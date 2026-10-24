@@ -310,6 +310,27 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_gaussian_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("gaussian_complete", None),
+            ("gaussian_construction", {"E0451": ("GaussianKernel { ..kernel }",)}),
+            ("gaussian_default", {"E0599": ("GaussianKernel::default()",)}),
+            ("gaussian_private", {"E0616": ("kernel.radius", "kernel.weights")}),
+            ("gaussian_readonly", {"E0594": ("kernel.weights()[0] = 0.0",)}),
+            ("gaussian_owned", None),
+            ("gaussian_borrow", {"E0515": ("kernel.weights()",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_scanner_post_is_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("scanner_post_complete", None),

@@ -22,6 +22,8 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
+#include "../ffi/exposure_fixture.h"
+#include "../ffi/juicer_test_api.h"
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
@@ -320,6 +322,41 @@ namespace {
         EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
         EXPECT_EQ(resources.stbnData, nullptr);
         EXPECT_EQ(resources.wangTilesData, nullptr);
+    }
+
+    TEST_F(GrainScratch, GaussianPreparedArraysMatchFrozenWordsAndWarmHitsDoNoConstruction) {
+        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan})
+            for (float pixelSize : {2.0f, 6.0f}) {
+                Inputs inputs(64, 48, route, {.pixelSize = pixelSize});
+                auto frame = prepare(inputs);
+                const auto kernels = frame.visual_grain_resources();
+                ASSERT_TRUE(kernels.active);
+                const auto check = [](const auto& kernel) {
+                    if (!kernel.weights)
+                        return;
+                    const auto expected = gaussian_kernel_fixture_words(JUICER_GAUSSIAN_FIXTURE_PATH, kernel.radius, kernel.sigma);
+                    std::vector<float> actual(expected.size());
+                    require_cuda(cudaMemcpy(actual.data(), kernel.weights, actual.size() * sizeof(float), cudaMemcpyDeviceToHost));
+                    for (std::size_t i = 0; i < actual.size(); ++i)
+                        require(std::bit_cast<std::uint32_t>(actual[i]) == expected[i], "all grain Gaussian words match independent native coefficients");
+                };
+                for (const auto& kernel : kernels.correlation)
+                    check(kernel);
+                for (const auto& layer : kernels.dyeCloud)
+                    for (const auto& kernel : layer)
+                        check(kernel);
+                finish(frame);
+                const auto acquisitions = fj_test_gaussian_kernel_acquires();
+                auto warm = prepare(inputs);
+                EXPECT_EQ(fj_test_gaussian_kernel_acquires(), acquisitions);
+                const auto reused = warm.visual_grain_resources();
+                for (std::size_t c = 0; c < 3; ++c) {
+                    EXPECT_EQ(reused.correlation[c].weights, kernels.correlation[c].weights);
+                    for (std::size_t layer = 0; layer < 3; ++layer)
+                        EXPECT_EQ(reused.dyeCloud[layer][c].weights, kernels.dyeCloud[layer][c].weights);
+                }
+                finish(warm);
+            }
     }
 
     TEST_F(GrainScratch, ReusesFinishedRawCorrectionPlanesWithoutDedicatedGrainAllocations) {

@@ -1009,7 +1009,7 @@ namespace {
             output.glareActive = true;
             output.glarePercent = 2.0f;
             output.glareRoughness = 0.3f;
-            output.glareBlurSigmaPx = output.lensBlurSigmaPx = output.unsharpSigmaPx = 0.7f;
+            output.glareBlurSigmaPx = output.lensBlurSigmaPx = output.unsharpSigmaPx = 0.75f;
             output.unsharpAmount = 0.8f;
             std::string diagnostic;
             inputs.post.emplace();
@@ -1020,7 +1020,7 @@ namespace {
             ASSERT_TRUE(view.active);
             ASSERT_NE(view.lensBlur.weights, nullptr);
             EXPECT_EQ(view.lensBlur.radius, 2);
-            EXPECT_EQ(view.lensBlur.sigma, 0.7f);
+            EXPECT_EQ(view.lensBlur.sigma, 0.75f);
             EXPECT_EQ(view.lensBlur.weights, view.unsharp.weights);
             if (Spektrafilm::scan_route_is_print(route)) {
                 EXPECT_EQ(view.glare.weights, view.lensBlur.weights);
@@ -1028,21 +1028,36 @@ namespace {
                 EXPECT_EQ(view.glare.weights, nullptr);
             }
             EXPECT_FALSE(first.scanner_post_effects_resources(first.workspace_lease(), original.hash ^ 1).active);
+            const auto check = [](const auto& kernel) {
+                if (!kernel.weights)
+                    return;
+                const auto expected = gaussian_kernel_fixture_words(JUICER_GAUSSIAN_FIXTURE_PATH, kernel.radius, kernel.sigma);
+                std::vector<float> actual(expected.size());
+                require(cudaMemcpy(actual.data(), kernel.weights, actual.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess, "scanner Gaussian download");
+                for (std::size_t i = 0; i < actual.size(); ++i)
+                    require(std::bit_cast<std::uint32_t>(actual[i]) == expected[i], "every scanner Gaussian coefficient matches frozen words");
+            };
+            check(view.lensBlur);
+            check(view.unsharp);
+            check(view.glare);
             const auto lut = capture_lut(*first.focused_resources().scanLut);
             const auto* retained = view.lensBlur.weights;
             JuicerCuda::Failure failure;
             require(first.finish(nullptr, failure), failure.diagnostic);
+            const auto acquisitions = fj_test_gaussian_kernel_acquires();
             auto warm = prepare_route(inputs, image);
+            EXPECT_EQ(fj_test_gaussian_kernel_acquires(), acquisitions);
             view = warm.scanner_post_effects_resources(warm.workspace_lease(), original.hash);
             ASSERT_TRUE(view.active);
             EXPECT_EQ(view.lensBlur.weights, retained);
             require(warm.finish(nullptr, failure), failure.diagnostic);
-            output.lensBlurSigmaPx = 2.0f;
+            output.lensBlurSigmaPx = 1.25f;
             ASSERT_TRUE(Scanner::build_scanner_post_effects_descriptor(output, *inputs.post, diagnostic)) << diagnostic;
             auto changed = prepare_route(inputs, image);
             view = changed.scanner_post_effects_resources(changed.workspace_lease(), inputs.post->hash);
             ASSERT_TRUE(view.active);
-            EXPECT_EQ(view.lensBlur.radius, 6);
+            EXPECT_EQ(view.lensBlur.radius, 4);
+            check(view.lensBlur);
             EXPECT_NE(view.lensBlur.weights, retained);
             EXPECT_EQ(view.unsharp.weights, retained);
             EXPECT_EQ(capture_lut(*changed.focused_resources().scanLut).addresses, lut.addresses);
@@ -1065,7 +1080,9 @@ namespace {
             output.lensBlurSigmaPx = output.unsharpSigmaPx = output.unsharpAmount = 0.0f;
             ASSERT_TRUE(Scanner::build_scanner_post_effects_descriptor(output, *inputs.post, diagnostic)) << diagnostic;
             EXPECT_EQ(inputs.post->hash, 0u);
+            const auto offAcquires = fj_test_gaussian_kernel_acquires();
             auto off = prepare_route(inputs, image);
+            EXPECT_EQ(fj_test_gaussian_kernel_acquires(), offAcquires);
             EXPECT_FALSE(off.scanner_post_effects_resources(off.workspace_lease(), 0).active);
             EXPECT_FALSE(off.scanner_workspace(off.workspace_lease()).active);
             require(off.finish(nullptr, failure), failure.diagnostic);

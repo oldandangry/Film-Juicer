@@ -2,6 +2,10 @@
 
 from pathlib import Path
 import json
+import hashlib
+import os
+import shutil
+import subprocess
 import re
 import tempfile
 import unittest
@@ -285,6 +289,42 @@ class NativeBoundary(unittest.TestCase):
         self.assertNotIn("Hash::", bridge)
         self.assertIn("struct ScannerSpectralLutDescriptor", header)
         self.assertIn("decoded.scanner.hash = source.scanner_lut.hash", (ROOT / "native/juicer_cuda_descriptors.cpp").read_text(encoding="utf-8"))
+
+    def test_native_gaussian_coefficient_producer_and_capture_access_stay_deleted(self):
+        source = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text()
+        header = (ROOT / "src/Cuda/JuicerCudaResources.h").read_text()
+        for name in ("build_gaussian_weights_cpu", "capture_native"):
+            self.assertNotIn(name, source + header)
+        self.assertIn("JuicerGaussian::Kernel::acquire(radius, sigma, outError)", source)
+        self.assertNotIn("capture-gaussian-kernels", (ROOT / "tests/ffi/film_recipe_test.cpp").read_text())
+        bridge = (ROOT / "src/RustGaussianBridge.cpp").read_text()
+        self.assertIn("SF_TEMP_BRIDGE_GAUSSIAN_KERNEL", (ROOT / "src/RustGaussianBridge.h").read_text())
+        self.assertNotIn("std::exp", bridge)
+        self.assertNotIn("Hash::", bridge)
+
+    def test_gaussian_hooks_and_allocator_are_absent_from_ordinary_objects(self):
+        build = Path.cwd().parent
+        if not (build / "CMakeCache.txt").is_file():
+            build = ROOT / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
+        compdb = json.loads((build / "compile_commands.json").read_bytes())
+        ordinary = [row for row in compdb if "juicer_native.dir" in row["command"] or "juicer_host.dir" in row["command"]]
+        self.assertTrue(ordinary)
+        self.assertFalse(any("JUICER_GAUSSIAN_TEST_HOOK" in row["command"] for row in ordinary))
+        nm = ("C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/llvm-nm.exe"
+              if os.name == "nt" else shutil.which("llvm-nm-22") or shutil.which("llvm-nm"))
+        self.assertTrue(nm, "qualified LLVM nm required for ordinary-object isolation")
+        for owner, source in (("juicer_native", "Cuda/JuicerCudaResources.cpp"), ("juicer_host", "RustGaussianBridge.cpp")):
+            path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
+            data = path.read_bytes()
+            output = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)], timeout=10).decode(errors="replace")
+            self.assertNotRegex(output, r"GaussianKernelTest::|SpectralAllocationProbe::|gaussian_faults::|fj_test_gaussian|rejectNativeAllocation|rejectedNativeBytes")
+            for text in ("Gaussian kernel fixture", "GaussianKernelTest", "SpectralAllocationProbe"):
+                for encoding in ("utf-8", "utf-16-le"):
+                    pattern = text.encode(encoding)
+                    self.assertNotIn(pattern, data)
+                    with self.assertRaises(AssertionError):
+                        self.assertNotIn(pattern, data + pattern)
+            print("Gaussian ordinary-object isolation", path, hashlib.sha256(data).hexdigest())
 
     def test_retired_scanner_post_constructor_stays_deleted(self):
         scanner = (ROOT / "src/Scanner.cpp").read_text(encoding="utf-8")

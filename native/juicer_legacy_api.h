@@ -1513,6 +1513,41 @@ typedef struct FjScannerPostEffectsFailure {
 #define FJ_SCANNER_POST_PANIC UINT32_C(5)
 FjStatus fj_legacy_scanner_post_describe(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_GAUSSIAN_KERNEL; remove S4.E with the native cache-miss caller.
+ * Safe Rust optics constructs scanner/grain/FIR-DIR coefficients. Acquire owns
+ * one immutable kernel, retaining no input borrow. The native miss borrows its
+ * view only through synchronous upload; no Rust pointer enters the device cache.
+ * Required records are live/initialized/aligned; writable records and diagnostic
+ * backing are exclusive and disjoint from peers/inputs. Numeric checks do not
+ * establish memory/handle provenance. Valid peers clear independently on failure.
+ * View needs a legitimate live matching owner and excludes concurrent release.
+ * All views end before release. Release consumes NULL or that owner exactly once,
+ * including malformed diagnostics or contained unwind; never cross-allocator free.
+ * Optional diagnostics and zero capacity are valid. No panic crosses this ABI.
+ */
+typedef struct FjGaussianKernelOwner FjGaussianKernelOwner;
+typedef struct FjGaussianKernelInput {
+    int32_t radius;
+    float sigma_px;
+} FjGaussianKernelInput;
+typedef struct FjGaussianKernelView {
+    int32_t radius;
+    float sigma_px;
+    FjFloatSpan weights;
+} FjGaussianKernelView;
+typedef struct FjGaussianKernelFailure {
+    uint32_t reason;
+} FjGaussianKernelFailure;
+#define FJ_GAUSSIAN_KERNEL_NONE UINT32_C(0)
+#define FJ_GAUSSIAN_KERNEL_RAW UINT32_C(1)
+#define FJ_GAUSSIAN_KERNEL_RADIUS UINT32_C(2)
+#define FJ_GAUSSIAN_KERNEL_SIGMA UINT32_C(3)
+#define FJ_GAUSSIAN_KERNEL_ALLOCATION UINT32_C(4)
+#define FJ_GAUSSIAN_KERNEL_PANIC UINT32_C(5)
+FjStatus fj_legacy_gaussian_kernel_acquire(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_gaussian_kernel_view(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_gaussian_kernel_release(FjGaussianKernelOwner*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

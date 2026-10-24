@@ -2485,6 +2485,18 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         std::mem::offset_of!(crate::scanner_bridge::FjScannerPostEffectsFailure, reason),
         std::mem::offset_of!(crate::scanner_bridge::FjScannerPostEffectsFailure, lane),
         std::mem::offset_of!(crate::scanner_bridge::FjScannerPostEffectsFailure, rejected),
+        size_of::<crate::optics_bridge::FjGaussianKernelInput>(),
+        align_of::<crate::optics_bridge::FjGaussianKernelInput>(),
+        std::mem::offset_of!(crate::optics_bridge::FjGaussianKernelInput, radius),
+        std::mem::offset_of!(crate::optics_bridge::FjGaussianKernelInput, sigma_px),
+        size_of::<crate::optics_bridge::FjGaussianKernelView>(),
+        align_of::<crate::optics_bridge::FjGaussianKernelView>(),
+        std::mem::offset_of!(crate::optics_bridge::FjGaussianKernelView, radius),
+        std::mem::offset_of!(crate::optics_bridge::FjGaussianKernelView, sigma_px),
+        std::mem::offset_of!(crate::optics_bridge::FjGaussianKernelView, weights),
+        size_of::<crate::optics_bridge::FjGaussianKernelFailure>(),
+        align_of::<crate::optics_bridge::FjGaussianKernelFailure>(),
+        std::mem::offset_of!(crate::optics_bridge::FjGaussianKernelFailure, reason),
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.

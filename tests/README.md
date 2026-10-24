@@ -1383,3 +1383,33 @@ absence of balance construction during resource preparation. These are bounded
 Film-Juicer characterization/product contracts; ordinary tests never capture or
 modify their frozen fixtures. Both Release OFF C11 probes retain sixteen frozen
 balance cases and all earlier boundary/feature-isolation checks.
+
+### Shared Gaussian coefficients
+
+`Ffi.Host.GaussianKernel` checks safe Rust optics, compiled C11/C++20/Rust ABI,
+checked owner/view/release transport and the native move-only hold against the
+four independently captured native cohorts in `optics/gaussian-fixtures/`.
+`Optics.Host.GaussianKernelProducts` reconstructs actual four-route scanner,
+visual-grain and small FIR DIR products and compares every coefficient and its
+metadata. Ordinary tests never regenerate expectations. The constructor preserves
+ascending f64 exp accumulation and both f32 rounding points; family radius and
+FIR/YVV selection remain with their existing owners.
+
+`Resource.Gpu.GaussianKernel` is one 180-second process with `juicer_gpu` exclusion
+and a real supported driver/device prerequisite. Its isolated resource object
+exercises real candidate allocation, a one-shot synchronous-copy result, the real
+map-node allocation rejection, deterministic two-upload insertion loser, explicit
+cancellation, once-only physical candidate frees, old-state/ledger/Rust-owner
+balance, recovery, warm hits and drained retirement. All waits are bounded to ten
+seconds and workers join before fixture/context destruction. The unchanged
+allocation probe is linked once per fixture executable. These are bounded injected
+operation/allocation results, not physical driver failure or universal OOM proof.
+Ordinary native objects and final testing-OFF artifacts exclude these controls.
+
+The owning scanner, grain and DIR GPU groups also download their actual prepared
+kernels and compare every word with the independent fixtures. Warm preparations
+must not acquire another Rust coefficient owner. Existing route numerics,
+identities, FIR/YVV separation, scratch and context-lifetime cases remain active.
+Both Release OFF C11 probes execute 201 Gaussian value/failure cases, preserving
+all earlier probe memberships, including 410 post-effects and 41 LUT descriptor
+rows. The local Box allocation still has the established allocator-abort limit.

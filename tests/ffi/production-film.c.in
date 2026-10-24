@@ -1628,6 +1628,83 @@ static int post_cases(void) {
     return 0;
 }
 
+_Static_assert(sizeof(FjGaussianKernelInput)==8 && _Alignof(FjGaussianKernelInput)==4 && offsetof(FjGaussianKernelInput,radius)==0 && offsetof(FjGaussianKernelInput,sigma_px)==4, "Gaussian input ABI");
+_Static_assert(sizeof(FjGaussianKernelView)==24 && _Alignof(FjGaussianKernelView)==8 && offsetof(FjGaussianKernelView,radius)==0 && offsetof(FjGaussianKernelView,sigma_px)==4 && offsetof(FjGaussianKernelView,weights)==8 && offsetof(FjFloatSpan,data)==0 && offsetof(FjFloatSpan,count)==8, "Gaussian view ABI");
+_Static_assert(sizeof(FjGaussianKernelFailure)==4 && _Alignof(FjGaussianKernelFailure)==4 && offsetof(FjGaussianKernelFailure,reason)==0, "Gaussian failure ABI");
+_Static_assert(_Generic(&fj_legacy_gaussian_kernel_acquire, FjStatus (*)(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*):1, default:0), "Gaussian acquire signature");
+_Static_assert(_Generic(&fj_legacy_gaussian_kernel_view, FjStatus (*)(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*):1, default:0), "Gaussian view signature");
+_Static_assert(_Generic(&fj_legacy_gaussian_kernel_release, FjStatus (*)(FjGaussianKernelOwner*, FjErrorBuffer*):1, default:0), "Gaussian release signature");
+static void gaussian_result(const char* name, FjStatus s, uint32_t reason, const FjGaussianKernelView* view) {
+    uint32_t sigma = 0;
+    if (view) memcpy(&sigma, &view->sigma_px, sizeof sigma);
+    printf("GAUSSIAN_CASE {\"case\":\"%s\",\"envelope\":[%u,%u,%d,%u],\"radius\":%d,\"sigma_bits\":%u,\"weights\":[",name,s.category,s.api,s.native_code,reason,view?view->radius:0,sigma);
+    if (view) for (size_t i=0;i<view->weights.count;++i) {
+        uint32_t word; memcpy(&word,view->weights.data+i,sizeof word);
+        printf("%s%u",i?",":"",word);
+    }
+    puts("]}");
+}
+static int gaussian_values(void) {
+    for (size_t i=0;i<sizeof(gaussian_rows)/sizeof(gaussian_rows[0]);++i) {
+        FjGaussianKernelInput input = {gaussian_rows[i].radius,0};
+        memcpy(&input.sigma_px,&gaussian_rows[i].sigma,sizeof(float));
+        FjGaussianKernelOwner* owner = NULL;
+        FjGaussianKernelFailure failure = {99};
+        FjGaussianKernelView view = {0};
+        char text[128] = "seed";
+        FjErrorBuffer error = {text,sizeof text,99};
+        FjStatus s = fj_legacy_gaussian_kernel_acquire(&input,&owner,&failure,&error);
+        CHECK(status(s,gaussian_rows[i].reason?3:0) && failure.reason==gaussian_rows[i].reason);
+        if (failure.reason) {
+            CHECK(owner==NULL && strcmp(text,failure.reason==2?"Gaussian kernel radius outside supported range":"invalid Gaussian kernel sigma")==0);
+        } else {
+            CHECK(owner!=NULL && error.length==0 && text[0]==0);
+            s = fj_legacy_gaussian_kernel_view(owner,&view,&failure,&error);
+            CHECK(status(s,0) && failure.reason==0 && view.radius==input.radius && view.weights.count==gaussian_rows[i].count && view.weights.data!=NULL);
+            uint32_t sigma; memcpy(&sigma,&view.sigma_px,sizeof sigma); CHECK(sigma==gaussian_rows[i].sigma);
+            for (size_t j=0;j<view.weights.count;++j) {
+                uint32_t word; memcpy(&word,view.weights.data+j,sizeof word); CHECK(word==gaussian_rows[i].words[j]);
+            }
+        }
+        gaussian_result(gaussian_rows[i].name,s,failure.reason,&view);
+        CHECK(status(fj_legacy_gaussian_kernel_release(owner,NULL),0));
+    }
+    const char* names[]={"radius-upper-reject","null-input","unaligned-input","null-owner-output","null-failure","malformed-diagnostic","null-view-owner","null-view-output","null-view-failure","view-malformed-diagnostic","zero-capacity","null-release","release-malformed-diagnostic"};
+    for (unsigned i=0;i<13;++i) {
+        FjGaussianKernelInput input={i==0?2049:3,1};
+        FjGaussianKernelOwner* owner=NULL;
+        FjGaussianKernelFailure failure={99};
+        FjGaussianKernelView view;
+        memset(&view,0x55,sizeof view);
+        FjErrorBuffer malformed={NULL,1,99}, zero={(char*)(uintptr_t)1,0,99};
+        FjStatus s;
+        if (i<=5) {
+            owner=(FjGaussianKernelOwner*)(uintptr_t)1;
+            s=fj_legacy_gaussian_kernel_acquire(i==1?NULL:i==2?(const FjGaussianKernelInput*)(uintptr_t)1:&input,i==3?NULL:&owner,i==4?NULL:&failure,i==5?&malformed:NULL);
+            CHECK(i==3 || owner==NULL);
+        } else if (i<=9) {
+            CHECK(status(fj_legacy_gaussian_kernel_acquire(&input,&owner,&failure,NULL),0));
+            s=fj_legacy_gaussian_kernel_view(i==6?NULL:owner,i==7?NULL:&view,i==8?NULL:&failure,i==9?&malformed:NULL);
+            CHECK(i==7 || (view.radius==0 && view.sigma_px==0 && view.weights.data==NULL && view.weights.count==0));
+            CHECK(status(fj_legacy_gaussian_kernel_release(owner,NULL),0));
+        } else if (i==10) {
+            s=fj_legacy_gaussian_kernel_acquire(&input,&owner,&failure,&zero);
+            CHECK(owner!=NULL && zero.length==0);
+            CHECK(status(fj_legacy_gaussian_kernel_release(owner,&zero),0));
+        } else if (i==11) s=fj_legacy_gaussian_kernel_release(NULL,NULL);
+        else {
+            CHECK(status(fj_legacy_gaussian_kernel_acquire(&input,&owner,&failure,NULL),0));
+            s=fj_legacy_gaussian_kernel_release(owner,&malformed);
+        }
+        const uint32_t reason=i==0?2:(i==10||i==11?0:1);
+        CHECK(status(s,reason==2?3:reason?2:0));
+        CHECK(i==4 || i==8 || i>=11 || failure.reason==reason);
+        gaussian_result(names[i],s,reason,NULL);
+    }
+    return 0;
+}
+
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -1635,6 +1712,8 @@ int wmain(int argc, wchar_t** argv) {
     FjPathView path = {argv[1], wcslen(argv[1]), FJ_PATH_WINDOWS_WIDE};
     FjPathView duplicate_path = {argv[2], wcslen(argv[2]), FJ_PATH_WINDOWS_WIDE};
 #else
+
+
 int main(int argc, char** argv) {
     CHECK(argc == 3);
     FjPathView path = {argv[1], strlen(argv[1]), FJ_PATH_UNIX_BYTES};
@@ -1650,6 +1729,7 @@ int main(int argc, char** argv) {
     CHECK(scanner_color_values() == 0);
     CHECK(scanner_descriptor_values() == 0);
     CHECK(post_cases() == 0);
+    CHECK(gaussian_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

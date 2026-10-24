@@ -783,3 +783,13 @@ static_assert(std::is_same_v<decltype(FjScannerPostEffectsFailure::lane), uint32
 static_assert(std::is_same_v<decltype(FjScannerPostEffectsFailure::rejected), FjScannerPostEffectsDescriptor> && offsetof(FjScannerPostEffectsFailure, rejected) == 8);
 static_assert(std::is_same_v<decltype(&fj_legacy_scanner_post_describe), FjStatus (*)(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_post_describe), FjStatus (*)(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*)>);
+
+static_assert(std::is_same_v<decltype(FjGaussianKernelInput::radius), int32_t>);
+static_assert(std::is_same_v<decltype(FjGaussianKernelInput::sigma_px), float>);
+static_assert(std::is_same_v<decltype(FjGaussianKernelView::radius), int32_t>);
+static_assert(std::is_same_v<decltype(FjGaussianKernelView::sigma_px), float>);
+static_assert(std::is_same_v<decltype(FjGaussianKernelView::weights), FjFloatSpan>);
+static_assert(std::is_same_v<decltype(FjGaussianKernelFailure::reason), uint32_t>);
+static_assert(std::is_same_v<decltype(&fj_legacy_gaussian_kernel_acquire), FjStatus (*)(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_legacy_gaussian_kernel_view), FjStatus (*)(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_legacy_gaussian_kernel_release), FjStatus (*)(FjGaussianKernelOwner*, FjErrorBuffer*)>);

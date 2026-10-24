@@ -856,3 +856,33 @@ _Static_assert(_Generic(((FjScannerPostEffectsFailure*)0)->rejected, FjScannerPo
 typedef FjStatus (*ScannerPostDescribe)(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*);
 _Static_assert(_Generic(&fj_legacy_scanner_post_describe, ScannerPostDescribe: 1, default: 0), "fj_legacy_scanner_post_describe signature");
 _Static_assert(_Generic(&fj_test_scanner_post_describe, ScannerPostDescribe: 1, default: 0), "fj_test_scanner_post_describe signature");
+
+_Static_assert(_Generic(((FjGaussianKernelInput*)0)->radius, int32_t: 1, default: 0), "FjGaussianKernelInput.radius type");
+_Static_assert(_Generic(((FjGaussianKernelInput*)0)->sigma_px, float: 1, default: 0), "FjGaussianKernelInput.sigma_px type");
+_Static_assert(_Generic(((FjGaussianKernelView*)0)->radius, int32_t: 1, default: 0), "FjGaussianKernelView.radius type");
+_Static_assert(_Generic(((FjGaussianKernelView*)0)->sigma_px, float: 1, default: 0), "FjGaussianKernelView.sigma_px type");
+_Static_assert(_Generic(((FjGaussianKernelView*)0)->weights, FjFloatSpan: 1, default: 0), "FjGaussianKernelView.weights type");
+_Static_assert(_Generic(((FjGaussianKernelFailure*)0)->reason, uint32_t: 1, default: 0), "FjGaussianKernelFailure.reason type");
+_Static_assert(_Generic(&fj_legacy_gaussian_kernel_acquire, FjStatus (*)(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*): 1, default: 0), "Gaussian acquire signature");
+_Static_assert(_Generic(&fj_legacy_gaussian_kernel_view, FjStatus (*)(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*): 1, default: 0), "Gaussian view signature");
+_Static_assert(_Generic(&fj_legacy_gaussian_kernel_release, FjStatus (*)(FjGaussianKernelOwner*, FjErrorBuffer*): 1, default: 0), "Gaussian release signature");
+
+int fj_test_gaussian_c_call(const FjGaussianKernelInput* input, const uint32_t* expected, size_t count) {
+    uint32_t sigma_bits = 0;
+    memcpy(&sigma_bits, &input->sigma_px, sizeof(float));
+    FjGaussianKernelOwner* owner = NULL;
+    FjGaussianKernelFailure failure = {99};
+    FjGaussianKernelView view;
+    if (fj_legacy_gaussian_kernel_acquire(input, &owner, &failure, NULL).category != 0 || !owner || failure.reason != 0)
+        return 0;
+    int ok = fj_legacy_gaussian_kernel_view(owner, &view, &failure, NULL).category == 0 && failure.reason == 0 && view.radius == input->radius && view.weights.count == count;
+    uint32_t observed_sigma = 0;
+    memcpy(&observed_sigma, &view.sigma_px, sizeof(float));
+    ok = ok && observed_sigma == sigma_bits;
+    for (size_t i = 0; ok && i < count; ++i) {
+        uint32_t word;
+        memcpy(&word, view.weights.data + i, sizeof word);
+        ok = word == expected[i];
+    }
+    return fj_legacy_gaussian_kernel_release(owner, NULL).category == 0 && ok;
+}

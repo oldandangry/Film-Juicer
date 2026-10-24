@@ -2243,3 +2243,50 @@ const _: unsafe extern "C" fn(
     *mut scanner_bridge::FjScannerLutDescriptorFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_scanner_lut_describe;
+
+/// # Safety
+/// Same initialized/disjoint ownership-transfer contract as the production acquire.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_gaussian_kernel_acquire(
+    input: *const crate::optics_bridge::FjGaussianKernelInput,
+    out: *mut *mut crate::optics_bridge::FjGaussianKernelOwner,
+    failure: *mut crate::optics_bridge::FjGaussianKernelFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Identical checked implementation; no legacy-export dependency.
+    unsafe { crate::optics_bridge::gaussian_acquire(input, out, failure, error) }
+}
+/// # Safety
+/// Legitimate live owner excluding release; initialized disjoint outputs/diagnostics.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_gaussian_kernel_view(
+    owner: *const crate::optics_bridge::FjGaussianKernelOwner,
+    out: *mut crate::optics_bridge::FjGaussianKernelView,
+    failure: *mut crate::optics_bridge::FjGaussianKernelFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Identical checked implementation and borrowed-view expiry.
+    unsafe { crate::optics_bridge::gaussian_view(owner, out, failure, error) }
+}
+/// # Safety
+/// NULL or one matching live owner transfers once, excluding all views.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_gaussian_kernel_release(
+    owner: *mut crate::optics_bridge::FjGaussianKernelOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Identical checked consuming implementation.
+    unsafe { crate::optics_bridge::gaussian_release(owner, error) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_gaussian_kernel_fault(operation: u32, fault: u32) -> FjStatus {
+    crate::optics_bridge::gaussian_faults::arm(operation, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_gaussian_kernel_acquires() -> usize {
+    crate::optics_bridge::gaussian_faults::counts()[0]
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_gaussian_kernel_live_owners() -> usize {
+    crate::optics_bridge::gaussian_faults::counts()[1]
+}

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <bit>
 #include <cstdint>
+#include <vector>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -92,4 +94,18 @@ inline nlohmann::json load_exposure_qualified_fixture(const std::filesystem::pat
     if (packet.at("original_fixture").get<std::string>() != path.filename().string())
         throw std::runtime_error("wrong A5 fixture supplement");
     return original.patch(packet.at("patch"));
+}
+
+// Exact independent Gaussian words for real scanner/grain/FIR-DIR device readers.
+inline std::vector<std::uint32_t> gaussian_kernel_fixture_words(const std::filesystem::path& logical, int radius, float sigma) {
+    const auto fixture = load_shared_fixture(logical, "manifest.json");
+    for (const auto& row : fixture.at("cases")) {
+        if (row.at("radius") == radius && row.at("sigma_bits") == std::bit_cast<std::uint32_t>(sigma)) {
+            auto words = row.at("weights").get<std::vector<std::uint32_t>>();
+            if (words.size() != static_cast<std::size_t>(radius) * 2u + 1u || row.at("count").get<std::size_t>() != words.size())
+                throw std::runtime_error("Gaussian frozen metadata mismatch");
+            return words;
+        }
+    }
+    throw std::runtime_error("Gaussian actual kernel has no frozen expectation");
 }

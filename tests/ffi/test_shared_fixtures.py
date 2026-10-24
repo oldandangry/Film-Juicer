@@ -15,6 +15,26 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_gaussian_complete_arrays_and_distinct_native_contexts(self):
+        root = Path(__file__).parents[1] / "optics/gaussian-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        for name, expected in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual(len(captured["cases"]), 188)
+            self.assertEqual(sum(row["count"] for row in captured["cases"]), 22895)
+            self.assertEqual([row["name"] for row in captured["cases"]], manifest["production_cases"][:188])
+            for row in captured["cases"]:
+                self.assertEqual(len(row["weights"]), row["count"])
+                self.assertTrue(all(isinstance(word, int) and 0 <= word <= 0xffffffff for word in row["weights"]))
+            self.assertTrue(any("fir-dir" in row["name"] and row["count"] > 0 for row in captured["cases"]))
+        self.assertEqual(len(manifest["production_cases"]), 201)
+        self.assertEqual(len(set(manifest["production_cases"])), 201)
+
     def test_scanner_post_complete_frozen_contexts(self):
         root = Path(__file__).parents[1] / "scanner/post-effects-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())

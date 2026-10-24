@@ -469,3 +469,355 @@ const _: unsafe extern "C" fn(
     *mut FjSpatialOpticsFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_legacy_spatial_optics_prepare;
+
+// SF_TEMP_BRIDGE_GAUSSIAN_KERNEL: miss-local owned coefficients; remove S4.E.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjGaussianKernelInput {
+    pub(crate) radius: i32,
+    pub(crate) sigma_px: f32,
+}
+#[repr(C)]
+pub(crate) struct FjGaussianKernelOwner {
+    _private: [u8; 0],
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjGaussianKernelView {
+    pub(crate) radius: i32,
+    pub(crate) sigma_px: f32,
+    pub(crate) weights: crate::cuda::sys::FjFloatSpan,
+}
+impl FjGaussianKernelView {
+    fn empty() -> Self {
+        Self {
+            radius: 0,
+            sigma_px: 0.0,
+            weights: crate::cuda::sys::FjFloatSpan {
+                data: std::ptr::null(),
+                count: 0,
+            },
+        }
+    }
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjGaussianKernelFailure {
+    pub(crate) reason: u32,
+}
+#[derive(Clone, Copy)]
+enum GaussianRejection {
+    Raw,
+    Core(optics::GaussianKernelError),
+    Panic,
+}
+impl GaussianRejection {
+    fn fields(self) -> (u32, u32, &'static str) {
+        match self {
+            Self::Raw => (
+                1,
+                FJ_STATUS_UNSUPPORTED_INPUT,
+                "invalid Gaussian kernel arguments",
+            ),
+            Self::Core(optics::GaussianKernelError::Radius) => (
+                2,
+                FJ_STATUS_PREPARATION_FAILURE,
+                "Gaussian kernel radius outside supported range",
+            ),
+            Self::Core(optics::GaussianKernelError::Sigma) => (
+                3,
+                FJ_STATUS_PREPARATION_FAILURE,
+                "invalid Gaussian kernel sigma",
+            ),
+            Self::Core(optics::GaussianKernelError::Allocation) => (
+                4,
+                crate::cuda::sys::FJ_STATUS_ALLOCATION_FAILURE,
+                "Gaussian kernel allocation failed",
+            ),
+            Self::Panic => (
+                5,
+                FJ_STATUS_INTERNAL_FAILURE,
+                "Gaussian kernel preparation panicked",
+            ),
+        }
+    }
+}
+/// # Safety
+/// Live initialized writable outputs/diagnostics are exclusive and mutually
+/// disjoint, including input storage. Admission does not prove memory provenance.
+unsafe fn gaussian_call<T: Copy>(
+    out: *mut T,
+    cleared: T,
+    failure: *mut FjGaussianKernelFailure,
+    error: *mut FjErrorBuffer,
+    release: bool,
+    body: impl FnOnce() -> Result<T, GaussianRejection>,
+) -> FjStatus {
+    let valid_out = valid_extent(out, 1);
+    let valid_failure = valid_extent(failure, 1);
+    // SAFETY: Clear each independently admitted writable peer before any other admission.
+    unsafe {
+        if valid_out {
+            out.write(cleared);
+        }
+        if valid_failure {
+            failure.write(FjGaussianKernelFailure { reason: 0 });
+        }
+    }
+    // SAFETY: Optional diagnostic storage follows the same live/disjoint contract.
+    let mut diagnostic = unsafe { Diagnostic::admit(error) };
+    let result = if !valid_out || !valid_failure || diagnostic.is_err() {
+        Err(GaussianRejection::Raw)
+    } else {
+        catch_unwind(AssertUnwindSafe(body)).unwrap_or(Err(GaussianRejection::Panic))
+    };
+    match result {
+        Ok(value) => {
+            // SAFETY: Successful admission established live exclusive output storage.
+            unsafe {
+                out.write(value);
+            }
+            status(FJ_STATUS_SUCCESS)
+        }
+        Err(rejection) => {
+            let (reason, category, text) = rejection.fields();
+            if valid_failure {
+                // SAFETY: Failure storage was independently admitted before any input access.
+                unsafe {
+                    failure.write(FjGaussianKernelFailure { reason });
+                }
+            }
+            if let Ok(writer) = &mut diagnostic {
+                let text = if release && reason == 5 {
+                    "Gaussian kernel release panicked"
+                } else {
+                    text
+                };
+                let _ = writer.write_str(text);
+            }
+            status(category)
+        }
+    }
+}
+fn gaussian_fault(operation: usize) -> u32 {
+    #[cfg(feature = "test-support")]
+    {
+        gaussian_faults::take(operation)
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = operation;
+        0
+    }
+}
+fn gaussian_panic(fault: u32) {
+    #[cfg(feature = "test-support")]
+    if fault == 1 {
+        panic!("Gaussian kernel fixture panic");
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = fault;
+}
+/// # Safety
+/// Live initialized input and disjoint exclusive output/failure/diagnostics stay
+/// valid through return. Successful ownership transfers to matching release.
+pub(crate) unsafe fn gaussian_acquire(
+    input: *const FjGaussianKernelInput,
+    out: *mut *mut FjGaussianKernelOwner,
+    failure: *mut FjGaussianKernelFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let fault = gaussian_fault(0);
+    #[cfg(feature = "test-support")]
+    gaussian_faults::ACQUIRES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // SAFETY: Common admission clears valid peers before borrowing the immutable input.
+    unsafe {
+        gaussian_call(out, std::ptr::null_mut(), failure, error, false, || {
+            if !valid_extent(input, 1) {
+                return Err(GaussianRejection::Raw);
+            }
+            gaussian_panic(fault);
+            let input = &*input;
+            #[cfg(feature = "test-support")]
+            optics::test_support::reject_gaussian_reservation(fault == 2);
+            let kernel = optics::GaussianKernel::new(input.radius as u32, input.sigma_px)
+                .map_err(GaussianRejection::Core)?;
+            // Box allocation retains the established infallible allocator-abort limitation.
+            let owner = Box::new(kernel);
+            #[cfg(feature = "test-support")]
+            gaussian_faults::LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Box::into_raw(owner).cast())
+        })
+    }
+}
+/// # Safety
+/// Borrow one legitimate live owner excluding release. Exclusive initialized
+/// output/failure/diagnostic storage is disjoint; all spans expire at release.
+pub(crate) unsafe fn gaussian_view(
+    owner: *const FjGaussianKernelOwner,
+    out: *mut FjGaussianKernelView,
+    failure: *mut FjGaussianKernelFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let fault = gaussian_fault(1);
+    // SAFETY: Common admission precedes owner borrow; provenance is the caller's obligation.
+    unsafe {
+        gaussian_call(
+            out,
+            FjGaussianKernelView::empty(),
+            failure,
+            error,
+            false,
+            || {
+                if !valid_extent(owner.cast::<optics::GaussianKernel>(), 1) {
+                    return Err(GaussianRejection::Raw);
+                }
+                gaussian_panic(fault);
+                let kernel = &*owner.cast::<optics::GaussianKernel>();
+                let view = FjGaussianKernelView {
+                    radius: kernel.radius() as i32,
+                    sigma_px: kernel.sigma_px(),
+                    weights: crate::cuda::sys::FjFloatSpan {
+                        data: kernel.weights().as_ptr(),
+                        count: kernel.weights().len(),
+                    },
+                };
+                #[cfg(feature = "test-support")]
+                let view = gaussian_faults::corrupt(view, fault);
+                Ok(view)
+            },
+        )
+    }
+}
+/// # Safety
+/// NULL or one matching live owner transfers exactly once, excluding views.
+/// Malformed diagnostics and contained unwind still consume an admitted owner.
+pub(crate) unsafe fn gaussian_release(
+    owner: *mut FjGaussianKernelOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let fault = gaussian_fault(2);
+    let valid_owner = owner.is_null() || valid_extent(owner.cast::<optics::GaussianKernel>(), 1);
+    let owned = if !owner.is_null() && valid_owner {
+        #[cfg(feature = "test-support")]
+        gaussian_faults::LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: Caller transfers this exact Box once before fallible diagnostic handling.
+        Some(unsafe { Box::from_raw(owner.cast::<optics::GaussianKernel>()) })
+    } else {
+        None
+    };
+    let mut out = 0u32;
+    let mut failure = FjGaussianKernelFailure { reason: 0 };
+    // SAFETY: Local outputs and caller-authorized diagnostics satisfy common admission.
+    // The owned closure drops its Box even when rejected before invocation.
+    unsafe {
+        gaussian_call(&mut out, 0, &mut failure, error, true, move || {
+            if !valid_owner {
+                return Err(GaussianRejection::Raw);
+            }
+            gaussian_panic(fault);
+            drop(owned);
+            Ok(0)
+        })
+    }
+}
+/// # Safety
+/// Same initialized/disjoint input and ownership transfer contract as gaussian_acquire.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_gaussian_kernel_acquire(
+    input: *const FjGaussianKernelInput,
+    out: *mut *mut FjGaussianKernelOwner,
+    failure: *mut FjGaussianKernelFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical checked ownership contract.
+    unsafe { gaussian_acquire(input, out, failure, error) }
+}
+/// # Safety
+/// Same legitimate owner/borrow expiry/disjoint output contract as gaussian_view.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_gaussian_kernel_view(
+    owner: *const FjGaussianKernelOwner,
+    out: *mut FjGaussianKernelView,
+    failure: *mut FjGaussianKernelFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical checked borrowing contract.
+    unsafe { gaussian_view(owner, out, failure, error) }
+}
+/// # Safety
+/// Same once-only matching ownership transfer contract as gaussian_release.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_gaussian_kernel_release(
+    owner: *mut FjGaussianKernelOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical checked consuming contract.
+    unsafe { gaussian_release(owner, error) }
+}
+#[cfg(feature = "test-support")]
+pub(crate) mod gaussian_faults {
+    use super::*;
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    pub(super) static LIVE: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static ACQUIRES: AtomicUsize = AtomicUsize::new(0);
+    thread_local! { static FAULTS: Cell<[u32; 3]> = const { Cell::new([0; 3]) }; }
+    pub(crate) fn arm(operation: u32, fault: u32) -> FjStatus {
+        if operation > 2
+            || fault
+                > match operation {
+                    0 => 2,
+                    1 => 4,
+                    _ => 1,
+                }
+        {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        FAULTS.with(|v| {
+            let mut slots = v.get();
+            slots[operation as usize] = fault;
+            v.set(slots);
+        });
+        status(FJ_STATUS_SUCCESS)
+    }
+    pub(super) fn take(operation: usize) -> u32 {
+        FAULTS.with(|v| {
+            let mut slots = v.get();
+            let fault = slots[operation];
+            slots[operation] = 0;
+            v.set(slots);
+            fault
+        })
+    }
+    pub(crate) fn counts() -> [usize; 2] {
+        [
+            ACQUIRES.load(Ordering::Relaxed),
+            LIVE.load(Ordering::Relaxed),
+        ]
+    }
+    pub(super) fn corrupt(mut view: FjGaussianKernelView, fault: u32) -> FjGaussianKernelView {
+        match fault {
+            2 => view.weights.count += 1,
+            3 => view.sigma_px = f32::NAN,
+            4 => view.weights.data = view.weights.data.cast::<u8>().wrapping_add(1).cast(),
+            _ => {}
+        }
+        view
+    }
+}
+
+const _: unsafe extern "C" fn(
+    *const FjGaussianKernelInput,
+    *mut *mut FjGaussianKernelOwner,
+    *mut FjGaussianKernelFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_gaussian_kernel_acquire;
+const _: unsafe extern "C" fn(
+    *const FjGaussianKernelOwner,
+    *mut FjGaussianKernelView,
+    *mut FjGaussianKernelFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_gaussian_kernel_view;
+const _: unsafe extern "C" fn(*mut FjGaussianKernelOwner, *mut FjErrorBuffer) -> FjStatus =
+    fj_legacy_gaussian_kernel_release;

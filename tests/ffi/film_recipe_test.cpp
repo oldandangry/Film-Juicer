@@ -31,6 +31,7 @@
 #include "Logging.h"
 #include "RustAssetBridge.h"
 #include "RustScannerBridge.h"
+#include "RustGaussianBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
@@ -46,6 +47,7 @@ extern "C" const std::size_t* fj_test_film_recipe_abi_c_facts(std::size_t* count
 extern "C" FjStatus fj_test_film_reference_c_prepare(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*);
 extern "C" int fj_test_scanner_correction_c_call(unsigned, const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, const FjScannerPrintCorrectionInput*, const FjScannerColorCorrection*, unsigned, unsigned);
 
+extern "C" int fj_test_gaussian_c_call(const FjGaussianKernelInput*, const uint32_t*, size_t);
 extern "C" int fj_test_scanner_descriptor_c_call(const FjScannerLutDescriptorInput*, const FjScannerLutDescriptor*);
 
 namespace {
@@ -295,7 +297,25 @@ namespace {
 #include "film_reference_test.inc"
 #include "scanner_lut_descriptor_test.inc"
 #include "scanner_post_effects_test.inc"
+#include "gaussian_kernel_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "gaussian" || std::string_view(argv[3]) == "gaussian-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = load_shared_fixture(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
+        require(captured.at("preset") == argv[4], "Gaussian native preset context");
+        GaussianTest::values(captured.at("cases"));
+        if (std::string_view(argv[3]) == "gaussian-products") {
+            const auto actual = GaussianTest::products(argv[1], captured.at("cohort"));
+            auto expected = captured.at("cases");
+            for (auto& row : expected)
+                row.erase("primitives");
+            require(actual == expected, "all actual Gaussian family descriptor products and every coefficient");
+        } else
+            GaussianTest::boundary();
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "scanner-post" || std::string_view(argv[3]) == "scanner-post-products")) {
         layouts();
         const auto manifest = read(argv[2]);

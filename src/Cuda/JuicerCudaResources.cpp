@@ -16,6 +16,7 @@
 #include "Scanner.h"
 #include "RustFilmRecipeBridge.h"
 #include "RustScannerBridge.h"
+#include "RustGaussianBridge.h"
 
 #include "Logging.h"
 #include "Hash.h"
@@ -4570,34 +4571,6 @@ namespace JuicerCuda {
         return true;
     }
 
-    // Cuda/JuicerCudaResourcesScratch.cpp
-    //
-    // Included by JuicerCudaResources.cpp (single-TU split).
-    static void build_gaussian_weights_cpu(
-        int radius,
-        float sigma,
-        std::vector<float>& outWeights) {
-        outWeights.clear();
-        if (radius <= 0 || !std::isfinite(sigma) || sigma <= 0.0f) {
-            return;
-        }
-        const std::size_t radiusSize = static_cast<std::size_t>(radius);
-        outWeights.resize(radiusSize * 2u + 1u);
-        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
-        double wsum = 0.0;
-        std::size_t weightIndex = 0;
-        for (int i = -radius; i <= radius; ++i, ++weightIndex) {
-            const double iDouble = static_cast<double>(i);
-            const double w = std::exp(-(iDouble * iDouble) / s2);
-            outWeights[weightIndex] = static_cast<float>(w);
-            wsum += w;
-        }
-        const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
-        for (float& w : outWeights) {
-            w = static_cast<float>(static_cast<double>(w) * invW);
-        }
-    }
-
     static void free_tracked_device_ptr_locked(
         Resources& resources,
         void*& ptr,
@@ -6353,14 +6326,13 @@ namespace JuicerCuda {
             }
         }
 
-        std::vector<float> cpuWeights;
-        build_gaussian_weights_cpu(radius, sigma, cpuWeights);
-        if (cpuWeights.empty()) {
-            outError.diagnostic = std::string(label ? label : "gaussian kernel") + " weights build failed";
+        // SF_TEMP_BRIDGE_GAUSSIAN_KERNEL: miss-only preparation; remove S4.E.
+        auto coefficients = JuicerGaussian::Kernel::acquire(radius, sigma, outError);
+        if (!coefficients) {
             return false;
         }
-
-        const std::size_t bytes = cpuWeights.size() * sizeof(float);
+        const auto weights = coefficients->weights();
+        const std::size_t bytes = weights.size_bytes();
         void* candidateRaw = nullptr;
         if (!allocate_owned_device(
                 resources,
@@ -6371,11 +6343,16 @@ namespace JuicerCuda {
             return false;
         }
         auto* candidateWeights = static_cast<float*>(candidateRaw);
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+        const cudaError_t copyError = static_cast<cudaError_t>(GaussianKernelTest::copy(
+            resources, key, candidateWeights, weights.data(), bytes));
+#else
         const cudaError_t copyError = cudaMemcpy(
             candidateWeights,
-            cpuWeights.data(),
+            weights.data(),
             bytes,
             cudaMemcpyHostToDevice);
+#endif
         if (copyError != cudaSuccess) {
             outError.status = runtime_failure_status(copyError);
             outError.diagnostic = std::string("cudaMemcpy(") +
@@ -6383,10 +6360,26 @@ namespace JuicerCuda {
                                   (cudaGetErrorString(copyError)
                                        ? cudaGetErrorString(copyError)
                                        : "(unknown)");
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+            Failure ignored;
+            const bool freed = free_owned_device(resources, candidateWeights, ignored);
+            GaussianKernelTest::observed_free(resources, key, candidateWeights, freed);
+#else
             free_owned_device_noexcept(resources, candidateWeights);
+#endif
             return false;
         }
 
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+        if (!GaussianKernelTest::after_upload(resources, key, candidateWeights)) {
+            Failure ignored;
+            const bool freed = free_owned_device(resources, candidateWeights, ignored);
+            GaussianKernelTest::observed_free(resources, key, candidateWeights, freed);
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+            outError.diagnostic = "Gaussian kernel fixture rendezvous canceled";
+            return false;
+        }
+#endif
         bool cacheOwnsCandidate = false;
         bool success = false;
         {
@@ -6394,6 +6387,9 @@ namespace JuicerCuda {
             reap_retire_queue_locked(resources);
             if (validate_resource_owner_locked(resources, outError, true)) {
                 try {
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+                    GaussianKernelTest::before_insert(resources, key);
+#endif
                     const auto inserted = resources.gaussianKernelCache.emplace(
                         key,
                         candidateWeights);
@@ -6410,7 +6406,13 @@ namespace JuicerCuda {
             }
         }
         if (!cacheOwnsCandidate) {
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+            Failure ignored;
+            const bool freed = free_owned_device(resources, candidateWeights, ignored);
+            GaussianKernelTest::observed_free(resources, key, candidateWeights, freed);
+#else
             free_owned_device_noexcept(resources, candidateWeights);
+#endif
         }
         return success;
     }
