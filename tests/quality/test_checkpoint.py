@@ -1280,11 +1280,16 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertEqual(len(document["gaussian_results"]), 201)
         for mode in ("missing", "duplicate", "changed-weight", "changed-metadata", "changed-envelope"):
             damaged = json.loads(json.dumps(document))
-            if mode == "missing": damaged["gaussian_results"].pop()
-            elif mode == "duplicate": damaged["gaussian_results"][-1] = damaged["gaussian_results"][0]
-            elif mode == "changed-weight": damaged["gaussian_results"][0]["weights"][1] ^= 1
-            elif mode == "changed-metadata": damaged["gaussian_results"][0]["sigma_bits"] ^= 1
-            else: damaged["gaussian_results"][-1]["envelope"][0] = 0
+            if mode == "missing":
+                damaged["gaussian_results"].pop()
+            elif mode == "duplicate":
+                damaged["gaussian_results"][-1] = damaged["gaussian_results"][0]
+            elif mode == "changed-weight":
+                damaged["gaussian_results"][0]["weights"][1] ^= 1
+            elif mode == "changed-metadata":
+                damaged["gaussian_results"][0]["sigma_bits"] ^= 1
+            else:
+                damaged["gaussian_results"][-1]["envelope"][0] = 0
             damaged_path = manifest.with_name("gaussian-" + mode + ".json")
             write_json(damaged_path, damaged)
             with self.assertRaisesRegex(ValueError, "Gaussian full arrays/metadata/failure"):
