@@ -4,6 +4,11 @@ use crate::hash;
 use std::fmt;
 
 mod descriptor;
+mod post_effects;
+pub use post_effects::{
+    describe_post_effects, PostEffects, PostEffectsAttempt, PostEffectsParams, PostEffectsError,
+    PostEffectsErrorKind,
+};
 pub use descriptor::{
     describe_lut, LutDescriptor, LutDescriptorError, LutDescriptorInput, LutDescriptorParams,
     LutSpectra,
@@ -639,6 +644,13 @@ fn print_reference_density(input: PrintInput<'_>, film_density: [f32; 3]) -> Opt
 #[cfg(feature = "test-support")]
 pub mod test_support {
     use std::cell::Cell;
+    thread_local! { static POST_FAULT: Cell<u32> = const { Cell::new(0) }; }
+    pub fn arm_post_fault(fault: u32) {
+        POST_FAULT.set(fault);
+    }
+    pub(super) fn take_post_fault() -> u32 {
+        POST_FAULT.replace(0)
+    }
     thread_local! { static DESCRIPTOR_FAULT: Cell<u32> = const { Cell::new(0) }; }
     pub fn arm_descriptor_fault(fault: u32) {
         DESCRIPTOR_FAULT.set(fault);

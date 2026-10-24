@@ -373,6 +373,26 @@ FjStatus fj_test_scanner_color_prepare(const FjScannerColorInput*, FjScannerColo
 FjStatus fj_test_scanner_lut_describe(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*);
 FjStatus fj_test_scanner_lut_descriptor_fault(uint32_t fault);
 
+/* Same synchronous scalar-copy contract as production. */
+FjStatus fj_test_scanner_post_describe(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*);
+/* Thread-local one-shot: 0 clear; 1 active hash0; 2 panic. Early errors retain it. */
+FjStatus fj_test_scanner_post_fault(uint32_t);
+/* One-shot per-operation Gaussian faults: 0 clears; 1 panics; acquire 2
+ * rejects its coefficient reservation; view 2/3/4 corrupt count/sigma/alignment.
+ * Other combinations are unsupported. Counters are monotonic, never reset. */
+FjStatus fj_test_gaussian_kernel_acquire(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*);
+FjStatus fj_test_gaussian_kernel_view(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
+FjStatus fj_test_gaussian_kernel_release(FjGaussianKernelOwner*, FjErrorBuffer*);
+FjStatus fj_test_gaussian_kernel_fault(uint32_t operation, uint32_t fault);
+size_t fj_test_gaussian_kernel_acquires(void);
+size_t fj_test_gaussian_kernel_live_owners(void);
+
+FjStatus fj_test_frame_domain_prepare(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
+FjStatus fj_test_frame_geometry_prepare(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
+FjStatus fj_test_frame_geometry_fault(uint32_t operation, uint32_t fault);
+FjStatus fj_test_frame_domain_c_prepare(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
+FjStatus fj_test_frame_geometry_c_prepare(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

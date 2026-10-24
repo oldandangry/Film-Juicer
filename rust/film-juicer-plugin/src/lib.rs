@@ -98,3 +98,9 @@ mod print_bridge;
     reason = "scanner transport checks foreign extents and scopes synchronous immutable input borrows"
 )]
 mod scanner_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the fixed frame edge admits foreign records and contains whole-operation unwind"
+)]
+mod frame_bridge;

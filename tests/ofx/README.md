@@ -86,3 +86,13 @@ implementation under test alone. Generate candidates under `out/validation/`,
 retain independent provenance, review them separately, and adopt an update only
 when its behavior is approved. Routine changes require automated renders, not a
 new user-supplied render or automatic baseline regeneration.
+
+`Ofx.Gpu.FrameGeometry` uses `JuicerAdapterTraceProbe --frame-geometry
+<frame-manifest> <preset> <trace-output>` with the existing GPU lock and a finite
+180-second deadline. Its three isolated observations are completed full-domain,
+scalar-pixel and conditional effects-domain phases. The host independently records
+image acquisition property reads and the live clip canonical query/time. Effects
+off preserves acquisition reads and skips the conditional phase/query. Distinct
+pixel RoD is observed before the existing prepared effects-domain rejection;
+successful effects and weave cases honor their current full-domain rules.
+Ordinary product objects contain none of the hook declarations or storage.

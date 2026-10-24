@@ -19,6 +19,8 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
+#include "../ffi/exposure_fixture.h"
+#include "../ffi/juicer_test_api.h"
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(const JuicerCuda::DirectPipelineRunParams*, JuicerCuda::SpatialDirBuildRequest);
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(const JuicerCuda::DirectPipelineRunParams*, float*, float*, float*, void*);
@@ -326,6 +328,42 @@ namespace {
         cudaStream_t stream = nullptr;
         inline static std::uint64_t nextIdentity = 1;
     };
+
+    TEST_F(ExposureCache, GaussianFirArraysMatchFrozenWordsAndWarmHitsDoNoConstruction) {
+        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+            Inputs inputs(route, Spektrafilm::RgbToRawMethod::Hanatos2025, 12.0f, {0, 0, 64, 48});
+            JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+            snapshot.instanceToken.value = 0x4741555353ull;
+            snapshot.frameToken.value = nextIdentity;
+            snapshot.snapshotId = nextIdentity++;
+            snapshot.deviceContextKey = key;
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
+            JuicerCuda::Failure error;
+            const auto prepareFir = [&] {
+                auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, error);
+                require(frame.active(), error.diagnostic);
+                require(frame.prepare_spatial_dir_resources(inputs.dir, frame.workspace_lease(), stream, error), error.diagnostic);
+                return frame;
+            };
+            auto frame = prepareFir();
+            const auto prepared = frame.spatial_dir_resources(frame.workspace_lease(), inputs.dir.hash);
+            ASSERT_TRUE(prepared.active);
+            ASSERT_NE(prepared.gaussian.weights, nullptr);
+            const auto expected = gaussian_kernel_fixture_words(JUICER_GAUSSIAN_FIXTURE_PATH, prepared.gaussian.radius, prepared.gaussian.sigma);
+            std::vector<float> actual(expected.size());
+            require_cuda(cudaMemcpy(actual.data(), prepared.gaussian.weights, actual.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            for (std::size_t i = 0; i < actual.size(); ++i)
+                require(std::bit_cast<std::uint32_t>(actual[i]) == expected[i], "all actual FIR DIR Gaussian words match frozen native coefficients");
+            require(frame.finish(stream, error), error.diagnostic);
+            const auto acquisitions = fj_test_gaussian_kernel_acquires();
+            snapshot.frameToken.value = nextIdentity;
+            snapshot.snapshotId = nextIdentity++;
+            auto warm = prepareFir();
+            EXPECT_EQ(fj_test_gaussian_kernel_acquires(), acquisitions);
+            EXPECT_EQ(warm.spatial_dir_resources(warm.workspace_lease(), inputs.dir.hash).gaussian.weights, prepared.gaussian.weights);
+            require(warm.finish(stream, error), error.diagnostic);
+        }
+    }
 
     TEST_F(ExposureCache, SourceBuildMatchesSeparateCacheAndDevelopedDensityBitForBit) {
         for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {

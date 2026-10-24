@@ -291,9 +291,11 @@ worker count with `--parallel <count>` when the machine needs a smaller limit.
 
 `Rust.Core` uses two libtest workers and reserves two CTest slots. Tests that
 spawn threads still exercise their internal concurrent publication and lifetime
-witnesses. On Windows, `Quality.Checkpoint` reserves four slots so its repeated
-tool-byte validation runs alone at the preset's four-worker limit. A larger
-explicit worker count can allow overlap again. Verification control logs include
+witnesses. On Windows, `Quality.Checkpoint` and `Quality.PreparationRenewal` each
+reserve four slots so their repeated tool-byte validation runs alone at the
+preset's four-worker limit. Their 600-second and 300-second deadlines remain
+unchanged. A larger explicit worker count can allow overlap again. Verification
+control logs include
 the ten slowest unittest cases. These scheduling choices preserve complete test
 membership, tool/input checks and the existing deadlines.
 
@@ -968,6 +970,26 @@ GPU output/reuse/correction and prepared-boundary cases remain downstream eviden
 
 ### Scanner output encoding
 
+`Ffi.Host.ScannerPostEffects` and `Scanner.Host.PostEffectsProducts` use the
+bounded `scanner/post-effects-fixtures` supplement: 400 independently captured
+whole native constructor cases with distinct Linux/Windows Debug/Release contexts.
+Floats remain raw f32 words; all fields, radii, schema, exact hash, masking,
+diagnostics and ordinary rejected attempts are checked through safe Rust, raw C
+and native readers. The original producer executables and source/configuration/
+tool receipts are retained in each context's provenance. Ordinary tests never
+generate these expectations. The capture-only dispatch was removed at cutover.
+
+The post-effects transport uses separate 32/56/64-byte input/result/failure
+records, with independent output clearing and optional diagnostics. The permanent
+48-byte CUDA execution record is unchanged. RadiusRange defines only consumed
+finite int32 conversion overflow; multiplication overflow retains radius-zero
+behavior. ON-only faults cover hash-zero, panic, projection rejection and recovery.
+Both actual route schedules, prepared projection and Gaussian slot reuse/rebuild/
+failed descriptor admission and retired-frame view rejection are exercised by
+the owning host and scanner GPU groups.
+Both native Release OFF probes additionally assert 410 exact post-effects results,
+alongside every existing probe including Slice 8's 41 descriptor rows.
+
 `Ffi.Host.ScannerCorrection` checks complete direct/print correction construction,
 coordinated C11/C++20/Rust ABI facts, raw/facade/native failure and clearing rules,
 all byte/flag demand combinations, independent fault consumption, integrity and
@@ -1363,3 +1385,56 @@ absence of balance construction during resource preparation. These are bounded
 Film-Juicer characterization/product contracts; ordinary tests never capture or
 modify their frozen fixtures. Both Release OFF C11 probes retain sixteen frozen
 balance cases and all earlier boundary/feature-isolation checks.
+
+### Shared Gaussian coefficients
+
+`Ffi.Host.GaussianKernel` checks safe Rust optics, compiled C11/C++20/Rust ABI,
+checked owner/view/release transport and the native move-only hold against the
+four independently captured native cohorts in `optics/gaussian-fixtures/`.
+`Optics.Host.GaussianKernelProducts` reconstructs actual four-route scanner,
+visual-grain and small FIR DIR products and compares every coefficient and its
+metadata. Ordinary tests never regenerate expectations. The constructor preserves
+ascending f64 exp accumulation and both f32 rounding points; family radius and
+FIR/YVV selection remain with their existing owners.
+
+`Resource.Gpu.GaussianKernel` is one 180-second process with `juicer_gpu` exclusion
+and a real supported driver/device prerequisite. Its isolated resource object
+exercises real candidate allocation, a one-shot synchronous-copy result, the real
+map-node allocation rejection, deterministic two-upload insertion loser, explicit
+cancellation, once-only physical candidate frees, old-state/ledger/Rust-owner
+balance, recovery, warm hits and drained retirement. All waits are bounded to ten
+seconds and workers join before fixture/context destruction. The unchanged
+allocation probe is linked once per fixture executable. These are bounded injected
+operation/allocation results, not physical driver failure or universal OOM proof.
+Ordinary native objects and final testing-OFF artifacts exclude these controls.
+
+The owning scanner, grain and DIR GPU groups also download their actual prepared
+kernels and compare every word with the independent fixtures. Warm preparations
+must not acquire another Rust coefficient owner. Existing route numerics,
+identities, FIR/YVV separation, scratch and context-lifetime cases remain active.
+Both Release OFF C11 probes execute 201 Gaussian value/failure cases, preserving
+all earlier probe memberships, including 410 post-effects and 41 LUT descriptor
+rows. The local Box allocation still has the established allocator-abort limit.
+
+### Frame domains and physical pixel size
+
+`Ffi.Host.FrameGeometry` checks fixed C11/C++20/Rust layouts and signatures,
+complete frozen values, independent clearing, raw admission, bounded diagnostics
+and contained panic. `Frame.Host.GeometryProducts` checks the native projection's
+complete signed fields, final f32 pixel word and its f64 diffusion widening.
+Both are host groups with 180-second deadlines. The immutable
+[frame fixtures](frame/geometry-fixtures/README.md) retain four native contexts.
+
+`Ofx.Gpu.FrameGeometry` calls the real render callback in the existing isolated
+adapter target, with valid pitched allocations for successful renders. It checks
+same-state geometry changes, source/destination/window distinctions, cached source
+pixel RoD/scale/PAR, live canonical RoD at the callback time, four routes, existing
+full-domain restrictions, early failure order and image leases. Acquisition reads
+metadata even with effects off; conditional effects consumption is proved by
+three bounded completed-phase observations. Failed effects-domain conversion
+retains the preceding canonical query and has no completed effects phase.
+
+Both final native Release testing-OFF gates link the existing C11 film probe
+against the exact Rust archive and check all 69 frame rows, plus all older probes.
+The temporary callback bridge retires with its actual last native OFX consumer,
+no later than S6.D; prepared-state integration remains separate.

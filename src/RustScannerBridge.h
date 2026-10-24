@@ -60,6 +60,8 @@ namespace JuicerScanner {
         void set_descriptor_projection(DescriptorProjection value);
         using ColorProjection = void (*)(FjStatus&, FjScannerColor&, FjScannerColorFailure&);
         void set_color_projection(ColorProjection value);
+        using PostProjection = void (*)(FjStatus&, FjScannerPostEffectsDescriptor&, FjScannerPostEffectsFailure&, FjErrorBuffer&);
+        void set_post_projection(PostProjection value);
     } // namespace Test
 #endif
 } // namespace JuicerScanner

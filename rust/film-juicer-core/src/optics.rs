@@ -2,6 +2,9 @@
 
 use crate::hash;
 
+mod gaussian;
+pub use gaussian::{GaussianKernel, GaussianKernelError};
+
 // Matches the frozen native v1 resolved-hash contract. Native authored-control
 // and PSF-sample hashes are distinct identities; their schema is
 // kDiffusionHostBehaviorSchemaVersion in DiffusionHostBehavior.h.
@@ -507,6 +510,13 @@ impl Recipe {
 pub mod test_support {
     use std::cell::Cell;
     thread_local! { static ZERO_HASH: Cell<bool> = const { Cell::new(false) }; }
+    thread_local! { static GAUSSIAN_RESERVATION: Cell<bool> = const { Cell::new(false) }; }
+    pub fn reject_gaussian_reservation(reject: bool) {
+        GAUSSIAN_RESERVATION.set(reject);
+    }
+    pub(super) fn take_gaussian_reservation() -> bool {
+        GAUSSIAN_RESERVATION.replace(false)
+    }
     pub fn zero_next_resolved_hash() {
         ZERO_HASH.set(true);
     }

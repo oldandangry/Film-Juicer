@@ -1802,3 +1802,242 @@ const _: unsafe extern "C" fn(
     *mut FjScannerLutDescriptorFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_legacy_scanner_lut_describe;
+
+// SF_TEMP_BRIDGE_SCANNER_POST_EFFECTS: fixed synchronous copies; remove S4.E.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjScannerPostEffectsInput {
+    pub(crate) route: u32,
+    pub(crate) glare_active: u32,
+    pub(crate) glare_percent: f32,
+    pub(crate) glare_roughness: f32,
+    pub(crate) glare_blur_sigma_px: f32,
+    pub(crate) lens_blur_sigma_px: f32,
+    pub(crate) unsharp_sigma_px: f32,
+    pub(crate) unsharp_amount: f32,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FjScannerPostEffectsDescriptor {
+    pub(crate) route: u32,
+    pub(crate) glare_active: u32,
+    pub(crate) glare_percent: f32,
+    pub(crate) glare_roughness: f32,
+    pub(crate) glare_blur_sigma_px: f32,
+    pub(crate) glare_blur_radius: i32,
+    pub(crate) lens_blur_sigma_px: f32,
+    pub(crate) lens_blur_radius: i32,
+    pub(crate) unsharp_sigma_px: f32,
+    pub(crate) unsharp_radius: i32,
+    pub(crate) unsharp_amount: f32,
+    pub(crate) schema: u32,
+    pub(crate) hash: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FjScannerPostEffectsFailure {
+    pub(crate) reason: u32,
+    pub(crate) lane: u32,
+    pub(crate) rejected: FjScannerPostEffectsDescriptor,
+}
+
+fn post_projection(
+    fields: &scanner::PostEffectsAttempt,
+    hash: u64,
+) -> FjScannerPostEffectsDescriptor {
+    let v = fields.values();
+    let r = fields.radii();
+    FjScannerPostEffectsDescriptor {
+        route: fields.route() as u32,
+        glare_active: u32::from(fields.glare_active()),
+        glare_percent: v[0],
+        glare_roughness: v[1],
+        glare_blur_sigma_px: v[2],
+        glare_blur_radius: r[0],
+        lens_blur_sigma_px: v[3],
+        lens_blur_radius: r[1],
+        unsharp_sigma_px: v[4],
+        unsharp_radius: r[2],
+        unsharp_amount: v[5],
+        schema: fields.schema(),
+        hash,
+    }
+}
+enum PostFailure {
+    Raw,
+    Core(scanner::PostEffectsError),
+    Panic,
+}
+impl PostFailure {
+    fn envelope(&self) -> (u32, u32, u32) {
+        use scanner::PostEffectsErrorKind as E;
+        match self {
+            Self::Raw => (1, 0, FJ_STATUS_UNSUPPORTED_INPUT),
+            Self::Core(error) => (
+                match error.kind() {
+                    E::Values => 2,
+                    E::RadiusRange => 3,
+                    E::ZeroHash => 4,
+                },
+                error.lane(),
+                FJ_STATUS_PREPARATION_FAILURE,
+            ),
+            Self::Panic => (5, 0, FJ_STATUS_INTERNAL_FAILURE),
+        }
+    }
+}
+impl fmt::Display for PostFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Raw => f.write_str("invalid scanner post-effects arguments"),
+            Self::Core(error) => error.fmt(f),
+            Self::Panic => f.write_str("scanner post-effects preparation panicked"),
+        }
+    }
+}
+
+/// # Safety
+/// Input is initialized/live/readable; both writable records and optional
+/// diagnostic/backing are exclusive, live and mutually disjoint, including from
+/// input, through return. Extent checks cannot prove arbitrary pointer readability.
+/// No pointer or borrow is retained.
+pub(crate) unsafe fn describe_post(
+    input: *const FjScannerPostEffectsInput,
+    out: *mut FjScannerPostEffectsDescriptor,
+    failure: *mut FjScannerPostEffectsFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let valid_out = valid_extent(out, 1);
+    let valid_failure = valid_extent(failure, 1);
+    // SAFETY: Each independently admitted exclusive record is cleared before peers.
+    unsafe {
+        if valid_out {
+            out.write_bytes(0, 1);
+        }
+        if valid_failure {
+            failure.write_bytes(0, 1);
+        }
+    }
+    let mut diagnostic = None;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: Optional diagnostic storage obeys the synchronous caller contract.
+        diagnostic = Some(unsafe { Diagnostic::admit(error) }.map_err(|_| PostFailure::Raw)?);
+        if !valid_out || !valid_failure || !valid_extent(input, 1) {
+            return Err(PostFailure::Raw);
+        }
+        // SAFETY: Admitted initialized readable input; the copy retains no pointer.
+        let input = unsafe { *input };
+        if input.glare_active > 1 {
+            return Err(PostFailure::Raw);
+        }
+        let route = match input.route {
+            0 => film_juicer_core::route::ScanRoute::NegativeDirect,
+            1 => film_juicer_core::route::ScanRoute::NegativePrint,
+            2 => film_juicer_core::route::ScanRoute::PositiveDirect,
+            3 => film_juicer_core::route::ScanRoute::PositivePrint,
+            _ => return Err(PostFailure::Raw),
+        };
+        scanner::describe_post_effects(scanner::PostEffectsParams {
+            route,
+            glare_active: input.glare_active != 0,
+            glare_percent: input.glare_percent,
+            glare_roughness: input.glare_roughness,
+            glare_blur_sigma_px: input.glare_blur_sigma_px,
+            lens_blur_sigma_px: input.lens_blur_sigma_px,
+            unsharp_sigma_px: input.unsharp_sigma_px,
+            unsharp_amount: input.unsharp_amount,
+        })
+        .map_err(PostFailure::Core)
+    }))
+    .unwrap_or(Err(PostFailure::Panic));
+    match result {
+        Ok(value) => {
+            // SAFETY: Both records admitted; success has a complete scalar copy.
+            unsafe {
+                out.write(post_projection(value.fields(), value.hash()));
+            }
+            status(FJ_STATUS_SUCCESS)
+        }
+        Err(rejection) => {
+            let (reason, lane, category) = rejection.envelope();
+            if valid_failure {
+                let rejected = if let PostFailure::Core(error) = &rejection {
+                    error
+                        .rejected_attempt()
+                        .map(|attempt| post_projection(attempt, 0))
+                } else {
+                    None
+                };
+                // SAFETY: Failure record admitted independently. All padding was cleared.
+                unsafe {
+                    (*failure).reason = reason;
+                    (*failure).lane = lane;
+                    if let Some(rejected) = rejected {
+                        (*failure).rejected = rejected;
+                    }
+                }
+            }
+            if let Some(writer) = &mut diagnostic {
+                let _ = write!(writer, "{rejection}");
+            }
+            status(category)
+        }
+    }
+}
+/// # Safety
+/// Same initialized/live/exclusive/disjoint synchronous contract as `describe_post`.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_scanner_post_describe(
+    input: *const FjScannerPostEffectsInput,
+    out: *mut FjScannerPostEffectsDescriptor,
+    failure: *mut FjScannerPostEffectsFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Caller provides the checked operation's storage obligations.
+    unsafe { describe_post(input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const FjScannerPostEffectsInput,
+    *mut FjScannerPostEffectsDescriptor,
+    *mut FjScannerPostEffectsFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_scanner_post_describe;
+
+const _: () = {
+    assert!(
+        size_of::<FjScannerPostEffectsInput>() == 32
+            && align_of::<FjScannerPostEffectsInput>() == 4
+    );
+    assert!(std::mem::offset_of!(FjScannerPostEffectsInput, route) == 0);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsInput, glare_active) == 4);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsInput, glare_percent) == 8);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsInput, glare_roughness) == 12);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsInput, glare_blur_sigma_px) == 16);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsInput, lens_blur_sigma_px) == 20);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsInput, unsharp_sigma_px) == 24);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsInput, unsharp_amount) == 28);
+    assert!(
+        size_of::<FjScannerPostEffectsDescriptor>() == 56
+            && align_of::<FjScannerPostEffectsDescriptor>() == 8
+    );
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, route) == 0);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, glare_active) == 4);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, glare_percent) == 8);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, glare_roughness) == 12);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, glare_blur_sigma_px) == 16);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, glare_blur_radius) == 20);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, lens_blur_sigma_px) == 24);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, lens_blur_radius) == 28);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, unsharp_sigma_px) == 32);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, unsharp_radius) == 36);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, unsharp_amount) == 40);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, schema) == 44);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsDescriptor, hash) == 48);
+    assert!(
+        size_of::<FjScannerPostEffectsFailure>() == 64
+            && align_of::<FjScannerPostEffectsFailure>() == 8
+    );
+    assert!(std::mem::offset_of!(FjScannerPostEffectsFailure, reason) == 0);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsFailure, lane) == 4);
+    assert!(std::mem::offset_of!(FjScannerPostEffectsFailure, rejected) == 8);
+};

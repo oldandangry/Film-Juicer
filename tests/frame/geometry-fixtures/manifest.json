@@ -1,0 +1,2089 @@
+{
+  "schema": 1,
+  "authority": "Film-Juicer native characterization: unchanged actual callback fragments before replacement; exact signed fields, final f32 and widened diffusion words",
+  "checked_authority": "Product raw boundary and panic contract, separate from native mathematical characterization",
+  "presets": {
+    "linux-debug": {
+      "native": "linux-debug.json"
+    },
+    "linux-release": {
+      "native": "linux-release.json"
+    },
+    "windows-clang-debug": {
+      "native": "windows-clang-debug.json"
+    },
+    "windows-clang-release": {
+      "native": "windows-clang-release.json"
+    }
+  },
+  "payloads": {
+    "linux-debug.json": "linux-debug-payload.json",
+    "linux-release.json": "linux-release-payload.json",
+    "windows-clang-debug.json": "windows-clang-debug-payload.json",
+    "windows-clang-release.json": "windows-clang-release-payload.json"
+  },
+  "contexts": {
+    "linux-debug.json": "linux-debug-context.json",
+    "linux-release.json": "linux-release-context.json",
+    "windows-clang-debug.json": "windows-clang-debug-context.json",
+    "windows-clang-release.json": "windows-clang-release-context.json"
+  },
+  "sha256": {
+    "linux-debug-payload.json": "8866288b8ba4b97b83c6b79fd006e25843bfa920a94f00789cc3b5e3bca548c4",
+    "linux-debug-context.json": "691d820289c6abc44133f2bdcb3173d5b58753b0fdbe573b81a98f4a88698318",
+    "linux-release-payload.json": "8866288b8ba4b97b83c6b79fd006e25843bfa920a94f00789cc3b5e3bca548c4",
+    "linux-release-context.json": "fb5a0d0b032046d4f6d83a6d26e8d40e93c9619102050db1d0c1350389ccfe32",
+    "windows-clang-debug-payload.json": "8866288b8ba4b97b83c6b79fd006e25843bfa920a94f00789cc3b5e3bca548c4",
+    "windows-clang-debug-context.json": "1919cad08ff0888e21d0baa3d5c1153764e2b4b15643272f8106204d46e60111",
+    "windows-clang-release-payload.json": "8866288b8ba4b97b83c6b79fd006e25843bfa920a94f00789cc3b5e3bca548c4",
+    "windows-clang-release-context.json": "28e06edf57083e8206d5ca2a7a939c0a1bbdbedc061ff3eae86aa6f11cc07231",
+    "inputs.json": "2b22fe5bf8841ea63f6d7e438580ec4b6cc149ef7feacd5162e7662a2a995205"
+  },
+  "domain_count": 15,
+  "geometry_count": 22,
+  "all_four_payloads_equal": true,
+  "production_cases": [
+    {
+      "case": "domain/landscape",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/portrait",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        -11,
+        17,
+        5,
+        7
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/square",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        3,
+        -4,
+        7,
+        7
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/empty",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        9,
+        -8,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/reversed",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        10,
+        20,
+        -13,
+        -28
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/max-width",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        1,
+        2147483647,
+        1
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/min-width",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        -2147483648,
+        1
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/positive-limit",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        -2147483648,
+        -4,
+        2147483647,
+        6
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/negative-limit",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        2147483647,
+        0,
+        -2147483648,
+        1
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/width-over",
+      "envelope": [
+        3,
+        0,
+        0,
+        2
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "frame descriptor dimensions exceed signed integer range"
+    },
+    {
+      "case": "domain/width-under",
+      "envelope": [
+        3,
+        0,
+        0,
+        2
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "frame descriptor dimensions exceed signed integer range"
+    },
+    {
+      "case": "domain/height-over",
+      "envelope": [
+        3,
+        0,
+        0,
+        2
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "frame descriptor dimensions exceed signed integer range"
+    },
+    {
+      "case": "domain/height-under",
+      "envelope": [
+        3,
+        0,
+        0,
+        2
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "frame descriptor dimensions exceed signed integer range"
+    },
+    {
+      "case": "domain/both-over",
+      "envelope": [
+        3,
+        0,
+        0,
+        2
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "frame descriptor dimensions exceed signed integer range"
+    },
+    {
+      "case": "domain/both-min",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        -2147483648,
+        -2147483648
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/landscape",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "pixel_bits": 1168160475,
+      "diffusion_bits": 4662376645699567616,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/portrait",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        -11,
+        17,
+        5,
+        7
+      ],
+      "pixel_bits": 1168160475,
+      "diffusion_bits": 4662376645699567616,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/square",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        3,
+        -4,
+        9,
+        9
+      ],
+      "pixel_bits": 1165623296,
+      "diffusion_bits": 4661014508095930368,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/zero",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        1,
+        -2,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/negative",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        2,
+        3,
+        -7,
+        -5
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/mixed",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        9,
+        10,
+        -7,
+        5
+      ],
+      "pixel_bits": 1172373504,
+      "diffusion_bits": 4664638498421080064,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/max",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        2147483647,
+        1
+      ],
+      "pixel_bits": 931962880,
+      "diffusion_bits": 4535569027459710976,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/min",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        -2147483648,
+        -2147483648
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-lower",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "pixel_bits": 1150212974,
+      "diffusion_bits": 4652741154469576704,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-upper",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "pixel_bits": 1183182263,
+      "diffusion_bits": 4670441406722998272,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-fractional",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "pixel_bits": 1168087333,
+      "diffusion_bits": 4662337377887322112,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-positive-zero",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-negative-zero",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-negative",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-infinity",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "pixel_bits": 2139095040,
+      "diffusion_bits": 9218868437227405312,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-subnormal",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "pixel_bits": 1000,
+      "diffusion_bits": 3980970964362985472,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-normal",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "pixel_bits": 91881472,
+      "diffusion_bits": 4084553755792506880,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-max",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "pixel_bits": 2139095040,
+      "diffusion_bits": 9218868437227405312,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-nan",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/film-negative-nan",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/exact-quotient",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        1000,
+        500
+      ],
+      "pixel_bits": 1108344832,
+      "diffusion_bits": 4630263366890291200,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/roi-scale-par-independent",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "pixel_bits": 1168160475,
+      "diffusion_bits": 4662376645699567616,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/null-input",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "domain/null-output",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": null,
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "domain/null-failure",
+      "envelope": [
+        2,
+        0,
+        0,
+        null
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "domain/unaligned-input",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "domain/unaligned-output",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": null,
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "domain/unaligned-failure",
+      "envelope": [
+        2,
+        0,
+        0,
+        null
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "domain/nonaddressable-input",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "domain/nonaddressable-output",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": null,
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "domain/nonaddressable-failure",
+      "envelope": [
+        2,
+        0,
+        0,
+        null
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "domain/null-diagnostic-backing",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": null
+    },
+    {
+      "case": "domain/unaligned-diagnostic",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": null
+    },
+    {
+      "case": "domain/nonaddressable-diagnostic-backing",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": null
+    },
+    {
+      "case": "domain/optional-diagnostic",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": null
+    },
+    {
+      "case": "domain/zero-capacity",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/one-byte-diagnostic",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": ""
+    },
+    {
+      "case": "domain/short-diagnostic",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid"
+    },
+    {
+      "case": "geometry/null-input",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "geometry/null-output",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": null,
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "geometry/null-failure",
+      "envelope": [
+        2,
+        0,
+        0,
+        null
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "geometry/unaligned-input",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "geometry/unaligned-output",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": null,
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "geometry/unaligned-failure",
+      "envelope": [
+        2,
+        0,
+        0,
+        null
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "geometry/nonaddressable-input",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "geometry/nonaddressable-output",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": null,
+      "pixel_bits": null,
+      "diffusion_bits": null,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "geometry/nonaddressable-failure",
+      "envelope": [
+        2,
+        0,
+        0,
+        null
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": "invalid frame geometry arguments"
+    },
+    {
+      "case": "geometry/null-diagnostic-backing",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": null
+    },
+    {
+      "case": "geometry/unaligned-diagnostic",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": null
+    },
+    {
+      "case": "geometry/nonaddressable-diagnostic-backing",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": null
+    },
+    {
+      "case": "geometry/optional-diagnostic",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "pixel_bits": 1168160475,
+      "diffusion_bits": 4662376645699567616,
+      "diagnostic": null
+    },
+    {
+      "case": "geometry/zero-capacity",
+      "envelope": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "pixel_bits": 1168160475,
+      "diffusion_bits": 4662376645699567616,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/one-byte-diagnostic",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": ""
+    },
+    {
+      "case": "geometry/short-diagnostic",
+      "envelope": [
+        2,
+        0,
+        0,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pixel_bits": 0,
+      "diffusion_bits": 0,
+      "diagnostic": "invalid"
+    }
+  ],
+  "production_inputs": [
+    {
+      "case": "domain/landscape",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/portrait",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        -11,
+        17,
+        -6,
+        24
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/square",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        3,
+        -4,
+        10,
+        3
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/empty",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        9,
+        -8,
+        9,
+        -8
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/reversed",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        10,
+        20,
+        -3,
+        -8
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/max-width",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        0,
+        1,
+        2147483647,
+        2
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/min-width",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        -2147483648,
+        1
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/positive-limit",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        -2147483648,
+        -4,
+        -1,
+        2
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/negative-limit",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        2147483647,
+        0,
+        -1,
+        1
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/width-over",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        -1,
+        0,
+        2147483647,
+        1
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/width-under",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        1,
+        0,
+        -2147483648,
+        1
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/height-over",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        0,
+        -1,
+        1,
+        2147483647
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/height-under",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        0,
+        1,
+        1,
+        -2147483648
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/both-over",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        -2147483648,
+        -2147483648,
+        2147483647,
+        2147483647
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "domain/both-min",
+      "operation": 0,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        -2147483648,
+        -2147483648
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "geometry/landscape",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/portrait",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        -11,
+        17,
+        5,
+        7
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/square",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        3,
+        -4,
+        9,
+        9
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/zero",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        1,
+        -2,
+        0,
+        0
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/negative",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        2,
+        3,
+        -7,
+        -5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/mixed",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        9,
+        10,
+        -7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/max",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        2147483647,
+        1
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/min",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        -2147483648,
+        -2147483648
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/film-lower",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 1090519040
+    },
+    {
+      "case": "geometry/film-upper",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 1123024896
+    },
+    {
+      "case": "geometry/film-fractional",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 1108279296
+    },
+    {
+      "case": "geometry/film-positive-zero",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 0
+    },
+    {
+      "case": "geometry/film-negative-zero",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 2147483648
+    },
+    {
+      "case": "geometry/film-negative",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 3212836864
+    },
+    {
+      "case": "geometry/film-infinity",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 2139095040
+    },
+    {
+      "case": "geometry/film-subnormal",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 1
+    },
+    {
+      "case": "geometry/film-normal",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 8388608
+    },
+    {
+      "case": "geometry/film-max",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 2139095039
+    },
+    {
+      "case": "geometry/film-nan",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 2143294004
+    },
+    {
+      "case": "geometry/film-negative-nan",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 4290777652
+    },
+    {
+      "case": "geometry/exact-quotient",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        1000,
+        500
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/roi-scale-par-independent",
+      "operation": 1,
+      "kind": -1,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/null-input",
+      "operation": 0,
+      "kind": 0,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/null-output",
+      "operation": 0,
+      "kind": 1,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/null-failure",
+      "operation": 0,
+      "kind": 2,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/unaligned-input",
+      "operation": 0,
+      "kind": 3,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/unaligned-output",
+      "operation": 0,
+      "kind": 4,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/unaligned-failure",
+      "operation": 0,
+      "kind": 5,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/nonaddressable-input",
+      "operation": 0,
+      "kind": 6,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/nonaddressable-output",
+      "operation": 0,
+      "kind": 7,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/nonaddressable-failure",
+      "operation": 0,
+      "kind": 8,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/null-diagnostic-backing",
+      "operation": 0,
+      "kind": 9,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/unaligned-diagnostic",
+      "operation": 0,
+      "kind": 10,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/nonaddressable-diagnostic-backing",
+      "operation": 0,
+      "kind": 11,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/optional-diagnostic",
+      "operation": 0,
+      "kind": 12,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/zero-capacity",
+      "operation": 0,
+      "kind": 13,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/one-byte-diagnostic",
+      "operation": 0,
+      "kind": 14,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "domain/short-diagnostic",
+      "operation": 0,
+      "kind": 15,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/null-input",
+      "operation": 1,
+      "kind": 0,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/null-output",
+      "operation": 1,
+      "kind": 1,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/null-failure",
+      "operation": 1,
+      "kind": 2,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/unaligned-input",
+      "operation": 1,
+      "kind": 3,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/unaligned-output",
+      "operation": 1,
+      "kind": 4,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/unaligned-failure",
+      "operation": 1,
+      "kind": 5,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/nonaddressable-input",
+      "operation": 1,
+      "kind": 6,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/nonaddressable-output",
+      "operation": 1,
+      "kind": 7,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/nonaddressable-failure",
+      "operation": 1,
+      "kind": 8,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/null-diagnostic-backing",
+      "operation": 1,
+      "kind": 9,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/unaligned-diagnostic",
+      "operation": 1,
+      "kind": 10,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/nonaddressable-diagnostic-backing",
+      "operation": 1,
+      "kind": 11,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/optional-diagnostic",
+      "operation": 1,
+      "kind": 12,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/zero-capacity",
+      "operation": 1,
+      "kind": 13,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/one-byte-diagnostic",
+      "operation": 1,
+      "kind": 14,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "case": "geometry/short-diagnostic",
+      "operation": 1,
+      "kind": 15,
+      "input": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    }
+  ]
+}

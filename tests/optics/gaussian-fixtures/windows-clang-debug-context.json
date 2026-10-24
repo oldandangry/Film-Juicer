@@ -1,0 +1,16 @@
+{
+  "preset": "windows-clang-debug",
+  "provenance": {
+    "native_head": "937652c659a336760524cd9dbefab55ab769bade",
+    "native_body_sha256": "1d3a4afaf6a9506f580172a1e0eb22878ff25cdbac6867d953817c657e6f4fb6",
+    "capture": "/mnt/c/Dev/Codex/out/validation/windows-clang-debug/s4-c-slice-10-2026-10-24/native-fir-capture.json",
+    "capture_sha256": "ad6b8245ba1479a620c9a326dbcdcddafecf478d8502e37bf01e1458a3454fc4",
+    "executable": "/mnt/c/Dev/Codex/out/validation/windows-clang-debug/s4-c-slice-10-2026-10-24/native-fir-producer.exe",
+    "executable_sha256": "0789d0ac399609ffef990fec2e97682634fbcf3df19aab16484aded8be1c470f",
+    "cohort_sha256": "95efd67891f4064483c5a111d02065f7037bb8b0c13ccce10a702f84aa474669",
+    "source_evidence": "/mnt/c/Dev/Codex/.juicer-local/validation/s4-c-slice-10-2026-10-24/initial-native-source",
+    "supplement_source": "/mnt/c/Dev/Codex/.juicer-local/validation/s4-c-slice-10-2026-10-24/fir-native-source",
+    "compiler_link_configuration": "/mnt/c/Dev/Codex/.juicer-local/validation/s4-c-slice-10-2026-10-24/initial-config/windows-clang-debug",
+    "metric": "exact entire f32 array/count/radius/input-sigma; native unchanged whole function"
+  }
+}

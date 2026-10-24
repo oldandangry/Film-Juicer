@@ -15,6 +15,75 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_frame_geometry_full_fields_and_distinct_native_contexts(self):
+        root = Path(__file__).parents[1] / "frame/geometry-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        for name, expected in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual(len(captured["domains"]), manifest["domain_count"])
+            self.assertEqual(len(captured["geometry"]), manifest["geometry_count"])
+            adopted = (root / manifest["payloads"][manifest["presets"][preset]["native"]]).read_bytes()
+            self.assertNotIn(b"\r", adopted)
+            original = adopted.replace(b"\n", b"\r\n") if captured["native_payload_line_ending"] == "CRLF" else adopted
+            self.assertEqual(hashlib.sha256(original).hexdigest(), captured["producer"]["files"]["payload.json"]["sha256"])
+            self.assertTrue(captured["commands"])
+            self.assertEqual(set(captured["producer"]["files"]), {"JuicerAdapterTraceProbe.exe" if "windows" in preset else "JuicerAdapterTraceProbe", "JuicerEffect.cpp.txt", "inputs.json", "payload.json", "context.json"})
+            for row in captured["domains"]:
+                self.assertEqual(len(row["bounds"]), 4)
+                if not row["range"]:
+                    self.assertEqual(len(row["domain"]), 4)
+            for row in captured["geometry"]:
+                self.assertEqual(len(row["domain"]), 4)
+                self.assertIsInstance(row["pixel_bits"], int)
+                self.assertIsInstance(row["diffusion_bits"], int)
+
+    def test_gaussian_complete_arrays_and_distinct_native_contexts(self):
+        root = Path(__file__).parents[1] / "optics/gaussian-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        for name, expected in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual(len(captured["cases"]), 188)
+            self.assertEqual(sum(row["count"] for row in captured["cases"]), 22895)
+            self.assertEqual([row["name"] for row in captured["cases"]], manifest["production_cases"][:188])
+            for row in captured["cases"]:
+                self.assertEqual(len(row["weights"]), row["count"])
+                self.assertTrue(all(isinstance(word, int) and 0 <= word <= 0xffffffff for word in row["weights"]))
+            self.assertTrue(any("fir-dir" in row["name"] and row["count"] > 0 for row in captured["cases"]))
+        self.assertEqual(len(manifest["production_cases"]), 201)
+        self.assertEqual(len(set(manifest["production_cases"])), 201)
+
+    def test_scanner_post_complete_frozen_contexts(self):
+        root = Path(__file__).parents[1] / "scanner/post-effects-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(set(manifest["payloads"].values()), {"native.json"})
+        self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        for name, expected in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
+        payloads = []
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual(len(captured["cases"]), 400)
+            for row in captured["cases"]:
+                self.assertEqual(len(row["input"]["values"]), 6)
+                self.assertEqual(len(row["native"]["descriptor"]["radii"]), 3)
+                self.assertEqual(row["native"]["descriptor"]["schema"], 2)
+            payloads.append(captured["cases"])
+        self.assertTrue(all(value == payloads[0] for value in payloads))
+        self.assertEqual(len(manifest["production_cases"]), 410)
+        self.assertEqual(len({row["case"] for row in manifest["production_cases"]}), 410)
+
     def test_scanner_descriptor_complete_frozen_contexts(self):
         root = Path(__file__).parents[1] / "scanner/descriptor-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())

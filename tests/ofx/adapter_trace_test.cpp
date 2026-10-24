@@ -1,3 +1,5 @@
+#include "frame_geometry_test_hooks.h"
+#include "../ffi/exposure_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include <algorithm>
 #include <chrono>
@@ -163,6 +165,7 @@ namespace {
         std::map<std::string, std::vector<double>> doubles;
         std::map<std::string, std::vector<void*>> pointers;
         std::string owningParamName;
+        std::array<unsigned, 3> geometryReads{};
         void* intWriteContext = nullptr;
         IntWriteObserver intWriteObserver = nullptr;
     };
@@ -379,6 +382,13 @@ namespace {
         const char* name,
         int index,
         double* output) {
+        if (handle && name) {
+            auto& bag = *reinterpret_cast<PropertyBag*>(handle);
+            if (std::string_view(name) == kOfxImagePropPixelAspectRatio)
+                ++bag.geometryReads[0];
+            if (std::string_view(name) == kOfxImageEffectPropRenderScale)
+                ++bag.geometryReads[1];
+        }
         return handle
                    ? get_property(
                          reinterpret_cast<PropertyBag*>(handle)->doubles,
@@ -393,6 +403,11 @@ namespace {
         const char* name,
         int index,
         int* output) {
+        if (handle && name) {
+            auto& bag = *reinterpret_cast<PropertyBag*>(handle);
+            if (std::string_view(name) == kOfxImagePropRegionOfDefinition)
+                ++bag.geometryReads[2];
+        }
         return handle
                    ? get_property(
                          reinterpret_cast<PropertyBag*>(handle)->ints,
@@ -563,21 +578,26 @@ namespace {
         static constexpr int kPitch = kWidth * kComponents + 3;
         static constexpr float kCanary = -8.0f;
 
-        DeviceFrame() {
+        struct Dimensions {
+            int width;
+            int height;
+        };
+        DeviceFrame() : DeviceFrame(Dimensions{kWidth, kHeight}) {}
+        explicit DeviceFrame(Dimensions dimensions) : _width(dimensions.width), _height(dimensions.height), _pitch(dimensions.width * kComponents + 3) {
             const std::size_t bytes = byte_count();
             require(cudaStreamCreateWithFlags(&_stream, cudaStreamNonBlocking), "create stream");
             require(cudaMalloc(&_source, bytes), "allocate source");
             require(cudaMalloc(&_destination, bytes), "allocate destination");
             const std::size_t elementCount =
-                static_cast<std::size_t>(kPitch) *
-                static_cast<std::size_t>(kHeight);
+                static_cast<std::size_t>(_pitch) *
+                static_cast<std::size_t>(_height);
             _input.assign(elementCount, -7.0f);
             _output.assign(elementCount, kCanary);
-            for (int y = 0; y < kHeight; ++y) {
-                for (int x = 0; x < kWidth; ++x) {
+            for (int y = 0; y < _height; ++y) {
+                for (int x = 0; x < _width; ++x) {
                     const std::size_t offset =
                         static_cast<std::size_t>(y) *
-                            static_cast<std::size_t>(kPitch) +
+                            static_cast<std::size_t>(_pitch) +
                         static_cast<std::size_t>(x) *
                             static_cast<std::size_t>(kComponents);
                     for (int channel = 0; channel < 3; ++channel) {
@@ -638,11 +658,11 @@ namespace {
                 "download destination");
             require(cudaStreamSynchronize(_stream), "render synchronize");
             std::uint64_t hash = 1469598103934665603ull;
-            for (int y = 0; y < kHeight; ++y) {
-                for (int x = 0; x < kWidth; ++x) {
+            for (int y = 0; y < _height; ++y) {
+                for (int x = 0; x < _width; ++x) {
                     const std::size_t offset =
                         static_cast<std::size_t>(y) *
-                            static_cast<std::size_t>(kPitch) +
+                            static_cast<std::size_t>(_pitch) +
                         static_cast<std::size_t>(x) *
                             static_cast<std::size_t>(kComponents);
                     for (int channel = 0; channel < kComponents; ++channel) {
@@ -661,10 +681,10 @@ namespace {
                         hash *= 1099511628211ull;
                     }
                 }
-                for (int index = kWidth * kComponents; index < kPitch; ++index) {
+                for (int index = _width * kComponents; index < _pitch; ++index) {
                     const std::size_t offset =
                         static_cast<std::size_t>(y) *
-                            static_cast<std::size_t>(kPitch) +
+                            static_cast<std::size_t>(_pitch) +
                         static_cast<std::size_t>(index);
                     const float value = _output[offset];
                     if (std::bit_cast<std::uint32_t>(value) !=
@@ -675,6 +695,16 @@ namespace {
                 }
             }
             return hash;
+        }
+
+        int width() const noexcept {
+            return _width;
+        }
+        int height() const noexcept {
+            return _height;
+        }
+        int pitch() const noexcept {
+            return _pitch;
         }
 
         float* source() const noexcept {
@@ -690,8 +720,8 @@ namespace {
         }
 
     private:
-        static std::size_t byte_count() {
-            return static_cast<std::size_t>(kPitch * kHeight) * sizeof(float);
+        std::size_t byte_count() const {
+            return static_cast<std::size_t>(_pitch * _height) * sizeof(float);
         }
 
         static void require(cudaError_t status, const char* operation) {
@@ -701,11 +731,32 @@ namespace {
             }
         }
 
+        int _width;
+        int _height;
+        int _pitch;
         float* _source = nullptr;
         float* _destination = nullptr;
         cudaStream_t _stream = nullptr;
         std::vector<float> _input;
         std::vector<float> _output;
+    };
+
+    struct FrameGeometryCase {
+        OfxRectI source{0, 0, 7, 5};
+        OfxRectI destination{0, 0, 7, 5};
+        OfxRectI window{0, 0, 7, 5};
+        OfxRectI definition{-10, -20, 18, 20};
+        OfxRectD canonical{-50.0, -60.0, 62.0, 100.0};
+        OfxPointD scale{0.25, 0.25};
+        double par = 1.0;
+        int sourceWidth = 7;
+        int sourceHeight = 5;
+        int definitionWidth = 28;
+        int definitionHeight = 40;
+        bool cuda = true;
+        bool nonfloat = false;
+        bool missingSource = false;
+        int expectedLeases = 2;
     };
 
     class NativeHost final {
@@ -921,16 +972,34 @@ namespace {
             JuicerEffect& effect,
             DeviceFrame& frame,
             std::string_view phase,
-            bool expectRejection = false) {
+            bool expectRejection = false,
+            const FrameGeometryCase* geometry = nullptr) {
+            _frameGeometryCase = geometry;
+            _canonicalQueries = 0;
+            _canonicalTime = -1;
+            JuicerFrame::FrameGeometryTest::reset();
             frame.reset();
             configure_image_properties(
                 _source.imageProperties,
                 frame.source(),
-                "adapter-source");
+                "adapter-source",
+                &frame);
             configure_image_properties(
                 _output.imageProperties,
                 frame.destination(),
-                "adapter-output");
+                "adapter-output",
+                &frame);
+            if (geometry) {
+                _source.imageProperties.ints[kOfxImagePropBounds] = {geometry->source.x1, geometry->source.y1, geometry->source.x2, geometry->source.y2};
+                _output.imageProperties.ints[kOfxImagePropBounds] = {geometry->destination.x1, geometry->destination.y1, geometry->destination.x2, geometry->destination.y2};
+                _source.imageProperties.ints[kOfxImagePropRegionOfDefinition] = {geometry->definition.x1, geometry->definition.y1, geometry->definition.x2, geometry->definition.y2};
+                _source.imageProperties.doubles[kOfxImageEffectPropRenderScale] = {geometry->scale.x, geometry->scale.y};
+                _source.imageProperties.doubles[kOfxImagePropPixelAspectRatio] = {geometry->par};
+                _output.imageProperties.doubles[kOfxImageEffectPropRenderScale] = {0.75, 0.5};
+                _output.imageProperties.doubles[kOfxImagePropPixelAspectRatio] = {2.0};
+                if (geometry->nonfloat)
+                    _source.imageProperties.strings[kOfxImageEffectPropPixelDepth] = {kOfxBitDepthShort};
+            }
             begin_image_audit();
             _trace.push_back(
                 "RENDER_BEGIN phase=" + std::string(phase) +
@@ -942,10 +1011,12 @@ namespace {
             arguments.renderWindow = {
                 0,
                 0,
-                DeviceFrame::kWidth,
-                DeviceFrame::kHeight};
+                frame.width(),
+                frame.height()};
+            if (geometry)
+                arguments.renderWindow = geometry->window;
             arguments.renderScale = {1.0, 1.0};
-            arguments.isEnabledCudaRender = true;
+            arguments.isEnabledCudaRender = geometry ? geometry->cuda : true;
             arguments.pCudaStream = frame.stream();
             arguments.cudaStreamPropertyPresent = true;
             try {
@@ -961,7 +1032,14 @@ namespace {
             if (unexpected) {
                 std::rethrow_exception(unexpected);
             }
-            result.outputSignature = frame.collect_signature(result.succeeded);
+            const bool completeAllocation = !geometry ||
+                                            (geometry->source.x1 == geometry->destination.x1 && geometry->source.y1 == geometry->destination.y1 &&
+                                             geometry->source.x2 == geometry->destination.x2 && geometry->source.y2 == geometry->destination.y2 &&
+                                             ((geometry->window.x1 == geometry->source.x1 && geometry->window.y1 == geometry->source.y1 &&
+                                               geometry->window.x2 == geometry->source.x2 && geometry->window.y2 == geometry->source.y2) ||
+                                              (geometry->window.x1 == geometry->window.x2 && geometry->window.y1 == geometry->window.y2)));
+            result.outputSignature = frame.collect_signature(result.succeeded && completeAllocation && (!geometry || !geometry->missingSource));
+            _frameGeometryCase = nullptr;
             result.state =
                 JuicerTestSupport::EffectTraceObserver::snapshot(effect);
             _trace.push_back(
@@ -979,12 +1057,25 @@ namespace {
                     "adapter render rejection expectation mismatch in " +
                     std::string(phase));
             }
-            if (result.releasedImages != 2) {
+            if (result.releasedImages != (geometry ? geometry->expectedLeases : 2)) {
                 throw std::runtime_error(
                     "adapter render did not release two OFX images in " +
                     std::string(phase));
             }
             return result;
+        }
+
+        unsigned canonical_queries() const {
+            return _canonicalQueries;
+        }
+        double canonical_time() const {
+            return _canonicalTime;
+        }
+        const std::array<unsigned, 3>& source_geometry_reads() const {
+            return _source.imageProperties.geometryReads;
+        }
+        const std::array<unsigned, 3>& destination_geometry_reads() const {
+            return _output.imageProperties.geometryReads;
         }
 
         std::size_t trace_size() const noexcept {
@@ -1108,7 +1199,7 @@ namespace {
                 throw std::runtime_error("adapter image audit is not active");
             }
             int releases = 0;
-            if (_imageLeases.size() != 2u) {
+            if (_imageLeases.size() != static_cast<std::size_t>(_frameGeometryCase ? _frameGeometryCase->expectedLeases : 2)) {
                 set_image_audit_error(
                     "expected two distinct acquired image handles");
             }
@@ -1374,20 +1465,24 @@ namespace {
         static void configure_image_properties(
             PropertyBag& properties,
             void* data,
-            const char* identifier) {
+            const char* identifier,
+            const DeviceFrame* allocation = nullptr) {
+            const int width = allocation ? allocation->width() : DeviceFrame::kWidth;
+            const int height = allocation ? allocation->height() : DeviceFrame::kHeight;
+            const int pitch = allocation ? allocation->pitch() : DeviceFrame::kPitch;
             properties = PropertyBag{};
             properties.ints[kOfxImagePropRowBytes] = {
-                DeviceFrame::kPitch * static_cast<int>(sizeof(float))};
+                pitch * static_cast<int>(sizeof(float))};
             properties.ints[kOfxImagePropBounds] = {
                 0,
                 0,
-                DeviceFrame::kWidth,
-                DeviceFrame::kHeight};
+                width,
+                height};
             properties.ints[kOfxImagePropRegionOfDefinition] = {
                 0,
                 0,
-                DeviceFrame::kWidth,
-                DeviceFrame::kHeight};
+                width,
+                height};
             properties.doubles[kOfxImagePropPixelAspectRatio] = {1.0};
             properties.doubles[kOfxImageEffectPropRenderScale] = {1.0, 1.0};
             properties.strings[kOfxImageEffectPropComponents] = {
@@ -1846,6 +1941,10 @@ namespace {
             host._trace.push_back(
                 "IMAGE_GET clip=" + reinterpret_cast<NativeClip*>(clip)->name +
                 " time=" + number_string(time));
+            if (host._frameGeometryCase && host._frameGeometryCase->missingSource && reinterpret_cast<NativeClip*>(clip)->name == "Source") {
+                *output = nullptr;
+                return kOfxStatFailed;
+            }
             *output = reinterpret_cast<OfxPropertySetHandle>(
                 &reinterpret_cast<NativeClip*>(clip)->imageProperties);
             host.record_image_acquisition(
@@ -1867,11 +1966,19 @@ namespace {
         }
 
         static OfxStatus clip_region(
-            OfxImageClipHandle,
-            OfxTime,
+            OfxImageClipHandle clip,
+            OfxTime time,
             OfxRectD* bounds) {
             if (!bounds) {
                 return kOfxStatErrBadHandle;
+            }
+            auto& host = active();
+            ++host._canonicalQueries;
+            host._canonicalTime = time;
+            host._trace.push_back("CANONICAL_QUERY clip=" + reinterpret_cast<NativeClip*>(clip)->name + " time=" + number_string(time));
+            if (host._frameGeometryCase) {
+                *bounds = host._frameGeometryCase->canonical;
+                return kOfxStatOK;
             }
             *bounds = {
                 0.0,
@@ -2248,6 +2355,9 @@ namespace {
         std::map<std::string, PropertyBag> _descriptorParams;
         JuicerEffect* _effect = nullptr;
         double _time = 0.0;
+        const FrameGeometryCase* _frameGeometryCase = nullptr;
+        unsigned _canonicalQueries = 0;
+        double _canonicalTime = -1;
         std::map<OfxPropertySetHandle, ImageLeaseRecord> _imageLeases;
         std::string _imageAuditError;
         bool _imageAuditActive = false;
@@ -2874,6 +2984,173 @@ namespace {
         host.unbind_effect();
         std::cout << "PASS adapter/20-frozen-physical-capture-publications-four-routes\n";
     }
+    void run_frame_geometry_cases(const std::filesystem::path& manifestPath, const char* preset, const std::filesystem::path& tracePath) {
+        using namespace JuicerFrame::FrameGeometryTest;
+        const auto manifest = nlohmann::json::parse(std::ifstream(manifestPath));
+        const auto captured = load_shared_fixture(manifestPath.parent_path() / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
+        auto expected_pixel = [&](const char* name) {
+            for (const auto& row : captured.at("geometry"))
+                if (row.at("name") == name)
+                    return row.at("pixel_bits").get<std::uint32_t>();
+            throw std::runtime_error("missing frozen frame geometry case");
+        };
+        NativeHost host;
+        JuicerEffect effect(host.effect_handle());
+        host.bind_effect(effect);
+        host.set_time(12.5);
+        host.set_double_value(JuicerParams::kCameraFilmFormatMm, 36.0);
+        host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(Spektrafilm::ScanRoute::NegativeDirectScan));
+        host.dispatch_event(effect, JuicerParams::kCameraFilmFormatMm, OFX::eChangePluginEdit);
+        DeviceFrame frame;
+        FrameGeometryCase geometry;
+        struct ExpectedPhases {
+            unsigned completed;
+            unsigned canonicalQueries;
+        };
+        auto check = [&](const char* name, DeviceFrame& allocation, const FrameGeometryCase& facts, bool failed, ExpectedPhases expected, const char* pixelCase = "landscape") {
+            const auto [phases, queries] = expected;
+            const auto traceBegin = host.trace_size();
+            NativeHost::RenderResult result;
+            try {
+                result = host.render(effect, allocation, name, failed, &facts);
+            } catch (...) {
+                host.write_trace(tracePath);
+                throw std::runtime_error(std::string("frame geometry callback case failed: ") + name);
+            }
+            const auto observation = snapshot();
+            require(observation.count == phases, std::string(name) + " exact completed phase count");
+            for (unsigned i = 0; i < phases; ++i)
+                require(observation.phases[i] == i + 1, "full/scalar/effects phase order");
+            require(host.canonical_queries() == queries, "conditional live canonical query count");
+            if (queries) {
+                require(host.canonical_time() == 12.5, "live canonical query uses args.time");
+                require(std::count_if(host.trace().begin() + static_cast<std::ptrdiff_t>(traceBegin), host.trace().end(), [](const std::string& line) {
+                            return line.starts_with("CANONICAL_QUERY clip=Source time=");
+                        }) == queries,
+                        "live canonical query belongs to the source clip");
+            }
+            if (facts.cuda && !facts.missingSource) {
+                for (auto reads : {host.source_geometry_reads(), host.destination_geometry_reads()})
+                    require(reads[0] > 0 && reads[1] > 0 && reads[2] > 0, "acquisition reads cached PAR/scale/pixel RoD even with effects off");
+            }
+            if (phases >= 1) {
+                const auto& d = observation.fullDomain;
+                require(d.originX == facts.source.x1 && d.originY == facts.source.y1 && d.width == facts.sourceWidth && d.height == facts.sourceHeight, "source allocation origin is current");
+            }
+            if (phases >= 2)
+                require(std::bit_cast<std::uint32_t>(observation.pixelSizeUm) == expected_pixel(pixelCase), "actual callback consumes frozen final f32 pixel size");
+            if (phases == 3) {
+                const auto& e = observation.effects;
+                require(e.pixelDefinition.x == facts.definition.x1 && e.pixelDefinition.y == facts.definition.y1 && e.pixelDefinition.width == facts.definitionWidth && e.pixelDefinition.height == facts.definitionHeight, "effects consumes source cached pixel RoD, distinct from allocation/window");
+                require(e.canonicalX == facts.canonical.x1 && e.canonicalY == facts.canonical.y1 && e.canonicalWidth == 112.0 && e.canonicalHeight == 160.0 && e.scaleX == facts.scale.x && e.scaleY == facts.scale.y && e.pixelAspectRatio == facts.par, "effects consumes live canonical and cached source scale/PAR, distinct from destination and args scale");
+            }
+            return result;
+        };
+        const auto first = check("off", frame, geometry, false, {2, 0});
+        geometry.scale = {0.5, 0.25};
+        geometry.par = 1.25;
+        geometry.destination = {-1, -1, 5, 3};
+        geometry.window = {1, 1, 5, 3};
+        const auto roi = check("same-state-roi-scale-par-destination", frame, geometry, false, {2, 0});
+        require(roi.state.recipeHash == first.state.recipeHash && roi.state.buildCounter == first.state.buildCounter, "callback geometry changes preserve immutable parameter state");
+        geometry.destination = geometry.source;
+        geometry.window = {99, 88, 99, 88};
+        check("both-empty-window-fallback", frame, geometry, false, {2, 0});
+        DeviceFrame square({9, 9});
+        auto squareFacts = geometry;
+        squareFacts.source = {3, -4, 12, 5};
+        squareFacts.destination = squareFacts.source;
+        squareFacts.window = squareFacts.source;
+        squareFacts.sourceWidth = squareFacts.sourceHeight = 9;
+        const auto changed = check("same-state-changed-allocation", square, squareFacts, false, {2, 0}, "square");
+        require(changed.state.recipeHash == first.state.recipeHash && changed.state.buildCounter == first.state.buildCounter, "new allocation derives new geometry without rebuilding state");
+        DeviceFrame portrait({5, 7});
+        auto portraitFacts = geometry;
+        portraitFacts.source = {-11, 17, -6, 24};
+        portraitFacts.destination = portraitFacts.source;
+        portraitFacts.window = portraitFacts.source;
+        portraitFacts.sourceWidth = 5;
+        portraitFacts.sourceHeight = 7;
+        check("negative-nonzero-origin-portrait", portrait, portraitFacts, false, {2, 0}, "portrait");
+        geometry.window = geometry.source;
+        host.set_double_value(JuicerParams::kCameraFilmFormatMm, 35.749999);
+        host.dispatch_event(effect, JuicerParams::kCameraFilmFormatMm, OFX::eChangePluginEdit);
+        check("admitted-f32-format-before-f64-pixel-arithmetic", frame, geometry, false, {2, 0}, "film-fractional");
+        host.set_double_value(JuicerParams::kCameraFilmFormatMm, 36.0);
+        host.dispatch_event(effect, JuicerParams::kCameraFilmFormatMm, OFX::eChangePluginEdit);
+        for (unsigned route = 0; route < 4; ++route) {
+            host.set_str_choice_value(JuicerParams::kFilmProfileKey, route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f");
+            host.dispatch_event(effect, JuicerParams::kFilmProfileKey, OFX::eChangePluginEdit);
+            host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(route % 2 ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+            host.set_int_value(kParamSpectralMode, static_cast<int>(route % 3));
+            host.set_int_value(JuicerParams::kGrainActive, route % 2 == 0);
+            host.set_double_value(JuicerParams::kFilmDustAmount, 0.1);
+            host.set_double_value(JuicerParams::kGateDustAmount, 0.1);
+            host.set_double_value(JuicerParams::kGateWeaveAmount, 0.0);
+            host.set_double_value(JuicerParams::kFilmScratchAmount, 0.1);
+            host.set_double_value(JuicerParams::kGateScratchAmount, 0.1);
+            host.set_int_value(JuicerParams::kCameraDiffusionEnabled, route < 2);
+            host.set_int_value(JuicerParams::kPrintDiffusionEnabled, static_cast<int>(route % 2));
+            host.set_int_value(JuicerParams::kHalationActive, route >= 2);
+            host.dispatch_event(effect, JuicerParams::kFilmDustAmount, OFX::eChangePluginEdit);
+            check("four-route-distinct-pixel-definition-rejected", frame, geometry, true, {3, 1});
+            auto active = geometry;
+            active.definition = geometry.source;
+            active.definitionWidth = 7;
+            active.definitionHeight = 5;
+            check("four-route-active-metadata", frame, active, false, {3, 1});
+            auto badDefinition = geometry;
+            badDefinition.definition = {std::numeric_limits<int>::min(), 0, std::numeric_limits<int>::max(), 5};
+            check("effects-range-after-canonical", frame, badDefinition, true, {2, 1});
+            auto weave = geometry;
+            weave.definition = geometry.source;
+            weave.definitionWidth = 7;
+            weave.definitionHeight = 5;
+            host.set_double_value(JuicerParams::kGateWeaveAmount, 0.1);
+            host.dispatch_event(effect, JuicerParams::kGateWeaveAmount, OFX::eChangePluginEdit);
+            check("four-route-weave-full-definition", frame, weave, false, {3, 1});
+            host.set_double_value(JuicerParams::kGateWeaveAmount, 0.0);
+            host.dispatch_event(effect, JuicerParams::kGateWeaveAmount, OFX::eChangePluginEdit);
+            if (route % 2) {
+                auto partial = geometry;
+                partial.window = {1, 1, 5, 3};
+                check("print-partial-window-rejected-before-scalar", frame, partial, true, {1, 0});
+            }
+        }
+        host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(Spektrafilm::ScanRoute::NegativeDirectScan));
+        host.set_int_value(JuicerParams::kCameraDiffusionEnabled, 1);
+        host.dispatch_event(effect, JuicerParams::kCameraDiffusionEnabled, OFX::eChangePluginEdit);
+        auto invalidPhysical = geometry;
+        invalidPhysical.source = {7, 5, 0, 0};
+        invalidPhysical.sourceWidth = -7;
+        invalidPhysical.sourceHeight = -5;
+        check("descriptor-failure-before-effects-query", frame, invalidPhysical, true, {2, 0}, "negative");
+        host.set_double_value(JuicerParams::kCameraFilmFormatMm, -1);
+        host.dispatch_event(effect, JuicerParams::kCameraFilmFormatMm, OFX::eChangePluginEdit);
+        require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingInvalid, "pending controls invalid for priority cases");
+        auto invalid = geometry;
+        invalid.cuda = false;
+        invalid.expectedLeases = 0;
+        check("backend-before-images-and-state", frame, invalid, true, {0, 0});
+        invalid = geometry;
+        invalid.missingSource = true;
+        invalid.expectedLeases = 1;
+        check("missing-image-before-state", frame, invalid, false, {0, 0});
+        invalid = geometry;
+        invalid.nonfloat = true;
+        check("format-before-state", frame, invalid, true, {0, 0});
+        invalid = geometry;
+        invalid.window = {1, 0, 1, 4};
+        check("single-empty-axis-before-state", frame, invalid, false, {0, 0});
+        invalid = geometry;
+        invalid.source = {std::numeric_limits<int>::min(), 0, std::numeric_limits<int>::max(), 5};
+        check("full-range-before-state", frame, invalid, true, {0, 0});
+        check("invalid-state-before-scalar", frame, geometry, true, {1, 0});
+        host.unbind_effect();
+        host.write_trace(tracePath);
+        std::cout << "PASS actual frame geometry callbacks, three phases, four routes, failure priority and image leases\n";
+    }
+
 } // namespace
 
 int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-level catches map all fixture failures.
@@ -2883,6 +3160,14 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             std::string_view(argv[3]) == "--trace-output") {
             NativeHost host;
             run_loaded_module_callback(host, argv[2], argv[4], std::string_view(argv[1]) == "--stream-contract");
+            return 0;
+        }
+        if (argc == 5 && std::string_view(argv[1]) == "--frame-geometry") {
+            cudaOwner.create(JuicerProcess::data_directory());
+            if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess)
+                throw std::runtime_error("CUDA initialization failed");
+            JuicerProcess::root().ensure_bootstrap();
+            run_frame_geometry_cases(argv[2], argv[3], argv[4]);
             return 0;
         }
         if ((argc != 3 && !(argc == 6 && std::string_view(argv[3]) == "--grain-fixtures")) || std::string_view(argv[1]) != "--trace-output") {

@@ -1,0 +1,4960 @@
+{
+  "contexts": {
+    "linux-debug.json": "context-linux-debug.json",
+    "linux-release.json": "context-linux-release.json",
+    "windows-clang-debug.json": "context-windows-clang-debug.json",
+    "windows-clang-release.json": "context-windows-clang-release.json"
+  },
+  "kind": "Film-Juicer native migration characterization",
+  "payloads": {
+    "linux-debug.json": "native.json",
+    "linux-release.json": "native.json",
+    "windows-clang-debug.json": "native.json",
+    "windows-clang-release.json": "native.json"
+  },
+  "presets": {
+    "linux-debug": {
+      "native": "linux-debug.json"
+    },
+    "linux-release": {
+      "native": "linux-release.json"
+    },
+    "windows-clang-debug": {
+      "native": "windows-clang-debug.json"
+    },
+    "windows-clang-release": {
+      "native": "windows-clang-release.json"
+    }
+  },
+  "production_cases": [
+    {
+      "case": "0/active",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/off",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/disabled-glare",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-2139095040",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-0-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-2139095040",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-1-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-2139095040",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-2-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/lane-3-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14343750788143177773
+    },
+    {
+      "case": "0/lane-3-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14343750788143177773
+    },
+    {
+      "case": "0/lane-3-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14343750788143177773
+    },
+    {
+      "case": "0/lane-3-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14343750788143177773
+    },
+    {
+      "case": "0/lane-3-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14343750788143177773
+    },
+    {
+      "case": "0/lane-3-2143363909",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/lane-3-4290847557",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/lane-3-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/lane-3-4286578688",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/lane-3-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14343750788143177773
+    },
+    {
+      "case": "0/lane-4-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-4-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-4-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-4-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-4-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-4-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-4-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-4-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        5
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/lane-4-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-4-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-5-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-5-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-5-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2743800208782345501
+    },
+    {
+      "case": "0/lane-5-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-5-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-5-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-5-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-5-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        6
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/lane-5-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/lane-5-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13089879425280024864
+    },
+    {
+      "case": "0/sigma-1042983594",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1296768891111522119
+    },
+    {
+      "case": "0/sigma-1042983595",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15235696579310273791
+    },
+    {
+      "case": "0/sigma-1042983596",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8095562643017565815
+    },
+    {
+      "case": "0/sigma-1056964607",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10518832357361025519
+    },
+    {
+      "case": "0/sigma-1056964608",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15831236880426095879
+    },
+    {
+      "case": "0/sigma-1056964609",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1680095051432710679
+    },
+    {
+      "case": "0/sigma-1060320050",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16259262978226157679
+    },
+    {
+      "case": "0/sigma-1060320051",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7919258926101754903
+    },
+    {
+      "case": "0/sigma-1060320052",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 698354994256756063
+    },
+    {
+      "case": "0/sigma-1069547519",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7480936704371468047
+    },
+    {
+      "case": "0/sigma-1069547520",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 5777349629694200855
+    },
+    {
+      "case": "0/sigma-1069547521",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16642873353786771879
+    },
+    {
+      "case": "0/sigma-1103364095",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13217925037742489287
+    },
+    {
+      "case": "0/sigma-1103364096",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 3179457457702363935
+    },
+    {
+      "case": "0/sigma-1103364097",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 5248350416092476251
+    },
+    {
+      "case": "0/sigma-1103626239",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7892327573663606055
+    },
+    {
+      "case": "0/sigma-1103626240",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16257332606132397895
+    },
+    {
+      "case": "0/sigma-1103626241",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13011492440120582027
+    },
+    {
+      "case": "0/sigma-1148846079",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10635688480795132411
+    },
+    {
+      "case": "0/sigma-1148846080",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10014644819528979671
+    },
+    {
+      "case": "0/sigma-1148846081",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2886699427318662111
+    },
+    {
+      "case": "0/sigma-1311419049",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15134613926088547447
+    },
+    {
+      "case": "0/sigma-1311419050",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 3146636932907495527
+    },
+    {
+      "case": "0/sigma-2139095038",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/sigma-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/sigma-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/combination-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/combination-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/combination-2",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/combination-3",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8861609415628919654
+    },
+    {
+      "case": "0/combination-4",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14343750788143177773
+    },
+    {
+      "case": "0/combination-5",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14343750788143177773
+    },
+    {
+      "case": "0/combination-6",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/combination-7",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7511645345345342884
+    },
+    {
+      "case": "0/invalid-4",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/invalid-255",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "0/default",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 11357039596686624205
+    },
+    {
+      "case": "1/active",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 3186614872363949542
+    },
+    {
+      "case": "1/off",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/disabled-glare",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13636830487444661269
+    },
+    {
+      "case": "1/lane-0-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13636830487444661269
+    },
+    {
+      "case": "1/lane-0-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13636830487444661269
+    },
+    {
+      "case": "1/lane-0-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 9081688292221682927
+    },
+    {
+      "case": "1/lane-0-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13636830487444661269
+    },
+    {
+      "case": "1/lane-0-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13636830487444661269
+    },
+    {
+      "case": "1/lane-0-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13636830487444661269
+    },
+    {
+      "case": "1/lane-0-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13636830487444661269
+    },
+    {
+      "case": "1/lane-0-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        1
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-0-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13636830487444661269
+    },
+    {
+      "case": "1/lane-0-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 187481993146140474
+    },
+    {
+      "case": "1/lane-1-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 11642901287334025020
+    },
+    {
+      "case": "1/lane-1-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8366469187704767164
+    },
+    {
+      "case": "1/lane-1-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6556146627765421653
+    },
+    {
+      "case": "1/lane-1-2147483649",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-1-3212836864",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-1-2143363909",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-1-4290847557",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-1-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-1-4286578688",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-1-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8802944415063095640
+    },
+    {
+      "case": "1/lane-2-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6272373465562114108
+    },
+    {
+      "case": "1/lane-2-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6272373465562114108
+    },
+    {
+      "case": "1/lane-2-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6272373465562114108
+    },
+    {
+      "case": "1/lane-2-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6272373465562114108
+    },
+    {
+      "case": "1/lane-2-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6272373465562114108
+    },
+    {
+      "case": "1/lane-2-2143363909",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-2-4290847557",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-2-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-2-4286578688",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-2-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6272373465562114108
+    },
+    {
+      "case": "1/lane-3-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10018720315161784431
+    },
+    {
+      "case": "1/lane-3-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10018720315161784431
+    },
+    {
+      "case": "1/lane-3-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10018720315161784431
+    },
+    {
+      "case": "1/lane-3-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10018720315161784431
+    },
+    {
+      "case": "1/lane-3-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10018720315161784431
+    },
+    {
+      "case": "1/lane-3-2143363909",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-3-4290847557",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-3-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-3-4286578688",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-3-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10018720315161784431
+    },
+    {
+      "case": "1/lane-4-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-4-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-4-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-4-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-4-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-4-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-4-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-4-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        5
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-4-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-4-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-5-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-5-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-5-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16865513809510503775
+    },
+    {
+      "case": "1/lane-5-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-5-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-5-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-5-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-5-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        6
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/lane-5-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/lane-5-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8764848952298631522
+    },
+    {
+      "case": "1/sigma-1042983594",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16692466485236074162
+    },
+    {
+      "case": "1/sigma-1042983595",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 11752658078349265763
+    },
+    {
+      "case": "1/sigma-1042983596",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6700754912739253272
+    },
+    {
+      "case": "1/sigma-1056964607",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7381816164276379097
+    },
+    {
+      "case": "1/sigma-1056964608",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 12348275809375328128
+    },
+    {
+      "case": "1/sigma-1056964609",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6280764756880530849
+    },
+    {
+      "case": "1/sigma-1060320050",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 11004420688356084804
+    },
+    {
+      "case": "1/sigma-1060320051",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6112525164529503765
+    },
+    {
+      "case": "1/sigma-1060320052",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15786307847412406606
+    },
+    {
+      "case": "1/sigma-1069547519",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 17415499094938725255
+    },
+    {
+      "case": "1/sigma-1069547520",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 11213646852496320023
+    },
+    {
+      "case": "1/sigma-1069547521",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8963536156500631894
+    },
+    {
+      "case": "1/sigma-1103364095",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13605129241900046452
+    },
+    {
+      "case": "1/sigma-1103364096",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6395909926665867266
+    },
+    {
+      "case": "1/sigma-1103364097",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13400172186683535379
+    },
+    {
+      "case": "1/sigma-1103626239",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 3088244107980923498
+    },
+    {
+      "case": "1/sigma-1103626240",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8169968527234462151
+    },
+    {
+      "case": "1/sigma-1103626241",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10336070005961389238
+    },
+    {
+      "case": "1/sigma-1148846079",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 12446797160880384695
+    },
+    {
+      "case": "1/sigma-1148846080",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 3456897820468487510
+    },
+    {
+      "case": "1/sigma-1148846081",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14107953773675315743
+    },
+    {
+      "case": "1/sigma-1311419049",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 9547370030783182343
+    },
+    {
+      "case": "1/sigma-1311419050",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13107359706469263720
+    },
+    {
+      "case": "1/sigma-2139095038",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2845478234548380071
+    },
+    {
+      "case": "1/sigma-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2845478234548380071
+    },
+    {
+      "case": "1/sigma-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/combination-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/combination-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 12265172394204660589
+    },
+    {
+      "case": "1/combination-2",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 14957022882822663343
+    },
+    {
+      "case": "1/combination-3",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13477838154951370660
+    },
+    {
+      "case": "1/combination-4",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15397987274528820732
+    },
+    {
+      "case": "1/combination-5",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10018720315161784431
+    },
+    {
+      "case": "1/combination-6",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13636830487444661269
+    },
+    {
+      "case": "1/combination-7",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 3186614872363949542
+    },
+    {
+      "case": "1/invalid-4",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/invalid-255",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "1/default",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 11768602557190918820
+    },
+    {
+      "case": "2/active",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/off",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/disabled-glare",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-2139095040",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-0-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-2139095040",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-1-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-2139095040",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-2-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/lane-3-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6535901762016322611
+    },
+    {
+      "case": "2/lane-3-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6535901762016322611
+    },
+    {
+      "case": "2/lane-3-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6535901762016322611
+    },
+    {
+      "case": "2/lane-3-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6535901762016322611
+    },
+    {
+      "case": "2/lane-3-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6535901762016322611
+    },
+    {
+      "case": "2/lane-3-2143363909",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/lane-3-4290847557",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/lane-3-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/lane-3-4286578688",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/lane-3-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6535901762016322611
+    },
+    {
+      "case": "2/lane-4-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-4-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-4-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-4-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-4-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-4-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-4-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-4-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        5
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/lane-4-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-4-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-5-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-5-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-5-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13399783758203622995
+    },
+    {
+      "case": "2/lane-5-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-5-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-5-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-5-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-5-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        6
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/lane-5-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/lane-5-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10799356592299521638
+    },
+    {
+      "case": "2/sigma-1042983594",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1225167323674032473
+    },
+    {
+      "case": "2/sigma-1042983595",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10793150904739219785
+    },
+    {
+      "case": "2/sigma-1042983596",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8164785676426007721
+    },
+    {
+      "case": "2/sigma-1056964607",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13752564212652006497
+    },
+    {
+      "case": "2/sigma-1056964608",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 5433983261951097177
+    },
+    {
+      "case": "2/sigma-1056964609",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16138441741021039849
+    },
+    {
+      "case": "2/sigma-1060320050",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1650942774358234985
+    },
+    {
+      "case": "2/sigma-1060320051",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16598081533525295305
+    },
+    {
+      "case": "2/sigma-1060320052",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 5362931841988689545
+    },
+    {
+      "case": "2/sigma-1069547519",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 17560854848653191425
+    },
+    {
+      "case": "2/sigma-1069547520",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 5107230522978287529
+    },
+    {
+      "case": "2/sigma-1069547521",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6639188725226688313
+    },
+    {
+      "case": "2/sigma-1103364095",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16467630140358193689
+    },
+    {
+      "case": "2/sigma-1103364096",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13087908771883001465
+    },
+    {
+      "case": "2/sigma-1103364097",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 17397859090934737605
+    },
+    {
+      "case": "2/sigma-1103626239",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1384303904050834489
+    },
+    {
+      "case": "2/sigma-1103626240",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 4765436002014351129
+    },
+    {
+      "case": "2/sigma-1103626241",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6441103273748366669
+    },
+    {
+      "case": "2/sigma-1148846079",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 310549219393694957
+    },
+    {
+      "case": "2/sigma-1148846080",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 5500923225406579369
+    },
+    {
+      "case": "2/sigma-1148846081",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10840996909278474473
+    },
+    {
+      "case": "2/sigma-1311419049",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 4632032007535975345
+    },
+    {
+      "case": "2/sigma-1311419050",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2095695391650431609
+    },
+    {
+      "case": "2/sigma-2139095038",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/sigma-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/sigma-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/combination-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/combination-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/combination-2",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/combination-3",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10340996948249604872
+    },
+    {
+      "case": "2/combination-4",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6535901762016322611
+    },
+    {
+      "case": "2/combination-5",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6535901762016322611
+    },
+    {
+      "case": "2/combination-6",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/combination-7",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2245189015135736206
+    },
+    {
+      "case": "2/invalid-4",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/invalid-255",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "2/default",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 17347134939126553023
+    },
+    {
+      "case": "3/active",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1365222576910583988
+    },
+    {
+      "case": "3/off",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/disabled-glare",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6718390752638210079
+    },
+    {
+      "case": "3/lane-0-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6718390752638210079
+    },
+    {
+      "case": "3/lane-0-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6718390752638210079
+    },
+    {
+      "case": "3/lane-0-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8684877117311823141
+    },
+    {
+      "case": "3/lane-0-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6718390752638210079
+    },
+    {
+      "case": "3/lane-0-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6718390752638210079
+    },
+    {
+      "case": "3/lane-0-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6718390752638210079
+    },
+    {
+      "case": "3/lane-0-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6718390752638210079
+    },
+    {
+      "case": "3/lane-0-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        1
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-0-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6718390752638210079
+    },
+    {
+      "case": "3/lane-0-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16979680282765530312
+    },
+    {
+      "case": "3/lane-1-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7670794526378876186
+    },
+    {
+      "case": "3/lane-1-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 17934804886608683162
+    },
+    {
+      "case": "3/lane-1-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 3680590002786672059
+    },
+    {
+      "case": "3/lane-1-2147483649",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-1-3212836864",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-1-2143363909",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-1-4290847557",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-1-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-1-4286578688",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-1-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16693768286051515750
+    },
+    {
+      "case": "3/lane-2-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2485791764307020142
+    },
+    {
+      "case": "3/lane-2-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2485791764307020142
+    },
+    {
+      "case": "3/lane-2-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2485791764307020142
+    },
+    {
+      "case": "3/lane-2-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2485791764307020142
+    },
+    {
+      "case": "3/lane-2-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2485791764307020142
+    },
+    {
+      "case": "3/lane-2-2143363909",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-2-4290847557",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-2-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-2-4286578688",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-2-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2485791764307020142
+    },
+    {
+      "case": "3/lane-3-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1070725330856604681
+    },
+    {
+      "case": "3/lane-3-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1070725330856604681
+    },
+    {
+      "case": "3/lane-3-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1070725330856604681
+    },
+    {
+      "case": "3/lane-3-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1070725330856604681
+    },
+    {
+      "case": "3/lane-3-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1070725330856604681
+    },
+    {
+      "case": "3/lane-3-2143363909",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-3-4290847557",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-3-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-3-4286578688",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        4
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-3-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1070725330856604681
+    },
+    {
+      "case": "3/lane-4-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-4-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-4-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-4-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-4-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-4-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-4-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-4-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        5
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-4-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-4-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-5-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-5-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-5-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10238071282612367737
+    },
+    {
+      "case": "3/lane-5-2147483649",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-5-3212836864",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-5-2143363909",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-5-4290847557",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-5-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        6
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/lane-5-4286578688",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/lane-5-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1581288298870745228
+    },
+    {
+      "case": "3/sigma-1042983594",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16558852548853665868
+    },
+    {
+      "case": "3/sigma-1042983595",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16967523757451098325
+    },
+    {
+      "case": "3/sigma-1042983596",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6995543038000383918
+    },
+    {
+      "case": "3/sigma-1056964607",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6325991101688957931
+    },
+    {
+      "case": "3/sigma-1056964608",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7638040820040404530
+    },
+    {
+      "case": "3/sigma-1056964609",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7313785631199510923
+    },
+    {
+      "case": "3/sigma-1060320050",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 4615696937483519898
+    },
+    {
+      "case": "3/sigma-1060320051",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15616473337780756787
+    },
+    {
+      "case": "3/sigma-1060320052",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 917358399814914760
+    },
+    {
+      "case": "3/sigma-1069547519",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 543858037827458585
+    },
+    {
+      "case": "3/sigma-1069547520",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 4722161669349058821
+    },
+    {
+      "case": "3/sigma-1069547521",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10430633245119848444
+    },
+    {
+      "case": "3/sigma-1103364095",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 5024875956297212946
+    },
+    {
+      "case": "3/sigma-1103364096",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 16727815532983011048
+    },
+    {
+      "case": "3/sigma-1103364097",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 13131825708450836417
+    },
+    {
+      "case": "3/sigma-1103626239",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 9332468830969014748
+    },
+    {
+      "case": "3/sigma-1103626240",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10483098728224985829
+    },
+    {
+      "case": "3/sigma-1103626241",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 11191795755963935292
+    },
+    {
+      "case": "3/sigma-1148846079",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 17048939069339338597
+    },
+    {
+      "case": "3/sigma-1148846080",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 7552722927256326792
+    },
+    {
+      "case": "3/sigma-1148846081",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 2327489144331225897
+    },
+    {
+      "case": "3/sigma-1311419049",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 3280121605058668641
+    },
+    {
+      "case": "3/sigma-1311419050",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 5089674229582527990
+    },
+    {
+      "case": "3/sigma-2139095038",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 696355134040661277
+    },
+    {
+      "case": "3/sigma-2139095039",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 696355134040661277
+    },
+    {
+      "case": "3/sigma-2139095040",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/combination-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/combination-1",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 10135306865779444327
+    },
+    {
+      "case": "3/combination-2",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 8980488556344943313
+    },
+    {
+      "case": "3/combination-3",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 15920470054090392162
+    },
+    {
+      "case": "3/combination-4",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6918690211046181986
+    },
+    {
+      "case": "3/combination-5",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1070725330856604681
+    },
+    {
+      "case": "3/combination-6",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 6718390752638210079
+    },
+    {
+      "case": "3/combination-7",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 1365222576910583988
+    },
+    {
+      "case": "3/invalid-4",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/invalid-255",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "3/default",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 4147621922734546294
+    },
+    {
+      "case": "radius-1",
+      "envelope": [
+        3,
+        0,
+        0,
+        3,
+        1
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "radius-2",
+      "envelope": [
+        3,
+        0,
+        0,
+        3,
+        2
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "radius-3",
+      "envelope": [
+        3,
+        0,
+        0,
+        3,
+        3
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "raw-0",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "raw-1",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "raw-2",
+      "envelope": [
+        2,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "raw-3",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "raw-4",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "raw-5",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    },
+    {
+      "case": "raw-6",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "fields": "13-pass",
+      "hash": 0
+    }
+  ],
+  "schema": 1,
+  "sha256": {
+    "context-linux-debug.json": "1e3b1e07cdb5b7135caa3b3a1e1027923cac7f120d3f23d5f44080e582ba7c76",
+    "context-linux-release.json": "71c1bde0329defa2490649a04f6ea3fd3c963879ce766a6eebbfa38464316773",
+    "context-windows-clang-debug.json": "92480869740d9dff97921a317745f1510030b56c4bfb2d0c2a31f74670fdcc94",
+    "context-windows-clang-release.json": "435eaec8e7eea28151e43ac907a2270afecb2263715688425a6dd6af95f65430",
+    "native.json": "7b431f01269eedaabb314fdc36f1bfce27fa064670cc202ccd244681988bfeca"
+  },
+  "source_revision": "67f28a5deee784b2440b181e2492dd200dc7cb66"
+}
