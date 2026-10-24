@@ -1,48 +1,14 @@
 #include "Scanner.h"
 
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstddef>
 #include <cstdint>
 #include <sstream>
 #include <string>
 
-#include "GaussianSciPy.h"
 #include "Logging.h"
 #include "RenderRecipe.h"
 #include "RustScannerBridge.h"
 
 namespace {
-
-    constexpr float kScannerGaussianTruncate = 3.0f;
-    constexpr int kMaxScannerGaussianRadius = 75;
-
-    template <typename T>
-    void hash_value(std::uint64_t& hash, const T& value) {
-        Hash::hash_bytes_update(hash, &value, sizeof(value));
-    }
-
-    int scanner_gaussian_radius_or_zero(float sigma) noexcept {
-        if (!std::isfinite(sigma) || sigma <= 0.0f) {
-            return 0;
-        }
-        return std::min(
-            JuicerGaussian::scipy_gaussian_radius(
-                sigma,
-                kScannerGaussianTruncate),
-            kMaxScannerGaussianRadius);
-    }
-
-    float scanner_gaussian_sigma_with_device_kernel_or_zero(float sigma) noexcept {
-        if (!std::isfinite(sigma)) {
-            return sigma;
-        }
-        if (sigma <= 0.0f) {
-            return 0.0f;
-        }
-        return scanner_gaussian_radius_or_zero(sigma) > 0 ? sigma : 0.0f;
-    }
 
     const char* bool_text(bool value) {
         return value ? "true" : "false";
@@ -146,63 +112,5 @@ namespace Scanner {
         return success;
     }
 
-    bool build_scanner_post_effects_descriptor(
-        const ScannerOutputRecipe& recipe,
-        ScannerPostEffectsDescriptor& outDescriptor,
-        std::string& outDiagnostic) {
-        outDescriptor = ScannerPostEffectsDescriptor{};
-        outDescriptor.route = recipe.route;
-        outDiagnostic.clear();
-        const bool printRoute = Spektrafilm::scan_route_is_print(recipe.route);
-        outDescriptor.glareActive = printRoute && recipe.glareActive && recipe.glarePercent > 0.0f;
-        outDescriptor.glarePercent = outDescriptor.glareActive ? recipe.glarePercent : 0.0f;
-        outDescriptor.glareRoughness = outDescriptor.glareActive ? recipe.glareRoughness : 0.0f;
-        outDescriptor.glareBlurSigmaPx =
-            outDescriptor.glareActive
-                ? scanner_gaussian_sigma_with_device_kernel_or_zero(recipe.glareBlurSigmaPx)
-                : 0.0f;
-        outDescriptor.glareBlurRadius =
-            scanner_gaussian_radius_or_zero(outDescriptor.glareBlurSigmaPx);
-        outDescriptor.lensBlurSigmaPx =
-            scanner_gaussian_sigma_with_device_kernel_or_zero(recipe.lensBlurSigmaPx);
-        outDescriptor.lensBlurRadius =
-            scanner_gaussian_radius_or_zero(outDescriptor.lensBlurSigmaPx);
-        const float unsharpSigmaPx =
-            scanner_gaussian_sigma_with_device_kernel_or_zero(recipe.unsharpSigmaPx);
-        const bool unsharpActive = unsharpSigmaPx > 0.0f && recipe.unsharpAmount > 0.0f;
-        outDescriptor.unsharpSigmaPx = unsharpActive ? unsharpSigmaPx : 0.0f;
-        outDescriptor.unsharpRadius =
-            scanner_gaussian_radius_or_zero(outDescriptor.unsharpSigmaPx);
-        outDescriptor.unsharpAmount = unsharpActive ? recipe.unsharpAmount : 0.0f;
-        const float values[] = {
-            outDescriptor.glarePercent,
-            outDescriptor.glareRoughness,
-            outDescriptor.glareBlurSigmaPx,
-            outDescriptor.lensBlurSigmaPx,
-            outDescriptor.unsharpSigmaPx,
-            outDescriptor.unsharpAmount};
-        for (float value : values) {
-            if (!std::isfinite(value) || value < 0.0f) {
-                outDiagnostic = "MalformedRequiredProfileData phase=8C scanner post effects";
-                return false;
-            }
-        }
-        if (!outDescriptor.glareActive && outDescriptor.lensBlurSigmaPx <= 0.0f &&
-            outDescriptor.unsharpSigmaPx <= 0.0f) {
-            return true;
-        }
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, outDescriptor.route);
-        hash_value(hash, outDescriptor.glareActive);
-        for (float value : values) {
-            hash_value(hash, value);
-        }
-        hash_value(hash, outDescriptor.glareBlurRadius);
-        hash_value(hash, outDescriptor.lensBlurRadius);
-        hash_value(hash, outDescriptor.unsharpRadius);
-        hash_value(hash, outDescriptor.schemaVersion);
-        outDescriptor.hash = hash;
-        return outDescriptor.hash != 0;
-    }
 
 } // namespace Scanner

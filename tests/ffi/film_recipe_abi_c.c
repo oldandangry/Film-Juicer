@@ -825,3 +825,64 @@ int fj_test_scanner_descriptor_c_call(const FjScannerLutDescriptorInput* input, 
     FjStatus status = fj_legacy_scanner_lut_describe(input, &result, &failure, NULL);
     return status.category == 0 && status.api == 0 && status.native_code == 0 && failure.reason == 0 && failure.lane == 0 && memcmp(&result, expected, sizeof result) == 0;
 }
+
+_Static_assert(sizeof(FjScannerPostEffectsInput) == 32 && _Alignof(FjScannerPostEffectsInput) == 4, "FjScannerPostEffectsInput layout");
+_Static_assert(_Generic(((FjScannerPostEffectsInput*)0)->route, uint32_t: 1, default: 0) && offsetof(FjScannerPostEffectsInput, route) == 0, "FjScannerPostEffectsInput.route");
+_Static_assert(_Generic(((FjScannerPostEffectsInput*)0)->glare_active, uint32_t: 1, default: 0) && offsetof(FjScannerPostEffectsInput, glare_active) == 4, "FjScannerPostEffectsInput.glare_active");
+_Static_assert(_Generic(((FjScannerPostEffectsInput*)0)->glare_percent, float: 1, default: 0) && offsetof(FjScannerPostEffectsInput, glare_percent) == 8, "FjScannerPostEffectsInput.glare_percent");
+_Static_assert(_Generic(((FjScannerPostEffectsInput*)0)->glare_roughness, float: 1, default: 0) && offsetof(FjScannerPostEffectsInput, glare_roughness) == 12, "FjScannerPostEffectsInput.glare_roughness");
+_Static_assert(_Generic(((FjScannerPostEffectsInput*)0)->glare_blur_sigma_px, float: 1, default: 0) && offsetof(FjScannerPostEffectsInput, glare_blur_sigma_px) == 16, "FjScannerPostEffectsInput.glare_blur_sigma_px");
+_Static_assert(_Generic(((FjScannerPostEffectsInput*)0)->lens_blur_sigma_px, float: 1, default: 0) && offsetof(FjScannerPostEffectsInput, lens_blur_sigma_px) == 20, "FjScannerPostEffectsInput.lens_blur_sigma_px");
+_Static_assert(_Generic(((FjScannerPostEffectsInput*)0)->unsharp_sigma_px, float: 1, default: 0) && offsetof(FjScannerPostEffectsInput, unsharp_sigma_px) == 24, "FjScannerPostEffectsInput.unsharp_sigma_px");
+_Static_assert(_Generic(((FjScannerPostEffectsInput*)0)->unsharp_amount, float: 1, default: 0) && offsetof(FjScannerPostEffectsInput, unsharp_amount) == 28, "FjScannerPostEffectsInput.unsharp_amount");
+_Static_assert(sizeof(FjScannerPostEffectsDescriptor) == 56 && _Alignof(FjScannerPostEffectsDescriptor) == 8, "FjScannerPostEffectsDescriptor layout");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->route, uint32_t: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, route) == 0, "FjScannerPostEffectsDescriptor.route");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->glare_active, uint32_t: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, glare_active) == 4, "FjScannerPostEffectsDescriptor.glare_active");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->glare_percent, float: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, glare_percent) == 8, "FjScannerPostEffectsDescriptor.glare_percent");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->glare_roughness, float: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, glare_roughness) == 12, "FjScannerPostEffectsDescriptor.glare_roughness");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->glare_blur_sigma_px, float: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, glare_blur_sigma_px) == 16, "FjScannerPostEffectsDescriptor.glare_blur_sigma_px");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->glare_blur_radius, int32_t: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, glare_blur_radius) == 20, "FjScannerPostEffectsDescriptor.glare_blur_radius");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->lens_blur_sigma_px, float: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, lens_blur_sigma_px) == 24, "FjScannerPostEffectsDescriptor.lens_blur_sigma_px");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->lens_blur_radius, int32_t: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, lens_blur_radius) == 28, "FjScannerPostEffectsDescriptor.lens_blur_radius");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->unsharp_sigma_px, float: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, unsharp_sigma_px) == 32, "FjScannerPostEffectsDescriptor.unsharp_sigma_px");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->unsharp_radius, int32_t: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, unsharp_radius) == 36, "FjScannerPostEffectsDescriptor.unsharp_radius");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->unsharp_amount, float: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, unsharp_amount) == 40, "FjScannerPostEffectsDescriptor.unsharp_amount");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->schema, uint32_t: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, schema) == 44, "FjScannerPostEffectsDescriptor.schema");
+_Static_assert(_Generic(((FjScannerPostEffectsDescriptor*)0)->hash, uint64_t: 1, default: 0) && offsetof(FjScannerPostEffectsDescriptor, hash) == 48, "FjScannerPostEffectsDescriptor.hash");
+_Static_assert(sizeof(FjScannerPostEffectsFailure) == 64 && _Alignof(FjScannerPostEffectsFailure) == 8, "FjScannerPostEffectsFailure layout");
+_Static_assert(_Generic(((FjScannerPostEffectsFailure*)0)->reason, uint32_t: 1, default: 0) && offsetof(FjScannerPostEffectsFailure, reason) == 0, "FjScannerPostEffectsFailure.reason");
+_Static_assert(_Generic(((FjScannerPostEffectsFailure*)0)->lane, uint32_t: 1, default: 0) && offsetof(FjScannerPostEffectsFailure, lane) == 4, "FjScannerPostEffectsFailure.lane");
+_Static_assert(_Generic(((FjScannerPostEffectsFailure*)0)->rejected, FjScannerPostEffectsDescriptor: 1, default: 0) && offsetof(FjScannerPostEffectsFailure, rejected) == 8, "FjScannerPostEffectsFailure.rejected");
+typedef FjStatus (*ScannerPostDescribe)(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_scanner_post_describe, ScannerPostDescribe: 1, default: 0), "fj_legacy_scanner_post_describe signature");
+_Static_assert(_Generic(&fj_test_scanner_post_describe, ScannerPostDescribe: 1, default: 0), "fj_test_scanner_post_describe signature");
+
+_Static_assert(_Generic(((FjGaussianKernelInput*)0)->radius, int32_t: 1, default: 0), "FjGaussianKernelInput.radius type");
+_Static_assert(_Generic(((FjGaussianKernelInput*)0)->sigma_px, float: 1, default: 0), "FjGaussianKernelInput.sigma_px type");
+_Static_assert(_Generic(((FjGaussianKernelView*)0)->radius, int32_t: 1, default: 0), "FjGaussianKernelView.radius type");
+_Static_assert(_Generic(((FjGaussianKernelView*)0)->sigma_px, float: 1, default: 0), "FjGaussianKernelView.sigma_px type");
+_Static_assert(_Generic(((FjGaussianKernelView*)0)->weights, FjFloatSpan: 1, default: 0), "FjGaussianKernelView.weights type");
+_Static_assert(_Generic(((FjGaussianKernelFailure*)0)->reason, uint32_t: 1, default: 0), "FjGaussianKernelFailure.reason type");
+_Static_assert(_Generic(&fj_legacy_gaussian_kernel_acquire, FjStatus (*)(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*): 1, default: 0), "Gaussian acquire signature");
+_Static_assert(_Generic(&fj_legacy_gaussian_kernel_view, FjStatus (*)(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*): 1, default: 0), "Gaussian view signature");
+_Static_assert(_Generic(&fj_legacy_gaussian_kernel_release, FjStatus (*)(FjGaussianKernelOwner*, FjErrorBuffer*): 1, default: 0), "Gaussian release signature");
+
+int fj_test_gaussian_c_call(const FjGaussianKernelInput* input, const uint32_t* expected, size_t count) {
+    uint32_t sigma_bits = 0;
+    memcpy(&sigma_bits, &input->sigma_px, sizeof(float));
+    FjGaussianKernelOwner* owner = NULL;
+    FjGaussianKernelFailure failure = {99};
+    FjGaussianKernelView view;
+    if (fj_legacy_gaussian_kernel_acquire(input, &owner, &failure, NULL).category != 0 || !owner || failure.reason != 0)
+        return 0;
+    int ok = fj_legacy_gaussian_kernel_view(owner, &view, &failure, NULL).category == 0 && failure.reason == 0 && view.radius == input->radius && view.weights.count == count;
+    uint32_t observed_sigma = 0;
+    memcpy(&observed_sigma, &view.sigma_px, sizeof(float));
+    ok = ok && observed_sigma == sigma_bits;
+    for (size_t i = 0; ok && i < count; ++i) {
+        uint32_t word;
+        memcpy(&word, view.weights.data + i, sizeof word);
+        ok = word == expected[i];
+    }
+    return fj_legacy_gaussian_kernel_release(owner, NULL).category == 0 && ok;
+}

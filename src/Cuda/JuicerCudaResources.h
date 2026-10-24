@@ -770,6 +770,15 @@ namespace JuicerCuda {
         void* contextOpaque,
         PinnedUploadPurgeDisposition disposition) noexcept;
 
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+    namespace GaussianKernelTest {
+        std::int32_t copy(Resources&, std::uint64_t key, void* destination, const void* source, std::size_t bytes) noexcept;
+        void before_insert(Resources&, std::uint64_t key) noexcept;
+        bool after_upload(Resources&, std::uint64_t key, float* candidate) noexcept;
+        void observed_free(Resources&, std::uint64_t key, void* pointer, bool success) noexcept;
+    } // namespace GaussianKernelTest
+#endif
+
 #if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
     namespace PinnedUploadTest {
         enum class Operation : std::uint8_t {

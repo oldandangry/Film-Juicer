@@ -206,6 +206,9 @@ target_link_libraries(juicer_film_recipe_state_test_objects PRIVATE juicer_setti
 target_compile_definitions(juicer_film_recipe_state_test_objects PRIVATE JUICER_FILM_RECIPE_STATE_TEST_HOOK=1)
 target_link_libraries(juicer_film_recipe_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_film_recipe_test_objects PRIVATE JUICER_FILM_RECIPE_TEST_HOOK=1)
+add_library(juicer_gaussian_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
+target_link_libraries(juicer_gaussian_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_gaussian_test_objects PRIVATE JUICER_GAUSSIAN_TEST_HOOK=1)
 add_executable(JuicerFilmRecipeTests ffi/film_recipe_abi_c.c ffi/film_recipe_test.cpp ffi/spectral_allocation_probe.cpp
     $<TARGET_OBJECTS:juicer_scanner_test_objects>
     $<TARGET_OBJECTS:juicer_film_recipe_test_objects>
@@ -219,6 +222,16 @@ if(UNIX)
     set_property(TARGET JuicerFilmRecipeTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 add_dependencies(JuicerFilmRecipeTests juicer_test_resources)
+add_test(NAME Ffi.Host.GaussianKernel COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/manifest.json" gaussian "${JUICER_TEST_PRESET_NAME}")
+add_test(NAME Optics.Host.GaussianKernelProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/manifest.json" gaussian-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.GaussianKernel Optics.Host.GaussianKernelProducts PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Ffi.Host.ScannerPostEffects COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/post-effects-fixtures/manifest.json" scanner-post "${JUICER_TEST_PRESET_NAME}")
+add_test(NAME Scanner.Host.PostEffectsProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/post-effects-fixtures/manifest.json" scanner-post-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.ScannerPostEffects Scanner.Host.PostEffectsProducts PROPERTIES LABELS "host" TIMEOUT 180)
 add_test(NAME Ffi.Host.ScannerLutDescriptor COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/descriptor-fixtures/manifest.json" scanner-descriptor "${JUICER_TEST_PRESET_NAME}")
 add_test(NAME Scanner.Host.LutDescriptorProducts COMMAND JuicerFilmRecipeTests
@@ -388,6 +401,20 @@ if(UNIX)
 endif()
 add_test(NAME Resource.Gpu.PinnedUpload COMMAND JuicerPinnedUploadTests)
 set_tests_properties(Resource.Gpu.PinnedUpload PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
+# Gaussian cache failure and collision cases use the real context-owned miss path.
+add_executable(JuicerGaussianKernelTests resource/gaussian_kernel_test.cpp
+    resource/gaussian_kernel_test_hooks.cpp ffi/spectral_allocation_probe.cpp
+    $<TARGET_OBJECTS:juicer_gaussian_test_objects>)
+target_link_libraries(JuicerGaussianKernelTests PRIVATE juicer_core CUDA::cuda_driver)
+target_compile_definitions(JuicerGaussianKernelTests PRIVATE JUICER_GAUSSIAN_TEST_HOOK=1)
+set_target_properties(JuicerGaussianKernelTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerGaussianKernelTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Resource.Gpu.GaussianKernel COMMAND JuicerGaussianKernelTests
+    "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/${JUICER_TEST_PRESET_NAME}-payload.json")
+set_tests_properties(Resource.Gpu.GaussianKernel PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 
 # Deferred retirement executes the real drain with a bounded post-extraction seam.
 add_library(juicer_deferred_destroy_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
@@ -984,6 +1011,10 @@ add_dependencies(JuicerScannerOutputTests juicer_test_resources)
 if(UNIX)
     set_property(TARGET JuicerScannerOutputTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
+foreach(gaussian_consumer IN ITEMS JuicerScannerOutputTests JuicerGrainScratchTests JuicerDirExposureCacheTests)
+    target_compile_definitions(${gaussian_consumer} PRIVATE
+        JUICER_GAUSSIAN_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/${JUICER_TEST_PRESET_NAME}.json")
+endforeach()
 add_test(NAME Scanner.Gpu.OutputEncoding COMMAND JuicerScannerOutputTests --gtest_filter=-ScannerRoutes.CorrectionRoutes)
 add_test(NAME Scanner.Gpu.CorrectionRoutes COMMAND JuicerScannerOutputTests --gtest_filter=ScannerRoutes.CorrectionRoutes)
 set_tests_properties(Scanner.Gpu.CorrectionRoutes PROPERTIES
@@ -1327,7 +1358,7 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Execution
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
-set(juicer_boundary_tests Ffi.Host.FilmReference
+set(juicer_boundary_tests Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat

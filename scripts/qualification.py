@@ -272,6 +272,53 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     expected_descriptors = descriptor_spec["production_cases"] + descriptor_spec["production_malformed"]
     if len(expected_descriptors) != 41 or document.get("scanner_descriptor_results") != expected_descriptors:
         raise ValueError("production scanner descriptor value/failure results are incomplete")
+    post_manifest = root / "tests/scanner/post-effects-fixtures/manifest.json"
+    post_spec = json.loads(post_manifest.read_bytes())
+    logical = post_spec["presets"][document["preset"]]["native"]
+    post_payload = post_manifest.parent / post_spec["payloads"][logical]
+    post_context = post_manifest.parent / post_spec["contexts"][logical]
+    post = document.get("scanner_post_fixture", {})
+    if (post.get("logical_preset") != document["preset"] or
+            any(resolve(post.get(key, "")) != path for key, path in
+                (("manifest", post_manifest), ("payload", post_payload), ("context", post_context)))):
+        raise ValueError("production scanner post-effects fixture membership is incomplete")
+    for path in (post_manifest, post_payload, post_context):
+        checksum = digest(path)
+        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum:
+            raise ValueError("production scanner post-effects consumed fixture identity changed")
+        if path != post_manifest and checksum != post_spec["sha256"][path.name]:
+            raise ValueError("production scanner post-effects frozen payload/context changed")
+    expected_post = post_spec["production_cases"]
+    if len(expected_post) != 410 or document.get("scanner_post_results") != expected_post:
+        raise ValueError("production scanner post-effects value/failure results are incomplete")
+    gaussian_manifest = root / "tests/optics/gaussian-fixtures/manifest.json"
+    gaussian_spec = json.loads(gaussian_manifest.read_bytes())
+    logical = gaussian_spec["presets"][document["preset"]]["native"]
+    gaussian_payload = gaussian_manifest.parent / gaussian_spec["payloads"][logical]
+    gaussian_context = gaussian_manifest.parent / gaussian_spec["contexts"][logical]
+    gaussian = document.get("gaussian_fixture", {})
+    if gaussian.get("logical_preset") != document["preset"] or any(
+            resolve(gaussian.get(key, "")) != path for key, path in
+            (("manifest", gaussian_manifest), ("payload", gaussian_payload), ("context", gaussian_context))):
+        raise ValueError("production Gaussian fixture membership is incomplete")
+    for path in (gaussian_manifest, gaussian_payload, gaussian_context):
+        checksum = digest(path)
+        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum or (path != gaussian_manifest and checksum != gaussian_spec["sha256"][path.name]):
+            raise ValueError("production Gaussian consumed fixture changed")
+    expected_gaussian = []
+    for row in json.loads(gaussian_payload.read_bytes())["cases"]:
+        radius, sigma = row["radius"], row["sigma_bits"]
+        reason = 2 if radius < 1 or radius > 2048 else (3 if sigma & 0x80000000 or sigma == 0 or sigma >= 0x7f800000 else 0)
+        expected_gaussian.append({"case": row["name"], "envelope": [3 if reason else 0, 0, 0, reason],
+                                  "radius": 0 if reason else radius, "sigma_bits": 0 if reason else sigma,
+                                  "weights": [] if reason else row["weights"]})
+    for name in gaussian_spec["production_cases"][188:]:
+        reason = 2 if name == "radius-upper-reject" else (0 if name in {"zero-capacity", "null-release"} else 1)
+        expected_gaussian.append({"case": name, "envelope": [3 if reason == 2 else 2 if reason else 0, 0, 0, reason],
+                                  "radius": 0, "sigma_bits": 0, "weights": []})
+    if len(expected_gaussian) != 201 or document.get("gaussian_results") != expected_gaussian:
+        raise ValueError("production Gaussian full arrays/metadata/failure results are incomplete")
+
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -408,7 +455,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "exposure_fixture.h", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+                "film_recipe_abi_facts.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
             paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
@@ -416,6 +463,8 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.update((root / "tests/scanner/correction-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/lut-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/descriptor-fixtures").glob("*.json"))
+            paths.update((root / "tests/scanner/post-effects-fixtures").glob("*.json"))
+            paths.update((root / "tests/optics/gaussian-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))
