@@ -266,6 +266,8 @@ class CheckpointTests(unittest.TestCase):
                      "tests/scanner/correction-fixtures/linux-debug.json", "tests/ffi/scanner_lut_test.inc", "tests/ffi/scanner_lut_descriptor_test.inc",
                      "tests/scanner/descriptor-fixtures/manifest.json", "tests/scanner/descriptor-fixtures/native.json",
                      "tests/scanner/descriptor-fixtures/context-linux-debug.json",
+                     "tests/scanner/post-effects-fixtures/manifest.json", "tests/scanner/post-effects-fixtures/native.json",
+                     "tests/scanner/post-effects-fixtures/context-linux-debug.json", "tests/ffi/scanner_post_effects_test.inc",
                      "tests/scanner/lut-fixtures/manifest.json", "tests/scanner/lut-fixtures/checked.json",
                      "tests/scanner/lut-fixtures/native.json", "tests/scanner/lut-fixtures/context-linux-debug.json",
                      "tests/ffi/exposure_fixture.h", "tests/ffi/scanner_color_test.inc",
@@ -304,6 +306,9 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn("tests/scanner/descriptor-fixtures/manifest.json", first)
         self.assertIn("tests/scanner/descriptor-fixtures/native.json", first)
         self.assertIn("tests/scanner/descriptor-fixtures/context-linux-debug.json", first)
+        self.assertIn("tests/scanner/post-effects-fixtures/manifest.json", first)
+        self.assertIn("tests/scanner/post-effects-fixtures/native.json", first)
+        self.assertIn("tests/scanner/post-effects-fixtures/context-linux-debug.json", first)
         self.assertIn("tests/ffi/scanner_lut_test.inc", first)
         self.assertIn("tests/scanner/lut-fixtures/manifest.json", first)
         self.assertIn("tests/scanner/lut-fixtures/checked.json", first)
@@ -893,6 +898,16 @@ class CheckpointTests(unittest.TestCase):
             "sha256": {payload.name: digest(payload), context.name: digest(context)},
             "production_cases": [{"case": str(i), "envelope": [0, 0, 0, 0, 0], "hash": 10, "fields": "10-pass"} for i in range(24)],
             "production_malformed": [{"case": str(i), "envelope": [2, 0, 0, 1, 0], "hash": 0, "fields": "10-pass"} for i in range(17)]})
+        post_directory = self.root / "tests/scanner/post-effects-fixtures"
+        post_directory.mkdir(parents=True, exist_ok=True)
+        post_payload = post_directory / "native.json"
+        post_context = post_directory / "context.json"
+        write_json(post_payload, {"scope": "post-effects retained membership protocol only"})
+        write_json(post_context, {"scope": "distinct post-effects native context protocol"})
+        write_json(post_directory / "manifest.json", {"presets": {preset: {"native": "logical.json"} for preset in qualification.PRESETS},
+            "payloads": {"logical.json": post_payload.name}, "contexts": {"logical.json": post_context.name},
+            "sha256": {post_payload.name: digest(post_payload), post_context.name: digest(post_context)},
+            "production_cases": [{"case": str(i), "envelope": [0, 0, 0, 0, 0], "hash": 10, "fields": "13-pass"} for i in range(410)]})
         return r'''
 import json, sys, subprocess, hashlib, shutil
 preset=sys.argv[sys.argv.index("--preset")+1]
@@ -933,6 +948,12 @@ descriptor_payload=descriptor_manifest.parent/'native.json'
 descriptor_context=descriptor_manifest.parent/'context.json'
 consumed.update({str(path):checksum(path) for path in (descriptor_manifest,descriptor_payload,descriptor_context)})
 descriptor_results=descriptor_spec['production_cases']+descriptor_spec['production_malformed']
+post_manifest=(Path('tests/scanner/post-effects-fixtures')/'manifest.json').resolve()
+post_spec=json.loads(post_manifest.read_text())
+post_payload=post_manifest.parent/'native.json'
+post_context=post_manifest.parent/'context.json'
+consumed.update({str(path):checksum(path) for path in (post_manifest,post_payload,post_context)})
+post_results=post_spec['production_cases']
 reference_results=[]
 for row in json.loads(reference_payload.read_text())['products']:
     for case in range(8 if row['method']==1 else 7):
@@ -973,6 +994,8 @@ record.write_text(json.dumps(commands))
     'reference_fixture':{'manifest':str(reference_manifest),'payload':str(reference_payload),'logical_preset':preset},
     'scanner_descriptor_fixture':{'manifest':str(descriptor_manifest),'payload':str(descriptor_payload),'context':str(descriptor_context),'logical_preset':preset},
     'scanner_descriptor_results':descriptor_results,
+    'scanner_post_fixture':{'manifest':str(post_manifest),'payload':str(post_payload),'context':str(post_context),'logical_preset':preset},
+    'scanner_post_results':post_results,
     'reference_results':reference_results,
     'commands':{'file':str(record),'sha256':checksum(record)},
     'command_outputs':{str(out/(row['name']+'.'+extension)):row[extension+'_sha256']
@@ -1229,10 +1252,24 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
         document = json.loads(manifest.read_text())
         self.assertEqual(len(document["reference_results"]), 15)
-        for field in ("reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture"):
+        self.assertEqual(len(document["scanner_post_results"]), 410)
+        for mode in ("missing", "duplicate", "changed"):
+            damaged = json.loads(json.dumps(document))
+            if mode == "missing":
+                damaged["scanner_post_results"].pop()
+            elif mode == "duplicate":
+                damaged["scanner_post_results"][-1] = damaged["scanner_post_results"][0]
+            else:
+                damaged["scanner_post_results"][0]["hash"] ^= 1
+            damaged_path = manifest.with_name("post-" + mode + ".json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "post-effects value/failure"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        for field in ("reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture"):
             missing = manifest.with_name("without-" + field + ".json")
             write_json(missing, {key: value for key, value in document.items() if key != field})
-            with self.assertRaisesRegex(ValueError, "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"):
+            expected = "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
+            with self.assertRaisesRegex(ValueError, expected):
                 qualification.production_payloads(missing, digest(missing), root=self.root,
                     inputs=stage["identity"]["inputs"])
         artifact = build / ("juicer.lib" if os.name == "nt" else "libjuicer.a")

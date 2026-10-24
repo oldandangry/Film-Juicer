@@ -2401,6 +2401,90 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         align_of::<crate::scanner_bridge::FjScannerLutDescriptorFailure>(),
         std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptorFailure, reason),
         std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptorFailure, lane),
+        size_of::<crate::scanner_bridge::FjScannerPostEffectsInput>(),
+        align_of::<crate::scanner_bridge::FjScannerPostEffectsInput>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerPostEffectsInput, route),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsInput,
+            glare_active
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsInput,
+            glare_percent
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsInput,
+            glare_roughness
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsInput,
+            glare_blur_sigma_px
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsInput,
+            lens_blur_sigma_px
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsInput,
+            unsharp_sigma_px
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsInput,
+            unsharp_amount
+        ),
+        size_of::<crate::scanner_bridge::FjScannerPostEffectsDescriptor>(),
+        align_of::<crate::scanner_bridge::FjScannerPostEffectsDescriptor>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerPostEffectsDescriptor, route),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            glare_active
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            glare_percent
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            glare_roughness
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            glare_blur_sigma_px
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            glare_blur_radius
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            lens_blur_sigma_px
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            lens_blur_radius
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            unsharp_sigma_px
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            unsharp_radius
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            unsharp_amount
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPostEffectsDescriptor,
+            schema
+        ),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerPostEffectsDescriptor, hash),
+        size_of::<crate::scanner_bridge::FjScannerPostEffectsFailure>(),
+        align_of::<crate::scanner_bridge::FjScannerPostEffectsFailure>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerPostEffectsFailure, reason),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerPostEffectsFailure, lane),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerPostEffectsFailure, rejected),
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.

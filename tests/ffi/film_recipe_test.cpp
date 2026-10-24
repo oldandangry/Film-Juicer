@@ -294,7 +294,22 @@ namespace {
 #include "scanner_lut_test.inc"
 #include "film_reference_test.inc"
 #include "scanner_lut_descriptor_test.inc"
+#include "scanner_post_effects_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "scanner-post" || std::string_view(argv[3]) == "scanner-post-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto captured = load_shared_fixture(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
+        require(captured.at("preset") == argv[4] && captured.at("cases").size() == 400, "post fixture preset and membership");
+        if (std::string_view(argv[3]) == "scanner-post") {
+            ScannerPostTest::boundary(captured.at("cases"));
+            ScannerPostTest::adapters(captured.at("cases"));
+        } else
+            ScannerPostTest::native_values(captured.at("cases"));
+        if (std::string_view(argv[3]) == "scanner-post-products")
+            ScannerPostTest::callers(argv[1], captured.at("cases"));
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "scanner-descriptor" || std::string_view(argv[3]) == "scanner-descriptor-products")) {
         layouts();
         const auto manifest = read(argv[2]);

@@ -272,6 +272,25 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     expected_descriptors = descriptor_spec["production_cases"] + descriptor_spec["production_malformed"]
     if len(expected_descriptors) != 41 or document.get("scanner_descriptor_results") != expected_descriptors:
         raise ValueError("production scanner descriptor value/failure results are incomplete")
+    post_manifest = root / "tests/scanner/post-effects-fixtures/manifest.json"
+    post_spec = json.loads(post_manifest.read_bytes())
+    logical = post_spec["presets"][document["preset"]]["native"]
+    post_payload = post_manifest.parent / post_spec["payloads"][logical]
+    post_context = post_manifest.parent / post_spec["contexts"][logical]
+    post = document.get("scanner_post_fixture", {})
+    if (post.get("logical_preset") != document["preset"] or
+            any(resolve(post.get(key, "")) != path for key, path in
+                (("manifest", post_manifest), ("payload", post_payload), ("context", post_context)))):
+        raise ValueError("production scanner post-effects fixture membership is incomplete")
+    for path in (post_manifest, post_payload, post_context):
+        checksum = digest(path)
+        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum:
+            raise ValueError("production scanner post-effects consumed fixture identity changed")
+        if path != post_manifest and checksum != post_spec["sha256"][path.name]:
+            raise ValueError("production scanner post-effects frozen payload/context changed")
+    expected_post = post_spec["production_cases"]
+    if len(expected_post) != 410 or document.get("scanner_post_results") != expected_post:
+        raise ValueError("production scanner post-effects value/failure results are incomplete")
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -416,6 +435,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.update((root / "tests/scanner/correction-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/lut-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/descriptor-fixtures").glob("*.json"))
+            paths.update((root / "tests/scanner/post-effects-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))

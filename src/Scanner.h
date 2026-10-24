@@ -146,6 +146,9 @@ namespace Scanner {
         float normalizer = 1.0f;
     };
 
+    // SF_TEMP_BRIDGE_SCANNER_POST_EFFECTS: Rust constructs complete scalar policy
+    // through the synchronous adapter; native frame/resource consumers bind it.
+    // Retire this model carrier at S4.E. Gaussian weights/residency stay native.
     struct ScannerPostEffectsDescriptor {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         bool glareActive = false;

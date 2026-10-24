@@ -15,6 +15,28 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_scanner_post_complete_frozen_contexts(self):
+        root = Path(__file__).parents[1] / "scanner/post-effects-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(set(manifest["payloads"].values()), {"native.json"})
+        self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        for name, expected in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
+        payloads = []
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual(len(captured["cases"]), 400)
+            for row in captured["cases"]:
+                self.assertEqual(len(row["input"]["values"]), 6)
+                self.assertEqual(len(row["native"]["descriptor"]["radii"]), 3)
+                self.assertEqual(row["native"]["descriptor"]["schema"], 2)
+            payloads.append(captured["cases"])
+        self.assertTrue(all(value == payloads[0] for value in payloads))
+        self.assertEqual(len(manifest["production_cases"]), 410)
+        self.assertEqual(len({row["case"] for row in manifest["production_cases"]}), 410)
+
     def test_scanner_descriptor_complete_frozen_contexts(self):
         root = Path(__file__).parents[1] / "scanner/descriptor-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())

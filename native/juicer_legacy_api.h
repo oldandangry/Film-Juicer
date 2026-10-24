@@ -1465,6 +1465,54 @@ typedef struct FjScannerLutDescriptorFailure {
 #define FJ_SCANNER_LUT_DESCRIPTOR_PANIC UINT32_C(9)
 FjStatus fj_legacy_scanner_lut_describe(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_SCANNER_POST_EFFECTS: remove S4.E at the final native caller.
+ * Producer: safe Rust scanner::describe_post_effects. Consumers: the native frame
+ * descriptor adapter, gated test facade, and C11 production validation probe.
+ * Input sigmas are already-resolved pixels; percent/roughness/amount retain their
+ * recipe meanings. route=0..3 and glare_active=0/1; all f32 bits are structurally
+ * admitted. Result is a complete copied scalar descriptor (schema2), distinct
+ * from the permanent 48-byte FjScannerPostEffects execution ABI.
+ * Both result and failure are required. Each valid writable record clears
+ * independently before checking peers, input or optional error. On failure the
+ * result remains entirely zero. Only VALUES/HASH carry a resolved rejected
+ * attempt (schema2/hash0); that payload is never a successful/cacheable value.
+ * Input must be initialized, live, aligned and readable. Writable result,
+ * failure, optional error record and nonempty backing must be live, aligned,
+ * exclusive, mutually disjoint and disjoint from input until return. Address
+ * arithmetic cannot prove actual allocation extent/readability. No pointer or
+ * borrow survives return. error=NULL omits diagnostics; capacity=0 never reads
+ * backing. Positive capacity requires writable backing; text truncates with NUL,
+ * and length excludes NUL. Panic is contained at this C boundary.
+ */
+typedef struct FjScannerPostEffectsInput {
+    uint32_t route, glare_active;
+    float glare_percent, glare_roughness, glare_blur_sigma_px;
+    float lens_blur_sigma_px, unsharp_sigma_px, unsharp_amount;
+} FjScannerPostEffectsInput;
+typedef struct FjScannerPostEffectsDescriptor {
+    uint32_t route, glare_active;
+    float glare_percent, glare_roughness, glare_blur_sigma_px;
+    int32_t glare_blur_radius;
+    float lens_blur_sigma_px;
+    int32_t lens_blur_radius;
+    float unsharp_sigma_px;
+    int32_t unsharp_radius;
+    float unsharp_amount;
+    uint32_t schema;
+    uint64_t hash;
+} FjScannerPostEffectsDescriptor;
+typedef struct FjScannerPostEffectsFailure {
+    uint32_t reason, lane;
+    FjScannerPostEffectsDescriptor rejected;
+} FjScannerPostEffectsFailure;
+#define FJ_SCANNER_POST_NONE UINT32_C(0)
+#define FJ_SCANNER_POST_RAW UINT32_C(1)
+#define FJ_SCANNER_POST_VALUES UINT32_C(2)
+#define FJ_SCANNER_POST_RADIUS UINT32_C(3)
+#define FJ_SCANNER_POST_HASH UINT32_C(4)
+#define FJ_SCANNER_POST_PANIC UINT32_C(5)
+FjStatus fj_legacy_scanner_post_describe(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

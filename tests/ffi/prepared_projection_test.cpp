@@ -1,4 +1,5 @@
 #include <array>
+#include <cstring>
 #include <bit>
 #include <cmath>
 #include <utility>
@@ -10,6 +11,8 @@
 #include <gtest/gtest.h>
 
 #include "prepared_descriptors.h"
+#include "RenderRecipe.h"
+#include "Scanner.h"
 #include "juicer_test_api.h"
 
 namespace {
@@ -188,6 +191,49 @@ namespace {
         input.effects.recipe_hash = 503;
         input.effects.hash = 504;
         return input;
+    }
+
+    TEST(PreparedProjection, RealPostConstructorSurvivesExecutionProjection) {
+        const std::uint64_t expectedHashes[]{7511645345345342884ull, 3186614872363949542ull, 2245189015135736206ull, 1365222576910583988ull};
+        for (unsigned route = 0; route < 4; ++route) {
+            ScannerOutputRecipe recipe;
+            recipe.route = static_cast<Spektrafilm::ScanRoute>(route);
+            recipe.glareActive = true;
+            recipe.glarePercent = 2.0f;
+            recipe.glareRoughness = 0.3f;
+            recipe.glareBlurSigmaPx = 0.7f;
+            recipe.lensBlurSigmaPx = 1.25f;
+            recipe.unsharpSigmaPx = 0.7f;
+            recipe.unsharpAmount = 0.8f;
+            JuicerCuda::PreparedDescriptors source;
+            source.route = recipe.route;
+            source.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(route / 2);
+            source.color.preparedEncoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_SRGB);
+            std::string diagnostic;
+            ASSERT_TRUE(Scanner::build_scanner_post_effects_descriptor(recipe, source.post, diagnostic)) << diagnostic;
+            ASSERT_EQ(source.post.hash, expectedHashes[route]);
+            FjPreparedHostData encoded{};
+            JuicerCudaTest::encode_prepared_descriptors(source, encoded);
+            const auto input = encoded;
+            EXPECT_EQ(input.route, route);
+            EXPECT_EQ(input.capture_polarity, route / 2);
+            JuicerCuda::PreparedDescriptors decoded;
+            ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, decoded, diagnostic)) << diagnostic;
+            EXPECT_EQ(decoded.post.route, recipe.route);
+            EXPECT_EQ(decoded.post.schemaVersion, 2u);
+            EXPECT_EQ(decoded.post.hash, expectedHashes[route]);
+            EXPECT_EQ(decoded.post.glareActive, bool(route & 1));
+            EXPECT_EQ(decoded.post.glareBlurRadius, (route & 1) ? 2 : 0);
+            EXPECT_EQ(decoded.post.lensBlurRadius, 4);
+            EXPECT_EQ(decoded.post.unsharpRadius, 2);
+            const float actual[]{decoded.post.glarePercent, decoded.post.glareRoughness, decoded.post.glareBlurSigmaPx, decoded.post.lensBlurSigmaPx, decoded.post.unsharpSigmaPx, decoded.post.unsharpAmount};
+            const float expected[]{(route & 1) ? 2.0f : 0.0f, (route & 1) ? 0.3f : 0.0f, (route & 1) ? 0.7f : 0.0f, 1.25f, 0.7f, 0.8f};
+            for (unsigned i = 0; i < 6; ++i)
+                EXPECT_EQ(std::bit_cast<std::uint32_t>(actual[i]), std::bit_cast<std::uint32_t>(expected[i]));
+            FjPreparedHostData roundtrip{};
+            JuicerCudaTest::encode_prepared_descriptors(decoded, roundtrip);
+            EXPECT_EQ(std::memcmp(&roundtrip.scanner_post, &encoded.scanner_post, sizeof(encoded.scanner_post)), 0);
+        }
     }
 
     TEST(PreparedProjection, RoutesKeepCapturePolarityAndSelectedMedium) {

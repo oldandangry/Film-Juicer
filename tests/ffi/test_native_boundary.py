@@ -286,6 +286,20 @@ class NativeBoundary(unittest.TestCase):
         self.assertIn("struct ScannerSpectralLutDescriptor", header)
         self.assertIn("decoded.scanner.hash = source.scanner_lut.hash", (ROOT / "native/juicer_cuda_descriptors.cpp").read_text(encoding="utf-8"))
 
+    def test_retired_scanner_post_constructor_stays_deleted(self):
+        scanner = (ROOT / "src/Scanner.cpp").read_text(encoding="utf-8")
+        for name in ("build_scanner_post_effects_descriptor", "scanner_gaussian_radius_or_zero", "scanner_gaussian_sigma_with_device_kernel_or_zero", "kScannerGaussianTruncate", "kMaxScannerGaussianRadius", "hash_value", "GaussianSciPy.h"):
+            self.assertNotIn(name, scanner)
+        bridge = (ROOT / "src/RustScannerBridge.cpp").read_text(encoding="utf-8")
+        self.assertIn("SF_TEMP_BRIDGE_SCANNER_POST_EFFECTS", bridge)
+        self.assertEqual(bridge.count("bool build_scanner_post_effects_descriptor("), 1)
+        self.assertIn("fj_legacy_scanner_post_describe", bridge)
+        self.assertNotIn("Hash::", bridge)
+        self.assertNotIn("scipy_gaussian_radius", bridge)
+        executor = (ROOT / "src/Cuda/JuicerCudaExecutor.cpp").read_text(encoding="utf-8")
+        self.assertEqual(executor.count("Scanner::build_scanner_post_effects_descriptor("), 2)
+        self.assertNotIn("capture-scanner-post-effects", (ROOT / "tests/ffi/film_recipe_test.cpp").read_text(encoding="utf-8"))
+
     def test_native_code_does_not_reset_host_contexts(self):
         paths = native_sources(ROOT)
         paths.append(ROOT / "src/ProcessRoot.cpp")

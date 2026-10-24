@@ -373,6 +373,10 @@ FjStatus fj_test_scanner_color_prepare(const FjScannerColorInput*, FjScannerColo
 FjStatus fj_test_scanner_lut_describe(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*);
 FjStatus fj_test_scanner_lut_descriptor_fault(uint32_t fault);
 
+/* Same synchronous scalar-copy contract as production. */
+FjStatus fj_test_scanner_post_describe(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*);
+/* Thread-local one-shot: 0 clear; 1 active hash0; 2 panic. Early errors retain it. */
+FjStatus fj_test_scanner_post_fault(uint32_t);
 #ifdef __cplusplus
 }
 #endif

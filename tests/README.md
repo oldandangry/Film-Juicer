@@ -968,6 +968,26 @@ GPU output/reuse/correction and prepared-boundary cases remain downstream eviden
 
 ### Scanner output encoding
 
+`Ffi.Host.ScannerPostEffects` and `Scanner.Host.PostEffectsProducts` use the
+bounded `scanner/post-effects-fixtures` supplement: 400 independently captured
+whole native constructor cases with distinct Linux/Windows Debug/Release contexts.
+Floats remain raw f32 words; all fields, radii, schema, exact hash, masking,
+diagnostics and ordinary rejected attempts are checked through safe Rust, raw C
+and native readers. The original producer executables and source/configuration/
+tool receipts are retained in each context's provenance. Ordinary tests never
+generate these expectations. The capture-only dispatch was removed at cutover.
+
+The post-effects transport uses separate 32/56/64-byte input/result/failure
+records, with independent output clearing and optional diagnostics. The permanent
+48-byte CUDA execution record is unchanged. RadiusRange defines only consumed
+finite int32 conversion overflow; multiplication overflow retains radius-zero
+behavior. ON-only faults cover hash-zero, panic, projection rejection and recovery.
+Both actual route schedules, prepared projection and Gaussian slot reuse/rebuild/
+failed descriptor admission and retired-frame view rejection are exercised by
+the owning host and scanner GPU groups.
+Both native Release OFF probes additionally assert 410 exact post-effects results,
+alongside every existing probe including Slice 8's 41 descriptor rows.
+
 `Ffi.Host.ScannerCorrection` checks complete direct/print correction construction,
 coordinated C11/C++20/Rust ABI facts, raw/facade/native failure and clearing rules,
 all byte/flag demand combinations, independent fault consumption, integrity and

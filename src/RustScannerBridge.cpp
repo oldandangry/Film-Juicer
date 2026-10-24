@@ -23,6 +23,10 @@ namespace JuicerScanner {
         thread_local Projection projection = nullptr;
         thread_local ColorProjection colorProjection = nullptr;
         thread_local DescriptorProjection descriptorProjection = nullptr;
+        thread_local PostProjection postProjection = nullptr;
+        void set_post_projection(PostProjection value) {
+            postProjection = value;
+        }
         void set_descriptor_projection(DescriptorProjection value) {
             descriptorProjection = value;
         }
@@ -599,5 +603,149 @@ namespace Scanner {
             return false;
         }
         return describe_scanner_lut(*input.profileRoute, *input.densityBounds, *input.scannerOutput, input.observerIdentity, true, descriptor, diagnostic);
+    }
+} // namespace Scanner
+
+namespace Scanner {
+    // SF_TEMP_BRIDGE_SCANNER_POST_EFFECTS: remove S4.E after the final native caller.
+    bool build_scanner_post_effects_descriptor(
+        const ScannerOutputRecipe& recipe,
+        ScannerPostEffectsDescriptor& out,
+        std::string& diagnostic) {
+        out = ScannerPostEffectsDescriptor{};
+        out.route = recipe.route;
+        diagnostic.clear();
+        (void)Spektrafilm::scan_route_is_print(recipe.route);
+        const FjScannerPostEffectsInput input{
+            static_cast<std::uint32_t>(recipe.route), std::uint32_t(recipe.glareActive), recipe.glarePercent, recipe.glareRoughness, recipe.glareBlurSigmaPx, recipe.lensBlurSigmaPx, recipe.unsharpSigmaPx, recipe.unsharpAmount};
+        FjScannerPostEffectsDescriptor wire{};
+        FjScannerPostEffectsFailure failure{};
+        std::array<char, 512> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        FjStatus status = fj_legacy_scanner_post_describe(&input, &wire, &failure, &error);
+#if defined(JUICER_SCANNER_TEST_HOOK)
+        if (JuicerScanner::Test::postProjection)
+            JuicerScanner::Test::postProjection(status, wire, failure, error);
+#endif
+        const auto fail = [](FjStatus actual, const char* message) -> void {
+            JuicerCuda::Failure rejected;
+            JuicerCuda::set_failure(rejected, actual, message);
+            throw JuicerCuda::ExecutionFailure{std::move(rejected)};
+        };
+        const auto invalid = [&]() {
+            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "scanner post-effects projection invalid");
+        };
+        const auto zero = [](const FjScannerPostEffectsDescriptor& d) {
+            const FjScannerPostEffectsDescriptor empty{};
+            return std::memcmp(&d, &empty, sizeof(d)) == 0;
+        };
+        const auto values = [](const FjScannerPostEffectsDescriptor& d) {
+            return std::array{d.glare_percent, d.glare_roughness, d.glare_blur_sigma_px, d.lens_blur_sigma_px, d.unsharp_sigma_px, d.unsharp_amount};
+        };
+        const auto shape = [&](const FjScannerPostEffectsDescriptor& d) {
+            return d.route == input.route && d.schema == 2 && d.glare_active <= 1 &&
+                   d.glare_blur_radius >= 0 && d.glare_blur_radius <= 75 &&
+                   d.lens_blur_radius >= 0 && d.lens_blur_radius <= 75 &&
+                   d.unsharp_radius >= 0 && d.unsharp_radius <= 75;
+        };
+        const auto all_zero = [&](const FjScannerPostEffectsDescriptor& d) {
+            const auto floats = values(d);
+            return d.glare_active == 0 && d.glare_blur_radius == 0 &&
+                   d.lens_blur_radius == 0 && d.unsharp_radius == 0 &&
+                   std::all_of(floats.begin(), floats.end(), [](float v) {
+                       return std::bit_cast<std::uint32_t>(v) == 0;
+                   });
+        };
+        const auto valid_values = [&](const FjScannerPostEffectsDescriptor& d) {
+            const auto floats = values(d);
+            return std::all_of(floats.begin(), floats.end(), [](float v) {
+                return std::isfinite(v) && v >= 0.0f;
+            });
+        };
+        const auto active = [](const FjScannerPostEffectsDescriptor& d) {
+            return d.glare_active != 0 || d.lens_blur_sigma_px > 0.0f || d.unsharp_sigma_px > 0.0f;
+        };
+        const auto consistent = [&](const FjScannerPostEffectsDescriptor& d) {
+            const auto positive_zero = [](float v) {
+                return std::bit_cast<std::uint32_t>(v) == 0;
+            };
+            if (d.glare_active) {
+                if ((d.route & 1u) == 0 || !(d.glare_percent > 0.0f))
+                    return false;
+            } else if (!positive_zero(d.glare_percent) || !positive_zero(d.glare_roughness) ||
+                       !positive_zero(d.glare_blur_sigma_px) || d.glare_blur_radius != 0)
+                return false;
+            if ((d.glare_blur_sigma_px > 0.0f) != (d.glare_blur_radius > 0) ||
+                (d.lens_blur_sigma_px > 0.0f) != (d.lens_blur_radius > 0) ||
+                (d.unsharp_sigma_px > 0.0f) != (d.unsharp_radius > 0))
+                return false;
+            return d.unsharp_sigma_px > 0.0f ? d.unsharp_amount > 0.0f : positive_zero(d.unsharp_amount);
+        };
+        if (error.data != text.data() || error.capacity != text.size() ||
+            error.length >= text.size() || text[error.length] != '\0' ||
+            status.api != FJ_API_NONE || status.native_code != 0)
+            invalid();
+        const bool envelope =
+            (failure.reason == 0 && failure.lane == 0 && status.category == FJ_STATUS_SUCCESS) ||
+            (failure.reason == 1 && failure.lane == 0 && status.category == FJ_STATUS_UNSUPPORTED_INPUT) ||
+            (failure.reason == 2 && failure.lane >= 1 && failure.lane <= 6 && status.category == FJ_STATUS_PREPARATION_FAILURE) ||
+            (failure.reason == 3 && failure.lane >= 1 && failure.lane <= 3 && status.category == FJ_STATUS_PREPARATION_FAILURE) ||
+            (failure.reason == 4 && failure.lane == 0 && status.category == FJ_STATUS_PREPARATION_FAILURE) ||
+            (failure.reason == 5 && failure.lane == 0 && status.category == FJ_STATUS_INTERNAL_FAILURE);
+        if (!envelope)
+            invalid();
+        const FjScannerPostEffectsDescriptor* completed = nullptr;
+        if (failure.reason == 0) {
+            if (!zero(failure.rejected) || error.length != 0 || !shape(wire) || !valid_values(wire) || !consistent(wire) ||
+                (wire.hash == 0 ? !all_zero(wire) : !active(wire)))
+                invalid();
+            completed = &wire;
+        } else {
+            if (!zero(wire))
+                invalid();
+            if (failure.reason == 2 || failure.reason == 4) {
+                const auto& rejected = failure.rejected;
+                if (!shape(rejected) || rejected.hash != 0)
+                    invalid();
+                if (failure.reason == 2) {
+                    const auto floats = values(rejected);
+                    const std::array<float, 6>::const_iterator bad = std::find_if(floats.begin(), floats.end(), [](float v) {
+                        return !std::isfinite(v) || v < 0.0f;
+                    });
+                    if (bad == floats.end() || static_cast<std::uint32_t>(bad - floats.begin()) + 1 != failure.lane ||
+                        std::string_view(text.data(), error.length) != "MalformedRequiredProfileData phase=8C scanner post effects")
+                        invalid();
+                } else if (!valid_values(rejected) || !consistent(rejected) || !active(rejected) || error.length != 0)
+                    invalid();
+                completed = &rejected;
+            } else {
+                if (!zero(failure.rejected))
+                    invalid();
+                const std::string_view expected = failure.reason == 1 ? "invalid scanner post-effects arguments" : failure.reason == 3 ? "scanner post-effects Gaussian radius outside int32 range"
+                                                                                                                                       : "scanner post-effects preparation panicked";
+                if (std::string_view(text.data(), error.length) != expected)
+                    invalid();
+                if (failure.reason != 3)
+                    fail(status, text.data());
+            }
+        }
+        if (completed) {
+            const auto& d = *completed;
+            out.route = static_cast<Spektrafilm::ScanRoute>(d.route);
+            out.glareActive = d.glare_active != 0;
+            out.glarePercent = d.glare_percent;
+            out.glareRoughness = d.glare_roughness;
+            out.glareBlurSigmaPx = d.glare_blur_sigma_px;
+            out.glareBlurRadius = d.glare_blur_radius;
+            out.lensBlurSigmaPx = d.lens_blur_sigma_px;
+            out.lensBlurRadius = d.lens_blur_radius;
+            out.unsharpSigmaPx = d.unsharp_sigma_px;
+            out.unsharpRadius = d.unsharp_radius;
+            out.unsharpAmount = d.unsharp_amount;
+            out.schemaVersion = d.schema;
+            out.hash = d.hash;
+        }
+        diagnostic.assign(text.data(), error.length);
+        return failure.reason == 0;
     }
 } // namespace Scanner

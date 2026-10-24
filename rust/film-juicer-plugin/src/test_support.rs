@@ -2210,6 +2210,33 @@ extern "C" fn fj_test_scanner_lut_descriptor_fault(fault: u32) -> FjStatus {
     status(FJ_STATUS_SUCCESS)
 }
 
+/// # Safety
+/// Same synchronous live/readable/exclusive/disjoint contract as production.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_post_describe(
+    input: *const scanner_bridge::FjScannerPostEffectsInput,
+    out: *mut scanner_bridge::FjScannerPostEffectsDescriptor,
+    failure: *mut scanner_bridge::FjScannerPostEffectsFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Test caller supplies the identical checked transport obligations.
+    unsafe { scanner_bridge::describe_post(input, out, failure, error) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_scanner_post_fault(fault: u32) -> FjStatus {
+    if fault > 2 {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    film_juicer_core::scanner::test_support::arm_post_fault(fault);
+    status(FJ_STATUS_SUCCESS)
+}
+const _: unsafe extern "C" fn(
+    *const scanner_bridge::FjScannerPostEffectsInput,
+    *mut scanner_bridge::FjScannerPostEffectsDescriptor,
+    *mut scanner_bridge::FjScannerPostEffectsFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_scanner_post_describe;
+
 const _: unsafe extern "C" fn(
     *const scanner_bridge::FjScannerLutDescriptorInput,
     *mut scanner_bridge::FjScannerLutDescriptor,

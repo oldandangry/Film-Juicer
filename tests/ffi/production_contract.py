@@ -113,6 +113,7 @@ def execute(arguments):
         b"scanner correction fixture panic",
         b"scanner LUT fixture panic",
         b"scanner LUT descriptor fixture panic",
+        b"scanner post-effects fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -174,6 +175,8 @@ def execute(arguments):
     balance_manifest, balance_payload, _, _, _ = balance_fixture(arguments.preset)
     consumed_paths.extend([balance_manifest, balance_payload])
     descriptor_manifest, descriptor_payload, descriptor_context, _, _ = scanner_descriptor_fixture(arguments.preset)
+    post_manifest, post_payload, post_context, _, _ = scanner_post_fixture(arguments.preset)
+    consumed_paths.extend([post_manifest, post_payload, post_context])
     consumed_paths.extend([descriptor_manifest, descriptor_payload, descriptor_context])
     lut_manifest, lut_payload, lut_context, lut_checked, _ = scanner_lut_fixture(arguments.preset)
     consumed_paths.extend([lut_manifest, lut_payload, lut_context, lut_checked, fixtures / "shared_fixture.py",
@@ -230,6 +233,7 @@ def execute(arguments):
         "fj_legacy_scanner_correction_input_demand",
         "fj_legacy_scanner_color_prepare",
         "fj_legacy_scanner_lut_describe",
+        "fj_legacy_scanner_post_describe",
         "fj_legacy_scanner_lut_acquire",
         "fj_legacy_scanner_lut_view",
         "fj_legacy_scanner_lut_release",
@@ -271,6 +275,7 @@ def execute(arguments):
     scanner_lut_results = []
     scanner_color_results = []
     scanner_descriptor_results = []
+    scanner_post_results = []
     reference_results = []
     for name, source in probes:
         executable = out / (name + suffix)
@@ -500,6 +505,14 @@ def execute(arguments):
                 actual = [int(x) for x in match.groups()[1:]]
                 assert actual == [*expected["envelope"], expected["hash"]], line
                 scanner_descriptor_results.append(expected)
+            _, _, _, _, post_cases = scanner_post_fixture(arguments.preset)
+            lines = [line for line in output.splitlines() if line.startswith("SCANNER_POST_CASE ")]
+            assert len(lines) == len(post_cases)
+            for line, expected in zip(lines, post_cases, strict=True):
+                match = re.fullmatch(r"SCANNER_POST_CASE (\S+) category=(\d+) api=(\d+) native_code=(-?\d+) reason=(\d+) lane=(\d+) fields=13-pass hash=(\d+)", line)
+                assert match and match[1] == expected["case"], line
+                assert [int(x) for x in match.groups()[1:]] == [*expected["envelope"], expected["hash"]], line
+                scanner_post_results.append(expected)
     check_build_inputs()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
@@ -549,6 +562,8 @@ def execute(arguments):
                 "scanner_lut_results": scanner_lut_results,
                 "scanner_color_results": scanner_color_results,
                 "scanner_descriptor_results": scanner_descriptor_results,
+                "scanner_post_results": scanner_post_results,
+                "scanner_post_fixture": {"manifest": str(post_manifest), "payload": str(post_payload), "context": str(post_context), "logical_preset": arguments.preset},
                 "scanner_descriptor_fixture": {"manifest": str(descriptor_manifest), "payload": str(descriptor_payload), "context": str(descriptor_context), "logical_preset": arguments.preset},
                 "reference_results": reference_results,
                 "reference_fixture": {"manifest": str(reference_manifest), "payload": str(reference_payload), "logical_preset": arguments.preset},
@@ -1035,6 +1050,42 @@ def expected_scanner_color_header(out):
         stream.write("static const uint64_t scanner_color_hashes[] = {" + ",".join("UINT64_C(%d)" % row["expected"]["hash"] for row in rows) + "};\n")
 
 
+def scanner_post_fixture(preset):
+    directory = root / "tests/scanner/post-effects-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_bytes())
+    logical = spec["presets"][preset]["native"]
+    payload = directory / spec["payloads"][logical]
+    context = directory / spec["contexts"][logical]
+    assert all(digest(path) == spec["sha256"][path.name] for path in (payload, context))
+    captured = load_shared_fixture(directory / logical)
+    assert captured["preset"] == preset and len(captured["cases"]) == 400
+    cases = spec["production_cases"]
+    assert len(cases) == 410 and len({row["case"] for row in cases}) == 410
+    return manifest, payload, context, captured, cases
+
+
+def expected_scanner_post_header(out):
+    _, _, _, captured, cases = scanner_post_fixture(arguments.preset)
+    rows = captured["cases"]
+    with (out / "production-film-expected.h").open("a") as stream:
+        def array(name, values):
+            stream.write(f"static const uint32_t {name}[][{len(values[0])}] = {{\n")
+            for words in values:
+                stream.write("{" + ",".join(str(word) + "U" for word in words) + "},\n")
+            stream.write("};\n")
+        array("post_input_words", [[row["input"]["route"], int(row["input"]["glare_active"]), *row["input"]["values"]] for row in rows])
+        projected = []
+        for row in rows:
+            d = row["native"]["descriptor"]
+            projected.append([d["route"], int(d["glare_active"]), *d["values"], *d["radii"], d["schema"]] if not row["native"]["exception"] else [0] * 12)
+        array("post_expected_words", projected)
+        array("post_envelopes", [row["envelope"] for row in cases[:400]])
+        stream.write("static const uint64_t post_hashes[] = {" + ",".join(f"UINT64_C({row['hash']})" for row in cases[:400]) + "};\n")
+        for name, values in (("post_names", [row["id"] for row in rows]), ("post_diagnostics", ["invalid scanner post-effects arguments" if row["native"]["exception"] else row["native"]["diagnostic"] for row in rows])):
+            stream.write(f"static const char* const {name}[] = {{" + ",".join(json.dumps(v) for v in values) + "};\n")
+
+
 def scanner_descriptor_fixture(preset):
     directory = root / "tests/scanner/descriptor-fixtures"
     manifest = directory / "manifest.json"
@@ -1152,4 +1203,5 @@ if __name__ == "__main__":
     expected_scanner_lut_header(arguments.artifacts)
     expected_scanner_color_header(arguments.artifacts)
     expected_scanner_descriptor_header(arguments.artifacts)
+    expected_scanner_post_header(arguments.artifacts)
     execute(arguments)
