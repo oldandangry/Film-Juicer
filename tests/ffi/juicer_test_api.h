@@ -398,6 +398,14 @@ FjStatus fj_test_scatter_halation_frame_fault(uint32_t fault);
 FjStatus fj_test_scatter_halation_frame_c_prepare(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*);
 int fj_test_scatter_halation_frame_c_check(const FjHalationFrameInput*, const FjScatterHalation*, const FjHalationFrameFailure*, uint32_t category, const char* diagnostic);
 
+FjStatus fj_test_diffusion_sample_prepare(const FjDiffusionSampleInput*, FjDiffusionSample*, FjDiffusionFailure*, FjErrorBuffer*);
+FjStatus fj_test_diffusion_sample_c_prepare(const FjDiffusionSampleInput*, FjDiffusionSample*, FjDiffusionFailure*, FjErrorBuffer*);
+FjStatus fj_test_diffusion_components_prepare(const FjDiffusionSample*, FjDiffusionComponents*, FjDiffusionFailure*, FjErrorBuffer*);
+FjStatus fj_test_diffusion_components_c_prepare(const FjDiffusionSample*, FjDiffusionComponents*, FjDiffusionFailure*, FjErrorBuffer*);
+FjStatus fj_test_diffusion_frame_prepare(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*);
+FjStatus fj_test_diffusion_frame_c_prepare(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*);
+FjStatus fj_test_diffusion_frame_fault(uint32_t operation, uint32_t fault);
+
 #ifdef __cplusplus
 }
 #endif

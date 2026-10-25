@@ -119,11 +119,14 @@ Rust is pinned by `rust-toolchain.toml` to 1.98.1 with its rustfmt and Clippy
 components. Native formatting and tidy use LLVM 22; on Windows the qualified
 tools are under
 `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin`.
-The commands below expose individual checks. Use the `scripts/verify.py` workflow
-below within its supported development or checkpoint scope. Other focused work
-uses explicit owning CMake targets, named CTest groups, native quality selections
-and Cargo package/profile/feature commands. This complete-preset example is for a
-designated broad checkpoint; setup explicitly enables tests before CTest:
+The commands below expose individual checks. A handoff names the supported target,
+test and quality commands and their expected membership. Use `scripts/verify.py`
+within its supported development or checkpoint scope. Other focused work uses
+explicit owning CMake targets, named CTest groups, native quality selections and
+Cargo package/profile/feature commands. An unsupported selector does not trigger an
+automatic `--targets all`; explicitly selecting `all` requires a stated affected
+dependency or checkpoint reason. This complete-preset example is for a designated
+broad checkpoint; setup explicitly enables tests before CTest:
 
 ```sh
 cmake --preset linux-debug -DBUILD_TESTING=ON
@@ -253,14 +256,19 @@ python -B scripts/verify.py prepare --preset linux-release --targets JuicerFilmR
 
 Run through the qualified native environment at the configured source path.
 Maintained targets are `juicer`, `JuicerFilmRecipeTests`, `JuicerRouteBridgeTests`,
-`JuicerOutputColorTests`, and an explicit `all` alone. Testing defaults to ON;
+`JuicerOutputColorTests`, and explicitly requested `all` by itself. Use `all` alone
+only for a stated affected dependency or checkpoint reason; unsupported selectors
+never widen to it automatically. Testing defaults to ON;
 OFF requires a Release preset and `juicer` or `all`. Each invocation reconfigures
 the requested testing state and builds only those targets and their dependencies
 under the existing build-tree lease, supervisor, deadlines and freshness owner.
 It dispatches no quality or runtime-test selection. It preserves development
 pending state and never supplies product, boundary or production qualification.
-Other pending target scopes must first be resolved by their preparation owner;
-normal same-scope interruption recovery still requires sealed drainage proof.
+Direct builds and preparation cover only their named targets and dependencies;
+they cannot bypass owners, pending markers, normal lease health or drainage, and
+cannot substitute for an admitted evidence receipt. Other pending target scopes
+must first be resolved by their preparation owner; normal same-scope interruption
+recovery still requires sealed drainage proof.
 
 The one-time `retire-s4c1-pending --preset linux-debug|linux-release` command
 implements the owner's 21 October 2026 amendment for exactly two retained legacy
@@ -326,9 +334,19 @@ Checkpoint output prints exact membership and preserves outstanding failures.
 Each relevance group runs its exact host and GPU memberships in separate
 supervised CTest invocations under one build-tree lease and one common deadline.
 Host work runs outside the shared device lease; GPU work holds it, including
-cross-native exclusion. Every partition must complete and admit its exact JUnit
-membership before the group can pass or be reused. Unchanged group reuse checks
-all original command records and reports without requesting the device lease.
+cross-native exclusion. Each partition command must complete under supervision,
+drain its owned work and admit its complete exact JUnit membership. Passing or
+reuse requires the applicable results to succeed. Before another owner is
+dispatched or a stable receipt is read, the enclosing owner must reach terminal
+completion, drain all operation work and release the shared normal lease in a
+healthy state once the outer operation ends. Apply existing pending/failure
+admission rules; preserve failed status, while a drained failure may permit a
+lawful repair or fresh preparation.
+Retries and admission within the existing lease remain with that owner.
+Partial console output and inner build success do not establish completion. Do not
+signal a healthy supervisor except through its documented cancel path. Unchanged
+group reuse checks all original command records and reports without requesting the
+device lease.
 `collect-qualification --receipts <paths...> --output <path>` requires product and
 boundary evidence for both native Debug/Release profiles, tooling once per native
 platform, corpus once, and both production Release gates. Host-only product checks
@@ -356,12 +374,25 @@ records the selected executable, policy and any termination.
 Follow the [validation cadence](tests/README.md#validation-cadence) for the current
 change: owning checks while editing, prescribed affected family checks at cutover,
 and the complete matrix only at its designated integration/release checkpoint.
-Complete approved numerical-policy adoption and exercise every affected expectation
-reader, caller and GPU identity group before freezing for that checkpoint. Its
-JUnit reports supply final domain evidence; do not repeat passing groups solely
-for another receipt. Reference captures and new ABI/owner OFF gates retain their
-transition requirements. Collection remains subject to the current CLI's artifact
-and pending-owner checks; a focused result is not an aggregate pass.
+Exercise touched C11/native fixture/helper compilation and scoped quality on both
+native platforms early, before broad qualification. Complete approved
+numerical-policy adoption and exercise every affected expectation reader, caller
+and GPU identity group before freezing for that checkpoint. Use one candidate
+identity and one final packet linking original receipts; preserve owner-required
+before/after source and tool hashes and finished receipts, retaining intermediate
+records only for a concrete consumer. Each partition must have completed its
+supervised command, drainage and exact JUnit admission. The enclosing outer owner
+must reach terminal completion, drain its work and release the shared normal lease
+in a healthy state before another owner is dispatched or a stable receipt is read.
+Passing or reuse requires the applicable results to succeed. Preserve failure
+status and apply existing pending/failure admission rules: a drained failure may
+permit a lawful repair or fresh preparation. Retries/admission within the existing
+lease remain with that owner. Do not
+repeat passing groups solely for another receipt or create a per-intermediate proof
+chain.
+Reference captures and new ABI/owner OFF gates retain their transition
+requirements. Collection remains subject to the current CLI's artifact and
+pending-owner checks; a focused result is not an aggregate pass.
 
 `--jobs` limits concurrent native and CUDA analysis commands; the default is 2
 and `--jobs 1` provides serial execution. Formatting, toolchain/CUDA preparation

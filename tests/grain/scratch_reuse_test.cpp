@@ -24,6 +24,7 @@
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/juicer_test_api.h"
+#include "../ffi/spatial_optics_fixture.h"
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
@@ -138,7 +139,7 @@ namespace {
                         error);
             }
             if (variant.cameraDiffusion) {
-                require(Spektrafilm::build_diffusion_frame_set_descriptor(
+                require(JuicerTestSupport::prepare_diffusion_frame(
                             product.recipe.spatialOptics, route, variant.pixelSize, {0, 0, w, h}, diffusion, error),
                         error);
             }

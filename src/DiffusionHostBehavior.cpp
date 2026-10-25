@@ -1,64 +1,18 @@
 #include "DiffusionHostBehavior.h"
 
-#include <algorithm>
-#include <array>
 #include <bit>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <string_view>
+#include <utility>
+
+#include "Cuda/JuicerCudaFailure.h"
+#include "RustDiffusionBridge.h"
 
 namespace {
 
     constexpr std::uint64_t kFnvOffset = 0xcbf29ce484222325ULL;
     constexpr std::uint64_t kFnvPrime = 0x100000001b3ULL;
-    constexpr double kMinimumScale = 1.0e-6;
-    constexpr std::array<double, 3> kHaloWarmthAxis{{1.30, 0.15, -1.45}};
-
-    struct GroupConfig {
-        double spread = 1.0;
-        std::size_t componentCount = 1;
-        double alpha = 3.0;
-    };
-
-    struct FamilyConfig {
-        GroupConfig core;
-        GroupConfig halo;
-        GroupConfig bloom;
-    };
-
-    constexpr std::array<FamilyConfig, 4> kFamilyConfigs{{{GroupConfig{1.5, 2, 3.0}, GroupConfig{2.0, 3, 3.0}, GroupConfig{2.5, 4, 3.2}},
-                                                          {GroupConfig{1.5, 2, 3.0}, GroupConfig{2.0, 3, 3.0}, GroupConfig{2.5, 4, 3.5}},
-                                                          {GroupConfig{1.5, 2, 3.0}, GroupConfig{2.0, 3, 3.0}, GroupConfig{2.5, 4, 2.9}},
-                                                          {GroupConfig{1.5, 2, 3.0}, GroupConfig{2.0, 3, 3.0}, GroupConfig{2.5, 4, 2.5}}}};
-
-    struct ExpandedGroup {
-        std::array<double, 4> lambdasUm{};
-        std::array<double, 4> weights{};
-        std::size_t count = 0;
-    };
-
-    void fail(std::string& diagnostic, std::string_view field) {
-        diagnostic = "InvalidDiffusionHostBehavior field=";
-        diagnostic.append(field);
-    }
-
-    const FamilyConfig* family_config(Spektrafilm::DiffusionFilterFamily family) {
-        using Spektrafilm::DiffusionFilterFamily;
-        switch (family) {
-            case DiffusionFilterFamily::Glimmerglass:
-                return &kFamilyConfigs[0];
-            case DiffusionFilterFamily::BlackProMist:
-                return &kFamilyConfigs[1];
-            case DiffusionFilterFamily::ProMist:
-                return &kFamilyConfigs[2];
-            case DiffusionFilterFamily::Cinebloom:
-                return &kFamilyConfigs[3];
-            default:
-                return nullptr;
-        }
-    }
 
     void hash_byte(std::uint64_t& hash, std::uint8_t value) {
         hash ^= static_cast<std::uint64_t>(value);
@@ -103,204 +57,6 @@ namespace {
         hash_u64_le(hash, std::bit_cast<std::uint64_t>(value));
     }
 
-    template <std::size_t N>
-    void hash_double_array(std::uint64_t& hash, const std::array<double, N>& values) {
-        for (const double value : values) {
-            hash_double(hash, value);
-        }
-    }
-
-    std::uint64_t sample_descriptor_hash(
-        const Spektrafilm::DiffusionPsfSampleDescriptor& descriptor) {
-        std::uint64_t hash = kFnvOffset;
-        hash_tag(hash, "diffusion-psf-sample");
-        hash_schema(hash);
-        hash_family(hash, descriptor.family);
-        hash_double_array(hash, descriptor.groupWeightsCoreHaloBloom);
-        hash_double_array(hash, descriptor.groupCenterLambdaUm);
-        hash_double(hash, descriptor.effectiveWarmth);
-        hash_double(hash, descriptor.spatialScale);
-        hash_double(hash, descriptor.pixelSizeUm);
-        hash_u32_le(hash, static_cast<std::uint32_t>(descriptor.radiusPixels));
-        return hash;
-    }
-
-    bool validate_sample_descriptor(
-        const Spektrafilm::DiffusionPsfSampleDescriptor& descriptor,
-        std::string& diagnostic) {
-        if (descriptor.hash == 0) {
-            fail(diagnostic, "sample_descriptor_inactive");
-            return false;
-        }
-        if (!family_config(descriptor.family)) {
-            fail(diagnostic, "family");
-            return false;
-        }
-        double weightTotal = 0.0;
-        for (const double weight : descriptor.groupWeightsCoreHaloBloom) {
-            if (!std::isfinite(weight) || weight < 0.0) {
-                fail(diagnostic, "group_weights");
-                return false;
-            }
-            weightTotal += weight;
-        }
-        if (!(std::isfinite(weightTotal) && weightTotal > 0.0)) {
-            fail(diagnostic, "group_weights");
-            return false;
-        }
-        for (const double center : descriptor.groupCenterLambdaUm) {
-            if (!(std::isfinite(center) && center > 0.0)) {
-                fail(diagnostic, "group_centers_um");
-                return false;
-            }
-        }
-        if (!std::isfinite(descriptor.effectiveWarmth) || descriptor.effectiveWarmth < -1.5 ||
-            descriptor.effectiveWarmth > 1.5) {
-            fail(diagnostic, "effective_warmth");
-            return false;
-        }
-        if (!(std::isfinite(descriptor.spatialScale) && descriptor.spatialScale > 0.0)) {
-            fail(diagnostic, "spatial_scale");
-            return false;
-        }
-        if (!(std::isfinite(descriptor.pixelSizeUm) && descriptor.pixelSizeUm > 0.0)) {
-            fail(diagnostic, "pixel_size_um");
-            return false;
-        }
-        if (descriptor.radiusPixels <= 0) {
-            fail(diagnostic, "radius_pixels");
-            return false;
-        }
-        if (sample_descriptor_hash(descriptor) != descriptor.hash) {
-            fail(diagnostic, "sample_descriptor_hash");
-            return false;
-        }
-        return true;
-    }
-
-    bool expand_group(
-        const GroupConfig& config,
-        double resolvedCenterLambdaUm,
-        bool bloom,
-        ExpandedGroup& out) {
-        out = ExpandedGroup{};
-        if (!(std::isfinite(resolvedCenterLambdaUm) && resolvedCenterLambdaUm > 0.0) ||
-            config.componentCount == 0 || config.componentCount > out.lambdasUm.size()) {
-            return false;
-        }
-        out.count = config.componentCount;
-        if (config.componentCount == 1 || config.spread <= 1.0) {
-            out.lambdasUm[0] = resolvedCenterLambdaUm;
-            out.weights[0] = 1.0;
-            return true;
-        }
-
-        const double logLow = std::log(resolvedCenterLambdaUm / config.spread);
-        const double logHigh = std::log(resolvedCenterLambdaUm * config.spread);
-        if (!(std::isfinite(logLow) && std::isfinite(logHigh))) {
-            return false;
-        }
-        for (std::size_t index = 0; index < config.componentCount; ++index) {
-            double logLambda = logLow;
-            if (index + 1 == config.componentCount) {
-                logLambda = logHigh;
-            } else if (index != 0) {
-                const double t = static_cast<double>(index) /
-                                 static_cast<double>(config.componentCount - 1);
-                logLambda = logLow + (logHigh - logLow) * t;
-            }
-            out.lambdasUm[index] = std::exp(logLambda);
-            out.weights[index] = bloom
-                                     ? std::pow(out.lambdasUm[index], 2.0 - config.alpha)
-                                     : 1.0;
-            if (!(std::isfinite(out.lambdasUm[index]) && out.lambdasUm[index] > 0.0) ||
-                !(std::isfinite(out.weights[index]) && out.weights[index] >= 0.0)) {
-                return false;
-            }
-        }
-        double total = 0.0;
-        for (std::size_t index = 0; index < config.componentCount; ++index) {
-            total += out.weights[index];
-        }
-        if (!(std::isfinite(total) && total > 0.0)) {
-            return false;
-        }
-        for (std::size_t index = 0; index < config.componentCount; ++index) {
-            out.weights[index] /= total;
-        }
-        return true;
-    }
-
-    bool halo_channel_weights(
-        const ExpandedGroup& halo,
-        double warmth,
-        std::array<std::array<double, 4>, 3>& out) {
-        out = {};
-        if (halo.count == 0 || halo.count > halo.weights.size()) {
-            return false;
-        }
-        if (halo.count < 2) {
-            for (auto& channel : out) {
-                channel = halo.weights;
-            }
-            return true;
-        }
-
-        std::array<double, 4> gradient{};
-        double targetTotal = 0.0;
-        double weightedGradient = 0.0;
-        for (std::size_t index = 0; index < halo.count; ++index) {
-            gradient[index] = -1.0 +
-                              2.0 * static_cast<double>(index) /
-                                  static_cast<double>(halo.count - 1);
-            targetTotal += halo.weights[index];
-            weightedGradient += halo.weights[index] * gradient[index];
-        }
-        if (!(std::isfinite(targetTotal) && targetTotal > 0.0)) {
-            return false;
-        }
-        weightedGradient /= targetTotal;
-        for (std::size_t index = 0; index < halo.count; ++index) {
-            gradient[index] -= weightedGradient;
-        }
-
-        for (std::size_t channel = 0; channel < out.size(); ++channel) {
-            double channelTotal = 0.0;
-            for (std::size_t index = 0; index < halo.count; ++index) {
-                out[channel][index] = std::max(
-                    halo.weights[index] *
-                        (1.0 + warmth * kHaloWarmthAxis[channel] * gradient[index]),
-                    0.0);
-                channelTotal += out[channel][index];
-            }
-            if (channelTotal > 0.0) {
-                const double scale = targetTotal / channelTotal;
-                for (std::size_t index = 0; index < halo.count; ++index) {
-                    out[channel][index] *= scale;
-                }
-            } else {
-                out[channel] = halo.weights;
-            }
-        }
-        return true;
-    }
-
-    bool finite_component_output(const Spektrafilm::DiffusionPsfComponents& components) {
-        for (std::size_t index = 0; index < components.kCount; ++index) {
-            if (!(std::isfinite(components.lambdaPixels[index]) &&
-                  components.lambdaPixels[index] > 0.0) ||
-                !(std::isfinite(components.redWeights[index]) &&
-                  components.redWeights[index] >= 0.0) ||
-                !(std::isfinite(components.greenWeights[index]) &&
-                  components.greenWeights[index] >= 0.0) ||
-                !(std::isfinite(components.blueWeights[index]) &&
-                  components.blueWeights[index] >= 0.0)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
 } // namespace
 
 namespace Spektrafilm {
@@ -324,6 +80,7 @@ namespace Spektrafilm {
         return hash;
     }
 
+    // Retain the public sample builder's scalar argument order.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     bool build_diffusion_psf_sample_descriptor(
         const DiffusionFilterResolvedParameters& resolved,
@@ -332,51 +89,11 @@ namespace Spektrafilm {
         int fullFrameHeight,
         DiffusionPsfSampleDescriptor& out,
         std::string& diagnostic) {
-        out = DiffusionPsfSampleDescriptor{};
-        diagnostic.clear();
-        if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0)) {
-            fail(diagnostic, "pixel_size_um");
-            return false;
-        }
-        if (fullFrameWidth <= 0 || fullFrameHeight <= 0) {
-            fail(diagnostic, "full_frame_extent");
-            return false;
-        }
-
-        const FamilyConfig* config = family_config(resolved.family);
-        const double bloomMaximumLambdaUm =
-            resolved.groupCenterLambdaUm[2] * config->bloom.spread;
-        const double requestedRadius = std::ceil(std::max(
-            8.0 * bloomMaximumLambdaUm * resolved.spatialScale / pixelSizeUm,
-            5.0));
-        if (!(std::isfinite(requestedRadius) && requestedRadius > 0.0)) {
-            fail(diagnostic, "radius_pixels");
-            return false;
-        }
-        const int radiusCap =
-            std::max(std::min(fullFrameWidth, fullFrameHeight) / 2 - 1, 1);
-        const int radius = requestedRadius >= static_cast<double>(radiusCap)
-                               ? radiusCap
-                               : static_cast<int>(requestedRadius);
-        if (radius <= 0) {
-            fail(diagnostic, "radius_pixels");
-            return false;
-        }
-
-        out.family = resolved.family;
-        out.groupWeightsCoreHaloBloom = resolved.groupWeightsCoreHaloBloom;
-        out.groupCenterLambdaUm = resolved.groupCenterLambdaUm;
-        out.effectiveWarmth = resolved.effectiveWarmth;
-        out.spatialScale = resolved.spatialScale;
-        out.pixelSizeUm = pixelSizeUm;
-        out.radiusPixels = radius;
-        out.hash = sample_descriptor_hash(out);
-        if (out.hash == 0) {
-            fail(diagnostic, "sample_descriptor_hash");
-            out = DiffusionPsfSampleDescriptor{};
-            return false;
-        }
-        return true;
+        JuicerCuda::Failure failure;
+        const bool success = JuicerDiffusion::prepare_sample(
+            resolved, pixelSizeUm, fullFrameWidth, fullFrameHeight, out, failure);
+        diagnostic = std::move(failure.diagnostic);
+        return success;
     }
     // NOLINTEND(bugprone-easily-swappable-parameters)
 
@@ -384,71 +101,10 @@ namespace Spektrafilm {
         const DiffusionPsfSampleDescriptor& descriptor,
         DiffusionPsfComponents& out,
         std::string& diagnostic) {
-        out = DiffusionPsfComponents{};
-        diagnostic.clear();
-        if (!validate_sample_descriptor(descriptor, diagnostic)) {
-            return false;
-        }
-        const FamilyConfig* config = family_config(descriptor.family);
-        ExpandedGroup core{};
-        ExpandedGroup halo{};
-        ExpandedGroup bloom{};
-        if (!expand_group(config->core, descriptor.groupCenterLambdaUm[0], false, core) ||
-            !expand_group(config->halo, descriptor.groupCenterLambdaUm[1], false, halo) ||
-            !expand_group(config->bloom, descriptor.groupCenterLambdaUm[2], true, bloom)) {
-            fail(diagnostic, "component_expansion");
-            return false;
-        }
-        if (core.count != 2 || halo.count != 3 || bloom.count != 4) {
-            fail(diagnostic, "component_count");
-            return false;
-        }
-
-        std::array<std::array<double, 4>, 3> haloWeightsRgb{};
-        if (!halo_channel_weights(halo, descriptor.effectiveWarmth, haloWeightsRgb)) {
-            fail(diagnostic, "halo_channel_weights");
-            return false;
-        }
-
-        const double componentSpatialScale =
-            std::max(descriptor.spatialScale, kMinimumScale);
-        const auto lambda_pixels = [&](double lambdaUm) {
-            return std::max(
-                lambdaUm * componentSpatialScale / descriptor.pixelSizeUm,
-                kMinimumScale);
-        };
-        for (std::size_t index = 0; index < core.count; ++index) {
-            out.lambdaPixels[index] = lambda_pixels(core.lambdasUm[index]);
-            const double weight = descriptor.groupWeightsCoreHaloBloom[0] * core.weights[index];
-            out.redWeights[index] = weight;
-            out.greenWeights[index] = weight;
-            out.blueWeights[index] = weight;
-        }
-        for (std::size_t index = 0; index < halo.count; ++index) {
-            const std::size_t outputIndex = index + core.count;
-            out.lambdaPixels[outputIndex] = lambda_pixels(halo.lambdasUm[index]);
-            out.redWeights[outputIndex] =
-                descriptor.groupWeightsCoreHaloBloom[1] * haloWeightsRgb[0][index];
-            out.greenWeights[outputIndex] =
-                descriptor.groupWeightsCoreHaloBloom[1] * haloWeightsRgb[1][index];
-            out.blueWeights[outputIndex] =
-                descriptor.groupWeightsCoreHaloBloom[1] * haloWeightsRgb[2][index];
-        }
-        for (std::size_t index = 0; index < bloom.count; ++index) {
-            const std::size_t outputIndex = index + core.count + halo.count;
-            out.lambdaPixels[outputIndex] = lambda_pixels(bloom.lambdasUm[index]);
-            const double weight = descriptor.groupWeightsCoreHaloBloom[2] * bloom.weights[index];
-            out.redWeights[outputIndex] = weight;
-            out.greenWeights[outputIndex] = weight;
-            out.blueWeights[outputIndex] = weight;
-        }
-
-        if (!finite_component_output(out)) {
-            fail(diagnostic, "component_output");
-            out = DiffusionPsfComponents{};
-            return false;
-        }
-        return true;
+        JuicerCuda::Failure failure;
+        const bool success = JuicerDiffusion::prepare_components(descriptor, out, failure);
+        diagnostic = std::move(failure.diagnostic);
+        return success;
     }
 
 } // namespace Spektrafilm

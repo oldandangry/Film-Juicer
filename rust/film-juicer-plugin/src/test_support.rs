@@ -2338,3 +2338,47 @@ unsafe extern "C" fn fj_test_scatter_halation_frame_prepare(
 extern "C" fn fj_test_scatter_halation_frame_fault(fault: u32) -> FjStatus {
     crate::optics_bridge::halation_frame_faults::arm(fault)
 }
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Live initialized aligned records; writable peers and diagnostics exclusive and disjoint.
+unsafe extern "C" fn fj_test_diffusion_sample_prepare(
+    input: *const crate::diffusion_bridge::FjDiffusionSampleInput,
+    out: *mut crate::diffusion_bridge::FjDiffusionSample,
+    failure: *mut crate::diffusion_bridge::FjDiffusionFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade shares the checked production body without a legacy-export dependency.
+    unsafe { crate::diffusion_bridge::sample_prepare(input, out, failure, error) }
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Live initialized aligned records; writable peers and diagnostics exclusive and disjoint.
+unsafe extern "C" fn fj_test_diffusion_components_prepare(
+    input: *const crate::diffusion_bridge::FjDiffusionSample,
+    out: *mut crate::diffusion_bridge::FjDiffusionComponents,
+    failure: *mut crate::diffusion_bridge::FjDiffusionFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade shares the checked production body without a legacy-export dependency.
+    unsafe { crate::diffusion_bridge::components_prepare(input, out, failure, error) }
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Live initialized aligned records; writable peers and diagnostics exclusive and disjoint.
+unsafe extern "C" fn fj_test_diffusion_frame_prepare(
+    input: *const crate::diffusion_bridge::FjDiffusionFrameInput,
+    out: *mut crate::diffusion_bridge::FjDiffusionFrameSet,
+    failure: *mut crate::diffusion_bridge::FjDiffusionFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade shares the checked production body without a legacy-export dependency.
+    unsafe { crate::diffusion_bridge::frame_prepare(input, out, failure, error) }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_diffusion_frame_fault(operation: u32, fault: u32) -> FjStatus {
+    crate::diffusion_bridge::diffusion_frame_faults::arm(operation, fault)
+}

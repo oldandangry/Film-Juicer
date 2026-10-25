@@ -19,9 +19,19 @@ namespace JuicerFrame::FrameGeometryTest {
         bool success = false;
         std::optional<ScatterHalationFrameDescriptor> descriptor;
     };
+    struct DiffusionObservation {
+        unsigned count = 0;
+        double pixelSizeUm = 0;
+        Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
+        Spektrafilm::DiffusionFrameDomain fullDomain{};
+        bool success = false;
+        std::optional<Spektrafilm::DiffusionFrameSetDescriptor> descriptor;
+    };
     void reset();
     Observation snapshot();
     HalationObservation halation_snapshot();
+    DiffusionObservation diffusion_snapshot();
+    void diffusion_frame(double pixelSizeUm, Spektrafilm::ScanRoute, Spektrafilm::DiffusionFrameDomain, bool success, const std::optional<Spektrafilm::DiffusionFrameSetDescriptor>&);
     void halation_frame(float pixelSizeUm, bool success, const std::optional<ScatterHalationFrameDescriptor>&);
     void full_domain(const Spektrafilm::DiffusionFrameDomain&);
     void scalar_pixel(float);

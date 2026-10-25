@@ -43,6 +43,7 @@ set(JUICER_HOST_SOURCES
     src/Illuminants.cpp
     src/ScatterHalation.cpp
     src/RustHalationBridge.cpp
+    src/RustDiffusionBridge.cpp
     src/ScanRoute.cpp
     src/Scanner.cpp
     src/SpectralProcessing.cpp

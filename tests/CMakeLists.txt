@@ -209,7 +209,7 @@ target_compile_definitions(juicer_film_recipe_test_objects PRIVATE JUICER_FILM_R
 add_library(juicer_gaussian_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
 target_link_libraries(juicer_gaussian_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_gaussian_test_objects PRIVATE JUICER_GAUSSIAN_TEST_HOOK=1)
-add_executable(JuicerFilmRecipeTests ffi/film_recipe_abi_c.c ffi/film_recipe_test.cpp ffi/spectral_allocation_probe.cpp
+add_executable(JuicerFilmRecipeTests ffi/film_recipe_abi_c.c ffi/film_recipe_test.cpp ffi/spectral_allocation_probe.cpp ffi/spatial_optics_fixture.cpp
     $<TARGET_OBJECTS:juicer_scanner_test_objects>
     $<TARGET_OBJECTS:juicer_film_recipe_test_objects>
     $<TARGET_OBJECTS:juicer_film_recipe_state_test_objects>)
@@ -222,6 +222,11 @@ if(UNIX)
     set_property(TARGET JuicerFilmRecipeTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 add_dependencies(JuicerFilmRecipeTests juicer_test_resources)
+add_test(NAME Ffi.Host.DiffusionFrame COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/diffusion/frame-fixtures/manifest.json" diffusion-frame "${JUICER_TEST_PRESET_NAME}")
+add_test(NAME Optics.Host.DiffusionFrameProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/diffusion/frame-fixtures/manifest.json" diffusion-frame-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.DiffusionFrame Optics.Host.DiffusionFrameProducts PROPERTIES LABELS "host" TIMEOUT 180)
 add_test(NAME Ffi.Host.HalationFrame COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation/frame-fixtures/manifest.json" halation-frame "${JUICER_TEST_PRESET_NAME}")
 add_test(NAME Optics.Host.HalationFrameProducts COMMAND JuicerFilmRecipeTests
@@ -902,7 +907,8 @@ endif()
 target_sources(JuicerAdapterTraceProbe PRIVATE ffi/spatial_optics_fixture.cpp)
 add_test(NAME Ofx.Gpu.FrameGeometry COMMAND JuicerAdapterTraceProbe --frame-geometry
     "${CMAKE_CURRENT_SOURCE_DIR}/frame/geometry-fixtures/manifest.json" "${JUICER_TEST_PRESET_NAME}"
-    "${JUICER_TEST_ARTIFACT_ROOT}/ofx/frame-geometry.log" "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation/frame-fixtures/manifest.json")
+    "${JUICER_TEST_ARTIFACT_ROOT}/ofx/frame-geometry.log" "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation/frame-fixtures/manifest.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/diffusion/frame-fixtures/manifest.json")
 set_tests_properties(Ofx.Gpu.FrameGeometry PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu
     ENVIRONMENT "JUICER_DIAGNOSTICS=3;JUICER_DIAGNOSTICS_PATH=${JUICER_TEST_ARTIFACT_ROOT}/ofx/frame-geometry-diagnostic.log")
 add_test(NAME Ofx.Gpu.AdapterTrace
@@ -980,7 +986,7 @@ set_property(TEST ScatterHalation.Gpu.CapturedCarrier
 juicer_add_scatter_gpu_test(ZeroWork zero-work 300)
 juicer_add_scatter_gpu_test(Lifecycle lifecycle 600)
 
-add_executable(JuicerGrainScratchTests grain/scratch_reuse_test.cpp)
+add_executable(JuicerGrainScratchTests grain/scratch_reuse_test.cpp ffi/spatial_optics_fixture.cpp)
 target_link_libraries(JuicerGrainScratchTests PRIVATE
     juicer_core GTest::gtest CUDA::cuda_driver)
 set_target_properties(JuicerGrainScratchTests PROPERTIES
@@ -1380,7 +1386,7 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Execution
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
-set(juicer_boundary_tests Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
+set(juicer_boundary_tests Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat

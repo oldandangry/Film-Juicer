@@ -104,3 +104,9 @@ mod scanner_bridge;
     reason = "the fixed frame edge admits foreign records and contains whole-operation unwind"
 )]
 mod frame_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "fixed diffusion transport admits foreign records and contains whole-operation unwind"
+)]
+mod diffusion_bridge;

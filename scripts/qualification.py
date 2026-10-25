@@ -364,6 +364,34 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
             or document.get("halation_frame_results") != halation_expected):
         raise ValueError("production halation frame full fields/words/failure results are incomplete")
 
+    diffusion_manifest = root / "tests/diffusion/frame-fixtures/manifest.json"
+    diffusion_spec = json.loads(diffusion_manifest.read_bytes())
+    diffusion_logical = diffusion_spec["presets"][document["preset"]]["native"]
+    diffusion_paths = {
+        "manifest": diffusion_manifest,
+        "payload": diffusion_manifest.parent / diffusion_spec["payloads"][diffusion_logical],
+        "context": diffusion_manifest.parent / diffusion_spec["contexts"][diffusion_logical],
+        "normative": diffusion_manifest.parent / diffusion_spec["checked"],
+        "input_spec": diffusion_manifest.parent / "inputs.json",
+        "edges_input_spec": diffusion_manifest.parent / "edge-inputs.json",
+        "edges_payload": diffusion_manifest.parent / diffusion_spec["payloads"][diffusion_spec["presets"][document["preset"]]["edges"]],
+        "edges_context": diffusion_manifest.parent / diffusion_spec["contexts"][diffusion_spec["presets"][document["preset"]]["edges"]],
+    }
+    diffusion = document.get("diffusion_frame_fixture", {})
+    if diffusion.get("logical_preset") != document["preset"] or any(
+            resolve(diffusion.get(key, "")) != path for key, path in diffusion_paths.items()):
+        raise ValueError("production diffusion frame fixture membership is incomplete")
+    for path in diffusion_paths.values():
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum
+                or (path != diffusion_manifest and checksum != diffusion_spec["sha256"][path.name])):
+            raise ValueError("production diffusion frame consumed fixture identity changed")
+    diffusion_expected = diffusion_spec["production_cases"]
+    if (len(diffusion_expected) != 507 or len({row["case"] for row in diffusion_expected}) != 507
+            or document.get("diffusion_frame_results") != diffusion_expected):
+        raise ValueError("production diffusion frame full fields/words/failure results are incomplete")
+
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -394,6 +422,11 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         raise ValueError("production retained detailed output membership is incomplete")
     for name, checksum in outputs.items():
         admit(name, checksum)
+    film_stdout = manifest.parent / "film-values.stdout"
+    diffusion_rows = [json.loads(line.removeprefix("DIFFUSION_FRAME_RESULT "))
+                      for line in film_stdout.read_text().splitlines() if line.startswith("DIFFUSION_FRAME_RESULT ")]
+    if diffusion_rows != diffusion_expected:
+        raise ValueError("production diffusion frame executed stdout results disagree")
     if retained is not None and {str(resolve(name)): checksum for name, checksum in retained.items()} != expected:
         raise ValueError("production retained payload membership or execution identities disagree; fresh execution required")
     return expected
@@ -500,7 +533,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "exposure_fixture.h", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+                "film_recipe_abi_facts.inc", "diffusion_frame_test.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
             paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
@@ -512,6 +545,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.update((root / "tests/optics/gaussian-fixtures").glob("*.json"))
             paths.update((root / "tests/frame/geometry-fixtures").glob("*.json"))
             paths.update((root / "tests/scatter_halation/frame-fixtures").glob("*.json"))
+            paths.update((root / "tests/diffusion/frame-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))

@@ -2,6 +2,8 @@
 
 use crate::hash;
 
+pub mod diffusion_frame;
+
 mod gaussian;
 pub use gaussian::{GaussianKernel, GaussianKernelError};
 
