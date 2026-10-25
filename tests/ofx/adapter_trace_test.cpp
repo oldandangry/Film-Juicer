@@ -2,6 +2,7 @@
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include "../ffi/spatial_optics_fixture.h"
+#include "../ffi/juicer_test_api.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -2992,6 +2993,7 @@ namespace {
     struct FrameGeometryFixturePaths {
         std::filesystem::path geometry;
         std::filesystem::path halation;
+        std::filesystem::path diffusion;
     };
     void run_frame_geometry_cases(const FrameGeometryFixturePaths& fixtures, const char* preset, const std::filesystem::path& tracePath) {
         using namespace JuicerFrame::FrameGeometryTest;
@@ -3002,6 +3004,9 @@ namespace {
         const auto halationManifest = nlohmann::json::parse(std::ifstream(halationManifestPath));
         const auto halationCaptured = load_shared_fixture(halationManifestPath.parent_path() / halationManifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
         require(halationCaptured.at("preset") == preset && halationCaptured.at("products").size() == 20, "halation callback frozen native context/membership");
+        const auto diffusionManifest = nlohmann::json::parse(std::ifstream(fixtures.diffusion));
+        const auto diffusionCaptured = load_shared_fixture(fixtures.diffusion.parent_path() / diffusionManifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
+        require(diffusionCaptured.at("preset") == preset && diffusionCaptured.at("products").size() == 92, "diffusion callback frozen native context/membership");
         auto expected_pixel = [&](const char* name) {
             for (const auto& row : captured.at("geometry"))
                 if (row.at("name") == name)
@@ -3035,9 +3040,27 @@ namespace {
                 throw std::runtime_error(std::string("frame geometry callback case failed: ") + name);
             }
             const auto observation = snapshot();
+            const auto diffusion = diffusion_snapshot();
             const auto halation = halation_snapshot();
             const auto halationCalls = expected.halationCalls == UINT32_MAX ? (phases >= 2 ? 1u : 0u) : expected.halationCalls;
             require(halation.count == halationCalls, std::string(name) + " halation invocation count");
+            require(diffusion.count == (phases >= 2 ? 1u : 0u), std::string(name) + " diffusion invocation count");
+            if (diffusion.count) {
+                require(std::bit_cast<std::uint64_t>(diffusion.pixelSizeUm) == std::bit_cast<std::uint64_t>(static_cast<double>(std::bit_cast<float>(expected_pixel(pixelCase)))), "diffusion binds current f32 pixel widened to f64");
+                const auto& d = diffusion.fullDomain;
+                require(d.originX == facts.source.x1 && d.originY == facts.source.y1 && d.width == facts.sourceWidth && d.height == facts.sourceHeight, "diffusion binds current full callback domain");
+                require(diffusion.success == (halationCalls != 0), "diffusion construction failure short-circuits halation/effects");
+                if (!diffusion.success)
+                    require(!diffusion.descriptor, "failed diffusion construction publishes no optional");
+                if (diffusion.descriptor) {
+                    require(diffusion.descriptor->route == diffusion.route, "diffusion callback route association");
+                    const auto& rows = diffusionCaptured.at("products");
+                    const auto frozen = std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
+                        return !row.at("frame").is_null() && row.at("frame").at("hash").template get<std::uint64_t>() == diffusion.descriptor->hash;
+                    });
+                    require(frozen != rows.end() && JuicerTestSupport::matches_diffusion_frame(diffusion.descriptor, frozen->at("frame")), "actual diffusion callback complete values/identities match native capture");
+                }
+            }
             if (halationCalls) {
                 require(halation.success == expected.halationSuccess && std::bit_cast<std::uint32_t>(halation.pixelSizeUm) == expected_pixel(pixelCase), "halation uses current callback pixel size and boolean result");
                 if (!halation.success)
@@ -3139,6 +3162,22 @@ namespace {
             host.dispatch_event(effect, JuicerParams::kHalationActive, OFX::eChangePluginEdit);
             check("four-route-active-metadata", frame, active, false, {3, 1});
             require(halation_snapshot().descriptor.has_value(), "active halation reaches each direct/print polarity callback");
+            for (unsigned mask = 0; mask < 4; ++mask) {
+                host.set_int_value(JuicerParams::kCameraDiffusionEnabled, (mask & 1) != 0);
+                host.set_int_value(JuicerParams::kPrintDiffusionEnabled, (mask & 2) != 0);
+                host.dispatch_event(effect, JuicerParams::kCameraDiffusionEnabled, OFX::eChangePluginEdit);
+                check("diffusion-camera-enlarger-combinations", frame, active, false, {3, 1});
+                const auto diffusion = diffusion_snapshot();
+                require(static_cast<unsigned>(diffusion.route) == route, "current admitted route and capture polarity");
+                const unsigned flags = (mask & 1) | (route % 2 ? mask & 2 : 0);
+                require(diffusion.descriptor.has_value() == (flags != 0), "hash-selected diffusion inactivity on all routes");
+                if (diffusion.descriptor)
+                    require(diffusion.descriptor->camera.has_value() == ((flags & 1) != 0) && diffusion.descriptor->enlarger.has_value() == ((flags & 2) != 0), "camera/enlarger stage association on all routes");
+            }
+            auto diffusionSquare = squareFacts;
+            diffusionSquare.definition = diffusionSquare.source;
+            diffusionSquare.definitionWidth = diffusionSquare.definitionHeight = 9;
+            check("active-diffusion-current-square-domain", square, diffusionSquare, false, {3, 1}, "square");
             auto badDefinition = geometry;
             badDefinition.definition = {std::numeric_limits<int>::min(), 0, std::numeric_limits<int>::max(), 5};
             check("effects-range-after-canonical", frame, badDefinition, true, {2, 1});
@@ -3160,6 +3199,12 @@ namespace {
         host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(Spektrafilm::ScanRoute::NegativeDirectScan));
         host.set_int_value(JuicerParams::kCameraDiffusionEnabled, 1);
         host.dispatch_event(effect, JuicerParams::kCameraDiffusionEnabled, OFX::eChangePluginEdit);
+        auto diffusionFailure = geometry;
+        diffusionFailure.definition = geometry.source;
+        diffusionFailure.definitionWidth = 7;
+        diffusionFailure.definitionHeight = 5;
+        require(fj_test_diffusion_frame_fault(3, 1).category == FJ_STATUS_SUCCESS, "arm bounded diffusion callback failure");
+        check("rust-diffusion-failure-short-circuits-halation-effects", frame, diffusionFailure, true, {2, 0, 0});
         auto invalidPhysical = geometry;
         invalidPhysical.source = {7, 5, 0, 0};
         invalidPhysical.sourceWidth = -7;
@@ -3206,12 +3251,12 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             run_loaded_module_callback(host, argv[2], argv[4], std::string_view(argv[1]) == "--stream-contract");
             return 0;
         }
-        if (argc == 6 && std::string_view(argv[1]) == "--frame-geometry") {
+        if (argc == 7 && std::string_view(argv[1]) == "--frame-geometry") {
             cudaOwner.create(JuicerProcess::data_directory());
             if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess)
                 throw std::runtime_error("CUDA initialization failed");
             JuicerProcess::root().ensure_bootstrap();
-            run_frame_geometry_cases({.geometry = argv[2], .halation = argv[5]}, argv[3], argv[4]);
+            run_frame_geometry_cases({.geometry = argv[2], .halation = argv[5], .diffusion = argv[6]}, argv[3], argv[4]);
             return 0;
         }
         if ((argc != 3 && !(argc == 6 && std::string_view(argv[3]) == "--grain-fixtures")) || std::string_view(argv[1]) != "--trace-output") {

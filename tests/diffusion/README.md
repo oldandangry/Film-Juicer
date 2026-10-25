@@ -93,3 +93,20 @@ ordinary tests and these commands leave the accepted fixture bytes unchanged.
 The CUDA convolution generator remains a maintenance tool. Its 1.4 GB output
 is intentionally not an ordinary repository fixture and is not registered in
 CTest.
+
+## Diffusion construction boundary
+
+`Ffi.Host.DiffusionFrame` checks sample support/identity, full camera/enlarger
+frame construction and all 36 component values through C11, the checked Rust
+boundary and the native projections. `Optics.Host.DiffusionFrameProducts` checks
+92 completed-route products. Both are driver-free host groups with 180-second
+limits. The existing `Diffusion.HostReference` keeps its external-reference
+cohort and bounds unchanged.
+
+The [construction fixtures](frame-fixtures/README.md) are separate Film-Juicer
+native migration characterization, with four retained native/profile producers.
+Frame activity follows component hashes. Standalone sample construction does not
+establish component readiness; component expansion admits those copied fields
+at its own boundary. Callback pixel size is the f32 geometry result widened to
+f64. FFT selection, memory admission and asynchronous CUDA resource ownership
+remain native.

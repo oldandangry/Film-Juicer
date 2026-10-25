@@ -146,3 +146,150 @@ namespace JuicerTestSupport {
         return true;
     }
 } // namespace JuicerTestSupport
+
+namespace {
+    Spektrafilm::DiffusionPsfSampleDescriptor diffusion_sample(const FjDiffusionSample& v) {
+        Spektrafilm::DiffusionPsfSampleDescriptor out;
+        out.family = static_cast<Spektrafilm::DiffusionFilterFamily>(v.family);
+        std::copy_n(v.group_weights, 3, out.groupWeightsCoreHaloBloom.begin());
+        std::copy_n(v.group_lambda_um, 3, out.groupCenterLambdaUm.begin());
+        out.effectiveWarmth = v.warmth;
+        out.spatialScale = v.spatial_scale;
+        out.pixelSizeUm = v.pixel_size_um;
+        out.radiusPixels = v.radius_px;
+        out.hash = v.hash;
+        return out;
+    }
+    FjDiffusionSample diffusion_sample(const Spektrafilm::DiffusionPsfSampleDescriptor& v) {
+        FjDiffusionSample out{};
+        out.family = static_cast<std::uint32_t>(v.family);
+        std::copy(v.groupWeightsCoreHaloBloom.begin(), v.groupWeightsCoreHaloBloom.end(), out.group_weights);
+        std::copy(v.groupCenterLambdaUm.begin(), v.groupCenterLambdaUm.end(), out.group_lambda_um);
+        out.warmth = v.effectiveWarmth;
+        out.spatial_scale = v.spatialScale;
+        out.pixel_size_um = v.pixelSizeUm;
+        out.radius_px = v.radiusPixels;
+        out.hash = v.hash;
+        return out;
+    }
+    FjDiffusionRecipe diffusion_recipe(const DiffusionFilterOpticsRecipe& v) {
+        FjDiffusionRecipe out{};
+        out.domain = static_cast<std::uint32_t>(v.domain);
+        out.active = v.resolved.active ? 1u : 0u;
+        out.family = static_cast<std::uint32_t>(v.resolved.family);
+        out.scatter_fraction = v.resolved.scatterFraction;
+        std::copy(v.resolved.groupWeightsCoreHaloBloom.begin(), v.resolved.groupWeightsCoreHaloBloom.end(), out.group_weights);
+        std::copy(v.resolved.groupCenterLambdaUm.begin(), v.resolved.groupCenterLambdaUm.end(), out.group_lambda_um);
+        out.warmth = v.resolved.effectiveWarmth;
+        out.spatial_scale = v.resolved.spatialScale;
+        out.resolved_hash = v.resolved.hash;
+        out.hash = v.hash;
+        return out;
+    }
+    bool diffusion_succeeded(FjStatus status, const FjDiffusionFailure& failure, const FjErrorBuffer& error, std::string& diagnostic) {
+        diagnostic.assign(error.data, error.length);
+        if (status.api != 0 || status.native_code != 0 || (status.category != 0 && status.category != 3 && status.category != 8) ||
+            (status.category == 0 && (failure.reason != 0 || failure.stage != 0 || failure.field != 0)))
+            throw std::runtime_error("diffusion fixture envelope invalid");
+        return status.category == 0;
+    }
+    Spektrafilm::DiffusionStageFrameDescriptor diffusion_stage(const FjDiffusion& v, Spektrafilm::DiffusionLinearStage stage) {
+        FjDiffusionSample sample{};
+        sample.family = v.family;
+        std::copy_n(v.group_weights, 3, sample.group_weights);
+        std::copy_n(v.group_lambda_um, 3, sample.group_lambda_um);
+        sample.warmth = v.warmth;
+        sample.spatial_scale = v.spatial_scale;
+        sample.pixel_size_um = v.pixel_size_um;
+        sample.radius_px = v.radius_px;
+        sample.hash = v.sample_hash;
+        return {stage, v.scatter_fraction, diffusion_sample(sample), v.hash};
+    }
+} // namespace
+
+namespace JuicerTestSupport {
+    // Mirror the native sample builder so fixture adoption changes only its producer.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    bool prepare_diffusion_sample(const Spektrafilm::DiffusionFilterResolvedParameters& r, double pixelSizeUm, int width, int height, Spektrafilm::DiffusionPsfSampleDescriptor& out, std::string& diagnostic) {
+        out = {};
+        FjDiffusionSampleInput input{};
+        input.family = static_cast<std::uint32_t>(r.family);
+        std::copy(r.groupWeightsCoreHaloBloom.begin(), r.groupWeightsCoreHaloBloom.end(), input.group_weights);
+        std::copy(r.groupCenterLambdaUm.begin(), r.groupCenterLambdaUm.end(), input.group_lambda_um);
+        input.warmth = r.effectiveWarmth;
+        input.spatial_scale = r.spatialScale;
+        input.pixel_size_um = pixelSizeUm;
+        input.width = width;
+        input.height = height;
+        FjDiffusionSample wire{};
+        FjDiffusionFailure failure{};
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const auto status = fj_test_diffusion_sample_prepare(&input, &wire, &failure, &error);
+        if (!diffusion_succeeded(status, failure, error, diagnostic))
+            return false;
+        out = diffusion_sample(wire);
+        return true;
+    }
+    bool prepare_diffusion_components(const Spektrafilm::DiffusionPsfSampleDescriptor& sample, Spektrafilm::DiffusionPsfComponents& out, std::string& diagnostic) {
+        out = {};
+        const auto input = diffusion_sample(sample);
+        FjDiffusionComponents wire{};
+        FjDiffusionFailure failure{};
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const auto status = fj_test_diffusion_components_prepare(&input, &wire, &failure, &error);
+        if (!diffusion_succeeded(status, failure, error, diagnostic))
+            return false;
+        std::copy_n(wire.lambda_px, 9, out.lambdaPixels.begin());
+        std::copy_n(wire.red_weights, 9, out.redWeights.begin());
+        std::copy_n(wire.green_weights, 9, out.greenWeights.begin());
+        std::copy_n(wire.blue_weights, 9, out.blueWeights.begin());
+        return true;
+    }
+    bool prepare_diffusion_frame(const SpatialOptics& optics, Spektrafilm::ScanRoute route, double pixelSizeUm, Spektrafilm::DiffusionFrameDomain domain, std::optional<Spektrafilm::DiffusionFrameSetDescriptor>& out, std::string& diagnostic) {
+        out.reset();
+        const FjDiffusionFrameInput input{static_cast<std::uint32_t>(route), {domain.originX, domain.originY, domain.width, domain.height}, pixelSizeUm, diffusion_recipe(optics.cameraDiffusion), diffusion_recipe(optics.enlargerDiffusion)};
+        FjDiffusionFrameSet wire{};
+        FjDiffusionFailure failure{};
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const auto status = fj_test_diffusion_frame_prepare(&input, &wire, &failure, &error);
+        if (!diffusion_succeeded(status, failure, error, diagnostic))
+            return false;
+        if (wire.flags == 0)
+            return true;
+        Spektrafilm::DiffusionFrameSetDescriptor frame;
+        frame.route = static_cast<Spektrafilm::ScanRoute>(wire.route);
+        frame.fullFrame = {wire.full_frame.x, wire.full_frame.y, wire.full_frame.width, wire.full_frame.height};
+        frame.hash = wire.hash;
+        if (wire.flags & 1)
+            frame.camera = diffusion_stage(wire.camera, Spektrafilm::DiffusionLinearStage::CameraFilmLinear);
+        if (wire.flags & 2)
+            frame.enlarger = diffusion_stage(wire.enlarger, Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear);
+        out = frame;
+        return true;
+    }
+    bool matches_diffusion_frame(const std::optional<Spektrafilm::DiffusionFrameSetDescriptor>& frame, const nlohmann::json& expected) {
+        if (!frame || expected.is_null())
+            return !frame && expected.is_null();
+        const auto stage = [](const std::optional<Spektrafilm::DiffusionStageFrameDescriptor>& actual, const nlohmann::json& frozen) {
+            if (!actual || frozen.is_null())
+                return !actual && frozen.is_null();
+            const auto& sample = actual->sample;
+            const auto& f = frozen.at("sample");
+            if (static_cast<unsigned>(actual->stage) != frozen.at("stage").get<unsigned>() || actual->hash != frozen.at("hash").get<std::uint64_t>() ||
+                std::bit_cast<std::uint64_t>(actual->scatterFraction) != frozen.at("scatter").get<std::uint64_t>() ||
+                static_cast<unsigned>(sample.family) != f.at("family").get<unsigned>() || sample.hash != f.at("hash").get<std::uint64_t>() || sample.radiusPixels != f.at("radius").get<int>() ||
+                std::bit_cast<std::uint64_t>(sample.effectiveWarmth) != f.at("warmth").get<std::uint64_t>() || std::bit_cast<std::uint64_t>(sample.spatialScale) != f.at("scale").get<std::uint64_t>() || std::bit_cast<std::uint64_t>(sample.pixelSizeUm) != f.at("pixel").get<std::uint64_t>())
+                return false;
+            for (std::size_t i = 0; i < 3; ++i)
+                if (std::bit_cast<std::uint64_t>(sample.groupWeightsCoreHaloBloom[i]) != f.at("weights")[i].get<std::uint64_t>() || std::bit_cast<std::uint64_t>(sample.groupCenterLambdaUm[i]) != f.at("centers")[i].get<std::uint64_t>())
+                    return false;
+            return true;
+        };
+        const auto& d = frame->fullFrame;
+        return static_cast<unsigned>(frame->route) == expected.at("route").get<unsigned>() && frame->hash == expected.at("hash").get<std::uint64_t>() &&
+               nlohmann::json({d.originX, d.originY, d.width, d.height}) == expected.at("extent") && stage(frame->camera, expected.at("camera")) && stage(frame->enlarger, expected.at("enlarger"));
+    }
+} // namespace JuicerTestSupport

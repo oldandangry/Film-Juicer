@@ -15,6 +15,30 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_diffusion_frame_original_bytes_and_complete_native_contexts(self):
+        root = Path(__file__).parents[1] / "diffusion/frame-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        for name, checksum in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), checksum)
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            provenance = manifest["provenance"][preset]
+            self.assertEqual(hashlib.sha256(original_capture_bytes(captured, provenance["line_ending"])).hexdigest(), provenance["original_capture_sha256"])
+            self.assertEqual([len(captured[k]) for k in ("samples", "frames", "products", "primitives")], [94, 35, 92, 8])
+            edges = load_shared_fixture(root / manifest["presets"][preset]["edges"])
+            edge_provenance = manifest["edge_provenance"][preset]
+            self.assertEqual(hashlib.sha256(original_capture_bytes(edges, edge_provenance["line_ending"])).hexdigest(), edge_provenance["original_capture_sha256"])
+            self.assertEqual(edge_provenance["producer_sha256"], provenance["producer_sha256"])
+            self.assertEqual([len(edges[k]) for k in ("samples", "frames", "products", "primitives")], [2, 0, 0, 0])
+            samples = captured["samples"] + edges["samples"] + [sample for row in captured["products"] for sample in row["samples"]]
+            self.assertEqual(len(samples), 174)
+            for row in samples:
+                if row["success"]:
+                    self.assertEqual(set(row["components"]), {"lambda", "red", "green", "blue"})
+                    self.assertTrue(all(len(words) == 9 for words in row["components"].values()))
+
     def test_halation_frame_original_bytes_and_complete_native_contexts(self):
         root = Path(__file__).parents[1] / "scatter_halation/frame-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())

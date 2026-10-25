@@ -1068,3 +1068,24 @@ See `Ffi.Host.SpatialOptics`, `Film.Host.SpatialOpticsProducts` and the immutabl
 [optics characterization](../film/optics-fixtures/README.md). Both native Release
 OFF gates retain the earlier film/output, six grain and nine effects cases and
 add all 15 optics cases, archive/module/PDB isolation and hidden-device loading.
+
+## Diffusion sample, frame and component preparation
+
+The temporary `fj_legacy_diffusion_{sample,frame,components}_prepare` exports copy
+fixed, synchronous values; their same-signature `fj_test_diffusion_*_prepare`
+facade calls share the checked production bodies. No pointer is retained and no
+CUDA owner is introduced. The permanent CUDA records remain unchanged.
+
+Sample support construction, component readiness and optional frame activity are
+separate guarantees. Frame activity uses component hashes and preserves ignored
+inputs on inactive work. Failures carry closed reason/stage/field metadata and
+clear each independently admitted output. Native standalone failure keeps its
+BlackProMist default; raw failure clears family to zero. Optional diagnostics
+support absent/zero-capacity backing and bounded NUL-terminated truncation.
+
+See the [exact native characterization](../diffusion/frame-fixtures/README.md),
+`Ffi.Host.DiffusionFrame` and `Optics.Host.DiffusionFrameProducts`. The strict C11
+Release OFF probe requires all three exports and executes 507 complete frozen
+value/failure results in addition to all earlier production contracts. Native
+sample/frame projections retire at their last caller by S6.D; native-resource
+component conversion retires with S4.E's final execution-input conversion.

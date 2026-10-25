@@ -1708,6 +1708,7 @@ JuicerEffect::~JuicerEffect() {
 
 #if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
 namespace JuicerFrame::FrameGeometryTest {
+    void diffusion_frame(double, Spektrafilm::ScanRoute, Spektrafilm::DiffusionFrameDomain, bool, const std::optional<Spektrafilm::DiffusionFrameSetDescriptor>&);
     void halation_frame(float, bool, const std::optional<ScatterHalationFrameDescriptor>&);
     void full_domain(const Spektrafilm::DiffusionFrameDomain&);
     void scalar_pixel(float);
@@ -1832,13 +1833,17 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
     std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
     std::string diffusionDiagnostic;
-    if (!Spektrafilm::build_diffusion_frame_set_descriptor(
-            focusedRecipe.spatialOptics,
-            focusedRecipe.profileRoute.scanRoute,
-            static_cast<double>(pixelSizeUm),
-            fullDomain,
-            diffusionFrameSet,
-            diffusionDiagnostic)) {
+    const bool diffusionSuccess = Spektrafilm::build_diffusion_frame_set_descriptor(
+        focusedRecipe.spatialOptics,
+        focusedRecipe.profileRoute.scanRoute,
+        static_cast<double>(pixelSizeUm),
+        fullDomain,
+        diffusionFrameSet,
+        diffusionDiagnostic);
+#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
+    JuicerFrame::FrameGeometryTest::diffusion_frame(static_cast<double>(pixelSizeUm), focusedRecipe.profileRoute.scanRoute, fullDomain, diffusionSuccess, diffusionFrameSet);
+#endif
+    if (!diffusionSuccess) {
         JTRACE("SPEKTRAFILM", diffusionDiagnostic);
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }

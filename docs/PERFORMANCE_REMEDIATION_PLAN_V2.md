@@ -68,11 +68,14 @@ claim. No whole-task improvement has yet been established.
 
 ## 3. Execution policy now
 
-Use one current handoff, existing attempt records and one final packet linking
-original reports. Before expensive execution, name the changed producer, complete
-construction boundary, risky primitives, identities/seeds, expectation readers,
-actual callers and staged runtime resources. Use registrations and source
-inspection; no new dependency database is needed.
+Use one current handoff, one candidate identity and one final packet linking
+original reports and finished receipts. Before execution, name the supported
+target, test and quality commands with expected membership, the changed producer,
+complete construction boundary, risky primitives, identities/seeds, expectation
+readers, actual callers and staged runtime resources. Retain intermediate records
+only for a concrete consumer; preserve owner-required before/after source and tool
+hashes. Use registrations and source inspection; no new dependency database or
+per-intermediate proof chain is needed.
 
 Diagnose risky numerical operations at the smallest valid boundary early. Complete
 required native characterization, independent expectation adoption, reader checks
@@ -87,11 +90,22 @@ existing owning test/capture entry point. If a maintained operation is missing,
 identify that one capability and change its owner when separately authorized.
 A short read-only report over existing records is not a second qualification path.
 
-During editing, use focused CMake/CTest and quality commands. Exercise new compiled
-cases on both native platforms early. Finish formatting, generated inputs,
-expectation adoption and affected checks before qualification. At a broader
-checkpoint, use its built-in quality and JUnit for the same domain evidence;
-do not add an identical full pass merely to produce another report.
+During editing, use focused CMake/CTest and quality commands. Exercise touched
+C11/native fixture/helper compile cases and scoped quality on both native platforms
+early. Finish formatting, generated inputs, expectation adoption and affected
+checks before broad qualification. At a broader checkpoint, use its built-in
+quality and JUnit for the same domain evidence; do not add an identical full pass
+merely to produce another report. Each partition command must complete under
+supervision, drain its owned work and admit complete exact JUnit membership.
+Passing or reuse requires the applicable results to succeed. Before another owner
+is dispatched or a stable receipt is read, the enclosing owner must reach terminal
+completion, drain operation work and release the shared normal lease in a healthy
+state once the outer operation ends. Apply existing pending/failure admission
+rules; preserve failed status, while a drained failure may permit a lawful repair
+or fresh preparation. Retries
+and admission within the existing lease remain with that owner. Partial console
+output and inner build success are not completion. Do not signal a healthy
+supervisor except through its documented cancel path.
 
 Do not edit consumed inputs during their execution against that mutable checkout.
 Documentation inspected by quality checks remains frozen for those checks. The
@@ -196,6 +210,11 @@ for fresh reuse, and compact historical acceptance. Historical acceptance needs
 exact source identity or a reconstructible patch, final membership/outcomes,
 review/decision and limits. Reusable executions need their complete original
 receipt/log/process/payload closure; a summary cannot supply the collector's proof.
+Keep a final producer only for each distinct needed context or OFF binary closure.
+Each retained producer/artifact needs a named current consumer and an end condition
+for retirement. Acceptance summaries and fresh-reuse evidence are separate: a
+summary cannot admit reuse, while a fresh-reuse receipt must preserve the original
+completed command records and required hashes.
 
 Ordinary raw success and redundant resolved-failure diagnostics without a continuing
 consumer use a **seven-day post-acceptance/resolution rollback window**. Keep real
@@ -209,12 +228,14 @@ a truncation/deletion quota.
 
 Review reproducible scratch, duplicate source/executable copies, repeated logs and
 obsolete launchers during ordinary closeout. Keep every payload required by
-retained reusable evidence. Receipt existence, old links and internal references
-inside a retired group do not keep every attempt live. Explicitly retire removed
-payload scopes from reuse in a new disposition; never rewrite original hashes. Check
-active processes and consumers first. Archival moves reclaim no bytes. Active
-caches, unresolved evidence and unique reference artifacts are not disposable
-merely because they are large.
+retained reusable evidence. Retire a retained binary only after its named consumer
+and required OFF/ON or package closure have reached their recorded end condition;
+acceptance-summary retention does not imply fresh reuse eligibility. Receipt
+existence, old links and internal references inside a retired group do not keep
+every attempt live. Explicitly retire removed payload scopes from reuse in a new
+disposition; never rewrite original hashes. Check active processes and consumers
+first. Archival moves reclaim no bytes. Active caches, unresolved evidence and
+unique reference artifacts are not disposable merely because they are large.
 
 Successful synthetic Checkpoint/BuildEvidence fixtures default to disposal once
 consumed and drained; artifact routing alone does not request retention.
@@ -234,16 +255,18 @@ at every leaf or family handoff.
 | Change or checkpoint | Required coverage |
 | --- | --- |
 | Documentation/status only | Contextual, link and whitespace review. Prose alone creates no product build/test requirement; section 5 describes the discovery boundary and older receipts' retained input requirements. |
-| Mathematical leaf during editing | Touched formatting and compilation/type checks, focused mathematical cases and nearest real consumer. Exercise new compiled cases on both natives early. |
-| Stable family cutover/deletion | Required four-native numerical cases; affected ABI, construction, failure, identity, cache and actual-caller checks; downstream GPU routes; scoped native/CUDA/Rust analysis; independent naming/ownership review. Unrelated whole-product/tooling matrices do not belong at every family handoff. |
+| Mathematical leaf during editing | Touched formatting and compilation/type checks, focused mathematical cases and nearest real consumer. Exercise touched C11/native fixture/helper compiles and scoped quality on both natives early, before freezing for broad qualification. |
+| Stable family cutover/deletion | Required four-native numerical cases; affected ABI, construction, failure, identity, cache and actual-caller checks; downstream GPU routes; scoped native/CUDA/Rust analysis; independent naming/ownership review. For a staged cutover, replacement fixture consumers and caller evidence pass before producer deletion. As an alternative for a prospectively planned, reconstructible mathematical producer, independently capture old behavior and pass replacement core/ABI/fixture preparation before cutover; switch the caller and delete the old body in one candidate, then pass actual replacement-caller and downstream evidence before acceptance. This applies only to new handoffs; an existing handoff's stricter stage order remains unless explicitly amended. Preserve lifecycle, ownership and other deletion gates. Unrelated whole-product/tooling matrices do not belong at every family handoff. |
 | Changed ABI, export, feature isolation or ownership boundary | Both native Release testing-OFF probes once on the stable boundary, relevant ON boundary/lifetime checks and required ON cache restoration. Repeat when consumed inputs change, not merely for unrelated prose/test-loader edits. |
 | Broad shared build/lifetime change; S4.E integration; S5 exit; S6.D cutover; S7/release | Full applicable four-preset product/boundary matrix, tooling once per native platform, corpus once, and required OFF/host/package gates. |
 | Publication/merge | Existing required hosted checks on the actual candidate, plus local gates required above. Hosted host-only passes do not establish GPU, OFF or Resolve acceptance. |
 
-Each handoff names affected tests and compilation contexts. Unknown dependencies
-justify broader affected checks with the uncertainty stated. All regression tests
-remain available at designated broader checkpoints. This changes cadence, not
-implementation-slice scope or scientific acceptance.
+Each handoff names the supported target, test and quality commands with expected
+membership. Unsupported selectors never trigger an automatic `--targets all`; an
+explicit `all` needs a stated affected dependency or checkpoint reason. Unknown
+dependencies justify broader affected checks with the uncertainty stated. All
+regression tests remain available at designated broader checkpoints. This changes
+cadence, not implementation-slice scope or scientific acceptance.
 
 Preserve reference revision/fixture provenance, supported resource semantics,
 numerical matrices and approved exceptions, honest hashes/seeds, polarity and
@@ -278,6 +301,9 @@ synthetic campaign. Record in the existing packet:
 - Admission/collection as aggregate work and interval union, targeting below 15%
   of task elapsed. Record receipts, evidence growth and available cached-input,
   uncached-input and output-token totals without creating another success gate.
+
+Use existing attempt, command and receipt records for these measurements; add no
+collection step. State unavailable values as unknown instead of reconstructing them.
 
 At 60 minutes, reassess remaining work and stop adding harness scope. Keep required
 work and unresolved gates explicit; never waive them to meet the target. If these

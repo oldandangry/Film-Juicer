@@ -143,7 +143,7 @@ namespace {
         Spektrafilm::DiffusionPsfSampleDescriptor& descriptor,
         std::string_view name) {
         std::string diagnostic;
-        if (!Spektrafilm::build_diffusion_psf_sample_descriptor(
+        if (!JuicerTestSupport::prepare_diffusion_sample(
                 resolved,
                 pixelSizeUm,
                 width,
@@ -161,7 +161,7 @@ namespace {
         Spektrafilm::DiffusionPsfComponents& components,
         std::string_view name) {
         std::string diagnostic;
-        if (!Spektrafilm::expand_diffusion_psf_components(descriptor, components, diagnostic)) {
+        if (!JuicerTestSupport::prepare_diffusion_components(descriptor, components, diagnostic)) {
             fail_text(name, "components", diagnostic.empty() ? "no diagnostic" : diagnostic);
             return false;
         }
@@ -844,7 +844,7 @@ namespace {
             Spektrafilm::DiffusionPsfSampleDescriptor descriptor{};
             diagnostic.clear();
             check_false(
-                Spektrafilm::build_diffusion_psf_sample_descriptor(
+                JuicerTestSupport::prepare_diffusion_sample(
                     resolved,
                     0.0,
                     1920,
@@ -854,7 +854,7 @@ namespace {
                 "invalid:descriptor",
                 "pixelSizeZero");
             check_false(
-                Spektrafilm::build_diffusion_psf_sample_descriptor(
+                JuicerTestSupport::prepare_diffusion_sample(
                     resolved,
                     1.0,
                     0,
@@ -864,7 +864,7 @@ namespace {
                 "invalid:descriptor",
                 "widthZero");
             check_false(
-                Spektrafilm::build_diffusion_psf_sample_descriptor(
+                JuicerTestSupport::prepare_diffusion_sample(
                     resolved,
                     1.0,
                     1920,
@@ -879,7 +879,7 @@ namespace {
         Spektrafilm::DiffusionPsfComponents components{};
         diagnostic.clear();
         check_false(
-            Spektrafilm::expand_diffusion_psf_components(
+            JuicerTestSupport::prepare_diffusion_components(
                 inactiveDescriptor,
                 components,
                 diagnostic),

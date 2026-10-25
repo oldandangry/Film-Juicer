@@ -328,6 +328,25 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_diffusion_frame_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("diffusion_frame_complete", None),
+            ("diffusion_frame_construction", {"E0451": ("Sample { ..sample }", "Components { ..components }", "FrameSet { ..frame }")}),
+            ("diffusion_frame_private", {"E0616": ("sample.fields", "components.lambda_px", "frame.hash", "frame.camera")}),
+            ("diffusion_frame_readonly", {"E0594": ("blue_weights()[8] = 0.0",)}),
+            ("diffusion_frame_default", {"E0599": ("Sample::default()", "Components::default()", "FrameSet::default()", "Stage::default()")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_halation_frame_is_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("halation_frame_complete", None),
@@ -708,6 +727,47 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertIn("fj_test_spatial_optics_prepare(", fixture)
         self.assertNotIn("fj_legacy_spatial_optics_prepare(", fixture)
         self.assertNotRegex(fixture, r"\b(?:log2|clamp|hash_value|strength_to_scatter)\s*\(")
+
+    def test_deleted_diffusion_construction_and_retained_native_consumers(self) -> None:
+        import re
+        diffusion = (ROOT / "src/DiffusionHostBehavior.cpp").read_text(encoding="utf-8-sig")
+        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8-sig")
+        for token in ("GroupConfig", "FamilyConfig", "ExpandedGroup", "kFamilyConfigs",
+                      "kMinimumScale", "kHaloWarmthAxis", "sample_descriptor_hash(",
+                      "validate_sample_descriptor(", "expand_group(", "halo_channel_weights(",
+                      "finite_component_output(", "std::ceil", "std::log", "std::exp", "std::pow"):
+            self.assertNotIn(token, diffusion)
+            with self.assertRaises(AssertionError):
+                self.assertNotIn(token, diffusion + token)
+        for name in ("fail_diffusion_frame_descriptor", "hash_diffusion_frame_byte",
+                     "hash_diffusion_frame_u32_le", "hash_diffusion_frame_u64_le",
+                     "hash_diffusion_frame_tag", "hash_diffusion_frame_double",
+                     "hash_diffusion_frame_domain", "valid_diffusion_frame_route",
+                     "build_diffusion_stage_frame_descriptor"):
+            pattern = r"\b" + name + r"\s*\([^;{}]*\)\s*\{"
+            self.assertIsNone(re.search(pattern, recipe), name)
+            self.assertIsNotNone(re.search(pattern, "bool " + name + "() { return true; }"))
+            self.assertIsNone(re.search(pattern, "bool " + name + "();"))
+        self.assertNotIn("kDiffusionFrameFnvPrime", recipe)
+        self.assertEqual(diffusion.count("JuicerDiffusion::prepare_sample("), 1)
+        self.assertEqual(diffusion.count("JuicerDiffusion::prepare_components("), 1)
+        self.assertEqual(recipe.count("JuicerDiffusion::prepare_frame("), 1)
+        self.assertIn("std::uint64_t hash_diffusion_authored_controls(", diffusion)
+        self.assertIn("hash_diffusion_authored_controls(", (ROOT / "src/JuicerState.cpp").read_text())
+        resources = (ROOT / "src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp").read_text()
+        self.assertIn("Spektrafilm::expand_diffusion_psf_components(", resources)
+        fixtures = "\n".join((ROOT / "tests/ffi" / name).read_text()
+                             for name in ("film_recipe_test.cpp", "diffusion_frame_test.inc"))
+        for token in ("capture-diffusion-frames", "nativeCapture", "Json capture(", "std::log", "std::exp", "std::pow"):
+            self.assertNotIn(token, fixtures)
+        for name in ("diffusion/host_reference_test.cpp", "scatter_halation/integration_test.cpp",
+                     "ofx/processor_reference_test.cpp", "grain/scratch_reuse_test.cpp"):
+            self.assertNotRegex((ROOT / "tests" / name).read_text(),
+                                r"\b(?:build_diffusion_psf_sample_descriptor|expand_diffusion_psf_components|build_diffusion_frame_set_descriptor)\s*\(")
+        fixture = (ROOT / "tests/ffi/spatial_optics_fixture.cpp").read_text()
+        for operation in ("sample", "components", "frame"):
+            self.assertIn("fj_test_diffusion_" + operation + "_prepare(", fixture)
+        self.assertIn("SF_TEMP_BRIDGE_DIFFUSION_FRAME", (ROOT / "src/RustDiffusionBridge.h").read_text())
 
     def test_deleted_scanner_lut_producer_and_retained_binding(self) -> None:
         import re

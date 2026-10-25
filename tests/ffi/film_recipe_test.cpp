@@ -34,10 +34,12 @@
 #include "RustGaussianBridge.h"
 #include "RustFrameBridge.h"
 #include "RustHalationBridge.h"
+#include "RustDiffusionBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
 #include "exposure_fixture.h"
+#include "spatial_optics_fixture.h"
 
 #include "film_recipe_abi_cpp.inc"
 static_assert(!std::is_copy_constructible_v<JuicerAssets::DevelopmentHold>);
@@ -302,7 +304,25 @@ namespace {
 #include "gaussian_kernel_test.inc"
 #include "frame_geometry_test.inc"
 #include "halation_frame_test.inc"
+#include "diffusion_frame_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "diffusion-frame" || std::string_view(argv[3]) == "diffusion-frame-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        auto captured = load_shared_fixture(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
+        const auto edges = load_shared_fixture(directory / manifest.at("presets").at(argv[4]).at("edges").get<std::string>(), "manifest.json");
+        require(captured.at("preset") == argv[4] && edges.at("preset") == argv[4], "diffusion native contexts");
+        for (const auto& row : edges.at("samples"))
+            captured["samples"].push_back(row);
+        DiffusionFrameTest::values(captured, read(directory / "checked.json"));
+        if (std::string_view(argv[3]) == "diffusion-frame")
+            DiffusionFrameTest::boundary(captured, read(directory / "checked.json"));
+        else
+            require(DiffusionFrameTest::products(argv[1], read(directory / "inputs.json").at("products")) == captured.at("products"), "complete diffusion route products match unchanged native captures");
+        return 0;
+    }
+
     if (argc == 5 && (std::string_view(argv[3]) == "halation-frame" || std::string_view(argv[3]) == "halation-frame-products")) {
         layouts();
         const auto manifest = read(argv[2]);

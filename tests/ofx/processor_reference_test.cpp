@@ -848,7 +848,7 @@ namespace {
                 throw std::runtime_error("halation descriptor: " + descriptorDiagnostic);
             }
             if (parameters.cameraDiffusion.active || parameters.enlargerDiffusion.active) {
-                if (!Spektrafilm::build_diffusion_frame_set_descriptor(
+                if (!JuicerTestSupport::prepare_diffusion_frame(
                         recipe.spatialOptics, test.route, pixelSizeUm, Spektrafilm::DiffusionFrameDomain{test.originX, test.originY, width, height}, diffusion, descriptorDiagnostic) ||
                     !diffusion) {
                     throw std::runtime_error("diffusion descriptor: " + descriptorDiagnostic);

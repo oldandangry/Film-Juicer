@@ -14,6 +14,141 @@
             return 1;                                                          \
         }                                                                      \
     } while (0)
+_Static_assert(sizeof(FjDiffusion) == 112 && _Alignof(FjDiffusion) == 8, "FjDiffusion layout");
+_Static_assert(offsetof(FjDiffusion, family) == 0, "FjDiffusion.family offset");
+_Static_assert(_Generic(((FjDiffusion*)0)->family, uint32_t: 1, default: 0), "FjDiffusion.family type");
+_Static_assert(offsetof(FjDiffusion, scatter_fraction) == 8, "FjDiffusion.scatter_fraction offset");
+_Static_assert(_Generic(((FjDiffusion*)0)->scatter_fraction, double: 1, default: 0), "FjDiffusion.scatter_fraction type");
+_Static_assert(offsetof(FjDiffusion, group_weights) == 16, "FjDiffusion.group_weights offset");
+_Static_assert(_Generic(&((FjDiffusion*)0)->group_weights, double (*)[3]: 1, default: 0), "FjDiffusion.group_weights type");
+_Static_assert(offsetof(FjDiffusion, group_lambda_um) == 40, "FjDiffusion.group_lambda_um offset");
+_Static_assert(_Generic(&((FjDiffusion*)0)->group_lambda_um, double (*)[3]: 1, default: 0), "FjDiffusion.group_lambda_um type");
+_Static_assert(offsetof(FjDiffusion, warmth) == 64, "FjDiffusion.warmth offset");
+_Static_assert(_Generic(((FjDiffusion*)0)->warmth, double: 1, default: 0), "FjDiffusion.warmth type");
+_Static_assert(offsetof(FjDiffusion, spatial_scale) == 72, "FjDiffusion.spatial_scale offset");
+_Static_assert(_Generic(((FjDiffusion*)0)->spatial_scale, double: 1, default: 0), "FjDiffusion.spatial_scale type");
+_Static_assert(offsetof(FjDiffusion, pixel_size_um) == 80, "FjDiffusion.pixel_size_um offset");
+_Static_assert(_Generic(((FjDiffusion*)0)->pixel_size_um, double: 1, default: 0), "FjDiffusion.pixel_size_um type");
+_Static_assert(offsetof(FjDiffusion, radius_px) == 88, "FjDiffusion.radius_px offset");
+_Static_assert(_Generic(((FjDiffusion*)0)->radius_px, int32_t: 1, default: 0), "FjDiffusion.radius_px type");
+_Static_assert(offsetof(FjDiffusion, sample_hash) == 96, "FjDiffusion.sample_hash offset");
+_Static_assert(_Generic(((FjDiffusion*)0)->sample_hash, uint64_t: 1, default: 0), "FjDiffusion.sample_hash type");
+_Static_assert(offsetof(FjDiffusion, hash) == 104, "FjDiffusion.hash offset");
+_Static_assert(_Generic(((FjDiffusion*)0)->hash, uint64_t: 1, default: 0), "FjDiffusion.hash type");
+_Static_assert(sizeof(FjDiffusionSampleInput) == 88 && _Alignof(FjDiffusionSampleInput) == 8, "FjDiffusionSampleInput layout");
+_Static_assert(offsetof(FjDiffusionSampleInput, family) == 0, "FjDiffusionSampleInput.family offset");
+_Static_assert(_Generic(((FjDiffusionSampleInput*)0)->family, uint32_t: 1, default: 0), "FjDiffusionSampleInput.family type");
+_Static_assert(offsetof(FjDiffusionSampleInput, group_weights) == 8, "FjDiffusionSampleInput.group_weights offset");
+_Static_assert(sizeof(((FjDiffusionSampleInput*)0)->group_weights) == 3 * sizeof(double), "FjDiffusionSampleInput.group_weights extent");
+_Static_assert(_Generic(&((FjDiffusionSampleInput*)0)->group_weights, double (*)[3]: 1, default: 0), "FjDiffusionSampleInput.group_weights type");
+_Static_assert(offsetof(FjDiffusionSampleInput, group_lambda_um) == 32, "FjDiffusionSampleInput.group_lambda_um offset");
+_Static_assert(sizeof(((FjDiffusionSampleInput*)0)->group_lambda_um) == 3 * sizeof(double), "FjDiffusionSampleInput.group_lambda_um extent");
+_Static_assert(_Generic(&((FjDiffusionSampleInput*)0)->group_lambda_um, double (*)[3]: 1, default: 0), "FjDiffusionSampleInput.group_lambda_um type");
+_Static_assert(offsetof(FjDiffusionSampleInput, warmth) == 56, "FjDiffusionSampleInput.warmth offset");
+_Static_assert(_Generic(((FjDiffusionSampleInput*)0)->warmth, double: 1, default: 0), "FjDiffusionSampleInput.warmth type");
+_Static_assert(offsetof(FjDiffusionSampleInput, spatial_scale) == 64, "FjDiffusionSampleInput.spatial_scale offset");
+_Static_assert(_Generic(((FjDiffusionSampleInput*)0)->spatial_scale, double: 1, default: 0), "FjDiffusionSampleInput.spatial_scale type");
+_Static_assert(offsetof(FjDiffusionSampleInput, pixel_size_um) == 72, "FjDiffusionSampleInput.pixel_size_um offset");
+_Static_assert(_Generic(((FjDiffusionSampleInput*)0)->pixel_size_um, double: 1, default: 0), "FjDiffusionSampleInput.pixel_size_um type");
+_Static_assert(offsetof(FjDiffusionSampleInput, width) == 80, "FjDiffusionSampleInput.width offset");
+_Static_assert(_Generic(((FjDiffusionSampleInput*)0)->width, int32_t: 1, default: 0), "FjDiffusionSampleInput.width type");
+_Static_assert(offsetof(FjDiffusionSampleInput, height) == 84, "FjDiffusionSampleInput.height offset");
+_Static_assert(_Generic(((FjDiffusionSampleInput*)0)->height, int32_t: 1, default: 0), "FjDiffusionSampleInput.height type");
+_Static_assert(sizeof(FjDiffusionSample) == 96 && _Alignof(FjDiffusionSample) == 8, "FjDiffusionSample layout");
+_Static_assert(offsetof(FjDiffusionSample, family) == 0, "FjDiffusionSample.family offset");
+_Static_assert(_Generic(((FjDiffusionSample*)0)->family, uint32_t: 1, default: 0), "FjDiffusionSample.family type");
+_Static_assert(offsetof(FjDiffusionSample, group_weights) == 8, "FjDiffusionSample.group_weights offset");
+_Static_assert(sizeof(((FjDiffusionSample*)0)->group_weights) == 3 * sizeof(double), "FjDiffusionSample.group_weights extent");
+_Static_assert(_Generic(&((FjDiffusionSample*)0)->group_weights, double (*)[3]: 1, default: 0), "FjDiffusionSample.group_weights type");
+_Static_assert(offsetof(FjDiffusionSample, group_lambda_um) == 32, "FjDiffusionSample.group_lambda_um offset");
+_Static_assert(sizeof(((FjDiffusionSample*)0)->group_lambda_um) == 3 * sizeof(double), "FjDiffusionSample.group_lambda_um extent");
+_Static_assert(_Generic(&((FjDiffusionSample*)0)->group_lambda_um, double (*)[3]: 1, default: 0), "FjDiffusionSample.group_lambda_um type");
+_Static_assert(offsetof(FjDiffusionSample, warmth) == 56, "FjDiffusionSample.warmth offset");
+_Static_assert(_Generic(((FjDiffusionSample*)0)->warmth, double: 1, default: 0), "FjDiffusionSample.warmth type");
+_Static_assert(offsetof(FjDiffusionSample, spatial_scale) == 64, "FjDiffusionSample.spatial_scale offset");
+_Static_assert(_Generic(((FjDiffusionSample*)0)->spatial_scale, double: 1, default: 0), "FjDiffusionSample.spatial_scale type");
+_Static_assert(offsetof(FjDiffusionSample, pixel_size_um) == 72, "FjDiffusionSample.pixel_size_um offset");
+_Static_assert(_Generic(((FjDiffusionSample*)0)->pixel_size_um, double: 1, default: 0), "FjDiffusionSample.pixel_size_um type");
+_Static_assert(offsetof(FjDiffusionSample, radius_px) == 80, "FjDiffusionSample.radius_px offset");
+_Static_assert(_Generic(((FjDiffusionSample*)0)->radius_px, int32_t: 1, default: 0), "FjDiffusionSample.radius_px type");
+_Static_assert(offsetof(FjDiffusionSample, hash) == 88, "FjDiffusionSample.hash offset");
+_Static_assert(_Generic(((FjDiffusionSample*)0)->hash, uint64_t: 1, default: 0), "FjDiffusionSample.hash type");
+_Static_assert(sizeof(FjDiffusionComponents) == 288 && _Alignof(FjDiffusionComponents) == 8, "FjDiffusionComponents layout");
+_Static_assert(offsetof(FjDiffusionComponents, lambda_px) == 0, "FjDiffusionComponents.lambda_px offset");
+_Static_assert(sizeof(((FjDiffusionComponents*)0)->lambda_px) == 9 * sizeof(double), "FjDiffusionComponents.lambda_px extent");
+_Static_assert(_Generic(&((FjDiffusionComponents*)0)->lambda_px, double (*)[9]: 1, default: 0), "FjDiffusionComponents.lambda_px type");
+_Static_assert(offsetof(FjDiffusionComponents, red_weights) == 72, "FjDiffusionComponents.red_weights offset");
+_Static_assert(sizeof(((FjDiffusionComponents*)0)->red_weights) == 9 * sizeof(double), "FjDiffusionComponents.red_weights extent");
+_Static_assert(_Generic(&((FjDiffusionComponents*)0)->red_weights, double (*)[9]: 1, default: 0), "FjDiffusionComponents.red_weights type");
+_Static_assert(offsetof(FjDiffusionComponents, green_weights) == 144, "FjDiffusionComponents.green_weights offset");
+_Static_assert(sizeof(((FjDiffusionComponents*)0)->green_weights) == 9 * sizeof(double), "FjDiffusionComponents.green_weights extent");
+_Static_assert(_Generic(&((FjDiffusionComponents*)0)->green_weights, double (*)[9]: 1, default: 0), "FjDiffusionComponents.green_weights type");
+_Static_assert(offsetof(FjDiffusionComponents, blue_weights) == 216, "FjDiffusionComponents.blue_weights offset");
+_Static_assert(sizeof(((FjDiffusionComponents*)0)->blue_weights) == 9 * sizeof(double), "FjDiffusionComponents.blue_weights extent");
+_Static_assert(_Generic(&((FjDiffusionComponents*)0)->blue_weights, double (*)[9]: 1, default: 0), "FjDiffusionComponents.blue_weights type");
+_Static_assert(sizeof(FjDiffusionFrameInput) == 240 && _Alignof(FjDiffusionFrameInput) == 8, "FjDiffusionFrameInput layout");
+_Static_assert(offsetof(FjDiffusionFrameInput, route) == 0, "FjDiffusionFrameInput.route offset");
+_Static_assert(_Generic(((FjDiffusionFrameInput*)0)->route, uint32_t: 1, default: 0), "FjDiffusionFrameInput.route type");
+_Static_assert(offsetof(FjDiffusionFrameInput, full_frame) == 4, "FjDiffusionFrameInput.full_frame offset");
+_Static_assert(_Generic(((FjDiffusionFrameInput*)0)->full_frame, FjExtent: 1, default: 0), "FjDiffusionFrameInput.full_frame type");
+_Static_assert(offsetof(FjDiffusionFrameInput, pixel_size_um) == 24, "FjDiffusionFrameInput.pixel_size_um offset");
+_Static_assert(_Generic(((FjDiffusionFrameInput*)0)->pixel_size_um, double: 1, default: 0), "FjDiffusionFrameInput.pixel_size_um type");
+_Static_assert(offsetof(FjDiffusionFrameInput, camera) == 32, "FjDiffusionFrameInput.camera offset");
+_Static_assert(_Generic(((FjDiffusionFrameInput*)0)->camera, FjDiffusionRecipe: 1, default: 0), "FjDiffusionFrameInput.camera type");
+_Static_assert(offsetof(FjDiffusionFrameInput, enlarger) == 136, "FjDiffusionFrameInput.enlarger offset");
+_Static_assert(_Generic(((FjDiffusionFrameInput*)0)->enlarger, FjDiffusionRecipe: 1, default: 0), "FjDiffusionFrameInput.enlarger type");
+_Static_assert(sizeof(FjDiffusionFrameSet) == 256 && _Alignof(FjDiffusionFrameSet) == 8, "FjDiffusionFrameSet layout");
+_Static_assert(offsetof(FjDiffusionFrameSet, route) == 0, "FjDiffusionFrameSet.route offset");
+_Static_assert(_Generic(((FjDiffusionFrameSet*)0)->route, uint32_t: 1, default: 0), "FjDiffusionFrameSet.route type");
+_Static_assert(offsetof(FjDiffusionFrameSet, flags) == 4, "FjDiffusionFrameSet.flags offset");
+_Static_assert(_Generic(((FjDiffusionFrameSet*)0)->flags, uint32_t: 1, default: 0), "FjDiffusionFrameSet.flags type");
+_Static_assert(offsetof(FjDiffusionFrameSet, full_frame) == 8, "FjDiffusionFrameSet.full_frame offset");
+_Static_assert(_Generic(((FjDiffusionFrameSet*)0)->full_frame, FjExtent: 1, default: 0), "FjDiffusionFrameSet.full_frame type");
+_Static_assert(offsetof(FjDiffusionFrameSet, camera) == 24, "FjDiffusionFrameSet.camera offset");
+_Static_assert(_Generic(((FjDiffusionFrameSet*)0)->camera, FjDiffusion: 1, default: 0), "FjDiffusionFrameSet.camera type");
+_Static_assert(offsetof(FjDiffusionFrameSet, enlarger) == 136, "FjDiffusionFrameSet.enlarger offset");
+_Static_assert(_Generic(((FjDiffusionFrameSet*)0)->enlarger, FjDiffusion: 1, default: 0), "FjDiffusionFrameSet.enlarger type");
+_Static_assert(offsetof(FjDiffusionFrameSet, hash) == 248, "FjDiffusionFrameSet.hash offset");
+_Static_assert(_Generic(((FjDiffusionFrameSet*)0)->hash, uint64_t: 1, default: 0), "FjDiffusionFrameSet.hash type");
+_Static_assert(sizeof(FjDiffusionFailure) == 12 && _Alignof(FjDiffusionFailure) == 4, "FjDiffusionFailure layout");
+_Static_assert(offsetof(FjDiffusionFailure, reason) == 0, "FjDiffusionFailure.reason offset");
+_Static_assert(_Generic(((FjDiffusionFailure*)0)->reason, uint32_t: 1, default: 0), "FjDiffusionFailure.reason type");
+_Static_assert(offsetof(FjDiffusionFailure, stage) == 4, "FjDiffusionFailure.stage offset");
+_Static_assert(_Generic(((FjDiffusionFailure*)0)->stage, uint32_t: 1, default: 0), "FjDiffusionFailure.stage type");
+_Static_assert(offsetof(FjDiffusionFailure, field) == 8, "FjDiffusionFailure.field offset");
+_Static_assert(_Generic(((FjDiffusionFailure*)0)->field, uint32_t: 1, default: 0), "FjDiffusionFailure.field type");
+_Static_assert(_Generic(&fj_legacy_diffusion_sample_prepare, FjStatus (*)(const FjDiffusionSampleInput*, FjDiffusionSample*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_diffusion_sample_prepare signature");
+_Static_assert(_Generic(&fj_legacy_diffusion_components_prepare, FjStatus (*)(const FjDiffusionSample*, FjDiffusionComponents*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_diffusion_components_prepare signature");
+_Static_assert(_Generic(&fj_legacy_diffusion_frame_prepare, FjStatus (*)(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_diffusion_frame_prepare signature");
+_Static_assert(FJ_DIFFUSION_REASON_NONE == 0U, "FJ_DIFFUSION_REASON_NONE value");
+_Static_assert(FJ_DIFFUSION_REASON_RAW == 1U, "FJ_DIFFUSION_REASON_RAW value");
+_Static_assert(FJ_DIFFUSION_REASON_PREPARATION == 2U, "FJ_DIFFUSION_REASON_PREPARATION value");
+_Static_assert(FJ_DIFFUSION_REASON_PANIC == 3U, "FJ_DIFFUSION_REASON_PANIC value");
+_Static_assert(FJ_DIFFUSION_STAGE_NONE == 0U, "FJ_DIFFUSION_STAGE_NONE value");
+_Static_assert(FJ_DIFFUSION_STAGE_CAMERA == 1U, "FJ_DIFFUSION_STAGE_CAMERA value");
+_Static_assert(FJ_DIFFUSION_STAGE_ENLARGER == 2U, "FJ_DIFFUSION_STAGE_ENLARGER value");
+_Static_assert(FJ_DIFFUSION_FIELD_NONE == 0U, "FJ_DIFFUSION_FIELD_NONE value");
+_Static_assert(FJ_DIFFUSION_FIELD_PIXEL_SIZE_UM == 1U, "FJ_DIFFUSION_FIELD_PIXEL_SIZE_UM value");
+_Static_assert(FJ_DIFFUSION_FIELD_FULL_FRAME_EXTENT == 2U, "FJ_DIFFUSION_FIELD_FULL_FRAME_EXTENT value");
+_Static_assert(FJ_DIFFUSION_FIELD_FAMILY == 3U, "FJ_DIFFUSION_FIELD_FAMILY value");
+_Static_assert(FJ_DIFFUSION_FIELD_RADIUS_PIXELS == 4U, "FJ_DIFFUSION_FIELD_RADIUS_PIXELS value");
+_Static_assert(FJ_DIFFUSION_FIELD_SAMPLE_DESCRIPTOR_HASH == 5U, "FJ_DIFFUSION_FIELD_SAMPLE_DESCRIPTOR_HASH value");
+_Static_assert(FJ_DIFFUSION_FIELD_SAMPLE_DESCRIPTOR_INACTIVE == 6U, "FJ_DIFFUSION_FIELD_SAMPLE_DESCRIPTOR_INACTIVE value");
+_Static_assert(FJ_DIFFUSION_FIELD_GROUP_WEIGHTS == 7U, "FJ_DIFFUSION_FIELD_GROUP_WEIGHTS value");
+_Static_assert(FJ_DIFFUSION_FIELD_GROUP_CENTERS_UM == 8U, "FJ_DIFFUSION_FIELD_GROUP_CENTERS_UM value");
+_Static_assert(FJ_DIFFUSION_FIELD_EFFECTIVE_WARMTH == 9U, "FJ_DIFFUSION_FIELD_EFFECTIVE_WARMTH value");
+_Static_assert(FJ_DIFFUSION_FIELD_SPATIAL_SCALE == 10U, "FJ_DIFFUSION_FIELD_SPATIAL_SCALE value");
+_Static_assert(FJ_DIFFUSION_FIELD_COMPONENT_EXPANSION == 11U, "FJ_DIFFUSION_FIELD_COMPONENT_EXPANSION value");
+_Static_assert(FJ_DIFFUSION_FIELD_COMPONENT_COUNT == 12U, "FJ_DIFFUSION_FIELD_COMPONENT_COUNT value");
+_Static_assert(FJ_DIFFUSION_FIELD_HALO_CHANNEL_WEIGHTS == 13U, "FJ_DIFFUSION_FIELD_HALO_CHANNEL_WEIGHTS value");
+_Static_assert(FJ_DIFFUSION_FIELD_COMPONENT_OUTPUT == 14U, "FJ_DIFFUSION_FIELD_COMPONENT_OUTPUT value");
+_Static_assert(FJ_DIFFUSION_FIELD_ROUTE == 15U, "FJ_DIFFUSION_FIELD_ROUTE value");
+_Static_assert(FJ_DIFFUSION_FIELD_FULL_FRAME_DOMAIN == 16U, "FJ_DIFFUSION_FIELD_FULL_FRAME_DOMAIN value");
+_Static_assert(FJ_DIFFUSION_FIELD_ENLARGER_ROUTE == 17U, "FJ_DIFFUSION_FIELD_ENLARGER_ROUTE value");
+_Static_assert(FJ_DIFFUSION_FIELD_LINEAR_DOMAIN == 18U, "FJ_DIFFUSION_FIELD_LINEAR_DOMAIN value");
+_Static_assert(FJ_DIFFUSION_FIELD_STAGE_SAMPLE == 19U, "FJ_DIFFUSION_FIELD_STAGE_SAMPLE value");
+_Static_assert(FJ_DIFFUSION_FIELD_STAGE_HASH == 20U, "FJ_DIFFUSION_FIELD_STAGE_HASH value");
+_Static_assert(FJ_DIFFUSION_FIELD_FRAME_SET_HASH == 21U, "FJ_DIFFUSION_FIELD_FRAME_SET_HASH value");
 _Static_assert(_Generic(&fj_legacy_film_development_acquire, FjStatus (*)(const FjFilmProfile*, uint32_t, float, uint32_t, FjFilmDevelopmentOwner**, FjErrorBuffer*): 1, default: 0), "acquire C11 type");
 _Static_assert(_Generic(&fj_legacy_film_development_view, FjStatus (*)(const FjFilmDevelopmentOwner*, FjFilmDevelopmentView*, FjErrorBuffer*): 1, default: 0), "view C11 type");
 _Static_assert(_Generic(&fj_legacy_film_development_release, FjStatus (*)(FjFilmDevelopmentOwner*, FjErrorBuffer*): 1, default: 0), "release C11 type");
@@ -1983,6 +2118,239 @@ static int halation_frame_values(void) {
 }
 
 
+static double diffusion_double(uint64_t word) {
+    double value;
+    memcpy(&value, &word, sizeof(value));
+    return value;
+}
+static uint64_t diffusion_word(double value) {
+    uint64_t word;
+    memcpy(&word, &value, sizeof(word));
+    return word;
+}
+static int32_t diffusion_integer(uint64_t word) {
+    uint32_t low = (uint32_t)word;
+    int32_t value;
+    memcpy(&value, &low, sizeof(value));
+    return value;
+}
+static void diffusion_recipe_input(const uint64_t* words, FjDiffusionRecipe* out) {
+    out->domain = (uint32_t)words[0];
+    out->active = (uint32_t)words[1];
+    out->family = (uint32_t)words[2];
+    out->scatter_fraction = diffusion_double(words[3]);
+    for (size_t i = 0; i < 3; ++i) {
+        out->group_weights[i] = diffusion_double(words[4 + i]);
+        out->group_lambda_um[i] = diffusion_double(words[7 + i]);
+    }
+    out->warmth = diffusion_double(words[10]);
+    out->spatial_scale = diffusion_double(words[11]);
+    out->resolved_hash = words[12];
+    out->hash = words[13];
+}
+static void diffusion_sample_input(const uint64_t* words, FjDiffusionSampleInput* out) {
+    out->family = (uint32_t)words[0];
+    for (size_t i = 0; i < 3; ++i) {
+        out->group_weights[i] = diffusion_double(words[1 + i]);
+        out->group_lambda_um[i] = diffusion_double(words[4 + i]);
+    }
+    out->warmth = diffusion_double(words[7]);
+    out->spatial_scale = diffusion_double(words[8]);
+    out->pixel_size_um = diffusion_double(words[9]);
+    out->width = diffusion_integer(words[10]);
+    out->height = diffusion_integer(words[11]);
+}
+static void diffusion_component_input(const uint64_t* words, FjDiffusionSample* out) {
+    out->family = (uint32_t)words[0];
+    for (size_t i = 0; i < 3; ++i) {
+        out->group_weights[i] = diffusion_double(words[1 + i]);
+        out->group_lambda_um[i] = diffusion_double(words[4 + i]);
+    }
+    out->warmth = diffusion_double(words[7]);
+    out->spatial_scale = diffusion_double(words[8]);
+    out->pixel_size_um = diffusion_double(words[9]);
+    out->radius_px = diffusion_integer(words[10]);
+    out->hash = words[11];
+}
+static void diffusion_frame_input(const uint64_t* words, FjDiffusionFrameInput* out) {
+    out->route = (uint32_t)words[0];
+    out->full_frame.x = diffusion_integer(words[1]);
+    out->full_frame.y = diffusion_integer(words[2]);
+    out->full_frame.width = diffusion_integer(words[3]);
+    out->full_frame.height = diffusion_integer(words[4]);
+    out->pixel_size_um = diffusion_double(words[5]);
+    diffusion_recipe_input(words + 6, &out->camera);
+    diffusion_recipe_input(words + 20, &out->enlarger);
+}
+static void diffusion_sample_words(const FjDiffusionSample* v, uint64_t* words) {
+    words[0] = v->family;
+    for (size_t i = 0; i < 3; ++i) {
+        words[1 + i] = diffusion_word(v->group_weights[i]);
+        words[4 + i] = diffusion_word(v->group_lambda_um[i]);
+    }
+    words[7] = diffusion_word(v->warmth);
+    words[8] = diffusion_word(v->spatial_scale);
+    words[9] = diffusion_word(v->pixel_size_um);
+    words[10] = (uint32_t)v->radius_px;
+    words[11] = v->hash;
+}
+static void diffusion_stage_words(const FjDiffusion* v, uint64_t* words) {
+    words[0] = v->family;
+    words[1] = diffusion_word(v->scatter_fraction);
+    for (size_t i = 0; i < 3; ++i) {
+        words[2 + i] = diffusion_word(v->group_weights[i]);
+        words[5 + i] = diffusion_word(v->group_lambda_um[i]);
+    }
+    words[8] = diffusion_word(v->warmth);
+    words[9] = diffusion_word(v->spatial_scale);
+    words[10] = diffusion_word(v->pixel_size_um);
+    words[11] = (uint32_t)v->radius_px;
+    words[12] = v->sample_hash;
+    words[13] = v->hash;
+}
+static void diffusion_frame_words(const FjDiffusionFrameSet* v, uint64_t* words) {
+    words[0] = v->route;
+    words[1] = v->flags;
+    words[2] = (uint32_t)v->full_frame.x;
+    words[3] = (uint32_t)v->full_frame.y;
+    words[4] = (uint32_t)v->full_frame.width;
+    words[5] = (uint32_t)v->full_frame.height;
+    diffusion_stage_words(&v->camera, words + 6);
+    diffusion_stage_words(&v->enlarger, words + 20);
+    words[34] = v->hash;
+}
+static int diffusion_frame_values(void) {
+    for (size_t index = 0; index < sizeof(diffusion_frame_rows) / sizeof(diffusion_frame_rows[0]); ++index) {
+        const DiffusionFrameRow* expected = &diffusion_frame_rows[index];
+        CHECK(expected->operation >= 1 && expected->operation <= 3 && expected->mode <= 14);
+        CHECK(expected->input_count == (expected->operation == 3 ? 34U : 12U));
+        CHECK(expected->output_count == (expected->operation == 1 ? 12U : expected->operation == 2 ? 36U
+                                                                                                   : 35U));
+        FjDiffusionSampleInput sample_input = {0};
+        FjDiffusionSample component_input = {0}, sample = {0};
+        FjDiffusionFrameInput frame_input = {0};
+        FjDiffusionComponents components = {0};
+        FjDiffusionFrameSet frame = {0};
+        diffusion_sample_input(expected->input, &sample_input);
+        diffusion_component_input(expected->input, &component_input);
+        diffusion_frame_input(expected->input, &frame_input);
+        memset(&sample, 0x55, sizeof(sample));
+        memset(&components, 0x55, sizeof(components));
+        memset(&frame, 0x55, sizeof(frame));
+        FjDiffusionFailure failure = {99, 99, 99};
+        char text[257];
+        memset(text, 'Q', sizeof(text));
+        FjErrorBuffer error = {text, 256, 99};
+        union {
+            max_align_t alignment;
+            unsigned char bytes[sizeof(FjDiffusionFrameInput) + 1];
+        } bad_input;
+        union {
+            max_align_t alignment;
+            unsigned char bytes[sizeof(FjDiffusionFrameSet) + 1];
+        } bad_output;
+        union {
+            max_align_t alignment;
+            unsigned char bytes[sizeof(FjDiffusionFailure) + 1];
+        } bad_failure;
+        union {
+            max_align_t alignment;
+            unsigned char bytes[sizeof(FjErrorBuffer) + 1];
+        } bad_error;
+        memset(&bad_input, 0, sizeof(bad_input));
+        memset(&bad_output, 0, sizeof(bad_output));
+        memset(&bad_failure, 0, sizeof(bad_failure));
+        memset(&bad_error, 0, sizeof(bad_error));
+        const void* input = expected->operation == 1 ? (const void*)&sample_input : expected->operation == 2 ? (const void*)&component_input
+                                                                                                             : (const void*)&frame_input;
+        void* output = expected->operation == 1 ? (void*)&sample : expected->operation == 2 ? (void*)&components
+                                                                                            : (void*)&frame;
+        if (expected->mode == 1 || expected->mode == 6 || expected->mode == 7 || expected->mode == 8)
+            input = NULL;
+        if (expected->mode == 2)
+            output = NULL;
+        FjDiffusionFailure* details = expected->mode == 3 ? NULL : &failure;
+        FjErrorBuffer* diagnostic = expected->mode == 5 ? NULL : &error;
+        if (expected->mode == 4)
+            error.data = NULL;
+        if (expected->mode == 6) {
+            error.data = (char*)UINTPTR_MAX;
+            error.capacity = 0;
+        }
+        if (expected->mode == 7)
+            error.capacity = 1;
+        if (expected->mode == 8)
+            error.capacity = 7;
+        if (expected->mode == 9)
+            input = bad_input.bytes + 1;
+        if (expected->mode == 10)
+            output = bad_output.bytes + 1;
+        if (expected->mode == 11)
+            details = (FjDiffusionFailure*)(bad_failure.bytes + 1);
+        if (expected->mode == 12)
+            diagnostic = (FjErrorBuffer*)(bad_error.bytes + 1);
+        if (expected->mode == 13)
+            error.capacity = SIZE_MAX;
+        if (expected->mode == 14) {
+            error.data = (char*)(UINTPTR_MAX - 1);
+            error.capacity = 7;
+        }
+        FjStatus result;
+        if (expected->operation == 1)
+            result = fj_legacy_diffusion_sample_prepare((const FjDiffusionSampleInput*)input, (FjDiffusionSample*)output, details, diagnostic);
+        else if (expected->operation == 2)
+            result = fj_legacy_diffusion_components_prepare((const FjDiffusionSample*)input, (FjDiffusionComponents*)output, details, diagnostic);
+        else
+            result = fj_legacy_diffusion_frame_prepare((const FjDiffusionFrameInput*)input, (FjDiffusionFrameSet*)output, details, diagnostic);
+        CHECK(result.category == expected->status.category && result.api == expected->status.api && result.native_code == expected->status.native_code);
+        if (expected->failure_valid)
+            CHECK(failure.reason == expected->failure[0] && failure.stage == expected->failure[1] && failure.field == expected->failure[2]);
+        uint64_t words[36] = {0};
+        if (expected->output_valid) {
+            if (expected->operation == 1)
+                diffusion_sample_words(&sample, words);
+            else if (expected->operation == 2) {
+                for (size_t i = 0; i < 9; ++i) {
+                    words[i] = diffusion_word(components.lambda_px[i]);
+                    words[9 + i] = diffusion_word(components.red_weights[i]);
+                    words[18 + i] = diffusion_word(components.green_weights[i]);
+                    words[27 + i] = diffusion_word(components.blue_weights[i]);
+                }
+            } else
+                diffusion_frame_words(&frame, words);
+            for (size_t i = 0; i < expected->output_count; ++i)
+                CHECK(words[i] == expected->output[i]);
+        }
+        const char* actual_text = expected->error_valid && error.capacity ? error.data : "";
+        if (expected->error_valid) {
+            CHECK(error.length == strlen(expected->diagnostic));
+            CHECK(strncmp(actual_text, expected->diagnostic, error.length) == 0);
+            if (error.capacity) {
+                CHECK(actual_text[error.length] == '\0');
+                CHECK(text[error.capacity] == 'Q');
+            }
+        }
+        printf("DIFFUSION_FRAME_RESULT {\"case\":\"%s\",\"envelope\":[%" PRIu32 ",%" PRIu32 ",%" PRId32 "],\"failure\":", expected->name, result.category, result.api, result.native_code);
+        if (expected->failure_valid)
+            printf("[%" PRIu32 ",%" PRIu32 ",%" PRIu32 "]", failure.reason, failure.stage, failure.field);
+        else
+            printf("null");
+        printf(",\"output\":");
+        if (expected->output_valid) {
+            printf("[");
+            for (size_t i = 0; i < expected->output_count; ++i)
+                printf("%s%" PRIu64, i ? "," : "", words[i]);
+            printf("]");
+        } else
+            printf("null");
+        if (expected->error_valid)
+            printf(",\"diagnostic\":\"%.*s\"}\n", (int)error.length, actual_text);
+        else
+            printf(",\"diagnostic\":null}\n");
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -2011,6 +2379,7 @@ int main(int argc, char** argv) {
     CHECK(gaussian_values() == 0);
     CHECK(frame_values() == 0);
     CHECK(halation_frame_values() == 0);
+    CHECK(diffusion_frame_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

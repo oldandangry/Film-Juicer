@@ -8,13 +8,15 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
-#include <string_view>
+#include <utility>
 
 #include "GamutCompression.h"
 #include "RustGamutBridge.h"
 #include "RustAssetBridge.h"
 #include "RustFilmRecipeBridge.h"
+#include "RustDiffusionBridge.h"
 #include "Cuda/JuicerCudaExecutor.h"
+#include "Cuda/JuicerCudaFailure.h"
 #include "Hash.h"
 #include "ColorTransforms.h"
 #if defined(JUICER_ASSET_LOOKUP_TEST_HOOK)
@@ -488,154 +490,6 @@ namespace {
         return hash;
     }
 
-    constexpr std::uint64_t kDiffusionFrameFnvPrime = 0x100000001b3ULL;
-
-    void fail_diffusion_frame_descriptor(
-        std::string& diagnostic,
-        std::string_view field) {
-        diagnostic = "InvalidDiffusionFrameDescriptor field=";
-        diagnostic.append(field);
-    }
-
-    void hash_diffusion_frame_byte(
-        std::uint64_t& hash,
-        std::uint8_t value) {
-        hash ^= static_cast<std::uint64_t>(value);
-        hash *= kDiffusionFrameFnvPrime;
-    }
-
-    void hash_diffusion_frame_u32_le(
-        std::uint64_t& hash,
-        std::uint32_t value) {
-        for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
-            hash_diffusion_frame_byte(
-                hash,
-                static_cast<std::uint8_t>((value >> (byte * 8)) & 0xffu));
-        }
-    }
-
-    void hash_diffusion_frame_u64_le(
-        std::uint64_t& hash,
-        std::uint64_t value) {
-        for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
-            hash_diffusion_frame_byte(
-                hash,
-                static_cast<std::uint8_t>((value >> (byte * 8)) & 0xffu));
-        }
-    }
-
-    void hash_diffusion_frame_tag(
-        std::uint64_t& hash,
-        std::string_view tag) {
-        for (const char value : tag) {
-            hash_diffusion_frame_byte(
-                hash,
-                static_cast<std::uint8_t>(value));
-        }
-        hash_diffusion_frame_byte(hash, 0);
-    }
-
-    void hash_diffusion_frame_double(
-        std::uint64_t& hash,
-        double value) {
-        if (value == 0.0) {
-            value = 0.0;
-        }
-        hash_diffusion_frame_u64_le(
-            hash,
-            std::bit_cast<std::uint64_t>(value));
-    }
-
-    void hash_diffusion_frame_domain(
-        std::uint64_t& hash,
-        const Spektrafilm::DiffusionFrameDomain& domain) {
-        hash_diffusion_frame_u32_le(
-            hash,
-            static_cast<std::uint32_t>(domain.originX));
-        hash_diffusion_frame_u32_le(
-            hash,
-            static_cast<std::uint32_t>(domain.originY));
-        hash_diffusion_frame_u32_le(
-            hash,
-            static_cast<std::uint32_t>(domain.width));
-        hash_diffusion_frame_u32_le(
-            hash,
-            static_cast<std::uint32_t>(domain.height));
-    }
-
-    bool valid_diffusion_frame_route(Spektrafilm::ScanRoute route) {
-        using Spektrafilm::ScanRoute;
-        switch (route) {
-            case ScanRoute::NegativeDirectScan:
-            case ScanRoute::NegativePrintScan:
-            case ScanRoute::PositiveDirectScan:
-            case ScanRoute::PositivePrintScan:
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    bool build_diffusion_stage_frame_descriptor(
-        const DiffusionFilterOpticsRecipe& component,
-        Spektrafilm::DiffusionLinearStage stage,
-        double pixelSizeUm,
-        Spektrafilm::DiffusionFrameDomain fullFrame,
-        Spektrafilm::DiffusionStageFrameDescriptor& out,
-        std::string& diagnostic) {
-        const bool cameraStage =
-            stage == Spektrafilm::DiffusionLinearStage::CameraFilmLinear;
-        const char* domainField =
-            cameraStage ? "camera_linear_domain" : "enlarger_linear_domain";
-        const char* sampleField =
-            cameraStage ? "camera_sample" : "enlarger_sample";
-        const char* stageHashField =
-            cameraStage ? "camera_hash" : "enlarger_hash";
-
-        const Spektrafilm::SpatialOpticsDomain expectedDomain =
-            cameraStage
-                ? Spektrafilm::SpatialOpticsDomain::FilmLinearExposure
-                : Spektrafilm::SpatialOpticsDomain::PrintLinearExposure;
-        if (component.domain != expectedDomain) {
-            fail_diffusion_frame_descriptor(diagnostic, domainField);
-            return false;
-        }
-
-        Spektrafilm::DiffusionPsfSampleDescriptor sample{};
-        std::string sampleDiagnostic;
-        if (!Spektrafilm::build_diffusion_psf_sample_descriptor(
-                component.resolved,
-                pixelSizeUm,
-                fullFrame.width,
-                fullFrame.height,
-                sample,
-                sampleDiagnostic)) {
-            fail_diffusion_frame_descriptor(diagnostic, sampleField);
-            return false;
-        }
-
-        out = Spektrafilm::DiffusionStageFrameDescriptor{};
-        out.stage = stage;
-        out.scatterFraction = component.resolved.scatterFraction;
-        out.sample = sample;
-
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_diffusion_frame_tag(hash, "diffusion-stage-frame");
-        hash_diffusion_frame_u32_le(
-            hash,
-            Spektrafilm::kDiffusionFrameDescriptorSchemaVersion);
-        hash_diffusion_frame_byte(
-            hash,
-            static_cast<std::uint8_t>(out.stage));
-        hash_diffusion_frame_double(hash, out.scatterFraction);
-        hash_diffusion_frame_u64_le(hash, out.sample.hash);
-        out.hash = hash;
-        if (out.hash == 0) {
-            fail_diffusion_frame_descriptor(diagnostic, stageHashField);
-            return false;
-        }
-        return true;
-    }
 
 } // namespace
 
@@ -1135,90 +989,10 @@ namespace Spektrafilm {
         DiffusionFrameDomain fullFrame,
         std::optional<DiffusionFrameSetDescriptor>& out,
         std::string& diagnostic) {
-        out.reset();
-        diagnostic.clear();
-
-        const bool cameraActive = optics.cameraDiffusion.hash != 0;
-        const bool enlargerActive = optics.enlargerDiffusion.hash != 0;
-        if (!cameraActive && !enlargerActive) {
-            return true;
-        }
-        if (!valid_diffusion_frame_route(route)) {
-            fail_diffusion_frame_descriptor(diagnostic, "route");
-            return false;
-        }
-        if (fullFrame.width < 2 || fullFrame.height < 2) {
-            fail_diffusion_frame_descriptor(diagnostic, "full_frame_domain");
-            return false;
-        }
-        if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0)) {
-            fail_diffusion_frame_descriptor(diagnostic, "pixel_size_um");
-            return false;
-        }
-        if (enlargerActive && !scan_route_is_print(route)) {
-            fail_diffusion_frame_descriptor(diagnostic, "enlarger_route");
-            return false;
-        }
-
-        DiffusionFrameSetDescriptor descriptor{};
-        descriptor.route = route;
-        descriptor.fullFrame = fullFrame;
-        if (cameraActive) {
-            DiffusionStageFrameDescriptor camera{};
-            if (!build_diffusion_stage_frame_descriptor(
-                    optics.cameraDiffusion,
-                    DiffusionLinearStage::CameraFilmLinear,
-                    pixelSizeUm,
-                    fullFrame,
-                    camera,
-                    diagnostic)) {
-                return false;
-            }
-            descriptor.camera = camera;
-        }
-        if (enlargerActive) {
-            DiffusionStageFrameDescriptor enlarger{};
-            if (!build_diffusion_stage_frame_descriptor(
-                    optics.enlargerDiffusion,
-                    DiffusionLinearStage::EnlargerPrintLinear,
-                    pixelSizeUm,
-                    fullFrame,
-                    enlarger,
-                    diagnostic)) {
-                return false;
-            }
-            descriptor.enlarger = enlarger;
-        }
-
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_diffusion_frame_tag(hash, "diffusion-frame-set");
-        hash_diffusion_frame_u32_le(
-            hash,
-            kDiffusionFrameDescriptorSchemaVersion);
-        hash_diffusion_frame_byte(
-            hash,
-            static_cast<std::uint8_t>(descriptor.route));
-        hash_diffusion_frame_domain(hash, descriptor.fullFrame);
-        hash_diffusion_frame_byte(
-            hash,
-            descriptor.camera.has_value() ? 1u : 0u);
-        if (descriptor.camera) {
-            hash_diffusion_frame_u64_le(hash, descriptor.camera->hash);
-        }
-        hash_diffusion_frame_byte(
-            hash,
-            descriptor.enlarger.has_value() ? 1u : 0u);
-        if (descriptor.enlarger) {
-            hash_diffusion_frame_u64_le(hash, descriptor.enlarger->hash);
-        }
-        descriptor.hash = hash;
-        if (descriptor.hash == 0) {
-            fail_diffusion_frame_descriptor(diagnostic, "frame_set_hash");
-            return false;
-        }
-
-        out = descriptor;
-        return true;
+        JuicerCuda::Failure failure;
+        const bool success = JuicerDiffusion::prepare_frame(optics, route, pixelSizeUm, fullFrame, out, failure);
+        diagnostic = std::move(failure.diagnostic);
+        return success;
     }
 
     void resolve_spatial_dir_scratch(SpatialDirDescriptor& descriptor) noexcept {

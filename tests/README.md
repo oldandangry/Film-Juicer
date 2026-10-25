@@ -38,16 +38,17 @@ for the supported local inputs and explicit checkpoint commands.
 ## Validation cadence
 
 Choose checks from the changed contract and the checkpoint being completed.
-Record the affected test names, native/CUDA/Rust compilation contexts and required
+Before execution, name the supported target, test and quality commands, their
+expected membership, and the affected native/CUDA/Rust compilation contexts and
 platform/profile/feature combinations in the existing change description or
-handoff before running them. A focused handoff does not require complete aggregate
-qualification and must not be described as full product acceptance.
+handoff. A focused handoff does not require complete aggregate qualification and
+must not be described as full product acceptance.
 
 | Change or checkpoint | Required checks |
 | --- | --- |
 | Documentation or status only | Whitespace, link/reference consistency and contextual review. No native build, product test or compiler gate solely for prose. |
-| Editing a mathematical leaf or other bounded implementation | Touched formatting, compile/type checks, owning mathematical or behavioral cases and the nearest real consumer. Exercise new compiled cases on both native platforms early. |
-| Stable family cutover or source deletion | The affected family's prescribed numerical cases in Linux/Windows Debug/Release; affected ABI, complete-construction, failure, identity, cache, caller and downstream GPU route cases; scoped native/CUDA/Rust quality and independent contextual naming/ownership review. Replacement fixture consumers and real caller evidence must pass before deleting their producer. |
+| Editing a mathematical leaf or other bounded implementation | Touched formatting, compile/type checks, owning mathematical or behavioral cases and the nearest real consumer. Exercise touched C11/native fixture/helper compile cases and scoped quality checks on both native platforms early, before freezing for broad qualification. |
+| Stable family cutover or source deletion | The affected family's prescribed numerical cases in Linux/Windows Debug/Release; affected ABI, complete-construction, failure, identity, cache, caller and downstream GPU route cases; scoped native/CUDA/Rust quality and independent contextual naming/ownership review. For a staged cutover, replacement fixture consumers and real caller evidence must pass before deleting their producer. As an alternative for a prospectively planned, reconstructible mathematical-producer cutover, capture the old producer independently and pass replacement core/ABI/fixture preparation before cutover; switch the caller and delete the old body in one candidate, then pass actual replacement-caller and downstream evidence before acceptance. This applies only to new handoffs; an existing handoff's stricter stage order remains unless explicitly amended. Lifecycle, ownership and other deletion gates remain. |
 | New or changed ABI, exports, feature isolation or ownership boundary | Both native Release testing-OFF probes once on the stable boundary, plus relevant testing-ON boundary/lifetime checks. Changes to consumed probe inputs require fresh evidence. |
 | Broad shared build/lifetime change, designated prepared-state integration, instance-state stage exit, OFX cutover, or final release qualification | Complete product and boundary selections in all four presets, tooling once per native platform in Debug, corpus once in Linux Debug, and the applicable OFF, installed-host and package gates. |
 | Publication or merge | Existing required hosted checks on the actual candidate, plus local gates selected by the preceding rows. Hosted host-only results do not establish GPU or Resolve acceptance. |
@@ -63,11 +64,25 @@ required cases follows from this cadence.
 
 Before a designated broad checkpoint, finish expectation adoption and inspect all
 readers and downstream identity/seed consumers, including their later assertions.
-Freeze source, then run the required selections once. Use that run's exact JUnit
-membership for final domain evidence instead of repeating passing groups. Keep
-separately required reference captures and transition checks. Do not edit public
-inputs while their checks are running. Quality checks still bind the prose they
-inspect; build leases do not exclude source writers.
+Unsupported selectors do not justify an automatic `--targets all`; an
+explicit `all` selection needs a stated dependency or checkpoint reason. Freeze
+one candidate identity, then run its required selections once. Each partition
+command must complete under supervision, drain its owned work and admit complete
+exact JUnit membership. The enclosing outer owner must reach terminal completion,
+drain its work and release the shared normal lease in a healthy state once the
+operation ends before another owner is dispatched or a stable receipt is read.
+Passing or reuse requires the applicable results to succeed. Apply existing
+pending/failure admission rules for another owner; preserve failed status, while a
+drained failure may permit a lawful repair or fresh preparation. Retries and
+admission within the existing lease remain with that owner. Partial console output
+or inner build success is not completion. Do not signal a healthy supervisor
+except through its documented cancel path. Link original receipts from one final
+packet and retain intermediate records only for a concrete consumer. Preserve
+owner-required before/after source and tool hashes and completed receipts; do not
+add a per-intermediate proof chain.
+Keep separately required reference captures and transition checks. Do not edit
+public inputs while their checks are running. Quality checks still bind the prose
+they inspect; build leases do not exclude source writers.
 
 The development dispatcher's supported inputs remain limited to those documented
 in [CONTRIBUTING.md](../CONTRIBUTING.md#required-checks). For other work, use existing
@@ -99,6 +114,10 @@ inputs and compiler/build-graph dependencies remain bound regardless of filename
 Quality runs still check and bind their selected prose; build/test reuse does not
 qualify changed documentation. Older receipts retain their original recorded inputs
 and may require fresh evidence; they are never rewritten or projected into this policy.
+
+An explicit build or preparation command covers only its named targets and
+dependencies. It cannot bypass pending owners, lease health, drainage or evidence
+admission, and a successful build is not a qualification receipt.
 
 Checkpoint preparation now separates a bounded set of proven runtime-only test
 files from build inputs. Exact, absolute file operands under `tests/` in generated

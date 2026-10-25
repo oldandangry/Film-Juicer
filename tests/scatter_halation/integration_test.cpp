@@ -1818,7 +1818,7 @@ namespace {
             return false;
         }
         if (cameraDiffusion.active &&
-            !Spektrafilm::build_diffusion_frame_set_descriptor(
+            !JuicerTestSupport::prepare_diffusion_frame(
                 out.product.recipe.spatialOptics,
                 route,
                 static_cast<double>(pixelSizeUm),
@@ -3356,7 +3356,7 @@ namespace ScatterHalationValidation {
             throw std::runtime_error(diagnostic);
         }
         if (cameraDiffusion.active &&
-            (!Spektrafilm::build_diffusion_frame_set_descriptor(
+            (!JuicerTestSupport::prepare_diffusion_frame(
                  impl->product.recipe.spatialOptics,
                  route,
                  static_cast<double>(pixelSizeUm),
