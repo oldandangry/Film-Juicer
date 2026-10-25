@@ -1576,6 +1576,40 @@ typedef struct FjFrameGeometryFailure {
 FjStatus fj_legacy_frame_domain_prepare(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
 FjStatus fj_legacy_frame_geometry_prepare(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_HALATION_FRAME: remove with the final native frame-preparation
+ * caller, no later than S6.D. Resolved scalar input is not recipe authentication.
+ * Records authorize initialized/aligned/live storage; writable output, failure,
+ * optional error and its backing are exclusive and mutually disjoint, including
+ * immutable input. Numeric extent checks cannot prove pointer provenance.
+ * Both valid writable peers clear independently before any admission. Raw flags
+ * are closed 0/1 even for hash0; hash0 otherwise succeeds before numeric use.
+ * Null optional and zero-capacity diagnostics are supported. No pointer escapes,
+ * heap owner, release operation, descriptor identity or CUDA ownership is added.
+ * NONE/RAW/PIXEL_SIZE/GAUSSIAN/PANIC status categories are 0/2/3/3/8; api/code0.
+ * Unselected channel/index are3, nongeneric sigma is+0. Gaussian core index is3;
+ * tail/bounce indices are0..2. C diagnostics use the fixed base; native adapters
+ * append their existing std::to_string sigma suffix from typed metadata.
+ */
+#define FJ_HALATION_FRAME_NONE UINT32_C(0)
+#define FJ_HALATION_FRAME_RAW UINT32_C(1)
+#define FJ_HALATION_FRAME_PIXEL_SIZE UINT32_C(2)
+#define FJ_HALATION_FRAME_GAUSSIAN UINT32_C(3)
+#define FJ_HALATION_FRAME_PANIC UINT32_C(4)
+#define FJ_HALATION_FRAME_FIELD_NONE UINT32_C(0)
+#define FJ_HALATION_FRAME_FIELD_PIXEL_SIZE UINT32_C(1)
+#define FJ_HALATION_FRAME_FIELD_SCATTER_CORE UINT32_C(2)
+#define FJ_HALATION_FRAME_FIELD_SCATTER_TAIL UINT32_C(3)
+#define FJ_HALATION_FRAME_FIELD_BOUNCE UINT32_C(4)
+typedef struct FjHalationFrameInput {
+    FjHalationRecipe recipe;
+    float pixel_size_um;
+} FjHalationFrameInput;
+typedef struct FjHalationFrameFailure {
+    uint32_t reason, field, channel, index;
+    double sigma_px;
+} FjHalationFrameFailure;
+FjStatus fj_legacy_scatter_halation_frame_prepare(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

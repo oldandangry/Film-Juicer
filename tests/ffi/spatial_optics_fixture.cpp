@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <stdexcept>
 
 #include "juicer_test_api.h"
+#include "Cuda/JuicerCudaFailure.h"
+#include "RustHalationBridge.h"
 
 namespace {
     FjSpatialOpticsParams defaults() {
@@ -44,6 +47,41 @@ namespace {
 } // namespace
 
 namespace JuicerTestSupport {
+    bool matches_halation_frame(const std::optional<ScatterHalationFrameDescriptor>& frame, const nlohmann::json& expected) {
+        if (!frame || expected.is_null())
+            return !frame && expected.is_null();
+        if (frame->recipeHash != expected.at("recipe_hash").get<std::uint64_t>() ||
+            std::bit_cast<std::uint32_t>(frame->scatterAmount) != expected.at("scatter_amount").get<std::uint32_t>())
+            return false;
+        const auto gaussian = [](const ScatterHalationGaussianDescriptor& actual, const nlohmann::json& frozen) {
+            if (static_cast<unsigned>(actual.kind) != frozen.at("kind").get<unsigned>() || actual.radius != frozen.at("radius").get<int>())
+                return false;
+            for (std::size_t index = 0; index < actual.firWeights.size(); ++index)
+                if (std::bit_cast<std::uint32_t>(actual.firWeights[index]) != frozen.at("weights")[index].get<std::uint32_t>())
+                    return false;
+            const std::array yvv{actual.B, actual.B1, actual.B2, actual.B3};
+            for (std::size_t index = 0; index < yvv.size(); ++index)
+                if (std::bit_cast<std::uint32_t>(yvv[index]) != frozen.at("yvv")[index].get<std::uint32_t>())
+                    return false;
+            return true;
+        };
+        for (std::size_t channel = 0; channel < frame->channels.size(); ++channel) {
+            const auto& actual = frame->channels[channel];
+            const auto& frozen = expected.at("channels")[channel];
+            if (std::bit_cast<std::uint32_t>(actual.totalStrength) != frozen.at("strength").get<std::uint32_t>() || !gaussian(actual.core, frozen.at("core")))
+                return false;
+            for (std::size_t index = 0; index < 3; ++index)
+                if (!gaussian(actual.tail[index], frozen.at("tail")[index]) || !gaussian(actual.bounce[index], frozen.at("bounce")[index]))
+                    return false;
+        }
+        return true;
+    }
+    bool prepare_halation_frame(const ScatterHalationOpticsRecipe& recipe, float pixelSizeUm, std::optional<ScatterHalationFrameDescriptor>& out, std::string& diagnostic) {
+        JuicerCuda::Failure failure;
+        const bool success = JuicerHalation::prepare_frame(recipe, pixelSizeUm, out, failure);
+        diagnostic = failure.diagnostic;
+        return success;
+    }
     bool prepare_diffusion_filter(
         const Spektrafilm::DiffusionFilterAuthoredControls& authored,
         Spektrafilm::DiffusionFilterResolvedParameters& out,

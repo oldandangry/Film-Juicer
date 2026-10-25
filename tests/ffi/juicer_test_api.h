@@ -393,6 +393,11 @@ FjStatus fj_test_frame_geometry_fault(uint32_t operation, uint32_t fault);
 FjStatus fj_test_frame_domain_c_prepare(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
 FjStatus fj_test_frame_geometry_c_prepare(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
 
+FjStatus fj_test_scatter_halation_frame_prepare(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*);
+FjStatus fj_test_scatter_halation_frame_fault(uint32_t fault);
+FjStatus fj_test_scatter_halation_frame_c_prepare(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*);
+int fj_test_scatter_halation_frame_c_check(const FjHalationFrameInput*, const FjScatterHalation*, const FjHalationFrameFailure*, uint32_t category, const char* diagnostic);
+
 #ifdef __cplusplus
 }
 #endif

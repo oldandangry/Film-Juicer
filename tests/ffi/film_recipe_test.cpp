@@ -33,6 +33,7 @@
 #include "RustScannerBridge.h"
 #include "RustGaussianBridge.h"
 #include "RustFrameBridge.h"
+#include "RustHalationBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
@@ -300,7 +301,21 @@ namespace {
 #include "scanner_post_effects_test.inc"
 #include "gaussian_kernel_test.inc"
 #include "frame_geometry_test.inc"
+#include "halation_frame_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "halation-frame" || std::string_view(argv[3]) == "halation-frame-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = load_shared_fixture(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
+        require(captured.at("preset") == argv[4], "halation frame native context");
+        HalationFrameTest::values(captured, read(directory / manifest.at("checked").get<std::string>()));
+        if (std::string_view(argv[3]) == "halation-frame")
+            HalationFrameTest::boundary();
+        else
+            require(HalationFrameTest::products(argv[1], manifest.at("product_pixel_bits")) == captured.at("products"), "actual four-route Rust halation products match complete native captures");
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "frame" || std::string_view(argv[3]) == "frame-products")) {
         layouts();
         const auto manifest = read(argv[2]);

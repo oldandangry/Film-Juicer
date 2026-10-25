@@ -1708,6 +1708,7 @@ JuicerEffect::~JuicerEffect() {
 
 #if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
 namespace JuicerFrame::FrameGeometryTest {
+    void halation_frame(float, bool, const std::optional<ScatterHalationFrameDescriptor>&);
     void full_domain(const Spektrafilm::DiffusionFrameDomain&);
     void scalar_pixel(float);
     void effects_domain(const Spektrafilm::FilmJuicerEffectsGeometry&);
@@ -1844,11 +1845,15 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
     std::optional<ScatterHalationFrameDescriptor> scatterHalationDescriptor;
     std::string scatterHalationDiagnostic;
-    if (!Spektrafilm::build_scatter_halation_frame_descriptor(
-            focusedRecipe.spatialOptics.scatterHalation,
-            pixelSizeUm,
-            scatterHalationDescriptor,
-            scatterHalationDiagnostic)) {
+    const bool scatterHalationSuccess = Spektrafilm::build_scatter_halation_frame_descriptor(
+        focusedRecipe.spatialOptics.scatterHalation,
+        pixelSizeUm,
+        scatterHalationDescriptor,
+        scatterHalationDiagnostic);
+#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
+    JuicerFrame::FrameGeometryTest::halation_frame(pixelSizeUm, scatterHalationSuccess, scatterHalationDescriptor);
+#endif
+    if (!scatterHalationSuccess) {
         JTRACE("SPEKTRAFILM", scatterHalationDiagnostic);
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }

@@ -1,5 +1,6 @@
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <bit>
 #include <cmath>
 #include <utility>
@@ -14,8 +15,59 @@
 #include "RenderRecipe.h"
 #include "Scanner.h"
 #include "juicer_test_api.h"
+#include "exposure_fixture.h"
+#include "spatial_optics_fixture.h"
 
 namespace {
+    FjPreparedHostData make_fixed_input();
+
+    TEST(PreparedProjection, RustHalationFramesKeepEveryFrozenFieldThroughEncodeDecode) {
+        const auto directory = std::filesystem::path(__FILE__).parent_path().parent_path() / "scatter_halation/frame-fixtures";
+        const auto manifest = nlohmann::json::parse(std::ifstream(directory / "manifest.json"));
+        const char* preset = std::getenv("JUICER_TEST_PRESET_NAME");
+        ASSERT_NE(preset, nullptr);
+        const auto captured = load_shared_fixture(directory / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
+        auto rows = captured.at("cases");
+        for (const auto& row : captured.at("products"))
+            rows.push_back(row);
+        ASSERT_EQ(rows.size(), 72u);
+        for (const auto& row : rows) {
+            SCOPED_TRACE(row.at("input").at("name").get<std::string>());
+            const auto& input = row.at("input");
+            ScatterHalationOpticsRecipe recipe;
+            recipe.hash = input.at("recipe_hash");
+            recipe.scatterActive = input.at("scatter_active");
+            recipe.backReflectionActive = input.at("back_reflection_active");
+            recipe.scatterAmount = std::bit_cast<float>(input.at("scalars")[0].get<std::uint32_t>());
+            recipe.scatterSpatialScale = std::bit_cast<float>(input.at("scalars")[1].get<std::uint32_t>());
+            recipe.halationSpatialScale = std::bit_cast<float>(input.at("scalars")[2].get<std::uint32_t>());
+            for (std::size_t c = 0; c < 3; ++c) {
+                recipe.halationFirstSigmaUm[c] = std::bit_cast<float>(input.at("first_sigma_um")[c].get<std::uint32_t>());
+                recipe.totalStrength[c] = std::bit_cast<float>(input.at("total_strength")[c].get<std::uint32_t>());
+            }
+            std::optional<ScatterHalationFrameDescriptor> frame;
+            std::string diagnostic;
+            const bool success = JuicerTestSupport::prepare_halation_frame(recipe, std::bit_cast<float>(input.at("pixel_size_um").get<std::uint32_t>()), frame, diagnostic);
+            ASSERT_EQ(success, row.at("success").get<bool>());
+            ASSERT_EQ(frame.has_value(), row.at("present").get<bool>());
+            ASSERT_TRUE(JuicerTestSupport::matches_halation_frame(frame, row.at("descriptor")));
+            if (!success)
+                continue;
+            JuicerCuda::PreparedDescriptors source;
+            // Populate unrelated fixed families using the existing projection fixture below.
+            FjPreparedHostData wire = make_fixed_input();
+            ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, source, diagnostic)) << diagnostic;
+            source.halation = frame;
+            JuicerCudaTest::encode_prepared_descriptors(source, wire);
+            JuicerCuda::PreparedDescriptors decoded;
+            ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic)) << diagnostic;
+            EXPECT_TRUE(JuicerTestSupport::matches_halation_frame(decoded.halation, row.at("descriptor")));
+            if (decoded.halation) {
+                decoded.halation->channels[2].bounce[2].firWeights[18] = std::bit_cast<float>(std::bit_cast<std::uint32_t>(decoded.halation->channels[2].bounce[2].firWeights[18]) ^ 1u);
+                EXPECT_FALSE(JuicerTestSupport::matches_halation_frame(decoded.halation, row.at("descriptor"))) << "reader reaches final unused weight";
+            }
+        }
+    }
 
     // Fixed projection contract only; complete spectral spans and CUDA admission have separate fixtures.
     FjPreparedHostData make_fixed_input() {

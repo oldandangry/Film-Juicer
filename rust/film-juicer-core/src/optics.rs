@@ -5,6 +5,12 @@ use crate::hash;
 mod gaussian;
 pub use gaussian::{GaussianKernel, GaussianKernelError};
 
+mod halation_frame;
+pub use halation_frame::{
+    HalationChannel, HalationFrame, HalationFrameError, HalationFrameField, HalationFrameInput,
+    HalationGaussian, HalationGaussianKind,
+};
+
 // Matches the frozen native v1 resolved-hash contract. Native authored-control
 // and PSF-sample hashes are distinct identities; their schema is
 // kDiffusionHostBehaviorSchemaVersion in DiffusionHostBehavior.h.

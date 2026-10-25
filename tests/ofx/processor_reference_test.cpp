@@ -1,3 +1,4 @@
+#include "../ffi/spatial_optics_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include <algorithm>
 #include <array>
@@ -841,7 +842,7 @@ namespace {
             std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
             const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
             std::string descriptorDiagnostic;
-            if (test.combined && (!Spektrafilm::build_scatter_halation_frame_descriptor(
+            if (test.combined && (!JuicerTestSupport::prepare_halation_frame(
                                       recipe.spatialOptics.scatterHalation, pixelSizeUm, halation, descriptorDiagnostic) ||
                                   !halation)) {
                 throw std::runtime_error("halation descriptor: " + descriptorDiagnostic);

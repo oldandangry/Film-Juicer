@@ -2320,3 +2320,21 @@ unsafe extern "C" fn fj_test_frame_geometry_prepare(
 extern "C" fn fj_test_frame_geometry_fault(operation: u32, fault: u32) -> FjStatus {
     crate::frame_bridge::faults::arm(operation, fault)
 }
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Required initialized/live/aligned records and exclusive/disjoint writable peers
+/// and optional diagnostic backing share the production operation's contract.
+unsafe extern "C" fn fj_test_scatter_halation_frame_prepare(
+    input: *const crate::optics_bridge::FjHalationFrameInput,
+    out: *mut crate::cuda::sys::FjScatterHalation,
+    failure: *mut crate::optics_bridge::FjHalationFrameFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Facade and production use the same checked body and borrow expiry.
+    unsafe { crate::optics_bridge::halation_frame_prepare(input, out, failure, error) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_scatter_halation_frame_fault(fault: u32) -> FjStatus {
+    crate::optics_bridge::halation_frame_faults::arm(fault)
+}

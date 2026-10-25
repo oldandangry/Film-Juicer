@@ -39,6 +39,85 @@ typedef FjStatus (*FrameDomainPrepare)(const FjRect*, FjExtent*, FjFrameGeometry
 _Static_assert(_Generic(&fj_legacy_frame_domain_prepare, FrameDomainPrepare: 1, default: 0), "frame domain legacy signature");
 typedef FjStatus (*FrameGeometryPrepare)(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
 _Static_assert(_Generic(&fj_legacy_frame_geometry_prepare, FrameGeometryPrepare: 1, default: 0), "frame geometry legacy signature");
+typedef FjStatus (*HalationFramePrepare)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_scatter_halation_frame_prepare, HalationFramePrepare: 1, default: 0), "halation frame signature");
+_Static_assert(sizeof(FjHalationRecipe) == 56 && _Alignof(FjHalationRecipe) == 8, "FjHalationRecipe layout");
+_Static_assert(_Generic(((FjHalationRecipe*)0)->scatter_active, uint32_t: 1, default: 0), "FjHalationRecipe.scatter_active type");
+_Static_assert(offsetof(FjHalationRecipe, scatter_active) == 0, "FjHalationRecipe.scatter_active offset");
+_Static_assert(_Generic(((FjHalationRecipe*)0)->back_reflection_active, uint32_t: 1, default: 0), "FjHalationRecipe.back_reflection_active type");
+_Static_assert(offsetof(FjHalationRecipe, back_reflection_active) == 4, "FjHalationRecipe.back_reflection_active offset");
+_Static_assert(_Generic(((FjHalationRecipe*)0)->scatter_amount, float: 1, default: 0), "FjHalationRecipe.scatter_amount type");
+_Static_assert(offsetof(FjHalationRecipe, scatter_amount) == 8, "FjHalationRecipe.scatter_amount offset");
+_Static_assert(_Generic(((FjHalationRecipe*)0)->scatter_spatial_scale, float: 1, default: 0), "FjHalationRecipe.scatter_spatial_scale type");
+_Static_assert(offsetof(FjHalationRecipe, scatter_spatial_scale) == 12, "FjHalationRecipe.scatter_spatial_scale offset");
+_Static_assert(_Generic(((FjHalationRecipe*)0)->halation_spatial_scale, float: 1, default: 0), "FjHalationRecipe.halation_spatial_scale type");
+_Static_assert(offsetof(FjHalationRecipe, halation_spatial_scale) == 16, "FjHalationRecipe.halation_spatial_scale offset");
+_Static_assert(_Generic(((FjHalationRecipe*)0)->first_sigma_um, float*: 1, default: 0), "FjHalationRecipe.first_sigma_um type");
+_Static_assert(offsetof(FjHalationRecipe, first_sigma_um) == 20, "FjHalationRecipe.first_sigma_um offset");
+_Static_assert(sizeof(((FjHalationRecipe*)0)->first_sigma_um) / sizeof(float) == 3, "FjHalationRecipe.first_sigma_um extent");
+_Static_assert(_Generic(((FjHalationRecipe*)0)->total_strength, float*: 1, default: 0), "FjHalationRecipe.total_strength type");
+_Static_assert(offsetof(FjHalationRecipe, total_strength) == 32, "FjHalationRecipe.total_strength offset");
+_Static_assert(sizeof(((FjHalationRecipe*)0)->total_strength) / sizeof(float) == 3, "FjHalationRecipe.total_strength extent");
+_Static_assert(_Generic(((FjHalationRecipe*)0)->hash, uint64_t: 1, default: 0), "FjHalationRecipe.hash type");
+_Static_assert(offsetof(FjHalationRecipe, hash) == 48, "FjHalationRecipe.hash offset");
+_Static_assert(sizeof(FjHalationFrameInput) == 64 && _Alignof(FjHalationFrameInput) == 8, "FjHalationFrameInput layout");
+_Static_assert(_Generic(((FjHalationFrameInput*)0)->recipe, FjHalationRecipe: 1, default: 0), "FjHalationFrameInput.recipe type");
+_Static_assert(offsetof(FjHalationFrameInput, recipe) == 0, "FjHalationFrameInput.recipe offset");
+_Static_assert(_Generic(((FjHalationFrameInput*)0)->pixel_size_um, float: 1, default: 0), "FjHalationFrameInput.pixel_size_um type");
+_Static_assert(offsetof(FjHalationFrameInput, pixel_size_um) == 56, "FjHalationFrameInput.pixel_size_um offset");
+_Static_assert(sizeof(FjHalationFrameFailure) == 24 && _Alignof(FjHalationFrameFailure) == 8, "FjHalationFrameFailure layout");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->reason, uint32_t: 1, default: 0), "FjHalationFrameFailure.reason type");
+_Static_assert(offsetof(FjHalationFrameFailure, reason) == 0, "FjHalationFrameFailure.reason offset");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->field, uint32_t: 1, default: 0), "FjHalationFrameFailure.field type");
+_Static_assert(offsetof(FjHalationFrameFailure, field) == 4, "FjHalationFrameFailure.field offset");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->channel, uint32_t: 1, default: 0), "FjHalationFrameFailure.channel type");
+_Static_assert(offsetof(FjHalationFrameFailure, channel) == 8, "FjHalationFrameFailure.channel offset");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->index, uint32_t: 1, default: 0), "FjHalationFrameFailure.index type");
+_Static_assert(offsetof(FjHalationFrameFailure, index) == 12, "FjHalationFrameFailure.index offset");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->sigma_px, double: 1, default: 0), "FjHalationFrameFailure.sigma_px type");
+_Static_assert(offsetof(FjHalationFrameFailure, sigma_px) == 16, "FjHalationFrameFailure.sigma_px offset");
+_Static_assert(sizeof(FjHalationGaussian) == 100 && _Alignof(FjHalationGaussian) == 4, "FjHalationGaussian layout");
+_Static_assert(_Generic(((FjHalationGaussian*)0)->kind, uint32_t: 1, default: 0), "FjHalationGaussian.kind type");
+_Static_assert(offsetof(FjHalationGaussian, kind) == 0, "FjHalationGaussian.kind offset");
+_Static_assert(_Generic(((FjHalationGaussian*)0)->radius, int32_t: 1, default: 0), "FjHalationGaussian.radius type");
+_Static_assert(offsetof(FjHalationGaussian, radius) == 4, "FjHalationGaussian.radius offset");
+_Static_assert(_Generic(((FjHalationGaussian*)0)->fir_weights, float*: 1, default: 0), "FjHalationGaussian.fir_weights type");
+_Static_assert(offsetof(FjHalationGaussian, fir_weights) == 8, "FjHalationGaussian.fir_weights offset");
+_Static_assert(sizeof(((FjHalationGaussian*)0)->fir_weights) / sizeof(float) == 19, "FjHalationGaussian.fir_weights extent");
+_Static_assert(_Generic(((FjHalationGaussian*)0)->feedforward, float: 1, default: 0), "FjHalationGaussian.feedforward type");
+_Static_assert(offsetof(FjHalationGaussian, feedforward) == 84, "FjHalationGaussian.feedforward offset");
+_Static_assert(_Generic(((FjHalationGaussian*)0)->feedback, float*: 1, default: 0), "FjHalationGaussian.feedback type");
+_Static_assert(offsetof(FjHalationGaussian, feedback) == 88, "FjHalationGaussian.feedback offset");
+_Static_assert(sizeof(((FjHalationGaussian*)0)->feedback) / sizeof(float) == 3, "FjHalationGaussian.feedback extent");
+_Static_assert(sizeof(FjHalationChannel) == 704 && _Alignof(FjHalationChannel) == 4, "FjHalationChannel layout");
+_Static_assert(_Generic(((FjHalationChannel*)0)->core, FjHalationGaussian: 1, default: 0), "FjHalationChannel.core type");
+_Static_assert(offsetof(FjHalationChannel, core) == 0, "FjHalationChannel.core offset");
+_Static_assert(_Generic(((FjHalationChannel*)0)->tail, FjHalationGaussian*: 1, default: 0), "FjHalationChannel.tail type");
+_Static_assert(offsetof(FjHalationChannel, tail) == 100, "FjHalationChannel.tail offset");
+_Static_assert(sizeof(((FjHalationChannel*)0)->tail) / sizeof(FjHalationGaussian) == 3, "FjHalationChannel.tail extent");
+_Static_assert(_Generic(((FjHalationChannel*)0)->bounce, FjHalationGaussian*: 1, default: 0), "FjHalationChannel.bounce type");
+_Static_assert(offsetof(FjHalationChannel, bounce) == 400, "FjHalationChannel.bounce offset");
+_Static_assert(sizeof(((FjHalationChannel*)0)->bounce) / sizeof(FjHalationGaussian) == 3, "FjHalationChannel.bounce extent");
+_Static_assert(_Generic(((FjHalationChannel*)0)->total_strength, float: 1, default: 0), "FjHalationChannel.total_strength type");
+_Static_assert(offsetof(FjHalationChannel, total_strength) == 700, "FjHalationChannel.total_strength offset");
+_Static_assert(sizeof(FjScatterHalation) == 2128 && _Alignof(FjScatterHalation) == 8, "FjScatterHalation layout");
+_Static_assert(_Generic(((FjScatterHalation*)0)->recipe_hash, uint64_t: 1, default: 0), "FjScatterHalation.recipe_hash type");
+_Static_assert(offsetof(FjScatterHalation, recipe_hash) == 0, "FjScatterHalation.recipe_hash offset");
+_Static_assert(_Generic(((FjScatterHalation*)0)->scatter_amount, float: 1, default: 0), "FjScatterHalation.scatter_amount type");
+_Static_assert(offsetof(FjScatterHalation, scatter_amount) == 8, "FjScatterHalation.scatter_amount offset");
+_Static_assert(_Generic(((FjScatterHalation*)0)->channels, FjHalationChannel*: 1, default: 0), "FjScatterHalation.channels type");
+_Static_assert(offsetof(FjScatterHalation, channels) == 12, "FjScatterHalation.channels offset");
+_Static_assert(sizeof(((FjScatterHalation*)0)->channels) / sizeof(FjHalationChannel) == 3, "FjScatterHalation.channels extent");
+_Static_assert(FJ_HALATION_FRAME_NONE == 0, "halation NONE tag");
+_Static_assert(FJ_HALATION_FRAME_RAW == 1, "halation RAW tag");
+_Static_assert(FJ_HALATION_FRAME_PIXEL_SIZE == 2, "halation PIXEL_SIZE tag");
+_Static_assert(FJ_HALATION_FRAME_GAUSSIAN == 3, "halation GAUSSIAN tag");
+_Static_assert(FJ_HALATION_FRAME_PANIC == 4, "halation PANIC tag");
+_Static_assert(FJ_HALATION_FRAME_FIELD_NONE == 0, "halation FIELD_NONE tag");
+_Static_assert(FJ_HALATION_FRAME_FIELD_PIXEL_SIZE == 1, "halation FIELD_PIXEL_SIZE tag");
+_Static_assert(FJ_HALATION_FRAME_FIELD_SCATTER_CORE == 2, "halation FIELD_SCATTER_CORE tag");
+_Static_assert(FJ_HALATION_FRAME_FIELD_SCATTER_TAIL == 3, "halation FIELD_SCATTER_TAIL tag");
+_Static_assert(FJ_HALATION_FRAME_FIELD_BOUNCE == 4, "halation FIELD_BOUNCE tag");
 static int words(const float* data, const uint32_t* expected, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         uint32_t word;
@@ -1803,6 +1882,107 @@ static int frame_values(void) {
 }
 
 
+static size_t halation_frame_words(const FjScatterHalation* frame, uint32_t words_out[529]) {
+    size_t count = 0;
+    memcpy(&words_out[count++], &frame->scatter_amount, sizeof(uint32_t));
+    for (size_t channel = 0; channel < 3; ++channel) {
+        const FjHalationChannel* c = &frame->channels[channel];
+        for (size_t component = 0; component < 7; ++component) {
+            const FjHalationGaussian* g = component == 0 ? &c->core : component < 4 ? &c->tail[component - 1] : &c->bounce[component - 4];
+            words_out[count++] = g->kind;
+            words_out[count++] = (uint32_t)g->radius;
+            for (size_t i = 0; i < 19; ++i)
+                memcpy(&words_out[count++], &g->fir_weights[i], sizeof(uint32_t));
+            memcpy(&words_out[count++], &g->feedforward, sizeof(uint32_t));
+            for (size_t i = 0; i < 3; ++i)
+                memcpy(&words_out[count++], &g->feedback[i], sizeof(uint32_t));
+        }
+        memcpy(&words_out[count++], &c->total_strength, sizeof(uint32_t));
+    }
+    return count;
+}
+
+static int halation_frame_values(void) {
+    for (size_t index = 0; index < sizeof(halation_frame_rows) / sizeof(halation_frame_rows[0]); ++index) {
+        const HalationFrameRow* expected = &halation_frame_rows[index];
+        FjHalationFrameInput input = {0};
+        input.recipe.scatter_active = expected->flags[0];
+        input.recipe.back_reflection_active = expected->flags[1];
+        input.recipe.hash = expected->recipe_hash;
+        float* fields[10] = {&input.recipe.scatter_amount, &input.recipe.scatter_spatial_scale, &input.recipe.halation_spatial_scale,
+            &input.recipe.first_sigma_um[0], &input.recipe.first_sigma_um[1], &input.recipe.first_sigma_um[2],
+            &input.recipe.total_strength[0], &input.recipe.total_strength[1], &input.recipe.total_strength[2], &input.pixel_size_um};
+        for (size_t i = 0; i < 10; ++i)
+            memcpy(fields[i], &expected->input[i], sizeof(float));
+        FjScatterHalation output;
+        memset(&output, 0x55, sizeof(output));
+        FjHalationFrameFailure failure = {99, 98, 97, 96, -1.0};
+        char text[256] = "seed";
+        FjErrorBuffer error = {text, sizeof(text), 99};
+        /* Real owned storage supplies malformed alignments; numeric rejection
+         * must precede any typed access. All valid peers remain disjoint. */
+        _Alignas(FjHalationFrameInput) unsigned char bad_input[sizeof(FjHalationFrameInput) + 1] = {0};
+        _Alignas(FjScatterHalation) unsigned char bad_output[sizeof(FjScatterHalation) + 1] = {0};
+        _Alignas(FjHalationFrameFailure) unsigned char bad_failure[sizeof(FjHalationFrameFailure) + 1] = {0};
+        _Alignas(FjErrorBuffer) unsigned char bad_error[sizeof(FjErrorBuffer) + 1] = {0};
+        const FjHalationFrameInput* input_slot = &input;
+        FjScatterHalation* output_slot = &output;
+        FjHalationFrameFailure* failure_slot = &failure;
+        FjErrorBuffer* error_slot = &error;
+        const uint32_t mode = expected->mode;
+        if (mode == 1 || mode == 9 || mode == 10) input_slot = NULL;
+        if (mode == 2) output_slot = NULL;
+        if (mode == 3) failure_slot = NULL;
+        if (mode == 4) { input.recipe.hash = 0; input.recipe.scatter_active = 2; }
+        if (mode == 5) { input.recipe.hash = 0; input.recipe.back_reflection_active = UINT32_MAX; }
+        if (mode == 6) error = (FjErrorBuffer){NULL, 1, 99};
+        if (mode == 7) error_slot = NULL;
+        if (mode == 8) error = (FjErrorBuffer){NULL, 0, 99};
+        if (mode == 9) error.capacity = 1;
+        if (mode == 10) error.capacity = 7;
+        if (mode == 11) input_slot = (const FjHalationFrameInput*)(bad_input + 1);
+        if (mode == 12) output_slot = (FjScatterHalation*)(bad_output + 1);
+        if (mode == 13) failure_slot = (FjHalationFrameFailure*)(bad_failure + 1);
+        if (mode == 14) error_slot = (FjErrorBuffer*)(bad_error + 1);
+        FjStatus result = fj_legacy_scatter_halation_frame_prepare(input_slot, output_slot, failure_slot, error_slot);
+        CHECK(result.category == expected->status.category && result.api == expected->status.api && result.native_code == expected->status.native_code);
+        uint64_t sigma_bits = 0;
+        if (expected->failure_valid) {
+            CHECK(failure.reason == expected->failure[0] && failure.field == expected->failure[1] && failure.channel == expected->failure[2] && failure.index == expected->failure[3]);
+            memcpy(&sigma_bits, &failure.sigma_px, sizeof(sigma_bits));
+            CHECK(expected->sigma_nan ? isnan(failure.sigma_px) : sigma_bits == expected->sigma_bits);
+        }
+        uint32_t actual_words[529] = {0};
+        if (expected->output_valid) {
+            CHECK(output.recipe_hash == expected->expected_hash);
+            CHECK(halation_frame_words(&output, actual_words) == 529);
+            for (size_t i = 0; i < 529; ++i) CHECK(actual_words[i] == expected->words[i]);
+        }
+        const char* actual_text = expected->error_valid && error.data && error.capacity ? error.data : "";
+        if (expected->error_valid) {
+            CHECK(error.length == strlen(expected->diagnostic));
+            CHECK(strncmp(actual_text, expected->diagnostic, error.length) == 0);
+            if (error.data && error.capacity) CHECK(actual_text[error.length] == '\0');
+        }
+        printf("HALATION_FRAME_RESULT {\"case\":\"%s\",\"envelope\":[%" PRIu32 ",%" PRIu32 ",%" PRId32 "],\"failure\":", expected->name, result.category, result.api, result.native_code);
+        if (expected->failure_valid) {
+            printf("[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],\"sigma_bits\":", failure.reason, failure.field, failure.channel, failure.index);
+            if (isnan(failure.sigma_px)) printf("null"); else printf("%" PRIu64, sigma_bits);
+            printf(",\"sigma_nan\":%s", isnan(failure.sigma_px) ? "true" : "false");
+        } else printf("null,\"sigma_bits\":null,\"sigma_nan\":null");
+        printf(",\"output\":");
+        if (expected->output_valid) {
+            printf("{\"recipe_hash\":%" PRIu64 ",\"words\":[", output.recipe_hash);
+            for (size_t i = 0; i < 529; ++i) printf("%s%" PRIu32, i ? "," : "", actual_words[i]);
+            printf("]}");
+        } else printf("null");
+        if (expected->error_valid) printf(",\"diagnostic\":\"%.*s\"}\n", (int)error.length, actual_text);
+        else printf(",\"diagnostic\":null}\n");
+    }
+    return 0;
+}
+
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -1810,6 +1990,7 @@ int wmain(int argc, wchar_t** argv) {
     FjPathView path = {argv[1], wcslen(argv[1]), FJ_PATH_WINDOWS_WIDE};
     FjPathView duplicate_path = {argv[2], wcslen(argv[2]), FJ_PATH_WINDOWS_WIDE};
 #else
+
 
 
 int main(int argc, char** argv) {
@@ -1829,6 +2010,7 @@ int main(int argc, char** argv) {
     CHECK(post_cases() == 0);
     CHECK(gaussian_values() == 0);
     CHECK(frame_values() == 0);
+    CHECK(halation_frame_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

@@ -337,7 +337,7 @@ namespace {
             profile_digest(65.0f, {0.08f, 0.02f, 0.0f}));
         std::optional<ScatterHalationFrameDescriptor> descriptor;
         std::string diagnostic;
-        ASSERT_TRUE(Spektrafilm::build_scatter_halation_frame_descriptor(
+        ASSERT_TRUE(JuicerTestSupport::prepare_halation_frame(
             recipe,
             1.0f,
             descriptor,
@@ -358,7 +358,7 @@ namespace {
         ScatterHalationOpticsRecipe identity;
         descriptor.emplace();
         diagnostic.clear();
-        EXPECT_TRUE(Spektrafilm::build_scatter_halation_frame_descriptor(
+        EXPECT_TRUE(JuicerTestSupport::prepare_halation_frame(
             identity,
             std::numeric_limits<float>::quiet_NaN(),
             descriptor,
