@@ -15,6 +15,39 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_dir_frame_exact_native_bytes_fields_and_production_membership(self):
+        root = Path(__file__).parents[1] / "dir/frame-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(len(set(manifest["payloads"].values())), 4)
+        for name, checksum in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), checksum)
+        baseline = None
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual([len(captured[key]) for key in ("cases", "products")], [74, 24])
+            rows = captured["cases"] + captured["products"]
+            if baseline is None:
+                baseline = rows
+            self.assertEqual(rows, baseline)
+            for row in rows:
+                native = row["native"]
+                self.assertEqual(len(native["components"]), 4)
+                self.assertEqual(len(native["roles"]), 4)
+                self.assertEqual(len(native["target_roles"]), 4)
+                for component in native["components"]:
+                    self.assertEqual(len(component["feedback"]), 3)
+                    self.assertEqual(len(component["numerators"]), 3)
+        expected = manifest["production_cases"]
+        self.assertEqual(len(expected), 121)
+        self.assertEqual(len({row["case"] for row in expected}), 121)
+        self.assertEqual({row["case"] for row in expected}, set(manifest["production_inputs"]))
+        for row in expected:
+            self.assertEqual(len(manifest["production_inputs"][row["case"]]["words"]), 14)
+            self.assertTrue(row["output"] is None or len(row["output"]) == 79)
+            self.assertTrue(row["failure"] is None or len(row["failure"]) == 82)
+
     def test_diffusion_frame_original_bytes_and_complete_native_contexts(self):
         root = Path(__file__).parents[1] / "diffusion/frame-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())

@@ -19,6 +19,10 @@ namespace Spectral {
     struct FilmTcLut;
 } // namespace Spectral
 
+namespace JuicerDir {
+    class MathOutcome;
+}
+
 // RenderRecipe owner map:
 // - ProfileRoute owns selected profile identity, typed metadata, immutable selected payload
 //   references, asset tokens, and resolved ScanRoute.
@@ -441,8 +445,6 @@ namespace Spektrafilm {
 } // namespace Spektrafilm
 
 struct SpatialDirDescriptor {
-    static constexpr std::array<float, 3> kExponentialAmplitudes{{0.1633f, 0.6496f, 0.1870f}};
-    static constexpr std::array<float, 3> kExponentialSigmaRatios{{0.5360f, 1.5236f, 2.7684f}};
     std::uint64_t dirRecipeHash = 0;
     Spektrafilm::DirScratchTier scratchTier = Spektrafilm::DirScratchTier::Tier0;
     Spektrafilm::DirDescriptorSupport support = Spektrafilm::DirDescriptorSupport::Inactive;
@@ -923,6 +925,9 @@ namespace Spektrafilm {
         std::string& diagnostic);
     // Native workspace policy for an already resolved nonempty DIR operator plan.
     void resolve_spatial_dir_scratch(SpatialDirDescriptor& descriptor) noexcept;
+
+    bool compose_spatial_dir_descriptor(
+        const JuicerDir::MathOutcome&, const char* traceRouteLabel, SpatialDirDescriptor& out);
 
     bool build_spatial_dir_descriptor(
         const DirCouplersRecipe& recipe,

@@ -98,8 +98,13 @@ def execute(arguments):
         "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
     )
     forbidden = re.compile(forbidden.pattern + r"|reconstruction::testing::|film::reference::testing::")
-    forbidden = re.compile(forbidden.pattern + r"|SpectralAllocationProbe::|gaussian_faults::|halation_frame_faults::|diffusion_frame_faults::|rejectNativeAllocation|rejectedNativeBytes")
+    forbidden = re.compile(forbidden.pattern + r"|SpectralAllocationProbe::|gaussian_faults::|halation_frame_faults::|diffusion_frame_faults::|dir_frame_faults::|DirFrameObservation|rejectNativeAllocation|rejectedNativeBytes")
     strings = [
+        b"spatial DIR frame fixture panic",
+        b"DirFrameObservation",
+        b"fj_test_dir_frame",
+        b"capture-dir-frames",
+        b"--dir-frame",
         b"scatter/halation frame fixture panic",
         b"HalationObservation",
         b"DiffusionObservation",
@@ -202,6 +207,8 @@ def execute(arguments):
     diffusion_edges_context = diffusion_manifest.parent / diffusion_spec["contexts"][edge_logical]
     diffusion_edges_inputs = diffusion_manifest.parent / "edge-inputs.json"
     consumed_paths.extend([diffusion_edges_payload, diffusion_edges_context, diffusion_edges_inputs])
+    dir_manifest, dir_payload, dir_checked, _, dir_spec = dir_frame_fixture(arguments.preset)
+    consumed_paths.extend([dir_manifest, dir_payload, dir_checked, dir_manifest.parent / "inputs.json"])
     gaussian_manifest, gaussian_payload, gaussian_context, _, _ = gaussian_fixture(arguments.preset)
     consumed_paths.extend([gaussian_manifest, gaussian_payload, gaussian_context])
     consumed_paths.extend([post_manifest, post_payload, post_context])
@@ -239,6 +246,7 @@ def execute(arguments):
     scan(native, "native-symbols", "llvm-nm", ["--defined-only", "--demangle"])
     symbols = scan(archive, "rust-symbols", "llvm-nm", ["--defined-only", "--demangle"])
     for name in [
+        "fj_legacy_dir_frame_prepare",
         "fj_legacy_scatter_halation_frame_prepare",
         "fj_legacy_diffusion_sample_prepare",
         "fj_legacy_diffusion_components_prepare",
@@ -317,6 +325,7 @@ def execute(arguments):
     frame_results = []
     halation_frame_results = []
     diffusion_frame_results = []
+    dir_frame_results = []
     reference_results = []
     for name, source in probes:
         executable = out / (name + suffix)
@@ -393,6 +402,9 @@ def execute(arguments):
                               "source_sha256": source_sha256, "archive": str(archive),
                               "archive_sha256": digest(archive)})
         if name == "film":
+            dir_frame_results = [json.loads(line.removeprefix("DIR_FRAME_RESULT "))
+                                 for line in output.splitlines() if line.startswith("DIR_FRAME_RESULT ")]
+            assert len(dir_frame_results) == 121 and dir_frame_results == dir_spec["production_cases"], "complete DIR production values/failure trace membership"
             diffusion_frame_results = [json.loads(line.removeprefix("DIFFUSION_FRAME_RESULT "))
                                        for line in output.splitlines() if line.startswith("DIFFUSION_FRAME_RESULT ")]
             assert len(diffusion_frame_results) == 507 and diffusion_frame_results == diffusion_spec["production_cases"], "complete diffusion production values/failure membership"
@@ -625,6 +637,9 @@ def execute(arguments):
                 "scanner_descriptor_results": scanner_descriptor_results,
                 "scanner_post_results": scanner_post_results,
                 "frame_results": frame_results,
+                "dir_frame_results": dir_frame_results,
+                "dir_frame_fixture": {"manifest": str(dir_manifest), "payload": str(dir_payload), "normative": str(dir_checked),
+                                      "input_spec": str(dir_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
                 "diffusion_frame_results": diffusion_frame_results,
                 "diffusion_frame_fixture": {"edges_payload": str(diffusion_edges_payload), "edges_context": str(diffusion_edges_context), "edges_input_spec": str(diffusion_edges_inputs), "manifest": str(diffusion_manifest), "payload": str(diffusion_payload), "context": str(diffusion_context),
                                             "normative": str(diffusion_checked), "input_spec": str(diffusion_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
@@ -1121,6 +1136,44 @@ def expected_scanner_color_header(out):
         stream.write("static const uint64_t scanner_color_hashes[] = {" + ",".join("UINT64_C(%d)" % row["expected"]["hash"] for row in rows) + "};\n")
 
 
+def dir_frame_fixture(preset):
+    directory = root / "tests/dir/frame-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_bytes())
+    logical = spec["presets"][preset]["native"]
+    payload = directory / spec["payloads"][logical]
+    checked = directory / spec["checked"]
+    for path in (payload, checked, directory / "inputs.json"):
+        assert digest(path) == spec["sha256"][path.name]
+    captured = load_shared_fixture(directory / logical)
+    assert captured["preset"] == preset
+    assert [len(captured[key]) for key in ("cases", "products")] == [74, 24]
+    assert len(spec["production_cases"]) == 121 and len(spec["production_inputs"]) == 121
+    assert {row["case"] for row in spec["production_cases"]} == set(spec["production_inputs"])
+    return manifest, payload, checked, captured, spec
+
+
+def expected_dir_frame_header(out):
+    _, _, _, _, spec = dir_frame_fixture(arguments.preset)
+    def words(values):
+        return "{" + ",".join("UINT64_C(" + str(v) + ")" for v in values) + "}"
+
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("typedef struct { const char* name; uint32_t mode; uint64_t input[14]; FjStatus status; uint64_t output[79], failure[82]; int output_valid, failure_valid, error_valid; const char* diagnostic; } DirFrameRow;\n")
+        stream.write("static const DirFrameRow dir_frame_rows[] = {\n")
+        for row in spec["production_cases"]:
+            declaration = spec["production_inputs"][row["case"]]
+            assert len(declaration["words"]) == 14
+            assert row["output"] is None or len(row["output"]) == 79
+            assert row["failure"] is None or len(row["failure"]) == 82
+            stream.write("{%s,%d,%s,%s,%s,%s,%d,%d,%d,%s},\n" % (
+                json.dumps(row["case"]), declaration["mode"], words(declaration["words"]),
+                "{" + ",".join(str(v) for v in row["envelope"]) + "}", words(row["output"] or [0]), words(row["failure"] or [0]),
+                row["output"] is not None, row["failure"] is not None, row["diagnostic"] is not None,
+                json.dumps(row["diagnostic"]) if row["diagnostic"] is not None else "NULL"))
+        stream.write("};\n")
+
+
 def diffusion_frame_fixture(preset):
     directory = root / "tests/diffusion/frame-fixtures"
     manifest = directory / "manifest.json"
@@ -1445,4 +1498,5 @@ if __name__ == "__main__":
     expected_frame_header(arguments.artifacts)
     expected_halation_frame_header(arguments.artifacts)
     expected_diffusion_frame_header(arguments.artifacts)
+    expected_dir_frame_header(arguments.artifacts)
     execute(arguments)

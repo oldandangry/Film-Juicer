@@ -35,6 +35,7 @@
 #include "RustFrameBridge.h"
 #include "RustHalationBridge.h"
 #include "RustDiffusionBridge.h"
+#include "RustDirBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
@@ -305,7 +306,22 @@ namespace {
 #include "frame_geometry_test.inc"
 #include "halation_frame_test.inc"
 #include "diffusion_frame_test.inc"
+#include "dir_frame_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "dir-frame" || std::string_view(argv[3]) == "dir-frame-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        require(captured.at("preset") == argv[4], "DIR frame native context");
+        DirFrameTest::values(captured, read(directory / "checked.json"));
+        if (std::string_view(argv[3]) == "dir-frame") {
+            DirFrameTest::boundary(captured.at("cases"));
+        } else {
+            require(DirFrameTest::products(argv[1], read(directory / "inputs.json").at("products")) == captured.at("products"), "complete DIR route products and final native identities");
+        }
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "diffusion-frame" || std::string_view(argv[3]) == "diffusion-frame-products")) {
         layouts();
         const auto manifest = read(argv[2]);

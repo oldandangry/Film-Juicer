@@ -110,3 +110,9 @@ mod frame_bridge;
     reason = "fixed diffusion transport admits foreign records and contains whole-operation unwind"
 )]
 mod diffusion_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "fixed DIR frame transport admits foreign storage and contains whole-operation unwind"
+)]
+mod dir_frame_bridge;

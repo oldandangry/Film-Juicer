@@ -7,6 +7,121 @@
 #include <wchar.h>
 #include "juicer_legacy_api.h"
 #include "production-film-expected.h"
+/* Fixed spatial-DIR frame contract, including reused permanent records. */
+_Static_assert(sizeof(FjDirFrameInput) == 64 && _Alignof(FjDirFrameInput) == 8, "FjDirFrameInput layout");
+_Static_assert(offsetof(FjDirFrameInput, active) == 0, "FjDirFrameInput.active offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->active, uint32_t: 1, default: 0), "FjDirFrameInput.active type/extent");
+_Static_assert(offsetof(FjDirFrameInput, diffusion_size_um) == 4, "FjDirFrameInput.diffusion_size_um offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->diffusion_size_um, float: 1, default: 0), "FjDirFrameInput.diffusion_size_um type/extent");
+_Static_assert(offsetof(FjDirFrameInput, diffusion_tail_um) == 8, "FjDirFrameInput.diffusion_tail_um offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->diffusion_tail_um, float: 1, default: 0), "FjDirFrameInput.diffusion_tail_um type/extent");
+_Static_assert(offsetof(FjDirFrameInput, diffusion_tail_weight) == 12, "FjDirFrameInput.diffusion_tail_weight offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->diffusion_tail_weight, float: 1, default: 0), "FjDirFrameInput.diffusion_tail_weight type/extent");
+_Static_assert(offsetof(FjDirFrameInput, pixel_size_um) == 16, "FjDirFrameInput.pixel_size_um offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->pixel_size_um, float: 1, default: 0), "FjDirFrameInput.pixel_size_um type/extent");
+_Static_assert(offsetof(FjDirFrameInput, render_extent) == 20, "FjDirFrameInput.render_extent offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->render_extent, FjExtent: 1, default: 0), "FjDirFrameInput.render_extent type/extent");
+_Static_assert(offsetof(FjDirFrameInput, full_frame_extent) == 36, "FjDirFrameInput.full_frame_extent offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->full_frame_extent, FjExtent: 1, default: 0), "FjDirFrameInput.full_frame_extent type/extent");
+_Static_assert(offsetof(FjDirFrameInput, recipe_hash) == 56, "FjDirFrameInput.recipe_hash offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->recipe_hash, uint64_t: 1, default: 0), "FjDirFrameInput.recipe_hash type/extent");
+_Static_assert(sizeof(FjDirFrameMath) == 512 && _Alignof(FjDirFrameMath) == 8, "FjDirFrameMath layout");
+_Static_assert(offsetof(FjDirFrameMath, present) == 0, "FjDirFrameMath.present offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->present, uint32_t: 1, default: 0), "FjDirFrameMath.present type/extent");
+_Static_assert(offsetof(FjDirFrameMath, component_count) == 4, "FjDirFrameMath.component_count offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->component_count, uint32_t: 1, default: 0), "FjDirFrameMath.component_count type/extent");
+_Static_assert(offsetof(FjDirFrameMath, recipe_hash) == 8, "FjDirFrameMath.recipe_hash offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->recipe_hash, uint64_t: 1, default: 0), "FjDirFrameMath.recipe_hash type/extent");
+_Static_assert(offsetof(FjDirFrameMath, render_extent) == 16, "FjDirFrameMath.render_extent offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->render_extent, FjExtent: 1, default: 0), "FjDirFrameMath.render_extent type/extent");
+_Static_assert(offsetof(FjDirFrameMath, full_frame_extent) == 32, "FjDirFrameMath.full_frame_extent offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->full_frame_extent, FjExtent: 1, default: 0), "FjDirFrameMath.full_frame_extent type/extent");
+_Static_assert(offsetof(FjDirFrameMath, filter_domain_extent) == 48, "FjDirFrameMath.filter_domain_extent offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->filter_domain_extent, FjExtent: 1, default: 0), "FjDirFrameMath.filter_domain_extent type/extent");
+_Static_assert(offsetof(FjDirFrameMath, components) == 64, "FjDirFrameMath.components offset");
+_Static_assert(_Generic(&((FjDirFrameMath*)0)->components, FjDirGaussian (*)[4]: 1, default: 0), "FjDirFrameMath.components type/extent");
+_Static_assert(sizeof(FjDirFrameFailure) == 528 && _Alignof(FjDirFrameFailure) == 8, "FjDirFrameFailure layout");
+_Static_assert(offsetof(FjDirFrameFailure, reason) == 0, "FjDirFrameFailure.reason offset");
+_Static_assert(_Generic(((FjDirFrameFailure*)0)->reason, uint32_t: 1, default: 0), "FjDirFrameFailure.reason type/extent");
+_Static_assert(offsetof(FjDirFrameFailure, field) == 4, "FjDirFrameFailure.field offset");
+_Static_assert(_Generic(((FjDirFrameFailure*)0)->field, uint32_t: 1, default: 0), "FjDirFrameFailure.field type/extent");
+_Static_assert(offsetof(FjDirFrameFailure, component) == 8, "FjDirFrameFailure.component offset");
+_Static_assert(_Generic(((FjDirFrameFailure*)0)->component, uint32_t: 1, default: 0), "FjDirFrameFailure.component type/extent");
+_Static_assert(offsetof(FjDirFrameFailure, trace) == 16, "FjDirFrameFailure.trace offset");
+_Static_assert(_Generic(((FjDirFrameFailure*)0)->trace, FjDirFrameMath: 1, default: 0), "FjDirFrameFailure.trace type/extent");
+_Static_assert(sizeof(FjExtent) == 16 && _Alignof(FjExtent) == 4, "FjExtent layout");
+_Static_assert(offsetof(FjExtent, x) == 0, "FjExtent.x offset");
+_Static_assert(_Generic(((FjExtent*)0)->x, int32_t: 1, default: 0), "FjExtent.x type/extent");
+_Static_assert(offsetof(FjExtent, y) == 4, "FjExtent.y offset");
+_Static_assert(_Generic(((FjExtent*)0)->y, int32_t: 1, default: 0), "FjExtent.y type/extent");
+_Static_assert(offsetof(FjExtent, width) == 8, "FjExtent.width offset");
+_Static_assert(_Generic(((FjExtent*)0)->width, int32_t: 1, default: 0), "FjExtent.width type/extent");
+_Static_assert(offsetof(FjExtent, height) == 12, "FjExtent.height offset");
+_Static_assert(_Generic(((FjExtent*)0)->height, int32_t: 1, default: 0), "FjExtent.height type/extent");
+_Static_assert(sizeof(FjDirGaussian) == 112 && _Alignof(FjDirGaussian) == 8, "FjDirGaussian layout");
+_Static_assert(offsetof(FjDirGaussian, sigma_px) == 0, "FjDirGaussian.sigma_px offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->sigma_px, float: 1, default: 0), "FjDirGaussian.sigma_px type/extent");
+_Static_assert(offsetof(FjDirGaussian, weight) == 4, "FjDirGaussian.weight offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->weight, float: 1, default: 0), "FjDirGaussian.weight type/extent");
+_Static_assert(offsetof(FjDirGaussian, radius) == 8, "FjDirGaussian.radius offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->radius, int32_t: 1, default: 0), "FjDirGaussian.radius type/extent");
+_Static_assert(offsetof(FjDirGaussian, reference_operator) == 12, "FjDirGaussian.reference_operator offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->reference_operator, uint32_t: 1, default: 0), "FjDirGaussian.reference_operator type/extent");
+_Static_assert(offsetof(FjDirGaussian, feedforward) == 16, "FjDirGaussian.feedforward offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->feedforward, double: 1, default: 0), "FjDirGaussian.feedforward type/extent");
+_Static_assert(offsetof(FjDirGaussian, feedback) == 24, "FjDirGaussian.feedback offset");
+_Static_assert(_Generic(&((FjDirGaussian*)0)->feedback, double (*)[3]: 1, default: 0), "FjDirGaussian.feedback type/extent");
+_Static_assert(offsetof(FjDirGaussian, normalization_denominator) == 48, "FjDirGaussian.normalization_denominator offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->normalization_denominator, double: 1, default: 0), "FjDirGaussian.normalization_denominator type/extent");
+_Static_assert(offsetof(FjDirGaussian, feedforward_numerator) == 56, "FjDirGaussian.feedforward_numerator offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->feedforward_numerator, double: 1, default: 0), "FjDirGaussian.feedforward_numerator type/extent");
+_Static_assert(offsetof(FjDirGaussian, feedback_numerators) == 64, "FjDirGaussian.feedback_numerators offset");
+_Static_assert(_Generic(&((FjDirGaussian*)0)->feedback_numerators, double (*)[3]: 1, default: 0), "FjDirGaussian.feedback_numerators type/extent");
+_Static_assert(offsetof(FjDirGaussian, boundary_truncation_accuracy) == 88, "FjDirGaussian.boundary_truncation_accuracy offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->boundary_truncation_accuracy, double: 1, default: 0), "FjDirGaussian.boundary_truncation_accuracy type/extent");
+_Static_assert(offsetof(FjDirGaussian, boundary_certification_tolerance) == 96, "FjDirGaussian.boundary_certification_tolerance offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->boundary_certification_tolerance, double: 1, default: 0), "FjDirGaussian.boundary_certification_tolerance type/extent");
+_Static_assert(offsetof(FjDirGaussian, boundary_derivation_version) == 104, "FjDirGaussian.boundary_derivation_version offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->boundary_derivation_version, uint32_t: 1, default: 0), "FjDirGaussian.boundary_derivation_version type/extent");
+_Static_assert(sizeof(FjSpatialDir) == 520 && _Alignof(FjSpatialDir) == 8, "FjSpatialDir layout");
+_Static_assert(offsetof(FjSpatialDir, render_extent) == 0, "FjSpatialDir.render_extent offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->render_extent, FjExtent: 1, default: 0), "FjSpatialDir.render_extent type/extent");
+_Static_assert(offsetof(FjSpatialDir, full_frame_extent) == 16, "FjSpatialDir.full_frame_extent offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->full_frame_extent, FjExtent: 1, default: 0), "FjSpatialDir.full_frame_extent type/extent");
+_Static_assert(offsetof(FjSpatialDir, filter_domain_extent) == 32, "FjSpatialDir.filter_domain_extent offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->filter_domain_extent, FjExtent: 1, default: 0), "FjSpatialDir.filter_domain_extent type/extent");
+_Static_assert(offsetof(FjSpatialDir, component_count) == 48, "FjSpatialDir.component_count offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->component_count, size_t: 1, default: 0), "FjSpatialDir.component_count type/extent");
+_Static_assert(offsetof(FjSpatialDir, components) == 56, "FjSpatialDir.components offset");
+_Static_assert(_Generic(&((FjSpatialDir*)0)->components, FjDirGaussian (*)[4]: 1, default: 0), "FjSpatialDir.components type/extent");
+_Static_assert(offsetof(FjSpatialDir, recipe_hash) == 504, "FjSpatialDir.recipe_hash offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->recipe_hash, uint64_t: 1, default: 0), "FjSpatialDir.recipe_hash type/extent");
+_Static_assert(offsetof(FjSpatialDir, hash) == 512, "FjSpatialDir.hash offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->hash, uint64_t: 1, default: 0), "FjSpatialDir.hash type/extent");
+_Static_assert(FJ_DIR_FRAME_NONE == 0U, "FJ_DIR_FRAME_NONE value");
+_Static_assert(FJ_DIR_FRAME_RAW == 1U, "FJ_DIR_FRAME_RAW value");
+_Static_assert(FJ_DIR_FRAME_PREPARATION == 2U, "FJ_DIR_FRAME_PREPARATION value");
+_Static_assert(FJ_DIR_FRAME_PANIC == 3U, "FJ_DIR_FRAME_PANIC value");
+_Static_assert(FJ_DIR_FRAME_FIELD_NONE == 0U, "FJ_DIR_FRAME_FIELD_NONE value");
+_Static_assert(FJ_DIR_FRAME_FIELD_PIXEL_SIZE_UM == 1U, "FJ_DIR_FRAME_FIELD_PIXEL_SIZE_UM value");
+_Static_assert(FJ_DIR_FRAME_FIELD_RENDER_EXTENT == 2U, "FJ_DIR_FRAME_FIELD_RENDER_EXTENT value");
+_Static_assert(FJ_DIR_FRAME_FIELD_FULL_FRAME_EXTENT == 3U, "FJ_DIR_FRAME_FIELD_FULL_FRAME_EXTENT value");
+_Static_assert(FJ_DIR_FRAME_FIELD_PARTIAL_RENDER_WINDOW == 4U, "FJ_DIR_FRAME_FIELD_PARTIAL_RENDER_WINDOW value");
+_Static_assert(FJ_DIR_FRAME_FIELD_CORE == 5U, "FJ_DIR_FRAME_FIELD_CORE value");
+_Static_assert(FJ_DIR_FRAME_FIELD_TAIL == 6U, "FJ_DIR_FRAME_FIELD_TAIL value");
+_Static_assert(FJ_DIR_FRAME_FIELD_COMPONENT_VALUES == 7U, "FJ_DIR_FRAME_FIELD_COMPONENT_VALUES value");
+_Static_assert(FJ_DIR_FRAME_FIELD_COMPONENT_CAPACITY == 8U, "FJ_DIR_FRAME_FIELD_COMPONENT_CAPACITY value");
+_Static_assert(FJ_DIR_FRAME_FIELD_RADIUS == 9U, "FJ_DIR_FRAME_FIELD_RADIUS value");
+_Static_assert(FJ_DIR_FRAME_FIELD_IIR_DENOMINATOR == 10U, "FJ_DIR_FRAME_FIELD_IIR_DENOMINATOR value");
+_Static_assert(FJ_DIR_FRAME_FIELD_IIR_OUTPUT == 11U, "FJ_DIR_FRAME_FIELD_IIR_OUTPUT value");
+_Static_assert(FJ_DIR_FRAME_FIELD_EMPTY_PLAN == 12U, "FJ_DIR_FRAME_FIELD_EMPTY_PLAN value");
+_Static_assert(FJ_DIR_FRAME_NO_COMPONENT == 4U, "FJ_DIR_FRAME_NO_COMPONENT value");
+_Static_assert(FJ_DIR_OPERATOR_NONE == 0U, "FJ_DIR_OPERATOR_NONE value");
+_Static_assert(FJ_DIR_OPERATOR_IDENTITY == 1U, "FJ_DIR_OPERATOR_IDENTITY value");
+_Static_assert(FJ_DIR_OPERATOR_FIR_REFLECT == 2U, "FJ_DIR_OPERATOR_FIR_REFLECT value");
+_Static_assert(FJ_DIR_OPERATOR_YVV_REFLECT == 3U, "FJ_DIR_OPERATOR_YVV_REFLECT value");
+_Static_assert(_Generic(&fj_legacy_dir_frame_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_frame_prepare signature");
+
 #define CHECK(v)                                                               \
     do {                                                                       \
         if (!(v)) {                                                            \
@@ -2351,6 +2466,145 @@ static int diffusion_frame_values(void) {
     return 0;
 }
 
+static float dir_frame_float(uint64_t word) {
+    uint32_t low = (uint32_t)word;
+    float value;
+    memcpy(&value, &low, sizeof(value));
+    return value;
+}
+
+static void dir_frame_words(const FjDirFrameMath* v, uint64_t words[79]) {
+    size_t index = 0;
+    words[index++] = v->present;
+    words[index++] = v->component_count;
+    words[index++] = v->recipe_hash;
+    const FjExtent* extents[3] = {&v->render_extent, &v->full_frame_extent, &v->filter_domain_extent};
+    for (size_t i = 0; i < 3; ++i) {
+        words[index++] = (uint32_t)extents[i]->x;
+        words[index++] = (uint32_t)extents[i]->y;
+        words[index++] = (uint32_t)extents[i]->width;
+        words[index++] = (uint32_t)extents[i]->height;
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        const FjDirGaussian* c = &v->components[i];
+        words[index++] = frame_pixel_word(c->sigma_px);
+        words[index++] = frame_pixel_word(c->weight);
+        words[index++] = (uint32_t)c->radius;
+        words[index++] = c->reference_operator;
+        words[index++] = diffusion_word(c->feedforward);
+        for (size_t j = 0; j < 3; ++j) words[index++] = diffusion_word(c->feedback[j]);
+        words[index++] = diffusion_word(c->normalization_denominator);
+        words[index++] = diffusion_word(c->feedforward_numerator);
+        for (size_t j = 0; j < 3; ++j) words[index++] = diffusion_word(c->feedback_numerators[j]);
+        words[index++] = diffusion_word(c->boundary_truncation_accuracy);
+        words[index++] = diffusion_word(c->boundary_certification_tolerance);
+        words[index++] = c->boundary_derivation_version;
+    }
+}
+
+static int dir_frame_values(void) {
+    for (size_t row = 0; row < sizeof(dir_frame_rows) / sizeof(dir_frame_rows[0]); ++row) {
+        const DirFrameRow* expected = &dir_frame_rows[row];
+        CHECK(expected->mode <= 23);
+        FjDirFrameInput input = {0};
+        input.active = (uint32_t)expected->input[0];
+        input.diffusion_size_um = dir_frame_float(expected->input[1]);
+        input.diffusion_tail_um = dir_frame_float(expected->input[2]);
+        input.diffusion_tail_weight = dir_frame_float(expected->input[3]);
+        input.pixel_size_um = dir_frame_float(expected->input[4]);
+        FjExtent* extents[2] = {&input.render_extent, &input.full_frame_extent};
+        for (size_t i = 0; i < 2; ++i) {
+            extents[i]->x = diffusion_integer(expected->input[5 + i * 4]);
+            extents[i]->y = diffusion_integer(expected->input[6 + i * 4]);
+            extents[i]->width = diffusion_integer(expected->input[7 + i * 4]);
+            extents[i]->height = diffusion_integer(expected->input[8 + i * 4]);
+        }
+        input.recipe_hash = expected->input[13];
+        FjDirFrameMath math;
+        FjDirFrameFailure failure;
+        memset(&math, 0x55, sizeof(math));
+        memset(&failure, 0x55, sizeof(failure));
+        char text[257];
+        memset(text, 'Q', sizeof(text));
+        FjErrorBuffer error = {text, 256, 99};
+        union { max_align_t alignment; unsigned char bytes[sizeof(FjDirFrameInput) + 1]; } bad_input;
+        union { max_align_t alignment; unsigned char bytes[sizeof(FjDirFrameMath) + 1]; } bad_output;
+        union { max_align_t alignment; unsigned char bytes[sizeof(FjDirFrameFailure) + 1]; } bad_failure;
+        union { max_align_t alignment; unsigned char bytes[sizeof(FjErrorBuffer) + 1]; } bad_error;
+        memset(&bad_input, 0, sizeof(bad_input));
+        memset(&bad_output, 0, sizeof(bad_output));
+        memset(&bad_failure, 0, sizeof(bad_failure));
+        memset(&bad_error, 0, sizeof(bad_error));
+        const FjDirFrameInput* source = &input;
+        FjDirFrameMath* output = &math;
+        FjDirFrameFailure* details = &failure;
+        FjErrorBuffer* diagnostic = &error;
+        const uint32_t mode = expected->mode;
+        if (mode == 1 || (mode >= 6 && mode <= 8)) source = NULL;
+        if (mode == 2) output = NULL;
+        if (mode == 3) details = NULL;
+        if (mode == 4) error.data = NULL;
+        if (mode == 5 || mode == 16) diagnostic = NULL;
+        if (mode == 6 || mode == 17) { error.data = (char*)UINTPTR_MAX; error.capacity = 0; }
+        if (mode == 7 || mode == 18) error.capacity = 1;
+        if (mode == 8) error.capacity = 7;
+        if (mode == 9) source = (const FjDirFrameInput*)(bad_input.bytes + 1);
+        if (mode == 10) output = (FjDirFrameMath*)(bad_output.bytes + 1);
+        if (mode == 11) details = (FjDirFrameFailure*)(bad_failure.bytes + 1);
+        if (mode == 12) diagnostic = (FjErrorBuffer*)(bad_error.bytes + 1);
+        if (mode == 13) error.capacity = SIZE_MAX;
+        if (mode == 14) { error.data = (char*)(UINTPTR_MAX - 1); error.capacity = 7; }
+        if (mode == 15) input.active = 2;
+        if (mode == 19) error.capacity = 8;
+        if (mode == 20) source = (const FjDirFrameInput*)(UINTPTR_MAX - 7);
+        if (mode == 21) output = (FjDirFrameMath*)(UINTPTR_MAX - 7);
+        if (mode == 22) details = (FjDirFrameFailure*)(UINTPTR_MAX - 7);
+        if (mode == 23) diagnostic = (FjErrorBuffer*)(UINTPTR_MAX - 7);
+        const FjStatus result = fj_legacy_dir_frame_prepare(source, output, details, diagnostic);
+        CHECK(result.category == expected->status.category && result.api == expected->status.api && result.native_code == expected->status.native_code);
+        if (mode == 9) for (size_t i = 0; i < sizeof(bad_input.bytes); ++i) CHECK(bad_input.bytes[i] == 0);
+        if (mode == 10) for (size_t i = 0; i < sizeof(bad_output.bytes); ++i) CHECK(bad_output.bytes[i] == 0);
+        if (mode == 11) for (size_t i = 0; i < sizeof(bad_failure.bytes); ++i) CHECK(bad_failure.bytes[i] == 0);
+        if (mode == 12) for (size_t i = 0; i < sizeof(bad_error.bytes); ++i) CHECK(bad_error.bytes[i] == 0);
+        uint64_t words[79] = {0}, trace[82] = {0};
+        if (expected->output_valid) {
+            dir_frame_words(&math, words);
+            for (size_t i = 0; i < 79; ++i) CHECK(words[i] == expected->output[i]);
+        }
+        if (expected->failure_valid) {
+            trace[0] = failure.reason;
+            trace[1] = failure.field;
+            trace[2] = failure.component;
+            dir_frame_words(&failure.trace, trace + 3);
+            for (size_t i = 0; i < 82; ++i) CHECK(trace[i] == expected->failure[i]);
+        }
+        const char* actual_text = expected->error_valid && error.capacity ? error.data : "";
+        if (expected->error_valid) {
+            CHECK(error.length == strlen(expected->diagnostic));
+            CHECK(strncmp(actual_text, expected->diagnostic, error.length) == 0);
+            if (error.capacity) {
+                CHECK(actual_text[error.length] == '\0');
+                CHECK(text[error.capacity] == 'Q');
+            }
+        } else if (mode == 4 || mode == 13 || mode == 14) CHECK(error.length == 0);
+        printf("DIR_FRAME_RESULT {\"case\":\"%s\",\"envelope\":[%" PRIu32 ",%" PRIu32 ",%" PRId32 "],\"failure\":", expected->name, result.category, result.api, result.native_code);
+        if (expected->failure_valid) {
+            printf("[");
+            for (size_t i = 0; i < 82; ++i) printf("%s%" PRIu64, i ? "," : "", trace[i]);
+            printf("]");
+        } else printf("null");
+        printf(",\"output\":");
+        if (expected->output_valid) {
+            printf("[");
+            for (size_t i = 0; i < 79; ++i) printf("%s%" PRIu64, i ? "," : "", words[i]);
+            printf("]");
+        } else printf("null");
+        if (expected->error_valid) printf(",\"diagnostic\":\"%.*s\"}\n", (int)error.length, actual_text);
+        else printf(",\"diagnostic\":null}\n");
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -2380,6 +2634,7 @@ int main(int argc, char** argv) {
     CHECK(frame_values() == 0);
     CHECK(halation_frame_values() == 0);
     CHECK(diffusion_frame_values() == 0);
+    CHECK(dir_frame_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

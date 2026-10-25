@@ -21,6 +21,7 @@
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/juicer_test_api.h"
+#include "../ffi/spatial_optics_fixture.h"
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(const JuicerCuda::DirectPipelineRunParams*, JuicerCuda::SpatialDirBuildRequest);
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(const JuicerCuda::DirectPipelineRunParams*, float*, float*, float*, void*);
@@ -89,7 +90,7 @@ namespace {
                           : Scanner::build_direct_scanner_spectral_lut_descriptor(
                                 {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error),
                     error);
-            require(Spektrafilm::build_spatial_dir_descriptor(product.recipe.dirCouplers, pixelSize, extent, extent, "dir-exposure-cache-test", dir), "DIR descriptor failed");
+            require(JuicerTestSupport::prepare_dir_frame(product.recipe.dirCouplers, pixelSize, extent, extent, "dir-exposure-cache-test", dir), "DIR descriptor failed");
         }
 
         JuicerProcess::Root::CudaFramePreparationRequest request() const {

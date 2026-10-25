@@ -1681,6 +1681,52 @@ typedef struct FjHalationFrameFailure {
 } FjHalationFrameFailure;
 FjStatus fj_legacy_scatter_halation_frame_prepare(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_DIR_FRAME: synchronous mathematical preparation; remove with
+ * its last native model caller, no later than S6.D. S4.E narrows execution inputs.
+ * Input and every nonnull record authorize live, initialized, aligned storage.
+ * Writable peers/diagnostic backing are exclusive and disjoint from each other
+ * and input. No pointer escapes; padding is not a value. Each admitted result
+ * clears independently before other admission. Failed executable Math is zero;
+ * Failure.trace is diagnostic progress only and must never execute.
+ * Optional diagnostics reserve a NUL for positive capacity; capacity zero reads
+ * no backing. Text truncation changes neither status nor typed failure.
+ */
+#define FJ_DIR_FRAME_NONE UINT32_C(0)
+#define FJ_DIR_FRAME_RAW UINT32_C(1)
+#define FJ_DIR_FRAME_PREPARATION UINT32_C(2)
+#define FJ_DIR_FRAME_PANIC UINT32_C(3)
+#define FJ_DIR_FRAME_FIELD_NONE UINT32_C(0)
+#define FJ_DIR_FRAME_FIELD_PIXEL_SIZE_UM UINT32_C(1)
+#define FJ_DIR_FRAME_FIELD_RENDER_EXTENT UINT32_C(2)
+#define FJ_DIR_FRAME_FIELD_FULL_FRAME_EXTENT UINT32_C(3)
+#define FJ_DIR_FRAME_FIELD_PARTIAL_RENDER_WINDOW UINT32_C(4)
+#define FJ_DIR_FRAME_FIELD_CORE UINT32_C(5)
+#define FJ_DIR_FRAME_FIELD_TAIL UINT32_C(6)
+#define FJ_DIR_FRAME_FIELD_COMPONENT_VALUES UINT32_C(7)
+#define FJ_DIR_FRAME_FIELD_COMPONENT_CAPACITY UINT32_C(8)
+#define FJ_DIR_FRAME_FIELD_RADIUS UINT32_C(9)
+#define FJ_DIR_FRAME_FIELD_IIR_DENOMINATOR UINT32_C(10)
+#define FJ_DIR_FRAME_FIELD_IIR_OUTPUT UINT32_C(11)
+#define FJ_DIR_FRAME_FIELD_EMPTY_PLAN UINT32_C(12)
+#define FJ_DIR_FRAME_NO_COMPONENT UINT32_C(4)
+typedef struct FjDirFrameInput {
+    uint32_t active;
+    float diffusion_size_um, diffusion_tail_um, diffusion_tail_weight, pixel_size_um;
+    FjExtent render_extent, full_frame_extent;
+    uint64_t recipe_hash;
+} FjDirFrameInput;
+typedef struct FjDirFrameMath {
+    uint32_t present, component_count;
+    uint64_t recipe_hash;
+    FjExtent render_extent, full_frame_extent, filter_domain_extent;
+    FjDirGaussian components[4];
+} FjDirFrameMath;
+typedef struct FjDirFrameFailure {
+    uint32_t reason, field, component;
+    FjDirFrameMath trace;
+} FjDirFrameFailure;
+FjStatus fj_legacy_dir_frame_prepare(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

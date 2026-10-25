@@ -1467,3 +1467,26 @@ Both need no driver/device and have 180-second deadlines. See the owning
 [fixture authority](scatter_halation/frame-fixtures/README.md). The existing
 strict C11 Release testing-OFF film probe also executes the complete frozen
 eighty-six-result membership, retaining all earlier production probe results.
+
+### Spatial DIR mathematical frame construction
+
+`Ffi.Host.DirFrame` and `Film.Host.DirFrameProducts` check the fixed Rust boundary,
+private complete results, ordinary failed progress and common native composition
+against [four native captures](dir/frame-fixtures/README.md). Both are host groups
+with 180-second limits. Every mathematical/default word and final native hash is
+compared exactly; fixtures are never regenerated during tests.
+
+`Ofx.Gpu.DirFrame` uses the existing executor-failure probe and GPU lock with a
+180-second limit. Its 100 bounded invocations cover the two real legacy builder
+sites, all four routes/polarities, current pixel/domain/origin facts, full-frame
+fallback, inactive/Identity/FIR/YVV/mixed plans, zero-weight construction and
+pre-builder/mathematical failure stops. Four genuine route products execute
+pixels; the other successful constructions cancel at the existing first schedule
+abort check before resource preparation. Existing DIR/cache, grain, prepared,
+operator, route and lifecycle groups retain their complete downstream assertions.
+
+Prepared projection retains the native decoder's distinct unconsumed zero-weight
+target tiers and carries the original final hash. Both native Release OFF C11
+probes execute 121 complete value/failure rows, in addition to all older probes.
+The reflected-YVV boundary-axis CPU producer, wider workspace construction,
+grain/defect mappings and S4.E integration remain later work.

@@ -392,6 +392,30 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
             or document.get("diffusion_frame_results") != diffusion_expected):
         raise ValueError("production diffusion frame full fields/words/failure results are incomplete")
 
+    dir_manifest = root / "tests/dir/frame-fixtures/manifest.json"
+    dir_spec = json.loads(dir_manifest.read_bytes())
+    dir_logical = dir_spec["presets"][document["preset"]]["native"]
+    dir_paths = {
+        "manifest": dir_manifest,
+        "payload": dir_manifest.parent / dir_spec["payloads"][dir_logical],
+        "normative": dir_manifest.parent / dir_spec["checked"],
+        "input_spec": dir_manifest.parent / "inputs.json",
+    }
+    dir_frame = document.get("dir_frame_fixture", {})
+    if dir_frame.get("logical_preset") != document["preset"] or any(
+            resolve(dir_frame.get(key, "")) != path for key, path in dir_paths.items()):
+        raise ValueError("production DIR frame fixture membership is incomplete")
+    for path in dir_paths.values():
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum
+                or (path != dir_manifest and checksum != dir_spec["sha256"][path.name])):
+            raise ValueError("production DIR frame consumed fixture identity changed")
+    dir_expected = dir_spec["production_cases"]
+    if (len(dir_expected) != 121 or len({row["case"] for row in dir_expected}) != 121
+            or document.get("dir_frame_results") != dir_expected):
+        raise ValueError("production DIR frame full fields/words/failure trace results are incomplete")
+
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -423,6 +447,10 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     for name, checksum in outputs.items():
         admit(name, checksum)
     film_stdout = manifest.parent / "film-values.stdout"
+    dir_rows = [json.loads(line.removeprefix("DIR_FRAME_RESULT "))
+                for line in film_stdout.read_text().splitlines() if line.startswith("DIR_FRAME_RESULT ")]
+    if dir_rows != dir_expected:
+        raise ValueError("production DIR frame executed stdout results disagree")
     diffusion_rows = [json.loads(line.removeprefix("DIFFUSION_FRAME_RESULT "))
                       for line in film_stdout.read_text().splitlines() if line.startswith("DIFFUSION_FRAME_RESULT ")]
     if diffusion_rows != diffusion_expected:
@@ -533,7 +561,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "exposure_fixture.h", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "diffusion_frame_test.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+                "film_recipe_abi_facts.inc", "dir_frame_test.inc", "diffusion_frame_test.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
             paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
@@ -546,6 +574,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.update((root / "tests/frame/geometry-fixtures").glob("*.json"))
             paths.update((root / "tests/scatter_halation/frame-fixtures").glob("*.json"))
             paths.update((root / "tests/diffusion/frame-fixtures").glob("*.json"))
+            paths.update((root / "tests/dir/frame-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))

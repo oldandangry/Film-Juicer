@@ -21,6 +21,70 @@
 namespace {
     FjPreparedHostData make_fixed_input();
 
+    TEST(PreparedProjection, DirFramesKeepCapturedMathAndCarriedHashWithNativeZeroWeightTiers) {
+        const auto directory = std::filesystem::path(__FILE__).parent_path().parent_path() / "dir/frame-fixtures";
+        const auto manifest = nlohmann::json::parse(std::ifstream(directory / "manifest.json"));
+        const char* preset = std::getenv("JUICER_TEST_PRESET_NAME");
+        ASSERT_NE(preset, nullptr);
+        const auto captured = load_shared_fixture(directory / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
+        auto rows = captured.at("cases");
+        for (const auto& row : captured.at("products"))
+            rows.push_back(row);
+        ASSERT_EQ(rows.size(), 98u);
+        bool sawZeroWeightYvv = false;
+        for (const auto& row : rows) {
+            SCOPED_TRACE(row.at("input").at("name").get<std::string>());
+            if (!row.at("success").get<bool>())
+                continue;
+            const auto& input = row.at("input");
+            const auto scalar = [](const nlohmann::json& v) {
+                return std::bit_cast<float>(v.get<std::uint32_t>());
+            };
+            const auto extent = [](const nlohmann::json& v) -> Spektrafilm::DirFrameExtent {
+                return {v.at(0), v.at(1), v.at(2), v.at(3)};
+            };
+            DirCouplersRecipe recipe;
+            recipe.active = input.at("active");
+            recipe.diffusionSizeUm = scalar(input.at("size"));
+            recipe.diffusionTailUm = scalar(input.at("tail"));
+            recipe.diffusionTailWeight = scalar(input.at("weight"));
+            recipe.hash = input.at("hash");
+            SpatialDirDescriptor frame;
+            ASSERT_TRUE(JuicerTestSupport::prepare_dir_frame(recipe, scalar(input.at("pixel")), extent(input.at("render")), extent(input.at("full")), "print", frame));
+            auto expected = row.at("native");
+            if (!expected.at("label").is_null())
+                expected["label"] = "print";
+            ASSERT_EQ(JuicerTestSupport::dir_frame_fields(frame), expected);
+            FjPreparedHostData wire = make_fixed_input();
+            JuicerCuda::PreparedDescriptors source, decoded;
+            std::string diagnostic;
+            ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, source, diagnostic)) << diagnostic;
+            source.spatialDir = frame;
+            JuicerCudaTest::encode_prepared_descriptors(source, wire);
+            if (frame.hash != 0 && frame.dirRecipeHash == 0) {
+                EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic));
+                EXPECT_EQ(diagnostic, "MalformedPreparedHostData field=spatial_dir.identity");
+                continue;
+            }
+            ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic)) << diagnostic;
+            for (int index = 0; index < frame.filterPlan.componentCount; ++index) {
+                const auto& component = frame.filterPlan.components[static_cast<std::size_t>(index)];
+                if (!(component.weight > 0.0f)) {
+                    // The decoder starts unconsumed zero-weight targets at Tier0. Carry the final hash unchanged.
+                    expected["components"][index]["target"] = static_cast<unsigned>(Spektrafilm::DirScratchTier::Tier0);
+                    if (component.referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect) {
+                        sawZeroWeightYvv = true;
+                        EXPECT_EQ(component.targetScratchTier, Spektrafilm::DirScratchTier::Tier1IChannels);
+                        EXPECT_EQ(frame.scratchTier, Spektrafilm::DirScratchTier::Tier1F);
+                    }
+                }
+            }
+            EXPECT_EQ(JuicerTestSupport::dir_frame_fields(decoded.spatialDir), expected);
+            EXPECT_EQ(decoded.spatialDir.hash, frame.hash);
+        }
+        EXPECT_TRUE(sawZeroWeightYvv);
+    }
+
     TEST(PreparedProjection, RustHalationFramesKeepEveryFrozenFieldThroughEncodeDecode) {
         const auto directory = std::filesystem::path(__FILE__).parent_path().parent_path() / "scatter_halation/frame-fixtures";
         const auto manifest = nlohmann::json::parse(std::ifstream(directory / "manifest.json"));

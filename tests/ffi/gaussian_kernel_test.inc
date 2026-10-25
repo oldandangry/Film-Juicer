@@ -64,7 +64,7 @@ namespace GaussianTest {
                 }
                 Spektrafilm::SpatialDirDescriptor dir;
                 const Spektrafilm::DirFrameExtent extent{0, 0, 64, 48};
-                require(Spektrafilm::build_spatial_dir_descriptor(product.recipe.dirCouplers, pixelSize, extent, extent, "gaussian-products", dir), "Gaussian capture DIR descriptor");
+                require(JuicerTestSupport::prepare_dir_frame(product.recipe.dirCouplers, pixelSize, extent, extent, "gaussian-products", dir), "Gaussian capture DIR descriptor");
                 for (int c = 0; c < dir.filterPlan.componentCount; ++c) {
                     const auto& component = dir.filterPlan.components[static_cast<std::size_t>(c)];
                     if (component.referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect)

@@ -1086,6 +1086,60 @@ _Static_assert(_Generic(&fj_test_diffusion_frame_prepare, FjStatus (*)(const FjD
 FjStatus fj_test_diffusion_frame_c_prepare(const FjDiffusionFrameInput* i, FjDiffusionFrameSet* o, FjDiffusionFailure* f, FjErrorBuffer* e) {
     return fj_legacy_diffusion_frame_prepare(i, o, f, e);
 }
+
+FjStatus fj_test_dir_frame_c_prepare(const FjDirFrameInput* input, FjDirFrameMath* out, FjDirFrameFailure* failure, FjErrorBuffer* error) {
+    return fj_legacy_dir_frame_prepare(input, out, failure, error);
+}
+
+static int dir_frame_extent_equal(FjExtent a, FjExtent b) {
+    return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+}
+
+static int dir_frame_math_equal(const FjDirFrameMath* a, const FjDirFrameMath* b) {
+    if (a->present != b->present || a->component_count != b->component_count || a->recipe_hash != b->recipe_hash ||
+        !dir_frame_extent_equal(a->render_extent, b->render_extent) ||
+        !dir_frame_extent_equal(a->full_frame_extent, b->full_frame_extent) ||
+        !dir_frame_extent_equal(a->filter_domain_extent, b->filter_domain_extent)) {
+        return 0;
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        const FjDirGaussian* x = &a->components[i];
+        const FjDirGaussian* y = &b->components[i];
+#define FJ_DIR_COMPARE(field)                                \
+    if (memcmp(&x->field, &y->field, sizeof(x->field)) != 0) \
+    return 0
+        FJ_DIR_COMPARE(sigma_px);
+        FJ_DIR_COMPARE(weight);
+        FJ_DIR_COMPARE(radius);
+        FJ_DIR_COMPARE(reference_operator);
+        FJ_DIR_COMPARE(feedforward);
+        FJ_DIR_COMPARE(feedback);
+        FJ_DIR_COMPARE(normalization_denominator);
+        FJ_DIR_COMPARE(feedforward_numerator);
+        FJ_DIR_COMPARE(feedback_numerators);
+        FJ_DIR_COMPARE(boundary_truncation_accuracy);
+        FJ_DIR_COMPARE(boundary_certification_tolerance);
+        FJ_DIR_COMPARE(boundary_derivation_version);
+#undef FJ_DIR_COMPARE
+    }
+    return 1;
+}
+
+int fj_test_dir_frame_c_check(const FjDirFrameInput* input, const FjDirFrameMath* expected, const FjDirFrameFailure* rejected, uint32_t category, const char* diagnostic) {
+    FjDirFrameMath out;
+    FjDirFrameFailure failure;
+    memset(&out, 0xa5, sizeof(out));
+    memset(&failure, 0xa5, sizeof(failure));
+    char text[256] = "seed";
+    FjErrorBuffer error = {text, sizeof(text), 99};
+    const FjStatus result = fj_test_dir_frame_c_prepare(input, &out, &failure, &error);
+    return result.category == category && result.api == FJ_API_NONE && result.native_code == 0 &&
+           dir_frame_math_equal(&out, expected) && failure.reason == rejected->reason &&
+           failure.field == rejected->field && failure.component == rejected->component &&
+           dir_frame_math_equal(&failure.trace, &rejected->trace) &&
+           error.data == text && error.capacity == sizeof(text) && error.length == strlen(diagnostic) &&
+           text[error.length] == '\0' && strcmp(text, diagnostic) == 0;
+}
 _Static_assert(FJ_DIFFUSION_REASON_NONE == 0U, "FJ_DIFFUSION_REASON_NONE value");
 _Static_assert(FJ_DIFFUSION_REASON_RAW == 1U, "FJ_DIFFUSION_REASON_RAW value");
 _Static_assert(FJ_DIFFUSION_REASON_PREPARATION == 2U, "FJ_DIFFUSION_REASON_PREPARATION value");
@@ -1137,3 +1191,120 @@ _Static_assert(offsetof(FjDiffusion, sample_hash) == 96, "FjDiffusion.sample_has
 _Static_assert(_Generic(((FjDiffusion*)0)->sample_hash, uint64_t: 1, default: 0), "FjDiffusion.sample_hash type");
 _Static_assert(offsetof(FjDiffusion, hash) == 104, "FjDiffusion.hash offset");
 _Static_assert(_Generic(((FjDiffusion*)0)->hash, uint64_t: 1, default: 0), "FjDiffusion.hash type");
+
+/* Fixed spatial-DIR frame contract, including reused permanent records. */
+_Static_assert(sizeof(FjDirFrameInput) == 64 && _Alignof(FjDirFrameInput) == 8, "FjDirFrameInput layout");
+_Static_assert(offsetof(FjDirFrameInput, active) == 0, "FjDirFrameInput.active offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->active, uint32_t: 1, default: 0), "FjDirFrameInput.active type/extent");
+_Static_assert(offsetof(FjDirFrameInput, diffusion_size_um) == 4, "FjDirFrameInput.diffusion_size_um offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->diffusion_size_um, float: 1, default: 0), "FjDirFrameInput.diffusion_size_um type/extent");
+_Static_assert(offsetof(FjDirFrameInput, diffusion_tail_um) == 8, "FjDirFrameInput.diffusion_tail_um offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->diffusion_tail_um, float: 1, default: 0), "FjDirFrameInput.diffusion_tail_um type/extent");
+_Static_assert(offsetof(FjDirFrameInput, diffusion_tail_weight) == 12, "FjDirFrameInput.diffusion_tail_weight offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->diffusion_tail_weight, float: 1, default: 0), "FjDirFrameInput.diffusion_tail_weight type/extent");
+_Static_assert(offsetof(FjDirFrameInput, pixel_size_um) == 16, "FjDirFrameInput.pixel_size_um offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->pixel_size_um, float: 1, default: 0), "FjDirFrameInput.pixel_size_um type/extent");
+_Static_assert(offsetof(FjDirFrameInput, render_extent) == 20, "FjDirFrameInput.render_extent offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->render_extent, FjExtent: 1, default: 0), "FjDirFrameInput.render_extent type/extent");
+_Static_assert(offsetof(FjDirFrameInput, full_frame_extent) == 36, "FjDirFrameInput.full_frame_extent offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->full_frame_extent, FjExtent: 1, default: 0), "FjDirFrameInput.full_frame_extent type/extent");
+_Static_assert(offsetof(FjDirFrameInput, recipe_hash) == 56, "FjDirFrameInput.recipe_hash offset");
+_Static_assert(_Generic(((FjDirFrameInput*)0)->recipe_hash, uint64_t: 1, default: 0), "FjDirFrameInput.recipe_hash type/extent");
+_Static_assert(sizeof(FjDirFrameMath) == 512 && _Alignof(FjDirFrameMath) == 8, "FjDirFrameMath layout");
+_Static_assert(offsetof(FjDirFrameMath, present) == 0, "FjDirFrameMath.present offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->present, uint32_t: 1, default: 0), "FjDirFrameMath.present type/extent");
+_Static_assert(offsetof(FjDirFrameMath, component_count) == 4, "FjDirFrameMath.component_count offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->component_count, uint32_t: 1, default: 0), "FjDirFrameMath.component_count type/extent");
+_Static_assert(offsetof(FjDirFrameMath, recipe_hash) == 8, "FjDirFrameMath.recipe_hash offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->recipe_hash, uint64_t: 1, default: 0), "FjDirFrameMath.recipe_hash type/extent");
+_Static_assert(offsetof(FjDirFrameMath, render_extent) == 16, "FjDirFrameMath.render_extent offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->render_extent, FjExtent: 1, default: 0), "FjDirFrameMath.render_extent type/extent");
+_Static_assert(offsetof(FjDirFrameMath, full_frame_extent) == 32, "FjDirFrameMath.full_frame_extent offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->full_frame_extent, FjExtent: 1, default: 0), "FjDirFrameMath.full_frame_extent type/extent");
+_Static_assert(offsetof(FjDirFrameMath, filter_domain_extent) == 48, "FjDirFrameMath.filter_domain_extent offset");
+_Static_assert(_Generic(((FjDirFrameMath*)0)->filter_domain_extent, FjExtent: 1, default: 0), "FjDirFrameMath.filter_domain_extent type/extent");
+_Static_assert(offsetof(FjDirFrameMath, components) == 64, "FjDirFrameMath.components offset");
+_Static_assert(_Generic(&((FjDirFrameMath*)0)->components, FjDirGaussian (*)[4]: 1, default: 0), "FjDirFrameMath.components type/extent");
+_Static_assert(sizeof(FjDirFrameFailure) == 528 && _Alignof(FjDirFrameFailure) == 8, "FjDirFrameFailure layout");
+_Static_assert(offsetof(FjDirFrameFailure, reason) == 0, "FjDirFrameFailure.reason offset");
+_Static_assert(_Generic(((FjDirFrameFailure*)0)->reason, uint32_t: 1, default: 0), "FjDirFrameFailure.reason type/extent");
+_Static_assert(offsetof(FjDirFrameFailure, field) == 4, "FjDirFrameFailure.field offset");
+_Static_assert(_Generic(((FjDirFrameFailure*)0)->field, uint32_t: 1, default: 0), "FjDirFrameFailure.field type/extent");
+_Static_assert(offsetof(FjDirFrameFailure, component) == 8, "FjDirFrameFailure.component offset");
+_Static_assert(_Generic(((FjDirFrameFailure*)0)->component, uint32_t: 1, default: 0), "FjDirFrameFailure.component type/extent");
+_Static_assert(offsetof(FjDirFrameFailure, trace) == 16, "FjDirFrameFailure.trace offset");
+_Static_assert(_Generic(((FjDirFrameFailure*)0)->trace, FjDirFrameMath: 1, default: 0), "FjDirFrameFailure.trace type/extent");
+_Static_assert(sizeof(FjExtent) == 16 && _Alignof(FjExtent) == 4, "FjExtent layout");
+_Static_assert(offsetof(FjExtent, x) == 0, "FjExtent.x offset");
+_Static_assert(_Generic(((FjExtent*)0)->x, int32_t: 1, default: 0), "FjExtent.x type/extent");
+_Static_assert(offsetof(FjExtent, y) == 4, "FjExtent.y offset");
+_Static_assert(_Generic(((FjExtent*)0)->y, int32_t: 1, default: 0), "FjExtent.y type/extent");
+_Static_assert(offsetof(FjExtent, width) == 8, "FjExtent.width offset");
+_Static_assert(_Generic(((FjExtent*)0)->width, int32_t: 1, default: 0), "FjExtent.width type/extent");
+_Static_assert(offsetof(FjExtent, height) == 12, "FjExtent.height offset");
+_Static_assert(_Generic(((FjExtent*)0)->height, int32_t: 1, default: 0), "FjExtent.height type/extent");
+_Static_assert(sizeof(FjDirGaussian) == 112 && _Alignof(FjDirGaussian) == 8, "FjDirGaussian layout");
+_Static_assert(offsetof(FjDirGaussian, sigma_px) == 0, "FjDirGaussian.sigma_px offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->sigma_px, float: 1, default: 0), "FjDirGaussian.sigma_px type/extent");
+_Static_assert(offsetof(FjDirGaussian, weight) == 4, "FjDirGaussian.weight offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->weight, float: 1, default: 0), "FjDirGaussian.weight type/extent");
+_Static_assert(offsetof(FjDirGaussian, radius) == 8, "FjDirGaussian.radius offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->radius, int32_t: 1, default: 0), "FjDirGaussian.radius type/extent");
+_Static_assert(offsetof(FjDirGaussian, reference_operator) == 12, "FjDirGaussian.reference_operator offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->reference_operator, uint32_t: 1, default: 0), "FjDirGaussian.reference_operator type/extent");
+_Static_assert(offsetof(FjDirGaussian, feedforward) == 16, "FjDirGaussian.feedforward offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->feedforward, double: 1, default: 0), "FjDirGaussian.feedforward type/extent");
+_Static_assert(offsetof(FjDirGaussian, feedback) == 24, "FjDirGaussian.feedback offset");
+_Static_assert(_Generic(&((FjDirGaussian*)0)->feedback, double (*)[3]: 1, default: 0), "FjDirGaussian.feedback type/extent");
+_Static_assert(offsetof(FjDirGaussian, normalization_denominator) == 48, "FjDirGaussian.normalization_denominator offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->normalization_denominator, double: 1, default: 0), "FjDirGaussian.normalization_denominator type/extent");
+_Static_assert(offsetof(FjDirGaussian, feedforward_numerator) == 56, "FjDirGaussian.feedforward_numerator offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->feedforward_numerator, double: 1, default: 0), "FjDirGaussian.feedforward_numerator type/extent");
+_Static_assert(offsetof(FjDirGaussian, feedback_numerators) == 64, "FjDirGaussian.feedback_numerators offset");
+_Static_assert(_Generic(&((FjDirGaussian*)0)->feedback_numerators, double (*)[3]: 1, default: 0), "FjDirGaussian.feedback_numerators type/extent");
+_Static_assert(offsetof(FjDirGaussian, boundary_truncation_accuracy) == 88, "FjDirGaussian.boundary_truncation_accuracy offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->boundary_truncation_accuracy, double: 1, default: 0), "FjDirGaussian.boundary_truncation_accuracy type/extent");
+_Static_assert(offsetof(FjDirGaussian, boundary_certification_tolerance) == 96, "FjDirGaussian.boundary_certification_tolerance offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->boundary_certification_tolerance, double: 1, default: 0), "FjDirGaussian.boundary_certification_tolerance type/extent");
+_Static_assert(offsetof(FjDirGaussian, boundary_derivation_version) == 104, "FjDirGaussian.boundary_derivation_version offset");
+_Static_assert(_Generic(((FjDirGaussian*)0)->boundary_derivation_version, uint32_t: 1, default: 0), "FjDirGaussian.boundary_derivation_version type/extent");
+_Static_assert(sizeof(FjSpatialDir) == 520 && _Alignof(FjSpatialDir) == 8, "FjSpatialDir layout");
+_Static_assert(offsetof(FjSpatialDir, render_extent) == 0, "FjSpatialDir.render_extent offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->render_extent, FjExtent: 1, default: 0), "FjSpatialDir.render_extent type/extent");
+_Static_assert(offsetof(FjSpatialDir, full_frame_extent) == 16, "FjSpatialDir.full_frame_extent offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->full_frame_extent, FjExtent: 1, default: 0), "FjSpatialDir.full_frame_extent type/extent");
+_Static_assert(offsetof(FjSpatialDir, filter_domain_extent) == 32, "FjSpatialDir.filter_domain_extent offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->filter_domain_extent, FjExtent: 1, default: 0), "FjSpatialDir.filter_domain_extent type/extent");
+_Static_assert(offsetof(FjSpatialDir, component_count) == 48, "FjSpatialDir.component_count offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->component_count, size_t: 1, default: 0), "FjSpatialDir.component_count type/extent");
+_Static_assert(offsetof(FjSpatialDir, components) == 56, "FjSpatialDir.components offset");
+_Static_assert(_Generic(&((FjSpatialDir*)0)->components, FjDirGaussian (*)[4]: 1, default: 0), "FjSpatialDir.components type/extent");
+_Static_assert(offsetof(FjSpatialDir, recipe_hash) == 504, "FjSpatialDir.recipe_hash offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->recipe_hash, uint64_t: 1, default: 0), "FjSpatialDir.recipe_hash type/extent");
+_Static_assert(offsetof(FjSpatialDir, hash) == 512, "FjSpatialDir.hash offset");
+_Static_assert(_Generic(((FjSpatialDir*)0)->hash, uint64_t: 1, default: 0), "FjSpatialDir.hash type/extent");
+_Static_assert(FJ_DIR_FRAME_NONE == 0U, "FJ_DIR_FRAME_NONE value");
+_Static_assert(FJ_DIR_FRAME_RAW == 1U, "FJ_DIR_FRAME_RAW value");
+_Static_assert(FJ_DIR_FRAME_PREPARATION == 2U, "FJ_DIR_FRAME_PREPARATION value");
+_Static_assert(FJ_DIR_FRAME_PANIC == 3U, "FJ_DIR_FRAME_PANIC value");
+_Static_assert(FJ_DIR_FRAME_FIELD_NONE == 0U, "FJ_DIR_FRAME_FIELD_NONE value");
+_Static_assert(FJ_DIR_FRAME_FIELD_PIXEL_SIZE_UM == 1U, "FJ_DIR_FRAME_FIELD_PIXEL_SIZE_UM value");
+_Static_assert(FJ_DIR_FRAME_FIELD_RENDER_EXTENT == 2U, "FJ_DIR_FRAME_FIELD_RENDER_EXTENT value");
+_Static_assert(FJ_DIR_FRAME_FIELD_FULL_FRAME_EXTENT == 3U, "FJ_DIR_FRAME_FIELD_FULL_FRAME_EXTENT value");
+_Static_assert(FJ_DIR_FRAME_FIELD_PARTIAL_RENDER_WINDOW == 4U, "FJ_DIR_FRAME_FIELD_PARTIAL_RENDER_WINDOW value");
+_Static_assert(FJ_DIR_FRAME_FIELD_CORE == 5U, "FJ_DIR_FRAME_FIELD_CORE value");
+_Static_assert(FJ_DIR_FRAME_FIELD_TAIL == 6U, "FJ_DIR_FRAME_FIELD_TAIL value");
+_Static_assert(FJ_DIR_FRAME_FIELD_COMPONENT_VALUES == 7U, "FJ_DIR_FRAME_FIELD_COMPONENT_VALUES value");
+_Static_assert(FJ_DIR_FRAME_FIELD_COMPONENT_CAPACITY == 8U, "FJ_DIR_FRAME_FIELD_COMPONENT_CAPACITY value");
+_Static_assert(FJ_DIR_FRAME_FIELD_RADIUS == 9U, "FJ_DIR_FRAME_FIELD_RADIUS value");
+_Static_assert(FJ_DIR_FRAME_FIELD_IIR_DENOMINATOR == 10U, "FJ_DIR_FRAME_FIELD_IIR_DENOMINATOR value");
+_Static_assert(FJ_DIR_FRAME_FIELD_IIR_OUTPUT == 11U, "FJ_DIR_FRAME_FIELD_IIR_OUTPUT value");
+_Static_assert(FJ_DIR_FRAME_FIELD_EMPTY_PLAN == 12U, "FJ_DIR_FRAME_FIELD_EMPTY_PLAN value");
+_Static_assert(FJ_DIR_FRAME_NO_COMPONENT == 4U, "FJ_DIR_FRAME_NO_COMPONENT value");
+_Static_assert(FJ_DIR_OPERATOR_NONE == 0U, "FJ_DIR_OPERATOR_NONE value");
+_Static_assert(FJ_DIR_OPERATOR_IDENTITY == 1U, "FJ_DIR_OPERATOR_IDENTITY value");
+_Static_assert(FJ_DIR_OPERATOR_FIR_REFLECT == 2U, "FJ_DIR_OPERATOR_FIR_REFLECT value");
+_Static_assert(FJ_DIR_OPERATOR_YVV_REFLECT == 3U, "FJ_DIR_OPERATOR_YVV_REFLECT value");
+_Static_assert(_Generic(&fj_legacy_dir_frame_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_frame_prepare signature");
+_Static_assert(_Generic(&fj_test_dir_frame_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_frame_prepare signature");
+_Static_assert(_Generic(&fj_test_dir_frame_c_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_frame_c_prepare signature");

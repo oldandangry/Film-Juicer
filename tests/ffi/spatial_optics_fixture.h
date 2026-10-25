@@ -7,6 +7,8 @@
 #include "RenderRecipe.h"
 
 namespace JuicerTestSupport {
+    nlohmann::json dir_frame_fields(const SpatialDirDescriptor&);
+    bool prepare_dir_frame(const DirCouplersRecipe&, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent, const char* traceRouteLabel, SpatialDirDescriptor&);
     bool matches_diffusion_frame(const std::optional<Spektrafilm::DiffusionFrameSetDescriptor>&, const nlohmann::json& expected);
     bool prepare_diffusion_sample(const Spektrafilm::DiffusionFilterResolvedParameters&, double pixelSizeUm, int width, int height, Spektrafilm::DiffusionPsfSampleDescriptor&, std::string& diagnostic);
     bool prepare_diffusion_components(const Spektrafilm::DiffusionPsfSampleDescriptor&, Spektrafilm::DiffusionPsfComponents&, std::string& diagnostic);

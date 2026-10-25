@@ -1253,13 +1253,18 @@ namespace {
             (frame.fullFrameExtent.x2 > frame.fullFrameExtent.x1 && frame.fullFrameExtent.y2 > frame.fullFrameExtent.y1)
                 ? frame.fullFrameExtent
                 : srcBounds;
-        if (!Spektrafilm::build_spatial_dir_descriptor(
-                directRecipe->dirCouplers,
-                frame.pixelSizeUm,
-                spatial_dir_extent_from_rect(win),
-                spatial_dir_extent_from_rect(directFullFrameRect),
-                "direct",
-                descriptors.dir)) {
+        const bool dirFrameBuilt = Spektrafilm::build_spatial_dir_descriptor(
+            directRecipe->dirCouplers,
+            frame.pixelSizeUm,
+            spatial_dir_extent_from_rect(win),
+            spatial_dir_extent_from_rect(directFullFrameRect),
+            "direct",
+            descriptors.dir);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_dir_frame(
+            directRecipe->profileRoute.scanRoute, frame.pixelSizeUm, spatial_dir_extent_from_rect(win), spatial_dir_extent_from_rect(directFullFrameRect), dirFrameBuilt, descriptors.dir);
+#endif
+        if (!dirFrameBuilt) {
             trace_spatial_dir_descriptor_build("direct", descriptors.dir);
             errors.fail_route(
                 "ResourceDescriptorMismatch phase=3D-3 field=spatial_dir_descriptor");
@@ -2037,13 +2042,18 @@ namespace {
             (frame.fullFrameExtent.x2 > frame.fullFrameExtent.x1 && frame.fullFrameExtent.y2 > frame.fullFrameExtent.y1)
                 ? frame.fullFrameExtent
                 : srcBounds;
-        if (!Spektrafilm::build_spatial_dir_descriptor(
-                printRecipe->dirCouplers,
-                frame.pixelSizeUm,
-                spatial_dir_extent_from_rect(win),
-                spatial_dir_extent_from_rect(printFullFrameRect),
-                "print",
-                descriptors.dir)) {
+        const bool dirFrameBuilt = Spektrafilm::build_spatial_dir_descriptor(
+            printRecipe->dirCouplers,
+            frame.pixelSizeUm,
+            spatial_dir_extent_from_rect(win),
+            spatial_dir_extent_from_rect(printFullFrameRect),
+            "print",
+            descriptors.dir);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_dir_frame(
+            printRecipe->profileRoute.scanRoute, frame.pixelSizeUm, spatial_dir_extent_from_rect(win), spatial_dir_extent_from_rect(printFullFrameRect), dirFrameBuilt, descriptors.dir);
+#endif
+        if (!dirFrameBuilt) {
             trace_spatial_dir_descriptor_build("print", descriptors.dir);
             errors.fail_route(
                 "ResourceDescriptorMismatch phase=4C field=spatial_dir_descriptor");

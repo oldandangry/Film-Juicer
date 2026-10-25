@@ -2382,3 +2382,21 @@ unsafe extern "C" fn fj_test_diffusion_frame_prepare(
 extern "C" fn fj_test_diffusion_frame_fault(operation: u32, fault: u32) -> FjStatus {
     crate::diffusion_bridge::diffusion_frame_faults::arm(operation, fault)
 }
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Required records are initialized/live/aligned; writable peers and diagnostics exclusive/disjoint.
+unsafe extern "C" fn fj_test_dir_frame_prepare(
+    input: *const crate::dir_frame_bridge::FjDirFrameInput,
+    out: *mut crate::dir_frame_bridge::FjDirFrameMath,
+    failure: *mut crate::dir_frame_bridge::FjDirFrameFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the production checked body without a legacy-export dependency.
+    unsafe { crate::dir_frame_bridge::prepare(input, out, failure, error) }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_dir_frame_fault(fault: u32) -> FjStatus {
+    crate::dir_frame_bridge::dir_frame_faults::arm(fault)
+}

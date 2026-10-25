@@ -8,6 +8,7 @@
 #include "juicer_test_api.h"
 #include "Cuda/JuicerCudaFailure.h"
 #include "RustHalationBridge.h"
+#include "RustDirBridge.h"
 
 namespace {
     FjSpatialOpticsParams defaults() {
@@ -47,6 +48,65 @@ namespace {
 } // namespace
 
 namespace JuicerTestSupport {
+    nlohmann::json dir_frame_fields(const Spektrafilm::DirFrameExtent& input) {
+        return {input.x, input.y, input.width, input.height};
+    }
+
+    nlohmann::json dir_frame_fields(const Spektrafilm::DirScratchPlaneRoles& input) {
+        return {input.rawCorrectionPlanes, input.filteredCorrectionPlanes, input.filterTempPlanes, input.cachedLogRawPlanes};
+    }
+
+    nlohmann::json dir_frame_fields(const Spektrafilm::DirGaussianComponentPlan& input) {
+        nlohmann::json feedback = nlohmann::json::array(), numerators = nlohmann::json::array();
+        for (double value : input.iir.feedback)
+            feedback.push_back(std::bit_cast<std::uint64_t>(value));
+        for (double value : input.iir.feedbackNumerators)
+            numerators.push_back(std::bit_cast<std::uint64_t>(value));
+        return {{"sigma", std::bit_cast<std::uint32_t>(input.sigmaPixels)},
+                {"weight", std::bit_cast<std::uint32_t>(input.weight)},
+                {"radius", input.radius},
+                {"operator", static_cast<unsigned>(input.referenceOperator)},
+                {"target", static_cast<unsigned>(input.targetScratchTier)},
+                {"feedforward", std::bit_cast<std::uint64_t>(input.iir.feedforward)},
+                {"feedback", feedback},
+                {"denominator", std::bit_cast<std::uint64_t>(input.iir.normalizationDenominator)},
+                {"numerator", std::bit_cast<std::uint64_t>(input.iir.feedforwardNumerator)},
+                {"numerators", numerators},
+                {"accuracy", std::bit_cast<std::uint64_t>(input.boundaryTruncationAccuracy)},
+                {"tolerance", std::bit_cast<std::uint64_t>(input.boundaryCertificationTolerance)},
+                {"version", input.boundaryDerivationVersion}};
+    }
+
+    nlohmann::json dir_frame_fields(const SpatialDirDescriptor& input) {
+        nlohmann::json components = nlohmann::json::array();
+        for (const auto& component : input.filterPlan.components)
+            components.push_back(dir_frame_fields(component));
+        return {{"recipe_hash", input.dirRecipeHash},
+                {"scratch", static_cast<unsigned>(input.scratchTier)},
+                {"support", static_cast<unsigned>(input.support)},
+                {"render", dir_frame_fields(input.renderExtent)},
+                {"full", dir_frame_fields(input.fullFrameExtent)},
+                {"filter", dir_frame_fields(input.filterDomainExtent)},
+                {"count", input.filterPlan.componentCount},
+                {"components", components},
+                {"roles", dir_frame_fields(input.planeRoles)},
+                {"target", static_cast<unsigned>(input.targetScratchTier)},
+                {"target_roles", dir_frame_fields(input.targetPlaneRoles)},
+                {"label", input.traceRouteLabel ? nlohmann::json(input.traceRouteLabel) : nlohmann::json(nullptr)},
+                {"hash", input.hash}};
+    }
+
+    bool prepare_dir_frame(const DirCouplersRecipe& recipe, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent, const char* traceRouteLabel, SpatialDirDescriptor& out) {
+        const FjDirFrameInput input{
+            recipe.active ? 1u : 0u, recipe.diffusionSizeUm, recipe.diffusionTailUm, recipe.diffusionTailWeight, pixelSizeUm, {renderExtent.x, renderExtent.y, renderExtent.width, renderExtent.height}, {fullFrameExtent.x, fullFrameExtent.y, fullFrameExtent.width, fullFrameExtent.height}, recipe.hash};
+        FjDirFrameMath math{};
+        FjDirFrameFailure failure{};
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const auto status = fj_test_dir_frame_prepare(&input, &math, &failure, &error);
+        const auto outcome = JuicerDir::MathOutcome::admit(input, status, math, failure, error, text);
+        return Spektrafilm::compose_spatial_dir_descriptor(outcome, traceRouteLabel, out);
+    }
     bool matches_halation_frame(const std::optional<ScatterHalationFrameDescriptor>& frame, const nlohmann::json& expected) {
         if (!frame || expected.is_null())
             return !frame && expected.is_null();

@@ -1035,7 +1035,8 @@ Minimum, DIR and film bounds retain their distinct construction positions and
 failure priority. The safe bounds constructor borrows a completed minimum; its
 raw adapter reconstructs it from the unchanged original request. This minimum
 remains independent of Film-Juicer visual particle density. Print-medium bounds
-and spatial-DIR geometry/operators/workspaces retain their native owners.
+retain their owner. Spatial-DIR frame mathematics is described below; workspace
+policy remains native.
 
 Raw prepare/acquire/view results and failure records are independently cleared.
 Success commits `{NONE,3,UINT64_MAX}`. `LOG_EXPOSURE=16` is legal only for DIR
@@ -1089,3 +1090,37 @@ Release OFF probe requires all three exports and executes 507 complete frozen
 value/failure results in addition to all earlier production contracts. Native
 sample/frame projections retire at their last caller by S6.D; native-resource
 component conversion retires with S4.E's final execution-input conversion.
+
+## Spatial DIR mathematical frames
+
+`film_juicer_core::film::dir::frame::Plan` owns physical-to-pixel scaling,
+geometry admission, fixed Gaussian components/operators and f64 YVV recurrence
+coefficients. Its private immutable storage has read-only accessors. An ordinary
+failure carries a separate `FailureTrace`, including completed components and a
+partially written next slot; it cannot be consumed as an executable Plan.
+
+The temporary `fj_legacy_dir_frame_prepare` export copies fixed synchronous
+values through `FjDirFrameInput`, `FjDirFrameMath` and `FjDirFrameFailure`. Each
+independently admitted output clears before argument admission. Raw executable
+Math remains zero on failure; typed ordinary progress belongs only to the failure
+record. Optional diagnostics use bounded NUL-terminated truncation. The complete
+operation, including projection, contains panic. The testing facade shares that
+same checked body; its one-shot fault controls are absent from production.
+
+The closed native `JuicerDir::MathOutcome` binds current pixel/input facts to
+checked results. Both the public builder and fixture facade use one native
+composer, which retains scratch tiers, plane roles/aliases and the existing sole
+final descriptor hash. Native allocation, resources and lifetime are unchanged.
+The zero-weight component target-tier difference in prepared decoding remains
+intentional; its unconsumed representation is not repaired and the carried hash
+is not recomputed. Synthetic active hash-zero characterization does not bypass
+the permanent prepared boundary's existing identity admission.
+
+See the [four-context native characterization](../dir/frame-fixtures/README.md),
+`Ffi.Host.DirFrame`, `Film.Host.DirFrameProducts` and `Ofx.Gpu.DirFrame`.
+The last group observes both actual legacy execution entries before their
+existing failure branches, and uses the existing GPU lock and 180-second limit.
+Both native Release OFF C11 probes execute all 121 mathematical/default/failure
+rows, retaining every earlier production row and artifact/isolation check.
+`SF_TEMP_BRIDGE_DIR_FRAME` retires at its last native model caller by S6.D;
+S4.E integration and reflected-YVV boundary-axis CPU derivation remain later work.

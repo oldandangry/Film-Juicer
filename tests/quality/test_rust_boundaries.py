@@ -328,6 +328,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_dir_frame_is_complete_private_readonly_and_failure_trace_cannot_execute(self) -> None:
+        for fixture, expected in (
+            ("dir_frame_complete", None),
+            ("dir_frame_construction", {"E0451": ("Plan { ..plan }", "Component { ..component }", "FailureTrace { ..trace }")}),
+            ("dir_frame_private", {"E0616": ("plan.progress", "component.sigma_px", "error.trace")}),
+            ("dir_frame_default", {"E0599": ("Plan::default()", "Component::default()", "FailureTrace::default()", "Error::default()")}),
+            ("dir_frame_readonly", {"E0594": ("coefficients()[0] = 0.0",)}),
+            ("dir_frame_failure_plan", {"E0308": ("consume(error.trace().unwrap())",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_diffusion_frame_is_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("diffusion_frame_complete", None),
@@ -727,6 +747,51 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertIn("fj_test_spatial_optics_prepare(", fixture)
         self.assertNotIn("fj_legacy_spatial_optics_prepare(", fixture)
         self.assertNotRegex(fixture, r"\b(?:log2|clamp|hash_value|strength_to_scatter)\s*\(")
+
+    def test_deleted_dir_frame_mathematics_and_retained_native_policy(self) -> None:
+        import re
+        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8-sig")
+        header = (ROOT / "src/RenderRecipe.h").read_text(encoding="utf-8-sig")
+        for name in ("finite_nonnegative", "dir_extent_valid", "dir_extents_match",
+                     "dir_reference_operator_for_sigma", "build_dir_iir_coefficients", "add_dir_component"):
+            pattern = r"\b" + name + r"\s*\([^;{}]*\)\s*\{"
+            self.assertIsNone(re.search(pattern, recipe), name)
+            self.assertIsNotNone(re.search(pattern, "bool " + name + "() { return true; }"))
+            self.assertIsNone(re.search(pattern, "bool " + name + "();"))
+        for token in ("DirComponentBuildInput", "coreSigmaPixels", "tailSigmaPixels", "0.98711", "2.44413", "0.422205"):
+            self.assertNotIn(token, recipe)
+            with self.assertRaises(AssertionError):
+                self.assertNotIn(token, recipe + token)
+        for token in ("kExponentialSigmaRatios", "kExponentialAmplitudes"):
+            self.assertNotIn(token, recipe + header)
+        for retained in ("dir_target_scratch_tier_for_operator", "dir_target_plane_roles_for_tier",
+                         "strict_yvv_channels_aliased_forward_plane_roles", "configure_cached_log_raw_descriptor",
+                         "resolve_spatial_dir_scratch", "hash_dir_extent", "hash_dir_plane_roles",
+                         "finish_spatial_dir_descriptor", "compose_spatial_dir_descriptor"):
+            self.assertIn(retained + "(", recipe)
+        self.assertEqual(recipe.count("JuicerDir::prepare_math("), 1)
+        resources = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text()
+        self.assertIn("build_spatial_dir_boundary_axis_cpu(", resources)
+        executor = (ROOT / "src/Cuda/JuicerCudaExecutor.cpp").read_text()
+        self.assertEqual(executor.count("Spektrafilm::build_spatial_dir_descriptor("), 2)
+        for route, phase in (("direct", "3D-3"), ("print", "4C")):
+            start = executor.index("const bool dirFrameBuilt", executor.index("RouteDescriptors build_" + route + "_descriptors"))
+            end = executor.index("std::string " + route + "GrainDescriptorDiagnostic", start)
+            block = executor[start:end]
+            self.assertLess(block.index("build_spatial_dir_descriptor("), block.index("observe_dir_frame("))
+            self.assertLess(block.index("observe_dir_frame("), block.index("if (!dirFrameBuilt)"))
+            self.assertIn("ResourceDescriptorMismatch phase=" + phase + " field=spatial_dir_descriptor", block)
+            schedule = executor[executor.index("static void execute_" + route + "_schedule"):]
+            self.assertLess(schedule.index("check_abort(abortCallback)"), schedule.index("prepare_cuda_frame("))
+        fixtures = "\n".join((ROOT / "tests/ffi" / name).read_text() for name in ("film_recipe_test.cpp", "dir_frame_test.inc"))
+        for token in ("capture-dir-frames", "native_case(", "native_products(", "DirFrameTest::capture("):
+            self.assertNotIn(token, fixtures)
+        for name in ("dir/exposure_cache_test.cpp", "grain/scratch_reuse_test.cpp", "ffi/gaussian_kernel_test.inc"):
+            fixture = (ROOT / "tests" / name).read_text()
+            self.assertNotIn("Spektrafilm::build_spatial_dir_descriptor(", fixture)
+            self.assertIn("JuicerTestSupport::prepare_dir_frame(", fixture)
+        self.assertIn("fj_test_dir_frame_prepare(", (ROOT / "tests/ffi/spatial_optics_fixture.cpp").read_text())
+        self.assertIn("SF_TEMP_BRIDGE_DIR_FRAME", (ROOT / "src/RustDirBridge.h").read_text())
 
     def test_deleted_diffusion_construction_and_retained_native_consumers(self) -> None:
         import re

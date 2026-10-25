@@ -406,6 +406,11 @@ FjStatus fj_test_diffusion_frame_prepare(const FjDiffusionFrameInput*, FjDiffusi
 FjStatus fj_test_diffusion_frame_c_prepare(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*);
 FjStatus fj_test_diffusion_frame_fault(uint32_t operation, uint32_t fault);
 
+FjStatus fj_test_dir_frame_prepare(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*);
+FjStatus fj_test_dir_frame_fault(uint32_t fault);
+FjStatus fj_test_dir_frame_c_prepare(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*);
+int fj_test_dir_frame_c_check(const FjDirFrameInput*, const FjDirFrameMath*, const FjDirFrameFailure*, uint32_t category, const char* diagnostic);
+
 #ifdef __cplusplus
 }
 #endif
