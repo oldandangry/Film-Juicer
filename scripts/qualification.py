@@ -339,6 +339,31 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     if len(frame_expected) != 69 or len({row["case"] for row in frame_expected}) != 69 or document.get("frame_results") != frame_expected:
         raise ValueError("production frame geometry full fields/words/failure results are incomplete")
 
+    halation_manifest = root / "tests/scatter_halation/frame-fixtures/manifest.json"
+    halation_spec = json.loads(halation_manifest.read_bytes())
+    halation_logical = halation_spec["presets"][document["preset"]]["native"]
+    halation_paths = {
+        "manifest": halation_manifest,
+        "payload": halation_manifest.parent / halation_spec["payloads"][halation_logical],
+        "context": halation_manifest.parent / halation_spec["contexts"][halation_logical],
+        "normative": halation_manifest.parent / halation_spec["checked"],
+        "input_spec": halation_manifest.parent / "inputs.json",
+    }
+    halation = document.get("halation_frame_fixture", {})
+    if halation.get("logical_preset") != document["preset"] or any(
+            resolve(halation.get(key, "")) != path for key, path in halation_paths.items()):
+        raise ValueError("production halation frame fixture membership is incomplete")
+    for path in halation_paths.values():
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum
+                or (path != halation_manifest and checksum != halation_spec["sha256"][path.name])):
+            raise ValueError("production halation frame consumed fixture identity changed")
+    halation_expected = halation_spec["production_cases"]
+    if (len(halation_expected) != 86 or len({row["case"] for row in halation_expected}) != 86
+            or document.get("halation_frame_results") != halation_expected):
+        raise ValueError("production halation frame full fields/words/failure results are incomplete")
+
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -475,7 +500,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "exposure_fixture.h", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+                "film_recipe_abi_facts.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
             paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
@@ -486,6 +511,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.update((root / "tests/scanner/post-effects-fixtures").glob("*.json"))
             paths.update((root / "tests/optics/gaussian-fixtures").glob("*.json"))
             paths.update((root / "tests/frame/geometry-fixtures").glob("*.json"))
+            paths.update((root / "tests/scatter_halation/frame-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))

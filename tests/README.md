@@ -1438,3 +1438,13 @@ Both final native Release testing-OFF gates link the existing C11 film probe
 against the exact Rust archive and check all 69 frame rows, plus all older probes.
 The temporary callback bridge retires with its actual last native OFX consumer,
 no later than S6.D; prepared-state integration remains separate.
+
+### Scatter/halation frame construction
+
+`Ffi.Host.HalationFrame` and `Optics.Host.HalationFrameProducts` exercise the fixed
+Rust-backed twenty-one-record schedule boundary and completed route products.
+Both need no driver/device and have 180-second deadlines. See the owning
+[scatter/halation guide](scatter_halation/README.md) and
+[fixture authority](scatter_halation/frame-fixtures/README.md). The existing
+strict C11 Release testing-OFF film probe also executes the complete frozen
+eighty-six-result membership, retaining all earlier production probe results.

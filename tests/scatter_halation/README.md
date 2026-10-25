@@ -69,3 +69,18 @@ the existing device special-value sanitation and interpolation policy. Native
 prepared-span count/product failures remain in `Ffi.Host.PreparedProjection`.
 These tests require CUDA hardware; they do not establish installed-host or
 visual acceptance.
+
+`frame-fixtures/` is the separate native frame-construction characterization.
+`Ffi.Host.HalationFrame` checks fixed transport, C11/C++20/Rust ABI agreement,
+complete descriptor values, typed failures, diagnostics, independent clearing and
+bounded fixture faults. `Optics.Host.HalationFrameProducts` checks twenty completed
+route products using the same Rust producer. Both are finite driver-free host
+groups with 180-second deadlines. `Ffi.Host.PreparedProjection` checks all fields
+through native encode/decode; `ScatterHalation.Gpu.RouteBoundaries` checks complete
+frozen fields at preparation and the launch view for all four routes.
+
+The safe schedule constructor preserves the complete twenty-one-record family;
+it is distinct from the cached scalar GaussianKernel constructor. The native
+adapter transports and checks the fixed result without deriving recipe policy or
+recomputing mathematics. Native carriers, workspaces and finish/abort retirement
+retain their existing ownership.

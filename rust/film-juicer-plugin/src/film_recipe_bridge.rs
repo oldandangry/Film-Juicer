@@ -1514,6 +1514,17 @@ const _: () = assert!(FJ_FILM_RECIPE_INTEGRITY == 15);
 /// facts have immutable static lifetime and cannot be freed by the caller.
 unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const usize {
     const FACTS: &[usize] = &[
+        size_of::<crate::optics_bridge::FjHalationFrameInput>(),
+        align_of::<crate::optics_bridge::FjHalationFrameInput>(),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationFrameInput, recipe),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationFrameInput, pixel_size_um),
+        size_of::<crate::optics_bridge::FjHalationFrameFailure>(),
+        align_of::<crate::optics_bridge::FjHalationFrameFailure>(),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationFrameFailure, reason),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationFrameFailure, field),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationFrameFailure, channel),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationFrameFailure, index),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationFrameFailure, sigma_px),
         size_of::<FjRect>(),
         align_of::<FjRect>(),
         std::mem::offset_of!(FjRect, x1),

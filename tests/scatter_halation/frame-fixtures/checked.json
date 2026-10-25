@@ -1,0 +1,726 @@
+{
+  "schema": 1,
+  "authority": "Product checked ABI contract. Failure metadata is specified independently of the old native diagnostic-only API; NaN payload is not identity.",
+  "cases": {
+    "inactive-ignored-numerics": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "inactive-invalid-negative-pixel": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "active-hash-no-components": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "both": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "scatter-only": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "reflection-only": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "pixel-one": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "pixel-large": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "pixel-small": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "pixel-subnormal": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "pixel-max": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "invalid-pixel-plus-zero": {
+      "category": 3,
+      "reason": 2,
+      "field": 1,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=pixel_size_um"
+    },
+    "invalid-pixel-minus-zero": {
+      "category": 3,
+      "reason": 2,
+      "field": 1,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=pixel_size_um"
+    },
+    "invalid-pixel-negative": {
+      "category": 3,
+      "reason": 2,
+      "field": 1,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=pixel_size_um"
+    },
+    "invalid-pixel-nan": {
+      "category": 3,
+      "reason": 2,
+      "field": 1,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=pixel_size_um"
+    },
+    "invalid-pixel-infinity": {
+      "category": 3,
+      "reason": 2,
+      "field": 1,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=pixel_size_um"
+    },
+    "invalid-pixel-negative-infinity": {
+      "category": 3,
+      "reason": 2,
+      "field": 1,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=pixel_size_um"
+    },
+    "radius-zero-1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "radius-zero0": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "radius-zero1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "radius-one-1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "radius-one0": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "radius-one1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "radius-nine-1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "radius-nine0": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "radius-nine1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "switch-1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "switch0": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "switch1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "rounding-1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "rounding0": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "rounding1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "canonical-scalars": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "unusual-scalars-preserved": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "inactive-components-mask-numerics": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "scatter-scale-negative-floor": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "scatter-scale-zero-floor": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "scatter-scale-subnormal": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "scatter-scale-max": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "scatter-nan-first-failure": {
+      "category": 3,
+      "reason": 3,
+      "field": 2,
+      "channel": 0,
+      "index": 3,
+      "sigma_nan": true,
+      "sigma_bits": null,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=scatter_core"
+    },
+    "scatter-positive-infinity": {
+      "category": 3,
+      "reason": 3,
+      "field": 2,
+      "channel": 0,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 9218868437227405312,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=scatter_core"
+    },
+    "scatter-negative-infinity-floor": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "bounce-nan-channel-0": {
+      "category": 3,
+      "reason": 3,
+      "field": 4,
+      "channel": 0,
+      "index": 0,
+      "sigma_nan": true,
+      "sigma_bits": null,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce"
+    },
+    "bounce-nan-channel-1": {
+      "category": 3,
+      "reason": 3,
+      "field": 4,
+      "channel": 1,
+      "index": 0,
+      "sigma_nan": true,
+      "sigma_bits": null,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce"
+    },
+    "bounce-nan-channel-2": {
+      "category": 3,
+      "reason": 3,
+      "field": 4,
+      "channel": 2,
+      "index": 0,
+      "sigma_nan": true,
+      "sigma_bits": null,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce"
+    },
+    "zero-strength-still-calculates": {
+      "category": 3,
+      "reason": 3,
+      "field": 4,
+      "channel": 0,
+      "index": 0,
+      "sigma_nan": true,
+      "sigma_bits": null,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce"
+    },
+    "bounce-scale-nan": {
+      "category": 3,
+      "reason": 3,
+      "field": 4,
+      "channel": 0,
+      "index": 0,
+      "sigma_nan": true,
+      "sigma_bits": null,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce"
+    },
+    "bounce-infinity": {
+      "category": 3,
+      "reason": 3,
+      "field": 4,
+      "channel": 0,
+      "index": 0,
+      "sigma_nan": false,
+      "sigma_bits": 9218868437227405312,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce"
+    },
+    "bounce-negative-floor": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "finite-yvv-overflow": {
+      "category": 3,
+      "reason": 3,
+      "field": 4,
+      "channel": 0,
+      "index": 0,
+      "sigma_nan": false,
+      "sigma_bits": 6431140266811326496,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce"
+    },
+    "finite-bounce-failure-index-1": {
+      "category": 3,
+      "reason": 3,
+      "field": 4,
+      "channel": 0,
+      "index": 1,
+      "sigma_nan": false,
+      "sigma_bits": 6144090597431724535,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce"
+    },
+    "finite-bounce-failure-index-2": {
+      "category": 3,
+      "reason": 3,
+      "field": 4,
+      "channel": 0,
+      "index": 2,
+      "sigma_nan": false,
+      "sigma_bits": 6143801705678710813,
+      "diagnostic": "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce"
+    },
+    "route/0/inactive": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/0/active/0": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/0/active/1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/0/active/2": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/0/active/3": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/1/inactive": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/1/active/0": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/1/active/1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/1/active/2": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/1/active/3": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/2/inactive": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/2/active/0": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/2/active/1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/2/active/2": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/2/active/3": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/3/inactive": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/3/active/0": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/3/active/1": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/3/active/2": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    },
+    "route/3/active/3": {
+      "category": 0,
+      "reason": 0,
+      "field": 0,
+      "channel": 3,
+      "index": 3,
+      "sigma_nan": false,
+      "sigma_bits": 0,
+      "diagnostic": ""
+    }
+  }
+}

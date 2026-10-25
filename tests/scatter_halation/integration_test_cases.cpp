@@ -366,7 +366,7 @@ namespace {
         row.width = input.at("fullFrameWidth").get<int>();
         row.height = input.at("fullFrameHeight").get<int>();
         std::optional<ScatterHalationFrameDescriptor> descriptor;
-        if (!Spektrafilm::build_scatter_halation_frame_descriptor(
+        if (!JuicerTestSupport::prepare_halation_frame(
                 row.recipe, row.pixelSizeUm, descriptor, diagnostic) ||
             !descriptor) {
             throw std::runtime_error(
@@ -781,7 +781,7 @@ namespace {
             throw std::runtime_error(diagnostic);
         }
         std::optional<ScatterHalationFrameDescriptor> descriptor;
-        if (!Spektrafilm::build_scatter_halation_frame_descriptor(
+        if (!JuicerTestSupport::prepare_halation_frame(
                 recipe, scale.pixelSizeUm, descriptor, diagnostic) ||
             !descriptor) {
             throw std::runtime_error(diagnostic);

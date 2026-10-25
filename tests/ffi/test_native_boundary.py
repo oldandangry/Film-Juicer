@@ -330,15 +330,15 @@ class NativeBoundary(unittest.TestCase):
         compdb = json.loads((build / "compile_commands.json").read_bytes())
         nm = find_llvm_nm()
         self.assertTrue(nm, "qualified LLVM nm required for ordinary-object isolation")
-        for owner, source in (("juicer_adapter", "JuicerEffect.cpp"), ("juicer_host", "RustFrameBridge.cpp")):
+        for owner, source in (("juicer_adapter", "JuicerEffect.cpp"), ("juicer_host", "RustFrameBridge.cpp"), ("juicer_host", "RustHalationBridge.cpp")):
             rows = [row for row in compdb if owner + ".dir" in row["command"] and row["file"].endswith(source)]
             self.assertEqual(len(rows), 1)
             self.assertNotIn("JUICER_FRAME_GEOMETRY_TEST_HOOK", rows[0]["command"])
             path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
             data = path.read_bytes()
             symbols = subprocess.check_output([nm, "--demangle", str(path)], timeout=10).decode(errors="replace")
-            self.assertNotRegex(symbols, r"FrameGeometryTest::|frame_bridge::faults::|fj_test_frame|native_frame_domain|native_pixel_size")
-            for text in ("FrameGeometryTest", "frame geometry fixture panic", "--capture-frame-geometry", "--frame-geometry", "fj_test_frame"):
+            self.assertNotRegex(symbols, r"FrameGeometryTest::|frame_bridge::faults::|halation_frame_faults::|fj_test_scatter_halation_frame|fj_test_frame|native_frame_domain|native_pixel_size")
+            for text in ("FrameGeometryTest", "frame geometry fixture panic", "--capture-frame-geometry", "--frame-geometry", "fj_test_frame", "scatter/halation frame fixture panic", "fj_test_scatter_halation_frame", "HalationObservation"):
                 for encoding in ("utf-8", "utf-16-le"):
                     pattern = text.encode(encoding)
                     self.assertNotIn(pattern, data)

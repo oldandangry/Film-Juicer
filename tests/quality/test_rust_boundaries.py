@@ -328,6 +328,25 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_halation_frame_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("halation_frame_complete", None),
+            ("halation_frame_construction", {"E0451": ("HalationFrame { ..frame }",)}),
+            ("halation_frame_private", {"E0616": ("frame.recipe_hash", "frame.channels", "core().radius")}),
+            ("halation_frame_readonly", {"E0594": ("fir_weights()[0] = 0.0",)}),
+            ("halation_frame_default", {"E0599": ("HalationFrame::default()",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_gaussian_is_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("gaussian_complete", None),
@@ -647,15 +666,25 @@ class RustBoundaryTests(unittest.TestCase):
             return re.search(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", text) is not None
         for file, names in [("RenderRecipe.cpp", ["build_spatial_optics_recipe", "hash_diffusion_filter_optics", "hash_camera_lens_blur_optics"]),
                             ("DiffusionHostBehavior.cpp", ["resolve_diffusion_filter", "resolved_hash", "strength_to_scatter", "validate_authored_finite"]),
-                            ("ScatterHalation.cpp", ["resolve_scatter_halation_recipe", "hash_scatter_halation_recipe", "any_positive"])]:
+                            ("ScatterHalation.cpp", ["resolve_scatter_halation_recipe", "hash_scatter_halation_recipe", "any_positive", "build_gaussian_descriptor", "fail_descriptor", "canonical_float", "hash_value"])]:
             for name in names:
                 self.assertFalse(definition(name, sources[file]), name)
                 self.assertTrue(definition(name, "bool " + name + "(const Params& params) { return true; }"))
                 self.assertFalse(definition(name, "bool " + name + "(const Params& params);"))
         for name in ["hash_diffusion_authored_controls", "build_diffusion_psf_sample_descriptor", "expand_diffusion_psf_components"]:
             self.assertTrue(definition(name, sources["DiffusionHostBehavior.cpp"]), name)
-        for name in ["build_scatter_halation_controls", "build_scatter_halation_frame_descriptor", "build_gaussian_descriptor"]:
+        for name in ["build_scatter_halation_controls", "build_scatter_halation_frame_descriptor"]:
             self.assertTrue(definition(name, sources["ScatterHalation.cpp"]), name)
+        halation = sources["ScatterHalation.cpp"]
+        self.assertEqual(halation.count("JuicerHalation::prepare_frame("), 1)
+        for token in ("kScatterCoreUm", "kScatterTailUm", "kExponentialSigmaRatios", "kBounceSigmaMultipliers", "kMinimumActiveSigmaPixels", "kFirDispatchSigmaPixels", "std::exp", "0.98711", '"Hash.h"'):
+            self.assertNotIn(token, halation)
+            with self.assertRaises(AssertionError):
+                self.assertNotIn(token, halation + token)
+        fixtures = "\n".join((ROOT / "tests/ffi" / name).read_text() for name in ("film_recipe_test.cpp", "halation_frame_test.inc"))
+        for token in ("capture-halation-frames", "nativeCapture", "Json capture(", "std::exp"):
+            self.assertNotIn(token, fixtures)
+        self.assertIn("SF_TEMP_BRIDGE_HALATION_FRAME", (ROOT / "src/RustHalationBridge.h").read_text())
         recipe = sources["RenderRecipe.cpp"]
         self.assertEqual(recipe.count("JuicerAssets::prepare_spatial_optics("), 1)
         header = (ROOT / "src/RenderRecipe.h").read_text(encoding="utf-8-sig")

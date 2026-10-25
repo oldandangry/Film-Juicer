@@ -1,6 +1,7 @@
 #include "frame_geometry_test_hooks.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
+#include "../ffi/spatial_optics_fixture.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -1977,6 +1978,10 @@ namespace {
             host._canonicalTime = time;
             host._trace.push_back("CANONICAL_QUERY clip=" + reinterpret_cast<NativeClip*>(clip)->name + " time=" + number_string(time));
             if (host._frameGeometryCase) {
+                const auto halation = JuicerFrame::FrameGeometryTest::halation_snapshot();
+                // A successful query must follow halation and precede effects publication.
+                if (halation.count != 1 || !halation.success || JuicerFrame::FrameGeometryTest::snapshot().count != 2)
+                    return kOfxStatFailed;
                 *bounds = host._frameGeometryCase->canonical;
                 return kOfxStatOK;
             }
@@ -2984,10 +2989,19 @@ namespace {
         host.unbind_effect();
         std::cout << "PASS adapter/20-frozen-physical-capture-publications-four-routes\n";
     }
-    void run_frame_geometry_cases(const std::filesystem::path& manifestPath, const char* preset, const std::filesystem::path& tracePath) {
+    struct FrameGeometryFixturePaths {
+        std::filesystem::path geometry;
+        std::filesystem::path halation;
+    };
+    void run_frame_geometry_cases(const FrameGeometryFixturePaths& fixtures, const char* preset, const std::filesystem::path& tracePath) {
         using namespace JuicerFrame::FrameGeometryTest;
+        const auto& manifestPath = fixtures.geometry;
+        const auto& halationManifestPath = fixtures.halation;
         const auto manifest = nlohmann::json::parse(std::ifstream(manifestPath));
         const auto captured = load_shared_fixture(manifestPath.parent_path() / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
+        const auto halationManifest = nlohmann::json::parse(std::ifstream(halationManifestPath));
+        const auto halationCaptured = load_shared_fixture(halationManifestPath.parent_path() / halationManifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
+        require(halationCaptured.at("preset") == preset && halationCaptured.at("products").size() == 20, "halation callback frozen native context/membership");
         auto expected_pixel = [&](const char* name) {
             for (const auto& row : captured.at("geometry"))
                 if (row.at("name") == name)
@@ -3004,11 +3018,14 @@ namespace {
         DeviceFrame frame;
         FrameGeometryCase geometry;
         struct ExpectedPhases {
-            unsigned completed;
-            unsigned canonicalQueries;
+            unsigned completed = 0;
+            unsigned canonicalQueries = 0;
+            unsigned halationCalls = UINT32_MAX;
+            bool halationSuccess = true;
         };
         auto check = [&](const char* name, DeviceFrame& allocation, const FrameGeometryCase& facts, bool failed, ExpectedPhases expected, const char* pixelCase = "landscape") {
-            const auto [phases, queries] = expected;
+            const auto phases = expected.completed;
+            const auto queries = expected.canonicalQueries;
             const auto traceBegin = host.trace_size();
             NativeHost::RenderResult result;
             try {
@@ -3018,6 +3035,22 @@ namespace {
                 throw std::runtime_error(std::string("frame geometry callback case failed: ") + name);
             }
             const auto observation = snapshot();
+            const auto halation = halation_snapshot();
+            const auto halationCalls = expected.halationCalls == UINT32_MAX ? (phases >= 2 ? 1u : 0u) : expected.halationCalls;
+            require(halation.count == halationCalls, std::string(name) + " halation invocation count");
+            if (halationCalls) {
+                require(halation.success == expected.halationSuccess && std::bit_cast<std::uint32_t>(halation.pixelSizeUm) == expected_pixel(pixelCase), "halation uses current callback pixel size and boolean result");
+                if (!halation.success)
+                    require(!halation.descriptor, "computed halation failure remains absent");
+                else if (halation.descriptor) {
+                    const auto& rows = halationCaptured.at("products");
+                    const auto frozen = std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
+                        return row.at("input").at("recipe_hash").template get<std::uint64_t>() == halation.descriptor->recipeHash &&
+                               row.at("input").at("pixel_size_um").template get<std::uint32_t>() == std::bit_cast<std::uint32_t>(halation.pixelSizeUm);
+                    });
+                    require(frozen != rows.end() && JuicerTestSupport::matches_halation_frame(halation.descriptor, frozen->at("descriptor")), "actual callback all21 schedules/scalars/hash match independent native capture");
+                }
+            }
             require(observation.count == phases, std::string(name) + " exact completed phase count");
             for (unsigned i = 0; i < phases; ++i)
                 require(observation.phases[i] == i + 1, "full/scalar/effects phase order");
@@ -3098,7 +3131,14 @@ namespace {
             active.definition = geometry.source;
             active.definitionWidth = 7;
             active.definitionHeight = 5;
+            host.set_int_value(JuicerParams::kHalationActive, 0);
+            host.dispatch_event(effect, JuicerParams::kHalationActive, OFX::eChangePluginEdit);
+            check("four-route-inactive-halation", frame, active, false, {3, 1});
+            require(!halation_snapshot().descriptor, "inactive halation count-one optional absence on each route/polarity");
+            host.set_int_value(JuicerParams::kHalationActive, 1);
+            host.dispatch_event(effect, JuicerParams::kHalationActive, OFX::eChangePluginEdit);
             check("four-route-active-metadata", frame, active, false, {3, 1});
+            require(halation_snapshot().descriptor.has_value(), "active halation reaches each direct/print polarity callback");
             auto badDefinition = geometry;
             badDefinition.definition = {std::numeric_limits<int>::min(), 0, std::numeric_limits<int>::max(), 5};
             check("effects-range-after-canonical", frame, badDefinition, true, {2, 1});
@@ -3124,7 +3164,11 @@ namespace {
         invalidPhysical.source = {7, 5, 0, 0};
         invalidPhysical.sourceWidth = -7;
         invalidPhysical.sourceHeight = -5;
-        check("descriptor-failure-before-effects-query", frame, invalidPhysical, true, {2, 0}, "negative");
+        check("descriptor-failure-before-effects-query", frame, invalidPhysical, true, {2, 0, 0}, "negative");
+        host.set_int_value(JuicerParams::kCameraDiffusionEnabled, 0);
+        host.set_int_value(JuicerParams::kHalationActive, 1);
+        host.dispatch_event(effect, JuicerParams::kCameraDiffusionEnabled, OFX::eChangePluginEdit);
+        check("halation-pixel-failure-before-effects-query", frame, invalidPhysical, true, {2, 0, 1, false}, "negative");
         host.set_double_value(JuicerParams::kCameraFilmFormatMm, -1);
         host.dispatch_event(effect, JuicerParams::kCameraFilmFormatMm, OFX::eChangePluginEdit);
         require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingInvalid, "pending controls invalid for priority cases");
@@ -3162,12 +3206,12 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             run_loaded_module_callback(host, argv[2], argv[4], std::string_view(argv[1]) == "--stream-contract");
             return 0;
         }
-        if (argc == 5 && std::string_view(argv[1]) == "--frame-geometry") {
+        if (argc == 6 && std::string_view(argv[1]) == "--frame-geometry") {
             cudaOwner.create(JuicerProcess::data_directory());
             if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess)
                 throw std::runtime_error("CUDA initialization failed");
             JuicerProcess::root().ensure_bootstrap();
-            run_frame_geometry_cases(argv[2], argv[3], argv[4]);
+            run_frame_geometry_cases({.geometry = argv[2], .halation = argv[5]}, argv[3], argv[4]);
             return 0;
         }
         if ((argc != 3 && !(argc == 6 && std::string_view(argv[3]) == "--grain-fixtures")) || std::string_view(argv[1]) != "--trace-output") {

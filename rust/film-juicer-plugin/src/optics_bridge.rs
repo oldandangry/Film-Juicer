@@ -821,3 +821,361 @@ const _: unsafe extern "C" fn(
 ) -> FjStatus = fj_legacy_gaussian_kernel_view;
 const _: unsafe extern "C" fn(*mut FjGaussianKernelOwner, *mut FjErrorBuffer) -> FjStatus =
     fj_legacy_gaussian_kernel_release;
+
+// SF_TEMP_BRIDGE_HALATION_FRAME: remove at the final native frame-preparation
+// caller, no later than S6.D. State integration remains S4.E's responsibility.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjHalationFrameInput {
+    pub(crate) recipe: FjHalationRecipe,
+    pub(crate) pixel_size_um: f32,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjHalationFrameFailure {
+    pub(crate) reason: u32,
+    pub(crate) field: u32,
+    pub(crate) channel: u32,
+    pub(crate) index: u32,
+    pub(crate) sigma_px: f64,
+}
+
+fn halation_frame_none() -> FjHalationFrameFailure {
+    FjHalationFrameFailure {
+        reason: 0,
+        field: 0,
+        channel: 3,
+        index: 3,
+        sigma_px: 0.0,
+    }
+}
+const HALATION_IDENTITY: crate::cuda::sys::FjHalationGaussian =
+    crate::cuda::sys::FjHalationGaussian {
+        kind: 0,
+        radius: 0,
+        fir_weights: [0.0; 19],
+        feedforward: 0.0,
+        feedback: [0.0; 3],
+    };
+fn empty_halation_frame() -> crate::cuda::sys::FjScatterHalation {
+    crate::cuda::sys::FjScatterHalation {
+        recipe_hash: 0,
+        scatter_amount: 0.0,
+        channels: [crate::cuda::sys::FjHalationChannel {
+            core: HALATION_IDENTITY,
+            tail: [HALATION_IDENTITY; 3],
+            bounce: [HALATION_IDENTITY; 3],
+            total_strength: 0.0,
+        }; 3],
+    }
+}
+fn halation_gaussian(v: &optics::HalationGaussian) -> crate::cuda::sys::FjHalationGaussian {
+    crate::cuda::sys::FjHalationGaussian {
+        kind: match v.kind() {
+            optics::HalationGaussianKind::Identity => 0,
+            optics::HalationGaussianKind::FirReflect => 1,
+            optics::HalationGaussianKind::YvvReplicate => 2,
+        },
+        radius: v.radius(),
+        fir_weights: *v.fir_weights(),
+        feedforward: v.yvv()[0],
+        feedback: [v.yvv()[1], v.yvv()[2], v.yvv()[3]],
+    }
+}
+fn halation_frame_projection(v: &optics::HalationFrame) -> crate::cuda::sys::FjScatterHalation {
+    crate::cuda::sys::FjScatterHalation {
+        recipe_hash: v.recipe_hash(),
+        scatter_amount: v.scatter_amount(),
+        channels: std::array::from_fn(|channel| {
+            let c = &v.channels()[channel];
+            crate::cuda::sys::FjHalationChannel {
+                core: halation_gaussian(c.core()),
+                tail: std::array::from_fn(|i| halation_gaussian(&c.tail()[i])),
+                bounce: std::array::from_fn(|i| halation_gaussian(&c.bounce()[i])),
+                total_strength: c.total_strength(),
+            }
+        }),
+    }
+}
+
+enum HalationFrameRejection {
+    Raw,
+    Core(optics::HalationFrameError),
+    Panic,
+}
+impl HalationFrameRejection {
+    fn fields(&self) -> (u32, FjHalationFrameFailure, &'static str) {
+        let mut failure = halation_frame_none();
+        let (category, text) = match *self {
+            Self::Raw => {
+                failure.reason = 1;
+                (
+                    FJ_STATUS_UNSUPPORTED_INPUT,
+                    "invalid scatter/halation frame arguments",
+                )
+            }
+            Self::Core(optics::HalationFrameError::PixelSize) => {
+                failure.reason = 2;
+                failure.field = 1;
+                (
+                    FJ_STATUS_PREPARATION_FAILURE,
+                    "ResourceDescriptorMismatch component=scatter_halation field=pixel_size_um",
+                )
+            }
+            Self::Core(optics::HalationFrameError::Gaussian {
+                field,
+                channel,
+                index,
+                sigma_px,
+            }) => {
+                failure.reason = 3;
+                failure.channel = channel as u32;
+                failure.index = index.map_or(3, |i| i as u32);
+                failure.sigma_px = sigma_px;
+                let (tag, text) = match field {
+                    optics::HalationFrameField::ScatterCore => (
+                        2,
+                        "ResourceDescriptorMismatch component=scatter_halation field=scatter_core",
+                    ),
+                    optics::HalationFrameField::ScatterTail => (
+                        3,
+                        "ResourceDescriptorMismatch component=scatter_halation field=scatter_tail",
+                    ),
+                    optics::HalationFrameField::Bounce => (
+                        4,
+                        "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce",
+                    ),
+                };
+                failure.field = tag;
+                (FJ_STATUS_PREPARATION_FAILURE, text)
+            }
+            Self::Panic => {
+                failure.reason = 4;
+                (
+                    FJ_STATUS_INTERNAL_FAILURE,
+                    "scatter/halation frame preparation panicked",
+                )
+            }
+        };
+        (category, failure, text)
+    }
+}
+
+/// # Safety
+/// Independently numerically valid writable records authorize initialized/live,
+/// aligned exclusive storage disjoint from all other records and backing.
+unsafe fn clear_halation_frame(
+    out: *mut crate::cuda::sys::FjScatterHalation,
+    failure: *mut FjHalationFrameFailure,
+) {
+    // SAFETY: Each peer's numeric admission is independent; provenance is a caller obligation.
+    unsafe {
+        if valid_extent(out, 1) {
+            out.write(empty_halation_frame());
+        }
+        if valid_extent(failure, 1) {
+            failure.write(halation_frame_none());
+        }
+    }
+}
+
+/// # Safety
+/// Same initialized/live/exclusive/disjoint obligations as halation_frame_prepare.
+unsafe fn halation_frame_body(
+    input: *const FjHalationFrameInput,
+    out: *mut crate::cuda::sys::FjScatterHalation,
+    failure: *mut FjHalationFrameFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Clear each admitted peer before checking input, peers or diagnostic backing.
+    unsafe {
+        clear_halation_frame(out, failure);
+    }
+    // SAFETY: Optional initialized record and bounded backing have the entry's exclusive borrow.
+    let mut diagnostic = unsafe { Diagnostic::admit(error) };
+    let result = (|| -> Result<crate::cuda::sys::FjScatterHalation, HalationFrameRejection> {
+        if !valid_extent(out, 1)
+            || !valid_extent(failure, 1)
+            || !valid_extent(input, 1)
+            || diagnostic.is_err()
+        {
+            return Err(HalationFrameRejection::Raw);
+        }
+        // SAFETY: Numeric checks precede this caller-authorized live aligned input copy.
+        let input = unsafe { input.read() };
+        let h = input.recipe;
+        if h.scatter_active > 1 || h.back_reflection_active > 1 {
+            return Err(HalationFrameRejection::Raw);
+        }
+        #[cfg(feature = "test-support")]
+        let fault = halation_frame_faults::take();
+        #[cfg(feature = "test-support")]
+        if fault == 1 {
+            panic!("scatter/halation frame fixture panic");
+        }
+        let input_recipe = optics::HalationFrameInput {
+            scatter_active: h.scatter_active != 0,
+            back_reflection_active: h.back_reflection_active != 0,
+            scatter_amount: h.scatter_amount,
+            scatter_spatial_scale: h.scatter_spatial_scale,
+            halation_spatial_scale: h.halation_spatial_scale,
+            first_sigma_um: h.first_sigma_um,
+            total_strength: h.total_strength,
+            recipe_hash: h.hash,
+        };
+        let frame = optics::HalationFrame::new(input_recipe, input.pixel_size_um)
+            .map_err(HalationFrameRejection::Core)?;
+        let wire = frame
+            .as_ref()
+            .map_or_else(empty_halation_frame, halation_frame_projection);
+        #[cfg(feature = "test-support")]
+        let wire = halation_frame_faults::corrupt(wire, fault);
+        Ok(wire)
+    })();
+    match result {
+        Ok(wire) => {
+            // SAFETY: All required peer admission succeeded and completed value is non-owning.
+            unsafe {
+                out.write(wire);
+            }
+            status(FJ_STATUS_SUCCESS)
+        }
+        Err(rejection) => {
+            let (category, details, text) = rejection.fields();
+            if valid_extent(failure, 1) {
+                // SAFETY: Independently authorized failure slot remains exclusive and live.
+                unsafe {
+                    failure.write(details);
+                }
+            }
+            if let Ok(writer) = &mut diagnostic {
+                let _ = writer.write_str(text);
+            }
+            status(category)
+        }
+    }
+}
+
+/// # Safety
+/// Required records are initialized/aligned/live. Writable records and optional
+/// diagnostic backing are exclusive, mutually disjoint and disjoint from input.
+/// Numeric checks do not prove arbitrary pointer provenance. No borrow escapes.
+pub(crate) unsafe fn halation_frame_prepare(
+    input: *const FjHalationFrameInput,
+    out: *mut crate::cuda::sys::FjScatterHalation,
+    failure: *mut FjHalationFrameFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: The checked body shares the full synchronous foreign storage contract.
+        unsafe { halation_frame_body(input, out, failure, error) }
+    }));
+    match result {
+        Ok(status) => status,
+        Err(_) => {
+            let (category, details, text) = HalationFrameRejection::Panic.fields();
+            // SAFETY: Recovery uses only independent admission, fixed writes and bounded diagnostics.
+            unsafe {
+                clear_halation_frame(out, failure);
+                if valid_extent(failure, 1) {
+                    failure.write(details);
+                }
+                if let Ok(mut writer) = Diagnostic::admit(error) {
+                    let _ = writer.write_str(text);
+                }
+            }
+            status(category)
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Same initialized/live/aligned, exclusive/disjoint obligations as halation_frame_prepare.
+unsafe extern "C" fn fj_legacy_scatter_halation_frame_prepare(
+    input: *const FjHalationFrameInput,
+    out: *mut crate::cuda::sys::FjScatterHalation,
+    failure: *mut FjHalationFrameFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The export delegates to the single whole-operation checked body.
+    unsafe { halation_frame_prepare(input, out, failure, error) }
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) mod halation_frame_faults {
+    use super::*;
+    use std::cell::Cell;
+    thread_local! { static NEXT: Cell<u32> = const { Cell::new(0) }; }
+    pub(crate) fn arm(fault: u32) -> FjStatus {
+        if fault > 4 {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        NEXT.set(fault);
+        status(FJ_STATUS_SUCCESS)
+    }
+    pub(super) fn take() -> u32 {
+        NEXT.replace(0)
+    }
+    pub(super) fn corrupt(
+        mut v: crate::cuda::sys::FjScatterHalation,
+        fault: u32,
+    ) -> crate::cuda::sys::FjScatterHalation {
+        match fault {
+            2 => v.channels[0].core.kind = 99,
+            3 => {
+                v.channels[0].core.kind = 1;
+                v.channels[0].core.radius = 10;
+            }
+            4 => v.recipe_hash ^= 1,
+            _ => {}
+        }
+        v
+    }
+}
+
+const _: () = {
+    assert!(size_of::<FjHalationFrameInput>() == 64 && align_of::<FjHalationFrameInput>() == 8);
+    assert!(std::mem::offset_of!(FjHalationFrameInput, recipe) == 0);
+    assert!(std::mem::offset_of!(FjHalationFrameInput, pixel_size_um) == 56);
+    assert!(size_of::<FjHalationFrameFailure>() == 24 && align_of::<FjHalationFrameFailure>() == 8);
+    assert!(std::mem::offset_of!(FjHalationFrameFailure, reason) == 0);
+    assert!(std::mem::offset_of!(FjHalationFrameFailure, field) == 4);
+    assert!(std::mem::offset_of!(FjHalationFrameFailure, channel) == 8);
+    assert!(std::mem::offset_of!(FjHalationFrameFailure, index) == 12);
+    assert!(std::mem::offset_of!(FjHalationFrameFailure, sigma_px) == 16);
+};
+const _: unsafe extern "C" fn(
+    *const FjHalationFrameInput,
+    *mut crate::cuda::sys::FjScatterHalation,
+    *mut FjHalationFrameFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_scatter_halation_frame_prepare;
+const _: fn(FjHalationFrameInput, FjHalationFrameFailure) = |input, failure| {
+    let _: FjHalationRecipe = input.recipe;
+    let _: f32 = input.pixel_size_um;
+    let _: u32 = failure.reason;
+    let _: u32 = failure.field;
+    let _: u32 = failure.channel;
+    let _: u32 = failure.index;
+    let _: f64 = failure.sigma_px;
+};
+
+const _: fn(
+    crate::cuda::sys::FjHalationGaussian,
+    crate::cuda::sys::FjHalationChannel,
+    crate::cuda::sys::FjScatterHalation,
+) = |gaussian, channel, frame| {
+    let _: u32 = gaussian.kind;
+    let _: i32 = gaussian.radius;
+    let _: [f32; 19] = gaussian.fir_weights;
+    let _: f32 = gaussian.feedforward;
+    let _: [f32; 3] = gaussian.feedback;
+    let _: crate::cuda::sys::FjHalationGaussian = channel.core;
+    let _: [crate::cuda::sys::FjHalationGaussian; 3] = channel.tail;
+    let _: [crate::cuda::sys::FjHalationGaussian; 3] = channel.bounce;
+    let _: f32 = channel.total_strength;
+    let _: u64 = frame.recipe_hash;
+    let _: f32 = frame.scatter_amount;
+    let _: [crate::cuda::sys::FjHalationChannel; 3] = frame.channels;
+};

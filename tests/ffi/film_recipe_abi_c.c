@@ -2,6 +2,29 @@
 #include <string.h>
 #include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
+
+_Static_assert(sizeof(FjHalationFrameInput) == 64 && _Alignof(FjHalationFrameInput) == 8, "FjHalationFrameInput layout");
+_Static_assert(_Generic(((FjHalationFrameInput*)0)->recipe, FjHalationRecipe: 1, default: 0), "FjHalationFrameInput.recipe type");
+_Static_assert(offsetof(FjHalationFrameInput, recipe) == 0, "FjHalationFrameInput.recipe offset");
+_Static_assert(_Generic(((FjHalationFrameInput*)0)->pixel_size_um, float: 1, default: 0), "FjHalationFrameInput.pixel_size_um type");
+_Static_assert(offsetof(FjHalationFrameInput, pixel_size_um) == 56, "FjHalationFrameInput.pixel_size_um offset");
+_Static_assert(sizeof(FjHalationFrameFailure) == 24 && _Alignof(FjHalationFrameFailure) == 8, "FjHalationFrameFailure layout");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->reason, uint32_t: 1, default: 0), "FjHalationFrameFailure.reason type");
+_Static_assert(offsetof(FjHalationFrameFailure, reason) == 0, "FjHalationFrameFailure.reason offset");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->field, uint32_t: 1, default: 0), "FjHalationFrameFailure.field type");
+_Static_assert(offsetof(FjHalationFrameFailure, field) == 4, "FjHalationFrameFailure.field offset");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->channel, uint32_t: 1, default: 0), "FjHalationFrameFailure.channel type");
+_Static_assert(offsetof(FjHalationFrameFailure, channel) == 8, "FjHalationFrameFailure.channel offset");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->index, uint32_t: 1, default: 0), "FjHalationFrameFailure.index type");
+_Static_assert(offsetof(FjHalationFrameFailure, index) == 12, "FjHalationFrameFailure.index offset");
+_Static_assert(_Generic(((FjHalationFrameFailure*)0)->sigma_px, double: 1, default: 0), "FjHalationFrameFailure.sigma_px type");
+_Static_assert(offsetof(FjHalationFrameFailure, sigma_px) == 16, "FjHalationFrameFailure.sigma_px offset");
+_Static_assert(_Generic(&fj_legacy_scatter_halation_frame_prepare, FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scatter_halation_frame_prepare signature");
+_Static_assert(_Generic(&fj_test_scatter_halation_frame_prepare, FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scatter_halation_frame_prepare signature");
+_Static_assert(_Generic(&fj_test_scatter_halation_frame_c_prepare, FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scatter_halation_frame_c_prepare signature");
+FjStatus fj_test_scatter_halation_frame_c_prepare(const FjHalationFrameInput* input, FjScatterHalation* out, FjHalationFrameFailure* failure, FjErrorBuffer* error) {
+    return fj_legacy_scatter_halation_frame_prepare(input, out, failure, error);
+}
 _Static_assert(_Generic(((FjRect*)0)->x1, int32_t: 1, default: 0), "FjRect.x1 type");
 _Static_assert(_Generic(((FjRect*)0)->y1, int32_t: 1, default: 0), "FjRect.y1 type");
 _Static_assert(_Generic(((FjRect*)0)->x2, int32_t: 1, default: 0), "FjRect.x2 type");
@@ -915,4 +938,53 @@ int fj_test_gaussian_c_call(const FjGaussianKernelInput* input, const uint32_t* 
         ok = word == expected[i];
     }
     return fj_legacy_gaussian_kernel_release(owner, NULL).category == 0 && ok;
+}
+
+static int halation_words_equal(const float* a, size_t count, const float* b) {
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t x, y;
+        memcpy(&x, a + i, sizeof(x));
+        memcpy(&y, b + i, sizeof(y));
+        if (x != y)
+            return 0;
+    }
+    return 1;
+}
+static int halation_gaussian_equal(const FjHalationGaussian* a, const FjHalationGaussian* b) {
+    return a->kind == b->kind && a->radius == b->radius && halation_words_equal(a->fir_weights, 19, b->fir_weights) &&
+           halation_words_equal(&a->feedforward, 1, &b->feedforward) && halation_words_equal(a->feedback, 3, b->feedback);
+}
+int fj_test_scatter_halation_frame_c_check(const FjHalationFrameInput* input, const FjScatterHalation* expected, const FjHalationFrameFailure* expected_failure, uint32_t category, const char* diagnostic) {
+    FjScatterHalation out;
+    memset(&out, 0x55, sizeof(out));
+    FjHalationFrameFailure failure = {99, 98, 97, 96, -1.0};
+    char text[256] = "seed";
+    FjErrorBuffer error = {text, sizeof(text), 99};
+    FjStatus result = fj_legacy_scatter_halation_frame_prepare(input, &out, &failure, &error);
+    if (result.category != category || result.api != 0 || result.native_code != 0 ||
+        failure.reason != expected_failure->reason || failure.field != expected_failure->field || failure.channel != expected_failure->channel || failure.index != expected_failure->index ||
+        error.length != strlen(diagnostic) || strcmp(text, diagnostic) != 0)
+        return 0;
+    if (expected_failure->sigma_px != expected_failure->sigma_px) {
+        if (failure.sigma_px == failure.sigma_px)
+            return 0;
+    } else {
+        uint64_t x, y;
+        memcpy(&x, &failure.sigma_px, sizeof(x));
+        memcpy(&y, &expected_failure->sigma_px, sizeof(y));
+        if (x != y)
+            return 0;
+    }
+    if (out.recipe_hash != expected->recipe_hash || !halation_words_equal(&out.scatter_amount, 1, &expected->scatter_amount))
+        return 0;
+    for (size_t c = 0; c < 3; ++c) {
+        const FjHalationChannel* a = &out.channels[c];
+        const FjHalationChannel* b = &expected->channels[c];
+        if (!halation_words_equal(&a->total_strength, 1, &b->total_strength) || !halation_gaussian_equal(&a->core, &b->core))
+            return 0;
+        for (size_t i = 0; i < 3; ++i)
+            if (!halation_gaussian_equal(&a->tail[i], &b->tail[i]) || !halation_gaussian_equal(&a->bounce[i], &b->bounce[i]))
+                return 0;
+    }
+    return 1;
 }

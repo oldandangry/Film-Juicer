@@ -98,8 +98,12 @@ def execute(arguments):
         "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
     )
     forbidden = re.compile(forbidden.pattern + r"|reconstruction::testing::|film::reference::testing::")
-    forbidden = re.compile(forbidden.pattern + r"|SpectralAllocationProbe::|gaussian_faults::|rejectNativeAllocation|rejectedNativeBytes")
+    forbidden = re.compile(forbidden.pattern + r"|SpectralAllocationProbe::|gaussian_faults::|halation_frame_faults::|rejectNativeAllocation|rejectedNativeBytes")
     strings = [
+        b"scatter/halation frame fixture panic",
+        b"HalationObservation",
+        b"fj_test_scatter_halation_frame",
+        b"capture-halation-frames",
         b"frame geometry fixture panic",
         b"FrameGeometryTest",
         b"--capture-frame-geometry",
@@ -185,6 +189,8 @@ def execute(arguments):
     post_manifest, post_payload, post_context, _, _ = scanner_post_fixture(arguments.preset)
     frame_manifest, frame_payload, frame_context, _ = frame_fixture(arguments.preset)
     consumed_paths.extend([frame_manifest, frame_payload, frame_context, frame_manifest.parent / "inputs.json"])
+    halation_manifest, halation_payload, halation_context, halation_checked, _, halation_spec = halation_frame_fixture(arguments.preset)
+    consumed_paths.extend([halation_manifest, halation_payload, halation_context, halation_checked, halation_manifest.parent / "inputs.json"])
     gaussian_manifest, gaussian_payload, gaussian_context, _, _ = gaussian_fixture(arguments.preset)
     consumed_paths.extend([gaussian_manifest, gaussian_payload, gaussian_context])
     consumed_paths.extend([post_manifest, post_payload, post_context])
@@ -222,6 +228,7 @@ def execute(arguments):
     scan(native, "native-symbols", "llvm-nm", ["--defined-only", "--demangle"])
     symbols = scan(archive, "rust-symbols", "llvm-nm", ["--defined-only", "--demangle"])
     for name in [
+        "fj_legacy_scatter_halation_frame_prepare",
         "fj_legacy_film_input_prepare",
         "fj_legacy_film_development_acquire",
         "fj_legacy_film_development_view",
@@ -294,6 +301,7 @@ def execute(arguments):
     scanner_post_results = []
     gaussian_results = []
     frame_results = []
+    halation_frame_results = []
     reference_results = []
     for name, source in probes:
         executable = out / (name + suffix)
@@ -370,6 +378,9 @@ def execute(arguments):
                               "source_sha256": source_sha256, "archive": str(archive),
                               "archive_sha256": digest(archive)})
         if name == "film":
+            halation_frame_results = [json.loads(line.removeprefix("HALATION_FRAME_RESULT "))
+                                      for line in output.splitlines() if line.startswith("HALATION_FRAME_RESULT ")]
+            assert len(halation_frame_results) == 86 and halation_frame_results == halation_spec["production_cases"], "complete halation production values/failure membership"
             _, _, reference_rows = reference_fixture(arguments.preset)
             expected = []
             for row in reference_rows:
@@ -596,6 +607,9 @@ def execute(arguments):
                 "scanner_descriptor_results": scanner_descriptor_results,
                 "scanner_post_results": scanner_post_results,
                 "frame_results": frame_results,
+                "halation_frame_results": halation_frame_results,
+                "halation_frame_fixture": {"manifest": str(halation_manifest), "payload": str(halation_payload), "context": str(halation_context),
+                                           "normative": str(halation_checked), "input_spec": str(halation_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
                 "frame_fixture": {"manifest": str(frame_manifest), "payload": str(frame_payload), "context": str(frame_context), "logical_preset": arguments.preset},
                 "gaussian_results": gaussian_results,
                 "gaussian_fixture": {"manifest": str(gaussian_manifest), "payload": str(gaussian_payload), "context": str(gaussian_context), "logical_preset": arguments.preset},
@@ -1086,6 +1100,56 @@ def expected_scanner_color_header(out):
         stream.write("static const uint64_t scanner_color_hashes[] = {" + ",".join("UINT64_C(%d)" % row["expected"]["hash"] for row in rows) + "};\n")
 
 
+def halation_frame_fixture(preset):
+    directory = root / "tests/scatter_halation/frame-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_bytes())
+    logical = spec["presets"][preset]["native"]
+    payload = directory / spec["payloads"][logical]
+    context = directory / spec["contexts"][logical]
+    checked = directory / spec["checked"]
+    for path in (payload, context, checked, directory / "inputs.json"):
+        assert digest(path) == spec["sha256"][path.name]
+    captured = load_shared_fixture(directory / logical)
+    assert captured["preset"] == preset
+    assert len(captured["cases"]) == 52 and len(captured["products"]) == 20
+    assert len(spec["production_cases"]) == 86
+    assert len({row["case"] for row in spec["production_cases"]}) == 86
+    return manifest, payload, context, checked, captured, spec
+
+
+def expected_halation_frame_header(out):
+    _, _, _, _, captured, spec = halation_frame_fixture(arguments.preset)
+    rows = captured["cases"] + captured["products"]
+    by_name = {row["input"]["name"]: row for row in rows}
+    malformed = {row["case"]: row for row in spec["production_malformed"]}
+    def words(values):
+        return "{" + ",".join(str(value) + "U" for value in values) + "}"
+
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("typedef struct { const char* name; uint32_t mode, flags[2], input[10]; uint64_t recipe_hash; FjStatus status; uint32_t failure[4]; uint64_t sigma_bits; int sigma_nan, output_valid, failure_valid, error_valid; uint64_t expected_hash; const uint32_t* words; const char* diagnostic; } HalationFrameRow;\n")
+        for index, expected in enumerate(spec["production_cases"]):
+            if expected["output"] is not None:
+                assert len(expected["output"]["words"]) == 529
+                stream.write(f"static const uint32_t halation_frame_words_{index}[529] = {{" + ",".join(str(v) + "U" for v in expected["output"]["words"]) + "};\n")
+        stream.write("static const HalationFrameRow halation_frame_rows[] = {\n")
+        for index, expected in enumerate(spec["production_cases"]):
+            ordinary = index < len(rows)
+            declaration = None if ordinary else malformed[expected["case"]]
+            row = rows[index] if ordinary else by_name[declaration["source_case"]]
+            input_record = row["input"]
+            values = input_record["scalars"] + input_record["first_sigma_um"] + input_record["total_strength"] + [input_record["pixel_size_um"]]
+            output = expected["output"]
+            stream.write("{%s,%dU,%s,%s,UINT64_C(%d),%s,%s,UINT64_C(%d),%d,%d,%d,%d,UINT64_C(%d),%s,%s},\n" % (
+                json.dumps(expected["case"]), 0 if ordinary else declaration["mode"],
+                words([int(input_record["scatter_active"]), int(input_record["back_reflection_active"])]), words(values), input_record["recipe_hash"],
+                words(expected["envelope"]), words(expected["failure"] or [0] * 4), expected["sigma_bits"] or 0,
+                bool(expected["sigma_nan"]), output is not None, expected["failure"] is not None, expected["diagnostic"] is not None,
+                output["recipe_hash"] if output else 0, f"halation_frame_words_{index}" if output else "NULL",
+                json.dumps(expected["diagnostic"]) if expected["diagnostic"] is not None else "NULL"))
+        stream.write("};\n")
+
+
 def frame_fixture(preset):
     directory = root / "tests/frame/geometry-fixtures"
     manifest = directory / "manifest.json"
@@ -1311,4 +1375,5 @@ if __name__ == "__main__":
     expected_scanner_post_header(arguments.artifacts)
     expected_gaussian_header(arguments.artifacts)
     expected_frame_header(arguments.artifacts)
+    expected_halation_frame_header(arguments.artifacts)
     execute(arguments)

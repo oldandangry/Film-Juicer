@@ -1,0 +1,1222 @@
+{
+  "schema": 1,
+  "authority": "Film-Juicer native characterization; ABI envelopes are a separate contract",
+  "cases": [
+    {
+      "name": "inactive-ignored-numerics",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        2143363909,
+        2143363909,
+        2143363909
+      ],
+      "first_sigma_um": [
+        2139095040,
+        2139095040,
+        2139095040
+      ],
+      "total_strength": [
+        4286578688,
+        4286578688,
+        4286578688
+      ],
+      "recipe_hash": 0,
+      "pixel_size_um": 2143363909
+    },
+    {
+      "name": "inactive-invalid-negative-pixel",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 0,
+      "pixel_size_um": 3212836864
+    },
+    {
+      "name": "active-hash-no-components",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": false,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "both",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "scatter-only",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": false,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "reflection-only",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "pixel-one",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "pixel-large",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1399379109
+    },
+    {
+      "name": "pixel-small",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 814313567
+    },
+    {
+      "name": "pixel-subnormal",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1
+    },
+    {
+      "name": "pixel-max",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 2139095039
+    },
+    {
+      "name": "invalid-pixel-plus-zero",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 0
+    },
+    {
+      "name": "invalid-pixel-minus-zero",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 2147483648
+    },
+    {
+      "name": "invalid-pixel-negative",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 3212836864
+    },
+    {
+      "name": "invalid-pixel-nan",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 2143363909
+    },
+    {
+      "name": "invalid-pixel-infinity",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 2139095040
+    },
+    {
+      "name": "invalid-pixel-negative-infinity",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 4286578688
+    },
+    {
+      "name": "radius-zero-1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1008981769,
+        1008981769,
+        1008981769
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "radius-zero0",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1008981770,
+        1008981770,
+        1008981770
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "radius-zero1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1008981771,
+        1008981771,
+        1008981771
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "radius-one-1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1045220556,
+        1045220556,
+        1045220556
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "radius-one0",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1045220557,
+        1045220557,
+        1045220557
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "radius-one1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1045220558,
+        1045220558,
+        1045220558
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "radius-nine-1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1077894184,
+        1077894184,
+        1077894184
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "radius-nine0",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1077894185,
+        1077894185,
+        1077894185
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "radius-nine1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1077894186,
+        1077894186,
+        1077894186
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "switch-1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1077936127,
+        1077936127,
+        1077936127
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "switch0",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1077936128,
+        1077936128,
+        1077936128
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "switch1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1077936129,
+        1077936129,
+        1077936129
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "rounding-1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1042983594,
+        1042983594,
+        1042983594
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "rounding0",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1042983595,
+        1042983595,
+        1042983595
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "rounding1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1042983596,
+        1042983596,
+        1042983596
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1065353216
+    },
+    {
+      "name": "canonical-scalars",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        2147483648,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        2147483648,
+        1045220557,
+        0
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "unusual-scalars-preserved",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        2143363909,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        2139095040,
+        4286578688,
+        2143363909
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "inactive-components-mask-numerics",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": false,
+      "scalars": [
+        2143363909,
+        2143363909,
+        2143363909
+      ],
+      "first_sigma_um": [
+        2143363909,
+        2143363909,
+        2143363909
+      ],
+      "total_strength": [
+        2143363909,
+        2143363909,
+        2143363909
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "scatter-scale-negative-floor",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        3212836864,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "scatter-scale-zero-floor",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        0,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "scatter-scale-subnormal",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "scatter-scale-max",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        2139095039,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "scatter-nan-first-failure",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        2143363909,
+        1065353216
+      ],
+      "first_sigma_um": [
+        2143363909,
+        2143363909,
+        2143363909
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "scatter-positive-infinity",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        2139095040,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "scatter-negative-infinity-floor",
+      "authority": "resolved-input-characterization",
+      "scatter_active": true,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        4286578688,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "bounce-nan-channel-0",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        2143363909,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "bounce-nan-channel-1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        2143363909,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "bounce-nan-channel-2",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        2143363909
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "zero-strength-still-calculates",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        2143363909,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        0,
+        0,
+        0
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "bounce-scale-nan",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        2143363909
+      ],
+      "first_sigma_um": [
+        1115815936,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "bounce-infinity",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        2139095040,
+        1107296256,
+        1091567616
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "bounce-negative-floor",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1065353216
+      ],
+      "first_sigma_um": [
+        3267887104,
+        0,
+        2147483648
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1092616192
+    },
+    {
+      "name": "finite-yvv-overflow",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        2139095039
+      ],
+      "first_sigma_um": [
+        2139095039,
+        2139095039,
+        2139095039
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 1
+    },
+    {
+      "name": "finite-bounce-failure-index-1",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1917448906
+      ],
+      "first_sigma_um": [
+        1900671690,
+        1900671690,
+        1900671690
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 714
+    },
+    {
+      "name": "finite-bounce-failure-index-2",
+      "authority": "resolved-input-characterization",
+      "scatter_active": false,
+      "back_reflection_active": true,
+      "scalars": [
+        1060823368,
+        1065353216,
+        1914471056
+      ],
+      "first_sigma_um": [
+        1900671690,
+        1900671690,
+        1900671690
+      ],
+      "total_strength": [
+        1050253722,
+        0,
+        1014350479
+      ],
+      "recipe_hash": 1311768467463790320,
+      "pixel_size_um": 714
+    }
+  ],
+  "exp_arguments": [
+    9223372036854775808,
+    13826050856027422720,
+    13830554455654793216,
+    13835058055282163712,
+    13840124604862955520,
+    13844065254536904704,
+    13846598529327300608,
+    13800290266158863483,
+    13817043656772681728,
+    13820546456482858780,
+    13832305855509881742,
+    13840124604750365529
+  ],
+  "product_pixel_bits": [
+    1168160475,
+    1165623296,
+    1092616192,
+    1065353216
+  ]
+}

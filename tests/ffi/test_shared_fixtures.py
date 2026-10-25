@@ -15,6 +15,28 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_halation_frame_original_bytes_and_complete_native_contexts(self):
+        root = Path(__file__).parents[1] / "scatter_halation/frame-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        for name, checksum in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), checksum)
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            self.assertEqual(captured["preset"], preset)
+            provenance = manifest["provenance"][preset]
+            self.assertEqual(hashlib.sha256(original_capture_bytes(captured, provenance["line_ending"])).hexdigest(), provenance["original_capture_sha256"])
+            self.assertEqual(len(captured["cases"]), 52)
+            self.assertEqual(len(captured["products"]), 20)
+            for row in captured["cases"] + captured["products"]:
+                if row["present"]:
+                    self.assertEqual(len(row["descriptor"]["channels"]), 3)
+                    for channel in row["descriptor"]["channels"]:
+                        for gaussian in [channel["core"], *channel["tail"], *channel["bounce"]]:
+                            self.assertEqual(len(gaussian["weights"]), 19)
+                            self.assertEqual(len(gaussian["yvv"]), 4)
+
     def test_frame_geometry_full_fields_and_distinct_native_contexts(self):
         root = Path(__file__).parents[1] / "frame/geometry-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())

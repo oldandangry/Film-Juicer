@@ -932,7 +932,7 @@ namespace {
             digest({65.0f, 65.0f, 65.0f}, {0.08f, 0.02f, 0.0f}));
         std::optional<ScatterHalationFrameDescriptor> descriptor;
         std::string diagnostic;
-        const bool success = Spektrafilm::build_scatter_halation_frame_descriptor(
+        const bool success = JuicerTestSupport::prepare_halation_frame(
             recipe,
             1.0f,
             descriptor,
@@ -957,7 +957,7 @@ namespace {
         ScatterHalationOpticsRecipe identity;
         descriptor.emplace();
         diagnostic.clear();
-        const bool absent = Spektrafilm::build_scatter_halation_frame_descriptor(
+        const bool absent = JuicerTestSupport::prepare_halation_frame(
             identity,
             std::numeric_limits<float>::quiet_NaN(),
             descriptor,
@@ -1789,7 +1789,7 @@ namespace {
         if (!productBuilt) {
             return false;
         }
-        if (!Spektrafilm::build_scatter_halation_frame_descriptor(
+        if (!JuicerTestSupport::prepare_halation_frame(
                 out.product.recipe.spatialOptics.scatterHalation,
                 pixelSizeUm,
                 out.scatterDescriptor,
@@ -2950,6 +2950,9 @@ namespace {
         const ScatterHalationControls controls = convert_or_throw(
             ScatterHalationRawControls{true, 1.0, 1.0, 1.0, 1.0});
         const Spektrafilm::DiffusionFilterAuthoredControls noDiffusion{};
+        const auto captured = nlohmann::json::parse(std::ifstream(
+            std::filesystem::path(__FILE__).parent_path() /
+            "frame-fixtures/native-payload.json"));
         for (int index = 0; index < Spektrafilm::scan_route_option_count(); ++index) {
             const auto& metadata = Spektrafilm::scan_route_metadata(
                 static_cast<Spektrafilm::ScanRoute>(index));
@@ -2964,7 +2967,18 @@ namespace {
                 kHeight,
                 inputs,
                 diagnostic.diagnostic);
-            bool passed = initialized && inputs.scatterDescriptor.has_value() &&
+            const auto frozen = std::find_if(
+                captured.at("products").begin(), captured.at("products").end(), [index](const nlohmann::json& row) {
+                    const auto& input = row.at("input");
+                    return input.at("route").get<int>() == index &&
+                           input.at("scatter_active").get<bool>() &&
+                           input.at("pixel_size_um").get<std::uint32_t>() ==
+                               std::bit_cast<std::uint32_t>(10.0f);
+                });
+            bool passed = initialized &&
+                          frozen != captured.at("products").end() &&
+                          JuicerTestSupport::matches_halation_frame(
+                              inputs.scatterDescriptor, frozen->at("descriptor")) &&
                           inputs.product.recipe.profileRoute.scanRoute ==
                               metadata.route;
             if (passed) {
@@ -2978,8 +2992,8 @@ namespace {
                     diagnostic);
                 const auto view = frame.scatter_halation_resources();
                 passed = frame.active() && view.descriptor &&
-                         view.descriptor->recipeHash ==
-                             inputs.product.recipe.spatialOptics.scatterHalation.hash &&
+                         JuicerTestSupport::matches_halation_frame(
+                             *view.descriptor, frozen->at("descriptor")) &&
                          upload_and_launch_dedicated(
                              view,
                              static_cast<cudaStream_t>(fixture.stream_opaque()),
@@ -3317,7 +3331,7 @@ namespace ScatterHalationValidation {
         if (!built) {
             throw std::runtime_error(diagnostic);
         }
-        if (!Spektrafilm::build_scatter_halation_frame_descriptor(
+        if (!JuicerTestSupport::prepare_halation_frame(
                 impl->product.recipe.spatialOptics.scatterHalation,
                 pixelSizeUm,
                 impl->scatterDescriptor,
