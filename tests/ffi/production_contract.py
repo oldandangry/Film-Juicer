@@ -100,6 +100,12 @@ def execute(arguments):
     forbidden = re.compile(forbidden.pattern + r"|reconstruction::testing::|film::reference::testing::")
     forbidden = re.compile(forbidden.pattern + r"|SpectralAllocationProbe::|gaussian_faults::|halation_frame_faults::|diffusion_frame_faults::|dir_frame_faults::|DirFrameObservation|rejectNativeAllocation|rejectedNativeBytes")
     strings = [
+        b"spatial DIR boundary fixture panic",
+        b"spatial DIR boundary candidate rendezvous canceled",
+        b"JUICER_DIR_BOUNDARY_TEST_HOOK",
+        b"DirBoundaryTest::",
+        b"fj_test_dir_boundary",
+        b"capture-dir-boundaries",
         b"spatial DIR frame fixture panic",
         b"DirFrameObservation",
         b"fj_test_dir_frame",
@@ -207,6 +213,8 @@ def execute(arguments):
     diffusion_edges_context = diffusion_manifest.parent / diffusion_spec["contexts"][edge_logical]
     diffusion_edges_inputs = diffusion_manifest.parent / "edge-inputs.json"
     consumed_paths.extend([diffusion_edges_payload, diffusion_edges_context, diffusion_edges_inputs])
+    dir_boundary_manifest, dir_boundary_payload, dir_boundary_checked, _, dir_boundary_spec = dir_boundary_fixture(arguments.preset)
+    consumed_paths.extend([dir_boundary_manifest, dir_boundary_payload, dir_boundary_checked, dir_boundary_manifest.parent / "inputs.json"])
     dir_manifest, dir_payload, dir_checked, _, dir_spec = dir_frame_fixture(arguments.preset)
     consumed_paths.extend([dir_manifest, dir_payload, dir_checked, dir_manifest.parent / "inputs.json"])
     gaussian_manifest, gaussian_payload, gaussian_context, _, _ = gaussian_fixture(arguments.preset)
@@ -246,6 +254,10 @@ def execute(arguments):
     scan(native, "native-symbols", "llvm-nm", ["--defined-only", "--demangle"])
     symbols = scan(archive, "rust-symbols", "llvm-nm", ["--defined-only", "--demangle"])
     for name in [
+        "fj_legacy_dir_boundary_describe",
+        "fj_legacy_dir_boundary_acquire",
+        "fj_legacy_dir_boundary_view",
+        "fj_legacy_dir_boundary_release",
         "fj_legacy_dir_frame_prepare",
         "fj_legacy_scatter_halation_frame_prepare",
         "fj_legacy_diffusion_sample_prepare",
@@ -325,6 +337,7 @@ def execute(arguments):
     frame_results = []
     halation_frame_results = []
     diffusion_frame_results = []
+    dir_boundary_results = []
     dir_frame_results = []
     reference_results = []
     for name, source in probes:
@@ -402,6 +415,9 @@ def execute(arguments):
                               "source_sha256": source_sha256, "archive": str(archive),
                               "archive_sha256": digest(archive)})
         if name == "film":
+            dir_boundary_results = [json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
+                                    for line in output.splitlines() if line.startswith("DIR_BOUNDARY_RESULT ")]
+            assert len(dir_boundary_results) == 171 and dir_boundary_results == dir_boundary_spec["production_cases"], "complete DIR boundary production values/key/metadata/raw/lifetime membership"
             dir_frame_results = [json.loads(line.removeprefix("DIR_FRAME_RESULT "))
                                  for line in output.splitlines() if line.startswith("DIR_FRAME_RESULT ")]
             assert len(dir_frame_results) == 121 and dir_frame_results == dir_spec["production_cases"], "complete DIR production values/failure trace membership"
@@ -637,6 +653,9 @@ def execute(arguments):
                 "scanner_descriptor_results": scanner_descriptor_results,
                 "scanner_post_results": scanner_post_results,
                 "frame_results": frame_results,
+                "dir_boundary_results": dir_boundary_results,
+                "dir_boundary_fixture": {"manifest": str(dir_boundary_manifest), "payload": str(dir_boundary_payload), "normative": str(dir_boundary_checked),
+                                         "input_spec": str(dir_boundary_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
                 "dir_frame_results": dir_frame_results,
                 "dir_frame_fixture": {"manifest": str(dir_manifest), "payload": str(dir_payload), "normative": str(dir_checked),
                                       "input_spec": str(dir_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
@@ -1136,6 +1155,53 @@ def expected_scanner_color_header(out):
         stream.write("static const uint64_t scanner_color_hashes[] = {" + ",".join("UINT64_C(%d)" % row["expected"]["hash"] for row in rows) + "};\n")
 
 
+def dir_boundary_fixture(preset):
+    directory = root / "tests/dir/boundary-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_bytes())
+    payload = directory / spec["presets"][preset]["native"]
+    checked = directory / spec["checked"]
+    for path in (payload, checked, directory / "inputs.json"):
+        assert digest(path) == spec["sha256"][path.name]
+    captured = json.loads(payload.read_bytes())
+    assert captured["preset"] == preset
+    assert len(captured["cases"]) == 114 and len(captured["primitives"]) == 56
+    assert len(spec["production_cases"]) == 171 and len(spec["production_inputs"]) == 171
+    assert len({row["case"] for row in spec["production_cases"]}) == 171
+    assert {row["case"] for row in spec["production_cases"]} == set(spec["production_inputs"])
+    return manifest, payload, checked, captured, spec
+
+
+def expected_dir_boundary_header(out):
+    _, _, _, _, spec = dir_boundary_fixture(arguments.preset)
+    def words(values):
+        return "{" + ",".join("UINT64_C(" + str(v) + ")" for v in values) + "}"
+    def integers(values):
+        return "{" + ",".join(str(v) for v in values) + "}"
+    values = [row for row in spec["production_cases"] if spec["production_inputs"][row["case"]]["kind"] == "values"]
+    raw = [row for row in spec["production_cases"] if spec["production_inputs"][row["case"]]["kind"] == "raw"]
+    assert len(values) == 117 and len(raw) == 51
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("#define DIR_BOUNDARY_MAX_WEIGHTS %d\n" % max(len(row["weights"] or []) for row in values))
+        stream.write("typedef struct { const char* name; uint64_t input[18]; FjStatus status; uint64_t key, failure[7]; int present; int32_t shape[6]; size_t count; const uint64_t* weights; uint64_t terminal[18]; const char* diagnostic; size_t diagnostic_length; } DirBoundaryRow;\n")
+        for index, row in enumerate(values):
+            stream.write("static const uint64_t dir_boundary_weights_%d[] = %s;\n" % (index, words(row["weights"] or [0])))
+        stream.write("static const DirBoundaryRow dir_boundary_rows[] = {\n")
+        for index, row in enumerate(values):
+            declaration = spec["production_inputs"][row["case"]]
+            assert len(declaration["words"]) == 18 and len(row["failure"]) == 7
+            stream.write("{%s,%s,%s,UINT64_C(%d),%s,%d,%s,%d,dir_boundary_weights_%d,%s,%s,%d},\n" % (
+                json.dumps(row["case"]), words(declaration["words"]), integers(row["envelope"]), row["key"], words(row["failure"]),
+                row["owner"], integers(row["shape"] or [0]), len(row["weights"] or []), index, words(row["terminal"] or [0]), json.dumps(row["diagnostic"]), row["diagnostic_length"]))
+        stream.write("};\n")
+        stream.write("typedef struct { const char* name; uint32_t operation,mode; int output_valid,failure_valid,error_record,error_span; size_t capacity; const char* diagnostic; size_t diagnostic_length; } DirBoundaryRawRow;\n")
+        stream.write("static const DirBoundaryRawRow dir_boundary_raw_rows[] = {\n")
+        for row in raw:
+            d = spec["production_inputs"][row["case"]]
+            stream.write("{%s,%d,%d,%d,%d,%d,%d,%d,%s,%d},\n" % (json.dumps(row["case"]), d["operation"], d["mode"], d["output_valid"], d["failure_valid"], d["error_record"], d["error_span"], d["capacity"], json.dumps(row["diagnostic"]) if row["diagnostic"] is not None else "NULL", row["diagnostic_length"] or 0))
+        stream.write("};\n")
+
+
 def dir_frame_fixture(preset):
     directory = root / "tests/dir/frame-fixtures"
     manifest = directory / "manifest.json"
@@ -1499,4 +1565,5 @@ if __name__ == "__main__":
     expected_halation_frame_header(arguments.artifacts)
     expected_diffusion_frame_header(arguments.artifacts)
     expected_dir_frame_header(arguments.artifacts)
+    expected_dir_boundary_header(arguments.artifacts)
     execute(arguments)

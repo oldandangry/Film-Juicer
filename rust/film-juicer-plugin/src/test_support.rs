@@ -2400,3 +2400,61 @@ unsafe extern "C" fn fj_test_dir_frame_prepare(
 extern "C" fn fj_test_dir_frame_fault(fault: u32) -> FjStatus {
     crate::dir_frame_bridge::dir_frame_faults::arm(fault)
 }
+
+/// # Safety
+/// Initialized, live/aligned/disjoint input/output/diagnostics follow the boundary contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_dir_boundary_describe(
+    input: *const crate::dir_boundary_bridge::FjDirBoundaryInput,
+    out: *mut u64,
+    failure: *mut crate::dir_boundary_bridge::FjDirBoundaryFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical checked production body and storage contract.
+    unsafe { crate::dir_boundary_bridge::describe(input, out, failure, error) }
+}
+/// # Safety
+/// Initialized/live/disjoint storage; successful ownership transfers to matching release.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_dir_boundary_acquire(
+    input: *const crate::dir_boundary_bridge::FjDirBoundaryInput,
+    out: *mut *mut crate::dir_boundary_bridge::FjDirBoundaryOwner,
+    failure: *mut crate::dir_boundary_bridge::FjDirBoundaryFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical checked production body and ownership contract.
+    unsafe { crate::dir_boundary_bridge::acquire(input, out, failure, error) }
+}
+/// # Safety
+/// Legitimate live owner excluding release; writable peers are disjoint. Views expire at release.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_dir_boundary_view(
+    owner: *const crate::dir_boundary_bridge::FjDirBoundaryOwner,
+    out: *mut crate::dir_boundary_bridge::FjDirBoundaryView,
+    failure: *mut crate::dir_boundary_bridge::FjDirBoundaryFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical checked production body and borrow contract.
+    unsafe { crate::dir_boundary_bridge::view(owner, out, failure, error) }
+}
+/// # Safety
+/// NULL or one matching owner is consumed once, excluding every view/read.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_dir_boundary_release(
+    owner: *mut crate::dir_boundary_bridge::FjDirBoundaryOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical checked production body and consume-once contract.
+    unsafe { crate::dir_boundary_bridge::release(owner, error) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_dir_boundary_fault(operation: u32, fault: u32) -> FjStatus {
+    crate::dir_boundary_bridge::faults::arm(operation, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_dir_boundary_count(index: u32) -> u64 {
+    crate::dir_boundary_bridge::faults::counts()
+        .get(index as usize)
+        .copied()
+        .unwrap_or(0)
+}

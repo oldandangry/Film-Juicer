@@ -45,6 +45,7 @@ set(JUICER_HOST_SOURCES
     src/RustHalationBridge.cpp
     src/RustDiffusionBridge.cpp
     src/RustDirBridge.cpp
+    src/RustDirBoundaryBridge.cpp
     src/ScanRoute.cpp
     src/Scanner.cpp
     src/SpectralProcessing.cpp

@@ -1123,4 +1123,38 @@ existing failure branches, and uses the existing GPU lock and 180-second limit.
 Both native Release OFF C11 probes execute all 121 mathematical/default/failure
 rows, retaining every earlier production row and artifact/isolation check.
 `SF_TEMP_BRIDGE_DIR_FRAME` retires at its last native model caller by S6.D;
-S4.E integration and reflected-YVV boundary-axis CPU derivation remain later work.
+S4.E integration remains later work. Reflected-YVV boundary construction is
+described below.
+
+## Spatial DIR reflected boundaries
+
+`film::dir::boundary::Boundary` owns both axis products, the immutable combined
+binary64 weights, packed terminal matrices and the existing 100-byte FNV key.
+Private complete construction exposes read-only borrows. It preserves the native
+double-double operation order and uses pinned `libm::fma` only for the original
+explicit fused product residual. Signed size admission covers retained Root/CUDA
+index expressions as well as vector extents and doubled axis periods.
+
+The four temporary `fj_legacy_dir_boundary_{describe,acquire,view,release}` exports
+transport literal `FjDirGaussian` coefficients. Describe derives only the key
+after outer eligibility. The native `JuicerDirBoundary::Boundary` hold is acquired
+after the warm-cache opportunity, outside the resource mutex. Its borrowed view
+survives synchronous staging; native pinned memory owns later asynchronous reads.
+Native context/epoch checks, collisions, device allocation and retirement remain
+in their existing owner. The separate final frame-descriptor hash is unchanged.
+
+Each independently admitted writable peer clears before other admission. Typed
+failures preserve axis order and metadata. A NULL diagnostic is valid; admitted
+zero capacity ignores backing and reports length zero. Positive capacity writes
+at most capacity-1 bytes plus NUL, with length counting only written bytes.
+Truncation changes neither status nor typed metadata. Release consumes a legitimate
+owner exactly once even with malformed diagnostics or contained release panic.
+Fallible vector reservations do not remove the existing infallible Box allocation
+abort limitation.
+
+See [the independent four-profile characterizations](../dir/boundary-fixtures/README.md),
+`Ffi.Host.DirBoundary`, `Film.Host.DirBoundaryProducts` and the existing
+`Dir.Gpu.ExposureCache`. Strict C11 Release OFF probes require all four exports
+and all 171 boundary rows, alongside every older probe and artifact/isolation
+check. `SF_TEMP_BRIDGE_DIR_BOUNDARY` narrows with S4.E execution inputs and retires
+at its last native model caller, no later than S6.D.

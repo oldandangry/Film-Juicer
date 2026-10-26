@@ -15,6 +15,59 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_dir_boundary_exact_native_products_keys_and_production_contracts(self):
+        root = Path(__file__).parents[1] / "dir/boundary-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        for name, checksum in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), checksum)
+        baseline = None
+        ordinary = json.loads((root / manifest["checked"]).read_bytes())["ordinary"]
+        for preset in PRESETS:
+            payload = (root / manifest["presets"][preset]["native"]).read_bytes()
+            self.assertEqual(hashlib.sha256(payload).hexdigest(), manifest["presets"][preset]["capture"]["sha256"])
+            captured = json.loads(payload)
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual([len(captured[key]) for key in ("cases", "primitives")], [114, 56])
+            if baseline is None:
+                baseline = (captured["cases"], captured["primitives"])
+            self.assertEqual((captured["cases"], captured["primitives"]), baseline)
+            for row in captured["cases"]:
+                source = row["input"]
+                c = source["component"]
+                encoded = c["version"].to_bytes(4, "little")
+                for value in [c["feedforward"], *c["feedback"], c["denominator"], c["numerator"], *c["numerators"]]:
+                    encoded += value.to_bytes(8, "little")
+                for value in [source["width"], source["height"]]:
+                    encoded += value.to_bytes(4, "little", signed=True)
+                for value in [c["accuracy"], c["tolerance"]]:
+                    encoded += value.to_bytes(8, "little")
+                self.assertEqual(len(encoded), 100)
+                self.assertEqual(list(encoded), row["key_bytes"])
+                if ordinary[source["name"]][0] != 2:
+                    identity = 0xcbf29ce484222325
+                    for byte in encoded:
+                        identity = ((identity ^ byte) * 0x100000001b3) & ((1 << 64) - 1)
+                    self.assertEqual(identity, row["key"])
+                if row["success"]:
+                    for name in ("horizontal", "vertical"):
+                        axis = row[name]
+                        self.assertEqual(len(axis["weights"]), 3 * axis["length"])
+                        self.assertEqual(len(axis["terminal"]), 9)
+                        self.assertEqual(axis["terminal"][axis["terminal_size"] ** 2:], [0] * (9 - axis["terminal_size"] ** 2))
+        self.assertEqual(len(manifest["production_cases"]), 171)
+        self.assertEqual({row["case"] for row in manifest["production_cases"]}, set(manifest["production_inputs"]))
+        self.assertEqual(len(manifest["production_inputs"]), 171)
+        raw = [row for row in manifest["production_cases"] if row["case"].startswith("raw/")]
+        self.assertEqual(len(raw), 51)
+        for operation in ("describe", "acquire", "view"):
+            for mode in (11, 12, 13, 14, 15):
+                row = next(row for row in raw if row["case"] == f"raw/{operation}/{mode}")
+                message = "spatial DIR reflected-boundary arguments are invalid"
+                self.assertEqual(row["diagnostic_length"], min(len(message), max(0, manifest["production_inputs"][row["case"]]["capacity"] - 1)))
+                self.assertEqual(row["diagnostic"], message[:row["diagnostic_length"]])
+                self.assertEqual(row["envelope"], [2, 0, 0])
+
     def test_dir_frame_exact_native_bytes_fields_and_production_membership(self):
         root = Path(__file__).parents[1] / "dir/frame-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())

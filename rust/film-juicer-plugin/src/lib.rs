@@ -116,3 +116,9 @@ mod diffusion_bridge;
     reason = "fixed DIR frame transport admits foreign storage and contains whole-operation unwind"
 )]
 mod dir_frame_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the temporary reflected-boundary edge admits foreign records and consumes scoped host owners once"
+)]
+mod dir_boundary_bridge;

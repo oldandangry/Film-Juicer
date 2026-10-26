@@ -416,6 +416,30 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
             or document.get("dir_frame_results") != dir_expected):
         raise ValueError("production DIR frame full fields/words/failure trace results are incomplete")
 
+    boundary_manifest = root / "tests/dir/boundary-fixtures/manifest.json"
+    boundary_spec = json.loads(boundary_manifest.read_bytes())
+    boundary_logical = boundary_spec["presets"][document["preset"]]["native"]
+    boundary_paths = {
+        "manifest": boundary_manifest,
+        "payload": boundary_manifest.parent / boundary_logical,
+        "normative": boundary_manifest.parent / boundary_spec["checked"],
+        "input_spec": boundary_manifest.parent / "inputs.json",
+    }
+    boundary = document.get("dir_boundary_fixture", {})
+    if boundary.get("logical_preset") != document["preset"] or any(
+            resolve(boundary.get(key, "")) != path for key, path in boundary_paths.items()):
+        raise ValueError("production DIR boundary fixture membership is incomplete")
+    for path in boundary_paths.values():
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum
+                or (path != boundary_manifest and checksum != boundary_spec["sha256"][path.name])):
+            raise ValueError("production DIR boundary consumed fixture identity changed")
+    boundary_expected = boundary_spec["production_cases"]
+    if (len(boundary_expected) != 171 or len({row["case"] for row in boundary_expected}) != 171
+            or document.get("dir_boundary_results") != boundary_expected):
+        raise ValueError("production DIR boundary full values/key/metadata/raw/lifetime results are incomplete")
+
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -447,6 +471,11 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     for name, checksum in outputs.items():
         admit(name, checksum)
     film_stdout = manifest.parent / "film-values.stdout"
+    boundary_rows = [json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
+                     for line in film_stdout.read_text(encoding="utf-8").splitlines()
+                     if line.startswith("DIR_BOUNDARY_RESULT ")]
+    if boundary_rows != boundary_expected:
+        raise ValueError("production DIR boundary executed stdout does not match frozen full results")
     dir_rows = [json.loads(line.removeprefix("DIR_FRAME_RESULT "))
                 for line in film_stdout.read_text().splitlines() if line.startswith("DIR_FRAME_RESULT ")]
     if dir_rows != dir_expected:

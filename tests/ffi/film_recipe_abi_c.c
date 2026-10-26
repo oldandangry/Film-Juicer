@@ -1308,3 +1308,89 @@ _Static_assert(FJ_DIR_OPERATOR_YVV_REFLECT == 3U, "FJ_DIR_OPERATOR_YVV_REFLECT v
 _Static_assert(_Generic(&fj_legacy_dir_frame_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_frame_prepare signature");
 _Static_assert(_Generic(&fj_test_dir_frame_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_frame_prepare signature");
 _Static_assert(_Generic(&fj_test_dir_frame_c_prepare, FjStatus (*)(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_frame_c_prepare signature");
+
+_Static_assert(sizeof(FjDirBoundaryInput) == 120 && _Alignof(FjDirBoundaryInput) == 8, "FjDirBoundaryInput layout");
+_Static_assert(_Generic(((FjDirBoundaryInput*)0)->component, FjDirGaussian: 1, default: 0), "FjDirBoundaryInput.component type");
+_Static_assert(offsetof(FjDirBoundaryInput, component) == 0, "FjDirBoundaryInput.component offset");
+_Static_assert(_Generic(((FjDirBoundaryInput*)0)->width, int32_t: 1, default: 0), "FjDirBoundaryInput.width type");
+_Static_assert(offsetof(FjDirBoundaryInput, width) == 112, "FjDirBoundaryInput.width offset");
+_Static_assert(_Generic(((FjDirBoundaryInput*)0)->height, int32_t: 1, default: 0), "FjDirBoundaryInput.height type");
+_Static_assert(offsetof(FjDirBoundaryInput, height) == 116, "FjDirBoundaryInput.height offset");
+_Static_assert(sizeof(FjDirBoundaryView) == 192 && _Alignof(FjDirBoundaryView) == 8, "FjDirBoundaryView layout");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->weights, const double*: 1, default: 0), "FjDirBoundaryView.weights type");
+_Static_assert(offsetof(FjDirBoundaryView, weights) == 0, "FjDirBoundaryView.weights offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->count, size_t: 1, default: 0), "FjDirBoundaryView.count type");
+_Static_assert(offsetof(FjDirBoundaryView, count) == 8, "FjDirBoundaryView.count offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->identity, uint64_t: 1, default: 0), "FjDirBoundaryView.identity type");
+_Static_assert(offsetof(FjDirBoundaryView, identity) == 16, "FjDirBoundaryView.identity offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->width, int32_t: 1, default: 0), "FjDirBoundaryView.width type");
+_Static_assert(offsetof(FjDirBoundaryView, width) == 24, "FjDirBoundaryView.width offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->height, int32_t: 1, default: 0), "FjDirBoundaryView.height type");
+_Static_assert(offsetof(FjDirBoundaryView, height) == 28, "FjDirBoundaryView.height offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->horizontal_length, int32_t: 1, default: 0), "FjDirBoundaryView.horizontal_length type");
+_Static_assert(offsetof(FjDirBoundaryView, horizontal_length) == 32, "FjDirBoundaryView.horizontal_length offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->vertical_length, int32_t: 1, default: 0), "FjDirBoundaryView.vertical_length type");
+_Static_assert(offsetof(FjDirBoundaryView, vertical_length) == 36, "FjDirBoundaryView.vertical_length offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->horizontal_terminal_size, int32_t: 1, default: 0), "FjDirBoundaryView.horizontal_terminal_size type");
+_Static_assert(offsetof(FjDirBoundaryView, horizontal_terminal_size) == 40, "FjDirBoundaryView.horizontal_terminal_size offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->vertical_terminal_size, int32_t: 1, default: 0), "FjDirBoundaryView.vertical_terminal_size type");
+_Static_assert(offsetof(FjDirBoundaryView, vertical_terminal_size) == 44, "FjDirBoundaryView.vertical_terminal_size offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->horizontal_terminal, double*: 1, default: 0), "FjDirBoundaryView.horizontal_terminal type");
+_Static_assert(offsetof(FjDirBoundaryView, horizontal_terminal) == 48, "FjDirBoundaryView.horizontal_terminal offset");
+_Static_assert(sizeof(((FjDirBoundaryView*)0)->horizontal_terminal) / sizeof(double) == 9, "FjDirBoundaryView.horizontal_terminal extent");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->vertical_terminal, double*: 1, default: 0), "FjDirBoundaryView.vertical_terminal type");
+_Static_assert(offsetof(FjDirBoundaryView, vertical_terminal) == 120, "FjDirBoundaryView.vertical_terminal offset");
+_Static_assert(sizeof(((FjDirBoundaryView*)0)->vertical_terminal) / sizeof(double) == 9, "FjDirBoundaryView.vertical_terminal extent");
+_Static_assert(sizeof(FjDirBoundaryFailure) == 40 && _Alignof(FjDirBoundaryFailure) == 8, "FjDirBoundaryFailure layout");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->reason, uint32_t: 1, default: 0), "FjDirBoundaryFailure.reason type");
+_Static_assert(offsetof(FjDirBoundaryFailure, reason) == 0, "FjDirBoundaryFailure.reason offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->axis, uint32_t: 1, default: 0), "FjDirBoundaryFailure.axis type");
+_Static_assert(offsetof(FjDirBoundaryFailure, axis) == 4, "FjDirBoundaryFailure.axis offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->row, uint32_t: 1, default: 0), "FjDirBoundaryFailure.row type");
+_Static_assert(offsetof(FjDirBoundaryFailure, row) == 8, "FjDirBoundaryFailure.row offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->length, int32_t: 1, default: 0), "FjDirBoundaryFailure.length type");
+_Static_assert(offsetof(FjDirBoundaryFailure, length) == 12, "FjDirBoundaryFailure.length offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->sigma_px, float: 1, default: 0), "FjDirBoundaryFailure.sigma_px type");
+_Static_assert(offsetof(FjDirBoundaryFailure, sigma_px) == 16, "FjDirBoundaryFailure.sigma_px offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->sum, double: 1, default: 0), "FjDirBoundaryFailure.sum type");
+_Static_assert(offsetof(FjDirBoundaryFailure, sum) == 24, "FjDirBoundaryFailure.sum offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->tolerance, double: 1, default: 0), "FjDirBoundaryFailure.tolerance type");
+_Static_assert(offsetof(FjDirBoundaryFailure, tolerance) == 32, "FjDirBoundaryFailure.tolerance offset");
+_Static_assert(_Generic(&fj_legacy_dir_boundary_describe, FjStatus (*)(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_describe signature");
+_Static_assert(_Generic(&fj_test_dir_boundary_describe, FjStatus (*)(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_boundary_describe signature");
+FjStatus fj_test_dir_boundary_c_describe(const FjDirBoundaryInput* input, uint64_t* out, FjDirBoundaryFailure* failure, FjErrorBuffer* error) {
+    return fj_legacy_dir_boundary_describe(input, out, failure, error);
+}
+_Static_assert(_Generic(&fj_legacy_dir_boundary_acquire, FjStatus (*)(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_acquire signature");
+_Static_assert(_Generic(&fj_test_dir_boundary_acquire, FjStatus (*)(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_boundary_acquire signature");
+FjStatus fj_test_dir_boundary_c_acquire(const FjDirBoundaryInput* input, FjDirBoundaryOwner** out, FjDirBoundaryFailure* failure, FjErrorBuffer* error) {
+    return fj_legacy_dir_boundary_acquire(input, out, failure, error);
+}
+_Static_assert(_Generic(&fj_legacy_dir_boundary_view, FjStatus (*)(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_view signature");
+_Static_assert(_Generic(&fj_test_dir_boundary_view, FjStatus (*)(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_boundary_view signature");
+FjStatus fj_test_dir_boundary_c_view(const FjDirBoundaryOwner* owner, FjDirBoundaryView* out, FjDirBoundaryFailure* failure, FjErrorBuffer* error) {
+    return fj_legacy_dir_boundary_view(owner, out, failure, error);
+}
+_Static_assert(_Generic(&fj_legacy_dir_boundary_release, FjStatus (*)(FjDirBoundaryOwner*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_release signature");
+_Static_assert(_Generic(&fj_test_dir_boundary_release, FjStatus (*)(FjDirBoundaryOwner*, FjErrorBuffer*): 1, default: 0), "fj_test_dir_boundary_release signature");
+FjStatus fj_test_dir_boundary_c_release(FjDirBoundaryOwner* owner, FjErrorBuffer* error) {
+    return fj_legacy_dir_boundary_release(owner, error);
+}
+_Static_assert(FJ_DIR_BOUNDARY_NONE == 0, "FJ_DIR_BOUNDARY_NONE value");
+_Static_assert(FJ_DIR_BOUNDARY_RAW == 1, "FJ_DIR_BOUNDARY_RAW value");
+_Static_assert(FJ_DIR_BOUNDARY_REQUEST == 2, "FJ_DIR_BOUNDARY_REQUEST value");
+_Static_assert(FJ_DIR_BOUNDARY_AXIS_SIZE == 3, "FJ_DIR_BOUNDARY_AXIS_SIZE value");
+_Static_assert(FJ_DIR_BOUNDARY_POLICY == 4, "FJ_DIR_BOUNDARY_POLICY value");
+_Static_assert(FJ_DIR_BOUNDARY_CAUSAL_SINGULAR == 5, "FJ_DIR_BOUNDARY_CAUSAL_SINGULAR value");
+_Static_assert(FJ_DIR_BOUNDARY_NONFINITE_WEIGHTS == 6, "FJ_DIR_BOUNDARY_NONFINITE_WEIGHTS value");
+_Static_assert(FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION == 7, "FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION value");
+_Static_assert(FJ_DIR_BOUNDARY_TAIL_ESCAPE == 8, "FJ_DIR_BOUNDARY_TAIL_ESCAPE value");
+_Static_assert(FJ_DIR_BOUNDARY_TERMINAL_SINGULAR == 9, "FJ_DIR_BOUNDARY_TERMINAL_SINGULAR value");
+_Static_assert(FJ_DIR_BOUNDARY_TERMINAL_CERTIFICATION == 10, "FJ_DIR_BOUNDARY_TERMINAL_CERTIFICATION value");
+_Static_assert(FJ_DIR_BOUNDARY_STORAGE_SIZE == 11, "FJ_DIR_BOUNDARY_STORAGE_SIZE value");
+_Static_assert(FJ_DIR_BOUNDARY_ALLOCATION == 12, "FJ_DIR_BOUNDARY_ALLOCATION value");
+_Static_assert(FJ_DIR_BOUNDARY_PANIC == 13, "FJ_DIR_BOUNDARY_PANIC value");
+_Static_assert(FJ_DIR_BOUNDARY_NO_AXIS == 0, "FJ_DIR_BOUNDARY_NO_AXIS value");
+_Static_assert(FJ_DIR_BOUNDARY_HORIZONTAL == 1, "FJ_DIR_BOUNDARY_HORIZONTAL value");
+_Static_assert(FJ_DIR_BOUNDARY_VERTICAL == 2, "FJ_DIR_BOUNDARY_VERTICAL value");
+_Static_assert(FJ_DIR_BOUNDARY_NO_ROW == 3, "FJ_DIR_BOUNDARY_NO_ROW value");

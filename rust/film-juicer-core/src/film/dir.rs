@@ -1,6 +1,7 @@
 //! Capture-film DIR chemistry and compensated development axes (RGB).
 
 pub mod frame;
+pub mod boundary;
 
 use std::fmt;
 use std::mem::size_of;

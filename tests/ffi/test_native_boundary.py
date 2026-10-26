@@ -308,6 +308,68 @@ class NativeBoundary(unittest.TestCase):
         self.assertNotIn("std::exp", bridge)
         self.assertNotIn("Hash::", bridge)
 
+    def test_reflected_dir_boundary_has_one_rust_producer_and_native_cache_owner(self):
+        retired = r"\b(?:DirDoubleDouble|dir_dd_\w+|SpatialDirBoundaryAxisCpu|build_spatial_dir_boundary_axis_cpu|spatial_dir_boundary_identity)\b"
+        paths = [path for directory in (ROOT / "src", ROOT / "native")
+                 for path in directory.rglob("*")
+                 if path.is_file() and path.suffix.lower() in SOURCE_SUFFIXES]
+        self.assertEqual(forbidden_uses(paths, retired), [])
+        for definition in ("struct DirDoubleDouble {};", "double dir_dd_multiply() {}",
+                           "struct SpatialDirBoundaryAxisCpu {};",
+                           "bool build_spatial_dir_boundary_axis_cpu() {}",
+                           "uint64_t spatial_dir_boundary_identity() {}"):
+            self.assertRegex(definition, retired)
+        source = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text()
+        body = source.split("    bool ensure_spatial_dir_boundary(", 1)[1].split("    bool clear_spatial_dir_boundary_binding(", 1)[0]
+        stages = [body.index(token) for token in (
+            "JuicerDirBoundary::describe(", "boundary.weights && boundary.identity == identity",
+            "JuicerDirBoundary::Boundary::acquire(", "hostBoundary->view()", "alloc_and_upload_bytes(",
+            "bool keepCandidate", "boundary.weights = static_cast<double*>(candidateRaw)",
+            "if (!keepCandidate)")]
+        self.assertEqual(stages, sorted(stages))
+        self.assertEqual(body.count("validate_resource_owner_locked(resources, outError, true)"), 2)
+        self.assertEqual(body.count("boundary.weights && boundary.identity == identity"), 2)
+        self.assertIn("view.weights", body)
+        self.assertIn("view.horizontal_terminal", body)
+        self.assertNotIn("identity == 0", body)
+        self.assertNotIn("std::vector<double>", body)
+        hooks = "".join((ROOT / path).read_text() for path in (
+            "tests/dir/boundary_test_hooks.h", "tests/dir/boundary_test_hooks.cpp", "tests/ffi/film_recipe_test.cpp"))
+        for token in ("capture-dir-boundaries", "capture_inputs", "key_bytes", "DirDoubleDouble"):
+            self.assertNotIn(token, hooks)
+        bridge = (ROOT / "src/RustDirBoundaryBridge.cpp").read_text()
+        self.assertNotRegex(bridge, r"std::fma|std::exp|Hash::|hash_bytes_update")
+        header = (ROOT / "src/RustDirBoundaryBridge.h").read_text()
+        self.assertIn("SF_TEMP_BRIDGE_DIR_BOUNDARY", header)
+        self.assertIn("S4.E", header)
+        self.assertIn("S6.D", header)
+
+    def test_dir_boundary_hooks_are_absent_from_ordinary_objects(self):
+        build = Path.cwd().parent
+        if not (build / "CMakeCache.txt").is_file():
+            build = ROOT / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
+        compdb = json.loads((build / "compile_commands.json").read_bytes())
+        isolated = [row for row in compdb if "juicer_dir_boundary_test_objects.dir" in row["command"]]
+        self.assertEqual(len(isolated), 1)
+        self.assertIn("JUICER_DIR_BOUNDARY_TEST_HOOK=1", isolated[0]["command"])
+        nm = find_llvm_nm()
+        self.assertTrue(nm, "qualified LLVM nm required for ordinary-object isolation")
+        for owner, source in (("juicer_native", "Cuda/JuicerCudaResources.cpp"), ("juicer_host", "RustDirBoundaryBridge.cpp")):
+            rows = [row for row in compdb if owner + ".dir" in row["command"] and row["file"].endswith(source)]
+            self.assertEqual(len(rows), 1)
+            self.assertNotIn("JUICER_DIR_BOUNDARY_TEST_HOOK", rows[0]["command"])
+            path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
+            data = path.read_bytes()
+            symbols = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)], timeout=10).decode(errors="replace")
+            self.assertNotRegex(symbols, r"DirBoundaryTest::|fj_test_dir_boundary|dir_boundary_bridge::faults::")
+            for text in ("DirBoundaryTest", "spatial DIR boundary fixture panic", "spatial DIR boundary candidate rendezvous canceled", "capture-dir-boundaries", "fj_test_dir_boundary"):
+                for encoding in ("utf-8", "utf-16-le"):
+                    pattern = text.encode(encoding)
+                    self.assertNotIn(pattern, data)
+                    with self.assertRaises(AssertionError):
+                        self.assertNotIn(pattern, data + pattern)
+            print("DIR boundary ordinary-object isolation", path, hashlib.sha256(data).hexdigest())
+
     def test_retired_frame_geometry_mathematics_and_capture_access_stay_deleted(self):
         source = (ROOT / "src/JuicerEffect.cpp").read_text()
         hooks = "".join((ROOT / "tests/ofx" / name).read_text() for name in ("frame_geometry_test_hooks.h", "frame_geometry_test_hooks.cpp", "adapter_trace_test.cpp"))

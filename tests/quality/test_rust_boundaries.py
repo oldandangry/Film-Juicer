@@ -328,6 +328,28 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_dir_boundary_is_complete_private_readonly_and_borrowed(self) -> None:
+        for fixture, expected in (
+            ("dir_boundary_complete", None),
+            ("dir_boundary_construction", {"E0451": ("Input { ..input }", "Boundary { ..boundary }", "Axis { ..axis }", "Error { ..error }")}),
+            ("dir_boundary_key", {"E0423": ("Key(0)",)}),
+            ("dir_boundary_private", {"E0616": ("input.coefficients", "boundary.weights", "axis.terminal", "error.reason", "key.0")}),
+            ("dir_boundary_default", {"E0599": ("Input::default()", "Boundary::default()", "Axis::default()", "Error::default()", "Key::default()")}),
+            ("dir_boundary_readonly", {"E0594": ("weights()[0] = 0.0", "terminal()[0] = 0.0")}),
+            ("dir_boundary_borrow", {"E0515": ("boundary.weights()",)}),
+            ("dir_boundary_drop", {"E0505": ("drop(boundary)",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_dir_frame_is_complete_private_readonly_and_failure_trace_cannot_execute(self) -> None:
         for fixture, expected in (
             ("dir_frame_complete", None),
@@ -771,7 +793,9 @@ class RustBoundaryTests(unittest.TestCase):
             self.assertIn(retained + "(", recipe)
         self.assertEqual(recipe.count("JuicerDir::prepare_math("), 1)
         resources = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text()
-        self.assertIn("build_spatial_dir_boundary_axis_cpu(", resources)
+        self.assertNotIn("build_spatial_dir_boundary_axis_cpu(", resources)
+        self.assertIn("bool ensure_spatial_dir_boundary(", resources)
+        self.assertIn("JuicerDirBoundary::Boundary::acquire(", resources)
         executor = (ROOT / "src/Cuda/JuicerCudaExecutor.cpp").read_text()
         self.assertEqual(executor.count("Spektrafilm::build_spatial_dir_descriptor("), 2)
         for route, phase in (("direct", "3D-3"), ("print", "4C")):

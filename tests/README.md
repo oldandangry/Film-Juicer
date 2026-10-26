@@ -1488,5 +1488,24 @@ operator, route and lifecycle groups retain their complete downstream assertions
 Prepared projection retains the native decoder's distinct unconsumed zero-weight
 target tiers and carries the original final hash. Both native Release OFF C11
 probes execute 121 complete value/failure rows, in addition to all older probes.
-The reflected-YVV boundary-axis CPU producer, wider workspace construction,
-grain/defect mappings and S4.E integration remain later work.
+Reflected-YVV boundary construction has its own contract below. Wider workspace
+construction, grain/defect mappings and S4.E integration remain later work.
+
+### Spatial DIR reflected boundaries
+
+`Ffi.Host.DirBoundary` and `Film.Host.DirBoundaryProducts` compare complete Rust
+owners, key bytes, typed failures and native adapters against
+[independent native captures](dir/boundary-fixtures/README.md). Each host group has
+a 180-second limit. Comparisons cover 114 whole products and 56 bounded primitives
+in each native profile, including the original explicit fused product residual.
+
+The existing `Dir.Gpu.ExposureCache` group retains its 300-second limit and GPU
+lock. It also downloads entire actual Root boundary arrays, checks terminal
+packing, warm reuse without acquisition, native staging after host-owner release,
+failure rollback, same-key candidate disposal and context retirement. The native
+owner still controls allocation, upload, cache publication and retirement.
+
+Both Release testing-OFF C11 probes execute 171 full boundary value/failure/raw/
+lifetime rows while retaining every predecessor probe. Diagnostic length counts
+written bytes without NUL at capacities zero, one, short, M and M+1. Ordinary tests
+never regenerate expectations.

@@ -7,6 +7,78 @@
 #include <wchar.h>
 #include "juicer_legacy_api.h"
 #include "production-film-expected.h"
+
+/* Fixed reflected-boundary layouts, types, extents, tags and real signatures. */
+_Static_assert(sizeof(FjDirBoundaryInput) == 120 && _Alignof(FjDirBoundaryInput) == 8, "FjDirBoundaryInput layout");
+_Static_assert(_Generic(((FjDirBoundaryInput*)0)->component, FjDirGaussian: 1, default: 0), "FjDirBoundaryInput.component type");
+_Static_assert(offsetof(FjDirBoundaryInput, component) == 0, "FjDirBoundaryInput.component offset");
+_Static_assert(_Generic(((FjDirBoundaryInput*)0)->width, int32_t: 1, default: 0), "FjDirBoundaryInput.width type");
+_Static_assert(offsetof(FjDirBoundaryInput, width) == 112, "FjDirBoundaryInput.width offset");
+_Static_assert(_Generic(((FjDirBoundaryInput*)0)->height, int32_t: 1, default: 0), "FjDirBoundaryInput.height type");
+_Static_assert(offsetof(FjDirBoundaryInput, height) == 116, "FjDirBoundaryInput.height offset");
+_Static_assert(sizeof(FjDirBoundaryView) == 192 && _Alignof(FjDirBoundaryView) == 8, "FjDirBoundaryView layout");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->weights, const double*: 1, default: 0), "FjDirBoundaryView.weights type");
+_Static_assert(offsetof(FjDirBoundaryView, weights) == 0, "FjDirBoundaryView.weights offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->count, size_t: 1, default: 0), "FjDirBoundaryView.count type");
+_Static_assert(offsetof(FjDirBoundaryView, count) == 8, "FjDirBoundaryView.count offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->identity, uint64_t: 1, default: 0), "FjDirBoundaryView.identity type");
+_Static_assert(offsetof(FjDirBoundaryView, identity) == 16, "FjDirBoundaryView.identity offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->width, int32_t: 1, default: 0), "FjDirBoundaryView.width type");
+_Static_assert(offsetof(FjDirBoundaryView, width) == 24, "FjDirBoundaryView.width offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->height, int32_t: 1, default: 0), "FjDirBoundaryView.height type");
+_Static_assert(offsetof(FjDirBoundaryView, height) == 28, "FjDirBoundaryView.height offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->horizontal_length, int32_t: 1, default: 0), "FjDirBoundaryView.horizontal_length type");
+_Static_assert(offsetof(FjDirBoundaryView, horizontal_length) == 32, "FjDirBoundaryView.horizontal_length offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->vertical_length, int32_t: 1, default: 0), "FjDirBoundaryView.vertical_length type");
+_Static_assert(offsetof(FjDirBoundaryView, vertical_length) == 36, "FjDirBoundaryView.vertical_length offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->horizontal_terminal_size, int32_t: 1, default: 0), "FjDirBoundaryView.horizontal_terminal_size type");
+_Static_assert(offsetof(FjDirBoundaryView, horizontal_terminal_size) == 40, "FjDirBoundaryView.horizontal_terminal_size offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->vertical_terminal_size, int32_t: 1, default: 0), "FjDirBoundaryView.vertical_terminal_size type");
+_Static_assert(offsetof(FjDirBoundaryView, vertical_terminal_size) == 44, "FjDirBoundaryView.vertical_terminal_size offset");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->horizontal_terminal, double*: 1, default: 0), "FjDirBoundaryView.horizontal_terminal type");
+_Static_assert(offsetof(FjDirBoundaryView, horizontal_terminal) == 48, "FjDirBoundaryView.horizontal_terminal offset");
+_Static_assert(sizeof(((FjDirBoundaryView*)0)->horizontal_terminal) / sizeof(double) == 9, "FjDirBoundaryView.horizontal_terminal extent");
+_Static_assert(_Generic(((FjDirBoundaryView*)0)->vertical_terminal, double*: 1, default: 0), "FjDirBoundaryView.vertical_terminal type");
+_Static_assert(offsetof(FjDirBoundaryView, vertical_terminal) == 120, "FjDirBoundaryView.vertical_terminal offset");
+_Static_assert(sizeof(((FjDirBoundaryView*)0)->vertical_terminal) / sizeof(double) == 9, "FjDirBoundaryView.vertical_terminal extent");
+_Static_assert(sizeof(FjDirBoundaryFailure) == 40 && _Alignof(FjDirBoundaryFailure) == 8, "FjDirBoundaryFailure layout");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->reason, uint32_t: 1, default: 0), "FjDirBoundaryFailure.reason type");
+_Static_assert(offsetof(FjDirBoundaryFailure, reason) == 0, "FjDirBoundaryFailure.reason offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->axis, uint32_t: 1, default: 0), "FjDirBoundaryFailure.axis type");
+_Static_assert(offsetof(FjDirBoundaryFailure, axis) == 4, "FjDirBoundaryFailure.axis offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->row, uint32_t: 1, default: 0), "FjDirBoundaryFailure.row type");
+_Static_assert(offsetof(FjDirBoundaryFailure, row) == 8, "FjDirBoundaryFailure.row offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->length, int32_t: 1, default: 0), "FjDirBoundaryFailure.length type");
+_Static_assert(offsetof(FjDirBoundaryFailure, length) == 12, "FjDirBoundaryFailure.length offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->sigma_px, float: 1, default: 0), "FjDirBoundaryFailure.sigma_px type");
+_Static_assert(offsetof(FjDirBoundaryFailure, sigma_px) == 16, "FjDirBoundaryFailure.sigma_px offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->sum, double: 1, default: 0), "FjDirBoundaryFailure.sum type");
+_Static_assert(offsetof(FjDirBoundaryFailure, sum) == 24, "FjDirBoundaryFailure.sum offset");
+_Static_assert(_Generic(((FjDirBoundaryFailure*)0)->tolerance, double: 1, default: 0), "FjDirBoundaryFailure.tolerance type");
+_Static_assert(offsetof(FjDirBoundaryFailure, tolerance) == 32, "FjDirBoundaryFailure.tolerance offset");
+_Static_assert(_Generic(&fj_legacy_dir_boundary_describe, FjStatus (*)(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_describe signature");
+_Static_assert(_Generic(&fj_legacy_dir_boundary_acquire, FjStatus (*)(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_acquire signature");
+_Static_assert(_Generic(&fj_legacy_dir_boundary_view, FjStatus (*)(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_view signature");
+_Static_assert(_Generic(&fj_legacy_dir_boundary_release, FjStatus (*)(FjDirBoundaryOwner*, FjErrorBuffer*): 1, default: 0), "fj_legacy_dir_boundary_release signature");
+_Static_assert(FJ_DIR_BOUNDARY_NONE == 0, "FJ_DIR_BOUNDARY_NONE value");
+_Static_assert(FJ_DIR_BOUNDARY_RAW == 1, "FJ_DIR_BOUNDARY_RAW value");
+_Static_assert(FJ_DIR_BOUNDARY_REQUEST == 2, "FJ_DIR_BOUNDARY_REQUEST value");
+_Static_assert(FJ_DIR_BOUNDARY_AXIS_SIZE == 3, "FJ_DIR_BOUNDARY_AXIS_SIZE value");
+_Static_assert(FJ_DIR_BOUNDARY_POLICY == 4, "FJ_DIR_BOUNDARY_POLICY value");
+_Static_assert(FJ_DIR_BOUNDARY_CAUSAL_SINGULAR == 5, "FJ_DIR_BOUNDARY_CAUSAL_SINGULAR value");
+_Static_assert(FJ_DIR_BOUNDARY_NONFINITE_WEIGHTS == 6, "FJ_DIR_BOUNDARY_NONFINITE_WEIGHTS value");
+_Static_assert(FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION == 7, "FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION value");
+_Static_assert(FJ_DIR_BOUNDARY_TAIL_ESCAPE == 8, "FJ_DIR_BOUNDARY_TAIL_ESCAPE value");
+_Static_assert(FJ_DIR_BOUNDARY_TERMINAL_SINGULAR == 9, "FJ_DIR_BOUNDARY_TERMINAL_SINGULAR value");
+_Static_assert(FJ_DIR_BOUNDARY_TERMINAL_CERTIFICATION == 10, "FJ_DIR_BOUNDARY_TERMINAL_CERTIFICATION value");
+_Static_assert(FJ_DIR_BOUNDARY_STORAGE_SIZE == 11, "FJ_DIR_BOUNDARY_STORAGE_SIZE value");
+_Static_assert(FJ_DIR_BOUNDARY_ALLOCATION == 12, "FJ_DIR_BOUNDARY_ALLOCATION value");
+_Static_assert(FJ_DIR_BOUNDARY_PANIC == 13, "FJ_DIR_BOUNDARY_PANIC value");
+_Static_assert(FJ_DIR_BOUNDARY_NO_AXIS == 0, "FJ_DIR_BOUNDARY_NO_AXIS value");
+_Static_assert(FJ_DIR_BOUNDARY_HORIZONTAL == 1, "FJ_DIR_BOUNDARY_HORIZONTAL value");
+_Static_assert(FJ_DIR_BOUNDARY_VERTICAL == 2, "FJ_DIR_BOUNDARY_VERTICAL value");
+_Static_assert(FJ_DIR_BOUNDARY_NO_ROW == 3, "FJ_DIR_BOUNDARY_NO_ROW value");
+
 /* Fixed spatial-DIR frame contract, including reused permanent records. */
 _Static_assert(sizeof(FjDirFrameInput) == 64 && _Alignof(FjDirFrameInput) == 8, "FjDirFrameInput layout");
 _Static_assert(offsetof(FjDirFrameInput, active) == 0, "FjDirFrameInput.active offset");
@@ -2605,6 +2677,277 @@ static int dir_frame_values(void) {
     return 0;
 }
 
+typedef struct {
+    FjStatus status;
+    int key_valid, failure_valid, view_valid, diagnostic_valid, length_valid, owner;
+    uint64_t key, failure[7], weights[DIR_BOUNDARY_MAX_WEIGHTS], terminal[18];
+    int32_t shape[6];
+    size_t count, length;
+    char diagnostic[256];
+} DirBoundaryResult;
+
+static double dir_boundary_double(uint64_t word) {
+    double value;
+    memcpy(&value, &word, sizeof(value));
+    return value;
+}
+static float dir_boundary_float(uint64_t word) {
+    uint32_t bits = (uint32_t)word;
+    float value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+static uint64_t dir_boundary_word(double value) {
+    uint64_t word;
+    memcpy(&word, &value, sizeof(word));
+    return word;
+}
+static FjDirBoundaryInput dir_boundary_input(const DirBoundaryRow* row) {
+    FjDirBoundaryInput input = {0};
+    input.component.sigma_px = dir_boundary_float(row->input[0]);
+    input.component.weight = dir_boundary_float(row->input[1]);
+    input.component.radius = (int32_t)(uint32_t)row->input[2];
+    input.component.reference_operator = (uint32_t)row->input[3];
+    input.component.feedforward = dir_boundary_double(row->input[4]);
+    for (size_t i = 0; i < 3; ++i) {
+        input.component.feedback[i] = dir_boundary_double(row->input[5 + i]);
+        input.component.feedback_numerators[i] = dir_boundary_double(row->input[10 + i]);
+    }
+    input.component.normalization_denominator = dir_boundary_double(row->input[8]);
+    input.component.feedforward_numerator = dir_boundary_double(row->input[9]);
+    input.component.boundary_truncation_accuracy = dir_boundary_double(row->input[13]);
+    input.component.boundary_certification_tolerance = dir_boundary_double(row->input[14]);
+    input.component.boundary_derivation_version = (uint32_t)row->input[15];
+    input.width = (int32_t)(uint32_t)row->input[16];
+    input.height = (int32_t)(uint32_t)row->input[17];
+    return input;
+}
+static void dir_boundary_failure(const FjDirBoundaryFailure* input, uint64_t words[7]) {
+    words[0] = input->reason;
+    words[1] = input->axis;
+    words[2] = input->row;
+    words[3] = (uint64_t)input->length;
+    uint32_t sigma;
+    memcpy(&sigma, &input->sigma_px, sizeof(sigma));
+    words[4] = sigma;
+    words[5] = dir_boundary_word(input->sum);
+    words[6] = dir_boundary_word(input->tolerance);
+}
+static int dir_boundary_copy_view(const FjDirBoundaryView* view, DirBoundaryResult* result) {
+    CHECK(view->count <= DIR_BOUNDARY_MAX_WEIGHTS);
+    CHECK(view->count ? view->weights != NULL && (uintptr_t)view->weights % _Alignof(double) == 0 : view->weights == NULL);
+    result->view_valid = 1;
+    result->shape[0] = view->width;
+    result->shape[1] = view->height;
+    result->shape[2] = view->horizontal_length;
+    result->shape[3] = view->vertical_length;
+    result->shape[4] = view->horizontal_terminal_size;
+    result->shape[5] = view->vertical_terminal_size;
+    result->count = view->count;
+    for (size_t i = 0; i < view->count; ++i) result->weights[i] = dir_boundary_word(view->weights[i]);
+    for (size_t i = 0; i < 9; ++i) {
+        result->terminal[i] = dir_boundary_word(view->horizontal_terminal[i]);
+        result->terminal[9 + i] = dir_boundary_word(view->vertical_terminal[i]);
+    }
+    return 0;
+}
+static void dir_boundary_array(const uint64_t* words, size_t count) {
+    printf("[");
+    for (size_t i = 0; i < count; ++i) printf("%s%" PRIu64, i ? "," : "", words[i]);
+    printf("]");
+}
+static void dir_boundary_emit(const char* name, const DirBoundaryResult* result) {
+    printf("DIR_BOUNDARY_RESULT {\"case\":\"%s\",\"envelope\":[%" PRIu32 ",%" PRIu32 ",%" PRId32 "],\"key\":", name, result->status.category, result->status.api, result->status.native_code);
+    if (result->key_valid) printf("%" PRIu64, result->key); else printf("null");
+    printf(",\"failure\":");
+    if (result->failure_valid) dir_boundary_array(result->failure, 7); else printf("null");
+    printf(",\"shape\":");
+    if (result->view_valid) {
+        printf("[");
+        for (size_t i = 0; i < 6; ++i) printf("%s%" PRId32, i ? "," : "", result->shape[i]);
+        printf("]");
+    } else printf("null");
+    printf(",\"weights\":");
+    if (result->view_valid) dir_boundary_array(result->weights, result->count); else printf("null");
+    printf(",\"terminal\":");
+    if (result->view_valid) dir_boundary_array(result->terminal, 18); else printf("null");
+    printf(",\"diagnostic\":");
+    if (result->diagnostic_valid) printf("\"%.*s\"", (int)result->length, result->diagnostic); else printf("null");
+    printf(",\"diagnostic_length\":");
+    if (result->length_valid) printf("%zu", result->length); else printf("null");
+    printf(",\"owner\":%s}\n", result->owner < 0 ? "null" : result->owner ? "true" : "false");
+}
+static int dir_boundary_match(const DirBoundaryResult* result, const DirBoundaryRow* expected) {
+    CHECK(result->key == expected->key && result->owner == expected->present);
+    for (size_t i = 0; i < 7; ++i) CHECK(result->failure[i] == expected->failure[i]);
+    CHECK(result->view_valid == expected->present);
+    if (expected->present) {
+        CHECK(result->count == expected->count);
+        for (size_t i = 0; i < 6; ++i) CHECK(result->shape[i] == expected->shape[i]);
+        for (size_t i = 0; i < result->count; ++i) CHECK(result->weights[i] == expected->weights[i]);
+        for (size_t i = 0; i < 18; ++i) CHECK(result->terminal[i] == expected->terminal[i]);
+    }
+    return 0;
+}
+static int dir_boundary_values(void) {
+    for (size_t index = 0; index < sizeof(dir_boundary_rows) / sizeof(dir_boundary_rows[0]); ++index) {
+        const DirBoundaryRow* expected = &dir_boundary_rows[index];
+        FjDirBoundaryInput input = dir_boundary_input(expected);
+        FjDirBoundaryFailure failure = {0};
+        char text[256] = {0};
+        FjErrorBuffer error = {text, sizeof(text), 999};
+        uint64_t key = 999;
+        FjStatus described = fj_legacy_dir_boundary_describe(&input, &key, &failure, &error);
+        CHECK(described.category == (expected->failure[0] == 2 ? 3U : 0U) && described.api == 0 && described.native_code == 0 && key == expected->key);
+        CHECK(failure.reason == (expected->failure[0] == 2 ? 2U : 0U) && failure.axis == 0 && failure.row == 3);
+        FjDirBoundaryOwner* owner = (FjDirBoundaryOwner*)(uintptr_t)1;
+        DirBoundaryResult result = {0};
+        result.status = fj_legacy_dir_boundary_acquire(&input, &owner, &failure, &error);
+        CHECK(result.status.category == expected->status.category && result.status.api == 0 && result.status.native_code == 0);
+        CHECK((owner != NULL) == expected->present);
+        result.key_valid = result.failure_valid = result.diagnostic_valid = result.length_valid = 1;
+        result.key = key;
+        result.owner = owner != NULL;
+        dir_boundary_failure(&failure, result.failure);
+        CHECK(error.data == text && error.capacity == sizeof(text) && error.length == expected->diagnostic_length && error.length < sizeof(text));
+        CHECK(text[error.length] == 0 && memcmp(text, expected->diagnostic, error.length) == 0);
+        result.length = error.length;
+        memcpy(result.diagnostic, text, error.length + 1);
+        if (owner) {
+            FjDirBoundaryView view = {0}, repeated = {0};
+            FjStatus viewed = fj_legacy_dir_boundary_view(owner, &view, &failure, &error);
+            CHECK(viewed.category == 0 && viewed.api == 0 && viewed.native_code == 0 && view.identity == key);
+            CHECK(dir_boundary_copy_view(&view, &result) == 0);
+            viewed = fj_legacy_dir_boundary_view(owner, &repeated, &failure, NULL);
+            CHECK(viewed.category == 0 && viewed.api == 0 && viewed.native_code == 0 && repeated.weights == view.weights && repeated.count == view.count);
+            DirBoundaryResult again = {0};
+            CHECK(dir_boundary_copy_view(&repeated, &again) == 0);
+            for (size_t i = 0; i < result.count; ++i) CHECK(again.weights[i] == result.weights[i]);
+            for (size_t i = 0; i < 18; ++i) CHECK(again.terminal[i] == result.terminal[i]);
+            FjStatus released = fj_legacy_dir_boundary_release(owner, NULL);
+            CHECK(released.category == 0 && released.api == 0 && released.native_code == 0);
+        }
+        CHECK(dir_boundary_match(&result, expected) == 0);
+        dir_boundary_emit(expected->name, &result);
+    }
+    return 0;
+}
+static FjDirBoundaryOwner* dir_boundary_local_owner(const DirBoundaryRow* sample) {
+    FjDirBoundaryInput input = dir_boundary_input(sample);
+    FjDirBoundaryOwner* owner = NULL;
+    FjDirBoundaryFailure failure = {0};
+    FjStatus status = fj_legacy_dir_boundary_acquire(&input, &owner, &failure, NULL);
+    return status.category == 0 && status.api == 0 && status.native_code == 0 ? owner : NULL;
+}
+static int dir_boundary_raw(void) {
+    const DirBoundaryRow* sample = &dir_boundary_rows[7];
+    for (size_t index = 0; index < sizeof(dir_boundary_raw_rows) / sizeof(dir_boundary_raw_rows[0]); ++index) {
+        const DirBoundaryRawRow* expected = &dir_boundary_raw_rows[index];
+        FjDirBoundaryInput input = dir_boundary_input(sample);
+        const FjDirBoundaryInput* source = &input;
+        FjDirBoundaryOwner* legitimate = expected->operation == 2 ? dir_boundary_local_owner(sample) : NULL;
+        CHECK(expected->operation != 2 || legitimate != NULL);
+        const FjDirBoundaryOwner* borrowed = legitimate;
+        uint64_t key = 999;
+        FjDirBoundaryOwner* output_owner = (FjDirBoundaryOwner*)(uintptr_t)1;
+        FjDirBoundaryView view = {0};
+        view.weights = (const double*)(uintptr_t)1;
+        view.count = 1;
+        view.identity = 1;
+        view.width = view.height = view.horizontal_length = view.vertical_length = view.horizontal_terminal_size = view.vertical_terminal_size = 1;
+        for (size_t i = 0; i < 9; ++i) view.horizontal_terminal[i] = view.vertical_terminal[i] = 1.0;
+        FjDirBoundaryFailure failure = {0};
+        FjDirBoundaryFailure* details = &failure;
+        char text[256];
+        memset(text, 'x', sizeof(text));
+        FjErrorBuffer error = {text, expected->capacity, 999};
+        FjErrorBuffer* diagnostic = &error;
+        _Alignas(16) unsigned char bad_input[sizeof(FjDirBoundaryInput) + 16] = {0};
+        _Alignas(16) unsigned char bad_output[sizeof(FjDirBoundaryView) + 16] = {0};
+        _Alignas(16) unsigned char bad_failure[sizeof(FjDirBoundaryFailure) + 16] = {0};
+        _Alignas(16) unsigned char bad_error[sizeof(FjErrorBuffer) + 16] = {0};
+        void* output = expected->operation == 0 ? (void*)&key : expected->operation == 1 ? (void*)&output_owner : (void*)&view;
+        if (expected->mode == 0 || expected->mode >= 11) { source = NULL; borrowed = NULL; }
+        if (expected->mode == 1) { source = (const FjDirBoundaryInput*)(bad_input + 1); borrowed = legitimate ? (const FjDirBoundaryOwner*)((const unsigned char*)legitimate + 1) : NULL; }
+        if (expected->mode == 2) { source = (const FjDirBoundaryInput*)(UINTPTR_MAX - 7); borrowed = (const FjDirBoundaryOwner*)(UINTPTR_MAX - 7); }
+        if (expected->mode == 3) output = NULL;
+        if (expected->mode == 4) output = bad_output + 1;
+        if (expected->mode == 5) details = NULL;
+        if (expected->mode == 6) details = (FjDirBoundaryFailure*)(bad_failure + 1);
+        if (expected->mode == 7) diagnostic = (FjErrorBuffer*)(bad_error + 1);
+        if (expected->mode == 8) { error.data = NULL; error.capacity = 1; }
+        if (expected->mode == 9) error.capacity = SIZE_MAX;
+        if (expected->mode == 10) { error.data = (char*)(UINTPTR_MAX - 7); error.capacity = 16; }
+        if (expected->mode == 11) error.data = (char*)(uintptr_t)1;
+        if (expected->mode == 16) diagnostic = NULL;
+        DirBoundaryResult result = {0};
+        result.owner = -1;
+        if (expected->operation == 0) result.status = fj_legacy_dir_boundary_describe(source, (uint64_t*)output, details, diagnostic);
+        else if (expected->operation == 1) result.status = fj_legacy_dir_boundary_acquire(source, (FjDirBoundaryOwner**)output, details, diagnostic);
+        else result.status = fj_legacy_dir_boundary_view(borrowed, (FjDirBoundaryView*)output, details, diagnostic);
+        CHECK(result.status.category == 2 && result.status.api == 0 && result.status.native_code == 0);
+        result.key_valid = expected->operation == 0 && expected->output_valid;
+        if (result.key_valid) { CHECK(key == 0); result.key = key; }
+        result.failure_valid = expected->failure_valid;
+        if (result.failure_valid) {
+            dir_boundary_failure(&failure, result.failure);
+            CHECK(failure.reason == 1 && failure.axis == 0 && failure.row == 3 && failure.length == 0 && result.failure[4] == 0 && result.failure[5] == 0 && result.failure[6] == 0);
+        }
+        if (expected->operation == 1 && expected->output_valid) { CHECK(output_owner == NULL); result.owner = 0; }
+        if (expected->operation == 2 && expected->output_valid) {
+            CHECK(view.weights == NULL && view.count == 0 && view.identity == 0);
+            CHECK(dir_boundary_copy_view(&view, &result) == 0);
+            for (size_t i = 0; i < 6; ++i) CHECK(result.shape[i] == 0);
+            for (size_t i = 0; i < 18; ++i) CHECK(result.terminal[i] == 0);
+        }
+        result.diagnostic_valid = expected->error_span;
+        result.length_valid = expected->error_record;
+        if (result.length_valid) { CHECK(error.length == expected->diagnostic_length); result.length = error.length; }
+        if (result.diagnostic_valid && error.capacity) {
+            CHECK(error.data == text && text[error.length] == 0 && memcmp(text, expected->diagnostic, error.length) == 0);
+            if (error.capacity < sizeof(text)) CHECK(text[error.capacity] == 'x');
+            memcpy(result.diagnostic, text, error.length + 1);
+        } else if (expected->mode == 11) {
+            CHECK(error.length == 0 && text[0] == 'x');
+        }
+        if (legitimate) {
+            FjStatus released = fj_legacy_dir_boundary_release(legitimate, NULL);
+            CHECK(released.category == 0 && released.api == 0 && released.native_code == 0);
+        }
+        dir_boundary_emit(expected->name, &result);
+    }
+    return 0;
+}
+static int dir_boundary_lifetime(void) {
+    const DirBoundaryRow* sample = &dir_boundary_rows[7];
+    FjDirBoundaryOwner* first = dir_boundary_local_owner(sample);
+    FjDirBoundaryOwner* second = dir_boundary_local_owner(sample);
+    CHECK(first != NULL && second != NULL && first != second);
+    FjDirBoundaryView a = {0}, b = {0};
+    FjDirBoundaryFailure failure = {0};
+    FjStatus status = fj_legacy_dir_boundary_view(first, &a, &failure, NULL);
+    CHECK(status.category == 0 && status.api == 0 && status.native_code == 0);
+    status = fj_legacy_dir_boundary_view(second, &b, &failure, NULL);
+    CHECK(status.category == 0 && status.api == 0 && status.native_code == 0 && a.weights != b.weights && a.identity == sample->key && b.identity == sample->key);
+    CHECK(a.count == sample->count && b.count == sample->count);
+    for (size_t i = 0; i < a.count; ++i) CHECK(dir_boundary_word(a.weights[i]) == sample->weights[i] && dir_boundary_word(b.weights[i]) == sample->weights[i]);
+    status = fj_legacy_dir_boundary_release(first, NULL);
+    CHECK(status.category == 0 && status.api == 0 && status.native_code == 0);
+    status = fj_legacy_dir_boundary_view(second, &b, &failure, NULL);
+    CHECK(status.category == 0 && status.api == 0 && status.native_code == 0 && b.identity == sample->key && b.count == sample->count);
+    for (size_t i = 0; i < b.count; ++i) CHECK(dir_boundary_word(b.weights[i]) == sample->weights[i]);
+    for (size_t i = 0; i < 9; ++i) CHECK(dir_boundary_word(b.horizontal_terminal[i]) == sample->terminal[i] && dir_boundary_word(b.vertical_terminal[i]) == sample->terminal[9 + i]);
+    printf("DIR_BOUNDARY_RESULT {\"case\":\"lifetime/independent-expiry\",\"envelope\":[0,0,0],\"key\":%" PRIu64 ",\"count\":%zu}\n", b.identity, b.count);
+    FjErrorBuffer malformed = {NULL, 1, 999};
+    status = fj_legacy_dir_boundary_release(second, &malformed);
+    CHECK(status.category == 2 && status.api == 0 && status.native_code == 0 && malformed.length == 0);
+    printf("DIR_BOUNDARY_RESULT {\"case\":\"lifetime/release-malformed\",\"envelope\":[2,0,0],\"diagnostic_length\":%zu}\n", malformed.length);
+    status = fj_legacy_dir_boundary_release(NULL, NULL);
+    CHECK(status.category == 0 && status.api == 0 && status.native_code == 0);
+    printf("DIR_BOUNDARY_RESULT {\"case\":\"lifetime/null-release\",\"envelope\":[0,0,0]}\n");
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -2635,6 +2978,9 @@ int main(int argc, char** argv) {
     CHECK(halation_frame_values() == 0);
     CHECK(diffusion_frame_values() == 0);
     CHECK(dir_frame_values() == 0);
+    CHECK(dir_boundary_values() == 0);
+    CHECK(dir_boundary_raw() == 0);
+    CHECK(dir_boundary_lifetime() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

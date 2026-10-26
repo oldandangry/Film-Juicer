@@ -36,11 +36,13 @@
 #include "RustHalationBridge.h"
 #include "RustDiffusionBridge.h"
 #include "RustDirBridge.h"
+#include "RustDirBoundaryBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
 #include "exposure_fixture.h"
 #include "spatial_optics_fixture.h"
+#include "../dir/boundary_test_hooks.h"
 
 #include "film_recipe_abi_cpp.inc"
 static_assert(!std::is_copy_constructible_v<JuicerAssets::DevelopmentHold>);
@@ -307,7 +309,22 @@ namespace {
 #include "halation_frame_test.inc"
 #include "diffusion_frame_test.inc"
 #include "dir_frame_test.inc"
+#include "dir_boundary_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "dir-boundary" || std::string_view(argv[3]) == "dir-boundary-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        require(captured.at("preset") == argv[4], "DIR boundary native context");
+        if (std::string_view(argv[3]) == "dir-boundary") {
+            DirBoundaryTest::raw_values({.native = captured, .checked = read(directory / "checked.json")});
+            DirBoundaryTest::boundary(captured);
+        } else {
+            DirBoundaryTest::products(captured);
+        }
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "dir-frame" || std::string_view(argv[3]) == "dir-frame-products")) {
         layouts();
         const auto manifest = read(argv[2]);

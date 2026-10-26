@@ -1727,6 +1727,62 @@ typedef struct FjDirFrameFailure {
 } FjDirFrameFailure;
 FjStatus fj_legacy_dir_frame_prepare(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_DIR_BOUNDARY: literal model input; S4.E narrows resolved
+ * execution inputs. Remove at the last native model caller, no later than S6.D.
+ * Input and all independently admitted writable peers are live, initialized,
+ * aligned and mutually disjoint, including diagnostic backing. Each result clears
+ * before other admission. Optional NULL diagnostics are valid; zero capacity
+ * ignores backing. Positive capacity reserves NUL; length counts written bytes
+ * excluding NUL. Truncation changes neither status nor typed failure metadata.
+ * A successful owner is consumed exactly once by release, excluding readers.
+ * View.weights is immutable row-major f64: horizontal 3*horizontal_length then
+ * vertical 3*vertical_length; packed terminal matrices use terminal-size stride.
+ * Rust produces the complete host result; native staging copies before upload.
+ * Every borrowed view expires at release. Release consumes a legitimate owner
+ * even on malformed diagnostics or contained panic. NULL release is safe.
+ */
+#define FJ_DIR_BOUNDARY_NONE UINT32_C(0)
+#define FJ_DIR_BOUNDARY_RAW UINT32_C(1)
+#define FJ_DIR_BOUNDARY_REQUEST UINT32_C(2)
+#define FJ_DIR_BOUNDARY_AXIS_SIZE UINT32_C(3)
+#define FJ_DIR_BOUNDARY_POLICY UINT32_C(4)
+#define FJ_DIR_BOUNDARY_CAUSAL_SINGULAR UINT32_C(5)
+#define FJ_DIR_BOUNDARY_NONFINITE_WEIGHTS UINT32_C(6)
+#define FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION UINT32_C(7)
+#define FJ_DIR_BOUNDARY_TAIL_ESCAPE UINT32_C(8)
+#define FJ_DIR_BOUNDARY_TERMINAL_SINGULAR UINT32_C(9)
+#define FJ_DIR_BOUNDARY_TERMINAL_CERTIFICATION UINT32_C(10)
+#define FJ_DIR_BOUNDARY_STORAGE_SIZE UINT32_C(11)
+#define FJ_DIR_BOUNDARY_ALLOCATION UINT32_C(12)
+#define FJ_DIR_BOUNDARY_PANIC UINT32_C(13)
+#define FJ_DIR_BOUNDARY_NO_AXIS UINT32_C(0)
+#define FJ_DIR_BOUNDARY_HORIZONTAL UINT32_C(1)
+#define FJ_DIR_BOUNDARY_VERTICAL UINT32_C(2)
+#define FJ_DIR_BOUNDARY_NO_ROW UINT32_C(3)
+typedef struct FjDirBoundaryInput {
+    FjDirGaussian component;
+    int32_t width, height;
+} FjDirBoundaryInput;
+typedef struct FjDirBoundaryView {
+    const double* weights;
+    size_t count;
+    uint64_t identity;
+    int32_t width, height, horizontal_length, vertical_length;
+    int32_t horizontal_terminal_size, vertical_terminal_size;
+    double horizontal_terminal[9], vertical_terminal[9];
+} FjDirBoundaryView;
+typedef struct FjDirBoundaryFailure {
+    uint32_t reason, axis, row;
+    int32_t length;
+    float sigma_px;
+    double sum, tolerance;
+} FjDirBoundaryFailure;
+typedef struct FjDirBoundaryOwner FjDirBoundaryOwner;
+FjStatus fj_legacy_dir_boundary_describe(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_dir_boundary_acquire(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_dir_boundary_view(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_dir_boundary_release(FjDirBoundaryOwner*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

@@ -972,6 +972,17 @@ class CheckpointTests(unittest.TestCase):
             "sha256": {name: digest(path) for name, path in dir_files.items()},
             "production_cases": [{"case": str(i), "envelope": [0, 0, 0], "failure": [0, 0, 4] + [0] * 79,
                                   "output": [0] * 78 + [i], "diagnostic": ""} for i in range(121)]})
+        boundary_directory = self.root / "tests/dir/boundary-fixtures"
+        boundary_directory.mkdir(parents=True, exist_ok=True)
+        boundary_files = {name: boundary_directory / name for name in ("native.json", "checked.json", "inputs.json")}
+        for name, path in boundary_files.items():
+            write_json(path, {"scope": "DIR boundary retained full-values protocol only", "file": name})
+        write_json(boundary_directory / "manifest.json", {
+            "presets": {preset: {"native": "native.json"} for preset in qualification.PRESETS},
+            "checked": "checked.json", "sha256": {name: digest(path) for name, path in boundary_files.items()},
+            "production_cases": [{"case": str(i), "envelope": [0, 0, 0], "key": i, "failure": [0, 0, 3, 0, 0, 0, 0],
+                                  "shape": [1, 2, 3, 4, 1, 2], "weights": [i], "terminal": [0] * 17 + [i],
+                                  "diagnostic": "", "diagnostic_length": 0, "owner": True} for i in range(171)]})
         return r'''
 import json, sys, subprocess, hashlib, shutil
 preset=sys.argv[sys.argv.index("--preset")+1]
@@ -1048,6 +1059,13 @@ dir_checked=dir_manifest.parent/'checked.json'
 dir_inputs=dir_manifest.parent/'inputs.json'
 consumed.update({str(path):checksum(path) for path in (dir_manifest,dir_payload,dir_checked,dir_inputs)})
 dir_results=dir_spec['production_cases']
+boundary_manifest=(Path('tests/dir/boundary-fixtures')/'manifest.json').resolve()
+boundary_spec=json.loads(boundary_manifest.read_text())
+boundary_payload=boundary_manifest.parent/'native.json'
+boundary_checked=boundary_manifest.parent/'checked.json'
+boundary_inputs=boundary_manifest.parent/'inputs.json'
+consumed.update({str(path):checksum(path) for path in (boundary_manifest,boundary_payload,boundary_checked,boundary_inputs)})
+boundary_results=boundary_spec['production_cases']
 
 reference_results=[]
 for row in json.loads(reference_payload.read_text())['products']:
@@ -1073,6 +1091,7 @@ for name in ['film','accepted-output-color']:
     source=out/(name+'.c')
     result_lines = ''.join('puts('+json.dumps('DIFFUSION_FRAME_RESULT '+json.dumps(row))+');' for row in diffusion_results) if name=='film' else ''
     if name=='film':result_lines += ''.join('puts('+json.dumps('DIR_FRAME_RESULT '+json.dumps(row))+');' for row in dir_results)
+    if name=='film':result_lines += ''.join('puts('+json.dumps('DIR_BOUNDARY_RESULT '+json.dumps(row))+');' for row in boundary_results)
     source.write_text('#include "production-film-expected.h"\n#include <stdio.h>\n'
                       'typedef struct Pair {int first; int second;} Pair;\n'
                       '_Static_assert(sizeof(Pair)==8,"ABI");\n'
@@ -1116,6 +1135,9 @@ record.write_text(json.dumps(commands))
     'dir_frame_fixture':{'manifest':str(dir_manifest),'payload':str(dir_payload),
                          'normative':str(dir_checked),'input_spec':str(dir_inputs),'logical_preset':preset},
     'dir_frame_results':dir_results,
+    'dir_boundary_fixture':{'manifest':str(boundary_manifest),'payload':str(boundary_payload),
+                            'normative':str(boundary_checked),'input_spec':str(boundary_inputs),'logical_preset':preset},
+    'dir_boundary_results':boundary_results,
     'gaussian_results':gaussian_results,
     'reference_results':reference_results,
     'commands':{'file':str(record),'sha256':checksum(record)},
@@ -1379,6 +1401,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertEqual(len(document["halation_frame_results"]), 86)
         self.assertEqual(len(document["diffusion_frame_results"]), 507)
         self.assertEqual(len(document["dir_frame_results"]), 121)
+        self.assertEqual(len(document["dir_boundary_results"]), 171)
         stdout = manifest.parent / "film-values.stdout"
         commands_path = manifest.parent / "commands.json"
         original_stdout, original_commands = stdout.read_bytes(), commands_path.read_bytes()
@@ -1403,6 +1426,56 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         finally:
             stdout.write_bytes(original_stdout)
             commands_path.write_bytes(original_commands)
+
+        try:
+            line = next(line for line in original_stdout.decode().splitlines() if line.startswith("DIR_BOUNDARY_RESULT "))
+            original_row = json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
+            changed_row = json.loads(json.dumps(original_row))
+            changed_row["weights"][-1] ^= 1
+            changed_stdout = original_stdout.replace(json.dumps(original_row).encode(), json.dumps(changed_row).encode(), 1)
+            self.assertNotEqual(changed_stdout, original_stdout)
+            stdout.write_bytes(changed_stdout)
+            commands = json.loads(original_commands)
+            next(row for row in commands if row["name"] == "film-values")["stdout_sha256"] = digest(stdout)
+            write_json(commands_path, commands)
+            damaged = json.loads(json.dumps(document))
+            damaged["commands"]["sha256"] = digest(commands_path)
+            damaged["command_outputs"][str(stdout)] = digest(stdout)
+            damaged_path = manifest.with_name("dir-boundary-executed-word.json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "DIR boundary executed stdout"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        finally:
+            stdout.write_bytes(original_stdout)
+            commands_path.write_bytes(original_commands)
+
+        for mode in ("missing", "duplicate", "word", "key", "envelope", "failure", "terminal", "shape", "diagnostic_length", "owner"):
+            damaged = json.loads(json.dumps(document))
+            rows = damaged["dir_boundary_results"]
+            if mode == "missing":
+                rows.pop()
+            elif mode == "duplicate":
+                rows[-1] = rows[0]
+            elif mode == "word":
+                rows[0]["weights"][-1] ^= 1
+            elif mode == "key":
+                rows[0]["key"] ^= 1
+            elif mode == "envelope":
+                rows[0]["envelope"][0] = 3
+            elif mode == "failure":
+                rows[0]["failure"][2] = 0
+            elif mode == "terminal":
+                rows[0]["terminal"][-1] ^= 1
+            elif mode == "shape":
+                rows[0]["shape"][0] ^= 1
+            elif mode == "diagnostic_length":
+                rows[0]["diagnostic_length"] += 1
+            else:
+                rows[0]["owner"] = False
+            damaged_path = manifest.with_name("dir-boundary-" + mode + ".json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "DIR boundary"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
 
         for mode in ("missing", "duplicate", "word", "envelope", "failure", "trace", "diagnostic"):
             damaged = json.loads(json.dumps(document))
@@ -1541,10 +1614,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             write_json(damaged_path, damaged)
             with self.assertRaisesRegex(ValueError, "post-effects value/failure"):
                 qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
-        for field in ("dir_frame_results", "dir_frame_fixture", "diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture", "gaussian_results", "gaussian_fixture"):
+        for field in ("dir_boundary_results", "dir_boundary_fixture", "dir_frame_results", "dir_frame_fixture", "diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture", "gaussian_results", "gaussian_fixture"):
             missing = manifest.with_name("without-" + field + ".json")
             write_json(missing, {key: value for key, value in document.items() if key != field})
-            expected = "DIR frame" if field.startswith("dir_frame") else "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "Gaussian" if field.startswith("gaussian") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
+            expected = "DIR boundary" if field.startswith("dir_boundary") else "DIR frame" if field.startswith("dir_frame") else "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "Gaussian" if field.startswith("gaussian") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
             with self.assertRaisesRegex(ValueError, expected):
                 qualification.production_payloads(missing, digest(missing), root=self.root,
                     inputs=stage["identity"]["inputs"])
