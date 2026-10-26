@@ -17,6 +17,9 @@ import uuid
 from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, preparation_inventory, prepare_build, registration_files
 from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/ffi"))
+from grain_probe_contract import GRAIN_FRAME_CASE_COUNT, GRAIN_FRAME_CASE_IDS
+
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
 GROUPS = {"product", "boundary", "tooling", "corpus", "production"}
 
@@ -222,11 +225,17 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         admit(row["executable"], row["after_run_sha256"])
         admit(row["source"], row["source_sha256"])
     consumed = document.get("consumed_inputs", {})
+    reference_consumed = {str(resolve(name)): checksum for name, checksum in consumed.items()}
+    for path in (root / "tests/ffi/grain_frame_abi_assertions.inc",
+                 root / "tests/ffi/grain_probe_contract.py"):
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum):
+            raise ValueError("production grain C11 assertion input identity changed")
     reference = document.get("reference_fixture", {})
     reference_manifest = root / "tests/film/reference-fixtures/manifest.json"
     spec = json.loads(reference_manifest.read_text())
     reference_payload = reference_manifest.parent / spec["presets"][document["preset"]]
-    reference_consumed = {str(resolve(name)): checksum for name, checksum in consumed.items()}
     if (reference.get("logical_preset") != document["preset"]
             or resolve(reference.get("manifest", "")) != reference_manifest
             or resolve(reference.get("payload", "")) != reference_payload):
@@ -435,7 +444,9 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
                 or (path != grain_manifest and checksum != grain_spec["sha256"][path.name])):
             raise ValueError("production grain frame consumed fixture identity changed")
     grain_expected = grain_spec["production_cases"]
-    if (len(grain_expected) != 188 or len({row["case"] for row in grain_expected}) != 188
+    if (tuple(row["case"] for row in grain_expected) != GRAIN_FRAME_CASE_IDS
+            or len(grain_expected) != GRAIN_FRAME_CASE_COUNT
+            or len({row["case"] for row in grain_expected}) != GRAIN_FRAME_CASE_COUNT
             or document.get("grain_frame_results") != grain_expected):
         raise ValueError("production grain frame full values/metadata/failure/diagnostic results are incomplete")
 
@@ -604,6 +615,13 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
     paths.add(build / "CMakeCache.txt")
     if group == "production":
         paths.update(build / name for name in ("build.ninja", "compile_commands.json", "cargo-features.txt"))
+        paths.update(root / name for name in (
+            "tests/ffi/production_contract.py",
+            "tests/ffi/production-film.c.in",
+            "tests/ffi/film_recipe_abi_c.c",
+            "tests/ffi/grain_frame_abi_assertions.inc",
+            "tests/ffi/grain_probe_contract.py",
+        ))
     else:
         paths.update(registration_files(build, allow_missing=True))
     if group in {"boundary", "tooling"}:

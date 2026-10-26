@@ -53,6 +53,69 @@ must not be described as full product acceptance.
 | Broad shared build/lifetime change, designated prepared-state integration, instance-state stage exit, OFX cutover, or final release qualification | Complete product and boundary selections in all four presets, tooling once per native platform in Debug, corpus once in Linux Debug, and the applicable OFF, installed-host and package gates. |
 | Publication or merge | Existing required hosted checks on the actual candidate, plus local gates selected by the preceding rows. Hosted host-only results do not establish GPU or Resolve acceptance. |
 
+For a leaf, freeze an assertion-to-change map before dispatch: each selected
+case names the changed contract or actual consumer and the assertion it proves.
+Compile and run one representative new native/C11 consumer first, then exercise
+the required native platforms before broad fan-out. Run formatting and quality
+on changed producer/helper translation units early. Once the candidate is stable,
+run its required broad header-consumer quality closure once; do not repeat the same
+closure before and after cutover. Keep newly affected consumers and required compile
+contexts in scope even when their test family name differs.
+
+The Rust compiler-fixture suite can run an existing unittest method directly with
+the same environment used by `Quality.RustBoundaries`; this is a focused leaf check,
+not a replacement for the full suite at a named broad checkpoint. Name the exact
+method, Rust target, Debug/Release profile, enabled feature forms, artifact paths,
+and expected fixture/check count in the handoff. For example, the grain-frame method
+has six fixtures—complete, private, construction, default, mutation and borrow—and
+checks both default and `test-support`, for 12 logical fixture/feature cases in
+six Cargo checks per required profile/context. Accepted consumers, isolated E0451
+construction and the remaining rejected fixtures form three batches; every required
+primary code/marker remains checked in its own fixture file. Confirm the selected
+method, printed fixture batches and six nonempty invocation logs; an empty selection
+is invalid. The maintained prospective command
+must be recorded with concrete preset paths and exact expected membership in the
+existing handoff.
+
+The complete Debug tooling selection also has a standalone CMake entry that does
+not configure the product, CUDA or GoogleTest. Supply the same qualified Python
+3.13, native C/C++ tools, Git, Ninja and Rust 1.98.1 environment. For Linux:
+
+```sh
+cmake -S tests/tooling -B out/build/tooling-linux -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc-13
+ctest --test-dir out/build/tooling-linux -L tooling --parallel 4 \
+  --no-tests=error --output-on-failure
+```
+
+On Windows use `out/build/tooling-windows` and `-DCMAKE_C_COMPILER=clang-cl.exe`
+inside the qualified VS 18 environment. `Python3_EXECUTABLE` and
+`JUICER_TOOLING_CARGO` can select the qualified executables explicitly. Both entries
+use `tests/ToolingTests.cmake`; ordinary product CTest retains the same eleven
+Debug tooling members. Artifacts still route to the native Debug preset's
+`out/validation/` tree. Each entry uses its own CTest binary directory as the
+default working directory; commands and fixture roots use explicit checkout paths.
+
+Windows verification controls require Win32 long-path support for nested
+preparation receipts. An administrator can enable `LongPathsEnabled` under
+`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`; restart test processes after
+changing that policy. The qualified tool versions alone do not establish this
+filesystem capability.
+
+For WSL filesystem diagnosis, `JUICER_TOOLING_ARTIFACT_ROOT` can place synthetic
+fixtures under an absolute native Linux `out/validation/linux-debug` root. Configure
+a separate standalone build directory on that filesystem and record both paths;
+do not relocate an existing cache. This preserves the same tests and deadlines
+while separating Windows-mounted filesystem costs from test execution. Retain
+failed fixtures at their configured paths and keep the resulting qualification
+explicit about the filesystem used.
+
+Hosted Debug product, Release product, analysis and tooling jobs run independently
+on each OS. Product jobs compile every configured target, including GPU-only tests,
+then execute the host selection; Linux Debug also runs corpus checks. Analysis
+owns cumulative PR Debug quality and matching Release Rust quality. The original
+required check names aggregate all four child results and accept only success.
+
 Run each necessary platform/profile/package/feature combination once per stable
 relevant source, tool and configuration context. During editing, use the smallest
 owning checks; a stable leaf alone does not trigger the whole-product matrix.

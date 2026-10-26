@@ -335,6 +335,112 @@ class CheckQualityTests(IsolatedOwnerTests):
             self.assertNotIn("--features", outputs["default"])
             self.assertEqual(outputs["test-support"][-2:], ["--features", "test-support"])
 
+    def test_boundary_negative_checks_bind_code_marker_and_fixture(self) -> None:
+        module = __import__("test_rust_boundaries")
+        probe = module.RustBoundaryTests("test_valid_profile_consumers_compile")
+        expected = {"E0616": ("color.rgb_to_xyz",)}
+        valid = [{
+            "level": "error",
+            "code": {"code": "E0616"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_input_color_private.rs",
+                "text": [{"text": "let _ = color.rgb_to_xyz;"}],
+            }],
+        }]
+
+        probe.assert_rejected(
+            1, valid, expected, "quality_boundary_probe_input_color_private.rs"
+        )
+        # Compiler lints can add primary errors in the same fixture without
+        # replacing the required ownership diagnostic.
+        with_lint = valid + [{
+            "level": "error",
+            "code": {"code": "E0453"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_input_color_private.rs",
+                "text": [{"text": "unsafe attribute used without unsafe"}],
+            }],
+        }]
+        probe.assert_rejected(
+            1, with_lint, expected, "quality_boundary_probe_input_color_private.rs"
+        )
+        for diagnostics, fixture in (
+            (valid, "quality_boundary_probe_output_color_private.rs"),
+            ([{**valid[0], "code": {"code": "E0599"}}], "quality_boundary_probe_input_color_private.rs"),
+            ([{**valid[0], "spans": [{**valid[0]["spans"][0], "text": [{"text": "let _ = color.hash;"}]}]}],
+             "quality_boundary_probe_input_color_private.rs"),
+        ):
+            with self.subTest(fixture=fixture, diagnostics=diagnostics), self.assertRaises(AssertionError):
+                probe.assert_rejected(1, diagnostics, expected, fixture)
+
+    def test_boundary_fixture_batches_keep_success_and_failure_groups_separate(self) -> None:
+        module = __import__("test_rust_boundaries")
+        probe = module.RustBoundaryTests("test_valid_profile_consumers_compile")
+        probe.profiles = (False,)
+        identities = {
+            "accepted_a": "quality_boundary_probe_accepted_a.rs",
+            "accepted_b": "quality_boundary_probe_accepted_b.rs",
+            "private_a": "quality_boundary_probe_private_a.rs",
+            "private_b": "quality_boundary_probe_private_b.rs",
+            "construct": "quality_boundary_probe_construct.rs",
+        }
+        expected = {"E0616": ("private_a.field",)}
+        rejected = [{
+            "level": "error",
+            "code": {"code": "E0616"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_private_a.rs",
+                "text": [{"text": "let _ = private_a.field;"}],
+            }],
+        }, {
+            "level": "error",
+            "code": {"code": "E0616"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_private_b.rs",
+                "text": [{"text": "let _ = private_b.field;"}],
+            }],
+        }]
+        construction_error = [{
+            "level": "error",
+            "code": {"code": "E0451"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_construct.rs",
+                "text": [{"text": "Private { value: 1 }"}],
+            }],
+        }]
+        with (
+            patch.object(probe, "attach_many", side_effect=lambda owner, names: {
+                name: identities[name] for name in names
+            }) as attach,
+            patch.object(probe, "check_features", side_effect=[
+                [(0, []), (0, [])],
+                [(1, rejected), (1, rejected)],
+                [(1, construction_error), (1, construction_error)],
+            ]) as compile_features,
+        ):
+            probe.check_fixture_cases(
+                "film-juicer-plugin/src/lib.rs",
+                "film-juicer-plugin",
+                cases=(
+                    ("accepted_a", None),
+                    ("accepted_b", None),
+                    ("private_a", expected),
+                    ("private_b", {"E0616": ("private_b.field",)}),
+                    ("construct", {"E0451": ("Private { value: 1 }",)}),
+                ),
+            )
+
+        self.assertEqual(attach.call_count, 3)
+        self.assertEqual(attach.call_args_list[0].args[1], ("accepted_a", "accepted_b"))
+        self.assertEqual(attach.call_args_list[1].args[1], ("private_a", "private_b"))
+        self.assertEqual(attach.call_args_list[2].args[1], ("construct",))
+        self.assertEqual(compile_features.call_count, 3)
+
     def test_boundary_feature_failure_waits_for_the_other_command(self) -> None:
         module = __import__("test_rust_boundaries")
         probe = module.RustBoundaryTests("test_valid_profile_consumers_compile")

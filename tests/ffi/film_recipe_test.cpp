@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <thread>
 #include <bit>
 #include <cstdint>
@@ -357,6 +358,8 @@ int main(int argc, char** argv) try {
         return 0;
     }
     if (argc == 5 && (std::string_view(argv[3]) == "diffusion-frame" || std::string_view(argv[3]) == "diffusion-frame-products")) {
+        std::fprintf(stderr, "DiffusionFrame stage=fixture-read\n");
+        std::fflush(stderr);
         layouts();
         const auto manifest = read(argv[2]);
         const auto directory = std::filesystem::path(argv[2]).parent_path();
@@ -365,11 +368,17 @@ int main(int argc, char** argv) try {
         require(captured.at("preset") == argv[4] && edges.at("preset") == argv[4], "diffusion native contexts");
         for (const auto& row : edges.at("samples"))
             captured["samples"].push_back(row);
+        std::fprintf(stderr, "DiffusionFrame stage=values\n");
+        std::fflush(stderr);
         DiffusionFrameTest::values(captured, read(directory / "checked.json"));
+        std::fprintf(stderr, "DiffusionFrame stage=values-complete\n");
+        std::fflush(stderr);
         if (std::string_view(argv[3]) == "diffusion-frame")
             DiffusionFrameTest::boundary(captured, read(directory / "checked.json"));
         else
             require(DiffusionFrameTest::products(argv[1], read(directory / "inputs.json").at("products")) == captured.at("products"), "complete diffusion route products match unchanged native captures");
+        std::fprintf(stderr, "DiffusionFrame stage=complete\n");
+        std::fflush(stderr);
         return 0;
     }
 

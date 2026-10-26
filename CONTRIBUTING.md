@@ -120,7 +120,15 @@ components. Native formatting and tidy use LLVM 22; on Windows the qualified
 tools are under
 `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin`.
 The commands below expose individual checks. A handoff names the supported target,
-test and quality commands and their expected membership. Use `scripts/verify.py`
+test and quality commands and their expected membership. For a leaf, map each
+selected assertion to the changed contract or actual consumer, compile and run one
+representative new native/C11 consumer before platform fan-out, and run changed
+producer/helper quality early. After the candidate stabilizes, run its required
+broad header-consumer quality closure once. Rust compiler fixtures may use their
+existing named unittest method with the configured target/profile/features and
+explicit expected nonempty membership; retain the full suite at its named broad
+checkpoint. Record the concrete method command and all environment values in the
+handoff. Use `scripts/verify.py`
 within its supported development or checkpoint scope. Other focused work uses
 explicit owning CMake targets, named CTest groups, native quality selections and
 Cargo package/profile/feature commands. An unsupported selector does not trigger an
@@ -478,11 +486,15 @@ are disposable, while each run retains separate bounded command logs under
 `out/validation/<preset>/quality/`. Probe workspaces must inherit the repository's
 Cargo configuration. No probe manifests, publisher or runtime sealing are used.
 
-Both native CI jobs run product and boundary selections in Debug and Release.
-Tooling runs only in Debug on each native platform; Linux Debug owns the single
+Independent native CI product jobs run product and boundary selections in Debug
+and Release. Analysis owns cumulative Debug quality and matching Release Rust
+quality, with its own configured compile databases and generated inputs.
+Tooling uses the standalone Debug CTest entry on each native platform; Linux Debug owns the single
 corpus selection. The existing tooling-lint job remains responsible for maintained
 Python, shell and workflow lint. Direct probe diagnostics are uploaded for both
-profiles. Required migration-stage numerical, ABI, production and host gates keep
+profiles. The existing Linux/Windows required check names aggregate all four jobs;
+every missing or non-success child keeps that aggregate non-passing.
+Required migration-stage numerical, ABI, production and host gates keep
 their named checkpoint requirements; ordinary local handoff does not rerun an
 unchanged full matrix.
 

@@ -12,6 +12,15 @@ import subprocess
 import sys
 
 from shared_fixture import load_shared_fixture, original_capture_bytes
+from grain_probe_contract import (
+    GRAIN_FRAME_CASE_COUNT,
+    GRAIN_FRAME_CASE_IDS,
+    GRAIN_FRAME_CURVE_COUNT,
+    GRAIN_FRAME_CURVE_SAMPLE_COUNT,
+    GRAIN_FRAME_FAILURE_WORD_COUNT,
+    GRAIN_FRAME_INPUT_WORD_COUNT,
+    GRAIN_FRAME_OUTPUT_WORD_COUNT,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from execution import digest
@@ -173,7 +182,8 @@ def execute(arguments):
         b"TC fixture-only fault",
     ]
     consumed_paths = [root / "native/juicer_legacy_api.h", fixtures / "production-film.c.in",
-                      fixtures / "production-output-color.c.in", Path(__file__),
+                      fixtures / "production-output-color.c.in", fixtures / "grain_frame_abi_assertions.inc",
+                      fixtures / "grain_probe_contract.py", Path(__file__),
                       out / "production-film-expected.h"]
     for directory in [root / "Resources", root / "tests/film/fixtures",
                       root / "tests/film/input-fixtures", root / "tests/film/dir-fixtures"]:
@@ -429,7 +439,7 @@ def execute(arguments):
         if name == "film":
             grain_frame_results = [json.loads(line.removeprefix("GRAIN_FRAME_RESULT "))
                                    for line in output.splitlines() if line.startswith("GRAIN_FRAME_RESULT ")]
-            assert len(grain_frame_results) == 188 and grain_frame_results == grain_frame_spec["production_cases"], "complete grain frame production values/metadata/failures/clearing/diagnostic membership"
+            assert len(grain_frame_results) == GRAIN_FRAME_CASE_COUNT and grain_frame_results == grain_frame_spec["production_cases"], "complete grain frame production values/metadata/failures/clearing/diagnostic membership"
             dir_boundary_results = [json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
                                     for line in output.splitlines() if line.startswith("DIR_BOUNDARY_RESULT ")]
             assert len(dir_boundary_results) == 171 and dir_boundary_results == dir_boundary_spec["production_cases"], "complete DIR boundary production values/key/metadata/raw/lifetime membership"
@@ -1232,8 +1242,10 @@ def grain_frame_fixture(preset):
     captured = json.loads(payload.read_bytes())
     assert captured["preset"] == preset
     assert [len(captured[key]) for key in ("cases", "products", "primitives")] == [153, 44, 50]
-    assert len(spec["production_cases"]) == 188 and len(spec["production_inputs"]) == 188
-    assert {row["case"] for row in spec["production_cases"]} == set(spec["production_inputs"])
+    case_ids = tuple(row["case"] for row in spec["production_cases"])
+    assert case_ids == GRAIN_FRAME_CASE_IDS, "reviewed complete grain-frame production case membership"
+    assert len(case_ids) == GRAIN_FRAME_CASE_COUNT and len(set(case_ids)) == GRAIN_FRAME_CASE_COUNT
+    assert set(spec["production_inputs"]) == set(GRAIN_FRAME_CASE_IDS)
     return manifest, payload, checked, captured, spec
 
 
@@ -1244,13 +1256,19 @@ def expected_grain_frame_header(out):
         return "{" + ",".join("UINT64_C(" + str(v) + ")" for v in values) + "}"
 
     with (out / "production-film-expected.h").open("a") as stream:
-        stream.write("typedef struct { const char* name; uint32_t mode; size_t capacity; uint64_t input[42]; uint32_t counts[9], curves[9][8]; FjStatus status; uint64_t output[115], failure[4]; int output_valid, failure_valid, error_valid; const char* diagnostic; } GrainFrameRow;\n")
+        stream.write(f"#define FJ_GRAIN_FRAME_CASE_COUNT {GRAIN_FRAME_CASE_COUNT}U\n")
+        stream.write(f"#define FJ_GRAIN_FRAME_INPUT_WORD_COUNT {GRAIN_FRAME_INPUT_WORD_COUNT}U\n")
+        stream.write(f"#define FJ_GRAIN_FRAME_CURVE_COUNT {GRAIN_FRAME_CURVE_COUNT}U\n")
+        stream.write(f"#define FJ_GRAIN_FRAME_CURVE_SAMPLE_COUNT {GRAIN_FRAME_CURVE_SAMPLE_COUNT}U\n")
+        stream.write(f"#define FJ_GRAIN_FRAME_OUTPUT_WORD_COUNT {GRAIN_FRAME_OUTPUT_WORD_COUNT}U\n")
+        stream.write(f"#define FJ_GRAIN_FRAME_FAILURE_WORD_COUNT {GRAIN_FRAME_FAILURE_WORD_COUNT}U\n")
+        stream.write("typedef struct { const char* name; uint32_t mode; size_t capacity; uint64_t input[FJ_GRAIN_FRAME_INPUT_WORD_COUNT]; uint32_t counts[FJ_GRAIN_FRAME_CURVE_COUNT], curves[FJ_GRAIN_FRAME_CURVE_COUNT][FJ_GRAIN_FRAME_CURVE_SAMPLE_COUNT]; FjStatus status; uint64_t output[FJ_GRAIN_FRAME_OUTPUT_WORD_COUNT], failure[FJ_GRAIN_FRAME_FAILURE_WORD_COUNT]; int output_valid, failure_valid, error_valid; const char* diagnostic; } GrainFrameRow;\n")
         stream.write("static const GrainFrameRow grain_frame_rows[] = {\n")
         for row in spec["production_cases"]:
             source = spec["production_inputs"][row["case"]]
-            assert len(source["words"]) == 42 and len(source["curves"]) == 9
-            assert all(len(curve) <= 8 for curve in source["curves"])
-            assert row["output"] is None or len(row["output"]) == 115
+            assert len(source["words"]) == GRAIN_FRAME_INPUT_WORD_COUNT and len(source["curves"]) == GRAIN_FRAME_CURVE_COUNT
+            assert all(len(curve) <= GRAIN_FRAME_CURVE_SAMPLE_COUNT for curve in source["curves"])
+            assert row["output"] is None or len(row["output"]) == GRAIN_FRAME_OUTPUT_WORD_COUNT
             curves = "{" + ",".join("{" + ",".join("UINT32_C(" + str(v) + ")" for v in (curve or [0])) + "}" for curve in source["curves"]) + "}"
             counts = "{" + ",".join(str(len(curve)) for curve in source["curves"]) + "}"
             stream.write("{%s,%d,%d,%s,%s,%s,%s,%s,%s,%d,%d,%d,%s},\n" % (

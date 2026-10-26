@@ -33,6 +33,25 @@ endif()
 set(JUICER_TEST_ARTIFACT_ROOT
     "${PROJECT_SOURCE_DIR}/out/validation/${JUICER_TEST_PRESET_NAME}")
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/ToolingTests.cmake")
+if(CMAKE_HOST_WIN32)
+    set(JUICER_TOOLING_HOST_WINDOWS TRUE)
+else()
+    set(JUICER_TOOLING_HOST_WINDOWS FALSE)
+endif()
+juicer_register_tooling_tests(
+    ROOT "${PROJECT_SOURCE_DIR}"
+    ARTIFACT_ROOT "${JUICER_TEST_ARTIFACT_ROOT}"
+    PYTHON "${Python3_EXECUTABLE}"
+    CMAKE_COMMAND "${CMAKE_COMMAND}"
+    CTEST_COMMAND "${CMAKE_CTEST_COMMAND}"
+    CARGO "${JUICER_CARGO_EXECUTABLE}"
+    NINJA "${CMAKE_MAKE_PROGRAM}"
+    CC "${CMAKE_C_COMPILER}"
+    BUILD_TYPE "${CMAKE_BUILD_TYPE}"
+    HOST_WINDOWS "${JUICER_TOOLING_HOST_WINDOWS}"
+    TESTS_OUT JUICER_TOOLING_TESTS)
+
 set(JUICER_RUST_TEST_COMMAND
     "${JUICER_CARGO_EXECUTABLE}" test
     --locked
@@ -78,13 +97,6 @@ add_test(NAME Rust.Bridge
             ${JUICER_RUST_PROFILE_ARGUMENT})
 set_tests_properties(Rust.Bridge PROPERTIES
     LABELS "host" TIMEOUT 120 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-
-add_test(NAME Ffi.Host.RustBuild
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/run_rust_build_contract.py"
-        --cargo "${JUICER_CARGO_EXECUTABLE}" --cmake "${CMAKE_COMMAND}"
-        --ninja "${CMAKE_MAKE_PROGRAM}" --cc "${CMAKE_C_COMPILER}"
-        --artifacts "${JUICER_TEST_ARTIFACT_ROOT}/ffi/rust-build")
-set_tests_properties(Ffi.Host.RustBuild PROPERTIES LABELS "host" TIMEOUT 240)
 
 add_test(NAME Ffi.Host.NativeBoundary
     COMMAND "${Python3_EXECUTABLE}" -m unittest discover
@@ -513,71 +525,6 @@ else()
 endif()
 add_test(NAME ${route_development_test} COMMAND ${route_development_target})
 set_tests_properties(Route.Host.Bridge PROPERTIES LABELS "host" TIMEOUT 30)
-
-add_test(NAME Quality.Dispatcher
-    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
-        -s "${CMAKE_CURRENT_SOURCE_DIR}/quality"
-        -p test_check_quality.py
-        -v)
-set_tests_properties(Quality.Dispatcher PROPERTIES
-    LABELS "host"
-    TIMEOUT 180
-    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
-
-add_test(NAME Quality.ToolingLint
-    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
-        -s "${CMAKE_CURRENT_SOURCE_DIR}/quality" -p test_tooling_lint.py -v)
-set_tests_properties(Quality.ToolingLint PROPERTIES
-    LABELS "host" TIMEOUT 60 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
-
-
-# Development verification controls need native compilers, but no driver/device.
-# The first delivery supports the two Debug development presets.
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(verification_group IN ITEMS Execution BuildEvidence BuildRegistration Verify Checkpoint PreparationRenewal)
-        if(verification_group STREQUAL "BuildEvidence")
-            set(verification_pattern "test_build_evidence.py")
-        elseif(verification_group STREQUAL "BuildRegistration")
-            set(verification_pattern "test_build_registration.py")
-        elseif(verification_group STREQUAL "Checkpoint")
-            set(verification_pattern "test_checkpoint.py")
-        elseif(verification_group STREQUAL "PreparationRenewal")
-            set(verification_pattern "test_preparation_renewal.py")
-        elseif(verification_group STREQUAL "Execution")
-            set(verification_pattern "test_execution.py")
-        else()
-            set(verification_pattern "test_verify.py")
-        endif()
-        add_test(NAME "Quality.${verification_group}"
-            COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
-                -s "${CMAKE_CURRENT_SOURCE_DIR}/quality" -p "${verification_pattern}" -f -v --durations 10)
-        if(verification_group STREQUAL "BuildEvidence")
-            set(verification_timeout 1800)
-        elseif(verification_group STREQUAL "PreparationRenewal" AND CMAKE_HOST_WIN32)
-            set(verification_timeout 300)
-        else()
-            set(verification_timeout 600)
-        endif()
-        set_tests_properties("Quality.${verification_group}" PROPERTIES LABELS "host" TIMEOUT ${verification_timeout}
-            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/verification-controls")
-        if(CMAKE_HOST_WIN32 AND (verification_group STREQUAL "Checkpoint" OR verification_group STREQUAL "PreparationRenewal"))
-            # Full tool-byte validation is I/O heavy; avoid overlap at the four-worker preset limit.
-            set_tests_properties("Quality.${verification_group}" PROPERTIES PROCESSORS 4)
-        endif()
-    endforeach()
-endif()
-
-add_test(NAME Ctest.Host.Report
-    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
-        -s "${CMAKE_CURRENT_SOURCE_DIR}/ctest" -p test_report.py -v)
-set_tests_properties(Ctest.Host.Report PROPERTIES
-    LABELS "host" TIMEOUT 30 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
-
-add_test(NAME Ctest.Host.Repetition
-    COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
-        -s "${CMAKE_CURRENT_SOURCE_DIR}/ctest" -p test_repeat.py -v)
-set_tests_properties(Ctest.Host.Repetition PROPERTIES LABELS "host" TIMEOUT 60
-    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;JUICER_CTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND};JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/ctest-repetition-controls")
 
 add_test(NAME Quality.RustNaming
     COMMAND "${CMAKE_COMMAND}" -E env
@@ -1411,9 +1358,6 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 
 
 # Relevance and runtime prerequisites are independent. Every group has one owner.
-set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Execution
-    Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
-    Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
 set(juicer_boundary_tests Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
@@ -1421,7 +1365,7 @@ set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat
     Gamut.Host.Output.FixtureFormat)
 get_property(juicer_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(juicer_test IN LISTS juicer_registered_tests)
-    if(juicer_test IN_LIST juicer_tooling_tests)
+    if(juicer_test IN_LIST JUICER_TOOLING_TESTS)
         set(juicer_relevance tooling)
     elseif(juicer_test IN_LIST juicer_boundary_tests)
         set(juicer_relevance boundary)

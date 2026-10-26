@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -344,7 +345,12 @@ class ArtifactSelectionTests(unittest.TestCase):
             self.assertIn("path: ${{ steps.failed-controls.outputs.paths }}", text)
             self.assertIn("include-hidden-files: true", text)
             self.assertIn("if: always() && steps.failed-controls.outputs.paths != ''", text)
-            self.assertEqual(text.count("Testing/Temporary/LastTest.log"), 2)
+            self.assertEqual(text.count("Testing/Temporary/LastTest.log"), 3)
+            artifacts = re.findall(r"^          name: (.+)$", text, re.M)
+            self.assertEqual(len(artifacts), len(set(artifacts)))
+            self.assertIn(f"{native}-tooling-results", artifacts)
+            for lane in ("product-debug", "product-release", "analysis", "tooling"):
+                self.assertIn(f"{native}-{lane}-failed-controls", artifacts)
             self.assertNotIn("out/validation/**", text)
 
 

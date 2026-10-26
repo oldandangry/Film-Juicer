@@ -97,8 +97,14 @@ class BuildEvidenceTests(unittest.TestCase):
         parent = ((Path(artifact_root) if artifact_root else ROOT / "out/validation" / preset)
                   / "build-evidence-controls")
         parent.mkdir(parents=True, exist_ok=True)
-        self.temporary = tempfile.TemporaryDirectory(dir=parent, delete=False)
-        self.root = Path(self.temporary.name).resolve()
+        temporary_parent = str(parent.resolve())
+        if os.name == "nt" and not temporary_parent.startswith("\\\\?\\"):
+            # Cargo creates incremental objects beyond MAX_PATH even when the
+            # host disables ordinary long paths. Keep this spelling in cleanup.
+            temporary_parent = ("\\\\?\\UNC\\" + temporary_parent[2:]
+                                if temporary_parent.startswith("\\\\") else "\\\\?\\" + temporary_parent)
+        self.temporary = tempfile.TemporaryDirectory(dir=temporary_parent, delete=False)
+        self.root = (parent / Path(self.temporary.name).name).resolve()
 
         def finish_fixture():
             outcome = record_fixture(self.root, self)
@@ -1975,6 +1981,20 @@ class FixtureLifetimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as artifact_root:
             case, result = self.run_fixture(artifact_root, False, lambda case: None)
             self.assertTrue(result.wasSuccessful())
+            self.assertFalse(case.root.exists())
+
+    def test_cleanup_handles_long_descendant_paths(self):
+        def create_long_descendant(case):
+            path = Path(case.temporary.name) / ("incremental-" + "a" * 90) / ("session-" + "b" * 90) / ("c" * 90 + ".o")
+            self.assertGreater(len(str(path)), 260)
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"incremental object")
+            self.assertEqual(path.read_bytes(), b"incremental object")
+            self.assertFalse(str(case.root).startswith("\\\\?\\"))
+
+        with tempfile.TemporaryDirectory() as artifact_root:
+            case, result = self.run_fixture(artifact_root, False, create_long_descendant)
+            self.assertTrue(result.wasSuccessful(), result.errors)
             self.assertFalse(case.root.exists())
 
     def test_diagnostic_opt_in_retains_successful_build_fixture(self):

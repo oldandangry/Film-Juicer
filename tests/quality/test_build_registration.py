@@ -4,6 +4,7 @@ from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,12 @@ import build_evidence
 import execution
 
 ROOT = Path(__file__).resolve().parents[2]
+
+TOOLING_TESTS = (
+    "Quality.Dispatcher", "Quality.ToolingLint", "Quality.Execution", "Quality.BuildEvidence",
+    "Quality.BuildRegistration", "Quality.Verify", "Quality.Checkpoint", "Quality.PreparationRenewal",
+    "Ctest.Host.Report", "Ctest.Host.Repetition", "Ffi.Host.RustBuild",
+)
 
 
 class BuildTests(unittest.TestCase):
@@ -83,6 +90,49 @@ class BuildTests(unittest.TestCase):
         self.lease = execution.OutputLease(self.root, self.build)
         self.lease.__enter__()
         self.addCleanup(self.lease.__exit__, None, None, None)
+
+    def test_shared_tooling_entry_has_exact_members_and_rejects_an_omission(self):
+        product_entry = ROOT / "tests/CMakeLists.txt"
+        standalone_entry = ROOT / "tests/tooling/CMakeLists.txt"
+        shared_module = ROOT / "tests/ToolingTests.cmake"
+        self.assertIn('include("${CMAKE_CURRENT_SOURCE_DIR}/ToolingTests.cmake")', product_entry.read_text())
+        self.assertIn('include("${JUICER_TOOLING_ROOT}/tests/ToolingTests.cmake")', standalone_entry.read_text())
+        self.assertIn("juicer_register_tooling_tests(", product_entry.read_text())
+        self.assertIn("juicer_register_tooling_tests(", standalone_entry.read_text())
+
+        cmake = shutil.which("cmake")
+        ctest = shutil.which("ctest")
+        ninja = shutil.which("ninja")
+        self.assertTrue(cmake and ctest and ninja, "standalone registration needs CMake, CTest and Ninja")
+
+        def tooling_members(module_text):
+            with tempfile.TemporaryDirectory(dir=self.root) as directory:
+                checkout = Path(directory) / "checkout"
+                (checkout / "tests/tooling").mkdir(parents=True)
+                (checkout / "tests/ToolingTests.cmake").write_text(module_text)
+                (checkout / "tests/tooling/CMakeLists.txt").write_text(standalone_entry.read_text())
+                build = Path(directory) / "build"
+                subprocess.run(
+                    [cmake, "-S", str(checkout / "tests/tooling"), "-B", str(build), "-G", "Ninja",
+                     "-DCMAKE_BUILD_TYPE=Debug", "-DPython3_EXECUTABLE=" + sys.executable,
+                     "-DCMAKE_C_COMPILER=" + ("clang-cl.exe" if os.name == "nt" else "/usr/bin/gcc-13"),
+                     "-DJUICER_TOOLING_CARGO=" + sys.executable, "-DJUICER_TOOLING_ROOT=" + str(checkout)],
+                    check=True, capture_output=True, text=True, timeout=120)
+                inventory = json.loads(subprocess.check_output(
+                    [ctest, "--test-dir", str(build), "--show-only=json-v1"],
+                    text=True, timeout=30))
+                return {
+                    test["name"] for test in inventory["tests"]
+                    if "tooling" in next((property_["value"] for property_ in test.get("properties", [])
+                                          if property_["name"] == "LABELS"), [])
+                }
+
+        source = shared_module.read_text()
+        self.assertEqual(tooling_members(source), set(TOOLING_TESTS))
+        omitted_source = source.replace("    list(APPEND tooling_tests Ctest.Host.Report)\n", "", 1)
+        self.assertNotEqual(omitted_source, source)
+        with self.assertRaises(AssertionError):
+            self.assertEqual(tooling_members(omitted_source), set(TOOLING_TESTS))
 
     def prepare(self):
         _, self.prepared = build_evidence.prepare_build(self.campaign, "prepare", source=self.source,
