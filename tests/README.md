@@ -381,6 +381,10 @@ control logs include
 the ten slowest unittest cases. These scheduling choices preserve complete test
 membership, tool/input checks and the existing deadlines.
 
+Windows Debug's `Optics.Host.DiffusionFrameProducts` also reserves four slots to
+keep its full numerical fixture separate from other host tests at the standard
+worker limit. Its 180-second deadline and complete case set remain unchanged.
+
 `Ffi.Host.InputColorPreparation` uses two worker slots. Its admission hooks and
 asset caches belong to its process, and its resources and parity fixtures are
 read-only. It can overlap other eligible groups after the full build completes.

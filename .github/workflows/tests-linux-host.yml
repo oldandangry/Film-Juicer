@@ -37,7 +37,7 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements.txt
 
-      - name: Install GCC 13, Ninja, and CUDA Toolkit 13.2
+      - name: Install GCC 13, Ninja, CUDA Toolkit 13.2, and LLVM object tools
         shell: bash
         run: |
           set -euo pipefail
@@ -46,6 +46,14 @@ jobs:
           sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
           sudo apt-get update
           sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2 libcurand-dev-13-2
+          wget -qO "$RUNNER_TEMP/llvm-22.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
+          gpg --dearmor --yes --output "$RUNNER_TEMP/llvm-22.gpg" "$RUNNER_TEMP/llvm-22.asc"
+          sudo install -m 0644 "$RUNNER_TEMP/llvm-22.gpg" /usr/share/keyrings/llvm-22.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | \
+            sudo tee /etc/apt/sources.list.d/llvm-22.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y llvm-22
+          llvm-nm-22 --version
           for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
             test -f "$CUDAToolkit_ROOT/include/$header" || {
               echo "::error::CUDA header missing: $CUDAToolkit_ROOT/include/$header"
@@ -139,7 +147,7 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements.txt
 
-      - name: Install GCC 13, Ninja, and CUDA Toolkit 13.2
+      - name: Install GCC 13, Ninja, CUDA Toolkit 13.2, and LLVM object tools
         shell: bash
         run: |
           set -euo pipefail
@@ -148,6 +156,14 @@ jobs:
           sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
           sudo apt-get update
           sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2 libcurand-dev-13-2
+          wget -qO "$RUNNER_TEMP/llvm-22.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
+          gpg --dearmor --yes --output "$RUNNER_TEMP/llvm-22.gpg" "$RUNNER_TEMP/llvm-22.asc"
+          sudo install -m 0644 "$RUNNER_TEMP/llvm-22.gpg" /usr/share/keyrings/llvm-22.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | \
+            sudo tee /etc/apt/sources.list.d/llvm-22.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y llvm-22
+          llvm-nm-22 --version
           for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
             test -f "$CUDAToolkit_ROOT/include/$header" || {
               echo "::error::CUDA header missing: $CUDAToolkit_ROOT/include/$header"

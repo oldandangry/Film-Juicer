@@ -258,6 +258,10 @@ add_test(NAME Ffi.Host.DiffusionFrame COMMAND JuicerFilmRecipeTests
 add_test(NAME Optics.Host.DiffusionFrameProducts COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/diffusion/frame-fixtures/manifest.json" diffusion-frame-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.DiffusionFrame Optics.Host.DiffusionFrameProducts PROPERTIES LABELS "host" TIMEOUT 180)
+if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # Keep the full numerical fixture separate at the preset's four-worker limit.
+    set_tests_properties(Optics.Host.DiffusionFrameProducts PROPERTIES PROCESSORS 4)
+endif()
 add_test(NAME Ffi.Host.HalationFrame COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation/frame-fixtures/manifest.json" halation-frame "${JUICER_TEST_PRESET_NAME}")
 add_test(NAME Optics.Host.HalationFrameProducts COMMAND JuicerFilmRecipeTests

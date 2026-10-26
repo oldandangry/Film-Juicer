@@ -112,8 +112,7 @@ namespace DiffusionFrameTest {
     Json products(const std::filesystem::path& resources, const Json& specs) {
         const auto started = std::chrono::steady_clock::now();
         auto progress = [&](const char* stage, const std::string& name) {
-            std::fprintf(stderr, "DiffusionFrame stage=%s case=%s seconds=%.3f\n", stage, name.c_str(),
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+            std::fprintf(stderr, "DiffusionFrame stage=%s case=%s seconds=%.3f\n", stage, name.c_str(), std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
             std::fflush(stderr);
         };
         progress("bootstrap", "");

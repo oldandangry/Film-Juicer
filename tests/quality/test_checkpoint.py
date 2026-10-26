@@ -3011,6 +3011,11 @@ class MembershipTests(unittest.TestCase):
                 self.assertIn("--no-tests=error", block)
                 self.assertIn(f"out/validation/{preset}/quality/rust-naming/**", block)
                 self.assertIn(f"out/validation/{preset}/quality/rust-boundaries/**", block)
+                if native == "linux":
+                    # NativeBoundary inspects real ordinary objects in both product lanes.
+                    self.assertIn("llvm-toolchain-noble-22 main", block)
+                    self.assertRegex(block, r"sudo apt-get install[^\n]*\bllvm-22\b")
+                    self.assertIn("llvm-nm-22 --version", block)
                 if native == "windows":
                     self.assertIn(f"out/build/{preset}/juicer.ofx", block)
                     for operation in ("NativeLibrary]::Load", "TryGetExport", "OfxGetNumberOfPlugins", "OfxGetPlugin", "NativeLibrary]::Free"):
