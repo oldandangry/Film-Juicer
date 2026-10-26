@@ -275,6 +275,7 @@ class SharedFixtureTests(unittest.TestCase):
         manifest = json.loads((root / "manifest.json").read_bytes())
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
         self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        self.assertEqual(set(manifest["payloads"].values()), {"linux-payload.json", "windows-clang-payload.json"})
         for name, expected in manifest["sha256"].items():
             self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
         for preset in PRESETS:
@@ -287,8 +288,21 @@ class SharedFixtureTests(unittest.TestCase):
                 self.assertEqual(len(row["weights"]), row["count"])
                 self.assertTrue(all(isinstance(word, int) and 0 <= word <= 0xffffffff for word in row["weights"]))
             self.assertTrue(any("fir-dir" in row["name"] and row["count"] > 0 for row in captured["cases"]))
+            original = deepcopy(captured)
+            provenance = original.pop("provenance")
+            ending = "LF" if preset.startswith("linux-") else "CRLF"
+            self.assertEqual(hashlib.sha256(original_capture_bytes(original, ending)).hexdigest(), provenance["capture_sha256"])
         self.assertEqual(len(manifest["production_cases"]), 201)
         self.assertEqual(len(set(manifest["production_cases"])), 201)
+        for native in ("linux", "windows-clang"):
+            debug = load_shared_fixture(root / manifest["presets"][native + "-debug"]["native"])
+            release = load_shared_fixture(root / manifest["presets"][native + "-release"]["native"])
+            self.assertEqual(debug["cases"], release["cases"])
+            debug["cases"][0]["weights"].append(123)
+            debug["provenance"].clear()
+            self.assertNotEqual(debug["cases"], release["cases"])
+            self.assertTrue(release["provenance"])
+            self.assertEqual(load_shared_fixture(root / manifest["presets"][native + "-release"]["native"]), release)
 
     def test_scanner_post_complete_frozen_contexts(self):
         root = Path(__file__).parents[1] / "scanner/post-effects-fixtures"

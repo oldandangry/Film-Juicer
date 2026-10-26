@@ -110,6 +110,12 @@ while separating Windows-mounted filesystem costs from test execution. Retain
 failed fixtures at their configured paths and keep the resulting qualification
 explicit about the filesystem used.
 
+The tooling job reports cumulative verifier scope using the existing source policy.
+This rollout is report-only: all tooling still executes, and every aggregate child
+must succeed. A naturally occurring candidate report and a separately reviewed
+activation change are required before any skips. Missing/failed decisions never
+mean a test passed.
+
 Hosted Debug product, Release product, analysis and tooling jobs run independently
 on each OS. Product jobs compile every configured target, including GPU-only tests,
 then execute the host selection; Linux Debug also runs corpus checks. Analysis
@@ -1501,6 +1507,12 @@ identities, FIR/YVV separation, scratch and context-lifetime cases remain active
 Both Release OFF C11 probes execute 201 Gaussian value/failure cases, preserving
 all earlier probe memberships, including 410 post-effects and 41 LUT descriptor
 rows. The local Box allocation still has the established allocator-abort limit.
+
+Gaussian Debug/Release captures share exact payload bytes within each platform;
+four context sidecars preserve distinct provenance and original LF/CRLF capture
+hashes. Logical cases, primitive exceptions and mutable reader isolation remain.
+The print-illuminant test supplement is immutable per process and parsed once;
+ordered patch validation and independent caller-owned patched JSON still apply.
 
 ### Frame domains and physical pixel size
 

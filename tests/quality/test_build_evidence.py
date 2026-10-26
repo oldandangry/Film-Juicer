@@ -466,9 +466,7 @@ class BuildEvidenceTests(unittest.TestCase):
             build_evidence.prepare_targets(root, preset, ["juicer"])
         self.assertEqual(pending.read_text(), '{"protocol":"legacy"}\n')
 
-    @unittest.skipIf(os.name == "nt", "the exact legacy exception is Linux-only")
-    def test_legacy_disposition_is_exact_drained_and_separate_from_preparation(self):
-        self.prepare()
+    def assert_legacy_disposition_is_exact_drained(self):
         preset = "linux-release"
         build = self.root / "out/build" / preset
         build.mkdir(parents=True)
@@ -697,6 +695,8 @@ class BuildEvidenceTests(unittest.TestCase):
             finally:
                 baseline.write_bytes(original)
         self.execute()
+        if os.name != "nt":
+            self.assert_legacy_disposition_is_exact_drained()
 
     def test_restored_timestamp_rust_body_is_observed_through_native_executable(self):
         self.enable_rust()

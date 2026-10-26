@@ -16,7 +16,7 @@ matching native Debug/Release contexts using ordinary safe Rust f64 exp.
 
 Every final f32 array agrees across contexts. Two positive-capture grain rows
 have distinct selected Linux/Windows f64 exp primitive words; they remain in the
-separate context payloads. No primitive tolerance, new evaluator, mirrored
+separate platform payloads. No primitive tolerance, new evaluator, mirrored
 half-kernel or normalization repair is used. Arithmetic promotes sigma first,
 sums ascending unrounded exp results while storing first-rounded f32 samples,
 then normalizes those samples in f64 and rounds to f32 again.
@@ -24,3 +24,9 @@ then normalizes those samples in f64 and rounds to f32 again.
 C++, Rust and the final C11 production probe read complete arrays and exact
 radius/count/sigma bits. GPU consumers download real cache storage. Raw/facade
 faults remain testing-ON only. Ordinary tests never write this directory.
+
+Each platform's Debug and Release logical captures share one byte-identical
+payload. Four distinct context sidecars retain their preset and provenance.
+Remove `provenance` from the reconstructed object and serialize with the existing
+original-capture helper (LF for Linux, CRLF for Windows) to recover the recorded
+capture SHA-256. Each load and patch still owns independent mutable JSON.

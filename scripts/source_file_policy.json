@@ -1,5 +1,17 @@
 {
   "schemaVersion": 1,
+  "verifierIndependentPrefixes": [
+    "src/",
+    "rust/film-juicer-core/src/",
+    "rust/film-juicer-plugin/src/"
+  ],
+  "verifierIndependentExtensions": [".cpp", ".cu", ".rs"],
+  "verifierRequiredPaths": [
+    "src/ScanRoute.cpp",
+    "src/RenderRecipe.cpp",
+    "rust/film-juicer-core/src/route.rs",
+    "rust/film-juicer-core/src/color/output.rs"
+  ],
   "sourceRoot": "src",
   "supportedExtensions": [
     ".c",

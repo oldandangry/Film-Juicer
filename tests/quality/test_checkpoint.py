@@ -2228,11 +2228,12 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             self.assertEqual(self.state["prepare"]["status"], "failed")
             self.assertEqual(first["payloads"], self.state["prepare"]["payloads"])
 
-    def test_preparation_repair_rejects_unproved_process_receipt(self):
+    def test_preparation_receipt_and_owner_permutations_preserve_one_baseline(self):
         first = self.prepare_compiled_project()
         record = json.loads(Path(first["receipt"]).read_text())
         process = Path(record["process_tree"]["receipt"])
-        document = json.loads(process.read_text())
+        original_process = process.read_bytes()
+        document = json.loads(original_process)
         document["drained"] = False
         process.write_text(json.dumps(document))
         with patch.object(Campaign, "run", side_effect=AssertionError("dispatched with unproved drainage")):
@@ -2242,9 +2243,8 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                         self.state, dict(os.environ), timeout=60, repeat_reason="diagnosed process proof failure")
                 self.assertEqual(self.state["prepare"]["status"], "failed")
                 self.assertEqual(first["payloads"], self.state["prepare"]["payloads"])
+        process.write_bytes(original_process)
 
-    def test_preparation_identity_requires_exact_artifacts_and_current_producer(self):
-        first = self.prepare_compiled_project()
         receipt = Path(first["receipt"]).read_bytes()
         expected = qualification.preparation_identity(self.build, first)
         candidate = {**first, "payloads": dict(first["payloads"])}
@@ -2265,6 +2265,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         baseline.write_text(json.dumps(changed))
         with self.assertRaisesRegex(ValueError, "latest completed preparation"):
             qualification.preparation_identity(self.build, first)
+        baseline.write_bytes(original)
         self.assertEqual(Path(first["receipt"]).read_bytes(), receipt)
 
     def test_restored_time_edit_exposes_stale_behavior_before_preparation(self):
@@ -3027,6 +3028,12 @@ class MembershipTests(unittest.TestCase):
             self.assertIn(f"out/validation/{family}-debug", tooling)
             self.assertNotIn("Install CUDA", tooling)
             self.assertNotIn("cmake --preset", tooling)
+            self.assertIn("Report cumulative verifier scope (skips disabled)", tooling)
+            self.assertIn("github.event.pull_request.base.sha || github.event.before", tooling)
+            self.assertIn("SCOPE_CANDIDATE: ${{ github.sha }}", tooling)
+            self.assertIn("--verifier-scope-output", tooling)
+            self.assertIn("subprocess.run(command, check=True)", tooling)
+            self.assertIn("verifier-scope.json", tooling)
             for obsolete in ("--probe-manifest", "JUICER_RUST_PROBE_MANIFEST", "probe_evidence.py"):
                 self.assertNotIn(obsolete, text)
 
@@ -3067,6 +3074,13 @@ class MembershipTests(unittest.TestCase):
                     env={**os.environ, "REQUIRED_RESULTS": json.dumps(document)},
                     capture_output=True, text=True, timeout=10).returncode
             self.assertEqual(run(success), 0)
+            # Report-only decisions never authorize a skipped lane, even when
+            # the complete same-candidate classification says it is unnecessary.
+            for decision in ({"complete": True, "required": False, "candidate": "current"},
+                             {"complete": True, "required": True, "candidate": "current"},
+                             {"complete": False}, {}, None):
+                tooling = {"result": "skipped", "outputs": {"classification": decision}}
+                self.assertNotEqual(run({**success, f"{native}-tooling": tooling}), 0)
             for name in sorted(expected):
                 for status in ("failure", "cancelled", "timed_out", "skipped", "", None):
                     with self.subTest(native=native, child=name, status=status):

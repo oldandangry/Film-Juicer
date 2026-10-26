@@ -49,6 +49,54 @@ class IsolatedOwnerTests(unittest.TestCase):
 
 
 class CheckQualityTests(IsolatedOwnerTests):
+    def test_verifier_scope_is_conservative_for_dependencies_and_uncertainty(self):
+        root = SCRIPT_PATH.parents[1]
+        policy = check_quality.load_policy(root)
+        head = "a" * 40
+        for name, required in (
+            ("src/Scanner.cpp", False), ("rust/film-juicer-core/src/optics/gaussian.rs", False),
+            ("src/ScanRoute.cpp", True), ("src/RenderRecipe.cpp", True),
+            ("rust/film-juicer-core/src/route.rs", True),
+            ("rust/film-juicer-core/src/color/output.rs", True),
+            ("tests/quality/test_checkpoint.py", True), ("scripts/execution.py", True),
+            ("cmake/JuicerRust.cmake", True), ("CMakePresets.json", True),
+            ("rust-toolchain.toml", True), ("Cargo.lock", True),
+            (".github/workflows/tests-linux-host.yml", True),
+            ("tests/ToolingTests.cmake", True), ("tests/ctest/control_artifacts.py", True),
+            ("src/GeneratedColorSpaces.cpp", True), ("src/Scanner.h", True),
+            ("unknown/input", True),
+        ):
+            with self.subTest(name=name), patch.object(check_quality, "run_git", side_effect=[
+                    head.encode(), b"base", b"M\0" + name.encode() + b"\0", b""]):
+                report = check_quality.verifier_scope(root, "pr-base", head, policy)
+                self.assertEqual(report["required"], required)
+                self.assertTrue(report["complete"])
+                self.assertEqual(report["candidate"], head)
+                self.assertEqual(report["mode"], "report-only")
+        for payload, statuses in ((b"D\0src/Scanner.cpp\0", b"src/Scanner.cpp\0"),
+                                  (b"R100\0src/old.cpp\0src/new.cpp\0", b"src/old.cpp\0src/new.cpp\0"),
+                                  (b"A\0src/new.cpp\0", b"src/new.cpp\0"),
+                                  (b"M\0", b"")):
+            with self.subTest(payload=payload), patch.object(check_quality, "run_git", side_effect=[
+                    head.encode(), b"base", payload, statuses]):
+                self.assertTrue(check_quality.verifier_scope(root, "base", head, policy)["required"])
+        for base, side_effect in ((None, [head.encode()]),
+                                  ("absent", [head.encode(), check_quality.QualityError("missing base")])):
+            with self.subTest(base=base), patch.object(check_quality, "run_git", side_effect=side_effect):
+                self.assertTrue(check_quality.verifier_scope(root, base, head, policy)["required"])
+        with patch.object(check_quality, "run_git", side_effect=check_quality.QualityError("invalid candidate")):
+            with self.assertRaisesRegex(check_quality.QualityError, "invalid candidate"):
+                check_quality.verifier_scope(root, "base", head, policy)
+
+    def test_verifier_scope_compares_merge_base_to_candidate(self):
+        root = SCRIPT_PATH.parents[1]
+        with patch.object(check_quality, "run_git", side_effect=[b"head", b"ancestor", b"M\0src/Scanner.cpp\0", b""]) as git:
+            report = check_quality.verifier_scope(root, "pr-base", "candidate", check_quality.load_policy(root))
+        self.assertFalse(report["required"])
+        self.assertIn(unittest.mock.call(root, ["merge-base", "pr-base", "head"]), git.call_args_list)
+        for call in git.call_args_list[2:]:
+            self.assertEqual(call.args[1][-3:], ["ancestor", "head", "--"])
+
     def test_bash_source_policy_accepts_native_windows_crlf_rows(self) -> None:
         bash = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "/bin/bash"
         helper = SCRIPT_PATH.parent / "lib/style_common.sh"

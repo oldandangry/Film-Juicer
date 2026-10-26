@@ -399,6 +399,30 @@ jobs:
           ctest --version
           cargo --version
 
+      - name: Report cumulative verifier scope (skips disabled)
+        shell: python
+        env:
+          SCOPE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SCOPE_CANDIDATE: ${{ github.sha }}
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          report = Path("out/validation/linux-debug/verifier-scope.json")
+          base = os.environ.get("SCOPE_BASE", "")
+          command = [sys.executable, "-B", "scripts/check-quality.py",
+                     "--preset", "linux-debug", "--candidate", os.environ["SCOPE_CANDIDATE"],
+                     "--verifier-scope-output", str(report)]
+          command += ["--base", base] if base else ["--all-owned"]
+          subprocess.run(command, check=True)
+          decision = json.loads(report.read_text(encoding="utf-8"))
+          scope = "required by scope" if decision["required"] else "not required by scope"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"Verifier integration: {scope}. Report-only: complete selection runs.\n")
+
       - name: Configure standalone tooling tests
         shell: bash
         run: |
@@ -443,6 +467,7 @@ jobs:
           name: linux-tooling-results
           path: |
             out/validation/linux-debug/tooling-junit.xml
+            out/validation/linux-debug/verifier-scope.json
             out/validation/linux-debug/ffi/rust-build/**
             out/build/tooling-linux/Testing/Temporary/LastTest.log
           if-no-files-found: warn

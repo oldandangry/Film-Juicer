@@ -463,7 +463,7 @@ if(UNIX)
     set_property(TARGET JuicerGaussianKernelTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 add_test(NAME Resource.Gpu.GaussianKernel COMMAND JuicerGaussianKernelTests
-    "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/${JUICER_TEST_PRESET_NAME}-payload.json")
+    "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/${JUICER_TEST_PRESET_NAME}.json")
 set_tests_properties(Resource.Gpu.GaussianKernel PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 
 # Deferred retirement executes the real drain with a bounded post-extraction seam.
