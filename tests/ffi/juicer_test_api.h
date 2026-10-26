@@ -427,8 +427,15 @@ FjStatus fj_test_dir_boundary_c_describe(const FjDirBoundaryInput*, uint64_t*, F
 FjStatus fj_test_dir_boundary_c_acquire(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*);
 FjStatus fj_test_dir_boundary_c_view(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*);
 FjStatus fj_test_dir_boundary_c_release(FjDirBoundaryOwner*, FjErrorBuffer*);
+/* Same checked body and synchronous storage contract as the production grain frame edge. */
+FjStatus fj_test_grain_frame_prepare(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*);
+/* Closed one-shot faults: 0 clear, 1 entry panic, 2 reached layer panic,
+ * 3 presence, 4 association, 5 Gaussian radius, 6 full-frame flag. */
+FjStatus fj_test_grain_frame_fault(uint32_t);
+int fj_test_grain_frame_c_check(uint32_t, const FjGrainFrameInput*, const FjGrainFrameMath*, FjStatus, FjGrainFrameFailure, const char*);
 #ifdef __cplusplus
 }
 #endif
+
 
 #endif

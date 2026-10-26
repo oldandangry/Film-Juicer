@@ -21,6 +21,54 @@
 namespace {
     FjPreparedHostData make_fixed_input();
 
+    TEST(PreparedProjection, GrainFramesKeepCapturedMathHashAndRecipeMetadata) {
+        const auto directory = std::filesystem::path(__FILE__).parent_path().parent_path() / "grain/frame-fixtures";
+        const auto manifest = nlohmann::json::parse(std::ifstream(directory / "manifest.json"));
+        const char* preset = std::getenv("JUICER_TEST_PRESET_NAME");
+        ASSERT_NE(preset, nullptr);
+        const auto captured = nlohmann::json::parse(std::ifstream(directory / manifest.at("presets").at(preset).at("native").get<std::string>()));
+        ASSERT_EQ(captured.at("cases").size(), 153u);
+        for (const auto& row : captured.at("cases")) {
+            if (!row.at("success").get<bool>() || !row.at("native").at("active").get<bool>())
+                continue;
+            SCOPED_TRACE(row.at("input").at("name").get<std::string>());
+            FjPreparedHostData wire = make_fixed_input();
+            JuicerCuda::PreparedDescriptors source, decoded;
+            std::string diagnostic;
+            ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, source, diagnostic)) << diagnostic;
+            const auto amplitude = source.grainRecipe.amplitude;
+            const auto independent = source.grainRecipe.chromaIndependentWeight;
+            const auto finite = source.grainRecipe.grainLayerAxisFinite;
+            const auto prefix = source.grainRecipe.grainLayerAxisBlockPrefixMax;
+            const auto uniformity = source.grainRecipe.uniformityCmy;
+            const auto microStructure = source.grainRecipe.microStructure;
+            FilmDevelopRecipe film;
+            const auto input = JuicerTestSupport::grain_frame_input(row.at("input"), source.grainRecipe, film);
+            Spektrafilm::VisualGrainFrameDescriptor frame;
+            ASSERT_TRUE(JuicerTestSupport::prepare_grain_frame(input, frame, diagnostic)) << diagnostic;
+            ASSERT_EQ(JuicerTestSupport::grain_frame_fields(frame), row.at("native"));
+            source.grain = frame;
+            source.capturePolarity = film.polarity;
+            source.route = film.polarity == Spektrafilm::ProfilePolarity::Positive ? Spektrafilm::ScanRoute::PositivePrintScan : Spektrafilm::ScanRoute::NegativePrintScan;
+            JuicerCudaTest::encode_prepared_descriptors(source, wire);
+            ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic)) << diagnostic;
+            ASSERT_TRUE(decoded.grain);
+            EXPECT_EQ(JuicerTestSupport::grain_frame_fields(*decoded.grain), row.at("native"));
+            EXPECT_EQ(decoded.grainRecipe.amplitude, amplitude);
+            EXPECT_EQ(decoded.grainRecipe.chromaMix, source.grainRecipe.chromaMix);
+            EXPECT_EQ(decoded.grainRecipe.chromaSharedWeight, source.grainRecipe.chromaSharedWeight);
+            EXPECT_EQ(decoded.grainRecipe.chromaIndependentWeight, independent);
+            EXPECT_EQ(decoded.grainRecipe.grainLayerAxisFinite, finite);
+            EXPECT_EQ(decoded.grainRecipe.grainLayerAxisBlockPrefixMax, prefix);
+            EXPECT_EQ(decoded.grainRecipe.uniformityCmy, uniformity);
+            EXPECT_EQ(decoded.grainRecipe.microStructure, microStructure);
+            EXPECT_EQ(decoded.grainRecipe.clumpTemporalMix, source.grainRecipe.clumpTemporalMix);
+            EXPECT_EQ(decoded.grainRecipe.sizeMixScale, source.grainRecipe.sizeMixScale);
+            EXPECT_EQ(decoded.grainRecipe.nSubLayers, source.grainRecipe.nSubLayers);
+            EXPECT_EQ(decoded.grainRecipe.debugView, source.grainRecipe.debugView);
+        }
+    }
+
     TEST(PreparedProjection, DirFramesKeepCapturedMathAndCarriedHashWithNativeZeroWeightTiers) {
         const auto directory = std::filesystem::path(__FILE__).parent_path().parent_path() / "dir/frame-fixtures";
         const auto manifest = nlohmann::json::parse(std::ifstream(directory / "manifest.json"));

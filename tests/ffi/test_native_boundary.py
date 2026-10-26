@@ -370,6 +370,31 @@ class NativeBoundary(unittest.TestCase):
                         self.assertNotIn(pattern, data + pattern)
             print("DIR boundary ordinary-object isolation", path, hashlib.sha256(data).hexdigest())
 
+    def test_retired_grain_frame_mathematics_and_capture_access_stay_deleted(self):
+        source = (ROOT / "src/FilmEffectsFrameDescriptors.cpp").read_text()
+        grain = source.split("constexpr std::uint64_t kSeedPassWeave", 1)[0]
+        bridge = (ROOT / "src/RustGrainFrameBridge.cpp").read_text()
+        setup = [(ROOT / path).read_text() for path in (
+            "tests/grain/scratch_reuse_test.cpp", "tests/ffi/gaussian_kernel_test.inc",
+            "tests/ffi/cuda_render_test.cpp")]
+        readers = "".join((ROOT / path).read_text() for path in (
+            "tests/CMakeLists.txt", "tests/ffi/grain_frame_test.inc", "tests/ffi/film_recipe_test.cpp"))
+        retired = r"\b(?:nanmax|make_gaussian|kernel_energy_2d|make_seed_base|kSeedPassGrain|kMaxGrainGaussianRadius|JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK|JuicerGrainCapture|juicer_grain_frame_capture_objects)\b|capture-grain-frames|grain_frame_capture\.h"
+        self.assertNotRegex(grain + bridge + readers, retired)
+        self.assertNotRegex(grain + bridge, r"std::(?:floor|llround|sqrt|exp)\s*\(")
+        self.assertFalse((ROOT / "tests/ffi/grain_frame_capture.h").exists())
+        for text in ("float nanmax() {}", "auto make_gaussian() {}", "float kernel_energy_2d() {}", "auto make_seed_base() {}", "JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK", "capture-grain-frames", "grain_frame_capture.h"):
+            self.assertRegex(grain + text, retired)
+        self.assertRegex(grain, r"bool build_visual_grain_frame_descriptor\([^{}]+\)\s*\{\s*return JuicerGrain::prepare_frame\(input, out, diagnostic\);\s*\}")
+        self.assertEqual(grain.count("hash_descriptor("), 2)
+        self.assertEqual(grain.count("out = descriptor;"), 1)
+        for consumer in setup:
+            self.assertNotIn("build_visual_grain_frame_descriptor", consumer)
+            self.assertIn("JuicerTestSupport::prepare_grain_frame", consumer)
+        header = (ROOT / "src/RustGrainFrameBridge.h").read_text()
+        self.assertIn("SF_TEMP_BRIDGE_GRAIN_FRAME", header)
+        self.assertIn("S6.D", header)
+
     def test_retired_frame_geometry_mathematics_and_capture_access_stay_deleted(self):
         source = (ROOT / "src/JuicerEffect.cpp").read_text()
         hooks = "".join((ROOT / "tests/ofx" / name).read_text() for name in ("frame_geometry_test_hooks.h", "frame_geometry_test_hooks.cpp", "adapter_trace_test.cpp"))
@@ -392,16 +417,17 @@ class NativeBoundary(unittest.TestCase):
         compdb = json.loads((build / "compile_commands.json").read_bytes())
         nm = find_llvm_nm()
         self.assertTrue(nm, "qualified LLVM nm required for ordinary-object isolation")
-        for owner, source in (("juicer_adapter", "JuicerEffect.cpp"), ("juicer_host", "RustFrameBridge.cpp"), ("juicer_host", "RustHalationBridge.cpp"), ("juicer_host", "RustDiffusionBridge.cpp"), ("juicer_host", "RustDirBridge.cpp"), ("juicer_native", "Cuda/JuicerCudaExecutor.cpp")):
+        for owner, source in (("juicer_adapter", "JuicerEffect.cpp"), ("juicer_host", "RustFrameBridge.cpp"), ("juicer_host", "RustHalationBridge.cpp"), ("juicer_host", "RustDiffusionBridge.cpp"), ("juicer_host", "RustDirBridge.cpp"), ("juicer_host", "RustGrainFrameBridge.cpp"), ("juicer_host", "FilmEffectsFrameDescriptors.cpp"), ("juicer_native", "Cuda/JuicerCudaExecutor.cpp")):
             rows = [row for row in compdb if owner + ".dir" in row["command"] and row["file"].endswith(source)]
             self.assertEqual(len(rows), 1)
             self.assertNotIn("JUICER_FRAME_GEOMETRY_TEST_HOOK", rows[0]["command"])
             self.assertNotIn("JUICER_EXECUTOR_FAILURE_TEST_HOOK", rows[0]["command"])
+            self.assertNotIn("JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK", rows[0]["command"])
             path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
             data = path.read_bytes()
             symbols = subprocess.check_output([nm, "--demangle", str(path)], timeout=10).decode(errors="replace")
-            self.assertNotRegex(symbols, r"FrameGeometryTest::|frame_bridge::faults::|halation_frame_faults::|diffusion_frame_faults::|dir_frame_faults::|ExecutorTest::|fj_test_dir_frame|fj_test_diffusion_|fj_test_scatter_halation_frame|fj_test_frame|native_frame_domain|native_pixel_size")
-            for text in ("FrameGeometryTest", "frame geometry fixture panic", "--capture-frame-geometry", "--frame-geometry", "fj_test_frame", "scatter/halation frame fixture panic", "fj_test_scatter_halation_frame", "HalationObservation", "DiffusionObservation", "diffusion construction fixture panic", "fj_test_diffusion_", "capture-diffusion-frames", "DirFrameObservation", "spatial DIR frame fixture panic", "fj_test_dir_frame", "capture-dir-frames", "--dir-frame"):
+            self.assertNotRegex(symbols, r"FrameGeometryTest::|frame_bridge::faults::|halation_frame_faults::|diffusion_frame_faults::|dir_frame_faults::|grain_frame_bridge::faults::|JuicerGrainCapture::|ExecutorTest::|fj_test_grain_frame|fj_test_dir_frame|fj_test_diffusion_|fj_test_scatter_halation_frame|fj_test_frame|native_frame_domain|native_pixel_size")
+            for text in ("FrameGeometryTest", "frame geometry fixture panic", "--capture-frame-geometry", "--frame-geometry", "fj_test_frame", "scatter/halation frame fixture panic", "fj_test_scatter_halation_frame", "HalationObservation", "DiffusionObservation", "diffusion construction fixture panic", "fj_test_diffusion_", "capture-diffusion-frames", "DirFrameObservation", "spatial DIR frame fixture panic", "fj_test_dir_frame", "capture-dir-frames", "--dir-frame", "GrainFrameObservation", "visual grain frame fixture entry panic", "visual grain frame fixture layer panic", "fj_test_grain_frame", "capture-grain-frames", "--grain-frame"):
                 for encoding in ("utf-8", "utf-16-le"):
                     pattern = text.encode(encoding)
                     self.assertNotIn(pattern, data)

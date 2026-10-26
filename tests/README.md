@@ -1489,7 +1489,7 @@ Prepared projection retains the native decoder's distinct unconsumed zero-weight
 target tiers and carries the original final hash. Both native Release OFF C11
 probes execute 121 complete value/failure rows, in addition to all older probes.
 Reflected-YVV boundary construction has its own contract below. Wider workspace
-construction, grain/defect mappings and S4.E integration remain later work.
+construction, defect/weave mappings and S4.E integration remain later work.
 
 ### Spatial DIR reflected boundaries
 
@@ -1509,3 +1509,35 @@ Both Release testing-OFF C11 probes execute 171 full boundary value/failure/raw/
 lifetime rows while retaining every predecessor probe. Diagnostic length counts
 written bytes without NUL at capacities zero, one, short, M and M+1. Ordinary tests
 never regenerate expectations.
+
+### Visual-grain mathematical frames
+
+`Ffi.Host.GrainFrame` and `Film.Host.GrainFrameProducts` compare complete raw
+values, typed failures, native defaults and final native hashes against
+[four independent native contexts](grain/frame-fixtures/README.md). Each host
+group has a 180-second limit. The frozen cohort has 153 literals, 44 genuine
+recipe/development products and 50 independently captured bounded primitives.
+The core keeps original f64 Gaussian energy samples; uploaded f32 coefficient
+arrays remain a separate owner. Published fields and hashes compare exactly.
+
+The S4D6-R1 singleton curves `[[0,0,1],[1,0,1],[1,0,1]]` require all nine
+row-major reductions, then a CMY loop that immediately computes each channel's
+three layers after checking its total. C layer0 particle-count failure precedes
+M total0: category3/API0/code0, reason2/field12/layer0/channel0. Legacy and facade
+readers require cleared raw mathematics and native-default failed output.
+
+`Ofx.Gpu.GrainFrame` uses the existing executor probe, GPU lock and 180-second
+limit. Its 122 invocations distinguish 16 genuine pixel executions, 92 successful
+constructions canceled before preparation and 14 failures. It checks both real
+caller sites, four routes/polarities, current time/seeds/geometry, full-frame
+fallback, inactive delegation and failure short-circuiting. Literal recipe
+substitutions are restricted to construction paths. Existing scratch, grain
+kernel, Gaussian-resource, prepared, route and lifecycle assertions stay intact.
+The three native setup consumers use the maintained facade and shared composer.
+
+Prepared transport preserves static recipe/chroma/amplitude/preset and layer-axis
+metadata. Both native Release testing-OFF probes call the real
+`fj_legacy_grain_frame_prepare` through strict C11 signatures and all 188 frozen
+full-value/metadata/failure/diagnostic rows, retaining every predecessor probe.
+Written-byte capacities 0/1/short/M/M+1 include R1. Ordinary tests never regenerate
+fixtures; conversion safety expectations do not execute undefined native casts.

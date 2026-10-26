@@ -1158,3 +1158,35 @@ See [the independent four-profile characterizations](../dir/boundary-fixtures/RE
 and all 171 boundary rows, alongside every older probe and artifact/isolation
 check. `SF_TEMP_BRIDGE_DIR_BOUNDARY` narrows with S4.E execution inputs and retires
 at its last native model caller, no later than S6.D.
+
+## Visual-grain mathematical frame boundary
+
+The safe immutable `film::grain::frame::Plan` owns callback-local temporal
+conversion/seeds, particle/layer mathematics, Gaussian descriptors and energy
+normalization. Construction completes before any result is transported; it
+retains no curve borrow. The existing static visual-grain Recipe stays policy
+authority. Native code retains scratch-shape selection, the sole final descriptor
+hash and all CUDA allocation/context/epoch/upload/publication/retirement policy.
+Permanent prepared ABI and recipe/chroma/amplitude/preset/layer-axis fields stay
+unchanged.
+
+`FjGrainFrameInput`, `FjGrainFrameMath` and `FjGrainFrameFailure` form the checked
+synchronous temporary edge. Layer spans are admitted only when their ordered
+reduction is reached. An inactive request ignores scalar/tag/span facts after
+required native recipe/film guards. Every independently admitted raw output clears
+before other admission. Failure carries no partial executable mathematics; native
+failed output returns its documented default. Optional diagnostics report written
+bytes, with zero-capacity backing ignored and positive capacity reserving NUL.
+The complete operation contains unwind. Test-only one-shot faults and observer
+hooks stay outside ordinary objects and testing-OFF artifacts.
+
+Legacy and testing facade entries share the checked body and native composer.
+See [the independent fixtures](../grain/frame-fixtures/README.md),
+`Ffi.Host.GrainFrame`, `Film.Host.GrainFrameProducts` and `Ofx.Gpu.GrainFrame`.
+The C11 reader checks all fixed field/layout/signature facts and complete results.
+R1 requires C layer0/count failure before M total0 after all nine reductions;
+its cleared output, reason2/field12/layer0/channel0 and diagnostic are exact.
+Both Release OFF probes retain all 188 grain rows plus every predecessor result
+and archive/module/PDB/fault/facade/export isolation check.
+`SF_TEMP_BRIDGE_GRAIN_FRAME` narrows at S4.E and retires at its last native model
+caller no later than S6.D. Independent review and phase acceptance are separate.

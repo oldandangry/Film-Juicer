@@ -350,6 +350,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_grain_frame_is_complete_private_readonly_and_owns_no_curve_borrow(self) -> None:
+        for fixture, expected in (
+            ("grain_frame_complete", None),
+            ("grain_frame_private", {"E0616": ("plan.frame0", "gaussian.sigma_px", "error.field")}),
+            ("grain_frame_construction", {"E0451": ("Plan { ..plan }", "Gaussian { ..gaussian }", "Error { ..error }")}),
+            ("grain_frame_default", {"E0599": ("Plan::default()", "Gaussian::default()", "Error::default()")}),
+            ("grain_frame_mutation", {"E0594": ("density_max_cmy()[0] = 0.0", "density_min_layers()[0][0] = 0.0")}),
+            ("grain_frame_borrow", {"E0515": ("plan.density_max_cmy()",), "E0505": ("drop(plan)",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_dir_frame_is_complete_private_readonly_and_failure_trace_cannot_execute(self) -> None:
         for fixture, expected in (
             ("dir_frame_complete", None),

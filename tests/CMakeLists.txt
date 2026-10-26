@@ -226,6 +226,11 @@ if(UNIX)
     set_property(TARGET JuicerFilmRecipeTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 add_dependencies(JuicerFilmRecipeTests juicer_test_resources)
+add_test(NAME Ffi.Host.GrainFrame COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/grain/frame-fixtures/manifest.json" grain-frame "${JUICER_TEST_PRESET_NAME}")
+add_test(NAME Film.Host.GrainFrameProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/grain/frame-fixtures/manifest.json" grain-frame-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.GrainFrame Film.Host.GrainFrameProducts PROPERTIES LABELS "host" TIMEOUT 180)
 add_test(NAME Ffi.Host.DirBoundary COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/dir/boundary-fixtures/manifest.json" dir-boundary "${JUICER_TEST_PRESET_NAME}")
 add_test(NAME Film.Host.DirBoundaryProducts COMMAND JuicerFilmRecipeTests
@@ -882,6 +887,9 @@ if(UNIX)
 endif()
 add_test(NAME Ofx.Gpu.NoiseSourceLifetime COMMAND JuicerExecutorFailureOrderProbe --noise-lifetime)
 set_tests_properties(Ofx.Gpu.NoiseSourceLifetime PROPERTIES LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+add_test(NAME Ofx.Gpu.GrainFrame COMMAND JuicerExecutorFailureOrderProbe --grain-frame
+    "${CMAKE_CURRENT_SOURCE_DIR}/grain/frame-fixtures/manifest.json" "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ofx.Gpu.GrainFrame PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 add_test(NAME Ofx.Gpu.DirFrame COMMAND JuicerExecutorFailureOrderProbe --dir-frame
     "${CMAKE_CURRENT_SOURCE_DIR}/dir/frame-fixtures/manifest.json" "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ofx.Gpu.DirFrame PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
@@ -1406,7 +1414,7 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Execution
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
-set(juicer_boundary_tests Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
+set(juicer_boundary_tests Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat

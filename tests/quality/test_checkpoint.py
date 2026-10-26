@@ -972,6 +972,16 @@ class CheckpointTests(unittest.TestCase):
             "sha256": {name: digest(path) for name, path in dir_files.items()},
             "production_cases": [{"case": str(i), "envelope": [0, 0, 0], "failure": [0, 0, 4] + [0] * 79,
                                   "output": [0] * 78 + [i], "diagnostic": ""} for i in range(121)]})
+        grain_directory = self.root / "tests/grain/frame-fixtures"
+        grain_directory.mkdir(parents=True, exist_ok=True)
+        grain_files = {name: grain_directory / name for name in ("native.json", "checked.json", "inputs.json")}
+        for name, path in grain_files.items():
+            write_json(path, {"scope": "grain frame retained full-value/metadata protocol only", "file": name})
+        write_json(grain_directory / "manifest.json", {
+            "presets": {preset: {"native": "native.json"} for preset in qualification.PRESETS},
+            "checked": "checked.json", "sha256": {name: digest(path) for name, path in grain_files.items()},
+            "production_cases": [{"case": str(i), "envelope": [0, 0, 0], "failure": [0, 0, 3, 3],
+                                  "output": [0] * 114 + [i], "diagnostic": "", "diagnostic_length": 0} for i in range(188)]})
         boundary_directory = self.root / "tests/dir/boundary-fixtures"
         boundary_directory.mkdir(parents=True, exist_ok=True)
         boundary_files = {name: boundary_directory / name for name in ("native.json", "checked.json", "inputs.json")}
@@ -1059,6 +1069,13 @@ dir_checked=dir_manifest.parent/'checked.json'
 dir_inputs=dir_manifest.parent/'inputs.json'
 consumed.update({str(path):checksum(path) for path in (dir_manifest,dir_payload,dir_checked,dir_inputs)})
 dir_results=dir_spec['production_cases']
+grain_manifest=(Path('tests/grain/frame-fixtures')/'manifest.json').resolve()
+grain_spec=json.loads(grain_manifest.read_text())
+grain_payload=grain_manifest.parent/'native.json'
+grain_checked=grain_manifest.parent/'checked.json'
+grain_inputs=grain_manifest.parent/'inputs.json'
+consumed.update({str(path):checksum(path) for path in (grain_manifest,grain_payload,grain_checked,grain_inputs)})
+grain_results=grain_spec['production_cases']
 boundary_manifest=(Path('tests/dir/boundary-fixtures')/'manifest.json').resolve()
 boundary_spec=json.loads(boundary_manifest.read_text())
 boundary_payload=boundary_manifest.parent/'native.json'
@@ -1090,6 +1107,7 @@ probes=[]
 for name in ['film','accepted-output-color']:
     source=out/(name+'.c')
     result_lines = ''.join('puts('+json.dumps('DIFFUSION_FRAME_RESULT '+json.dumps(row))+');' for row in diffusion_results) if name=='film' else ''
+    if name=='film':result_lines += ''.join('puts('+json.dumps('GRAIN_FRAME_RESULT '+json.dumps(row))+');' for row in grain_results)
     if name=='film':result_lines += ''.join('puts('+json.dumps('DIR_FRAME_RESULT '+json.dumps(row))+');' for row in dir_results)
     if name=='film':result_lines += ''.join('puts('+json.dumps('DIR_BOUNDARY_RESULT '+json.dumps(row))+');' for row in boundary_results)
     source.write_text('#include "production-film-expected.h"\n#include <stdio.h>\n'
@@ -1135,6 +1153,9 @@ record.write_text(json.dumps(commands))
     'dir_frame_fixture':{'manifest':str(dir_manifest),'payload':str(dir_payload),
                          'normative':str(dir_checked),'input_spec':str(dir_inputs),'logical_preset':preset},
     'dir_frame_results':dir_results,
+    'grain_frame_fixture':{'manifest':str(grain_manifest),'payload':str(grain_payload),
+                          'normative':str(grain_checked),'input_spec':str(grain_inputs),'logical_preset':preset},
+    'grain_frame_results':grain_results,
     'dir_boundary_fixture':{'manifest':str(boundary_manifest),'payload':str(boundary_payload),
                             'normative':str(boundary_checked),'input_spec':str(boundary_inputs),'logical_preset':preset},
     'dir_boundary_results':boundary_results,
@@ -1401,6 +1422,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertEqual(len(document["halation_frame_results"]), 86)
         self.assertEqual(len(document["diffusion_frame_results"]), 507)
         self.assertEqual(len(document["dir_frame_results"]), 121)
+        self.assertEqual(len(document["grain_frame_results"]), 188)
         self.assertEqual(len(document["dir_boundary_results"]), 171)
         stdout = manifest.parent / "film-values.stdout"
         commands_path = manifest.parent / "commands.json"
@@ -1476,6 +1498,58 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             write_json(damaged_path, damaged)
             with self.assertRaisesRegex(ValueError, "DIR boundary"):
                 qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+
+        for mode in ("missing", "duplicate", "word", "envelope", "failure", "diagnostic", "length"):
+            damaged = json.loads(json.dumps(document))
+            rows = damaged["grain_frame_results"]
+            if mode == "missing":
+                rows.pop()
+            elif mode == "duplicate":
+                rows[-1] = rows[0]
+            elif mode == "word":
+                rows[0]["output"][-1] ^= 1
+            elif mode == "envelope":
+                rows[0]["envelope"][0] = 3
+            elif mode == "failure":
+                rows[0]["failure"][2] = 0
+            elif mode == "diagnostic":
+                rows[0]["diagnostic"] = "wrong"
+            else:
+                rows[0]["diagnostic_length"] += 1
+            damaged_path = manifest.with_name("grain-" + mode + ".json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "grain frame"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        for member in ("manifest", "payload", "normative", "input_spec"):
+            target = Path(document["grain_frame_fixture"][member])
+            original = target.read_bytes()
+            try:
+                target.write_bytes(original + b" ")
+                with self.assertRaisesRegex(ValueError, "grain frame consumed fixture"):
+                    qualification.production_payloads(manifest, digest(manifest), root=self.root, inputs=stage["identity"]["inputs"])
+            finally:
+                target.write_bytes(original)
+        try:
+            line = next(line for line in original_stdout.decode().splitlines() if line.startswith("GRAIN_FRAME_RESULT "))
+            original_row = json.loads(line.removeprefix("GRAIN_FRAME_RESULT "))
+            changed_row = json.loads(json.dumps(original_row))
+            changed_row["output"][-1] ^= 1
+            changed_stdout = original_stdout.replace(json.dumps(original_row).encode(), json.dumps(changed_row).encode(), 1)
+            self.assertNotEqual(changed_stdout, original_stdout)
+            stdout.write_bytes(changed_stdout)
+            commands = json.loads(original_commands)
+            next(row for row in commands if row["name"] == "film-values")["stdout_sha256"] = digest(stdout)
+            write_json(commands_path, commands)
+            damaged = json.loads(json.dumps(document))
+            damaged["commands"]["sha256"] = digest(commands_path)
+            damaged["command_outputs"][str(stdout)] = digest(stdout)
+            damaged_path = manifest.with_name("grain-executed-values.json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "grain frame executed stdout"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        finally:
+            stdout.write_bytes(original_stdout)
+            commands_path.write_bytes(original_commands)
 
         for mode in ("missing", "duplicate", "word", "envelope", "failure", "trace", "diagnostic"):
             damaged = json.loads(json.dumps(document))
@@ -1614,10 +1688,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             write_json(damaged_path, damaged)
             with self.assertRaisesRegex(ValueError, "post-effects value/failure"):
                 qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
-        for field in ("dir_boundary_results", "dir_boundary_fixture", "dir_frame_results", "dir_frame_fixture", "diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture", "gaussian_results", "gaussian_fixture"):
+        for field in ("grain_frame_results", "grain_frame_fixture", "dir_boundary_results", "dir_boundary_fixture", "dir_frame_results", "dir_frame_fixture", "diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture", "gaussian_results", "gaussian_fixture"):
             missing = manifest.with_name("without-" + field + ".json")
             write_json(missing, {key: value for key, value in document.items() if key != field})
-            expected = "DIR boundary" if field.startswith("dir_boundary") else "DIR frame" if field.startswith("dir_frame") else "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "Gaussian" if field.startswith("gaussian") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
+            expected = "grain frame" if field.startswith("grain_frame") else "DIR boundary" if field.startswith("dir_boundary") else "DIR frame" if field.startswith("dir_frame") else "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "Gaussian" if field.startswith("gaussian") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
             with self.assertRaisesRegex(ValueError, expected):
                 qualification.production_payloads(missing, digest(missing), root=self.root,
                     inputs=stage["identity"]["inputs"])

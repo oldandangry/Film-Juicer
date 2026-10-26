@@ -2458,3 +2458,20 @@ extern "C" fn fj_test_dir_boundary_count(index: u32) -> u64 {
         .copied()
         .unwrap_or(0)
 }
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Same initialized/live/disjoint and synchronous borrowing contract as the legacy entry.
+unsafe extern "C" fn fj_test_grain_frame_prepare(
+    input: *const crate::grain_frame_bridge::FjGrainFrameInput,
+    out: *mut crate::grain_frame_bridge::FjGrainFrameMath,
+    failure: *mut crate::grain_frame_bridge::FjGrainFrameFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The single checked implementation contains admission and whole-operation unwind.
+    unsafe { crate::grain_frame_bridge::prepare(input, out, failure, error) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_grain_frame_fault(fault: u32) -> FjStatus {
+    crate::grain_frame_bridge::faults::arm(fault)
+}

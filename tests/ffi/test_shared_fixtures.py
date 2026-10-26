@@ -1,9 +1,12 @@
 """Frozen logical captures share storage without sharing mutable patch state."""
 
+import ast
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
 from compact_exposure_fixtures import compact_expected_blocks, expand_expected_blocks
@@ -15,6 +18,99 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_production_grain_fixture_records_keep_both_authorities(self):
+        root = Path(__file__).parents[2]
+        tree = ast.parse((root / "tests/ffi/production_contract.py").read_text())
+        record = next(node for node in ast.walk(tree) if isinstance(node, ast.Dict)
+                      and {"grain_fixture", "grain_frame_fixture"} <= {
+                          key.value for key in node.keys if isinstance(key, ast.Constant)})
+        fields = {key.value: value for key, value in zip(record.keys, record.values)
+                  if isinstance(key, ast.Constant)}
+        projection = ast.Dict(keys=[ast.Constant("grain_fixture"), ast.Constant("grain_frame_fixture")],
+                              values=[deepcopy(fields["grain_fixture"]), deepcopy(fields["grain_frame_fixture"])])
+        for preset in PRESETS:
+            grain_manifest = root / "tests/film/grain-fixtures/manifest.json"
+            grain_payload = grain_manifest.parent / json.loads(grain_manifest.read_bytes())["presets"][preset]["values"]
+            frame_manifest = root / "tests/grain/frame-fixtures/manifest.json"
+            frame_spec = json.loads(frame_manifest.read_bytes())
+            frame_payload = frame_manifest.parent / frame_spec["presets"][preset]["native"]
+            bindings = {"str": str, "arguments": SimpleNamespace(preset=preset),
+                        "grain_manifest": grain_manifest, "grain_payload": grain_payload,
+                        "grain_frame_manifest": frame_manifest, "grain_frame_payload": frame_payload,
+                        "grain_frame_checked": frame_manifest.parent / frame_spec["checked"]}
+
+            def render(expression):
+                code = compile(ast.fix_missing_locations(ast.Expression(expression)), "production fixture records", "eval")
+                return eval(code, {"__builtins__": {}}, bindings)
+
+            actual = render(deepcopy(projection))
+            self.assertEqual(actual["grain_fixture"], {"manifest": str(grain_manifest), "payload": str(grain_payload), "logical_preset": preset})
+            self.assertEqual(actual["grain_frame_fixture"], {"manifest": str(frame_manifest), "payload": str(frame_payload),
+                "normative": str(bindings["grain_frame_checked"]), "input_spec": str(frame_manifest.parent / "inputs.json"), "logical_preset": preset})
+            damaged = deepcopy(projection)
+            for node in ast.walk(damaged):
+                if isinstance(node, ast.Name) and node.id in ("grain_frame_manifest", "grain_frame_payload"):
+                    node.id = node.id.replace("grain_frame_", "grain_")
+            self.assertNotEqual(render(damaged)["grain_frame_fixture"], actual["grain_frame_fixture"])
+
+    def test_grain_frame_complete_native_contexts_and_r1_production_contract(self):
+        root = Path(__file__).parents[1] / "grain/frame-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        for name, checksum in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), checksum)
+        baseline = None
+        for preset in PRESETS:
+            captured = json.loads((root / manifest["presets"][preset]["native"]).read_bytes())
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual([len(captured[key]) for key in ("cases", "products", "primitives")], [153, 44, 50])
+            semantic = [captured[key] for key in ("cases", "products", "primitives")]
+            if baseline is None:
+                baseline = semantic
+            self.assertEqual(semantic, baseline)
+            for row in captured["cases"] + captured["products"]:
+                native = row["native"]
+                self.assertEqual(len(native["correlation"]), 3)
+                self.assertEqual([len(layer) for layer in native["dye_cloud"]], [3, 3, 3])
+                self.assertTrue(all(len(g) == 3 for g in native["correlation"]))
+                self.assertTrue(all(len(g) == 3 for layer in native["dye_cloud"] for g in layer))
+            r1 = next(row for row in captured["cases"] if row["input"]["name"] == "S4D6-R1")
+            self.assertFalse(r1["success"])
+            self.assertEqual(r1["diagnostic"], "ResourceDescriptorMismatch phase=grain_descriptor field=layer_particle_count")
+            self.assertEqual(r1["input"]["layer_curves"], [[[0], [0], [1065353216]], [[1065353216], [0], [1065353216]], [[1065353216], [0], [1065353216]]])
+        rows = manifest["production_cases"]
+        self.assertEqual(len(rows), 188)
+        self.assertEqual(len({row["case"] for row in rows}), 188)
+        self.assertEqual({row["case"] for row in rows}, set(manifest["production_inputs"]))
+        for row in rows:
+            source = manifest["production_inputs"][row["case"]]
+            self.assertEqual(len(source["words"]), 42)
+            self.assertEqual(len(source["curves"]), 9)
+            self.assertTrue(row["output"] is None or len(row["output"]) == 115)
+            self.assertTrue(row["failure"] is None or len(row["failure"]) == 4)
+        r1 = next(row for row in rows if row["case"] == "literal/S4D6-R1")
+        def require_r1(value):
+            self.assertEqual(value["envelope"], [3, 0, 0])
+            self.assertEqual(value["failure"], [2, 12, 0, 0])
+            self.assertEqual(value["output"], [0] * 115)
+        require_r1(r1)
+        for key, replacement in (("failure", [2, 10, 3, 1]), ("output", [1] + [0] * 114)):
+            damaged = dict(r1, **{key: replacement})
+            with self.assertRaises(AssertionError):
+                require_r1(damaged)
+        for prefix, message, metadata in (("raw-diagnostic/", "visual grain frame arguments are invalid", [1, 0, 3, 3]),
+                                          ("r1-diagnostic/", r1["diagnostic"], [2, 12, 0, 0])):
+            selected = [row for row in rows if row["case"].startswith(prefix)]
+            self.assertEqual(len(selected), 5)
+            self.assertEqual({manifest["production_inputs"][row["case"]]["capacity"] for row in selected}, {0, 1, 7, len(message), len(message) + 1})
+            for row in selected:
+                capacity = manifest["production_inputs"][row["case"]]["capacity"]
+                self.assertEqual(row["failure"], metadata)
+                self.assertEqual(row["output"], [0] * 115)
+                self.assertEqual(row["diagnostic"], message[:max(0, capacity - 1)])
+                self.assertEqual(row["diagnostic_length"], min(len(message), max(0, capacity - 1)))
+
+
     def test_dir_boundary_exact_native_products_keys_and_production_contracts(self):
         root = Path(__file__).parents[1] / "dir/boundary-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())

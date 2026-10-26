@@ -1,4 +1,5 @@
 #include "prepared_boundary.h"
+#include "spatial_optics_fixture.h"
 
 #include <algorithm>
 #include <array>
@@ -331,7 +332,7 @@ namespace JuicerCudaTest {
                 const auto& full = prepared.grain.full_frame_extent;
                 Spektrafilm::VisualGrainFrameDescriptor grain;
                 std::string diagnostic;
-                require(Spektrafilm::build_visual_grain_frame_descriptor(
+                require(JuicerTestSupport::prepare_grain_frame(
                             {&recipe.visualGrain, &recipe.filmDevelop, recipe.profileRoute.capturePolarity, {render.x, render.y, render.width, render.height}, {full.x, full.y, full.width, full.height}, frame.pixel_size_um, time, frame.frame_rate, frame.session_seed, frame.clip_token},
                             grain,
                             diagnostic),

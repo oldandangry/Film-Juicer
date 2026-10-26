@@ -9,6 +9,7 @@
 #include "Cuda/JuicerCudaFailure.h"
 #include "RustHalationBridge.h"
 #include "RustDirBridge.h"
+#include "RustGrainFrameBridge.h"
 
 namespace {
     FjSpatialOpticsParams defaults() {
@@ -351,5 +352,151 @@ namespace JuicerTestSupport {
         const auto& d = frame->fullFrame;
         return static_cast<unsigned>(frame->route) == expected.at("route").get<unsigned>() && frame->hash == expected.at("hash").get<std::uint64_t>() &&
                nlohmann::json({d.originX, d.originY, d.width, d.height}) == expected.at("extent") && stage(frame->camera, expected.at("camera")) && stage(frame->enlarger, expected.at("enlarger"));
+    }
+} // namespace JuicerTestSupport
+
+namespace JuicerTestSupport {
+    nlohmann::json grain_frame_fields(const Spektrafilm::VisualGrainFrameDescriptor& v) {
+        using Json = nlohmann::json;
+        Json out;
+        out["active"] = v.active;
+        out["capture_polarity"] = static_cast<unsigned>(v.capturePolarity);
+        out["render_extent"] = {v.renderExtent.x, v.renderExtent.y, v.renderExtent.width, v.renderExtent.height};
+        out["full_frame_extent"] = {v.fullFrameExtent.x, v.fullFrameExtent.y, v.fullFrameExtent.width, v.fullFrameExtent.height};
+        out["pixel_size_um"] = std::bit_cast<std::uint32_t>(v.pixelSizeUm);
+        out["frame_alpha"] = std::bit_cast<std::uint32_t>(v.frameAlpha);
+        out["wang_cell_mm"] = std::bit_cast<std::uint32_t>(v.wangCellMm);
+        out["breathing_amplitude"] = std::bit_cast<std::uint32_t>(v.breathingAmplitude);
+        out["breathing_cell_um_small"] = std::bit_cast<std::uint32_t>(v.breathingCellUmSmall);
+        out["breathing_cell_um_large"] = std::bit_cast<std::uint32_t>(v.breathingCellUmLarge);
+        out["breathing_mix"] = std::bit_cast<std::uint32_t>(v.breathingMix);
+        out["breathing_drift_um_per_frame"] = std::bit_cast<std::uint32_t>(v.breathingDriftUmPerFrame);
+        out["debug_scale"] = std::bit_cast<std::uint32_t>(v.debugScale);
+        out["size_mix_gain"] = std::bit_cast<std::uint32_t>(v.sizeMixGain);
+        out["frame0"] = v.frame0;
+        out["seed_base"] = v.seedBase;
+        out["seed_base_next"] = v.seedBaseNext;
+        out["session_seed"] = v.sessionSeed;
+        out["clip_token"] = v.clipToken;
+        out["pitch_px"] = v.pitchPx;
+        out["breathing_period_frames"] = v.breathingPeriodFrames;
+        out["clump_morph_period_frames"] = v.clumpMorphPeriodFrames;
+        out["recipe_hash"] = v.recipeHash;
+        out["density_layers_hash"] = v.densityCurvesLayersHash;
+        out["hash"] = v.hash;
+        out["scratch_shape"] = static_cast<unsigned>(v.scratchShape);
+        out["requires_full_frame"] = v.requiresFullFrame;
+        out["size_mix_weights"] = {std::bit_cast<std::uint32_t>(v.effectiveFineWeight), std::bit_cast<std::uint32_t>(v.effectiveMidWeight), std::bit_cast<std::uint32_t>(v.effectiveCoarseWeight)};
+        const auto words = [](const auto& values) {
+            Json result = Json::array();
+            for (float f : values)
+                result.push_back(std::bit_cast<std::uint32_t>(f));
+            return result;
+        };
+        out["density_max_cmy"] = words(v.densityMaxCmy);
+        out["n_particles_cmy"] = words(v.nParticlesCmy);
+        out["od_particle_cmy"] = words(v.odParticleCmy);
+        out["density_min_layers"] = Json::array();
+        for (const auto& layer : v.densityMinLayers)
+            out["density_min_layers"].push_back(words(layer));
+        out["density_max_layers"] = Json::array();
+        for (const auto& layer : v.densityMaxLayers)
+            out["density_max_layers"].push_back(words(layer));
+        out["n_particles_layers"] = Json::array();
+        for (const auto& layer : v.nParticlesLayers)
+            out["n_particles_layers"].push_back(words(layer));
+        out["od_particle_layers"] = Json::array();
+        for (const auto& layer : v.odParticleLayers)
+            out["od_particle_layers"].push_back(words(layer));
+        const auto gaussian = [](const auto& g) -> Json {
+            return {std::bit_cast<std::uint32_t>(g.sigmaPx), g.radius, g.hash};
+        };
+        out["correlation"] = Json::array();
+        for (const auto& g : v.correlation)
+            out["correlation"].push_back(gaussian(g));
+        out["dye_cloud"] = Json::array();
+        for (const auto& layer : v.dyeCloud) {
+            Json row = Json::array();
+            for (const auto& g : layer)
+                row.push_back(gaussian(g));
+            out["dye_cloud"].push_back(row);
+        }
+        return out;
+    }
+} // namespace JuicerTestSupport
+
+namespace JuicerTestSupport {
+    bool prepare_grain_frame(const Spektrafilm::VisualGrainFrameDescriptorInput& input, Spektrafilm::VisualGrainFrameDescriptor& out, std::string& diagnostic) {
+        out = {};
+        FjGrainFrameInput raw{};
+        if (!JuicerGrain::project_input(input, raw, diagnostic))
+            return false;
+        FjGrainFrameMath math{};
+        FjGrainFrameFailure failure{};
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const auto status = fj_test_grain_frame_prepare(&raw, &math, &failure, &error);
+        return JuicerGrain::accept_result(input, status, math, failure, error, text, out, diagnostic);
+    }
+} // namespace JuicerTestSupport
+
+namespace JuicerTestSupport {
+    Spektrafilm::VisualGrainFrameDescriptorInput grain_frame_input(const nlohmann::json& v, Spektrafilm::VisualGrainRecipe& recipe, Spektrafilm::FilmDevelopRecipe& film) {
+        const auto scalar = [](const nlohmann::json& value) {
+            return std::bit_cast<float>(value.get<std::uint32_t>());
+        };
+        const auto wide = [](const nlohmann::json& value) {
+            return std::bit_cast<double>(value.get<std::uint64_t>());
+        };
+        const auto extent = [](const nlohmann::json& value) -> Spektrafilm::VisualGrainFrameExtent {
+            return {value.at(0), value.at(1), value.at(2), value.at(3)};
+        };
+        Spektrafilm::VisualGrainFrameDescriptorInput frame;
+
+        recipe.active = v.at("active");
+        recipe.sublayersActive = v.at("sublayers_active");
+        recipe.nSubLayers = v.at("sublayer_count");
+        recipe.hash = v.at("recipe_hash");
+        recipe.densityCurvesLayersHash = v.at("recipe_layers_hash");
+        recipe.debugView = v.at("debug_view");
+        recipe.chromaMix = scalar(v.at("chroma_mix"));
+        recipe.chromaSharedWeight = scalar(v.at("shared_weight"));
+        recipe.particleAreaUm2 = scalar(v.at("particle_area_um2"));
+        recipe.correlationSigmaPx = scalar(v.at("correlation_sigma_px"));
+        recipe.dyeCloudBlurUm = scalar(v.at("dye_cloud_blur_um"));
+        recipe.sizeMixScale = scalar(v.at("size_mix_scale"));
+        recipe.fineWeight = scalar(v.at("fine_weight"));
+        recipe.midWeight = scalar(v.at("mid_weight"));
+        recipe.coarseWeight = scalar(v.at("coarse_weight"));
+        recipe.clumpMorphPeriodSec = scalar(v.at("clump_morph_period_sec"));
+        for (unsigned c = 0; c < 3; ++c)
+            recipe.particleScaleCmy[c] = scalar(v.at("particle_scale_cmy")[c]);
+        for (unsigned c = 0; c < 3; ++c)
+            recipe.particleScaleLayers[c] = scalar(v.at("particle_scale_layers")[c]);
+        for (unsigned c = 0; c < 3; ++c)
+            recipe.visualParticleDensityMinCmy[c] = scalar(v.at("particle_density_min_cmy")[c]);
+        film.polarity = static_cast<Spektrafilm::ProfilePolarity>(v.at("film_polarity").get<unsigned>());
+        film.densityCurvesLayersRequired = v.at("layer_curves_required");
+        film.densityCurvesLayersHash = v.at("film_layers_hash");
+        for (unsigned c = 0; c < 3; ++c)
+            film.authoredMaxCmy[c] = scalar(v.at("authored_max_cmy")[c]);
+        for (unsigned l = 0; l < 3; ++l) {
+            for (unsigned c = 0; c < 3; ++c) {
+                film.densityCurvesLayers[l][c].clear();
+                for (const auto& sample : v.at("layer_curves")[l][c])
+                    film.densityCurvesLayers[l][c].push_back(scalar(sample));
+            }
+        }
+        frame.recipe = v.value("missing_recipe", false) ? nullptr : &recipe;
+        frame.filmDevelop = v.value("missing_film", false) ? nullptr : &film;
+        frame.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(v.at("capture_polarity").get<unsigned>());
+        frame.renderExtent = extent(v.at("render_extent"));
+        frame.fullFrameExtent = extent(v.at("full_frame_extent"));
+        frame.pixelSizeUm = scalar(v.at("pixel_size_um"));
+        frame.frameTime = wide(v.at("frame_time"));
+        frame.frameRate = wide(v.at("frame_rate"));
+        frame.sessionSeed = v.at("session_seed");
+        frame.clipToken = v.at("clip_token");
+        return frame;
     }
 } // namespace JuicerTestSupport

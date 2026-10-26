@@ -122,3 +122,9 @@ mod dir_frame_bridge;
     reason = "the temporary reflected-boundary edge admits foreign records and consumes scoped host owners once"
 )]
 mod dir_boundary_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the grain frame edge admits synchronous foreign storage and contains whole-operation unwind"
+)]
+mod grain_frame_bridge;

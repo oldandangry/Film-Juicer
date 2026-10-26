@@ -53,7 +53,7 @@ namespace GaussianTest {
                 input.sessionSeed = 17;
                 input.clipToken = 23;
                 Spektrafilm::VisualGrainFrameDescriptor grain;
-                require(Spektrafilm::build_visual_grain_frame_descriptor(input, grain, diagnostic), diagnostic.c_str());
+                require(JuicerTestSupport::prepare_grain_frame(input, grain, diagnostic), diagnostic.c_str());
                 for (std::size_t c = 0; c < 3; ++c) {
                     const auto& correlation = grain.correlation[c];
                     rows.push_back(kernel_case(scale + "grain-correlation/" + std::to_string(c), correlation.radius, correlation.sigmaPx));

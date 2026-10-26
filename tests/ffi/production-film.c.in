@@ -6,6 +6,146 @@
 #include <string.h>
 #include <wchar.h>
 #include "juicer_legacy_api.h"
+_Static_assert(sizeof(FjGrainFrameInput) == 344 && _Alignof(FjGrainFrameInput) == 8, "FjGrainFrameInput layout");
+_Static_assert(offsetof(FjGrainFrameInput, active) == 0, "FjGrainFrameInput.active offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->active), uint32_t (*): 1, default: 0), "FjGrainFrameInput.active type");
+_Static_assert(offsetof(FjGrainFrameInput, sublayers_active) == 4, "FjGrainFrameInput.sublayers_active offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->sublayers_active), uint32_t (*): 1, default: 0), "FjGrainFrameInput.sublayers_active type");
+_Static_assert(offsetof(FjGrainFrameInput, layer_curves_required) == 8, "FjGrainFrameInput.layer_curves_required offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->layer_curves_required), uint32_t (*): 1, default: 0), "FjGrainFrameInput.layer_curves_required type");
+_Static_assert(offsetof(FjGrainFrameInput, capture_polarity) == 12, "FjGrainFrameInput.capture_polarity offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->capture_polarity), uint32_t (*): 1, default: 0), "FjGrainFrameInput.capture_polarity type");
+_Static_assert(offsetof(FjGrainFrameInput, film_polarity) == 16, "FjGrainFrameInput.film_polarity offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->film_polarity), uint32_t (*): 1, default: 0), "FjGrainFrameInput.film_polarity type");
+_Static_assert(offsetof(FjGrainFrameInput, sublayer_count) == 20, "FjGrainFrameInput.sublayer_count offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->sublayer_count), int32_t (*): 1, default: 0), "FjGrainFrameInput.sublayer_count type");
+_Static_assert(offsetof(FjGrainFrameInput, pixel_size_um) == 24, "FjGrainFrameInput.pixel_size_um offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->pixel_size_um), float (*): 1, default: 0), "FjGrainFrameInput.pixel_size_um type");
+_Static_assert(offsetof(FjGrainFrameInput, particle_area_um2) == 28, "FjGrainFrameInput.particle_area_um2 offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->particle_area_um2), float (*): 1, default: 0), "FjGrainFrameInput.particle_area_um2 type");
+_Static_assert(offsetof(FjGrainFrameInput, particle_scale_cmy) == 32, "FjGrainFrameInput.particle_scale_cmy offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->particle_scale_cmy), float (*)[3]: 1, default: 0), "FjGrainFrameInput.particle_scale_cmy type");
+_Static_assert(offsetof(FjGrainFrameInput, particle_scale_layers) == 44, "FjGrainFrameInput.particle_scale_layers offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->particle_scale_layers), float (*)[3]: 1, default: 0), "FjGrainFrameInput.particle_scale_layers type");
+_Static_assert(offsetof(FjGrainFrameInput, particle_density_min_cmy) == 56, "FjGrainFrameInput.particle_density_min_cmy offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->particle_density_min_cmy), float (*)[3]: 1, default: 0), "FjGrainFrameInput.particle_density_min_cmy type");
+_Static_assert(offsetof(FjGrainFrameInput, authored_max_cmy) == 68, "FjGrainFrameInput.authored_max_cmy offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->authored_max_cmy), float (*)[3]: 1, default: 0), "FjGrainFrameInput.authored_max_cmy type");
+_Static_assert(offsetof(FjGrainFrameInput, correlation_sigma_px) == 80, "FjGrainFrameInput.correlation_sigma_px offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->correlation_sigma_px), float (*): 1, default: 0), "FjGrainFrameInput.correlation_sigma_px type");
+_Static_assert(offsetof(FjGrainFrameInput, dye_cloud_blur_um) == 84, "FjGrainFrameInput.dye_cloud_blur_um offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->dye_cloud_blur_um), float (*): 1, default: 0), "FjGrainFrameInput.dye_cloud_blur_um type");
+_Static_assert(offsetof(FjGrainFrameInput, size_mix_scale) == 88, "FjGrainFrameInput.size_mix_scale offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->size_mix_scale), float (*): 1, default: 0), "FjGrainFrameInput.size_mix_scale type");
+_Static_assert(offsetof(FjGrainFrameInput, fine_weight) == 92, "FjGrainFrameInput.fine_weight offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->fine_weight), float (*): 1, default: 0), "FjGrainFrameInput.fine_weight type");
+_Static_assert(offsetof(FjGrainFrameInput, mid_weight) == 96, "FjGrainFrameInput.mid_weight offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->mid_weight), float (*): 1, default: 0), "FjGrainFrameInput.mid_weight type");
+_Static_assert(offsetof(FjGrainFrameInput, coarse_weight) == 100, "FjGrainFrameInput.coarse_weight offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->coarse_weight), float (*): 1, default: 0), "FjGrainFrameInput.coarse_weight type");
+_Static_assert(offsetof(FjGrainFrameInput, clump_morph_period_sec) == 104, "FjGrainFrameInput.clump_morph_period_sec offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->clump_morph_period_sec), float (*): 1, default: 0), "FjGrainFrameInput.clump_morph_period_sec type");
+_Static_assert(offsetof(FjGrainFrameInput, render_extent) == 108, "FjGrainFrameInput.render_extent offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->render_extent), FjExtent (*): 1, default: 0), "FjGrainFrameInput.render_extent type");
+_Static_assert(offsetof(FjGrainFrameInput, full_frame_extent) == 124, "FjGrainFrameInput.full_frame_extent offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->full_frame_extent), FjExtent (*): 1, default: 0), "FjGrainFrameInput.full_frame_extent type");
+_Static_assert(offsetof(FjGrainFrameInput, frame_time) == 144, "FjGrainFrameInput.frame_time offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->frame_time), double (*): 1, default: 0), "FjGrainFrameInput.frame_time type");
+_Static_assert(offsetof(FjGrainFrameInput, frame_rate) == 152, "FjGrainFrameInput.frame_rate offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->frame_rate), double (*): 1, default: 0), "FjGrainFrameInput.frame_rate type");
+_Static_assert(offsetof(FjGrainFrameInput, session_seed) == 160, "FjGrainFrameInput.session_seed offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->session_seed), uint64_t (*): 1, default: 0), "FjGrainFrameInput.session_seed type");
+_Static_assert(offsetof(FjGrainFrameInput, clip_token) == 168, "FjGrainFrameInput.clip_token offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->clip_token), uint64_t (*): 1, default: 0), "FjGrainFrameInput.clip_token type");
+_Static_assert(offsetof(FjGrainFrameInput, recipe_hash) == 176, "FjGrainFrameInput.recipe_hash offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->recipe_hash), uint64_t (*): 1, default: 0), "FjGrainFrameInput.recipe_hash type");
+_Static_assert(offsetof(FjGrainFrameInput, recipe_layers_hash) == 184, "FjGrainFrameInput.recipe_layers_hash offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->recipe_layers_hash), uint64_t (*): 1, default: 0), "FjGrainFrameInput.recipe_layers_hash type");
+_Static_assert(offsetof(FjGrainFrameInput, film_layers_hash) == 192, "FjGrainFrameInput.film_layers_hash offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->film_layers_hash), uint64_t (*): 1, default: 0), "FjGrainFrameInput.film_layers_hash type");
+_Static_assert(offsetof(FjGrainFrameInput, layer_curves) == 200, "FjGrainFrameInput.layer_curves offset");
+_Static_assert(_Generic(&(((FjGrainFrameInput*)0)->layer_curves), FjFloatSpan (*)[3][3]: 1, default: 0), "FjGrainFrameInput.layer_curves type");
+_Static_assert(sizeof(FjGrainFrameMath) == 552 && _Alignof(FjGrainFrameMath) == 8, "FjGrainFrameMath layout");
+_Static_assert(offsetof(FjGrainFrameMath, present) == 0, "FjGrainFrameMath.present offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->present), uint32_t (*): 1, default: 0), "FjGrainFrameMath.present type");
+_Static_assert(offsetof(FjGrainFrameMath, capture_polarity) == 4, "FjGrainFrameMath.capture_polarity offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->capture_polarity), uint32_t (*): 1, default: 0), "FjGrainFrameMath.capture_polarity type");
+_Static_assert(offsetof(FjGrainFrameMath, render_extent) == 8, "FjGrainFrameMath.render_extent offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->render_extent), FjExtent (*): 1, default: 0), "FjGrainFrameMath.render_extent type");
+_Static_assert(offsetof(FjGrainFrameMath, full_frame_extent) == 24, "FjGrainFrameMath.full_frame_extent offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->full_frame_extent), FjExtent (*): 1, default: 0), "FjGrainFrameMath.full_frame_extent type");
+_Static_assert(offsetof(FjGrainFrameMath, pixel_size_um) == 40, "FjGrainFrameMath.pixel_size_um offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->pixel_size_um), float (*): 1, default: 0), "FjGrainFrameMath.pixel_size_um type");
+_Static_assert(offsetof(FjGrainFrameMath, frame0) == 48, "FjGrainFrameMath.frame0 offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->frame0), int64_t (*): 1, default: 0), "FjGrainFrameMath.frame0 type");
+_Static_assert(offsetof(FjGrainFrameMath, frame_alpha) == 56, "FjGrainFrameMath.frame_alpha offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->frame_alpha), float (*): 1, default: 0), "FjGrainFrameMath.frame_alpha type");
+_Static_assert(offsetof(FjGrainFrameMath, seed_base) == 64, "FjGrainFrameMath.seed_base offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->seed_base), uint64_t (*): 1, default: 0), "FjGrainFrameMath.seed_base type");
+_Static_assert(offsetof(FjGrainFrameMath, seed_base_next) == 72, "FjGrainFrameMath.seed_base_next offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->seed_base_next), uint64_t (*): 1, default: 0), "FjGrainFrameMath.seed_base_next type");
+_Static_assert(offsetof(FjGrainFrameMath, session_seed) == 80, "FjGrainFrameMath.session_seed offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->session_seed), uint64_t (*): 1, default: 0), "FjGrainFrameMath.session_seed type");
+_Static_assert(offsetof(FjGrainFrameMath, clip_token) == 88, "FjGrainFrameMath.clip_token offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->clip_token), uint64_t (*): 1, default: 0), "FjGrainFrameMath.clip_token type");
+_Static_assert(offsetof(FjGrainFrameMath, pitch_px) == 96, "FjGrainFrameMath.pitch_px offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->pitch_px), int32_t (*): 1, default: 0), "FjGrainFrameMath.pitch_px type");
+_Static_assert(offsetof(FjGrainFrameMath, breathing_period_frames) == 100, "FjGrainFrameMath.breathing_period_frames offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->breathing_period_frames), int32_t (*): 1, default: 0), "FjGrainFrameMath.breathing_period_frames type");
+_Static_assert(offsetof(FjGrainFrameMath, clump_morph_period_frames) == 104, "FjGrainFrameMath.clump_morph_period_frames offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->clump_morph_period_frames), int32_t (*): 1, default: 0), "FjGrainFrameMath.clump_morph_period_frames type");
+_Static_assert(offsetof(FjGrainFrameMath, wang_cell_mm) == 108, "FjGrainFrameMath.wang_cell_mm offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->wang_cell_mm), float (*): 1, default: 0), "FjGrainFrameMath.wang_cell_mm type");
+_Static_assert(offsetof(FjGrainFrameMath, breathing_amplitude) == 112, "FjGrainFrameMath.breathing_amplitude offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->breathing_amplitude), float (*): 1, default: 0), "FjGrainFrameMath.breathing_amplitude type");
+_Static_assert(offsetof(FjGrainFrameMath, breathing_cell_um_small) == 116, "FjGrainFrameMath.breathing_cell_um_small offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->breathing_cell_um_small), float (*): 1, default: 0), "FjGrainFrameMath.breathing_cell_um_small type");
+_Static_assert(offsetof(FjGrainFrameMath, breathing_cell_um_large) == 120, "FjGrainFrameMath.breathing_cell_um_large offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->breathing_cell_um_large), float (*): 1, default: 0), "FjGrainFrameMath.breathing_cell_um_large type");
+_Static_assert(offsetof(FjGrainFrameMath, breathing_mix) == 124, "FjGrainFrameMath.breathing_mix offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->breathing_mix), float (*): 1, default: 0), "FjGrainFrameMath.breathing_mix type");
+_Static_assert(offsetof(FjGrainFrameMath, breathing_drift_um_per_frame) == 128, "FjGrainFrameMath.breathing_drift_um_per_frame offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->breathing_drift_um_per_frame), float (*): 1, default: 0), "FjGrainFrameMath.breathing_drift_um_per_frame type");
+_Static_assert(offsetof(FjGrainFrameMath, debug_scale) == 132, "FjGrainFrameMath.debug_scale offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->debug_scale), float (*): 1, default: 0), "FjGrainFrameMath.debug_scale type");
+_Static_assert(offsetof(FjGrainFrameMath, density_max_cmy) == 136, "FjGrainFrameMath.density_max_cmy offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->density_max_cmy), float (*)[3]: 1, default: 0), "FjGrainFrameMath.density_max_cmy type");
+_Static_assert(offsetof(FjGrainFrameMath, n_particles_cmy) == 148, "FjGrainFrameMath.n_particles_cmy offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->n_particles_cmy), float (*)[3]: 1, default: 0), "FjGrainFrameMath.n_particles_cmy type");
+_Static_assert(offsetof(FjGrainFrameMath, od_particle_cmy) == 160, "FjGrainFrameMath.od_particle_cmy offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->od_particle_cmy), float (*)[3]: 1, default: 0), "FjGrainFrameMath.od_particle_cmy type");
+_Static_assert(offsetof(FjGrainFrameMath, density_min_layers) == 172, "FjGrainFrameMath.density_min_layers offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->density_min_layers), float (*)[3][3]: 1, default: 0), "FjGrainFrameMath.density_min_layers type");
+_Static_assert(offsetof(FjGrainFrameMath, density_max_layers) == 208, "FjGrainFrameMath.density_max_layers offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->density_max_layers), float (*)[3][3]: 1, default: 0), "FjGrainFrameMath.density_max_layers type");
+_Static_assert(offsetof(FjGrainFrameMath, n_particles_layers) == 244, "FjGrainFrameMath.n_particles_layers offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->n_particles_layers), float (*)[3][3]: 1, default: 0), "FjGrainFrameMath.n_particles_layers type");
+_Static_assert(offsetof(FjGrainFrameMath, od_particle_layers) == 280, "FjGrainFrameMath.od_particle_layers offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->od_particle_layers), float (*)[3][3]: 1, default: 0), "FjGrainFrameMath.od_particle_layers type");
+_Static_assert(offsetof(FjGrainFrameMath, correlation) == 320, "FjGrainFrameMath.correlation offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->correlation), FjGrainGaussian (*)[3]: 1, default: 0), "FjGrainFrameMath.correlation type");
+_Static_assert(offsetof(FjGrainFrameMath, dye_cloud) == 368, "FjGrainFrameMath.dye_cloud offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->dye_cloud), FjGrainGaussian (*)[3][3]: 1, default: 0), "FjGrainFrameMath.dye_cloud type");
+_Static_assert(offsetof(FjGrainFrameMath, size_mix_weights) == 512, "FjGrainFrameMath.size_mix_weights offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->size_mix_weights), float (*)[3]: 1, default: 0), "FjGrainFrameMath.size_mix_weights type");
+_Static_assert(offsetof(FjGrainFrameMath, size_mix_gain) == 524, "FjGrainFrameMath.size_mix_gain offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->size_mix_gain), float (*): 1, default: 0), "FjGrainFrameMath.size_mix_gain type");
+_Static_assert(offsetof(FjGrainFrameMath, requires_full_frame) == 528, "FjGrainFrameMath.requires_full_frame offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->requires_full_frame), uint32_t (*): 1, default: 0), "FjGrainFrameMath.requires_full_frame type");
+_Static_assert(offsetof(FjGrainFrameMath, recipe_hash) == 536, "FjGrainFrameMath.recipe_hash offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->recipe_hash), uint64_t (*): 1, default: 0), "FjGrainFrameMath.recipe_hash type");
+_Static_assert(offsetof(FjGrainFrameMath, density_layers_hash) == 544, "FjGrainFrameMath.density_layers_hash offset");
+_Static_assert(_Generic(&(((FjGrainFrameMath*)0)->density_layers_hash), uint64_t (*): 1, default: 0), "FjGrainFrameMath.density_layers_hash type");
+_Static_assert(sizeof(FjGrainFrameFailure) == 16 && _Alignof(FjGrainFrameFailure) == 4, "FjGrainFrameFailure layout");
+_Static_assert(offsetof(FjGrainFrameFailure, reason) == 0, "FjGrainFrameFailure.reason offset");
+_Static_assert(_Generic(&(((FjGrainFrameFailure*)0)->reason), uint32_t (*): 1, default: 0), "FjGrainFrameFailure.reason type");
+_Static_assert(offsetof(FjGrainFrameFailure, field) == 4, "FjGrainFrameFailure.field offset");
+_Static_assert(_Generic(&(((FjGrainFrameFailure*)0)->field), uint32_t (*): 1, default: 0), "FjGrainFrameFailure.field type");
+_Static_assert(offsetof(FjGrainFrameFailure, layer) == 8, "FjGrainFrameFailure.layer offset");
+_Static_assert(_Generic(&(((FjGrainFrameFailure*)0)->layer), uint32_t (*): 1, default: 0), "FjGrainFrameFailure.layer type");
+_Static_assert(offsetof(FjGrainFrameFailure, channel) == 12, "FjGrainFrameFailure.channel offset");
+_Static_assert(_Generic(&(((FjGrainFrameFailure*)0)->channel), uint32_t (*): 1, default: 0), "FjGrainFrameFailure.channel type");
+_Static_assert(_Generic(&fj_legacy_grain_frame_prepare, FjStatus (*)(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_grain_frame_prepare signature");
 #include "production-film-expected.h"
 
 /* Fixed reflected-boundary layouts, types, extents, tags and real signatures. */
@@ -2686,6 +2826,269 @@ typedef struct {
     char diagnostic[256];
 } DirBoundaryResult;
 
+
+static size_t grain_frame_words(const FjGrainFrameMath* v, uint64_t words[115]) {
+    size_t index = 0;
+    words[index++] = v->present;
+    words[index++] = v->capture_polarity;
+    words[index++] = (uint32_t)v->render_extent.x;
+    words[index++] = (uint32_t)v->render_extent.y;
+    words[index++] = (uint32_t)v->render_extent.width;
+    words[index++] = (uint32_t)v->render_extent.height;
+    words[index++] = (uint32_t)v->full_frame_extent.x;
+    words[index++] = (uint32_t)v->full_frame_extent.y;
+    words[index++] = (uint32_t)v->full_frame_extent.width;
+    words[index++] = (uint32_t)v->full_frame_extent.height;
+    words[index++] = frame_pixel_word(v->pixel_size_um);
+    words[index++] = (uint64_t)v->frame0;
+    words[index++] = frame_pixel_word(v->frame_alpha);
+    words[index++] = v->seed_base;
+    words[index++] = v->seed_base_next;
+    words[index++] = v->session_seed;
+    words[index++] = v->clip_token;
+    words[index++] = (uint32_t)v->pitch_px;
+    words[index++] = (uint32_t)v->breathing_period_frames;
+    words[index++] = (uint32_t)v->clump_morph_period_frames;
+    words[index++] = frame_pixel_word(v->wang_cell_mm);
+    words[index++] = frame_pixel_word(v->breathing_amplitude);
+    words[index++] = frame_pixel_word(v->breathing_cell_um_small);
+    words[index++] = frame_pixel_word(v->breathing_cell_um_large);
+    words[index++] = frame_pixel_word(v->breathing_mix);
+    words[index++] = frame_pixel_word(v->breathing_drift_um_per_frame);
+    words[index++] = frame_pixel_word(v->debug_scale);
+    for (size_t c = 0; c < 3; ++c)
+        words[index++] = frame_pixel_word(v->density_max_cmy[c]);
+    for (size_t c = 0; c < 3; ++c)
+        words[index++] = frame_pixel_word(v->n_particles_cmy[c]);
+    for (size_t c = 0; c < 3; ++c)
+        words[index++] = frame_pixel_word(v->od_particle_cmy[c]);
+    for (size_t l = 0; l < 3; ++l)
+        for (size_t c = 0; c < 3; ++c)
+            words[index++] = frame_pixel_word(v->density_min_layers[l][c]);
+    for (size_t l = 0; l < 3; ++l)
+        for (size_t c = 0; c < 3; ++c)
+            words[index++] = frame_pixel_word(v->density_max_layers[l][c]);
+    for (size_t l = 0; l < 3; ++l)
+        for (size_t c = 0; c < 3; ++c)
+            words[index++] = frame_pixel_word(v->n_particles_layers[l][c]);
+    for (size_t l = 0; l < 3; ++l)
+        for (size_t c = 0; c < 3; ++c)
+            words[index++] = frame_pixel_word(v->od_particle_layers[l][c]);
+    for (size_t c = 0; c < 3; ++c) {
+        const FjGrainGaussian* g = &v->correlation[c];
+        words[index++] = frame_pixel_word(g->sigma_px);
+        words[index++] = (uint32_t)g->radius;
+        words[index++] = g->hash;
+    }
+    for (size_t l = 0; l < 3; ++l)
+        for (size_t c = 0; c < 3; ++c) {
+            const FjGrainGaussian* g = &v->dye_cloud[l][c];
+            words[index++] = frame_pixel_word(g->sigma_px);
+            words[index++] = (uint32_t)g->radius;
+            words[index++] = g->hash;
+        }
+    for (size_t c = 0; c < 3; ++c)
+        words[index++] = frame_pixel_word(v->size_mix_weights[c]);
+    words[index++] = frame_pixel_word(v->size_mix_gain);
+    words[index++] = v->requires_full_frame;
+    words[index++] = v->recipe_hash;
+    words[index++] = v->density_layers_hash;
+
+    return index;
+}
+
+static int grain_frame_values(void) {
+    CHECK(sizeof(grain_frame_rows) / sizeof(grain_frame_rows[0]) == 188);
+    for (size_t row = 0; row < sizeof(grain_frame_rows) / sizeof(grain_frame_rows[0]); ++row) {
+        const GrainFrameRow* expected = &grain_frame_rows[row];
+        CHECK(expected->mode <= 28 && expected->capacity <= 256);
+        FjGrainFrameInput input = {0};
+        size_t cursor = 0;
+        input.active = (uint32_t)(expected->input[cursor++]);
+        input.sublayers_active = (uint32_t)(expected->input[cursor++]);
+        input.layer_curves_required = (uint32_t)(expected->input[cursor++]);
+        input.capture_polarity = (uint32_t)(expected->input[cursor++]);
+        input.film_polarity = (uint32_t)(expected->input[cursor++]);
+        input.sublayer_count = diffusion_integer(expected->input[cursor++]);
+        input.pixel_size_um = dir_frame_float(expected->input[cursor++]);
+        input.particle_area_um2 = dir_frame_float(expected->input[cursor++]);
+        for (size_t c = 0; c < 3; ++c)
+            input.particle_scale_cmy[c] = dir_frame_float(expected->input[cursor++]);
+        for (size_t c = 0; c < 3; ++c)
+            input.particle_scale_layers[c] = dir_frame_float(expected->input[cursor++]);
+        for (size_t c = 0; c < 3; ++c)
+            input.particle_density_min_cmy[c] = dir_frame_float(expected->input[cursor++]);
+        for (size_t c = 0; c < 3; ++c)
+            input.authored_max_cmy[c] = dir_frame_float(expected->input[cursor++]);
+        input.correlation_sigma_px = dir_frame_float(expected->input[cursor++]);
+        input.dye_cloud_blur_um = dir_frame_float(expected->input[cursor++]);
+        input.size_mix_scale = dir_frame_float(expected->input[cursor++]);
+        input.fine_weight = dir_frame_float(expected->input[cursor++]);
+        input.mid_weight = dir_frame_float(expected->input[cursor++]);
+        input.coarse_weight = dir_frame_float(expected->input[cursor++]);
+        input.clump_morph_period_sec = dir_frame_float(expected->input[cursor++]);
+        input.render_extent.x = diffusion_integer(expected->input[cursor++]);
+        input.render_extent.y = diffusion_integer(expected->input[cursor++]);
+        input.render_extent.width = diffusion_integer(expected->input[cursor++]);
+        input.render_extent.height = diffusion_integer(expected->input[cursor++]);
+        input.full_frame_extent.x = diffusion_integer(expected->input[cursor++]);
+        input.full_frame_extent.y = diffusion_integer(expected->input[cursor++]);
+        input.full_frame_extent.width = diffusion_integer(expected->input[cursor++]);
+        input.full_frame_extent.height = diffusion_integer(expected->input[cursor++]);
+        input.frame_time = diffusion_double(expected->input[cursor++]);
+        input.frame_rate = diffusion_double(expected->input[cursor++]);
+        input.session_seed = (expected->input[cursor++]);
+        input.clip_token = (expected->input[cursor++]);
+        input.recipe_hash = (expected->input[cursor++]);
+        input.recipe_layers_hash = (expected->input[cursor++]);
+        input.film_layers_hash = (expected->input[cursor++]);
+
+        CHECK(cursor == 42);
+        float curves[9][8] = {{0}};
+        for (size_t cell = 0; cell < 9; ++cell) {
+            CHECK(expected->counts[cell] <= 8);
+            for (size_t sample = 0; sample < expected->counts[cell]; ++sample)
+                curves[cell][sample] = dir_frame_float(expected->curves[cell][sample]);
+            input.layer_curves[cell / 3][cell % 3].data = expected->counts[cell] ? curves[cell] : NULL;
+            input.layer_curves[cell / 3][cell % 3].count = expected->counts[cell];
+        }
+        FjGrainFrameMath math;
+        FjGrainFrameFailure failure;
+        memset(&math, 0x55, sizeof(math));
+        memset(&failure, 0x55, sizeof(failure));
+        char text[257];
+        memset(text, 'Q', sizeof(text));
+        FjErrorBuffer error = {text, expected->capacity, 99};
+        union {
+            max_align_t alignment;
+            unsigned char bytes[sizeof(FjGrainFrameMath) + 8];
+        } bad;
+        memset(&bad, 0x5a, sizeof(bad));
+        const FjGrainFrameInput* source = &input;
+        FjGrainFrameMath* output = &math;
+        FjGrainFrameFailure* details = &failure;
+        FjErrorBuffer* diagnostic = &error;
+        const uint32_t mode = expected->mode;
+        if (!error.capacity)
+            error.data = (char*)UINTPTR_MAX;
+        if (mode == 1 || mode == 25)
+            source = NULL;
+        if (mode == 2)
+            output = NULL;
+        if (mode == 3)
+            details = NULL;
+        if (mode == 4)
+            error.data = NULL;
+        if (mode == 5 || mode == 25)
+            diagnostic = NULL;
+        if (mode == 6)
+            source = (const FjGrainFrameInput*)(bad.bytes + 1);
+        if (mode == 7)
+            output = (FjGrainFrameMath*)(bad.bytes + 1);
+        if (mode == 8)
+            details = (FjGrainFrameFailure*)(bad.bytes + 1);
+        if (mode == 9)
+            diagnostic = (FjErrorBuffer*)(bad.bytes + 1);
+        if (mode == 10)
+            error.capacity = SIZE_MAX;
+        if (mode == 11) {
+            error.data = (char*)(UINTPTR_MAX - 1);
+            error.capacity = 7;
+        }
+        if (mode == 12)
+            input.active = 2;
+        if (mode == 13)
+            input.capture_polarity = 3;
+        if (mode == 14)
+            input.film_polarity = 3;
+        if (mode == 15)
+            input.sublayers_active = 2;
+        if (mode == 16) {
+            input.sublayers_active = 1;
+            input.layer_curves_required = 2;
+        }
+        if (mode == 17 || mode == 18) {
+            input.sublayers_active = 1;
+            input.layer_curves[0][0].count = mode == 17 ? SIZE_MAX : 0;
+            if (mode == 18)
+                input.layer_curves[2][2].count = SIZE_MAX;
+        }
+        if (mode == 19)
+            input.layer_curves[0][0].count = SIZE_MAX;
+        if (mode == 20) {
+            input.active = 0;
+            input.sublayers_active = 99;
+            input.layer_curves_required = 99;
+            input.capture_polarity = 99;
+            input.film_polarity = 99;
+        }
+        if (mode == 21)
+            source = (const FjGrainFrameInput*)(UINTPTR_MAX - 7);
+        if (mode == 22)
+            output = (FjGrainFrameMath*)(UINTPTR_MAX - 7);
+        if (mode == 23)
+            details = (FjGrainFrameFailure*)(UINTPTR_MAX - 7);
+        if (mode == 24)
+            diagnostic = (FjErrorBuffer*)(UINTPTR_MAX - 7);
+        if (mode == 26)
+            input.frame_rate = diffusion_double(UINT64_C(0x7fefffffffffffff));
+        if (mode == 27)
+            input.clump_morph_period_sec = dir_frame_float(UINT64_C(0x7fc00000));
+        if (mode == 28)
+            input.clump_morph_period_sec = dir_frame_float(UINT64_C(0x7149f2ca));
+        const FjStatus result = fj_legacy_grain_frame_prepare(source, output, details, diagnostic);
+        CHECK(result.category == expected->status.category && result.api == expected->status.api && result.native_code == expected->status.native_code);
+        for (size_t byte = 0; byte < sizeof(bad.bytes); ++byte)
+            CHECK(bad.bytes[byte] == 0x5a);
+        uint64_t words[115] = {0}, metadata[4] = {0};
+        if (expected->output_valid) {
+            CHECK(grain_frame_words(&math, words) == 115);
+            for (size_t word = 0; word < 115; ++word)
+                CHECK(words[word] == expected->output[word]);
+        }
+        if (expected->failure_valid) {
+            metadata[0] = failure.reason;
+            metadata[1] = failure.field;
+            metadata[2] = failure.layer;
+            metadata[3] = failure.channel;
+            for (size_t word = 0; word < 4; ++word)
+                CHECK(metadata[word] == expected->failure[word]);
+        }
+        const char* actual_text = expected->error_valid && error.capacity ? error.data : "";
+        if (expected->error_valid) {
+            CHECK(error.length == strlen(expected->diagnostic));
+            CHECK(memcmp(actual_text, expected->diagnostic, error.length) == 0);
+            if (error.capacity) {
+                CHECK(actual_text[error.length] == '\0');
+                CHECK(text[error.capacity] == 'Q');
+            } else
+                CHECK(text[0] == 'Q');
+        } else if (mode == 4 || mode == 10 || mode == 11)
+            CHECK(error.length == 0);
+        printf("GRAIN_FRAME_RESULT {\"case\":\"%s\",\"envelope\":[%" PRIu32 ",%" PRIu32 ",%" PRId32 "],\"output\":", expected->name, result.category, result.api, result.native_code);
+        if (expected->output_valid) {
+            printf("[");
+            for (size_t i = 0; i < 115; ++i)
+                printf("%s%" PRIu64, i ? "," : "", words[i]);
+            printf("]");
+        } else
+            printf("null");
+        printf(",\"failure\":");
+        if (expected->failure_valid) {
+            printf("[");
+            for (size_t i = 0; i < 4; ++i)
+                printf("%s%" PRIu64, i ? "," : "", metadata[i]);
+            printf("]");
+        } else
+            printf("null");
+        if (expected->error_valid)
+            printf(",\"diagnostic\":\"%.*s\",\"diagnostic_length\":%zu}\n", (int)error.length, actual_text, error.length);
+        else
+            printf(",\"diagnostic\":null,\"diagnostic_length\":null}\n");
+    }
+    return 0;
+}
+
 static double dir_boundary_double(uint64_t word) {
     double value;
     memcpy(&value, &word, sizeof(value));
@@ -2978,6 +3381,7 @@ int main(int argc, char** argv) {
     CHECK(halation_frame_values() == 0);
     CHECK(diffusion_frame_values() == 0);
     CHECK(dir_frame_values() == 0);
+    CHECK(grain_frame_values() == 0);
     CHECK(dir_boundary_values() == 0);
     CHECK(dir_boundary_raw() == 0);
     CHECK(dir_boundary_lifetime() == 0);

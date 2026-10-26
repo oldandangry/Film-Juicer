@@ -1783,6 +1783,96 @@ FjStatus fj_legacy_dir_boundary_acquire(const FjDirBoundaryInput*, FjDirBoundary
 FjStatus fj_legacy_dir_boundary_view(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*);
 FjStatus fj_legacy_dir_boundary_release(FjDirBoundaryOwner*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_GRAIN_FRAME: synchronous value preparation, removed at the
+ * last native model caller by S6.D; S4.E narrows final execution inputs.
+ * Layer spans are [layer][CMY], float elements in authored order, borrowed only
+ * on reached sublayer reductions and expired at return. No backing is retained.
+ * Callers provide live initialized aligned immutable inputs/consumed spans and
+ * exclusive disjoint output/failure/diagnostic storage. Inactive/failed math is
+ * all-zero; failure defaults are 0/0/3/3. Diagnostics count written bytes.
+ * Reason tags: none=0, raw=1, preparation=2, panic=3; unused axes are 3.
+ * Field tags: none=0, frame_input=1, density_layers_identity=2, frame_time=3,
+ * period_frames=4, pixel_area=5, particle_model=6, particle_count=7, size_mix=8,
+ * layer_curve=9, density_layer_total=10, layer_particle_area=11,
+ * layer_particle_count=12, partial_frame=13. Polarity tags: negative=0,
+ * positive=1, unsupported=2; reserved tags reject only when consumed.
+ * Native scratch selection and the final descriptor hash are not transported. */
+typedef struct FjGrainFrameInput {
+    uint32_t active;
+    uint32_t sublayers_active;
+    uint32_t layer_curves_required;
+    uint32_t capture_polarity;
+    uint32_t film_polarity;
+    int32_t sublayer_count;
+    float pixel_size_um;
+    float particle_area_um2;
+    float particle_scale_cmy[3];
+    float particle_scale_layers[3];
+    float particle_density_min_cmy[3];
+    float authored_max_cmy[3];
+    float correlation_sigma_px;
+    float dye_cloud_blur_um;
+    float size_mix_scale;
+    float fine_weight;
+    float mid_weight;
+    float coarse_weight;
+    float clump_morph_period_sec;
+    FjExtent render_extent;
+    FjExtent full_frame_extent;
+    double frame_time;
+    double frame_rate;
+    uint64_t session_seed;
+    uint64_t clip_token;
+    uint64_t recipe_hash;
+    uint64_t recipe_layers_hash;
+    uint64_t film_layers_hash;
+    FjFloatSpan layer_curves[3][3];
+} FjGrainFrameInput;
+typedef struct FjGrainFrameMath {
+    uint32_t present;
+    uint32_t capture_polarity;
+    FjExtent render_extent;
+    FjExtent full_frame_extent;
+    float pixel_size_um;
+    int64_t frame0;
+    float frame_alpha;
+    uint64_t seed_base;
+    uint64_t seed_base_next;
+    uint64_t session_seed;
+    uint64_t clip_token;
+    int32_t pitch_px;
+    int32_t breathing_period_frames;
+    int32_t clump_morph_period_frames;
+    float wang_cell_mm;
+    float breathing_amplitude;
+    float breathing_cell_um_small;
+    float breathing_cell_um_large;
+    float breathing_mix;
+    float breathing_drift_um_per_frame;
+    float debug_scale;
+    float density_max_cmy[3];
+    float n_particles_cmy[3];
+    float od_particle_cmy[3];
+    float density_min_layers[3][3];
+    float density_max_layers[3][3];
+    float n_particles_layers[3][3];
+    float od_particle_layers[3][3];
+    FjGrainGaussian correlation[3];
+    FjGrainGaussian dye_cloud[3][3];
+    float size_mix_weights[3];
+    float size_mix_gain;
+    uint32_t requires_full_frame;
+    uint64_t recipe_hash;
+    uint64_t density_layers_hash;
+} FjGrainFrameMath;
+typedef struct FjGrainFrameFailure {
+    uint32_t reason;
+    uint32_t field;
+    uint32_t layer;
+    uint32_t channel;
+} FjGrainFrameFailure;
+FjStatus fj_legacy_grain_frame_prepare(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

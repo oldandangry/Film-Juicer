@@ -132,3 +132,7 @@ tests/film/reference-fixtures/*.json -text whitespace=cr-at-eol
 
 # Reflected-YVV native characterization preserves exact capture bytes.
 tests/dir/boundary-fixtures/*.json -text whitespace=cr-at-eol
+
+# Visual-grain frame native characterization preserves original platform bytes.
+tests/grain/frame-fixtures/*-debug.json -text whitespace=cr-at-eol
+tests/grain/frame-fixtures/*-release.json -text whitespace=cr-at-eol

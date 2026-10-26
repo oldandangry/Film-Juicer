@@ -36,6 +36,7 @@
 #include "RustHalationBridge.h"
 #include "RustDiffusionBridge.h"
 #include "RustDirBridge.h"
+#include "RustGrainFrameBridge.h"
 #include "RustDirBoundaryBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
@@ -310,7 +311,23 @@ namespace {
 #include "diffusion_frame_test.inc"
 #include "dir_frame_test.inc"
 #include "dir_boundary_test.inc"
+#include "grain_frame_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "grain-frame" || std::string_view(argv[3]) == "grain-frame-products")) {
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        if (std::string_view(argv[3]) == "grain-frame-products")
+            require(GrainFrameTest::product_rows(argv[1], read(directory / "inputs.json")) == captured.at("products"), "complete genuine grain frame products and native composition hashes");
+        else {
+            layouts();
+            GrainFrameTest::values(captured);
+            GrainFrameTest::raw_and_faults(captured);
+        }
+        std::puts("PASS grain frame exact C11/full/native/facade/failure/default contracts");
+        return 0;
+    }
+
     if (argc == 5 && (std::string_view(argv[3]) == "dir-boundary" || std::string_view(argv[3]) == "dir-boundary-products")) {
         layouts();
         const auto manifest = read(argv[2]);
