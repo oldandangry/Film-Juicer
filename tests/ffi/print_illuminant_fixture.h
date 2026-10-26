@@ -12,10 +12,13 @@ namespace PrintIlluminantFixtures {
     // products receive ordered test/replace operations for the approved erff policy.
     inline nlohmann::json apply(const std::filesystem::path& path, const nlohmann::json& original) {
         const auto tests = std::filesystem::path(__FILE__).parent_path().parent_path();
-        std::ifstream stream(tests / "print/illuminant-fixtures/product-updates.json");
-        const auto updates = nlohmann::json::parse(stream);
-        if (updates.at("schema") != 1 || updates.at("policy") != "print-erff-0.2.15-2026-10-20")
-            throw std::runtime_error("unsupported print illuminant expectation policy");
+        static const nlohmann::json updates = [tests] {
+            std::ifstream stream(tests / "print/illuminant-fixtures/product-updates.json");
+            const auto parsed = nlohmann::json::parse(stream);
+            if (parsed.at("schema") != 1 || parsed.at("policy") != "print-erff-0.2.15-2026-10-20")
+                throw std::runtime_error("unsupported print illuminant expectation policy");
+            return parsed;
+        }();
         const auto name = std::filesystem::relative(path, tests).generic_string();
         const auto& fixtures = updates.at("fixtures");
         if (!fixtures.contains(name))

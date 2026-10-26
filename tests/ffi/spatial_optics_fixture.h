@@ -5,8 +5,15 @@
 #include "DiffusionHostBehavior.h"
 #include "ScatterHalation.h"
 #include "RenderRecipe.h"
+#include "FilmEffectsFrameDescriptors.h"
 
 namespace JuicerTestSupport {
+    // Literal characterization only; existing production recipes go directly to prepare_grain_frame.
+    Spektrafilm::VisualGrainFrameDescriptorInput grain_frame_input(const nlohmann::json&, Spektrafilm::VisualGrainRecipe&, Spektrafilm::FilmDevelopRecipe&);
+    bool prepare_grain_frame(const Spektrafilm::VisualGrainFrameDescriptorInput&, Spektrafilm::VisualGrainFrameDescriptor&, std::string&);
+    nlohmann::json grain_frame_fields(const Spektrafilm::VisualGrainFrameDescriptor&);
+    nlohmann::json dir_frame_fields(const SpatialDirDescriptor&);
+    bool prepare_dir_frame(const DirCouplersRecipe&, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent, const char* traceRouteLabel, SpatialDirDescriptor&);
     bool matches_diffusion_frame(const std::optional<Spektrafilm::DiffusionFrameSetDescriptor>&, const nlohmann::json& expected);
     bool prepare_diffusion_sample(const Spektrafilm::DiffusionFilterResolvedParameters&, double pixelSizeUm, int width, int height, Spektrafilm::DiffusionPsfSampleDescriptor&, std::string& diagnostic);
     bool prepare_diffusion_components(const Spektrafilm::DiffusionPsfSampleDescriptor&, Spektrafilm::DiffusionPsfComponents&, std::string& diagnostic);

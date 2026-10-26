@@ -15,16 +15,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux-debug-host:
-    name: Linux Debug host and Python checks
+  linux-product-debug:
+    name: Linux Product Debug
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       CUDACXX: /usr/local/cuda-13.2/bin/nvcc
       CUDAToolkit_ROOT: /usr/local/cuda-13.2
-      JUICER_CLANG_FORMAT: clang-format-22
-      JUICER_CLANG_TIDY: clang-tidy-22
 
     steps:
       - name: Check out source
@@ -39,7 +37,7 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements.txt
 
-      - name: Install GCC 13, Ninja, and CUDA Toolkit 13.2
+      - name: Install GCC 13, Ninja, CUDA Toolkit 13.2, and LLVM object tools
         shell: bash
         run: |
           set -euo pipefail
@@ -47,123 +45,74 @@ jobs:
             https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
           sudo apt-get update
-          # Clang's CUDA wrapper also needs cuRAND, even for sources that do not use it.
           sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2 libcurand-dev-13-2
+          wget -qO "$RUNNER_TEMP/llvm-22.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
+          gpg --dearmor --yes --output "$RUNNER_TEMP/llvm-22.gpg" "$RUNNER_TEMP/llvm-22.asc"
+          sudo install -m 0644 "$RUNNER_TEMP/llvm-22.gpg" /usr/share/keyrings/llvm-22.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | \
+            sudo tee /etc/apt/sources.list.d/llvm-22.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y llvm-22
+          llvm-nm-22 --version
           for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
-            if [[ ! -f "$CUDAToolkit_ROOT/include/$header" ]]; then
-              echo "::error::CUDA analysis header is missing: $CUDAToolkit_ROOT/include/$header"
+            test -f "$CUDAToolkit_ROOT/include/$header" || {
+              echo "::error::CUDA header missing: $CUDAToolkit_ROOT/include/$header"
               exit 1
-            fi
+            }
           done
 
-      - name: Install LLVM 22 quality tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 22
-          sudo apt-get install -y clang-format-22 clang-tidy-22
-          clang-format-22 --version
-          clang-tidy-22 --version
-
-      - name: Install pinned Rust quality tools
+      - name: Install pinned Rust toolchain and Python requirements
         shell: bash
         run: |
           set -euo pipefail
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
-          rustc --version --verbose
-          cargo --version
-          rustfmt --version
-          cargo clippy --version
-
-      - name: Install CMake 4.3 and ordinary Python requirements
-        shell: bash
-        run: |
-          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
           python -m pip install -r tests/requirements.txt
+          rustc --version --verbose
+          cargo --version
           cmake --version
           python --version
-          /usr/local/cuda-13.2/bin/nvcc --version
+          "$CUDACXX" --version
 
       - name: Verify host lane has no NVIDIA device
         shell: bash
-        run: |
-          set -euo pipefail
-          test ! -e /dev/nvidiactl
+        run: test ! -e /dev/nvidiactl
 
-      - name: Configure and build Debug public tests
+      - name: Configure and build all Debug product and test targets
         shell: bash
         run: |
           set -euo pipefail
           cmake --preset linux-debug -DBUILD_TESTING=ON
           cmake --build --preset linux-debug
 
-      - name: Run tracked native, CUDA, and Rust quality checks
-        shell: bash
-        env:
-          QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$QUALITY_BASE" || "$QUALITY_BASE" =~ ^0+$ ]]; then
-            QUALITY_BASE="$(git rev-parse HEAD^)"
-          fi
-          python -u scripts/check-quality.py \
-            --base "$QUALITY_BASE" --preset linux-debug --jobs 2
-
-      - name: List tests and run Debug host selection
+      - name: List and run Debug product, boundary, and corpus tests
         shell: bash
         run: |
           set -euo pipefail
           cmake -E make_directory out/validation/linux-debug
-          ctest --preset linux-debug -N -L "product|boundary|tooling|corpus" -LE gpu
-          ctest --preset linux-debug -L "product|boundary|tooling|corpus" -LE gpu \
+          ctest --preset linux-debug -N -L "product|boundary|corpus" -LE gpu
+          ctest --preset linux-debug -L "product|boundary|corpus" -LE gpu \
             --no-tests=error --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/host-junit.xml"
 
-      - name: Configure and build Release public tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake --preset linux-release -DBUILD_TESTING=ON
-          cmake --build --preset linux-release
-
-      - name: Run matching Release Rust quality checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -u scripts/check-quality.py \
-            --files Cargo.toml --preset linux-release --jobs 2
-
-      - name: List tests and run Release host selection
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p out/validation/linux-release
-          ctest --preset linux-release -N -L "product|boundary" -LE gpu
-          ctest --preset linux-release -L "product|boundary" -LE gpu \
-            --no-tests=error --output-on-failure \
-            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-release/host-junit.xml"
-
-      - name: Select failed control evidence
+      - name: Select failed Debug control evidence
         if: always()
         id: failed-controls
         shell: bash
-        run: python -B tests/ctest/control_artifacts.py --preset linux-debug linux-release --github-output "$GITHUB_OUTPUT"
+        run: python -B tests/ctest/control_artifacts.py --preset linux-debug --github-output "$GITHUB_OUTPUT"
 
-      - name: Upload failed controls and NPY samples
+      - name: Upload failed Debug controls and NPY samples
         if: always() && steps.failed-controls.outputs.paths != ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: linux-failed-controls
+          name: linux-product-debug-failed-controls
           path: ${{ steps.failed-controls.outputs.paths }}
           include-hidden-files: true
           if-no-files-found: warn
 
-      - name: Upload host test report
+      - name: Upload Debug product test report
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -171,9 +120,109 @@ jobs:
           path: |
             out/validation/linux-debug/host-junit.xml
             out/build/linux-debug/Testing/Temporary/LastTest.log
+            out/build/linux-debug/compile_commands.json
+            out/validation/linux-debug/quality/rust-naming/**
+            out/validation/linux-debug/quality/rust-boundaries/**
           if-no-files-found: warn
 
-      - name: Upload Release host test report
+  linux-product-release:
+    name: Linux Product Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      CUDACXX: /usr/local/cuda-13.2/bin/nvcc
+      CUDAToolkit_ROOT: /usr/local/cuda-13.2
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - name: Install GCC 13, Ninja, CUDA Toolkit 13.2, and LLVM object tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          wget -qO "$RUNNER_TEMP/cuda-keyring.deb" \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2 libcurand-dev-13-2
+          wget -qO "$RUNNER_TEMP/llvm-22.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
+          gpg --dearmor --yes --output "$RUNNER_TEMP/llvm-22.gpg" "$RUNNER_TEMP/llvm-22.asc"
+          sudo install -m 0644 "$RUNNER_TEMP/llvm-22.gpg" /usr/share/keyrings/llvm-22.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | \
+            sudo tee /etc/apt/sources.list.d/llvm-22.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y llvm-22
+          llvm-nm-22 --version
+          for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
+            test -f "$CUDAToolkit_ROOT/include/$header" || {
+              echo "::error::CUDA header missing: $CUDAToolkit_ROOT/include/$header"
+              exit 1
+            }
+          done
+
+      - name: Install pinned Rust toolchain and Python requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup set profile minimal
+          rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          python -m pip install --upgrade pip
+          python -m pip install cmake==4.3.1
+          python -m pip install -r tests/requirements.txt
+          rustc --version --verbose
+          cargo --version
+          cmake --version
+          python --version
+          "$CUDACXX" --version
+
+      - name: Verify host lane has no NVIDIA device
+        shell: bash
+        run: test ! -e /dev/nvidiactl
+
+      - name: Configure and build all Release product and test targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset linux-release -DBUILD_TESTING=ON
+          cmake --build --preset linux-release
+
+      - name: List and run Release product and boundary tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -E make_directory out/validation/linux-release
+          ctest --preset linux-release -N -L "product|boundary" -LE gpu
+          ctest --preset linux-release -L "product|boundary" -LE gpu \
+            --no-tests=error --output-on-failure \
+            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-release/host-junit.xml"
+
+      - name: Select failed Release control evidence
+        if: always()
+        id: failed-controls
+        shell: bash
+        run: python -B tests/ctest/control_artifacts.py --preset linux-release --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload failed Release controls and NPY samples
+        if: always() && steps.failed-controls.outputs.paths != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-product-release-failed-controls
+          path: ${{ steps.failed-controls.outputs.paths }}
+          include-hidden-files: true
+          if-no-files-found: warn
+
+      - name: Upload Release product test report
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -182,18 +231,289 @@ jobs:
             out/validation/linux-release/host-junit.xml
             out/build/linux-release/Testing/Temporary/LastTest.log
             out/build/linux-release/compile_commands.json
-            out/validation/linux-release/quality/**/*.log
-            out/validation/linux-release/quality/**/*.json
+            out/validation/linux-release/quality/rust-naming/**
+            out/validation/linux-release/quality/rust-boundaries/**
           if-no-files-found: warn
 
-      - name: Upload quality diagnostics and CUDA commands
+  linux-analysis:
+    name: Linux Native, CUDA, and Rust Analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      CUDACXX: /usr/local/cuda-13.2/bin/nvcc
+      CUDAToolkit_ROOT: /usr/local/cuda-13.2
+      JUICER_CLANG_FORMAT: clang-format-22
+      JUICER_CLANG_TIDY: clang-tidy-22
+      CC: /usr/bin/gcc-13
+      CXX: /usr/bin/g++-13
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - name: Install GCC 13, Ninja, CUDA Toolkit 13.2, and LLVM 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          wget -qO "$RUNNER_TEMP/cuda-keyring.deb" \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2 libcurand-dev-13-2
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install -y clang-format-22 clang-tidy-22
+          for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
+            test -f "$CUDAToolkit_ROOT/include/$header" || {
+              echo "::error::CUDA analysis header missing: $CUDAToolkit_ROOT/include/$header"
+              exit 1
+            }
+          done
+          clang-format-22 --version
+          clang-tidy-22 --version
+          "$CUDACXX" --version
+
+      - name: Install pinned Rust quality tools and Python requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup set profile minimal
+          rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          python -m pip install --upgrade pip
+          python -m pip install cmake==4.3.1
+          python -m pip install -r tests/requirements.txt
+          rustc --version --verbose
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
+
+      - name: Configure Debug analysis inputs
+        shell: bash
+        run: cmake --preset linux-debug -DBUILD_TESTING=ON
+
+      - name: Build Debug analysis inputs
+        shell: bash
+        run: cmake --build --preset linux-debug
+
+      - name: Configure Release Rust inputs
+        shell: bash
+        run: cmake --preset linux-release -DBUILD_TESTING=ON
+
+      - name: Build Release Rust archive
+        shell: bash
+        run: cmake --build --preset linux-release --target juicer_rust_build
+
+      - name: Run cumulative Debug native, CUDA, and Rust quality
+        shell: bash
+        env:
+          QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$QUALITY_BASE" && ! "$QUALITY_BASE" =~ ^0+$ ]] \
+            && git cat-file -e "${QUALITY_BASE}^{commit}" 2>/dev/null; then
+            python -u scripts/check-quality.py --base "$QUALITY_BASE" --preset linux-debug --jobs 2
+          else
+            python -u scripts/check-quality.py --all-owned --preset linux-debug --jobs 2
+          fi
+
+      - name: Run matching Release Rust quality
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u scripts/check-quality.py --files Cargo.toml --preset linux-release --jobs 2
+
+      - name: Select failed analysis control evidence
+        if: always()
+        id: failed-controls
+        shell: bash
+        run: python -B tests/ctest/control_artifacts.py --preset linux-debug linux-release --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload failed analysis controls and NPY samples
+        if: always() && steps.failed-controls.outputs.paths != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-analysis-failed-controls
+          path: ${{ steps.failed-controls.outputs.paths }}
+          include-hidden-files: true
+          if-no-files-found: warn
+
+      - name: Upload analysis receipts and compile databases
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: linux-debug-quality
+          name: linux-analysis-quality
           path: |
             out/validation/linux-debug/quality/**/*.log
             out/validation/linux-debug/quality/**/*.json
             out/validation/linux-debug/quality/parallel-controls/**
             out/build/linux-debug/compile_commands.json
+            out/validation/linux-release/quality/**/*.log
+            out/validation/linux-release/quality/**/*.json
+            out/build/linux-release/compile_commands.json
           if-no-files-found: warn
+
+  linux-tooling:
+    name: Linux CTest Tooling
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - name: Install native tools, CMake, and test requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13 ninja-build
+          rustup set profile minimal
+          rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          python -m pip install --upgrade pip
+          python -m pip install cmake==4.3.1
+          python -m pip install -r tests/requirements.txt
+          python --version
+          cmake --version
+          ctest --version
+          cargo --version
+
+      - name: Report cumulative verifier scope (skips disabled)
+        shell: python
+        env:
+          SCOPE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SCOPE_CANDIDATE: ${{ github.sha }}
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          report = Path("out/validation/linux-debug/verifier-scope.json")
+          base = os.environ.get("SCOPE_BASE", "")
+          command = [sys.executable, "-B", "scripts/check-quality.py",
+                     "--preset", "linux-debug", "--candidate", os.environ["SCOPE_CANDIDATE"],
+                     "--verifier-scope-output", str(report)]
+          command += ["--base", base] if base else ["--all-owned"]
+          subprocess.run(command, check=True)
+          decision = json.loads(report.read_text(encoding="utf-8"))
+          scope = "required by scope" if decision["required"] else "not required by scope"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"Verifier integration: {scope}. Report-only: complete selection runs.\n")
+
+      - name: Configure standalone tooling tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tests/tooling -B out/build/tooling-linux -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=/usr/bin/gcc-13 \
+            -DCMAKE_MAKE_PROGRAM="$(command -v ninja)" \
+            -DPython3_EXECUTABLE="$(command -v python)" \
+            -DJUICER_TOOLING_CARGO="$(command -v cargo)" \
+            -DJUICER_TOOLING_ROOT="$GITHUB_WORKSPACE" \
+            -DJUICER_TOOLING_ARTIFACT_ROOT="$GITHUB_WORKSPACE/out/validation/linux-debug"
+
+      - name: List and run complete tooling selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir out/build/tooling-linux -N -L tooling
+          ctest --test-dir out/build/tooling-linux -L tooling --parallel 4 \
+            --no-tests=error --output-on-failure \
+            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/tooling-junit.xml"
+
+      - name: Select failed tooling controls
+        if: always()
+        id: failed-controls
+        shell: bash
+        run: python -B tests/ctest/control_artifacts.py --preset linux-debug --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload failed tooling controls
+        if: always() && steps.failed-controls.outputs.paths != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-tooling-failed-controls
+          path: ${{ steps.failed-controls.outputs.paths }}
+          include-hidden-files: true
+          if-no-files-found: warn
+
+      - name: Upload tooling tests and Rust build evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-tooling-results
+          path: |
+            out/validation/linux-debug/tooling-junit.xml
+            out/validation/linux-debug/verifier-scope.json
+            out/validation/linux-debug/ffi/rust-build/**
+            out/build/tooling-linux/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+
+  linux-debug-host:
+    name: Linux Debug host and Python checks
+    if: always()
+    needs:
+      - linux-product-debug
+      - linux-product-release
+      - linux-analysis
+      - linux-tooling
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set up Python 3.13
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Require every child result
+        shell: python
+        env:
+          REQUIRED_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          import json
+          import os
+          import sys
+
+          expected = {
+              "linux-product-debug",
+              "linux-product-release",
+              "linux-analysis",
+              "linux-tooling",
+          }
+          try:
+              results = json.loads(os.environ["REQUIRED_RESULTS"])
+          except (KeyError, json.JSONDecodeError) as error:
+              print(f"Cannot read required child results: {error}", file=sys.stderr)
+              raise SystemExit(1)
+          names = set(results)
+          failures = {
+              name: results.get(name, {}).get("result", "missing")
+              for name in expected
+              if results.get(name, {}).get("result") != "success"
+          }
+          unexpected = names - expected
+          if failures or unexpected:
+              print(f"Required child failures: {failures}; unexpected children: {sorted(unexpected)}", file=sys.stderr)
+              raise SystemExit(1)
+          print("All required Linux Debug, Release, analysis, and tooling children succeeded.")

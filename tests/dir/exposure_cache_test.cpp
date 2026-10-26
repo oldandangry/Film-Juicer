@@ -4,6 +4,12 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <fstream>
+#include <memory>
+#include <limits>
+#include <mutex>
+#include <thread>
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -18,9 +24,12 @@
 #include "ColorTransforms.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "RustDirBoundaryBridge.h"
+#include "boundary_test_hooks.h"
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/juicer_test_api.h"
+#include "../ffi/spatial_optics_fixture.h"
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(const JuicerCuda::DirectPipelineRunParams*, JuicerCuda::SpatialDirBuildRequest);
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(const JuicerCuda::DirectPipelineRunParams*, float*, float*, float*, void*);
@@ -66,7 +75,7 @@ namespace {
         int width;
         int height;
 
-        Inputs(Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method, float pixelSize, Spektrafilm::DirFrameExtent extent)
+        Inputs(Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method, float pixelSize, Spektrafilm::DirFrameExtent extent, float tailWeight = 0.03f)
             : width(extent.width), height(extent.height) {
             ParamSnapshot controls;
             controls.scanRoute = route;
@@ -78,7 +87,7 @@ namespace {
             }
             controls.dirCouplers.diffusionSizeUm = 20.0f;
             controls.dirCouplers.diffusionTailUm = 200.0f;
-            controls.dirCouplers.diffusionTailWeight = 0.03f;
+            controls.dirCouplers.diffusionTailWeight = tailWeight;
             std::string error;
             const bool print = Spektrafilm::scan_route_is_print(route);
             require(print ? build_print_render_state_product(controls, product, error)
@@ -89,7 +98,7 @@ namespace {
                           : Scanner::build_direct_scanner_spectral_lut_descriptor(
                                 {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error),
                     error);
-            require(Spektrafilm::build_spatial_dir_descriptor(product.recipe.dirCouplers, pixelSize, extent, extent, "dir-exposure-cache-test", dir), "DIR descriptor failed");
+            require(JuicerTestSupport::prepare_dir_frame(product.recipe.dirCouplers, pixelSize, extent, extent, "dir-exposure-cache-test", dir), "DIR descriptor failed");
         }
 
         JuicerProcess::Root::CudaFramePreparationRequest request() const {
@@ -144,6 +153,105 @@ namespace {
         std::copy(boundary.verticalTerminalMatrix.begin(), boundary.verticalTerminalMatrix.end(), out.verticalBoundary.terminalMatrix);
     }
 
+    using Json = nlohmann::json;
+    Json boundary_fixture() {
+        std::ifstream input(JUICER_DIR_BOUNDARY_FIXTURE_PATH);
+        require(bool(input), "DIR boundary fixture open");
+        return Json::parse(input);
+    }
+    Json boundary_words(const double* values, std::size_t count) {
+        Json words = Json::array();
+        for (std::size_t index = 0; index < count; ++index)
+            words.push_back(std::bit_cast<std::uint64_t>(values[index]));
+        return words;
+    }
+    std::uint64_t boundary_key(const Spektrafilm::DirGaussianComponentPlan& component, int width, int height) {
+        JuicerCuda::Failure failure;
+        std::uint64_t key = 0;
+        require(JuicerDirBoundary::describe(JuicerDirBoundary::project_input(component, {width, height}), key, failure), failure.diagnostic);
+        return key;
+    }
+    const Json& expected_boundary(const Json& fixture, std::uint64_t key) {
+        for (const auto& row : fixture.at("cases"))
+            if (row.at("success").get<bool>() && row.at("key") == key)
+                return row;
+        throw std::runtime_error("actual DIR boundary has no frozen native expectation identity=" + std::to_string(key));
+    }
+    Json expected_weights(const Json& row) {
+        Json words = row.at("horizontal").at("weights");
+        for (const auto& word : row.at("vertical").at("weights"))
+            words.push_back(word);
+        return words;
+    }
+    void compare_boundary(const Frame::SpatialDirPreparedView::BoundaryView& actual, const Json& row) {
+        const auto& horizontal = row.at("horizontal");
+        const auto& vertical = row.at("vertical");
+        require(actual.horizontalLength == horizontal.at("length") && actual.verticalLength == vertical.at("length"), "Root boundary retained lengths");
+        require(actual.horizontalTerminalSize == horizontal.at("terminal_size") && actual.verticalTerminalSize == vertical.at("terminal_size"), "Root boundary terminal sizes");
+        require(actual.horizontalWeights && actual.verticalWeights == actual.horizontalWeights + 3 * static_cast<std::size_t>(actual.horizontalLength), "Root vertical offset binds the combined allocation");
+        const auto expected = expected_weights(row);
+        std::vector<double> downloaded(expected.size());
+        require_cuda(cudaMemcpy(downloaded.data(), actual.horizontalWeights, downloaded.size() * sizeof(double), cudaMemcpyDeviceToHost));
+        require(boundary_words(downloaded.data(), downloaded.size()) == expected, "entire actual Root boundary array matches frozen native words");
+        require(boundary_words(actual.horizontalTerminalMatrix.data(), 9) == horizontal.at("terminal") && boundary_words(actual.verticalTerminalMatrix.data(), 9) == vertical.at("terminal"), "Root terminal packing is exact");
+    }
+    Frame::SpatialDirPreparedView::BoundaryView boundary_view(const JuicerCuda::Resources::DeviceSpatialDirBoundary& boundary) {
+        return {boundary.weights, boundary.weights ? boundary.weights + 3 * static_cast<std::size_t>(boundary.horizontalLength) : nullptr, boundary.horizontalLength, boundary.verticalLength, boundary.horizontalTerminalSize, boundary.verticalTerminalSize, boundary.horizontalTerminalMatrix, boundary.verticalTerminalMatrix};
+    }
+    void same_binding(const JuicerCuda::Resources::DeviceSpatialDirBoundary& actual, const JuicerCuda::Resources::DeviceSpatialDirBoundary& old) {
+        require(actual.weights == old.weights && actual.bytes == old.bytes && actual.identity == old.identity &&
+                    actual.horizontalLength == old.horizontalLength && actual.verticalLength == old.verticalLength &&
+                    actual.horizontalTerminalSize == old.horizontalTerminalSize && actual.verticalTerminalSize == old.verticalTerminalSize &&
+                    boundary_words(actual.horizontalTerminalMatrix.data(), 9) == boundary_words(old.horizontalTerminalMatrix.data(), 9) &&
+                    boundary_words(actual.verticalTerminalMatrix.data(), 9) == boundary_words(old.verticalTerminalMatrix.data(), 9),
+                "failed boundary preparation preserves every old binding field");
+    }
+    struct BoundaryWorkers {
+        JuicerCuda::DirBoundaryTest::Controls& controls;
+        JuicerCuda::Resources::DeviceSpatialDirBoundary& boundary;
+        const Spektrafilm::DirGaussianComponentPlan component;
+        const int width, height;
+        void* stream;
+        std::array<std::thread, 2> threads;
+        std::array<std::exception_ptr, 2> exceptions{};
+        std::array<JuicerCuda::Failure, 2> failures{};
+        BoundaryWorkers(JuicerCuda::DirBoundaryTest::Controls& value, JuicerCuda::Resources::DeviceSpatialDirBoundary& target, Spektrafilm::DirGaussianComponentPlan input, std::array<int, 2> dimensions, void* uploadStream)
+            : controls(value), boundary(target), component(input), width(dimensions[0]), height(dimensions[1]), stream(uploadStream) {}
+        ~BoundaryWorkers() {
+            controls.cancel();
+            join();
+        }
+        void join() {
+            for (auto& thread : threads)
+                if (thread.joinable())
+                    thread.join();
+        }
+        void start(unsigned count) {
+            for (unsigned index = 0; index < count; ++index)
+                threads[index] = std::thread([&, index] {
+                    bool success = false;
+                    try {
+                        require(cuCtxSetCurrent(static_cast<CUcontext>(controls.context.contextOpaque)) == CUDA_SUCCESS, "DIR worker exact current context");
+                        JuicerCuda::DirBoundaryTest::Binding binding(controls, index);
+                        success = JuicerCuda::ensure_spatial_dir_boundary(controls.resources, boundary, component, width, height, stream, failures[index]);
+                    } catch (...) {
+                        exceptions[index] = std::current_exception();
+                    }
+                    std::lock_guard lock(controls.mutex);
+                    controls.participants[index].success = success;
+                    controls.participants[index].done = true;
+                    controls.changed.notify_all();
+                });
+        }
+        void check() {
+            join();
+            for (const auto& exception : exceptions)
+                if (exception)
+                    std::rethrow_exception(exception);
+            require(!controls.timedOut, "DIR rendezvous timeout is a failure");
+        }
+    };
+
     class ExposureCache : public testing::Test {
     protected:
         void SetUp() override {
@@ -161,6 +269,37 @@ namespace {
             const auto status = cudaStreamDestroy(stream);
             require(retired, error);
             require_cuda(status);
+            if (trackedLedger) {
+                const auto state = trackedLedger->snapshot();
+                require(state.chargedBytes == 0 && state.reservedBytes == 0 && state.recordCount == 0, "DIR context retirement drains physical allocation ownership");
+            }
+        }
+
+        Frame prepare_boundary(const Inputs& inputs) {
+            JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+            snapshot.instanceToken.value = 0x444952424f554e44ull;
+            snapshot.frameToken.value = nextIdentity;
+            snapshot.snapshotId = nextIdentity++;
+            snapshot.deviceContextKey = key;
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
+            JuicerCuda::Failure failure;
+            auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, failure);
+            require(frame.active(), failure.diagnostic);
+            require(frame.prepare_spatial_dir_resources(inputs.dir, frame.workspace_lease(), stream, failure), failure.diagnostic);
+            return frame;
+        }
+        JuicerCuda::Resources& boundary_owner() {
+            Inputs inputs(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Hanatos2025, 1.0f, {0, 0, 64, 48});
+            const auto identity = boundary_key(inputs.dir.filterPlan.components[0], 64, 48);
+            JuicerCuda::DirBoundaryTest::Watch watch(key, identity);
+            auto frame = prepare_boundary(inputs);
+            require(watch.resources && watch.epoch != 0 && watch.resources->ownerContextKey == key, "observe the actual Root exact-context owner");
+            trackedLedger = watch.resources->deviceLedger;
+            JuicerCuda::Failure failure;
+            require(frame.finish(stream, failure), failure.diagnostic);
+            require_cuda(cudaStreamSynchronize(stream));
+            // Root retains this owner until this fixture's drained context retirement.
+            return *watch.resources;
         }
 
         template <typename Params>
@@ -326,6 +465,7 @@ namespace {
 
         JuicerCuda::ResourceManager::DeviceContextKey key;
         cudaStream_t stream = nullptr;
+        std::shared_ptr<JuicerCuda::DeviceAllocationLedger> trackedLedger;
         inline static std::uint64_t nextIdentity = 1;
     };
 
@@ -363,6 +503,186 @@ namespace {
             EXPECT_EQ(warm.spatial_dir_resources(warm.workspace_lease(), inputs.dir.hash).gaussian.weights, prepared.gaussian.weights);
             require(warm.finish(stream, error), error.diagnostic);
         }
+    }
+
+    TEST_F(ExposureCache, ReflectedBoundaryRootArraysWarmHitsClearFinishAndAbort) {
+        const auto fixture = boundary_fixture();
+        struct Case {
+            Spektrafilm::ScanRoute route;
+            float pixel, tail;
+            int width, height;
+        };
+        const std::array cases{
+            Case{Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, 0.0f, 64, 48},
+            Case{Spektrafilm::ScanRoute::NegativeDirectScan, 8.0f, 0.03f, 64, 48},
+            Case{Spektrafilm::ScanRoute::NegativePrintScan, 8.0f, 0.03f, 65, 63},
+            Case{Spektrafilm::ScanRoute::PositiveDirectScan, 20.0f, 0.03f, 64, 48},
+            Case{Spektrafilm::ScanRoute::PositivePrintScan, 1.0f, 0.0f, 65, 63},
+            Case{Spektrafilm::ScanRoute::PositivePrintScan, 100.0f, 0.03f, 64, 48},
+            Case{Spektrafilm::ScanRoute::NegativePrintScan, 200.0f, 0.03f, 64, 48},
+            Case{Spektrafilm::ScanRoute::PositiveDirectScan, 8.0f, 0.03f, 65, 63}};
+        for (const auto& spec : cases) {
+            SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(spec.route) << " pixel=" << spec.pixel << " tail=" << spec.tail << " width=" << spec.width);
+            Inputs inputs(spec.route, Spektrafilm::RgbToRawMethod::Hanatos2025, spec.pixel, {0, 0, spec.width, spec.height}, spec.tail);
+            auto frame = prepare_boundary(inputs);
+            const auto actual = frame.spatial_dir_resources(frame.workspace_lease(), inputs.dir.hash);
+            ASSERT_TRUE(actual.active);
+            for (std::size_t slot = 0; slot < actual.boundaries.size(); ++slot) {
+                const auto& component = inputs.dir.filterPlan.components[slot];
+                const bool active = slot < static_cast<std::size_t>(inputs.dir.filterPlan.componentCount) && component.weight > 0.0f && component.referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect;
+                if (active)
+                    compare_boundary(actual.boundaries[slot], expected_boundary(fixture, boundary_key(component, spec.width, spec.height)));
+                else
+                    require(!actual.boundaries[slot].horizontalWeights && !actual.boundaries[slot].verticalWeights && !actual.boundaries[slot].horizontalLength && !actual.boundaries[slot].verticalLength, "Root clears nonparticipating boundary views");
+            }
+            require(fj_test_dir_boundary_count(3) == 0, "no host owner retained in prepared frame/cache");
+            JuicerCuda::Failure failure;
+            require(frame.finish(stream, failure), failure.diagnostic);
+            const auto acquires = fj_test_dir_boundary_count(0);
+            auto warm = prepare_boundary(inputs);
+            const auto reused = warm.spatial_dir_resources(warm.workspace_lease(), inputs.dir.hash);
+            require(fj_test_dir_boundary_count(0) == acquires, "warm Root preparation performs no Rust acquire/vector construction");
+            for (std::size_t slot = 0; slot < actual.boundaries.size(); ++slot)
+                require(actual.boundaries[slot].horizontalWeights == reused.boundaries[slot].horizontalWeights, "warm Root reuses each device binding");
+            warm.abort();
+            require(fj_test_dir_boundary_count(3) == 0, "abort retains no Rust host owner");
+        }
+    }
+
+    TEST_F(ExposureCache, ReflectedBoundaryFailuresStagingAndIndependentEpoch) {
+        auto& resources = boundary_owner();
+        const auto fixture = boundary_fixture();
+        auto& binding = resources.spatialDirBoundaries[0];
+        const auto old = binding;
+        const auto& oldExpected = expected_boundary(fixture, old.identity);
+        auto ignored = JuicerCuda::DirBoundaryTest::component(oldExpected.at("input").at("component"));
+        ignored.sigmaPixels = std::numeric_limits<float>::quiet_NaN();
+        ignored.radius = -1;
+        ignored.weight = std::numeric_limits<float>::infinity();
+        JuicerCuda::Failure failure;
+        auto acquires = fj_test_dir_boundary_count(0);
+        require(JuicerCuda::ensure_spatial_dir_boundary(resources, binding, ignored, 64, 48, stream, failure), failure.diagnostic);
+        require(fj_test_dir_boundary_count(0) == acquires, "ignored diagnostic fields preserve warm-hit opportunity");
+        same_binding(binding, old);
+        const auto& candidate = fixture.at("cases").at(7);
+        const auto component = JuicerCuda::DirBoundaryTest::component(candidate.at("input").at("component"));
+        const auto identity = candidate.at("key").get<std::uint64_t>();
+        for (const auto& [operation, fault] : std::array<std::pair<unsigned, unsigned>, 7>{{{1, 1}, {1, 2}, {2, 1}, {2, 9}, {2, 10}, {2, 11}, {2, 12}}}) {
+            const auto releases = fj_test_dir_boundary_count(2);
+            require(fj_test_dir_boundary_fault(operation, fault).category == 0, "arm bounded real boundary failure");
+            if (operation == 2)
+                require(fj_test_dir_boundary_fault(3, 1).category == 0, "cleanup panic must preserve primary failure");
+            require(!JuicerCuda::ensure_spatial_dir_boundary(resources, binding, component, 9, 6, stream, failure), "real resource miss rejects failed Rust boundary");
+            const auto expectedCategory = operation == 1 ? (fault == 1 ? 8u : 4u) : fault == 1 ? 8u
+                                                                                               : 3u;
+            require(failure.status.category == expectedCategory && failure.status.api == 0 && failure.status.native_code == 0, "primary boundary status survives release panic");
+            same_binding(binding, old);
+            require(fj_test_dir_boundary_count(3) == 0 && fj_test_dir_boundary_count(2) == releases + (operation == 2 ? 1u : 0u), "real miss consumes its only host owner once");
+        }
+        {
+            const auto before = resources.deviceLedger->snapshot();
+            JuicerCuda::DirBoundaryTest::Controls controls(resources, identity);
+            controls.participants[0].failUpload = true;
+            {
+                JuicerCuda::DirBoundaryTest::Binding observe(controls, 0);
+                require(!JuicerCuda::ensure_spatial_dir_boundary(resources, binding, component, 9, 6, stream, failure), "bounded actual upload failure");
+            }
+            const auto& p = controls.participants[0];
+            require(p.uploadRejected && p.copies == 1 && p.candidate && p.frees == 1 && p.freed == p.candidate && p.freeSucceeded && !p.observationFailed, "failed real candidate is physically freed exactly once");
+            same_binding(binding, old);
+            const auto after = resources.deviceLedger->snapshot();
+            require(after.chargedBytes == before.chargedBytes && after.reservedBytes == before.reservedBytes && after.recordCount == before.recordCount, "failed upload preserves physical accounting");
+            require(fj_test_dir_boundary_count(3) == 0, "failed upload releases host boundary");
+        }
+        {
+            JuicerCuda::DirBoundaryTest::Controls controls(resources, identity);
+            {
+                JuicerCuda::DirBoundaryTest::Binding observe(controls, 0);
+                require(JuicerCuda::ensure_spatial_dir_boundary(resources, binding, component, 9, 6, stream, failure), failure.diagnostic);
+            }
+            const auto& p = controls.participants[0];
+            require(p.copies == 1 && p.candidate == binding.weights && p.hostOwners >= 1 && p.staging && reinterpret_cast<std::uintptr_t>(p.staging) != p.sourceAddress && !p.observationFailed, "actual upload copies into independent native pinned staging while host owner is live");
+            require(fj_test_dir_boundary_count(3) == 0, "successful ensure releases host owner before later native staging read");
+            require(boundary_words(p.stagedWeights.data(), p.stagedWeights.size()) == expected_weights(candidate) && boundary_words(p.staging, p.stagedWeights.size()) == expected_weights(candidate), "actual staged bytes remain intact after host owner release");
+            compare_boundary(boundary_view(binding), candidate);
+        }
+        acquires = fj_test_dir_boundary_count(0);
+        std::unique_ptr<JuicerCuda::Resources, decltype(&JuicerCuda::destroy)> epoch(
+            JuicerCuda::create(key, resources.contextEpoch + 1, resources.deviceLedger, failure), &JuicerCuda::destroy);
+        require(bool(epoch), failure.diagnostic);
+        require(JuicerCuda::ensure_spatial_dir_boundary(*epoch, epoch->spatialDirBoundaries[0], component, 9, 6, stream, failure), failure.diagnostic);
+        require(epoch->spatialDirBoundaries[0].weights != binding.weights && fj_test_dir_boundary_count(0) == acquires + 1, "independent native epoch constructs an independent device binding");
+        compare_boundary(boundary_view(epoch->spatialDirBoundaries[0]), candidate);
+        require(JuicerCuda::drain_for_context_retire(*epoch, failure), failure.diagnostic);
+        require(epoch->deviceAllocationRecords.empty(), "independent epoch drains all physical records");
+    }
+
+    TEST_F(ExposureCache, ReflectedBoundarySameKeyRaceAndPrepublicationCancellation) {
+        auto& resources = boundary_owner();
+        auto& target = resources.spatialDirBoundaries[0];
+        const auto fixture = boundary_fixture();
+        const auto& candidate = fixture.at("cases").at(7);
+        const auto component = JuicerCuda::DirBoundaryTest::component(candidate.at("input").at("component"));
+        const auto identity = candidate.at("key").get<std::uint64_t>();
+        const auto old = target;
+        const auto acquires = fj_test_dir_boundary_count(0);
+        {
+            JuicerCuda::DirBoundaryTest::Controls controls(resources, identity);
+            controls.rendezvous = true;
+            BoundaryWorkers workers(controls, target, component, {9, 6}, stream);
+            workers.start(2);
+            require(controls.await_arrivals(2), "two real same-key uploaded candidates rendezvous");
+            require(controls.participants[0].candidate && controls.participants[1].candidate && controls.participants[0].candidate != controls.participants[1].candidate, "distinct real same-key allocations");
+            require(fj_test_dir_boundary_count(3) == 2, "both miss-local host owners survive synchronous staging and prepublication wait");
+            controls.release(0);
+            require(controls.await_done(0) && controls.participants[0].success, "first candidate publishes before second resumes");
+            controls.release(1);
+            require(controls.await_done(1) && controls.participants[1].success, "same-key loser succeeds by reusing winner");
+            workers.check();
+            const auto& winner = controls.participants[0];
+            const auto& loser = controls.participants[1];
+            require(target.weights == winner.candidate && target.identity == identity && winner.frees == 0 && loser.frees == 1 && loser.freed == loser.candidate && loser.freeSucceeded, "publication keeps winner and physically frees the actual losing allocation");
+            require(fj_test_dir_boundary_count(3) == 0 && fj_test_dir_boundary_count(0) == acquires + 2, "same-key race releases both host owners");
+            compare_boundary(boundary_view(target), candidate);
+        }
+        const auto& next = fixture.at("cases").at(6);
+        const auto nextComponent = JuicerCuda::DirBoundaryTest::component(next.at("input").at("component"));
+        const auto current = target;
+        JuicerCuda::DirBoundaryTest::Controls controls(resources, next.at("key"));
+        controls.rendezvous = true;
+        BoundaryWorkers workers(controls, target, nextComponent, {next.at("input").at("width").get<int>(), next.at("input").at("height").get<int>()}, stream);
+        workers.start(1);
+        require(controls.await_arrivals(1), "canceled candidate reaches real prepublication boundary");
+        controls.cancel();
+        workers.check();
+        const auto& rejected = controls.participants[0];
+        require(!rejected.success && rejected.frees == 1 && rejected.freed == rejected.candidate && rejected.freeSucceeded, "prepublication cancellation frees candidate");
+        same_binding(target, current);
+        require(target.weights != old.weights && fj_test_dir_boundary_count(3) == 0, "race replacement and cancellation preserve native ownership");
+    }
+
+    TEST_F(ExposureCache, ReflectedBoundarySecondOwnerValidationRejectsQuarantinedPublication) {
+        auto& resources = boundary_owner();
+        auto& target = resources.spatialDirBoundaries[0];
+        const auto old = target;
+        const auto fixture = boundary_fixture();
+        const auto& candidate = fixture.at("cases").at(7);
+        const auto component = JuicerCuda::DirBoundaryTest::component(candidate.at("input").at("component"));
+        JuicerCuda::DirBoundaryTest::Controls controls(resources, candidate.at("key"));
+        controls.rendezvous = true;
+        BoundaryWorkers workers(controls, target, component, {9, 6}, stream);
+        workers.start(1);
+        require(controls.await_arrivals(1), "candidate uploaded before second exact owner validation");
+        // Exercise the existing owner transition, without changing context/epoch,
+        // allocator policy or the publication implementation.
+        JuicerCuda::quarantine_unfenced_frame_use(resources, stream);
+        controls.release(0);
+        require(controls.await_done(0), "revalidated candidate returns");
+        workers.check();
+        const auto& rejected = controls.participants[0];
+        require(!rejected.success && workers.failures[0].diagnostic == "CUDA resources quarantined after unfenced frame use", "actual second owner validation blocks publication");
+        require(rejected.frees == 1 && rejected.freed == rejected.candidate && rejected.freeSucceeded && fj_test_dir_boundary_count(3) == 0, "owner rejection frees candidate and releases host boundary");
+        same_binding(target, old);
     }
 
     TEST_F(ExposureCache, SourceBuildMatchesSeparateCacheAndDevelopedDensityBitForBit) {

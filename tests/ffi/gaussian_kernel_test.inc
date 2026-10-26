@@ -53,7 +53,7 @@ namespace GaussianTest {
                 input.sessionSeed = 17;
                 input.clipToken = 23;
                 Spektrafilm::VisualGrainFrameDescriptor grain;
-                require(Spektrafilm::build_visual_grain_frame_descriptor(input, grain, diagnostic), diagnostic.c_str());
+                require(JuicerTestSupport::prepare_grain_frame(input, grain, diagnostic), diagnostic.c_str());
                 for (std::size_t c = 0; c < 3; ++c) {
                     const auto& correlation = grain.correlation[c];
                     rows.push_back(kernel_case(scale + "grain-correlation/" + std::to_string(c), correlation.radius, correlation.sigmaPx));
@@ -64,7 +64,7 @@ namespace GaussianTest {
                 }
                 Spektrafilm::SpatialDirDescriptor dir;
                 const Spektrafilm::DirFrameExtent extent{0, 0, 64, 48};
-                require(Spektrafilm::build_spatial_dir_descriptor(product.recipe.dirCouplers, pixelSize, extent, extent, "gaussian-products", dir), "Gaussian capture DIR descriptor");
+                require(JuicerTestSupport::prepare_dir_frame(product.recipe.dirCouplers, pixelSize, extent, extent, "gaussian-products", dir), "Gaussian capture DIR descriptor");
                 for (int c = 0; c < dir.filterPlan.componentCount; ++c) {
                     const auto& component = dir.filterPlan.components[static_cast<std::size_t>(c)];
                     if (component.referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect)

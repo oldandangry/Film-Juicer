@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <thread>
 #include <bit>
 #include <cstdint>
@@ -35,11 +36,15 @@
 #include "RustFrameBridge.h"
 #include "RustHalationBridge.h"
 #include "RustDiffusionBridge.h"
+#include "RustDirBridge.h"
+#include "RustGrainFrameBridge.h"
+#include "RustDirBoundaryBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
 #include "exposure_fixture.h"
 #include "spatial_optics_fixture.h"
+#include "../dir/boundary_test_hooks.h"
 
 #include "film_recipe_abi_cpp.inc"
 static_assert(!std::is_copy_constructible_v<JuicerAssets::DevelopmentHold>);
@@ -305,8 +310,56 @@ namespace {
 #include "frame_geometry_test.inc"
 #include "halation_frame_test.inc"
 #include "diffusion_frame_test.inc"
+#include "dir_frame_test.inc"
+#include "dir_boundary_test.inc"
+#include "grain_frame_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "grain-frame" || std::string_view(argv[3]) == "grain-frame-products")) {
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        if (std::string_view(argv[3]) == "grain-frame-products")
+            require(GrainFrameTest::product_rows(argv[1], read(directory / "inputs.json")) == captured.at("products"), "complete genuine grain frame products and native composition hashes");
+        else {
+            layouts();
+            GrainFrameTest::values(captured);
+            GrainFrameTest::raw_and_faults(captured);
+        }
+        std::puts("PASS grain frame exact C11/full/native/facade/failure/default contracts");
+        return 0;
+    }
+
+    if (argc == 5 && (std::string_view(argv[3]) == "dir-boundary" || std::string_view(argv[3]) == "dir-boundary-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        require(captured.at("preset") == argv[4], "DIR boundary native context");
+        if (std::string_view(argv[3]) == "dir-boundary") {
+            DirBoundaryTest::raw_values({.native = captured, .checked = read(directory / "checked.json")});
+            DirBoundaryTest::boundary(captured);
+        } else {
+            DirBoundaryTest::products(captured);
+        }
+        return 0;
+    }
+    if (argc == 5 && (std::string_view(argv[3]) == "dir-frame" || std::string_view(argv[3]) == "dir-frame-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        require(captured.at("preset") == argv[4], "DIR frame native context");
+        DirFrameTest::values(captured, read(directory / "checked.json"));
+        if (std::string_view(argv[3]) == "dir-frame") {
+            DirFrameTest::boundary(captured.at("cases"));
+        } else {
+            require(DirFrameTest::products(argv[1], read(directory / "inputs.json").at("products")) == captured.at("products"), "complete DIR route products and final native identities");
+        }
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "diffusion-frame" || std::string_view(argv[3]) == "diffusion-frame-products")) {
+        std::fprintf(stderr, "DiffusionFrame stage=fixture-read\n");
+        std::fflush(stderr);
         layouts();
         const auto manifest = read(argv[2]);
         const auto directory = std::filesystem::path(argv[2]).parent_path();
@@ -315,11 +368,17 @@ int main(int argc, char** argv) try {
         require(captured.at("preset") == argv[4] && edges.at("preset") == argv[4], "diffusion native contexts");
         for (const auto& row : edges.at("samples"))
             captured["samples"].push_back(row);
+        std::fprintf(stderr, "DiffusionFrame stage=values\n");
+        std::fflush(stderr);
         DiffusionFrameTest::values(captured, read(directory / "checked.json"));
+        std::fprintf(stderr, "DiffusionFrame stage=values-complete\n");
+        std::fflush(stderr);
         if (std::string_view(argv[3]) == "diffusion-frame")
             DiffusionFrameTest::boundary(captured, read(directory / "checked.json"));
         else
             require(DiffusionFrameTest::products(argv[1], read(directory / "inputs.json").at("products")) == captured.at("products"), "complete diffusion route products match unchanged native captures");
+        std::fprintf(stderr, "DiffusionFrame stage=complete\n");
+        std::fflush(stderr);
         return 0;
     }
 

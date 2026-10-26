@@ -406,8 +406,36 @@ FjStatus fj_test_diffusion_frame_prepare(const FjDiffusionFrameInput*, FjDiffusi
 FjStatus fj_test_diffusion_frame_c_prepare(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*);
 FjStatus fj_test_diffusion_frame_fault(uint32_t operation, uint32_t fault);
 
+FjStatus fj_test_dir_frame_prepare(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*);
+FjStatus fj_test_dir_frame_fault(uint32_t fault);
+FjStatus fj_test_dir_frame_c_prepare(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*);
+int fj_test_dir_frame_c_check(const FjDirFrameInput*, const FjDirFrameMath*, const FjDirFrameFailure*, uint32_t category, const char* diagnostic);
+
+/* Same live storage, owner/view expiry and consume-once contract as the legacy
+ * DIR boundary edge. Fault operation: describe0/acquire1/view2/release3.
+ * Fault0 clears, panic1; acquire2..8 reservations, view9..12 metadata only.
+ * Counts are acquire/view/release calls and current live owners respectively. */
+FjStatus fj_test_dir_boundary_describe(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_test_dir_boundary_acquire(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_test_dir_boundary_view(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_test_dir_boundary_release(FjDirBoundaryOwner*, FjErrorBuffer*);
+FjStatus fj_test_dir_boundary_fault(uint32_t operation, uint32_t fault);
+uint64_t fj_test_dir_boundary_count(uint32_t index);
+
+
+FjStatus fj_test_dir_boundary_c_describe(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_test_dir_boundary_c_acquire(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_test_dir_boundary_c_view(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_test_dir_boundary_c_release(FjDirBoundaryOwner*, FjErrorBuffer*);
+/* Same checked body and synchronous storage contract as the production grain frame edge. */
+FjStatus fj_test_grain_frame_prepare(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*);
+/* Closed one-shot faults: 0 clear, 1 entry panic, 2 reached layer panic,
+ * 3 presence, 4 association, 5 Gaussian radius, 6 full-frame flag. */
+FjStatus fj_test_grain_frame_fault(uint32_t);
+int fj_test_grain_frame_c_check(uint32_t, const FjGrainFrameInput*, const FjGrainFrameMath*, FjStatus, FjGrainFrameFailure, const char*);
 #ifdef __cplusplus
 }
 #endif
+
 
 #endif

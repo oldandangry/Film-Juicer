@@ -17,6 +17,9 @@ import uuid
 from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, preparation_inventory, prepare_build, registration_files
 from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/ffi"))
+from grain_probe_contract import GRAIN_FRAME_CASE_COUNT, GRAIN_FRAME_CASE_IDS
+
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
 GROUPS = {"product", "boundary", "tooling", "corpus", "production"}
 
@@ -222,11 +225,17 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         admit(row["executable"], row["after_run_sha256"])
         admit(row["source"], row["source_sha256"])
     consumed = document.get("consumed_inputs", {})
+    reference_consumed = {str(resolve(name)): checksum for name, checksum in consumed.items()}
+    for path in (root / "tests/ffi/grain_frame_abi_assertions.inc",
+                 root / "tests/ffi/grain_probe_contract.py"):
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum):
+            raise ValueError("production grain C11 assertion input identity changed")
     reference = document.get("reference_fixture", {})
     reference_manifest = root / "tests/film/reference-fixtures/manifest.json"
     spec = json.loads(reference_manifest.read_text())
     reference_payload = reference_manifest.parent / spec["presets"][document["preset"]]
-    reference_consumed = {str(resolve(name)): checksum for name, checksum in consumed.items()}
     if (reference.get("logical_preset") != document["preset"]
             or resolve(reference.get("manifest", "")) != reference_manifest
             or resolve(reference.get("payload", "")) != reference_payload):
@@ -392,6 +401,79 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
             or document.get("diffusion_frame_results") != diffusion_expected):
         raise ValueError("production diffusion frame full fields/words/failure results are incomplete")
 
+    dir_manifest = root / "tests/dir/frame-fixtures/manifest.json"
+    dir_spec = json.loads(dir_manifest.read_bytes())
+    dir_logical = dir_spec["presets"][document["preset"]]["native"]
+    dir_paths = {
+        "manifest": dir_manifest,
+        "payload": dir_manifest.parent / dir_spec["payloads"][dir_logical],
+        "normative": dir_manifest.parent / dir_spec["checked"],
+        "input_spec": dir_manifest.parent / "inputs.json",
+    }
+    dir_frame = document.get("dir_frame_fixture", {})
+    if dir_frame.get("logical_preset") != document["preset"] or any(
+            resolve(dir_frame.get(key, "")) != path for key, path in dir_paths.items()):
+        raise ValueError("production DIR frame fixture membership is incomplete")
+    for path in dir_paths.values():
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum
+                or (path != dir_manifest and checksum != dir_spec["sha256"][path.name])):
+            raise ValueError("production DIR frame consumed fixture identity changed")
+    dir_expected = dir_spec["production_cases"]
+    if (len(dir_expected) != 121 or len({row["case"] for row in dir_expected}) != 121
+            or document.get("dir_frame_results") != dir_expected):
+        raise ValueError("production DIR frame full fields/words/failure trace results are incomplete")
+
+    grain_manifest = root / "tests/grain/frame-fixtures/manifest.json"
+    grain_spec = json.loads(grain_manifest.read_bytes())
+    grain_paths = {
+        "manifest": grain_manifest,
+        "payload": grain_manifest.parent / grain_spec["presets"][document["preset"]]["native"],
+        "normative": grain_manifest.parent / grain_spec["checked"],
+        "input_spec": grain_manifest.parent / "inputs.json",
+    }
+    grain = document.get("grain_frame_fixture", {})
+    if grain.get("logical_preset") != document["preset"] or any(
+            resolve(grain.get(key, "")) != path for key, path in grain_paths.items()):
+        raise ValueError("production grain frame fixture membership is incomplete")
+    for path in grain_paths.values():
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum
+                or (path != grain_manifest and checksum != grain_spec["sha256"][path.name])):
+            raise ValueError("production grain frame consumed fixture identity changed")
+    grain_expected = grain_spec["production_cases"]
+    if (tuple(row["case"] for row in grain_expected) != GRAIN_FRAME_CASE_IDS
+            or len(grain_expected) != GRAIN_FRAME_CASE_COUNT
+            or len({row["case"] for row in grain_expected}) != GRAIN_FRAME_CASE_COUNT
+            or document.get("grain_frame_results") != grain_expected):
+        raise ValueError("production grain frame full values/metadata/failure/diagnostic results are incomplete")
+
+    boundary_manifest = root / "tests/dir/boundary-fixtures/manifest.json"
+    boundary_spec = json.loads(boundary_manifest.read_bytes())
+    boundary_logical = boundary_spec["presets"][document["preset"]]["native"]
+    boundary_paths = {
+        "manifest": boundary_manifest,
+        "payload": boundary_manifest.parent / boundary_logical,
+        "normative": boundary_manifest.parent / boundary_spec["checked"],
+        "input_spec": boundary_manifest.parent / "inputs.json",
+    }
+    boundary = document.get("dir_boundary_fixture", {})
+    if boundary.get("logical_preset") != document["preset"] or any(
+            resolve(boundary.get(key, "")) != path for key, path in boundary_paths.items()):
+        raise ValueError("production DIR boundary fixture membership is incomplete")
+    for path in boundary_paths.values():
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum
+                or (path != boundary_manifest and checksum != boundary_spec["sha256"][path.name])):
+            raise ValueError("production DIR boundary consumed fixture identity changed")
+    boundary_expected = boundary_spec["production_cases"]
+    if (len(boundary_expected) != 171 or len({row["case"] for row in boundary_expected}) != 171
+            or document.get("dir_boundary_results") != boundary_expected):
+        raise ValueError("production DIR boundary full values/key/metadata/raw/lifetime results are incomplete")
+
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -423,6 +505,19 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     for name, checksum in outputs.items():
         admit(name, checksum)
     film_stdout = manifest.parent / "film-values.stdout"
+    boundary_rows = [json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
+                     for line in film_stdout.read_text(encoding="utf-8").splitlines()
+                     if line.startswith("DIR_BOUNDARY_RESULT ")]
+    if boundary_rows != boundary_expected:
+        raise ValueError("production DIR boundary executed stdout does not match frozen full results")
+    grain_rows = [json.loads(line.removeprefix("GRAIN_FRAME_RESULT "))
+                  for line in film_stdout.read_text(encoding="utf-8").splitlines() if line.startswith("GRAIN_FRAME_RESULT ")]
+    if grain_rows != grain_expected:
+        raise ValueError("production grain frame executed stdout results disagree")
+    dir_rows = [json.loads(line.removeprefix("DIR_FRAME_RESULT "))
+                for line in film_stdout.read_text().splitlines() if line.startswith("DIR_FRAME_RESULT ")]
+    if dir_rows != dir_expected:
+        raise ValueError("production DIR frame executed stdout results disagree")
     diffusion_rows = [json.loads(line.removeprefix("DIFFUSION_FRAME_RESULT "))
                       for line in film_stdout.read_text().splitlines() if line.startswith("DIFFUSION_FRAME_RESULT ")]
     if diffusion_rows != diffusion_expected:
@@ -520,6 +615,13 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
     paths.add(build / "CMakeCache.txt")
     if group == "production":
         paths.update(build / name for name in ("build.ninja", "compile_commands.json", "cargo-features.txt"))
+        paths.update(root / name for name in (
+            "tests/ffi/production_contract.py",
+            "tests/ffi/production-film.c.in",
+            "tests/ffi/film_recipe_abi_c.c",
+            "tests/ffi/grain_frame_abi_assertions.inc",
+            "tests/ffi/grain_probe_contract.py",
+        ))
     else:
         paths.update(registration_files(build, allow_missing=True))
     if group in {"boundary", "tooling"}:
@@ -533,7 +635,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "exposure_fixture.h", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "diffusion_frame_test.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+                "film_recipe_abi_facts.inc", "grain_frame_test.inc", "dir_frame_test.inc", "diffusion_frame_test.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
             paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
@@ -546,6 +648,8 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.update((root / "tests/frame/geometry-fixtures").glob("*.json"))
             paths.update((root / "tests/scatter_halation/frame-fixtures").glob("*.json"))
             paths.update((root / "tests/diffusion/frame-fixtures").glob("*.json"))
+            paths.update((root / "tests/dir/frame-fixtures").glob("*.json"))
+            paths.update((root / "tests/grain/frame-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))

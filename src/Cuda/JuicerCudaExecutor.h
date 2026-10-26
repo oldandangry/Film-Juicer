@@ -119,6 +119,34 @@ namespace JuicerCuda {
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
     namespace ExecutorTest {
+        struct GrainFrameObservation {
+            Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
+            unsigned count = 0;
+            Spektrafilm::VisualGrainFrameExtent renderExtent;
+            Spektrafilm::VisualGrainFrameExtent fullFrameExtent;
+            float pixelSizeUm = 0.0f;
+            double frameTime = 0.0;
+            double frameRate = 0.0;
+            std::uint64_t sessionSeed = 0;
+            std::uint64_t clipToken = 0;
+            bool success = false;
+            std::optional<Spektrafilm::VisualGrainFrameDescriptor> descriptor;
+        };
+        void reset_grain_frame_observation() noexcept;
+        GrainFrameObservation grain_frame_observation() noexcept;
+        void observe_grain_frame(GrainFrameObservation observation) noexcept;
+        struct DirFrameObservation {
+            Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
+            unsigned count = 0;
+            std::uint32_t pixelSizeBits = 0;
+            Spektrafilm::DirFrameExtent renderExtent;
+            Spektrafilm::DirFrameExtent fullFrameExtent;
+            bool success = false;
+            Spektrafilm::SpatialDirDescriptor descriptor;
+        };
+        void reset_dir_frame_observation() noexcept;
+        DirFrameObservation dir_frame_observation() noexcept;
+        void observe_dir_frame(Spektrafilm::ScanRoute route, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent, bool success, const Spektrafilm::SpatialDirDescriptor& descriptor) noexcept;
         bool inject_scan_error(Failure& failure, JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult& result);
         bool inject_grain_upload_failure(const char* label, Failure& failure);
         bool inject_defect_event_create(cudaError_t& error) noexcept;

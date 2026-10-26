@@ -3,7 +3,6 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -15,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "gaussian_kernel_test_hooks.h"
+#include "../ffi/exposure_fixture.h"
 #include "../ffi/juicer_test_api.h"
 
 namespace {
@@ -289,10 +289,8 @@ namespace {
     }
 } // namespace
 int main(int argc, char** argv) try {
-    require(argc == 2, "Gaussian frozen fixture payload argument");
-    std::ifstream stream(argv[1]);
-    require(bool(stream), "Gaussian fixture open");
-    const auto expected = Json::parse(stream);
+    require(argc == 2, "Gaussian logical fixture argument");
+    const auto expected = load_shared_fixture(argv[1], "manifest.json");
     preparation_keys_and_contexts(expected);
     seeded_failure(expected, true);
     seeded_failure(expected, false);

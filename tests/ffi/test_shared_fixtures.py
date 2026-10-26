@@ -1,9 +1,12 @@
 """Frozen logical captures share storage without sharing mutable patch state."""
 
+import ast
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
 from compact_exposure_fixtures import compact_expected_blocks, expand_expected_blocks
@@ -15,6 +18,185 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_production_grain_fixture_records_keep_both_authorities(self):
+        root = Path(__file__).parents[2]
+        tree = ast.parse((root / "tests/ffi/production_contract.py").read_text())
+        record = next(node for node in ast.walk(tree) if isinstance(node, ast.Dict)
+                      and {"grain_fixture", "grain_frame_fixture"} <= {
+                          key.value for key in node.keys if isinstance(key, ast.Constant)})
+        fields = {key.value: value for key, value in zip(record.keys, record.values)
+                  if isinstance(key, ast.Constant)}
+        projection = ast.Dict(keys=[ast.Constant("grain_fixture"), ast.Constant("grain_frame_fixture")],
+                              values=[deepcopy(fields["grain_fixture"]), deepcopy(fields["grain_frame_fixture"])])
+        for preset in PRESETS:
+            grain_manifest = root / "tests/film/grain-fixtures/manifest.json"
+            grain_payload = grain_manifest.parent / json.loads(grain_manifest.read_bytes())["presets"][preset]["values"]
+            frame_manifest = root / "tests/grain/frame-fixtures/manifest.json"
+            frame_spec = json.loads(frame_manifest.read_bytes())
+            frame_payload = frame_manifest.parent / frame_spec["presets"][preset]["native"]
+            bindings = {"str": str, "arguments": SimpleNamespace(preset=preset),
+                        "grain_manifest": grain_manifest, "grain_payload": grain_payload,
+                        "grain_frame_manifest": frame_manifest, "grain_frame_payload": frame_payload,
+                        "grain_frame_checked": frame_manifest.parent / frame_spec["checked"]}
+
+            def render(expression):
+                code = compile(ast.fix_missing_locations(ast.Expression(expression)), "production fixture records", "eval")
+                return eval(code, {"__builtins__": {}}, bindings)
+
+            actual = render(deepcopy(projection))
+            self.assertEqual(actual["grain_fixture"], {"manifest": str(grain_manifest), "payload": str(grain_payload), "logical_preset": preset})
+            self.assertEqual(actual["grain_frame_fixture"], {"manifest": str(frame_manifest), "payload": str(frame_payload),
+                "normative": str(bindings["grain_frame_checked"]), "input_spec": str(frame_manifest.parent / "inputs.json"), "logical_preset": preset})
+            damaged = deepcopy(projection)
+            for node in ast.walk(damaged):
+                if isinstance(node, ast.Name) and node.id in ("grain_frame_manifest", "grain_frame_payload"):
+                    node.id = node.id.replace("grain_frame_", "grain_")
+            self.assertNotEqual(render(damaged)["grain_frame_fixture"], actual["grain_frame_fixture"])
+
+    def test_grain_frame_complete_native_contexts_and_r1_production_contract(self):
+        root = Path(__file__).parents[1] / "grain/frame-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        for name, checksum in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), checksum)
+        baseline = None
+        for preset in PRESETS:
+            captured = json.loads((root / manifest["presets"][preset]["native"]).read_bytes())
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual([len(captured[key]) for key in ("cases", "products", "primitives")], [153, 44, 50])
+            semantic = [captured[key] for key in ("cases", "products", "primitives")]
+            if baseline is None:
+                baseline = semantic
+            self.assertEqual(semantic, baseline)
+            for row in captured["cases"] + captured["products"]:
+                native = row["native"]
+                self.assertEqual(len(native["correlation"]), 3)
+                self.assertEqual([len(layer) for layer in native["dye_cloud"]], [3, 3, 3])
+                self.assertTrue(all(len(g) == 3 for g in native["correlation"]))
+                self.assertTrue(all(len(g) == 3 for layer in native["dye_cloud"] for g in layer))
+            r1 = next(row for row in captured["cases"] if row["input"]["name"] == "S4D6-R1")
+            self.assertFalse(r1["success"])
+            self.assertEqual(r1["diagnostic"], "ResourceDescriptorMismatch phase=grain_descriptor field=layer_particle_count")
+            self.assertEqual(r1["input"]["layer_curves"], [[[0], [0], [1065353216]], [[1065353216], [0], [1065353216]], [[1065353216], [0], [1065353216]]])
+        rows = manifest["production_cases"]
+        self.assertEqual(len(rows), 188)
+        self.assertEqual(len({row["case"] for row in rows}), 188)
+        self.assertEqual({row["case"] for row in rows}, set(manifest["production_inputs"]))
+        for row in rows:
+            source = manifest["production_inputs"][row["case"]]
+            self.assertEqual(len(source["words"]), 42)
+            self.assertEqual(len(source["curves"]), 9)
+            self.assertTrue(row["output"] is None or len(row["output"]) == 115)
+            self.assertTrue(row["failure"] is None or len(row["failure"]) == 4)
+        r1 = next(row for row in rows if row["case"] == "literal/S4D6-R1")
+        def require_r1(value):
+            self.assertEqual(value["envelope"], [3, 0, 0])
+            self.assertEqual(value["failure"], [2, 12, 0, 0])
+            self.assertEqual(value["output"], [0] * 115)
+        require_r1(r1)
+        for key, replacement in (("failure", [2, 10, 3, 1]), ("output", [1] + [0] * 114)):
+            damaged = dict(r1, **{key: replacement})
+            with self.assertRaises(AssertionError):
+                require_r1(damaged)
+        for prefix, message, metadata in (("raw-diagnostic/", "visual grain frame arguments are invalid", [1, 0, 3, 3]),
+                                          ("r1-diagnostic/", r1["diagnostic"], [2, 12, 0, 0])):
+            selected = [row for row in rows if row["case"].startswith(prefix)]
+            self.assertEqual(len(selected), 5)
+            self.assertEqual({manifest["production_inputs"][row["case"]]["capacity"] for row in selected}, {0, 1, 7, len(message), len(message) + 1})
+            for row in selected:
+                capacity = manifest["production_inputs"][row["case"]]["capacity"]
+                self.assertEqual(row["failure"], metadata)
+                self.assertEqual(row["output"], [0] * 115)
+                self.assertEqual(row["diagnostic"], message[:max(0, capacity - 1)])
+                self.assertEqual(row["diagnostic_length"], min(len(message), max(0, capacity - 1)))
+
+
+    def test_dir_boundary_exact_native_products_keys_and_production_contracts(self):
+        root = Path(__file__).parents[1] / "dir/boundary-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        for name, checksum in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), checksum)
+        baseline = None
+        ordinary = json.loads((root / manifest["checked"]).read_bytes())["ordinary"]
+        for preset in PRESETS:
+            payload = (root / manifest["presets"][preset]["native"]).read_bytes()
+            self.assertEqual(hashlib.sha256(payload).hexdigest(), manifest["presets"][preset]["capture"]["sha256"])
+            captured = json.loads(payload)
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual([len(captured[key]) for key in ("cases", "primitives")], [114, 56])
+            if baseline is None:
+                baseline = (captured["cases"], captured["primitives"])
+            self.assertEqual((captured["cases"], captured["primitives"]), baseline)
+            for row in captured["cases"]:
+                source = row["input"]
+                c = source["component"]
+                encoded = c["version"].to_bytes(4, "little")
+                for value in [c["feedforward"], *c["feedback"], c["denominator"], c["numerator"], *c["numerators"]]:
+                    encoded += value.to_bytes(8, "little")
+                for value in [source["width"], source["height"]]:
+                    encoded += value.to_bytes(4, "little", signed=True)
+                for value in [c["accuracy"], c["tolerance"]]:
+                    encoded += value.to_bytes(8, "little")
+                self.assertEqual(len(encoded), 100)
+                self.assertEqual(list(encoded), row["key_bytes"])
+                if ordinary[source["name"]][0] != 2:
+                    identity = 0xcbf29ce484222325
+                    for byte in encoded:
+                        identity = ((identity ^ byte) * 0x100000001b3) & ((1 << 64) - 1)
+                    self.assertEqual(identity, row["key"])
+                if row["success"]:
+                    for name in ("horizontal", "vertical"):
+                        axis = row[name]
+                        self.assertEqual(len(axis["weights"]), 3 * axis["length"])
+                        self.assertEqual(len(axis["terminal"]), 9)
+                        self.assertEqual(axis["terminal"][axis["terminal_size"] ** 2:], [0] * (9 - axis["terminal_size"] ** 2))
+        self.assertEqual(len(manifest["production_cases"]), 171)
+        self.assertEqual({row["case"] for row in manifest["production_cases"]}, set(manifest["production_inputs"]))
+        self.assertEqual(len(manifest["production_inputs"]), 171)
+        raw = [row for row in manifest["production_cases"] if row["case"].startswith("raw/")]
+        self.assertEqual(len(raw), 51)
+        for operation in ("describe", "acquire", "view"):
+            for mode in (11, 12, 13, 14, 15):
+                row = next(row for row in raw if row["case"] == f"raw/{operation}/{mode}")
+                message = "spatial DIR reflected-boundary arguments are invalid"
+                self.assertEqual(row["diagnostic_length"], min(len(message), max(0, manifest["production_inputs"][row["case"]]["capacity"] - 1)))
+                self.assertEqual(row["diagnostic"], message[:row["diagnostic_length"]])
+                self.assertEqual(row["envelope"], [2, 0, 0])
+
+    def test_dir_frame_exact_native_bytes_fields_and_production_membership(self):
+        root = Path(__file__).parents[1] / "dir/frame-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(len(set(manifest["payloads"].values())), 4)
+        for name, checksum in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), checksum)
+        baseline = None
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual([len(captured[key]) for key in ("cases", "products")], [74, 24])
+            rows = captured["cases"] + captured["products"]
+            if baseline is None:
+                baseline = rows
+            self.assertEqual(rows, baseline)
+            for row in rows:
+                native = row["native"]
+                self.assertEqual(len(native["components"]), 4)
+                self.assertEqual(len(native["roles"]), 4)
+                self.assertEqual(len(native["target_roles"]), 4)
+                for component in native["components"]:
+                    self.assertEqual(len(component["feedback"]), 3)
+                    self.assertEqual(len(component["numerators"]), 3)
+        expected = manifest["production_cases"]
+        self.assertEqual(len(expected), 121)
+        self.assertEqual(len({row["case"] for row in expected}), 121)
+        self.assertEqual({row["case"] for row in expected}, set(manifest["production_inputs"]))
+        for row in expected:
+            self.assertEqual(len(manifest["production_inputs"][row["case"]]["words"]), 14)
+            self.assertTrue(row["output"] is None or len(row["output"]) == 79)
+            self.assertTrue(row["failure"] is None or len(row["failure"]) == 82)
+
     def test_diffusion_frame_original_bytes_and_complete_native_contexts(self):
         root = Path(__file__).parents[1] / "diffusion/frame-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())
@@ -93,6 +275,7 @@ class SharedFixtureTests(unittest.TestCase):
         manifest = json.loads((root / "manifest.json").read_bytes())
         self.assertEqual(set(manifest["presets"]), set(PRESETS))
         self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        self.assertEqual(set(manifest["payloads"].values()), {"linux-payload.json", "windows-clang-payload.json"})
         for name, expected in manifest["sha256"].items():
             self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
         for preset in PRESETS:
@@ -105,8 +288,21 @@ class SharedFixtureTests(unittest.TestCase):
                 self.assertEqual(len(row["weights"]), row["count"])
                 self.assertTrue(all(isinstance(word, int) and 0 <= word <= 0xffffffff for word in row["weights"]))
             self.assertTrue(any("fir-dir" in row["name"] and row["count"] > 0 for row in captured["cases"]))
+            original = deepcopy(captured)
+            provenance = original.pop("provenance")
+            ending = "LF" if preset.startswith("linux-") else "CRLF"
+            self.assertEqual(hashlib.sha256(original_capture_bytes(original, ending)).hexdigest(), provenance["capture_sha256"])
         self.assertEqual(len(manifest["production_cases"]), 201)
         self.assertEqual(len(set(manifest["production_cases"])), 201)
+        for native in ("linux", "windows-clang"):
+            debug = load_shared_fixture(root / manifest["presets"][native + "-debug"]["native"])
+            release = load_shared_fixture(root / manifest["presets"][native + "-release"]["native"])
+            self.assertEqual(debug["cases"], release["cases"])
+            debug["cases"][0]["weights"].append(123)
+            debug["provenance"].clear()
+            self.assertNotEqual(debug["cases"], release["cases"])
+            self.assertTrue(release["provenance"])
+            self.assertEqual(load_shared_fixture(root / manifest["presets"][native + "-release"]["native"]), release)
 
     def test_scanner_post_complete_frozen_contexts(self):
         root = Path(__file__).parents[1] / "scanner/post-effects-fixtures"

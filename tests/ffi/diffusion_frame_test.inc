@@ -110,11 +110,19 @@ namespace DiffusionFrameTest {
     }
 
     Json products(const std::filesystem::path& resources, const Json& specs) {
+        const auto started = std::chrono::steady_clock::now();
+        auto progress = [&](const char* stage, const std::string& name) {
+            std::fprintf(stderr, "DiffusionFrame stage=%s case=%s seconds=%.3f\n", stage, name.c_str(), std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+            std::fflush(stderr);
+        };
+        progress("bootstrap", "");
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         JuicerProcess::root().ensure_bootstrap();
         Json rows = Json::array();
         for (const auto& spec : specs) {
+            const auto name = spec.at("name").get<std::string>();
+            progress("recipe", name);
             const auto route = spec.at("route").get<unsigned>();
             ParamSnapshot params;
             params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
@@ -128,6 +136,7 @@ namespace DiffusionFrameTest {
             require(route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic), diagnostic.c_str());
             const auto& optics = product.recipe.spatialOptics;
             Json input{{"name", spec.at("name")}, {"route", route}, {"extent", spec.at("extent")}, {"pixel", std::bit_cast<std::uint64_t>(static_cast<double>(std::bit_cast<float>(spec.at("pixel_bits").get<std::uint32_t>())))}, {"camera", resolved_input(optics.cameraDiffusion)}, {"enlarger", resolved_input(optics.enlargerDiffusion)}};
+            progress("frame", name);
             auto row = frame_product(input);
             row["spec"] = spec;
             row["samples"] = Json::array();
@@ -139,10 +148,13 @@ namespace DiffusionFrameTest {
                 sample["pixel"] = input.at("pixel");
                 sample["width"] = spec.at("extent")[2];
                 sample["height"] = spec.at("extent")[3];
+                progress(stage, name);
                 row["samples"].push_back(sample_product(sample));
             }
             rows.push_back(row);
+            progress("case-complete", name);
         }
+        progress("owner-release", "");
         return rows;
     }
 

@@ -1681,6 +1681,198 @@ typedef struct FjHalationFrameFailure {
 } FjHalationFrameFailure;
 FjStatus fj_legacy_scatter_halation_frame_prepare(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_DIR_FRAME: synchronous mathematical preparation; remove with
+ * its last native model caller, no later than S6.D. S4.E narrows execution inputs.
+ * Input and every nonnull record authorize live, initialized, aligned storage.
+ * Writable peers/diagnostic backing are exclusive and disjoint from each other
+ * and input. No pointer escapes; padding is not a value. Each admitted result
+ * clears independently before other admission. Failed executable Math is zero;
+ * Failure.trace is diagnostic progress only and must never execute.
+ * Optional diagnostics reserve a NUL for positive capacity; capacity zero reads
+ * no backing. Text truncation changes neither status nor typed failure.
+ */
+#define FJ_DIR_FRAME_NONE UINT32_C(0)
+#define FJ_DIR_FRAME_RAW UINT32_C(1)
+#define FJ_DIR_FRAME_PREPARATION UINT32_C(2)
+#define FJ_DIR_FRAME_PANIC UINT32_C(3)
+#define FJ_DIR_FRAME_FIELD_NONE UINT32_C(0)
+#define FJ_DIR_FRAME_FIELD_PIXEL_SIZE_UM UINT32_C(1)
+#define FJ_DIR_FRAME_FIELD_RENDER_EXTENT UINT32_C(2)
+#define FJ_DIR_FRAME_FIELD_FULL_FRAME_EXTENT UINT32_C(3)
+#define FJ_DIR_FRAME_FIELD_PARTIAL_RENDER_WINDOW UINT32_C(4)
+#define FJ_DIR_FRAME_FIELD_CORE UINT32_C(5)
+#define FJ_DIR_FRAME_FIELD_TAIL UINT32_C(6)
+#define FJ_DIR_FRAME_FIELD_COMPONENT_VALUES UINT32_C(7)
+#define FJ_DIR_FRAME_FIELD_COMPONENT_CAPACITY UINT32_C(8)
+#define FJ_DIR_FRAME_FIELD_RADIUS UINT32_C(9)
+#define FJ_DIR_FRAME_FIELD_IIR_DENOMINATOR UINT32_C(10)
+#define FJ_DIR_FRAME_FIELD_IIR_OUTPUT UINT32_C(11)
+#define FJ_DIR_FRAME_FIELD_EMPTY_PLAN UINT32_C(12)
+#define FJ_DIR_FRAME_NO_COMPONENT UINT32_C(4)
+typedef struct FjDirFrameInput {
+    uint32_t active;
+    float diffusion_size_um, diffusion_tail_um, diffusion_tail_weight, pixel_size_um;
+    FjExtent render_extent, full_frame_extent;
+    uint64_t recipe_hash;
+} FjDirFrameInput;
+typedef struct FjDirFrameMath {
+    uint32_t present, component_count;
+    uint64_t recipe_hash;
+    FjExtent render_extent, full_frame_extent, filter_domain_extent;
+    FjDirGaussian components[4];
+} FjDirFrameMath;
+typedef struct FjDirFrameFailure {
+    uint32_t reason, field, component;
+    FjDirFrameMath trace;
+} FjDirFrameFailure;
+FjStatus fj_legacy_dir_frame_prepare(const FjDirFrameInput*, FjDirFrameMath*, FjDirFrameFailure*, FjErrorBuffer*);
+
+/* SF_TEMP_BRIDGE_DIR_BOUNDARY: literal model input; S4.E narrows resolved
+ * execution inputs. Remove at the last native model caller, no later than S6.D.
+ * Input and all independently admitted writable peers are live, initialized,
+ * aligned and mutually disjoint, including diagnostic backing. Each result clears
+ * before other admission. Optional NULL diagnostics are valid; zero capacity
+ * ignores backing. Positive capacity reserves NUL; length counts written bytes
+ * excluding NUL. Truncation changes neither status nor typed failure metadata.
+ * A successful owner is consumed exactly once by release, excluding readers.
+ * View.weights is immutable row-major f64: horizontal 3*horizontal_length then
+ * vertical 3*vertical_length; packed terminal matrices use terminal-size stride.
+ * Rust produces the complete host result; native staging copies before upload.
+ * Every borrowed view expires at release. Release consumes a legitimate owner
+ * even on malformed diagnostics or contained panic. NULL release is safe.
+ */
+#define FJ_DIR_BOUNDARY_NONE UINT32_C(0)
+#define FJ_DIR_BOUNDARY_RAW UINT32_C(1)
+#define FJ_DIR_BOUNDARY_REQUEST UINT32_C(2)
+#define FJ_DIR_BOUNDARY_AXIS_SIZE UINT32_C(3)
+#define FJ_DIR_BOUNDARY_POLICY UINT32_C(4)
+#define FJ_DIR_BOUNDARY_CAUSAL_SINGULAR UINT32_C(5)
+#define FJ_DIR_BOUNDARY_NONFINITE_WEIGHTS UINT32_C(6)
+#define FJ_DIR_BOUNDARY_CAUSAL_CERTIFICATION UINT32_C(7)
+#define FJ_DIR_BOUNDARY_TAIL_ESCAPE UINT32_C(8)
+#define FJ_DIR_BOUNDARY_TERMINAL_SINGULAR UINT32_C(9)
+#define FJ_DIR_BOUNDARY_TERMINAL_CERTIFICATION UINT32_C(10)
+#define FJ_DIR_BOUNDARY_STORAGE_SIZE UINT32_C(11)
+#define FJ_DIR_BOUNDARY_ALLOCATION UINT32_C(12)
+#define FJ_DIR_BOUNDARY_PANIC UINT32_C(13)
+#define FJ_DIR_BOUNDARY_NO_AXIS UINT32_C(0)
+#define FJ_DIR_BOUNDARY_HORIZONTAL UINT32_C(1)
+#define FJ_DIR_BOUNDARY_VERTICAL UINT32_C(2)
+#define FJ_DIR_BOUNDARY_NO_ROW UINT32_C(3)
+typedef struct FjDirBoundaryInput {
+    FjDirGaussian component;
+    int32_t width, height;
+} FjDirBoundaryInput;
+typedef struct FjDirBoundaryView {
+    const double* weights;
+    size_t count;
+    uint64_t identity;
+    int32_t width, height, horizontal_length, vertical_length;
+    int32_t horizontal_terminal_size, vertical_terminal_size;
+    double horizontal_terminal[9], vertical_terminal[9];
+} FjDirBoundaryView;
+typedef struct FjDirBoundaryFailure {
+    uint32_t reason, axis, row;
+    int32_t length;
+    float sigma_px;
+    double sum, tolerance;
+} FjDirBoundaryFailure;
+typedef struct FjDirBoundaryOwner FjDirBoundaryOwner;
+FjStatus fj_legacy_dir_boundary_describe(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_dir_boundary_acquire(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_dir_boundary_view(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_dir_boundary_release(FjDirBoundaryOwner*, FjErrorBuffer*);
+
+/* SF_TEMP_BRIDGE_GRAIN_FRAME: synchronous value preparation, removed at the
+ * last native model caller by S6.D; S4.E narrows final execution inputs.
+ * Layer spans are [layer][CMY], float elements in authored order, borrowed only
+ * on reached sublayer reductions and expired at return. No backing is retained.
+ * Callers provide live initialized aligned immutable inputs/consumed spans and
+ * exclusive disjoint output/failure/diagnostic storage. Inactive/failed math is
+ * all-zero; failure defaults are 0/0/3/3. Diagnostics count written bytes.
+ * Reason tags: none=0, raw=1, preparation=2, panic=3; unused axes are 3.
+ * Field tags: none=0, frame_input=1, density_layers_identity=2, frame_time=3,
+ * period_frames=4, pixel_area=5, particle_model=6, particle_count=7, size_mix=8,
+ * layer_curve=9, density_layer_total=10, layer_particle_area=11,
+ * layer_particle_count=12, partial_frame=13. Polarity tags: negative=0,
+ * positive=1, unsupported=2; reserved tags reject only when consumed.
+ * Native scratch selection and the final descriptor hash are not transported. */
+typedef struct FjGrainFrameInput {
+    uint32_t active;
+    uint32_t sublayers_active;
+    uint32_t layer_curves_required;
+    uint32_t capture_polarity;
+    uint32_t film_polarity;
+    int32_t sublayer_count;
+    float pixel_size_um;
+    float particle_area_um2;
+    float particle_scale_cmy[3];
+    float particle_scale_layers[3];
+    float particle_density_min_cmy[3];
+    float authored_max_cmy[3];
+    float correlation_sigma_px;
+    float dye_cloud_blur_um;
+    float size_mix_scale;
+    float fine_weight;
+    float mid_weight;
+    float coarse_weight;
+    float clump_morph_period_sec;
+    FjExtent render_extent;
+    FjExtent full_frame_extent;
+    double frame_time;
+    double frame_rate;
+    uint64_t session_seed;
+    uint64_t clip_token;
+    uint64_t recipe_hash;
+    uint64_t recipe_layers_hash;
+    uint64_t film_layers_hash;
+    FjFloatSpan layer_curves[3][3];
+} FjGrainFrameInput;
+typedef struct FjGrainFrameMath {
+    uint32_t present;
+    uint32_t capture_polarity;
+    FjExtent render_extent;
+    FjExtent full_frame_extent;
+    float pixel_size_um;
+    int64_t frame0;
+    float frame_alpha;
+    uint64_t seed_base;
+    uint64_t seed_base_next;
+    uint64_t session_seed;
+    uint64_t clip_token;
+    int32_t pitch_px;
+    int32_t breathing_period_frames;
+    int32_t clump_morph_period_frames;
+    float wang_cell_mm;
+    float breathing_amplitude;
+    float breathing_cell_um_small;
+    float breathing_cell_um_large;
+    float breathing_mix;
+    float breathing_drift_um_per_frame;
+    float debug_scale;
+    float density_max_cmy[3];
+    float n_particles_cmy[3];
+    float od_particle_cmy[3];
+    float density_min_layers[3][3];
+    float density_max_layers[3][3];
+    float n_particles_layers[3][3];
+    float od_particle_layers[3][3];
+    FjGrainGaussian correlation[3];
+    FjGrainGaussian dye_cloud[3][3];
+    float size_mix_weights[3];
+    float size_mix_gain;
+    uint32_t requires_full_frame;
+    uint64_t recipe_hash;
+    uint64_t density_layers_hash;
+} FjGrainFrameMath;
+typedef struct FjGrainFrameFailure {
+    uint32_t reason;
+    uint32_t field;
+    uint32_t layer;
+    uint32_t channel;
+} FjGrainFrameFailure;
+FjStatus fj_legacy_grain_frame_prepare(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

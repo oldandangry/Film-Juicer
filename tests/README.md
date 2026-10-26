@@ -53,6 +53,75 @@ must not be described as full product acceptance.
 | Broad shared build/lifetime change, designated prepared-state integration, instance-state stage exit, OFX cutover, or final release qualification | Complete product and boundary selections in all four presets, tooling once per native platform in Debug, corpus once in Linux Debug, and the applicable OFF, installed-host and package gates. |
 | Publication or merge | Existing required hosted checks on the actual candidate, plus local gates selected by the preceding rows. Hosted host-only results do not establish GPU or Resolve acceptance. |
 
+For a leaf, freeze an assertion-to-change map before dispatch: each selected
+case names the changed contract or actual consumer and the assertion it proves.
+Compile and run one representative new native/C11 consumer first, then exercise
+the required native platforms before broad fan-out. Run formatting and quality
+on changed producer/helper translation units early. Once the candidate is stable,
+run its required broad header-consumer quality closure once; do not repeat the same
+closure before and after cutover. Keep newly affected consumers and required compile
+contexts in scope even when their test family name differs.
+
+The Rust compiler-fixture suite can run an existing unittest method directly with
+the same environment used by `Quality.RustBoundaries`; this is a focused leaf check,
+not a replacement for the full suite at a named broad checkpoint. Name the exact
+method, Rust target, Debug/Release profile, enabled feature forms, artifact paths,
+and expected fixture/check count in the handoff. For example, the grain-frame method
+has six fixtures—complete, private, construction, default, mutation and borrow—and
+checks both default and `test-support`, for 12 logical fixture/feature cases in
+six Cargo checks per required profile/context. Accepted consumers, isolated E0451
+construction and the remaining rejected fixtures form three batches; every required
+primary code/marker remains checked in its own fixture file. Confirm the selected
+method, printed fixture batches and six nonempty invocation logs; an empty selection
+is invalid. The maintained prospective command
+must be recorded with concrete preset paths and exact expected membership in the
+existing handoff.
+
+The complete Debug tooling selection also has a standalone CMake entry that does
+not configure the product, CUDA or GoogleTest. Supply the same qualified Python
+3.13, native C/C++ tools, Git, Ninja and Rust 1.98.1 environment. For Linux:
+
+```sh
+cmake -S tests/tooling -B out/build/tooling-linux -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc-13
+ctest --test-dir out/build/tooling-linux -L tooling --parallel 4 \
+  --no-tests=error --output-on-failure
+```
+
+On Windows use `out/build/tooling-windows` and `-DCMAKE_C_COMPILER=clang-cl.exe`
+inside the qualified VS 18 environment. `Python3_EXECUTABLE` and
+`JUICER_TOOLING_CARGO` can select the qualified executables explicitly. Both entries
+use `tests/ToolingTests.cmake`; ordinary product CTest retains the same eleven
+Debug tooling members. Artifacts still route to the native Debug preset's
+`out/validation/` tree. Each entry uses its own CTest binary directory as the
+default working directory; commands and fixture roots use explicit checkout paths.
+
+Windows verification controls require Win32 long-path support for nested
+preparation receipts. An administrator can enable `LongPathsEnabled` under
+`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`; restart test processes after
+changing that policy. The qualified tool versions alone do not establish this
+filesystem capability.
+
+For WSL filesystem diagnosis, `JUICER_TOOLING_ARTIFACT_ROOT` can place synthetic
+fixtures under an absolute native Linux `out/validation/linux-debug` root. Configure
+a separate standalone build directory on that filesystem and record both paths;
+do not relocate an existing cache. This preserves the same tests and deadlines
+while separating Windows-mounted filesystem costs from test execution. Retain
+failed fixtures at their configured paths and keep the resulting qualification
+explicit about the filesystem used.
+
+The tooling job reports cumulative verifier scope using the existing source policy.
+This rollout is report-only: all tooling still executes, and every aggregate child
+must succeed. A naturally occurring candidate report and a separately reviewed
+activation change are required before any skips. Missing/failed decisions never
+mean a test passed.
+
+Hosted Debug product, Release product, analysis and tooling jobs run independently
+on each OS. Product jobs compile every configured target, including GPU-only tests,
+then execute the host selection; Linux Debug also runs corpus checks. Analysis
+owns cumulative PR Debug quality and matching Release Rust quality. The original
+required check names aggregate all four child results and accept only success.
+
 Run each necessary platform/profile/package/feature combination once per stable
 relevant source, tool and configuration context. During editing, use the smallest
 owning checks; a stable leaf alone does not trigger the whole-product matrix.
@@ -317,6 +386,10 @@ unchanged. A larger explicit worker count can allow overlap again. Verification
 control logs include
 the ten slowest unittest cases. These scheduling choices preserve complete test
 membership, tool/input checks and the existing deadlines.
+
+Debug's `Optics.Host.DiffusionFrameProducts` also reserves four slots to
+keep its full numerical fixture separate from other host tests at the standard
+worker limit. Its 180-second deadline and complete case set remain unchanged.
 
 `Ffi.Host.InputColorPreparation` uses two worker slots. Its admission hooks and
 asset caches belong to its process, and its resources and parity fixtures are
@@ -1435,6 +1508,12 @@ Both Release OFF C11 probes execute 201 Gaussian value/failure cases, preserving
 all earlier probe memberships, including 410 post-effects and 41 LUT descriptor
 rows. The local Box allocation still has the established allocator-abort limit.
 
+Gaussian Debug/Release captures share exact payload bytes within each platform;
+four context sidecars preserve distinct provenance and original LF/CRLF capture
+hashes. Logical cases, primitive exceptions and mutable reader isolation remain.
+The print-illuminant test supplement is immutable per process and parsed once;
+ordered patch validation and independent caller-owned patched JSON still apply.
+
 ### Frame domains and physical pixel size
 
 `Ffi.Host.FrameGeometry` checks fixed C11/C++20/Rust layouts and signatures,
@@ -1467,3 +1546,77 @@ Both need no driver/device and have 180-second deadlines. See the owning
 [fixture authority](scatter_halation/frame-fixtures/README.md). The existing
 strict C11 Release testing-OFF film probe also executes the complete frozen
 eighty-six-result membership, retaining all earlier production probe results.
+
+### Spatial DIR mathematical frame construction
+
+`Ffi.Host.DirFrame` and `Film.Host.DirFrameProducts` check the fixed Rust boundary,
+private complete results, ordinary failed progress and common native composition
+against [four native captures](dir/frame-fixtures/README.md). Both are host groups
+with 180-second limits. Every mathematical/default word and final native hash is
+compared exactly; fixtures are never regenerated during tests.
+
+`Ofx.Gpu.DirFrame` uses the existing executor-failure probe and GPU lock with a
+180-second limit. Its 100 bounded invocations cover the two real legacy builder
+sites, all four routes/polarities, current pixel/domain/origin facts, full-frame
+fallback, inactive/Identity/FIR/YVV/mixed plans, zero-weight construction and
+pre-builder/mathematical failure stops. Four genuine route products execute
+pixels; the other successful constructions cancel at the existing first schedule
+abort check before resource preparation. Existing DIR/cache, grain, prepared,
+operator, route and lifecycle groups retain their complete downstream assertions.
+
+Prepared projection retains the native decoder's distinct unconsumed zero-weight
+target tiers and carries the original final hash. Both native Release OFF C11
+probes execute 121 complete value/failure rows, in addition to all older probes.
+Reflected-YVV boundary construction has its own contract below. Wider workspace
+construction, defect/weave mappings and S4.E integration remain later work.
+
+### Spatial DIR reflected boundaries
+
+`Ffi.Host.DirBoundary` and `Film.Host.DirBoundaryProducts` compare complete Rust
+owners, key bytes, typed failures and native adapters against
+[independent native captures](dir/boundary-fixtures/README.md). Each host group has
+a 180-second limit. Comparisons cover 114 whole products and 56 bounded primitives
+in each native profile, including the original explicit fused product residual.
+
+The existing `Dir.Gpu.ExposureCache` group retains its 300-second limit and GPU
+lock. It also downloads entire actual Root boundary arrays, checks terminal
+packing, warm reuse without acquisition, native staging after host-owner release,
+failure rollback, same-key candidate disposal and context retirement. The native
+owner still controls allocation, upload, cache publication and retirement.
+
+Both Release testing-OFF C11 probes execute 171 full boundary value/failure/raw/
+lifetime rows while retaining every predecessor probe. Diagnostic length counts
+written bytes without NUL at capacities zero, one, short, M and M+1. Ordinary tests
+never regenerate expectations.
+
+### Visual-grain mathematical frames
+
+`Ffi.Host.GrainFrame` and `Film.Host.GrainFrameProducts` compare complete raw
+values, typed failures, native defaults and final native hashes against
+[four independent native contexts](grain/frame-fixtures/README.md). Each host
+group has a 180-second limit. The frozen cohort has 153 literals, 44 genuine
+recipe/development products and 50 independently captured bounded primitives.
+The core keeps original f64 Gaussian energy samples; uploaded f32 coefficient
+arrays remain a separate owner. Published fields and hashes compare exactly.
+
+The S4D6-R1 singleton curves `[[0,0,1],[1,0,1],[1,0,1]]` require all nine
+row-major reductions, then a CMY loop that immediately computes each channel's
+three layers after checking its total. C layer0 particle-count failure precedes
+M total0: category3/API0/code0, reason2/field12/layer0/channel0. Legacy and facade
+readers require cleared raw mathematics and native-default failed output.
+
+`Ofx.Gpu.GrainFrame` uses the existing executor probe, GPU lock and 180-second
+limit. Its 122 invocations distinguish 16 genuine pixel executions, 92 successful
+constructions canceled before preparation and 14 failures. It checks both real
+caller sites, four routes/polarities, current time/seeds/geometry, full-frame
+fallback, inactive delegation and failure short-circuiting. Literal recipe
+substitutions are restricted to construction paths. Existing scratch, grain
+kernel, Gaussian-resource, prepared, route and lifecycle assertions stay intact.
+The three native setup consumers use the maintained facade and shared composer.
+
+Prepared transport preserves static recipe/chroma/amplitude/preset and layer-axis
+metadata. Both native Release testing-OFF probes call the real
+`fj_legacy_grain_frame_prepare` through strict C11 signatures and all 188 frozen
+full-value/metadata/failure/diagnostic rows, retaining every predecessor probe.
+Written-byte capacities 0/1/short/M/M+1 include R1. Ordinary tests never regenerate
+fixtures; conversion safety expectations do not execute undefined native casts.

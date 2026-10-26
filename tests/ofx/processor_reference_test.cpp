@@ -1,5 +1,6 @@
 #include "../ffi/spatial_optics_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
+#include "../ffi/exposure_fixture.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -175,6 +176,37 @@ namespace JuicerCuda::ExecutorTest {
         }
     };
     thread_local FailureObservation* observation = nullptr;
+
+    namespace {
+        thread_local DirFrameObservation s_dirFrameObservation;
+        thread_local GrainFrameObservation s_grainFrameObservation;
+    } // namespace
+    void reset_grain_frame_observation() noexcept {
+        s_grainFrameObservation = {};
+    }
+    GrainFrameObservation grain_frame_observation() noexcept {
+        return s_grainFrameObservation;
+    }
+    void observe_grain_frame(GrainFrameObservation observation) noexcept {
+        observation.count = std::min(s_grainFrameObservation.count + 1, 2u);
+        s_grainFrameObservation = observation;
+    }
+    void reset_dir_frame_observation() noexcept {
+        s_dirFrameObservation = {};
+    }
+    DirFrameObservation dir_frame_observation() noexcept {
+        return s_dirFrameObservation;
+    }
+    void observe_dir_frame(Spektrafilm::ScanRoute route, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent, bool success, const Spektrafilm::SpatialDirDescriptor& descriptor) noexcept {
+        auto& out = s_dirFrameObservation;
+        out.count = std::min(out.count + 1, 2u);
+        out.route = route;
+        out.pixelSizeBits = std::bit_cast<std::uint32_t>(pixelSizeUm);
+        out.renderExtent = renderExtent;
+        out.fullFrameExtent = fullFrameExtent;
+        out.success = success;
+        out.descriptor = descriptor;
+    }
 
     struct ResourceFailures {
         std::optional<Failure> stbn;
@@ -1203,6 +1235,437 @@ namespace {
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
 namespace {
+    template <typename RouteState>
+    std::shared_ptr<const RouteState> frame_state(FocusedRenderStateBuildProduct product) {
+        auto state = std::make_shared<RouteState>();
+        state->recipe = std::move(product.recipe);
+        state->payload = std::move(product.payload);
+        state->buildCounter = 1;
+        return state;
+    }
+
+
+    enum class GrainCallerPath : std::uint8_t {
+        Pixels,
+        StopBeforePreparation,
+        BeforeBuilder
+    };
+
+    void run_grain_frame_cases(const std::filesystem::path& manifestPath, const std::string& preset) {
+        using Json = nlohmann::json;
+        const auto manifest = Json::parse(std::ifstream(manifestPath));
+        const auto captured = Json::parse(std::ifstream(manifestPath.parent_path() / manifest.at("presets").at(preset).at("native").get<std::string>()));
+        if (captured.at("preset") != preset || captured.at("cases").size() != 153 || captured.at("products").size() != 44)
+            throw std::runtime_error("grain caller independent context/membership changed");
+        const auto scalar = [](const Json& v) {
+            return std::bit_cast<float>(v.get<std::uint32_t>());
+        };
+        const auto wide = [](const Json& v) {
+            return std::bit_cast<double>(v.get<std::uint64_t>());
+        };
+        const auto extent = [](const Json& v) -> Spektrafilm::VisualGrainFrameExtent {
+            return {v.at(0), v.at(1), v.at(2), v.at(3)};
+        };
+        const auto rect = [](const Spektrafilm::VisualGrainFrameExtent& v) -> JuicerCuda::FrameRect {
+            return {v.x, v.y, v.x + v.width, v.y + v.height};
+        };
+        const auto fields = [](const Spektrafilm::VisualGrainFrameExtent& v) -> Json {
+            return {v.x, v.y, v.width, v.height};
+        };
+        DeviceFrame device;
+        require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "grain caller stream");
+        constexpr std::size_t kSamples = std::size_t{96} * 71 * 4;
+        constexpr std::size_t kBytes = kSamples * sizeof(float);
+        require_cuda(cudaMalloc(&device.source, kBytes), "grain caller input");
+        require_cuda(cudaMalloc(&device.destination, kBytes), "grain caller output");
+        const std::vector<float> source(kSamples, 0.18f), canary(kSamples, kCanary);
+        require_cuda(cudaMemcpy(device.source, source.data(), kBytes, cudaMemcpyHostToDevice), "grain caller initialized input");
+        int deviceId = 0;
+        CUcontext context = nullptr;
+        require_cuda(cudaGetDevice(&deviceId), "grain caller device");
+        if (cuCtxGetCurrent(&context) != CUDA_SUCCESS || !context)
+            throw std::runtime_error("grain caller exact context");
+        unsigned runs = 0, pixels = 0, constructions = 0, failures = 0;
+        const auto& base = captured.at("cases")[0].at("input");
+        for (unsigned route = 0; route < 4; ++route) {
+            const auto run = [&](const Json& row, GrainCallerPath path, bool fullFallback = false) {
+                const bool genuine = row.contains("spec");
+                if (!genuine && path == GrainCallerPath::Pixels)
+                    throw std::runtime_error("literal grain construction cannot execute pixels");
+                const auto& v = genuine ? base : row.at("input");
+                const auto render = extent(v.at("render_extent")), full = extent(v.at("full_frame_extent"));
+                ParamSnapshot params;
+                params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
+                params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+                if (genuine) {
+                    const auto& spec = row.at("spec");
+                    params.grainControls.active = spec.at("active");
+                    params.grainControls.sublayersActive = spec.at("layers");
+                    params.grainControls.debugView = spec.at("debug");
+                    params.grainControls.chromaMix = scalar(spec.at("chroma"));
+                    params.grainControls.amplitude = scalar(spec.value("amplitude", Json(1065353216u)));
+                    params.grainControls.particleAreaUm2 = scalar(spec.value("area", Json(1051428127u)));
+                    params.cameraExposureCompensationEv = spec.value("ev", 0.0);
+                } else {
+                    params.dirCouplers.active = false;
+                }
+                FocusedRenderStateBuildProduct product;
+                std::string diagnostic;
+                if (!(route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic)))
+                    throw std::runtime_error(diagnostic);
+                if (!genuine) {
+                    // Literal contracts retain genuine route/payload chemistry but stop
+                    // before resource admission; these overrides are not authenticated recipes.
+                    static_cast<void>(JuicerTestSupport::grain_frame_input(v, product.recipe.visualGrain, product.recipe.filmDevelop));
+                }
+                std::shared_ptr<const DirectRenderState> direct;
+                std::shared_ptr<const PrintRenderState> print;
+                if (route % 2) {
+                    print = frame_state<PrintRenderState>(std::move(product));
+                } else {
+                    direct = frame_state<DirectRenderState>(std::move(product));
+                }
+                const auto& recipe = print ? print->recipe : direct->recipe;
+                const auto& payload = print ? print->payload : direct->payload;
+                const auto bounds = rect(full);
+                const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(bounds, bounds, recipe.filmRaw.autoExposureMethod);
+                const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
+                const std::optional<ScatterHalationFrameDescriptor> halation;
+                const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
+                const auto rowBytes = static_cast<std::ptrdiff_t>(static_cast<std::size_t>(full.width) * 4 * sizeof(float));
+                const JuicerCuda::ExecutionFrame frame{
+                    bounds, rect(render), fullFallback ? JuicerCuda::FrameRect{} : bounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), rowBytes, rowBytes, path == GrainCallerPath::BeforeBuilder ? 2 : 4, device.stream, diffusion, halation, geometry, scalar(v.at("pixel_size_um")), wide(v.at("frame_time")), wide(v.at("frame_rate")), v.at("session_seed").get<std::uint64_t>(), v.at("clip_token").get<std::uintptr_t>(), meter, false, false};
+                JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+                snapshot.instanceToken.value = 0x645600 + route;
+                snapshot.frameToken.value = 37;
+                snapshot.snapshotId = ++runs;
+                snapshot.deviceContextKey = {deviceId, context};
+                snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
+                unsigned abortCalls = 0;
+                const FjAbortCallback stop{[](void* user) -> std::uint32_t {
+                                               ++*static_cast<unsigned*>(user);
+                                               return FJ_ABORT_REQUESTED;
+                                           },
+                                           &abortCalls};
+                require_cuda(cudaMemcpy(device.destination, canary.data(), kBytes, cudaMemcpyHostToDevice), "grain caller canary");
+                JuicerCuda::ExecutorTest::reset_grain_frame_observation();
+                JuicerCuda::ExecutorTest::FailureObservation events;
+                JuicerCuda::ExecutorTest::ResourceFailures resources;
+                const bool success = row.at("success");
+                const bool early = path == GrainCallerPath::BeforeBuilder || !success;
+                if (early) {
+                    resources.lutPosition = 1;
+                    JuicerCuda::ExecutorTest::observation = &events;
+                    JuicerCuda::ExecutorTest::resourceFailures = &resources;
+                }
+                FjStatus result{0, 0, 0};
+                std::string failureText;
+                JuicerCuda::PendingContextLossRecovery recovery;
+                auto admission = JuicerProcess::root().begin_frame_preparation();
+                if (!admission.active())
+                    throw std::runtime_error("grain caller admission");
+                try {
+                    if (route % 2)
+                        JuicerCuda::execute_print({print->recipe, print->payload, frame, snapshot}, recovery, path == GrainCallerPath::Pixels ? FjAbortCallback{} : stop);
+                    else
+                        JuicerCuda::execute_direct({direct->recipe, direct->payload, frame, snapshot}, recovery, path == GrainCallerPath::Pixels ? FjAbortCallback{} : stop);
+                } catch (const JuicerCuda::ExecutionFailure& error) {
+                    result = error.failure.status;
+                    failureText = error.failure.diagnostic;
+                } catch (...) {
+                    JuicerCuda::ExecutorTest::observation = nullptr;
+                    JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+                    throw;
+                }
+                JuicerCuda::ExecutorTest::observation = nullptr;
+                JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+                const auto observed = JuicerCuda::ExecutorTest::grain_frame_observation();
+                const auto name = genuine ? row.at("spec").dump() : v.at("name").get<std::string>();
+                if (observed.count != (path == GrainCallerPath::BeforeBuilder ? 0u : 1u))
+                    throw std::runtime_error(name + ": grain helper invocation count");
+                if (path != GrainCallerPath::BeforeBuilder) {
+                    if (observed.route != params.scanRoute || fields(observed.renderExtent) != v.at("render_extent") || fields(observed.fullFrameExtent) != v.at("full_frame_extent") || std::bit_cast<std::uint32_t>(observed.pixelSizeUm) != v.at("pixel_size_um") || std::bit_cast<std::uint64_t>(observed.frameTime) != v.at("frame_time") || std::bit_cast<std::uint64_t>(observed.frameRate) != v.at("frame_rate") || observed.sessionSeed != v.at("session_seed") || observed.clipToken != v.at("clip_token") || observed.success != success)
+                        throw std::runtime_error(name + ": current callback grain facts");
+                    const bool present = success && row.at("native").at("active").get<bool>();
+                    if (observed.descriptor.has_value() != present || (present && JuicerTestSupport::grain_frame_fields(*observed.descriptor) != row.at("native")))
+                        throw std::runtime_error(name + ": complete successful grain fields/hash or absent failed/inactive descriptor");
+                }
+                const auto expectedStatus = early ? FJ_STATUS_PREPARATION_FAILURE : path == GrainCallerPath::Pixels ? FJ_STATUS_SUCCESS
+                                                                                                                    : FJ_STATUS_CANCELLED;
+                if (result.category != expectedStatus || result.api != 0 || result.native_code != 0 || recovery.pending || abortCalls != (!early && path != GrainCallerPath::Pixels ? 1u : 0u))
+                    throw std::runtime_error(std::string(name).append(": grain caller stage/status: ").append(failureText));
+                if (early) {
+                    const auto expectedText = path == GrainCallerPath::BeforeBuilder
+                                                  ? route % 2 ? "UnsupportedPrintComponentCountForPhase4C" : "UnsupportedDirectComponentCountForPhase3C"
+                                                  : row.at("diagnostic").get<std::string>();
+                    if (failureText != expectedText || events.count != 0 || !events.armed || resources.lutAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0)
+                        throw std::runtime_error(name + ": failed grain reached preparation/upload/launch");
+                    ++failures;
+                }
+                std::vector<float> actual(kSamples);
+                require_cuda(cudaMemcpyAsync(actual.data(), device.destination, kBytes, cudaMemcpyDeviceToHost, device.stream), "grain caller readback");
+                require_cuda(cudaStreamSynchronize(device.stream), "grain caller completion");
+                if (path == GrainCallerPath::Pixels) {
+                    if (!genuine || early || actual == canary)
+                        throw std::runtime_error("genuine grain pixel execution missing");
+                    const auto count = static_cast<std::size_t>(full.width) * static_cast<std::size_t>(full.height) * 4;
+                    for (std::size_t i = 0; i < count; ++i) {
+                        if (i % 4 == 3 ? std::bit_cast<std::uint32_t>(actual[i]) != std::bit_cast<std::uint32_t>(0.18f) : !std::isfinite(actual[i]) || actual[i] < 0.0f || actual[i] > 1.0f)
+                            throw std::runtime_error("grain genuine pixel/alpha contract");
+                    }
+                    ++pixels;
+                } else {
+                    if (actual != canary)
+                        throw std::runtime_error("grain construction-only execution wrote pixels");
+                    if (!early)
+                        ++constructions;
+                }
+                std::cout << "grain caller route=" << route << " name=" << name << " pixels=" << (path == GrainCallerPath::Pixels) << " fallback=" << fullFallback << " builder_calls=" << observed.count << " success=" << success << " passed\n";
+            };
+            for (const auto& row : captured.at("products")) {
+                if (row.at("route") != route)
+                    continue;
+                const auto& spec = row.at("spec");
+                const bool pixel = !spec.at("active").get<bool>() || (spec.at("debug") == 0 && !spec.contains("amplitude"));
+                if (!spec.at("active").get<bool>() && fj_test_grain_frame_fault(1).category != 0)
+                    throw std::runtime_error("arm inactive delegation witness");
+                run(row, pixel ? GrainCallerPath::Pixels : GrainCallerPath::StopBeforePreparation);
+                if (!spec.at("active").get<bool>()) {
+                    FjGrainFrameInput active{};
+                    active.active = 1;
+                    FjGrainFrameMath output{};
+                    FjGrainFrameFailure failure{};
+                    if (fj_test_grain_frame_prepare(&active, &output, &failure, nullptr).category != 8 || failure.reason != 3)
+                        throw std::runtime_error("inactive executor consumed Rust frame mathematics");
+                }
+                if (spec.at("active").get<bool>() && !spec.at("layers").get<bool>() && !spec.contains("amplitude")) {
+                    run(row, GrainCallerPath::BeforeBuilder);
+                    run(row, GrainCallerPath::StopBeforePreparation, true);
+                }
+            }
+            const std::array names{
+                "time--1.75", "time-1.5", "fps-23.976", "fps-0.2", "negative-origin", "partial-unblurred", "sigma-0.4", "sigma-0.4000001", "new-session", "new-clip", "mix", "S4D6-R1", "pixel-half", "pixel-eight", "geometry-96x71", "geometry-offset-96x71", "layers-film_layers_hash", "model-0", "frame-frame_time"};
+            for (const auto& row : captured.at("cases")) {
+                const auto& v = row.at("input");
+                const auto name = v.at("name").get<std::string>();
+                const auto logical = name.starts_with("positive/") ? name.substr(9) : name;
+                if (v.at("capture_polarity") == route / 2 && v.at("film_polarity") == route / 2 && std::find(names.begin(), names.end(), logical) != names.end())
+                    run(row, GrainCallerPath::StopBeforePreparation);
+            }
+            if (fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), 0x645600 + route, nullptr).category != 0)
+                throw std::runtime_error("grain caller membership retirement");
+        }
+        if (runs != 122 || pixels != 16 || constructions != 92 || failures != 14)
+            throw std::runtime_error("grain caller exact pixel/failure/stop membership");
+        std::cout << "grain caller runs=" << runs << " genuine pixels=" << pixels << " construction-only=" << constructions << " failures=" << failures << " passed\n";
+    }
+
+    void run_dir_frame_cases(const std::filesystem::path& manifestPath, const std::string& preset) {
+        using Json = nlohmann::json;
+        const auto manifest = Json::parse(std::ifstream(manifestPath));
+        const auto captured = load_shared_fixture(manifestPath.parent_path() / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
+        if (captured.at("preset") != preset || captured.at("cases").size() != 74 || captured.at("products").size() != 24) {
+            throw std::runtime_error("DIR caller capture membership changed");
+        }
+        const auto extent = [](const Json& value) -> Spektrafilm::DirFrameExtent {
+            return {value.at(0), value.at(1), value.at(2), value.at(3)};
+        };
+        const auto rect = [](Spektrafilm::DirFrameExtent value) -> JuicerCuda::FrameRect {
+            return {value.x, value.y, value.x + value.width, value.y + value.height};
+        };
+        const auto fields = [](Spektrafilm::DirFrameExtent value) -> Json {
+            return {value.x, value.y, value.width, value.height};
+        };
+        const auto scalar = [](const Json& value) {
+            return std::bit_cast<float>(value.get<std::uint32_t>());
+        };
+        DeviceFrame device;
+        require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "DIR caller stream");
+        constexpr std::size_t kSamples = std::size_t{96} * 71 * 4;
+        constexpr std::size_t kBytes = kSamples * sizeof(float);
+        require_cuda(cudaMalloc(&device.source, kBytes), "DIR caller source");
+        require_cuda(cudaMalloc(&device.destination, kBytes), "DIR caller destination");
+        const std::vector<float> source(kSamples, 0.18f), canary(kSamples, kCanary);
+        require_cuda(cudaMemcpy(device.source, source.data(), kBytes, cudaMemcpyHostToDevice), "DIR caller input");
+        int deviceId = 0;
+        CUcontext context = nullptr;
+        require_cuda(cudaGetDevice(&deviceId), "DIR caller device");
+        if (cuCtxGetCurrent(&context) != CUDA_SUCCESS || !context) {
+            throw std::runtime_error("DIR caller context unavailable");
+        }
+        unsigned runs = 0;
+        for (unsigned route = 0; route < 4; ++route) {
+            ParamSnapshot params;
+            params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
+            params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            params.grainControls.active = false;
+            params.dirCouplers.diffusionSizeUm = 20.0f;
+            params.dirCouplers.diffusionTailUm = 200.0f;
+            params.dirCouplers.diffusionTailWeight = 0.03f;
+            FocusedRenderStateBuildProduct product;
+            std::string diagnostic;
+            if (!(route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic))) {
+                throw std::runtime_error(diagnostic);
+            }
+            std::shared_ptr<const DirectRenderState> directState;
+            std::shared_ptr<const PrintRenderState> printState;
+            if (route % 2) {
+                printState = frame_state<PrintRenderState>(std::move(product));
+            } else {
+                directState = frame_state<DirectRenderState>(std::move(product));
+            }
+            const auto run = [&](const Json& row, bool genuine, bool beforeBuilder, bool executePixels, bool fullFallback) {
+                const auto& input = row.at("input");
+                const auto name = input.at("name").get<std::string>() + "/route-" + std::to_string(route);
+                auto direct = directState;
+                auto print = printState;
+                if (!genuine) {
+                    FocusedRenderStateBuildProduct literal;
+                    if (!(route % 2 ? build_print_render_state_product(params, literal, diagnostic) : build_direct_render_state_product(params, literal, diagnostic))) {
+                        throw std::runtime_error(diagnostic);
+                    }
+                    // Literal characterization retains real chemistry/payload; these scalar overrides are not authenticated recipes.
+                    auto& dir = literal.recipe.dirCouplers;
+                    dir.active = input.at("active");
+                    dir.diffusionSizeUm = scalar(input.at("size"));
+                    dir.diffusionTailUm = scalar(input.at("tail"));
+                    dir.diffusionTailWeight = scalar(input.at("weight"));
+                    dir.hash = input.at("hash");
+                    if (route % 2) {
+                        print = frame_state<PrintRenderState>(std::move(literal));
+                    } else {
+                        direct = frame_state<DirectRenderState>(std::move(literal));
+                    }
+                }
+                const auto& recipe = print ? print->recipe : direct->recipe;
+                const auto& payload = print ? print->payload : direct->payload;
+                if (genuine && (row.at("recipe_hash") != recipe.hash || input.at("hash") != recipe.dirCouplers.hash)) {
+                    throw std::runtime_error(name + ": genuine recipe identity changed");
+                }
+                const auto render = extent(input.at("render")), full = extent(input.at("full"));
+                const auto sourceDomain = full.width > 0 && full.height > 0 ? full : Spektrafilm::DirFrameExtent{0, 0, 64, 48};
+                const auto sourceBounds = rect(sourceDomain);
+                const auto effectiveFull = fullFallback || full.width <= 0 || full.height <= 0 ? sourceDomain : full;
+                const auto fullBounds = fullFallback ? JuicerCuda::FrameRect{} : rect(full);
+                const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(sourceBounds, sourceBounds, recipe.filmRaw.autoExposureMethod);
+                const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
+                const std::optional<ScatterHalationFrameDescriptor> halation;
+                const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
+                const auto rowBytes = static_cast<std::ptrdiff_t>(static_cast<std::size_t>(sourceDomain.width) * 4 * sizeof(float));
+                const JuicerCuda::ExecutionFrame frame{sourceBounds, rect(render), fullBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), rowBytes, rowBytes, beforeBuilder ? 2 : 4, device.stream, diffusion, halation, geometry, scalar(input.at("pixel")), 37.0, 24.0, 0x20260923, 0x5312, meter, false, false};
+                JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+                snapshot.instanceToken.value = 0x641300 + route;
+                snapshot.frameToken.value = 37;
+                snapshot.snapshotId = ++runs;
+                snapshot.deviceContextKey = {deviceId, context};
+                snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
+                unsigned abortCalls = 0;
+                const FjAbortCallback stopBeforePreparation{[](void* user) -> std::uint32_t {
+                                                                ++*static_cast<unsigned*>(user);
+                                                                return FJ_ABORT_REQUESTED;
+                                                            },
+                                                            &abortCalls};
+                require_cuda(cudaMemcpy(device.destination, canary.data(), kBytes, cudaMemcpyHostToDevice), "DIR caller canary");
+                JuicerCuda::ExecutorTest::reset_dir_frame_observation();
+                JuicerCuda::ExecutorTest::FailureObservation failureEvents;
+                JuicerCuda::ExecutorTest::ResourceFailures resources;
+                const bool success = row.at("success");
+                const bool earlyFailure = beforeBuilder || !success;
+                if (earlyFailure) {
+                    resources.lutPosition = 1;
+                    JuicerCuda::ExecutorTest::observation = &failureEvents;
+                    JuicerCuda::ExecutorTest::resourceFailures = &resources;
+                }
+                FjStatus status{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+                std::string failureText;
+                JuicerCuda::PendingContextLossRecovery recovery;
+                auto preparation = JuicerProcess::root().begin_frame_preparation();
+                if (!preparation.active()) {
+                    throw std::runtime_error(name + ": caller admission unavailable");
+                }
+                try {
+                    if (route % 2) {
+                        JuicerCuda::execute_print({print->recipe, print->payload, frame, snapshot}, recovery, executePixels ? FjAbortCallback{} : stopBeforePreparation);
+                    } else {
+                        JuicerCuda::execute_direct({direct->recipe, direct->payload, frame, snapshot}, recovery, executePixels ? FjAbortCallback{} : stopBeforePreparation);
+                    }
+                } catch (const JuicerCuda::ExecutionFailure& failure) {
+                    status = failure.failure.status;
+                    failureText = failure.failure.diagnostic;
+                } catch (...) {
+                    JuicerCuda::ExecutorTest::observation = nullptr;
+                    JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+                    throw;
+                }
+                JuicerCuda::ExecutorTest::observation = nullptr;
+                JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+                const auto observed = JuicerCuda::ExecutorTest::dir_frame_observation();
+                auto expected = row.at("native");
+                if (!expected.at("label").is_null()) {
+                    expected["label"] = route % 2 ? "print" : "direct";
+                }
+                if (observed.count != (beforeBuilder ? 0u : 1u) ||
+                    (!beforeBuilder && (observed.route != params.scanRoute || observed.pixelSizeBits != input.at("pixel") ||
+                                        fields(observed.renderExtent) != input.at("render") || fields(observed.fullFrameExtent) != fields(effectiveFull) ||
+                                        observed.success != success || JuicerTestSupport::dir_frame_fields(observed.descriptor) != expected))) {
+                    throw std::runtime_error(name + ": actual builder facts, fields or final hash changed");
+                }
+                const auto expectedStatus = earlyFailure ? FJ_STATUS_PREPARATION_FAILURE : executePixels ? FJ_STATUS_SUCCESS
+                                                                                                         : FJ_STATUS_CANCELLED;
+                if (status.category != expectedStatus || status.api != FJ_API_NONE || status.native_code != 0 || recovery.pending ||
+                    abortCalls != (!earlyFailure && !executePixels ? 1u : 0u)) {
+                    std::string message = name;
+                    message += ": caller did not stop at the expected stage: ";
+                    message += failureText;
+                    throw std::runtime_error(message);
+                }
+                if (earlyFailure) {
+                    const std::string expectedText = beforeBuilder
+                                                         ? route % 2 ? "UnsupportedPrintComponentCountForPhase4C" : "UnsupportedDirectComponentCountForPhase3C"
+                                                     : route % 2 ? "ResourceDescriptorMismatch phase=4C field=spatial_dir_descriptor"
+                                                                 : "ResourceDescriptorMismatch phase=3D-3 field=spatial_dir_descriptor";
+                    if (failureText != expectedText || failureEvents.count != 0 || !failureEvents.armed ||
+                        resources.lutAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0) {
+                        throw std::runtime_error(name + ": failed mathematics reached resource preparation or launch");
+                    }
+                }
+                if (!executePixels) {
+                    std::vector<float> actual(kSamples);
+                    require_cuda(cudaMemcpyAsync(actual.data(), device.destination, kBytes, cudaMemcpyDeviceToHost, device.stream), "DIR caller output canary");
+                    require_cuda(cudaStreamSynchronize(device.stream), "DIR caller completion");
+                    if (actual != canary) {
+                        throw std::runtime_error(name + ": stopped caller wrote pixels");
+                    }
+                } else {
+                    require_cuda(cudaStreamSynchronize(device.stream), "DIR caller rendered completion");
+                }
+                std::cout << "DIR caller " << name << " fallback=" << fullFallback << " before=" << beforeBuilder << " pixels=" << executePixels << " passed\n";
+            };
+            for (const auto& row : captured.at("products")) {
+                if (row.at("route") == route) {
+                    const bool executePixels = row.at("input").at("name") == std::to_string(route) + "/pixel-8";
+                    run(row, true, false, executePixels, false);
+                    if (executePixels) {
+                        run(row, true, true, false, false);
+                        run(row, true, false, false, true);
+                    }
+                }
+            }
+            for (const char* name : {"inactive", "size-zero", "size-nan", "core-word-1", "core-word-1042983595", "fir", "core-word-1077936128", "tail-mixed", "tail-weight-one", "tail-zero", "pixel-change", "negative-origin", "pixel-zero", "offset", "tail-radius", "core-inf", "active-hash-zero"}) {
+                const auto found = std::find_if(captured.at("cases").begin(), captured.at("cases").end(), [&](const auto& row) {
+                    return row.at("input").at("name") == name;
+                });
+                if (found == captured.at("cases").end()) {
+                    throw std::runtime_error("DIR caller literal missing");
+                }
+                run(*found, false, false, false, false);
+            }
+        }
+        if (runs != 100) {
+            throw std::runtime_error("DIR caller exact membership changed");
+        }
+    }
+
     void check_failure_order(const Case& test,
                              JuicerCuda::ExecutorTest::Delivery delivery,
                              bool deferredDirFailure,
@@ -1692,6 +2155,19 @@ int main(int argc, char** argv) {
         }
 #endif
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (argc == 4 && std::string(argv[1]) == "--grain-frame") {
+            run_grain_frame_cases(argv[2], argv[3]);
+            if (cudaOwner.close().category != FJ_STATUS_SUCCESS)
+                throw std::runtime_error("grain caller owner cleanup failed");
+            return 0;
+        }
+        if (argc == 4 && std::string(argv[1]) == "--dir-frame") {
+            run_dir_frame_cases(argv[2], argv[3]);
+            if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {
+                throw std::runtime_error("DIR caller owner cleanup failed");
+            }
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--noise-lifetime") {
             run_noise_lifetime_cases();
             if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {

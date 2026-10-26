@@ -144,7 +144,7 @@ namespace {
                         error);
             }
             const Spektrafilm::DirFrameExtent extent{0, 0, w, h};
-            require(Spektrafilm::build_spatial_dir_descriptor(
+            require(JuicerTestSupport::prepare_dir_frame(
                         product.recipe.dirCouplers, variant.pixelSize, extent, extent, "grain-scratch-test", dir),
                     "DIR descriptor failed");
             build_grain_frame(variant.time);
@@ -163,7 +163,7 @@ namespace {
             input.frameRate = 24.0;
             input.sessionSeed = 17;
             input.clipToken = 23;
-            require(Spektrafilm::build_visual_grain_frame_descriptor(input, grain, error), error);
+            require(JuicerTestSupport::prepare_grain_frame(input, grain, error), error);
         }
 
         JuicerProcess::Root::CudaFramePreparationRequest request(bool withDir = true) const {

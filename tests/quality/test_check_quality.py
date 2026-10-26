@@ -49,6 +49,54 @@ class IsolatedOwnerTests(unittest.TestCase):
 
 
 class CheckQualityTests(IsolatedOwnerTests):
+    def test_verifier_scope_is_conservative_for_dependencies_and_uncertainty(self):
+        root = SCRIPT_PATH.parents[1]
+        policy = check_quality.load_policy(root)
+        head = "a" * 40
+        for name, required in (
+            ("src/Scanner.cpp", False), ("rust/film-juicer-core/src/optics/gaussian.rs", False),
+            ("src/ScanRoute.cpp", True), ("src/RenderRecipe.cpp", True),
+            ("rust/film-juicer-core/src/route.rs", True),
+            ("rust/film-juicer-core/src/color/output.rs", True),
+            ("tests/quality/test_checkpoint.py", True), ("scripts/execution.py", True),
+            ("cmake/JuicerRust.cmake", True), ("CMakePresets.json", True),
+            ("rust-toolchain.toml", True), ("Cargo.lock", True),
+            (".github/workflows/tests-linux-host.yml", True),
+            ("tests/ToolingTests.cmake", True), ("tests/ctest/control_artifacts.py", True),
+            ("src/GeneratedColorSpaces.cpp", True), ("src/Scanner.h", True),
+            ("unknown/input", True),
+        ):
+            with self.subTest(name=name), patch.object(check_quality, "run_git", side_effect=[
+                    head.encode(), b"base", b"M\0" + name.encode() + b"\0", b""]):
+                report = check_quality.verifier_scope(root, "pr-base", head, policy)
+                self.assertEqual(report["required"], required)
+                self.assertTrue(report["complete"])
+                self.assertEqual(report["candidate"], head)
+                self.assertEqual(report["mode"], "report-only")
+        for payload, statuses in ((b"D\0src/Scanner.cpp\0", b"src/Scanner.cpp\0"),
+                                  (b"R100\0src/old.cpp\0src/new.cpp\0", b"src/old.cpp\0src/new.cpp\0"),
+                                  (b"A\0src/new.cpp\0", b"src/new.cpp\0"),
+                                  (b"M\0", b"")):
+            with self.subTest(payload=payload), patch.object(check_quality, "run_git", side_effect=[
+                    head.encode(), b"base", payload, statuses]):
+                self.assertTrue(check_quality.verifier_scope(root, "base", head, policy)["required"])
+        for base, side_effect in ((None, [head.encode()]),
+                                  ("absent", [head.encode(), check_quality.QualityError("missing base")])):
+            with self.subTest(base=base), patch.object(check_quality, "run_git", side_effect=side_effect):
+                self.assertTrue(check_quality.verifier_scope(root, base, head, policy)["required"])
+        with patch.object(check_quality, "run_git", side_effect=check_quality.QualityError("invalid candidate")):
+            with self.assertRaisesRegex(check_quality.QualityError, "invalid candidate"):
+                check_quality.verifier_scope(root, "base", head, policy)
+
+    def test_verifier_scope_compares_merge_base_to_candidate(self):
+        root = SCRIPT_PATH.parents[1]
+        with patch.object(check_quality, "run_git", side_effect=[b"head", b"ancestor", b"M\0src/Scanner.cpp\0", b""]) as git:
+            report = check_quality.verifier_scope(root, "pr-base", "candidate", check_quality.load_policy(root))
+        self.assertFalse(report["required"])
+        self.assertIn(unittest.mock.call(root, ["merge-base", "pr-base", "head"]), git.call_args_list)
+        for call in git.call_args_list[2:]:
+            self.assertEqual(call.args[1][-3:], ["ancestor", "head", "--"])
+
     def test_bash_source_policy_accepts_native_windows_crlf_rows(self) -> None:
         bash = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "/bin/bash"
         helper = SCRIPT_PATH.parent / "lib/style_common.sh"
@@ -334,6 +382,112 @@ class CheckQualityTests(IsolatedOwnerTests):
             self.assertEqual(set(outputs), {"default", "test-support"})
             self.assertNotIn("--features", outputs["default"])
             self.assertEqual(outputs["test-support"][-2:], ["--features", "test-support"])
+
+    def test_boundary_negative_checks_bind_code_marker_and_fixture(self) -> None:
+        module = __import__("test_rust_boundaries")
+        probe = module.RustBoundaryTests("test_valid_profile_consumers_compile")
+        expected = {"E0616": ("color.rgb_to_xyz",)}
+        valid = [{
+            "level": "error",
+            "code": {"code": "E0616"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_input_color_private.rs",
+                "text": [{"text": "let _ = color.rgb_to_xyz;"}],
+            }],
+        }]
+
+        probe.assert_rejected(
+            1, valid, expected, "quality_boundary_probe_input_color_private.rs"
+        )
+        # Compiler lints can add primary errors in the same fixture without
+        # replacing the required ownership diagnostic.
+        with_lint = valid + [{
+            "level": "error",
+            "code": {"code": "E0453"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_input_color_private.rs",
+                "text": [{"text": "unsafe attribute used without unsafe"}],
+            }],
+        }]
+        probe.assert_rejected(
+            1, with_lint, expected, "quality_boundary_probe_input_color_private.rs"
+        )
+        for diagnostics, fixture in (
+            (valid, "quality_boundary_probe_output_color_private.rs"),
+            ([{**valid[0], "code": {"code": "E0599"}}], "quality_boundary_probe_input_color_private.rs"),
+            ([{**valid[0], "spans": [{**valid[0]["spans"][0], "text": [{"text": "let _ = color.hash;"}]}]}],
+             "quality_boundary_probe_input_color_private.rs"),
+        ):
+            with self.subTest(fixture=fixture, diagnostics=diagnostics), self.assertRaises(AssertionError):
+                probe.assert_rejected(1, diagnostics, expected, fixture)
+
+    def test_boundary_fixture_batches_keep_success_and_failure_groups_separate(self) -> None:
+        module = __import__("test_rust_boundaries")
+        probe = module.RustBoundaryTests("test_valid_profile_consumers_compile")
+        probe.profiles = (False,)
+        identities = {
+            "accepted_a": "quality_boundary_probe_accepted_a.rs",
+            "accepted_b": "quality_boundary_probe_accepted_b.rs",
+            "private_a": "quality_boundary_probe_private_a.rs",
+            "private_b": "quality_boundary_probe_private_b.rs",
+            "construct": "quality_boundary_probe_construct.rs",
+        }
+        expected = {"E0616": ("private_a.field",)}
+        rejected = [{
+            "level": "error",
+            "code": {"code": "E0616"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_private_a.rs",
+                "text": [{"text": "let _ = private_a.field;"}],
+            }],
+        }, {
+            "level": "error",
+            "code": {"code": "E0616"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_private_b.rs",
+                "text": [{"text": "let _ = private_b.field;"}],
+            }],
+        }]
+        construction_error = [{
+            "level": "error",
+            "code": {"code": "E0451"},
+            "spans": [{
+                "is_primary": True,
+                "file_name": "/tmp/quality_boundary_probe_construct.rs",
+                "text": [{"text": "Private { value: 1 }"}],
+            }],
+        }]
+        with (
+            patch.object(probe, "attach_many", side_effect=lambda owner, names: {
+                name: identities[name] for name in names
+            }) as attach,
+            patch.object(probe, "check_features", side_effect=[
+                [(0, []), (0, [])],
+                [(1, rejected), (1, rejected)],
+                [(1, construction_error), (1, construction_error)],
+            ]) as compile_features,
+        ):
+            probe.check_fixture_cases(
+                "film-juicer-plugin/src/lib.rs",
+                "film-juicer-plugin",
+                cases=(
+                    ("accepted_a", None),
+                    ("accepted_b", None),
+                    ("private_a", expected),
+                    ("private_b", {"E0616": ("private_b.field",)}),
+                    ("construct", {"E0451": ("Private { value: 1 }",)}),
+                ),
+            )
+
+        self.assertEqual(attach.call_count, 3)
+        self.assertEqual(attach.call_args_list[0].args[1], ("accepted_a", "accepted_b"))
+        self.assertEqual(attach.call_args_list[1].args[1], ("private_a", "private_b"))
+        self.assertEqual(attach.call_args_list[2].args[1], ("construct",))
+        self.assertEqual(compile_features.call_count, 3)
 
     def test_boundary_feature_failure_waits_for_the_other_command(self) -> None:
         module = __import__("test_rust_boundaries")

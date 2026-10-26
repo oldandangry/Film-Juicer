@@ -16,10 +16,10 @@
     }
   },
   "payloads": {
-    "linux-debug.json": "linux-debug-payload.json",
-    "linux-release.json": "linux-release-payload.json",
-    "windows-clang-debug.json": "windows-clang-debug-payload.json",
-    "windows-clang-release.json": "windows-clang-release-payload.json"
+    "linux-debug.json": "linux-payload.json",
+    "linux-release.json": "linux-payload.json",
+    "windows-clang-debug.json": "windows-clang-payload.json",
+    "windows-clang-release.json": "windows-clang-payload.json"
   },
   "contexts": {
     "linux-debug.json": "linux-debug-context.json",
@@ -28,14 +28,12 @@
     "windows-clang-release.json": "windows-clang-release-context.json"
   },
   "sha256": {
-    "linux-debug-payload.json": "40885a91b4a8b96e7f14579d480b97279cd156c6c8d429382320debc1dcd3709",
     "linux-debug-context.json": "9d420375cf2076dfd108f846de780ae02d857c92bbd85a5d2caa8e5dae8d102d",
-    "linux-release-payload.json": "40885a91b4a8b96e7f14579d480b97279cd156c6c8d429382320debc1dcd3709",
     "linux-release-context.json": "035cc15100e04e3aefb270e79f2aa1304df0d480988e31ee41b7c9449ec3613c",
-    "windows-clang-debug-payload.json": "de45f01c24c0dfc6cd5c2379844fc4153ea7cd051abda8603395489385e6c0ca",
     "windows-clang-debug-context.json": "940cfe009676c8a54bb125475de1ca5bca24c50f1f096dd5a0a596b27b223782",
-    "windows-clang-release-payload.json": "de45f01c24c0dfc6cd5c2379844fc4153ea7cd051abda8603395489385e6c0ca",
-    "windows-clang-release-context.json": "25494f719833790a3d6ae0026ad680e6b9063f4c74c46ef5f463857637dd17b2"
+    "windows-clang-release-context.json": "25494f719833790a3d6ae0026ad680e6b9063f4c74c46ef5f463857637dd17b2",
+    "linux-payload.json": "40885a91b4a8b96e7f14579d480b97279cd156c6c8d429382320debc1dcd3709",
+    "windows-clang-payload.json": "de45f01c24c0dfc6cd5c2379844fc4153ea7cd051abda8603395489385e6c0ca"
   },
   "case_count": 188,
   "sample_words": 22895,

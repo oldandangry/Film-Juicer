@@ -1253,13 +1253,18 @@ namespace {
             (frame.fullFrameExtent.x2 > frame.fullFrameExtent.x1 && frame.fullFrameExtent.y2 > frame.fullFrameExtent.y1)
                 ? frame.fullFrameExtent
                 : srcBounds;
-        if (!Spektrafilm::build_spatial_dir_descriptor(
-                directRecipe->dirCouplers,
-                frame.pixelSizeUm,
-                spatial_dir_extent_from_rect(win),
-                spatial_dir_extent_from_rect(directFullFrameRect),
-                "direct",
-                descriptors.dir)) {
+        const bool dirFrameBuilt = Spektrafilm::build_spatial_dir_descriptor(
+            directRecipe->dirCouplers,
+            frame.pixelSizeUm,
+            spatial_dir_extent_from_rect(win),
+            spatial_dir_extent_from_rect(directFullFrameRect),
+            "direct",
+            descriptors.dir);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_dir_frame(
+            directRecipe->profileRoute.scanRoute, frame.pixelSizeUm, spatial_dir_extent_from_rect(win), spatial_dir_extent_from_rect(directFullFrameRect), dirFrameBuilt, descriptors.dir);
+#endif
+        if (!dirFrameBuilt) {
             trace_spatial_dir_descriptor_build("direct", descriptors.dir);
             errors.fail_route(
                 "ResourceDescriptorMismatch phase=3D-3 field=spatial_dir_descriptor");
@@ -1267,22 +1272,26 @@ namespace {
         trace_spatial_dir_descriptor_build("direct", descriptors.dir);
 
         std::string directGrainDescriptorDiagnostic;
-        if (!build_visual_grain_descriptor_for_frame(
-                directRecipe->visualGrain,
-                directRecipe->filmDevelop,
-                directRecipe->profileRoute.capturePolarity,
-                {win.x1, win.y1, width, height},
-                {directFullFrameRect.x1,
-                 directFullFrameRect.y1,
-                 directFullFrameRect.x2 - directFullFrameRect.x1,
-                 directFullFrameRect.y2 - directFullFrameRect.y1},
-                frame.pixelSizeUm,
-                frame.timeFrames,
-                frame.frameRate,
-                frame.sessionSeed,
-                static_cast<std::uint64_t>(frame.clipToken),
-                descriptors.grain,
-                directGrainDescriptorDiagnostic)) {
+        const bool grainFrameBuilt = build_visual_grain_descriptor_for_frame(
+            directRecipe->visualGrain,
+            directRecipe->filmDevelop,
+            directRecipe->profileRoute.capturePolarity,
+            {win.x1, win.y1, width, height},
+            {directFullFrameRect.x1,
+             directFullFrameRect.y1,
+             directFullFrameRect.x2 - directFullFrameRect.x1,
+             directFullFrameRect.y2 - directFullFrameRect.y1},
+            frame.pixelSizeUm,
+            frame.timeFrames,
+            frame.frameRate,
+            frame.sessionSeed,
+            static_cast<std::uint64_t>(frame.clipToken),
+            descriptors.grain,
+            directGrainDescriptorDiagnostic);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_grain_frame({directRecipe->profileRoute.scanRoute, 0, {win.x1, win.y1, width, height}, {directFullFrameRect.x1, directFullFrameRect.y1, directFullFrameRect.x2 - directFullFrameRect.x1, directFullFrameRect.y2 - directFullFrameRect.y1}, frame.pixelSizeUm, frame.timeFrames, frame.frameRate, frame.sessionSeed, static_cast<std::uint64_t>(frame.clipToken), grainFrameBuilt, grainFrameBuilt ? descriptors.grain : std::nullopt});
+#endif
+        if (!grainFrameBuilt) {
             errors.fail_route(
                 directGrainDescriptorDiagnostic.c_str());
         }
@@ -2037,13 +2046,18 @@ namespace {
             (frame.fullFrameExtent.x2 > frame.fullFrameExtent.x1 && frame.fullFrameExtent.y2 > frame.fullFrameExtent.y1)
                 ? frame.fullFrameExtent
                 : srcBounds;
-        if (!Spektrafilm::build_spatial_dir_descriptor(
-                printRecipe->dirCouplers,
-                frame.pixelSizeUm,
-                spatial_dir_extent_from_rect(win),
-                spatial_dir_extent_from_rect(printFullFrameRect),
-                "print",
-                descriptors.dir)) {
+        const bool dirFrameBuilt = Spektrafilm::build_spatial_dir_descriptor(
+            printRecipe->dirCouplers,
+            frame.pixelSizeUm,
+            spatial_dir_extent_from_rect(win),
+            spatial_dir_extent_from_rect(printFullFrameRect),
+            "print",
+            descriptors.dir);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_dir_frame(
+            printRecipe->profileRoute.scanRoute, frame.pixelSizeUm, spatial_dir_extent_from_rect(win), spatial_dir_extent_from_rect(printFullFrameRect), dirFrameBuilt, descriptors.dir);
+#endif
+        if (!dirFrameBuilt) {
             trace_spatial_dir_descriptor_build("print", descriptors.dir);
             errors.fail_route(
                 "ResourceDescriptorMismatch phase=4C field=spatial_dir_descriptor");
@@ -2051,22 +2065,26 @@ namespace {
         trace_spatial_dir_descriptor_build("print", descriptors.dir);
 
         std::string printGrainDescriptorDiagnostic;
-        if (!build_visual_grain_descriptor_for_frame(
-                printRecipe->visualGrain,
-                printRecipe->filmDevelop,
-                printRecipe->profileRoute.capturePolarity,
-                {win.x1, win.y1, width, height},
-                {printFullFrameRect.x1,
-                 printFullFrameRect.y1,
-                 printFullFrameRect.x2 - printFullFrameRect.x1,
-                 printFullFrameRect.y2 - printFullFrameRect.y1},
-                frame.pixelSizeUm,
-                frame.timeFrames,
-                frame.frameRate,
-                frame.sessionSeed,
-                static_cast<std::uint64_t>(frame.clipToken),
-                descriptors.grain,
-                printGrainDescriptorDiagnostic)) {
+        const bool grainFrameBuilt = build_visual_grain_descriptor_for_frame(
+            printRecipe->visualGrain,
+            printRecipe->filmDevelop,
+            printRecipe->profileRoute.capturePolarity,
+            {win.x1, win.y1, width, height},
+            {printFullFrameRect.x1,
+             printFullFrameRect.y1,
+             printFullFrameRect.x2 - printFullFrameRect.x1,
+             printFullFrameRect.y2 - printFullFrameRect.y1},
+            frame.pixelSizeUm,
+            frame.timeFrames,
+            frame.frameRate,
+            frame.sessionSeed,
+            static_cast<std::uint64_t>(frame.clipToken),
+            descriptors.grain,
+            printGrainDescriptorDiagnostic);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_grain_frame({printRecipe->profileRoute.scanRoute, 0, {win.x1, win.y1, width, height}, {printFullFrameRect.x1, printFullFrameRect.y1, printFullFrameRect.x2 - printFullFrameRect.x1, printFullFrameRect.y2 - printFullFrameRect.y1}, frame.pixelSizeUm, frame.timeFrames, frame.frameRate, frame.sessionSeed, static_cast<std::uint64_t>(frame.clipToken), grainFrameBuilt, grainFrameBuilt ? descriptors.grain : std::nullopt});
+#endif
+        if (!grainFrameBuilt) {
             errors.fail_route(
                 printGrainDescriptorDiagnostic.c_str());
         }

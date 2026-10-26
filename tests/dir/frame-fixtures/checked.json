@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "authority": "Separately authored source-level failure stages, not inferred from native bool or replacement results. Provisional annotations in original capture inputs are historical; the safe-radius neighbor and tail first-radius failure are corrected here.",
+  "ordinary": {
+    "core-word-1311419051": [
+      9,
+      0
+    ],
+    "core-word-1900671690": [
+      9,
+      0
+    ],
+    "pixel-zero": [
+      1,
+      4
+    ],
+    "pixel-minus-zero": [
+      1,
+      4
+    ],
+    "pixel-negative": [
+      1,
+      4
+    ],
+    "pixel-nan": [
+      1,
+      4
+    ],
+    "pixel-inf": [
+      1,
+      4
+    ],
+    "render-2-0": [
+      2,
+      4
+    ],
+    "render-2--1": [
+      2,
+      4
+    ],
+    "render-3-0": [
+      2,
+      4
+    ],
+    "render-3--1": [
+      2,
+      4
+    ],
+    "full-2-0": [
+      3,
+      4
+    ],
+    "full-2--1": [
+      3,
+      4
+    ],
+    "full-3-0": [
+      3,
+      4
+    ],
+    "full-3--1": [
+      3,
+      4
+    ],
+    "pixel-before-extents": [
+      1,
+      4
+    ],
+    "render-before-full": [
+      2,
+      4
+    ],
+    "core-inf": [
+      5,
+      0
+    ],
+    "core-overflow": [
+      5,
+      0
+    ],
+    "core-underflow": [
+      5,
+      0
+    ],
+    "core-weight-nan": [
+      5,
+      0
+    ],
+    "core-weight-inf": [
+      5,
+      0
+    ],
+    "core-weight-above-one": [
+      5,
+      0
+    ],
+    "offset": [
+      4,
+      4
+    ],
+    "width": [
+      4,
+      4
+    ],
+    "core-before-partial": [
+      5,
+      0
+    ],
+    "tail-nan": [
+      6,
+      4
+    ],
+    "tail-inf": [
+      6,
+      4
+    ],
+    "tail-negative": [
+      6,
+      4
+    ],
+    "tail-sigma-overflow": [
+      9,
+      1
+    ],
+    "tail-radius": [
+      9,
+      1
+    ]
+  },
+  "raw": {
+    "category": 2,
+    "reason": 1,
+    "field": 0,
+    "component": 4,
+    "diagnostic": "invalid spatial DIR frame arguments"
+  },
+  "panic": {
+    "category": 8,
+    "reason": 3,
+    "field": 0,
+    "component": 4,
+    "diagnostic": "spatial DIR frame preparation panicked"
+  }
+}

@@ -110,3 +110,21 @@ mod frame_bridge;
     reason = "fixed diffusion transport admits foreign records and contains whole-operation unwind"
 )]
 mod diffusion_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "fixed DIR frame transport admits foreign storage and contains whole-operation unwind"
+)]
+mod dir_frame_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the temporary reflected-boundary edge admits foreign records and consumes scoped host owners once"
+)]
+mod dir_boundary_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the grain frame edge admits synchronous foreign storage and contains whole-operation unwind"
+)]
+mod grain_frame_bridge;

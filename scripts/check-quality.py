@@ -84,6 +84,9 @@ class SourcePolicy:
     owned_prefixes: tuple[str, ...]
     excluded_prefixes: tuple[str, ...]
     generated_paths: frozenset[str]
+    verifier_independent_prefixes: tuple[str, ...]
+    verifier_independent_extensions: frozenset[str]
+    verifier_required_paths: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -273,6 +276,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--rust-test-filters", nargs="+", help="existing package test filters for development")
     parser.add_argument("--development", action="store_true", help="development checks only; never publishes qualification probes")
     parser.add_argument("--preset", required=True, choices=sorted(PRESET_TARGETS))
+    parser.add_argument("--verifier-scope-output", type=Path,
+                        help="report-only verifier classification; no build or analysis")
+    parser.add_argument("--candidate", default="HEAD", help="commit classified by --verifier-scope-output")
     parser.add_argument("--cargo", help="Cargo executable override")
     parser.add_argument("--rustc", help="rustc executable override")
     parser.add_argument("--clang-format", dest="clang_format")
@@ -365,6 +371,9 @@ def load_policy(root: Path) -> SourcePolicy:
         "qualityOwnedPrefixes",
         "qualityExcludedPrefixes",
         "generatedPaths",
+        "verifierIndependentPrefixes",
+        "verifierIndependentExtensions",
+        "verifierRequiredPaths",
     )
     if any(not isinstance(raw.get(key), list) for key in required):
         raise QualityError(f"source policy is missing a required list: {path}")
@@ -375,7 +384,40 @@ def load_policy(root: Path) -> SourcePolicy:
         owned_prefixes=tuple(raw["qualityOwnedPrefixes"]),
         excluded_prefixes=tuple(raw["qualityExcludedPrefixes"]),
         generated_paths=frozenset(raw["generatedPaths"]),
+        verifier_independent_prefixes=tuple(raw["verifierIndependentPrefixes"]),
+        verifier_independent_extensions=frozenset(raw["verifierIndependentExtensions"]),
+        verifier_required_paths=frozenset(raw["verifierRequiredPaths"]),
     )
+
+
+def verifier_scope(root: Path, base: str | None, candidate: str, policy: SourcePolicy) -> dict:
+    """Classify cumulative committed scope. Uncertainty always requires integration."""
+    head = run_git(root, ["rev-parse", "--verify", candidate + "^{commit}"]).decode().strip()
+    report = {"candidate": head, "mode": "report-only", "complete": True,
+              "required": True, "base": None, "reasons": []}
+    try:
+        if not base:
+            raise QualityError("missing base; complete integration required")
+        ancestor = run_git(root, ["merge-base", base, head]).decode().strip()
+        report["base"] = ancestor
+        payload = run_git(root, ["diff", "--name-status", "-z", "--find-renames", ancestor, head, "--"])
+        paths, uncertain = parse_name_status(payload)
+        # Renames/deletions and every status other than modification stay broad.
+        statuses = run_git(root, ["diff", "--name-only", "-z", "--diff-filter=ACDRTUXB", ancestor, head, "--"])
+        reasons = list(uncertain)
+        reasons.extend("non-modification: " + path.decode("utf-8", errors="strict")
+                       for path in statuses.split(b"\0") if path)
+        for name in paths:
+            path = normalize_path(root, name)
+            independent = (path.startswith(policy.verifier_independent_prefixes)
+                           and PurePosixPath(path).suffix in policy.verifier_independent_extensions
+                           and path not in policy.generated_paths | policy.verifier_required_paths)
+            if not independent:
+                reasons.append("verifier dependency or unknown input: " + path)
+        report.update(required=bool(reasons), reasons=sorted(set(reasons)))
+    except (QualityError, UnicodeError) as error:
+        report["reasons"] = [str(error)]
+    return report
 
 
 def is_owned(path: str, policy: SourcePolicy) -> bool:
@@ -1265,6 +1307,14 @@ def main() -> int:
     sys.dont_write_bytecode = True
     arguments = parse_arguments()
     root = Path(__file__).resolve().parent.parent
+    if arguments.verifier_scope_output:
+        report = verifier_scope(root, arguments.base, arguments.candidate, load_policy(root))
+        arguments.verifier_scope_output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.verifier_scope_output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        print("Integration required by scope." if report["required"] else "Integration not required by scope.")
+        print("Report-only rollout: the complete tooling selection still runs.")
+        return 0
     sys.path.insert(0, str(root / "scripts"))
     from execution import OutputLease
     with OutputLease(root, root / "out/build" / arguments.preset):

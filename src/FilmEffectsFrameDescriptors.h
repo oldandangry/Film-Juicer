@@ -6,6 +6,8 @@
 
 #include "RenderRecipe.h"
 
+struct FjGrainFrameMath;
+
 namespace Spektrafilm {
 
     enum class VisualGrainScratchShape : std::uint8_t {
@@ -85,6 +87,12 @@ namespace Spektrafilm {
     };
 
     VisualGrainScratchShape visual_grain_scratch_shape(const VisualGrainRecipe& recipe) noexcept;
+
+    bool compose_visual_grain_frame_descriptor(
+        const VisualGrainFrameDescriptorInput& input,
+        const FjGrainFrameMath& math,
+        VisualGrainFrameDescriptor& out,
+        std::string& diagnostic);
 
     bool build_visual_grain_frame_descriptor(
         const VisualGrainFrameDescriptorInput& input,

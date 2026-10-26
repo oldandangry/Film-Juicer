@@ -1035,7 +1035,8 @@ Minimum, DIR and film bounds retain their distinct construction positions and
 failure priority. The safe bounds constructor borrows a completed minimum; its
 raw adapter reconstructs it from the unchanged original request. This minimum
 remains independent of Film-Juicer visual particle density. Print-medium bounds
-and spatial-DIR geometry/operators/workspaces retain their native owners.
+retain their owner. Spatial-DIR frame mathematics is described below; workspace
+policy remains native.
 
 Raw prepare/acquire/view results and failure records are independently cleared.
 Success commits `{NONE,3,UINT64_MAX}`. `LOG_EXPOSURE=16` is legal only for DIR
@@ -1089,3 +1090,103 @@ Release OFF probe requires all three exports and executes 507 complete frozen
 value/failure results in addition to all earlier production contracts. Native
 sample/frame projections retire at their last caller by S6.D; native-resource
 component conversion retires with S4.E's final execution-input conversion.
+
+## Spatial DIR mathematical frames
+
+`film_juicer_core::film::dir::frame::Plan` owns physical-to-pixel scaling,
+geometry admission, fixed Gaussian components/operators and f64 YVV recurrence
+coefficients. Its private immutable storage has read-only accessors. An ordinary
+failure carries a separate `FailureTrace`, including completed components and a
+partially written next slot; it cannot be consumed as an executable Plan.
+
+The temporary `fj_legacy_dir_frame_prepare` export copies fixed synchronous
+values through `FjDirFrameInput`, `FjDirFrameMath` and `FjDirFrameFailure`. Each
+independently admitted output clears before argument admission. Raw executable
+Math remains zero on failure; typed ordinary progress belongs only to the failure
+record. Optional diagnostics use bounded NUL-terminated truncation. The complete
+operation, including projection, contains panic. The testing facade shares that
+same checked body; its one-shot fault controls are absent from production.
+
+The closed native `JuicerDir::MathOutcome` binds current pixel/input facts to
+checked results. Both the public builder and fixture facade use one native
+composer, which retains scratch tiers, plane roles/aliases and the existing sole
+final descriptor hash. Native allocation, resources and lifetime are unchanged.
+The zero-weight component target-tier difference in prepared decoding remains
+intentional; its unconsumed representation is not repaired and the carried hash
+is not recomputed. Synthetic active hash-zero characterization does not bypass
+the permanent prepared boundary's existing identity admission.
+
+See the [four-context native characterization](../dir/frame-fixtures/README.md),
+`Ffi.Host.DirFrame`, `Film.Host.DirFrameProducts` and `Ofx.Gpu.DirFrame`.
+The last group observes both actual legacy execution entries before their
+existing failure branches, and uses the existing GPU lock and 180-second limit.
+Both native Release OFF C11 probes execute all 121 mathematical/default/failure
+rows, retaining every earlier production row and artifact/isolation check.
+`SF_TEMP_BRIDGE_DIR_FRAME` retires at its last native model caller by S6.D;
+S4.E integration remains later work. Reflected-YVV boundary construction is
+described below.
+
+## Spatial DIR reflected boundaries
+
+`film::dir::boundary::Boundary` owns both axis products, the immutable combined
+binary64 weights, packed terminal matrices and the existing 100-byte FNV key.
+Private complete construction exposes read-only borrows. It preserves the native
+double-double operation order and uses pinned `libm::fma` only for the original
+explicit fused product residual. Signed size admission covers retained Root/CUDA
+index expressions as well as vector extents and doubled axis periods.
+
+The four temporary `fj_legacy_dir_boundary_{describe,acquire,view,release}` exports
+transport literal `FjDirGaussian` coefficients. Describe derives only the key
+after outer eligibility. The native `JuicerDirBoundary::Boundary` hold is acquired
+after the warm-cache opportunity, outside the resource mutex. Its borrowed view
+survives synchronous staging; native pinned memory owns later asynchronous reads.
+Native context/epoch checks, collisions, device allocation and retirement remain
+in their existing owner. The separate final frame-descriptor hash is unchanged.
+
+Each independently admitted writable peer clears before other admission. Typed
+failures preserve axis order and metadata. A NULL diagnostic is valid; admitted
+zero capacity ignores backing and reports length zero. Positive capacity writes
+at most capacity-1 bytes plus NUL, with length counting only written bytes.
+Truncation changes neither status nor typed metadata. Release consumes a legitimate
+owner exactly once even with malformed diagnostics or contained release panic.
+Fallible vector reservations do not remove the existing infallible Box allocation
+abort limitation.
+
+See [the independent four-profile characterizations](../dir/boundary-fixtures/README.md),
+`Ffi.Host.DirBoundary`, `Film.Host.DirBoundaryProducts` and the existing
+`Dir.Gpu.ExposureCache`. Strict C11 Release OFF probes require all four exports
+and all 171 boundary rows, alongside every older probe and artifact/isolation
+check. `SF_TEMP_BRIDGE_DIR_BOUNDARY` narrows with S4.E execution inputs and retires
+at its last native model caller, no later than S6.D.
+
+## Visual-grain mathematical frame boundary
+
+The safe immutable `film::grain::frame::Plan` owns callback-local temporal
+conversion/seeds, particle/layer mathematics, Gaussian descriptors and energy
+normalization. Construction completes before any result is transported; it
+retains no curve borrow. The existing static visual-grain Recipe stays policy
+authority. Native code retains scratch-shape selection, the sole final descriptor
+hash and all CUDA allocation/context/epoch/upload/publication/retirement policy.
+Permanent prepared ABI and recipe/chroma/amplitude/preset/layer-axis fields stay
+unchanged.
+
+`FjGrainFrameInput`, `FjGrainFrameMath` and `FjGrainFrameFailure` form the checked
+synchronous temporary edge. Layer spans are admitted only when their ordered
+reduction is reached. An inactive request ignores scalar/tag/span facts after
+required native recipe/film guards. Every independently admitted raw output clears
+before other admission. Failure carries no partial executable mathematics; native
+failed output returns its documented default. Optional diagnostics report written
+bytes, with zero-capacity backing ignored and positive capacity reserving NUL.
+The complete operation contains unwind. Test-only one-shot faults and observer
+hooks stay outside ordinary objects and testing-OFF artifacts.
+
+Legacy and testing facade entries share the checked body and native composer.
+See [the independent fixtures](../grain/frame-fixtures/README.md),
+`Ffi.Host.GrainFrame`, `Film.Host.GrainFrameProducts` and `Ofx.Gpu.GrainFrame`.
+The C11 reader checks all fixed field/layout/signature facts and complete results.
+R1 requires C layer0/count failure before M total0 after all nine reductions;
+its cleared output, reason2/field12/layer0/channel0 and diagnostic are exact.
+Both Release OFF probes retain all 188 grain rows plus every predecessor result
+and archive/module/PDB/fault/facade/export isolation check.
+`SF_TEMP_BRIDGE_GRAIN_FRAME` narrows at S4.E and retires at its last native model
+caller no later than S6.D. Independent review and phase acceptance are separate.

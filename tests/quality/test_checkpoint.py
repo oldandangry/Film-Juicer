@@ -2,11 +2,13 @@
 from __future__ import annotations
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+import textwrap
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -18,10 +20,13 @@ import qualification
 from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 
 ROOT = Path(__file__).resolve().parents[2]
+SUITE_STARTED = time.monotonic()
 
 
 class CheckpointTests(unittest.TestCase):
     def run(self, result=None):
+        started = time.monotonic()
+        print(f"Checkpoint begin {self.id()} suite_seconds={started - SUITE_STARTED:.3f}", file=sys.stderr, flush=True)
         try:
             return super().run(result)
         except KeyboardInterrupt:
@@ -33,6 +38,9 @@ class CheckpointTests(unittest.TestCase):
                 self.lease.blocked = True
             self.doCleanups()
             raise
+        finally:
+            print(f"Checkpoint end {self.id()} case_seconds={time.monotonic() - started:.3f} "
+                  f"suite_seconds={time.monotonic() - SUITE_STARTED:.3f}", file=sys.stderr, flush=True)
 
     def setUp(self):
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
@@ -618,6 +626,11 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(original.read_bytes(), original_receipt)
 
     def assert_configure_copy_reprepared(self, configure_commands, *, module=None, bundled_module=None):
+        started = time.monotonic()
+        def progress(stage):
+            print(f"Checkpoint {self._testMethodName} stage={stage} seconds={time.monotonic() - started:.3f}",
+                  file=sys.stderr, flush=True)
+        progress("runtime-project")
         fixture, _ = self.runtime_project()
         cmake = self.root / "CMakeLists.txt"
         if module:
@@ -631,8 +644,10 @@ class CheckpointTests(unittest.TestCase):
         if module or bundled_module:
             from verify import source_snapshot
             self.assertFalse(qualification.has_opaque_configure_commands(self.root / name for name in source_snapshot(self.root)))
+        progress("first-preparation")
         first = qualification.prepare_checkpoint(self.campaign("variable-copy-first"), self.build,
             self.state_path, self.state, self.environment, timeout=60)
+        progress("first-preparation-complete")
         producer = Path(first["receipt"])
         original_receipt = producer.read_bytes()
         if bundled_module:
@@ -651,11 +666,13 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(json.loads(staged.read_text())["value"], 1)
         self.assertIn(str(staged), first["payloads"])
         (producer.parent / "original-staged.json").write_bytes(staged.read_bytes())
+        progress("unchanged-admission")
         with patch.object(qualification, "prepare_build", side_effect=AssertionError("unchanged opaque scope redispatched")), \
                 patch.object(Campaign, "run", side_effect=AssertionError("unchanged opaque scope executed")):
             unchanged = qualification.prepare_checkpoint(self.campaign("variable-copy-unchanged"), self.build,
                 self.state_path, self.state, self.environment, timeout=60)
         self.assertEqual(unchanged["reused_from"], first["receipt"])
+        progress("unchanged-admission-complete")
         fixture.write_text('{"value": 2}\n')
         commands = []
         run = Campaign.run
@@ -664,9 +681,11 @@ class CheckpointTests(unittest.TestCase):
             commands.append(list(command))
             return run(campaign, stage, command, **kwargs)
 
+        progress("changed-preparation")
         with patch.object(Campaign, "run", new=observe):
             second = qualification.prepare_checkpoint(self.campaign("variable-copy-changed"), self.build,
                 self.state_path, self.state, self.environment, timeout=60)
+        progress("changed-preparation-complete")
         write_json(self.build / "variable-copy-control.json", {
             "first_receipt": first["receipt"], "second_receipt": second["receipt"],
             "commands": commands, "runtime": json.loads(fixture.read_text()),
@@ -887,6 +906,10 @@ class CheckpointTests(unittest.TestCase):
 
     def production_fixture(self):
         """Native tiny probes exercise retained proof, not product mathematics."""
+        for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py"):
+            target = self.root / "tests/ffi" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((ROOT / "tests/ffi" / name).read_bytes())
         directory = self.root / "tests/film/reference-fixtures"
         directory.mkdir(parents=True, exist_ok=True)
         payload = directory / "mini.json"
@@ -961,6 +984,39 @@ class CheckpointTests(unittest.TestCase):
             "sha256": {name: digest(path) for name, path in diffusion_files.items()},
             "production_cases": [{"case": str(i), "envelope": [0, 0, 0], "failure": [0, 0, 0],
                                   "output": [0] * 35 + [i], "diagnostic": ""} for i in range(507)]})
+        dir_directory = self.root / "tests/dir/frame-fixtures"
+        dir_directory.mkdir(parents=True, exist_ok=True)
+        dir_files = {name: dir_directory / name for name in ("native.json", "checked.json", "inputs.json")}
+        for name, path in dir_files.items():
+            write_json(path, {"scope": "DIR retained full-field/trace protocol only", "file": name})
+        write_json(dir_directory / "manifest.json", {
+            "presets": {preset: {"native": "logical.json"} for preset in qualification.PRESETS},
+            "payloads": {"logical.json": "native.json"}, "checked": "checked.json",
+            "sha256": {name: digest(path) for name, path in dir_files.items()},
+            "production_cases": [{"case": str(i), "envelope": [0, 0, 0], "failure": [0, 0, 4] + [0] * 79,
+                                  "output": [0] * 78 + [i], "diagnostic": ""} for i in range(121)]})
+        grain_directory = self.root / "tests/grain/frame-fixtures"
+        grain_directory.mkdir(parents=True, exist_ok=True)
+        grain_files = {name: grain_directory / name for name in ("native.json", "checked.json", "inputs.json")}
+        for name, path in grain_files.items():
+            write_json(path, {"scope": "grain frame retained full-value/metadata protocol only", "file": name})
+        write_json(grain_directory / "manifest.json", {
+            "presets": {preset: {"native": "native.json"} for preset in qualification.PRESETS},
+            "checked": "checked.json", "sha256": {name: digest(path) for name, path in grain_files.items()},
+            "production_cases": [{"case": case, "envelope": [0, 0, 0], "failure": [0, 0, 3, 3],
+                                  "output": [0] * 114 + [i], "diagnostic": "", "diagnostic_length": 0}
+                                 for i, case in enumerate(qualification.GRAIN_FRAME_CASE_IDS)]})
+        boundary_directory = self.root / "tests/dir/boundary-fixtures"
+        boundary_directory.mkdir(parents=True, exist_ok=True)
+        boundary_files = {name: boundary_directory / name for name in ("native.json", "checked.json", "inputs.json")}
+        for name, path in boundary_files.items():
+            write_json(path, {"scope": "DIR boundary retained full-values protocol only", "file": name})
+        write_json(boundary_directory / "manifest.json", {
+            "presets": {preset: {"native": "native.json"} for preset in qualification.PRESETS},
+            "checked": "checked.json", "sha256": {name: digest(path) for name, path in boundary_files.items()},
+            "production_cases": [{"case": str(i), "envelope": [0, 0, 0], "key": i, "failure": [0, 0, 3, 0, 0, 0, 0],
+                                  "shape": [1, 2, 3, 4, 1, 2], "weights": [i], "terminal": [0] * 17 + [i],
+                                  "diagnostic": "", "diagnostic_length": 0, "owner": True} for i in range(171)]})
         return r'''
 import json, sys, subprocess, hashlib, shutil
 preset=sys.argv[sys.argv.index("--preset")+1]
@@ -991,6 +1047,9 @@ def execute(name, command):
 header=out/'production-film-expected.h'
 header.write_text('#define EXPECTED 10\n')
 consumed={str(header):checksum(header)}
+for name in ('grain_frame_abi_assertions.inc', 'grain_probe_contract.py'):
+    helper=(Path('tests/ffi')/name).resolve()
+    consumed[str(helper)]=checksum(helper)
 reference_manifest=(Path('tests/film/reference-fixtures')/'manifest.json').resolve()
 reference_spec=json.loads(reference_manifest.read_text())
 reference_payload=reference_manifest.parent/reference_spec['presets'][preset]
@@ -1030,6 +1089,27 @@ diffusion_inputs=diffusion_manifest.parent/'inputs.json'
 diffusion_edges_inputs=diffusion_manifest.parent/'edge-inputs.json'
 consumed.update({str(path):checksum(path) for path in (diffusion_manifest,diffusion_payload,diffusion_context,diffusion_checked,diffusion_inputs,diffusion_edges_inputs)})
 diffusion_results=diffusion_spec['production_cases']
+dir_manifest=(Path('tests/dir/frame-fixtures')/'manifest.json').resolve()
+dir_spec=json.loads(dir_manifest.read_text())
+dir_payload=dir_manifest.parent/'native.json'
+dir_checked=dir_manifest.parent/'checked.json'
+dir_inputs=dir_manifest.parent/'inputs.json'
+consumed.update({str(path):checksum(path) for path in (dir_manifest,dir_payload,dir_checked,dir_inputs)})
+dir_results=dir_spec['production_cases']
+grain_manifest=(Path('tests/grain/frame-fixtures')/'manifest.json').resolve()
+grain_spec=json.loads(grain_manifest.read_text())
+grain_payload=grain_manifest.parent/'native.json'
+grain_checked=grain_manifest.parent/'checked.json'
+grain_inputs=grain_manifest.parent/'inputs.json'
+consumed.update({str(path):checksum(path) for path in (grain_manifest,grain_payload,grain_checked,grain_inputs)})
+grain_results=grain_spec['production_cases']
+boundary_manifest=(Path('tests/dir/boundary-fixtures')/'manifest.json').resolve()
+boundary_spec=json.loads(boundary_manifest.read_text())
+boundary_payload=boundary_manifest.parent/'native.json'
+boundary_checked=boundary_manifest.parent/'checked.json'
+boundary_inputs=boundary_manifest.parent/'inputs.json'
+consumed.update({str(path):checksum(path) for path in (boundary_manifest,boundary_payload,boundary_checked,boundary_inputs)})
+boundary_results=boundary_spec['production_cases']
 
 reference_results=[]
 for row in json.loads(reference_payload.read_text())['products']:
@@ -1054,6 +1134,9 @@ probes=[]
 for name in ['film','accepted-output-color']:
     source=out/(name+'.c')
     result_lines = ''.join('puts('+json.dumps('DIFFUSION_FRAME_RESULT '+json.dumps(row))+');' for row in diffusion_results) if name=='film' else ''
+    if name=='film':result_lines += ''.join('puts('+json.dumps('GRAIN_FRAME_RESULT '+json.dumps(row))+');' for row in grain_results)
+    if name=='film':result_lines += ''.join('puts('+json.dumps('DIR_FRAME_RESULT '+json.dumps(row))+');' for row in dir_results)
+    if name=='film':result_lines += ''.join('puts('+json.dumps('DIR_BOUNDARY_RESULT '+json.dumps(row))+');' for row in boundary_results)
     source.write_text('#include "production-film-expected.h"\n#include <stdio.h>\n'
                       'typedef struct Pair {int first; int second;} Pair;\n'
                       '_Static_assert(sizeof(Pair)==8,"ABI");\n'
@@ -1094,6 +1177,15 @@ record.write_text(json.dumps(commands))
     'diffusion_frame_fixture':{'edges_payload':str(diffusion_payload),'edges_context':str(diffusion_context),'edges_input_spec':str(diffusion_edges_inputs),'manifest':str(diffusion_manifest),'payload':str(diffusion_payload),'context':str(diffusion_context),
                               'normative':str(diffusion_checked),'input_spec':str(diffusion_inputs),'logical_preset':preset},
     'diffusion_frame_results':diffusion_results,
+    'dir_frame_fixture':{'manifest':str(dir_manifest),'payload':str(dir_payload),
+                         'normative':str(dir_checked),'input_spec':str(dir_inputs),'logical_preset':preset},
+    'dir_frame_results':dir_results,
+    'grain_frame_fixture':{'manifest':str(grain_manifest),'payload':str(grain_payload),
+                          'normative':str(grain_checked),'input_spec':str(grain_inputs),'logical_preset':preset},
+    'grain_frame_results':grain_results,
+    'dir_boundary_fixture':{'manifest':str(boundary_manifest),'payload':str(boundary_payload),
+                            'normative':str(boundary_checked),'input_spec':str(boundary_inputs),'logical_preset':preset},
+    'dir_boundary_results':boundary_results,
     'gaussian_results':gaussian_results,
     'reference_results':reference_results,
     'commands':{'file':str(record),'sha256':checksum(record)},
@@ -1110,6 +1202,71 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         paths += [self.root / name for name in stage["identity"]["inputs"]
                   if Path(name).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}]
         return {str(path): digest(path) for path in paths}
+
+    def test_retained_grain_helpers_resolve_foreign_paths(self):
+        """Exercise shared-input admission before the independent reference gate."""
+        preset = "windows-clang-release" if os.name == "nt" else "linux-release"
+        build = self.root / "out/build" / preset
+        out = self.directory / "retained"
+        (out / "build").mkdir(parents=True)
+        build.mkdir(parents=True)
+        inputs, copies, probes = {}, {}, []
+        for name, content in (("CMakeCache.txt", b"BUILD_TESTING:BOOL=OFF\n"), ("libjuicer.a", b"archive")):
+            source, retained = build / name, out / "build" / name
+            source.write_bytes(content)
+            retained.write_bytes(content)
+            checksum = digest(source)
+            inputs[source.relative_to(self.root).as_posix()] = checksum
+            copies[str(source)] = {"file": str(retained), "sha256": checksum}
+        for name in ("film", "accepted-output-color"):
+            source, executable = out / (name + ".c"), out / (name + (".exe" if os.name == "nt" else ""))
+            source.write_text("/* retained source identity */\n")
+            executable.write_bytes(b"retained executable identity")
+            probes.append({"name": name, "source": str(source), "source_sha256": digest(source),
+                           "executable": str(executable), "linked_sha256": digest(executable),
+                           "before_run_sha256": digest(executable), "after_run_sha256": digest(executable)})
+        helpers = [self.root / "tests/ffi" / name for name in
+                   ("grain_frame_abi_assertions.inc", "grain_probe_contract.py")]
+        for helper in helpers:
+            helper.parent.mkdir(parents=True, exist_ok=True)
+            helper.write_bytes((ROOT / helper.relative_to(self.root)).read_bytes())
+            inputs[helper.relative_to(self.root).as_posix()] = digest(helper)
+        reference = self.root / "tests/film/reference-fixtures/manifest.json"
+        reference.parent.mkdir(parents=True)
+        write_json(reference, {"presets": {preset: "native.json"}})
+        manifest = out / "production.json"
+
+        for prefix, separator in (("Z:\\Film-Juicer\\", "\\"), ("/foreign/Film-Juicer/", "/")):
+            def foreign(path):
+                return prefix + path.relative_to(self.root).as_posix().replace("/", separator)
+            def resolve(name):
+                if name.startswith(prefix):
+                    return self.root / name[len(prefix):].replace(separator, "/")
+                return Path(name)
+            document = {"preset": preset, "build_testing": "OFF", "build_inputs": copies,
+                        "probes": probes, "consumed_inputs": {foreign(p): digest(p) for p in helpers}}
+            write_json(manifest, document)
+            # This intentionally incomplete tiny record must reach the next gate;
+            # it does not claim real archive execution or full payload admission.
+            with self.assertRaisesRegex(ValueError, "film-reference fixture membership"):
+                qualification.production_payloads(manifest, digest(manifest), root=self.root, inputs=inputs, resolve=resolve)
+            for helper in helpers:
+                for mode in ("missing", "hash", "content"):
+                    with self.subTest(prefix=prefix, helper=helper.name, mode=mode):
+                        damaged = json.loads(json.dumps(document))
+                        original = helper.read_bytes()
+                        try:
+                            if mode == "missing":
+                                del damaged["consumed_inputs"][foreign(helper)]
+                            elif mode == "hash":
+                                damaged["consumed_inputs"][foreign(helper)] = "0" * 64
+                            else:
+                                helper.write_bytes(original + b"\n")
+                            write_json(manifest, damaged)
+                            with self.assertRaisesRegex(ValueError, "grain C11 assertion input identity changed"):
+                                qualification.production_payloads(manifest, digest(manifest), root=self.root, inputs=inputs, resolve=resolve)
+                        finally:
+                            helper.write_bytes(original)
 
     def production_mutations(self, stage):
         manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
@@ -1356,9 +1513,189 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertEqual(len(document["frame_results"]), 69)
         self.assertEqual(len(document["halation_frame_results"]), 86)
         self.assertEqual(len(document["diffusion_frame_results"]), 507)
+        self.assertEqual(len(document["dir_frame_results"]), 121)
+        self.assertEqual(len(document["grain_frame_results"]), 188)
+        self.assertEqual(len(document["dir_boundary_results"]), 171)
         stdout = manifest.parent / "film-values.stdout"
         commands_path = manifest.parent / "commands.json"
         original_stdout, original_commands = stdout.read_bytes(), commands_path.read_bytes()
+        try:
+            line = next(line for line in original_stdout.decode().splitlines() if line.startswith("DIR_FRAME_RESULT "))
+            original_row = json.loads(line.removeprefix("DIR_FRAME_RESULT "))
+            changed_row = json.loads(json.dumps(original_row))
+            changed_row["failure"][-1] ^= 1
+            changed_stdout = original_stdout.replace(json.dumps(original_row).encode(), json.dumps(changed_row).encode(), 1)
+            self.assertNotEqual(changed_stdout, original_stdout)
+            stdout.write_bytes(changed_stdout)
+            commands = json.loads(original_commands)
+            next(row for row in commands if row["name"] == "film-values")["stdout_sha256"] = digest(stdout)
+            write_json(commands_path, commands)
+            damaged = json.loads(json.dumps(document))
+            damaged["commands"]["sha256"] = digest(commands_path)
+            damaged["command_outputs"][str(stdout)] = digest(stdout)
+            damaged_path = manifest.with_name("dir-executed-trace.json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "DIR frame executed stdout"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        finally:
+            stdout.write_bytes(original_stdout)
+            commands_path.write_bytes(original_commands)
+
+        try:
+            line = next(line for line in original_stdout.decode().splitlines() if line.startswith("DIR_BOUNDARY_RESULT "))
+            original_row = json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
+            changed_row = json.loads(json.dumps(original_row))
+            changed_row["weights"][-1] ^= 1
+            changed_stdout = original_stdout.replace(json.dumps(original_row).encode(), json.dumps(changed_row).encode(), 1)
+            self.assertNotEqual(changed_stdout, original_stdout)
+            stdout.write_bytes(changed_stdout)
+            commands = json.loads(original_commands)
+            next(row for row in commands if row["name"] == "film-values")["stdout_sha256"] = digest(stdout)
+            write_json(commands_path, commands)
+            damaged = json.loads(json.dumps(document))
+            damaged["commands"]["sha256"] = digest(commands_path)
+            damaged["command_outputs"][str(stdout)] = digest(stdout)
+            damaged_path = manifest.with_name("dir-boundary-executed-word.json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "DIR boundary executed stdout"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        finally:
+            stdout.write_bytes(original_stdout)
+            commands_path.write_bytes(original_commands)
+
+        for mode in ("missing", "duplicate", "word", "key", "envelope", "failure", "terminal", "shape", "diagnostic_length", "owner"):
+            damaged = json.loads(json.dumps(document))
+            rows = damaged["dir_boundary_results"]
+            if mode == "missing":
+                rows.pop()
+            elif mode == "duplicate":
+                rows[-1] = rows[0]
+            elif mode == "word":
+                rows[0]["weights"][-1] ^= 1
+            elif mode == "key":
+                rows[0]["key"] ^= 1
+            elif mode == "envelope":
+                rows[0]["envelope"][0] = 3
+            elif mode == "failure":
+                rows[0]["failure"][2] = 0
+            elif mode == "terminal":
+                rows[0]["terminal"][-1] ^= 1
+            elif mode == "shape":
+                rows[0]["shape"][0] ^= 1
+            elif mode == "diagnostic_length":
+                rows[0]["diagnostic_length"] += 1
+            else:
+                rows[0]["owner"] = False
+            damaged_path = manifest.with_name("dir-boundary-" + mode + ".json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "DIR boundary"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+
+        for mode in ("missing", "duplicate", "case", "word", "envelope", "failure", "diagnostic", "length"):
+            damaged = json.loads(json.dumps(document))
+            rows = damaged["grain_frame_results"]
+            if mode == "missing":
+                rows.pop()
+            elif mode == "duplicate":
+                rows[-1] = rows[0]
+            elif mode == "case":
+                rows[0]["case"] = "unknown-grain-case"
+            elif mode == "word":
+                rows[0]["output"][-1] ^= 1
+            elif mode == "envelope":
+                rows[0]["envelope"][0] = 3
+            elif mode == "failure":
+                rows[0]["failure"][2] = 0
+            elif mode == "diagnostic":
+                rows[0]["diagnostic"] = "wrong"
+            else:
+                rows[0]["diagnostic_length"] += 1
+            damaged_path = manifest.with_name("grain-" + mode + ".json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "grain frame"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py"):
+            target = self.root / "tests/ffi" / name
+            original = target.read_bytes()
+            try:
+                target.write_bytes(original + b"\n")
+                with self.assertRaisesRegex(ValueError, "grain C11 assertion input identity changed"):
+                    qualification.production_payloads(manifest, digest(manifest), root=self.root, inputs=stage["identity"]["inputs"])
+            finally:
+                target.write_bytes(original)
+
+        # Even an aligned, rehashed expected/result substitution cannot redefine
+        # the independently reviewed complete case set.
+        target = Path(document["grain_frame_fixture"]["manifest"])
+        original = target.read_bytes()
+        try:
+            spec = json.loads(original)
+            spec["production_cases"][0]["case"] = "unknown-grain-case"
+            write_json(target, spec)
+            damaged = json.loads(json.dumps(document))
+            damaged["grain_frame_results"][0]["case"] = "unknown-grain-case"
+            damaged["consumed_inputs"][str(target)] = digest(target)
+            inputs = dict(stage["identity"]["inputs"])
+            inputs[target.relative_to(self.root).as_posix()] = digest(target)
+            damaged_path = manifest.with_name("grain-aligned-case-substitution.json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "grain frame full values"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=inputs)
+        finally:
+            target.write_bytes(original)
+        for member in ("manifest", "payload", "normative", "input_spec"):
+            target = Path(document["grain_frame_fixture"][member])
+            original = target.read_bytes()
+            try:
+                target.write_bytes(original + b" ")
+                with self.assertRaisesRegex(ValueError, "grain frame consumed fixture"):
+                    qualification.production_payloads(manifest, digest(manifest), root=self.root, inputs=stage["identity"]["inputs"])
+            finally:
+                target.write_bytes(original)
+        try:
+            line = next(line for line in original_stdout.decode().splitlines() if line.startswith("GRAIN_FRAME_RESULT "))
+            original_row = json.loads(line.removeprefix("GRAIN_FRAME_RESULT "))
+            changed_row = json.loads(json.dumps(original_row))
+            changed_row["output"][-1] ^= 1
+            changed_stdout = original_stdout.replace(json.dumps(original_row).encode(), json.dumps(changed_row).encode(), 1)
+            self.assertNotEqual(changed_stdout, original_stdout)
+            stdout.write_bytes(changed_stdout)
+            commands = json.loads(original_commands)
+            next(row for row in commands if row["name"] == "film-values")["stdout_sha256"] = digest(stdout)
+            write_json(commands_path, commands)
+            damaged = json.loads(json.dumps(document))
+            damaged["commands"]["sha256"] = digest(commands_path)
+            damaged["command_outputs"][str(stdout)] = digest(stdout)
+            damaged_path = manifest.with_name("grain-executed-values.json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "grain frame executed stdout"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        finally:
+            stdout.write_bytes(original_stdout)
+            commands_path.write_bytes(original_commands)
+
+        for mode in ("missing", "duplicate", "word", "envelope", "failure", "trace", "diagnostic"):
+            damaged = json.loads(json.dumps(document))
+            rows = damaged["dir_frame_results"]
+            if mode == "missing":
+                rows.pop()
+            elif mode == "duplicate":
+                rows[-1] = rows[0]
+            elif mode == "word":
+                rows[0]["output"][-1] ^= 1
+            elif mode == "envelope":
+                rows[0]["envelope"][0] = 3
+            elif mode == "failure":
+                rows[0]["failure"][2] = 1
+            elif mode == "trace":
+                rows[0]["failure"][-1] ^= 1
+            else:
+                rows[0]["diagnostic"] = "wrong"
+            damaged_path = manifest.with_name("dir-" + mode + ".json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "DIR frame"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+
         try:
             line = next(line for line in original_stdout.decode().splitlines() if line.startswith("DIFFUSION_FRAME_RESULT "))
             original_row = json.loads(line.removeprefix("DIFFUSION_FRAME_RESULT "))
@@ -1474,10 +1811,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             write_json(damaged_path, damaged)
             with self.assertRaisesRegex(ValueError, "post-effects value/failure"):
                 qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
-        for field in ("diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture", "gaussian_results", "gaussian_fixture"):
+        for field in ("grain_frame_results", "grain_frame_fixture", "dir_boundary_results", "dir_boundary_fixture", "dir_frame_results", "dir_frame_fixture", "diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture", "gaussian_results", "gaussian_fixture"):
             missing = manifest.with_name("without-" + field + ".json")
             write_json(missing, {key: value for key, value in document.items() if key != field})
-            expected = "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "Gaussian" if field.startswith("gaussian") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
+            expected = "grain frame" if field.startswith("grain_frame") else "DIR boundary" if field.startswith("dir_boundary") else "DIR frame" if field.startswith("dir_frame") else "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "Gaussian" if field.startswith("gaussian") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
             with self.assertRaisesRegex(ValueError, expected):
                 qualification.production_payloads(missing, digest(missing), root=self.root,
                     inputs=stage["identity"]["inputs"])
@@ -1578,6 +1915,11 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
+        for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py"):
+            relative = "tests/ffi/" + name
+            content = (ROOT / relative).read_text()
+            (self.root / relative).write_text(content)
+            files[relative] = content
         compiler = ({"CMAKE_C_COMPILER": "clang-cl.exe", "CMAKE_CXX_COMPILER": "clang-cl.exe", "CMAKE_LINKER_TYPE": "LLD",
                      "CMAKE_C_FLAGS": "/Brepro", "CMAKE_CXX_FLAGS": "/Brepro"}
                     if os.name == "nt" else {"CMAKE_C_COMPILER": "/usr/bin/gcc-13", "CMAKE_CXX_COMPILER": "/usr/bin/g++-13"})
@@ -1886,11 +2228,12 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             self.assertEqual(self.state["prepare"]["status"], "failed")
             self.assertEqual(first["payloads"], self.state["prepare"]["payloads"])
 
-    def test_preparation_repair_rejects_unproved_process_receipt(self):
+    def test_preparation_receipt_and_owner_permutations_preserve_one_baseline(self):
         first = self.prepare_compiled_project()
         record = json.loads(Path(first["receipt"]).read_text())
         process = Path(record["process_tree"]["receipt"])
-        document = json.loads(process.read_text())
+        original_process = process.read_bytes()
+        document = json.loads(original_process)
         document["drained"] = False
         process.write_text(json.dumps(document))
         with patch.object(Campaign, "run", side_effect=AssertionError("dispatched with unproved drainage")):
@@ -1900,9 +2243,8 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                         self.state, dict(os.environ), timeout=60, repeat_reason="diagnosed process proof failure")
                 self.assertEqual(self.state["prepare"]["status"], "failed")
                 self.assertEqual(first["payloads"], self.state["prepare"]["payloads"])
+        process.write_bytes(original_process)
 
-    def test_preparation_identity_requires_exact_artifacts_and_current_producer(self):
-        first = self.prepare_compiled_project()
         receipt = Path(first["receipt"]).read_bytes()
         expected = qualification.preparation_identity(self.build, first)
         candidate = {**first, "payloads": dict(first["payloads"])}
@@ -1923,6 +2265,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         baseline.write_text(json.dumps(changed))
         with self.assertRaisesRegex(ValueError, "latest completed preparation"):
             qualification.preparation_identity(self.build, first)
+        baseline.write_bytes(original)
         self.assertEqual(Path(first["receipt"]).read_bytes(), receipt)
 
     def test_restored_time_edit_exposes_stale_behavior_before_preparation(self):
@@ -2102,10 +2445,17 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def test_production_inputs_do_not_require_test_registration(self):
         self.native_project()
+        helpers = ("tests/ffi/grain_frame_abi_assertions.inc", "tests/ffi/grain_probe_contract.py")
+        for name in helpers:
+            target = self.root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((ROOT / name).read_bytes())
         self.assertFalse((self.build / "CTestTestfile.cmake").exists())
         inputs = qualification.checkpoint_inputs(self.root, self.build, "production")
         self.assertIn("CMakeLists.txt", inputs)
         self.assertIn((self.build / "CMakeCache.txt").relative_to(self.root).as_posix(), inputs)
+        for name in helpers:
+            self.assertIn(name, inputs)
 
     @unittest.skipUnless(os.name == "nt", "Windows production PDB")
     def test_production_pdb_changes_and_missing_repair_cannot_reuse_old_pass(self):
@@ -2630,36 +2980,115 @@ class MembershipTests(unittest.TestCase):
             report.write_text('<testsuite><testcase name="required" status="run"/></testsuite>')
             qualification.validate_ctest_report(report, ["required"])
 
-    def test_both_native_ci_callers_use_registered_membership_without_publisher(self):
-        for family in ("linux", "windows-clang"):
-            path = ROOT / ".github/workflows" / ("tests-linux-host.yml" if family == "linux" else "tests-windows-host.yml")
-            text = path.read_text()
-            self.assertNotIn("--probe-manifest", text)
-            self.assertNotIn("JUICER_RUST_PROBE_MANIFEST", text)
-            self.assertNotIn("probe_evidence.py", text)
-            self.assertIn('product|boundary|tooling', text)
-            self.assertIn('product|boundary" -LE gpu', text)
-            self.assertIn(f"out/validation/{family}-release/quality/**/*.log", text)
-        self.assertIn('product|boundary|tooling|corpus', (ROOT / ".github/workflows/tests-linux-host.yml").read_text())
+    def ci_jobs(self, native):
+        text = (ROOT / f".github/workflows/tests-{native}-host.yml").read_text()
+        body = text.split("\njobs:\n", 1)[1]
+        starts = list(re.finditer(r"^  ([a-z][a-z0-9-]*):$", body, re.M))
+        jobs = {match[1]: body[match.end():starts[index + 1].start() if index + 1 < len(starts) else len(body)]
+                for index, match in enumerate(starts)}
+        return text, jobs
 
-    def test_both_native_ci_callers_run_matching_debug_and_release_quality(self):
-        for family in ("linux", "windows-clang"):
-            with self.subTest(family=family):
-                path = ROOT / ".github/workflows" / ("tests-linux-host.yml" if family == "linux" else "tests-windows-host.yml")
-                text = path.read_text().replace("\\\n", " ").replace("`\n", " ")
-                lines = [" ".join(line.split()) for line in text.splitlines()]
-                commands = [line for line in lines if line.startswith("python -u scripts/check-quality.py ")]
-                self.assertEqual(len(commands), 2)
-                debug, release = commands
-                self.assertIn("--base ", debug)
-                self.assertIn(f"--preset {family}-debug", debug)
-                self.assertNotIn("--files", debug)
-                self.assertEqual(release,
-                                 f"python -u scripts/check-quality.py --files Cargo.toml --preset {family}-release --jobs 2")
-                for profile, command in (("debug", debug), ("release", release)):
-                    build = f"cmake --build --preset {family}-{profile}"
-                    self.assertIn(build, lines)
-                    self.assertLess(lines.index(build), lines.index(command))
+    def test_native_ci_preserves_independent_product_and_tooling_coverage(self):
+        for native, family in (("linux", "linux"), ("windows", "windows-clang")):
+            text, jobs = self.ci_jobs(native)
+            children = {f"{native}-{lane}" for lane in ("product-debug", "product-release", "analysis", "tooling")}
+            self.assertEqual(set(jobs), children | {f"{native}-debug-host"})
+            self.assertIn("cancel-in-progress: true", text)
+            for trigger in ("workflow_dispatch:", "pull_request:", "push:"):
+                self.assertIn(trigger, text)
+            self.assertNotRegex(text, re.compile(r"^    paths(?:-ignore)?:", re.M))
+            for name in children:
+                self.assertNotRegex(jobs[name], re.compile(r"^    (?:needs|if|strategy):", re.M))
+                self.assertIn("fetch-depth: 0", jobs[name])
+                self.assertIn("tests/ctest/control_artifacts.py --preset", jobs[name])
+                self.assertIn("include-hidden-files: true", jobs[name])
+            for profile in ("debug", "release"):
+                block = jobs[f"{native}-product-{profile}"]
+                preset = f"{family}-{profile}"
+                self.assertRegex(block, re.compile(rf"^          cmake --build --preset {preset}$", re.M))
+                labels = "product|boundary|corpus" if (native, profile) == ("linux", "debug") else "product|boundary"
+                selections = re.findall(rf'ctest --preset {preset}(?: -N)? -L "([^"\n]+)" -LE gpu', block)
+                self.assertEqual(selections, [labels, labels])
+                self.assertIn("--no-tests=error", block)
+                self.assertIn(f"out/validation/{preset}/quality/rust-naming/**", block)
+                self.assertIn(f"out/validation/{preset}/quality/rust-boundaries/**", block)
+                if native == "linux":
+                    # NativeBoundary inspects real ordinary objects in both product lanes.
+                    self.assertIn("llvm-toolchain-noble-22 main", block)
+                    self.assertRegex(block, r"sudo apt-get install[^\n]*\bllvm-22\b")
+                    self.assertIn("llvm-nm-22 --version", block)
+                if native == "windows":
+                    self.assertIn(f"out/build/{preset}/juicer.ofx", block)
+                    for operation in ("NativeLibrary]::Load", "TryGetExport", "OfxGetNumberOfPlugins", "OfxGetPlugin", "NativeLibrary]::Free"):
+                        self.assertIn(operation, block)
+            tooling = jobs[f"{native}-tooling"]
+            self.assertIn(f"cmake -S tests/tooling -B out/build/tooling-{native}", tooling)
+            self.assertIn(f"ctest --test-dir out/build/tooling-{native} -L tooling", tooling)
+            self.assertIn("--no-tests=error", tooling)
+            self.assertIn(f"out/validation/{family}-debug", tooling)
+            self.assertNotIn("Install CUDA", tooling)
+            self.assertNotIn("cmake --preset", tooling)
+            self.assertIn("Report cumulative verifier scope (skips disabled)", tooling)
+            self.assertIn("github.event.pull_request.base.sha || github.event.before", tooling)
+            self.assertIn("SCOPE_CANDIDATE: ${{ github.sha }}", tooling)
+            self.assertIn("--verifier-scope-output", tooling)
+            self.assertIn("subprocess.run(command, check=True)", tooling)
+            self.assertIn("verifier-scope.json", tooling)
+            for obsolete in ("--probe-manifest", "JUICER_RUST_PROBE_MANIFEST", "probe_evidence.py"):
+                self.assertNotIn(obsolete, text)
+
+    def test_native_ci_analysis_owns_cumulative_debug_and_release_quality(self):
+        for native, family in (("linux", "linux"), ("windows", "windows-clang")):
+            _, jobs = self.ci_jobs(native)
+            block = jobs[f"{native}-analysis"]
+            self.assertIn(f"cmake --build --preset {family}-debug", block)
+            self.assertIn(f"cmake --preset {family}-release -DBUILD_TESTING=ON", block)
+            self.assertIn(f"cmake --build --preset {family}-release --target juicer_rust_build", block)
+            self.assertIn("github.event.pull_request.base.sha", block)
+            self.assertIn("github.event.before", block)
+            self.assertIn("git cat-file -e", block)
+            self.assertNotIn("HEAD^", block)
+            for selection in ("--base", "--all-owned"):
+                self.assertRegex(block, rf"scripts/check-quality.py {selection}[^\n]*--preset {family}-debug --jobs 2")
+            self.assertIn(f"scripts/check-quality.py --files Cargo.toml --preset {family}-release --jobs 2", block)
+            for profile in ("debug", "release"):
+                self.assertIn(f"out/validation/{family}-{profile}/quality/**/*.log", block)
+                self.assertIn(f"out/build/{family}-{profile}/compile_commands.json", block)
+
+    def test_required_ci_aggregates_reject_every_non_success_and_missing_child(self):
+        for native, display in (("linux", "Linux"), ("windows", "Windows")):
+            _, jobs = self.ci_jobs(native)
+            aggregate = jobs[f"{native}-debug-host"]
+            expected = {f"{native}-{lane}" for lane in ("product-debug", "product-release", "analysis", "tooling")}
+            self.assertIn(f"name: {display} Debug host and Python checks", aggregate)
+            self.assertIn("    if: always()", aggregate)
+            needs = set(re.findall(r"^      - ([a-z][a-z0-9-]*)$", aggregate, re.M))
+            self.assertEqual(needs, expected)
+            self.assertIn("REQUIRED_RESULTS: ${{ toJSON(needs) }}", aggregate)
+            self.assertIn("shell: python", aggregate)
+            # Execute the actual inline gate, not a separately implemented truth table.
+            code = textwrap.dedent(aggregate.split("        run: |\n", 1)[1])
+            success = {name: {"result": "success"} for name in expected}
+            def run(document):
+                return subprocess.run([sys.executable, "-c", code],
+                    env={**os.environ, "REQUIRED_RESULTS": json.dumps(document)},
+                    capture_output=True, text=True, timeout=10).returncode
+            self.assertEqual(run(success), 0)
+            # Report-only decisions never authorize a skipped lane, even when
+            # the complete same-candidate classification says it is unnecessary.
+            for decision in ({"complete": True, "required": False, "candidate": "current"},
+                             {"complete": True, "required": True, "candidate": "current"},
+                             {"complete": False}, {}, None):
+                tooling = {"result": "skipped", "outputs": {"classification": decision}}
+                self.assertNotEqual(run({**success, f"{native}-tooling": tooling}), 0)
+            for name in sorted(expected):
+                for status in ("failure", "cancelled", "timed_out", "skipped", "", None):
+                    with self.subTest(native=native, child=name, status=status):
+                        self.assertNotEqual(run({**success, name: {"result": status}}), 0)
+                self.assertNotEqual(run({key: value for key, value in success.items() if key != name}), 0)
+                self.assertNotEqual(run({**success, name: {}}), 0)
+            for malformed in ({}, {**success, "unexpected-child": {"result": "success"}}, [], None):
+                self.assertNotEqual(run(malformed), 0)
 
     def test_malformed_checkpoint_selection_and_empty_collection_schedule_no_work(self):
         import verify

@@ -1,5 +1,7 @@
 //! Film-Juicer visual grain from captured resolved controls, borrowing completed development.
 
+pub mod frame;
+
 use crate::hash;
 use crate::profile::Polarity;
 use super::Development;

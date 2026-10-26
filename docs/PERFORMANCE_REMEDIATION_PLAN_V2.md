@@ -90,10 +90,17 @@ existing owning test/capture entry point. If a maintained operation is missing,
 identify that one capability and change its owner when separately authorized.
 A short read-only report over existing records is not a second qualification path.
 
-During editing, use focused CMake/CTest and quality commands. Exercise touched
-C11/native fixture/helper compile cases and scoped quality on both native platforms
-early. Finish formatting, generated inputs, expectation adoption and affected
-checks before broad qualification. At a broader checkpoint, use its built-in
+During editing, map each selected assertion to the changed contract or actual
+consumer and freeze complete membership before capture. Compile and run one
+representative new native/C11 consumer before platform fan-out; then exercise the
+required native platforms early. Run formatting and quality on changed
+producer/helper translation units before cutover. Finish expectation adoption and
+affected checks before broad qualification. Once the candidate is stable, run the
+required broad header-consumer quality closure once, rather than repeating that
+same closure both before and after cutover. For leaf Rust compiler checks, use the
+existing named unittest method with its configured target, profile, features,
+timeout and exact nonempty fixture/check membership; do not replace the full suite
+at its designated broad checkpoint. At a broader checkpoint, use its built-in
 quality and JUnit for the same domain evidence; do not add an identical full pass
 merely to produce another report. Each partition command must complete under
 supervision, drain its owned work and admit complete exact JUnit membership.
