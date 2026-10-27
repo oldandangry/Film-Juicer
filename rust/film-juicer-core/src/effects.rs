@@ -2,6 +2,8 @@
 
 use crate::hash;
 
+pub mod frame;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Params {
     pub film_dust_amount: f32,

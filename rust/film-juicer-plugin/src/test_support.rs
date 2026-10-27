@@ -2475,3 +2475,20 @@ unsafe extern "C" fn fj_test_grain_frame_prepare(
 extern "C" fn fj_test_grain_frame_fault(fault: u32) -> FjStatus {
     crate::grain_frame_bridge::faults::arm(fault)
 }
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Same initialized/live/exclusive/disjoint synchronous contract as the production entry.
+unsafe extern "C" fn fj_test_effects_frame_prepare(
+    input: *const crate::effects_frame_bridge::FjEffectsFrameInput,
+    out: *mut crate::effects_frame_bridge::FjEffectsFrameMath,
+    failure: *mut crate::effects_frame_bridge::FjEffectsFrameFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical checked production body and storage contract.
+    unsafe { crate::effects_frame_bridge::prepare(input, out, failure, error) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_effects_frame_fault(fault: u32) -> FjStatus {
+    crate::effects_frame_bridge::faults::arm(fault)
+}

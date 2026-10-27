@@ -166,9 +166,6 @@ namespace Spektrafilm {
         float filmFormatLongEdgeMm = 0.0f;
     };
 
-    std::uint64_t hash_film_juicer_effects_descriptor(
-        const FilmJuicerEffectsFrameDescriptor& descriptor);
-
     bool build_film_juicer_effects_frame_descriptor(
         const FilmJuicerEffectsFrameDescriptorInput& input,
         FilmJuicerEffectsFrameDescriptor& out,

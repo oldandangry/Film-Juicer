@@ -46,6 +46,7 @@ set(JUICER_HOST_SOURCES
     src/RustDiffusionBridge.cpp
     src/RustDirBridge.cpp
     src/RustGrainFrameBridge.cpp
+    src/RustEffectsFrameBridge.cpp
     src/RustDirBoundaryBridge.cpp
     src/ScanRoute.cpp
     src/Scanner.cpp

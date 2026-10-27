@@ -1415,6 +1415,25 @@ and alpha preservation. Both Release testing-OFF production gates compile, link
 and run all nine effects cases against their final native archive. These scoped
 checks do not establish installed Resolve, visual or aggregate acceptance.
 
+`Ffi.Host.EffectsFrame` checks physical-effects frame construction through the
+production ABI, facade and native bridge against 347 literal cases, 72 genuine
+products and 57 independently captured primitives. `Film.Host.EffectsFrameProducts`
+compares complete policy, geometry and identity fields for the genuine products.
+The [frame fixtures](film/effects-frame-fixtures/README.md) retain four native
+contexts and exact raw words, including the existing Windows Release static
+scratch rounding. Each host group has a 180-second limit. Rust owns immutable
+frame mathematics and identity; native code copies static policy and binds CUDA.
+
+`Ofx.Gpu.EffectsFrame` checks both actual caller sites across all four routes,
+with a GPU lock and 180-second limit. Pixel executions and successful construction
+checks canceled before preparation are counted separately. Literal policy
+substitutions stop before resource admission. Existing physical-family pixel,
+prepared-resource and lifecycle groups retain insertion-point, alpha, all-off,
+grain-debug and deterministic-coordinate assertions. Both Release testing-OFF
+probes call the real `fj_legacy_effects_frame_prepare` with the shared strict C11
+assertions and all 453 common-ABI full-result/failure/diagnostic cases. Native-only
+missing-recipe and ON-only fault cohorts remain separate.
+
 `Ffi.Host.SpatialOptics` checks all 553 frozen native literal recipes through the
 production and test facade entries, C11/C++20/Rust layouts and signatures,
 independent raw output admission/clearing, closed failure metadata, diagnostics,

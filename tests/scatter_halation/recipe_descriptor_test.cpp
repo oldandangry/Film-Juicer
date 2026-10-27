@@ -131,7 +131,7 @@ namespace {
         const Spektrafilm::FilmJuicerEffectsFrameDescriptorInput& input,
         Spektrafilm::FilmJuicerEffectsFrameDescriptor& descriptor) {
         std::string diagnostic;
-        return Spektrafilm::build_film_juicer_effects_frame_descriptor(
+        return JuicerTestSupport::prepare_effects_frame(
             input,
             descriptor,
             diagnostic);

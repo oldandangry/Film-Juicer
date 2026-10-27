@@ -433,6 +433,11 @@ FjStatus fj_test_grain_frame_prepare(const FjGrainFrameInput*, FjGrainFrameMath*
  * 3 presence, 4 association, 5 Gaussian radius, 6 full-frame flag. */
 FjStatus fj_test_grain_frame_fault(uint32_t);
 int fj_test_grain_frame_c_check(uint32_t, const FjGrainFrameInput*, const FjGrainFrameMath*, FjStatus, FjGrainFrameFailure, const char*);
+FjStatus fj_test_effects_frame_prepare(const FjEffectsFrameInput*, FjEffectsFrameMath*, FjEffectsFrameFailure*, FjErrorBuffer*);
+FjStatus fj_test_effects_frame_fault(uint32_t);
+int fj_test_effects_frame_c_check(uint32_t, const FjEffectsFrameInput*, const FjEffectsFrameMath*, FjStatus, FjEffectsFrameFailure, const char*);
+int fj_test_effects_frame_c_raw(uint32_t, const FjEffectsFrameInput*, uint32_t, const FjEffectsFrameMath*);
+
 #ifdef __cplusplus
 }
 #endif

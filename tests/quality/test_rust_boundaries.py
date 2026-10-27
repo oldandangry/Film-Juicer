@@ -421,6 +421,21 @@ class RustBoundaryTests(unittest.TestCase):
             feature_forms=(False, True),
         )
 
+    def test_effects_frame_is_complete_private_readonly_and_owned(self) -> None:
+        self.check_fixture_cases(
+            "film-juicer-plugin/src/lib.rs",
+            "film-juicer-plugin",
+            cases=(
+                ('effects_frame_complete', None),
+                ('effects_frame_private', {'E0616': ('frame.hash', 'frame.origins')}),
+                ('effects_frame_construction', {'E0451': ('Frame { ..frame }',)}),
+                ('effects_frame_default', {'E0599': ('Frame::default()',)}),
+                ('effects_frame_mutation', {'E0594': ('weave()[0] = 0.0', 'origins()[0].cell_x = 0')}),
+                ('effects_frame_owned', None),
+            ),
+            feature_forms=(False, True),
+        )
+
     def test_grain_frame_is_complete_private_readonly_and_owns_no_curve_borrow(self) -> None:
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",

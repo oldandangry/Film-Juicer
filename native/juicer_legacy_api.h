@@ -1873,6 +1873,60 @@ typedef struct FjGrainFrameFailure {
 } FjGrainFrameFailure;
 FjStatus fj_legacy_grain_frame_prepare(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*);
 
+// SF_TEMP_BRIDGE_EFFECTS_FRAME: synchronous resolved literals and complete fixed math.
+// S4.E narrows inputs; remove at the last native model caller, no later than S6.D.
+// Caller owns initialized, live, mutually disjoint records for the complete call.
+typedef struct FjEffectsFrameInput {
+    uint32_t active;
+    FjExtent render_extent;
+    FjExtent pixel_definition;
+    float pixel_size_um;
+    float film_format_long_edge_mm;
+    double canonical_x;
+    double canonical_y;
+    double canonical_width;
+    double canonical_height;
+    double scale_x;
+    double scale_y;
+    double pixel_aspect_ratio;
+    double frame_time;
+    double frame_rate;
+    double gate_weave_amount;
+    uint64_t session_seed;
+    uint64_t clip_token;
+    uint64_t recipe_hash;
+    FjDust film_dust;
+    FjScratch film_scratch;
+    FjDust gate_dust;
+    FjScratch gate_scratch;
+} FjEffectsFrameInput;
+typedef struct FjEffectsFrameMath {
+    uint32_t present;
+    uint32_t flags;
+    FjExtent render_extent;
+    FjExtent full_frame_extent;
+    FjDefectOrigin origins[4];
+    float sample_step_x_mm;
+    float sample_step_y_mm;
+    int32_t roi_offset_x;
+    int32_t roi_offset_y;
+    int32_t gate_width;
+    int32_t gate_height;
+    uint64_t session_seed;
+    uint64_t clip_token;
+    float weave_dx_px;
+    float weave_dy_px;
+    float weave_cos_rot;
+    float weave_sin_rot;
+    uint64_t recipe_hash;
+    uint64_t hash;
+} FjEffectsFrameMath;
+// Reasons: 0 success, 1 raw arguments, 2 inactive identity, 3 geometry/policy, 4 panic.
+typedef struct FjEffectsFrameFailure {
+    uint32_t reason;
+} FjEffectsFrameFailure;
+FjStatus fj_legacy_effects_frame_prepare(const FjEffectsFrameInput*, FjEffectsFrameMath*, FjEffectsFrameFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

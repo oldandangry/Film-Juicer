@@ -11,6 +11,10 @@ import unittest
 
 from compact_exposure_fixtures import compact_expected_blocks, expand_expected_blocks
 from shared_fixture import load_shared_fixture, original_capture_bytes
+from effects_frame_probe_contract import (
+    EFFECTS_FRAME_CASE_IDS, EFFECTS_FRAME_CASE_COUNT,
+    EFFECTS_FRAME_INPUT_WORD_COUNT, EFFECTS_FRAME_OUTPUT_WORD_COUNT,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -18,6 +22,75 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_effects_frame_exact_native_contexts_and_complete_production_cases(self):
+        directory = Path(__file__).parents[1] / "film/effects-frame-fixtures"
+        manifest = json.loads((directory / "manifest.json").read_bytes())
+        checked = json.loads((directory / "checked.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        for name, checksum in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((directory / name).read_bytes()).hexdigest(), checksum)
+        self.assertEqual((EFFECTS_FRAME_CASE_COUNT, EFFECTS_FRAME_INPUT_WORD_COUNT, EFFECTS_FRAME_OUTPUT_WORD_COUNT), (453, 180, 40))
+
+        def output(row):
+            if not row["success"] or not row["input"]["active"]:
+                return [0] * EFFECTS_FRAME_OUTPUT_WORD_COUNT
+            native = row["native"]
+            flags = sum(int(native[name]) << index for index, name in enumerate(
+                ("weave_active", "film_active", "gate_transmittance_active", "gate_output_active", "requires_full_frame")))
+            words = [1, flags] + native["render_extent"] + native["full_frame_extent"]
+            words += [word for origin in native["origins"] for word in origin]
+            words += [native[name] for name in (
+                "sample_step_x_mm", "sample_step_y_mm", "roi_offset_x", "roi_offset_y", "gate_width", "gate_height",
+                "session_seed", "clip_token", "weave_dx_px", "weave_dy_px", "weave_cos_rot", "weave_sin_rot", "recipe_hash", "hash")]
+            self.assertEqual(len(words), EFFECTS_FRAME_OUTPUT_WORD_COUNT)
+            return [word & ((1 << 64) - 1) for word in words]
+
+        for preset in PRESETS:
+            entry = manifest["presets"][preset]
+            captured = load_shared_fixture(directory / entry["native"])
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual(hashlib.sha256(original_capture_bytes(captured, "LF")).hexdigest(), entry["original_capture_sha256"])
+            self.assertEqual([len(captured[key]) for key in ("cases", "products", "primitives")], [347, 72, 57])
+            self.assertEqual([row["input"]["id"] for row in captured["cases"]], checked["case_ids"])
+            self.assertEqual(len(set(checked["case_ids"])), 347)
+            self.assertEqual([row["input"]["id"] for row in captured["products"]], checked["product_ids"])
+            rows = manifest["production_cases"][preset]
+            def membership(values):
+                self.assertEqual(tuple(row["case"] for row in values), EFFECTS_FRAME_CASE_IDS)
+                self.assertEqual(len({row["case"] for row in values}), EFFECTS_FRAME_CASE_COUNT)
+            membership(rows)
+            with self.assertRaises(AssertionError):
+                membership(rows[:-1])
+            by_id = {row["case"]: row for row in rows}
+            for cohort, key in (("literal", "cases"), ("product", "products")):
+                for native in captured[key]:
+                    if native["input"].get("missing_recipe"):
+                        continue
+                    name = cohort + "/" + native["input"]["id"]
+                    expected = by_id[name]
+                    self.assertEqual(expected["output"], output(native))
+                    self.assertEqual(expected["diagnostic"], native["diagnostic"])
+                    self.assertEqual(len(manifest["production_inputs"][preset][name]["words"]), EFFECTS_FRAME_INPUT_WORD_COUNT)
+            damaged = list(by_id["literal/mixed"]["output"])
+            damaged[-1] ^= 1
+            with self.assertRaises(AssertionError):
+                self.assertEqual(damaged, output(captured["cases"][0]))
+            for prefix, message, category, reason in (
+                    ("geometry-diagnostic/", checked["geometry_failure"]["diagnostic"], 3, 3),
+                    ("inactive-diagnostic/", "", 3, 2),
+                    ("raw-diagnostic/", checked["raw_failure"]["diagnostic"], 2, 1)):
+                selected = [row for row in rows if row["case"].startswith(prefix)]
+                self.assertEqual(len(selected), 5)
+                self.assertEqual({manifest["production_inputs"][preset][row["case"]]["capacity"] for row in selected},
+                                 {0, 1, 7, len(message), len(message) + 1})
+                for row in selected:
+                    capacity = manifest["production_inputs"][preset][row["case"]]["capacity"]
+                    self.assertEqual(row["envelope"], [category, 0, 0])
+                    self.assertEqual(row["failure"], [reason])
+                    self.assertEqual(row["output"], [0] * EFFECTS_FRAME_OUTPUT_WORD_COUNT)
+                    self.assertEqual(row["diagnostic"], message[:max(0, capacity - 1)])
+                    self.assertEqual(row["diagnostic_length"], len(row["diagnostic"]))
+
     def test_production_grain_fixture_records_keep_both_authorities(self):
         root = Path(__file__).parents[2]
         tree = ast.parse((root / "tests/ffi/production_contract.py").read_text())

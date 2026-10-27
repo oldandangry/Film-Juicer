@@ -19,6 +19,7 @@ from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, wr
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/ffi"))
 from grain_probe_contract import GRAIN_FRAME_CASE_COUNT, GRAIN_FRAME_CASE_IDS
+from effects_frame_probe_contract import EFFECTS_FRAME_CASE_COUNT, EFFECTS_FRAME_CASE_IDS
 
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
 GROUPS = {"product", "boundary", "tooling", "corpus", "production"}
@@ -227,7 +228,9 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     consumed = document.get("consumed_inputs", {})
     reference_consumed = {str(resolve(name)): checksum for name, checksum in consumed.items()}
     for path in (root / "tests/ffi/grain_frame_abi_assertions.inc",
-                 root / "tests/ffi/grain_probe_contract.py"):
+                 root / "tests/ffi/grain_probe_contract.py",
+                 root / "tests/ffi/effects_frame_abi_assertions.inc",
+                 root / "tests/ffi/effects_frame_probe_contract.py"):
         checksum = digest(path)
         if (inputs.get(path.relative_to(root).as_posix()) != checksum
                 or reference_consumed.get(str(path)) != checksum):
@@ -425,6 +428,33 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
             or document.get("dir_frame_results") != dir_expected):
         raise ValueError("production DIR frame full fields/words/failure trace results are incomplete")
 
+    effects_manifest = root / "tests/film/effects-frame-fixtures/manifest.json"
+    effects_spec = json.loads(effects_manifest.read_bytes())
+    effects_logical = effects_spec["presets"][document["preset"]]["native"]
+    effects_paths = {
+        "manifest": effects_manifest,
+        "payload": effects_manifest.parent / effects_spec["payloads"][effects_logical],
+        "context": effects_manifest.parent / effects_spec["contexts"][effects_logical],
+        "normative": effects_manifest.parent / effects_spec["checked"],
+        "input_spec": effects_manifest.parent / "inputs.json",
+    }
+    effects = document.get("effects_frame_fixture", {})
+    if effects.get("logical_preset") != document["preset"] or any(
+            resolve(effects.get(key, "")) != path for key, path in effects_paths.items()):
+        raise ValueError("production effects frame fixture membership is incomplete")
+    for path in effects_paths.values():
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum
+                or (path != effects_manifest and checksum != effects_spec["sha256"][path.name])):
+            raise ValueError("production effects frame consumed fixture identity changed")
+    effects_expected = effects_spec["production_cases"][document["preset"]]
+    if (tuple(row["case"] for row in effects_expected) != EFFECTS_FRAME_CASE_IDS
+            or len(effects_expected) != EFFECTS_FRAME_CASE_COUNT
+            or len({row["case"] for row in effects_expected}) != EFFECTS_FRAME_CASE_COUNT
+            or document.get("effects_frame_results") != effects_expected):
+        raise ValueError("production effects frame full values/failure/diagnostic results are incomplete")
+
     grain_manifest = root / "tests/grain/frame-fixtures/manifest.json"
     grain_spec = json.loads(grain_manifest.read_bytes())
     grain_paths = {
@@ -505,6 +535,11 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     for name, checksum in outputs.items():
         admit(name, checksum)
     film_stdout = manifest.parent / "film-values.stdout"
+    effects_rows = [json.loads(line.removeprefix("EFFECTS_FRAME_RESULT "))
+                    for line in film_stdout.read_text(encoding="utf-8").splitlines()
+                    if line.startswith("EFFECTS_FRAME_RESULT ")]
+    if effects_rows != effects_expected:
+        raise ValueError("production effects frame executed stdout results disagree")
     boundary_rows = [json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
                      for line in film_stdout.read_text(encoding="utf-8").splitlines()
                      if line.startswith("DIR_BOUNDARY_RESULT ")]
@@ -621,6 +656,8 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             "tests/ffi/film_recipe_abi_c.c",
             "tests/ffi/grain_frame_abi_assertions.inc",
             "tests/ffi/grain_probe_contract.py",
+            "tests/ffi/effects_frame_abi_assertions.inc",
+            "tests/ffi/effects_frame_probe_contract.py",
         ))
     else:
         paths.update(registration_files(build, allow_missing=True))
@@ -635,7 +672,8 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "exposure_fixture.h", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "grain_frame_test.inc", "dir_frame_test.inc", "diffusion_frame_test.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+                "film_recipe_abi_facts.inc", "effects_frame_test.inc", "effects_frame_abi_assertions.inc", "effects_frame_probe_contract.py", "grain_frame_test.inc", "dir_frame_test.inc", "diffusion_frame_test.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+            paths.update((root / "tests/film/effects-frame-fixtures").glob("*.json"))
             paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))

@@ -1190,3 +1190,18 @@ Both Release OFF probes retain all 188 grain rows plus every predecessor result
 and archive/module/PDB/fault/facade/export isolation check.
 `SF_TEMP_BRIDGE_GRAIN_FRAME` narrows at S4.E and retires at its last native model
 caller no later than S6.D. Independent review and phase acceptance are separate.
+
+`FjEffectsFrameInput`, `FjEffectsFrameMath` and `FjEffectsFrameFailure` carry the
+fixed physical-effects mathematical frame. The real ON reader and generated OFF
+reader share `effects_frame_abi_assertions.inc`; `effects_frame_probe_contract.py`
+owns the 180/40/1 codec dimensions and independent ordered common-ABI case IDs.
+C projection remains explicit. Static 42-member dust and 36-member scratch policy
+is copied from the same native recipe when a complete frame is present. Raw
+failed/inactive results clear to zero; native defaults retain cosine one. A
+present active zero-work result may have hash zero. The native bridge does not
+repeat Root's later resource admission policy.
+
+See [the independent frame fixtures](../film/effects-frame-fixtures/README.md),
+`Ffi.Host.EffectsFrame`, `Film.Host.EffectsFrameProducts` and `Ofx.Gpu.EffectsFrame`.
+The six test-support faults are closed and one-shot. Ordinary objects and both
+production OFF artifacts must exclude their seams and the retired capture hook.

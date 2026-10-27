@@ -370,6 +370,64 @@ class NativeBoundary(unittest.TestCase):
                         self.assertNotIn(pattern, data + pattern)
             print("DIR boundary ordinary-object isolation", path, hashlib.sha256(data).hexdigest())
 
+    def test_effects_frame_checked_edge_has_no_native_mathematical_or_resource_owner(self):
+        core = (ROOT / "rust/film-juicer-core/src/effects/frame.rs").read_text().split("#[cfg(test)]", 1)[0]
+        bridge = (ROOT / "src/RustEffectsFrameBridge.cpp").read_text()
+        header = (ROOT / "src/RustEffectsFrameBridge.h").read_text()
+        self.assertNotRegex(core, r"\b(?:unsafe|Vec|Box|Arc|Mutex|Cell)\b|mul_add\s*\(")
+        self.assertEqual(core.count("libm::fma("), 3)
+        self.assertNotRegex(bridge, r"std::(?:fma|floor|ceil|sin|cos|sqrt)\s*\(|Hash::|hash_bytes|cudaMalloc|cudaFree")
+        self.assertIn("fj_legacy_effects_frame_prepare", bridge)
+        for marker in ("SF_TEMP_BRIDGE_EFFECTS_FRAME", "S4.E", "S6.D"):
+            self.assertIn(marker, header)
+        self.assertNotRegex(header, r"\b(?:retain|release|Owner|Cache)\b")
+        self.assertIn("recipe_hash != input.recipe->hash", bridge)
+        self.assertIn("v.present != 1", bridge)
+
+    def test_retired_effects_frame_mathematics_and_capture_access_stay_deleted(self):
+        source = (ROOT / "src/FilmEffectsFrameDescriptors.cpp").read_text()
+        header = (ROOT / "src/FilmEffectsFrameDescriptors.h").read_text()
+        readers = "".join((ROOT / path).read_text() for path in (
+            "tests/CMakeLists.txt", "tests/ffi/effects_frame_test.inc", "tests/ffi/film_recipe_test.cpp"))
+        retired = r"\b(?:hash_film_juicer_effects_descriptor|hash_to_unit|phase_from_seed|sin_sum|compute_gate_weave|split_defect_origin|valid_defect_grid|kSeedPassWeave|JUICER_EFFECTS_FRAME_CAPTURE_TEST_HOOK|juicer_capture_effects_primitive|juicer_effects_frame_capture_objects)\b|capture-effects-frames|effects_frame_capture\.h"
+        self.assertNotRegex(source + header + readers, retired)
+        self.assertNotRegex(source, r"std::(?:fma|floor|ceil|sin|cos|sqrt)\s*\(")
+        self.assertFalse((ROOT / "tests/ffi/effects_frame_capture.h").exists())
+        for text in ("void compute_gate_weave() {}", "auto hash_film_juicer_effects_descriptor() {}",
+                     "JUICER_EFFECTS_FRAME_CAPTURE_TEST_HOOK", "capture-effects-frames", "effects_frame_capture.h"):
+            self.assertRegex(text, retired)
+        self.assertRegex(source, r"bool build_film_juicer_effects_frame_descriptor\([^{}]+\)\s*\{\s*return JuicerEffects::prepare_frame\(input, out, diagnostic\);\s*\}")
+        executor = (ROOT / "src/Cuda/JuicerCudaExecutor.cpp").read_text()
+        self.assertEqual(executor.count("ExecutorTest::observe_effects_frame("), 2)
+        self.assertEqual(executor.count("const bool effectsFrameBuilt = build_film_juicer_effects_descriptor_for_frame("), 2)
+        self.assertIn("JuicerTestSupport::prepare_effects_frame", (ROOT / "tests/scatter_halation/recipe_descriptor_test.cpp").read_text())
+
+    def test_effects_frame_seams_are_absent_from_ordinary_native_objects(self):
+        build = Path.cwd().parent
+        if not (build / "CMakeCache.txt").is_file():
+            build = ROOT / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
+        compdb = json.loads((build / "compile_commands.json").read_bytes())
+        nm = find_llvm_nm()
+        self.assertTrue(nm, "qualified LLVM nm required for effects frame ordinary-object isolation")
+        for owner, source in (("juicer_host", "RustEffectsFrameBridge.cpp"),
+                              ("juicer_host", "FilmEffectsFrameDescriptors.cpp"),
+                              ("juicer_native", "Cuda/JuicerCudaExecutor.cpp")):
+            rows = [row for row in compdb if owner + ".dir" in row["command"] and row["file"].endswith(source)]
+            self.assertEqual(len(rows), 1)
+            self.assertNotIn("JUICER_EFFECTS_FRAME_CAPTURE_TEST_HOOK", rows[0]["command"])
+            path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
+            data = path.read_bytes()
+            symbols = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)], timeout=10).decode(errors="replace")
+            self.assertNotRegex(symbols, r"EffectsFrameObservation|effects_frame_observation|juicer_capture_effects|fj_test_effects_frame")
+            for text in ("EffectsFrameObservation", "physical effects frame fixture entry panic",
+                         "fj_test_effects_frame", "capture-effects-frames", "effects_frame_capture.h"):
+                for encoding in ("utf-8", "utf-16-le"):
+                    pattern = text.encode(encoding)
+                    self.assertNotIn(pattern, data)
+                    with self.assertRaises(AssertionError):
+                        self.assertNotIn(pattern, data + pattern)
+            print("Effects frame ordinary-object isolation", path, hashlib.sha256(data).hexdigest())
+
     def test_retired_grain_frame_mathematics_and_capture_access_stay_deleted(self):
         source = (ROOT / "src/FilmEffectsFrameDescriptors.cpp").read_text()
         grain = source.split("constexpr std::uint64_t kSeedPassWeave", 1)[0]
