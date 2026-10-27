@@ -64,7 +64,7 @@ class RustNamingTests(unittest.TestCase):
         log = self.artifacts / f"{self._testMethodName}-{package}-{profile}.log"
         quality.check_probe_configuration(ROOT, self.workspace)
         result = subprocess.run(command, cwd=self.workspace, env=self.environment,
-                                capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+                                capture_output=True, text=True, encoding="utf-8", check=False)
         log.write_text(subprocess.list2cmdline(command) + "\n" + result.stdout + result.stderr, encoding="utf-8")
         quality.check_probe_configuration(ROOT, self.workspace)
         diagnostics = []

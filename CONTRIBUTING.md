@@ -313,6 +313,11 @@ python scripts/verify.py qualification --preset linux-debug --reason "Rust bound
 CTest registration owns disjoint `product`, `boundary`, `tooling` and `corpus`
 labels, alongside `host`/`gpu` prerequisites. Product checkpoints also require
 `--base <accepted-revision>` and include preparation and ordinary quality.
+Preparation admission is read-only by default. Build explicitly with
+`python scripts/verify.py prepare --preset <preset> --targets all --testing ON`,
+or add `--prepare` to explicitly authorize preparation in the qualification command.
+An admission mismatch reports the cause without invalidating existing outputs.
+Both commands use the same all-target input contract.
 Production isolation is a separate `--selection production` checkpoint on an
 already prepared testing-OFF Release tree. It binds the inspected final artifacts.
 The legacy sealed-build adapters remain unsupported.
@@ -332,6 +337,18 @@ remain authoritative. Runtime changes still require fresh affected test executio
 quality and product declarations are unchanged. Admission, refresh and collection
 share this scope while honoring every original receipt requirement. An older broad
 or cold-discovery receipt may need one fresh preparation; never rewrite it.
+
+A repeat reason authorizes retrying failed work. Matching successful checks remain
+reusable. CTest retries retain the original process/JUnit evidence and execute only
+cases that have not passed for the same inputs, tools, commands and artifacts.
+Original failed invocations remain failed; composition requires complete passed-case
+coverage and rejects altered receipts, outputs, skipped cases and incomplete owners.
+
+Ordinary preparation, analysis, compiler probes and qualification have no elapsed
+kill deadline. CTest registrations use `TIMEOUT 0`. Quiet logs and low CPU usage
+alone do not establish a hang. Inspect suspected stalls and cancel through the owner;
+owner-loss, failure handling and descendant drainage remain enforced. Explicit finite
+timeouts remain available for intentional fault-injection controls and post-exit drainage.
 General input-closure separation beyond this boundary is not yet implemented.
 Opaque configure file operations, subprocesses and dynamic evaluation retain broad
 input scope and require a real reconfigure when preparation dispatches;
@@ -374,8 +391,9 @@ immediate parent exited.
 On Windows, supervised CMake configuration and builds identify `VCTIP.EXE` from
 the active `VCToolsInstallDir`. After a successful parent exit, the Job waits 30
 seconds for natural drainage, then may terminate only that exact Job-owned
-executable. Other children retain the stage deadline, capped at five minutes
-after parent exit, and must drain before success. Parent failure or interruption
+executable. Other children in ordinary unbounded commands continue until they
+finish and drain; finite drain caps are limited to explicit fault controls.
+Parent failure or interruption
 keeps the ordinary failure and whole-Job drainage behavior. The process receipt
 records the selected executable, policy and any termination.
 

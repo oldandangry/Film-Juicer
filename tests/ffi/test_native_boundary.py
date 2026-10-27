@@ -40,7 +40,7 @@ def color_sources(root):
     return sorted(
         path for directory in (root / "src", root / "native", root / "cmake", root / "tests")
         for path in directory.rglob("*")
-        if path.is_file() and (path.suffix.lower() in SOURCE_SUFFIXES or path.suffix == ".cmake")
+        if (path.suffix.lower() in SOURCE_SUFFIXES or path.suffix == ".cmake") and path.is_file()
     ) + [root / "CMakeLists.txt"]
 
 
@@ -381,7 +381,7 @@ class NativeBoundary(unittest.TestCase):
             self.assertNotIn("JUICER_DIR_BOUNDARY_TEST_HOOK", rows[0]["command"])
             path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
             data = path.read_bytes()
-            symbols = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)], timeout=10).decode(errors="replace")
+            symbols = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)]).decode(errors="replace")
             self.assertNotRegex(symbols, r"DirBoundaryTest::|fj_test_dir_boundary|dir_boundary_bridge::faults::")
             for text in ("DirBoundaryTest", "spatial DIR boundary fixture panic", "spatial DIR boundary candidate rendezvous canceled", "capture-dir-boundaries", "fj_test_dir_boundary"):
                 for encoding in ("utf-8", "utf-16-le"):
@@ -438,7 +438,7 @@ class NativeBoundary(unittest.TestCase):
             self.assertNotIn("JUICER_EFFECTS_FRAME_CAPTURE_TEST_HOOK", rows[0]["command"])
             path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
             data = path.read_bytes()
-            symbols = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)], timeout=10).decode(errors="replace")
+            symbols = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)]).decode(errors="replace")
             self.assertNotRegex(symbols, r"EffectsFrameObservation|effects_frame_observation|juicer_capture_effects|fj_test_effects_frame")
             for text in ("EffectsFrameObservation", "physical effects frame fixture entry panic",
                          "fj_test_effects_frame", "capture-effects-frames", "effects_frame_capture.h"):
@@ -504,7 +504,7 @@ class NativeBoundary(unittest.TestCase):
             self.assertNotIn("JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK", rows[0]["command"])
             path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
             data = path.read_bytes()
-            symbols = subprocess.check_output([nm, "--demangle", str(path)], timeout=10).decode(errors="replace")
+            symbols = subprocess.check_output([nm, "--demangle", str(path)]).decode(errors="replace")
             self.assertNotRegex(symbols, r"FrameGeometryTest::|frame_bridge::faults::|halation_frame_faults::|diffusion_frame_faults::|dir_frame_faults::|grain_frame_bridge::faults::|JuicerGrainCapture::|ExecutorTest::|fj_test_grain_frame|fj_test_dir_frame|fj_test_diffusion_|fj_test_scatter_halation_frame|fj_test_frame|native_frame_domain|native_pixel_size")
             for text in ("FrameGeometryTest", "frame geometry fixture panic", "--capture-frame-geometry", "--frame-geometry", "fj_test_frame", "scatter/halation frame fixture panic", "fj_test_scatter_halation_frame", "HalationObservation", "DiffusionObservation", "diffusion construction fixture panic", "fj_test_diffusion_", "capture-diffusion-frames", "DirFrameObservation", "spatial DIR frame fixture panic", "fj_test_dir_frame", "capture-dir-frames", "--dir-frame", "GrainFrameObservation", "visual grain frame fixture entry panic", "visual grain frame fixture layer panic", "fj_test_grain_frame", "capture-grain-frames", "--grain-frame"):
                 for encoding in ("utf-8", "utf-16-le"):
@@ -527,7 +527,7 @@ class NativeBoundary(unittest.TestCase):
         for owner, source in (("juicer_native", "Cuda/JuicerCudaResources.cpp"), ("juicer_host", "RustGaussianBridge.cpp")):
             path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
             data = path.read_bytes()
-            output = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)], timeout=10).decode(errors="replace")
+            output = subprocess.check_output([nm, "--demangle", "--defined-only", str(path)]).decode(errors="replace")
             self.assertNotRegex(output, r"GaussianKernelTest::|SpectralAllocationProbe::|gaussian_faults::|fj_test_gaussian|rejectNativeAllocation|rejectedNativeBytes")
             for text in ("Gaussian kernel fixture", "GaussianKernelTest", "SpectralAllocationProbe"):
                 for encoding in ("utf-8", "utf-16-le"):

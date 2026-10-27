@@ -1,4 +1,4 @@
-"""The complete native preparation replay has one finite integration owner."""
+"""The complete native preparation replay has one integration owner."""
 
 import unittest
 

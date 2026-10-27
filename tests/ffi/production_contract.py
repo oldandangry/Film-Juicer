@@ -53,7 +53,7 @@ def execute(arguments):
     out.mkdir(parents=True, exist_ok=True)
     commands = []
 
-    def run(name, command, timeout=300):
+    def run(name, command, timeout=None):
         result = subprocess.run(command, cwd=root, capture_output=True, timeout=timeout)
         (out / (name + ".stdout")).write_bytes(result.stdout)
         (out / (name + ".stderr")).write_bytes(result.stderr)
@@ -276,7 +276,7 @@ def execute(arguments):
     scanned = []
 
     def scan(path, name, tool, flags):
-        text = run(name, [str(llvm / (tool + suffix)), *flags, str(path)], 600)
+        text = run(name, [str(llvm / (tool + suffix)), *flags, str(path)])
         match = forbidden.search(text)
         assert match is None, (name, match.group(0) if match else None)
         raw = path.read_bytes()
@@ -438,7 +438,7 @@ def execute(arguments):
                 str(executable),
             ]
         check_consumed()
-        run(name + "-compile", command, 300)
+        run(name + "-compile", command)
         linked = digest(executable)
         assert digest(archive) == next(row["sha256"] for row in scanned if row["file"] == str(archive))
         check_consumed()

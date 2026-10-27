@@ -67,7 +67,7 @@ class RustBuild(unittest.TestCase):
         commands = []
 
         def run(command, *, success=True):
-            process = subprocess.run(command, capture_output=True, text=True, timeout=60)
+            process = subprocess.run(command, capture_output=True, text=True)
             log = artifact / f"command-{len(commands):02}.log"
             with log.open("x", encoding="utf-8") as stream:
                 stream.write(process.stdout + process.stderr)

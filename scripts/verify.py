@@ -172,9 +172,14 @@ def select_consumers(root, build, selected, *, require_compiled=False, compilati
             "reasons": ["explicit owners beside CTest registration; all configured header variants; linkage only determines build dependencies"]}
 
 
-def check_receipt_payloads(root, receipt):
+def check_receipt_payloads(root, receipt, *, allow_ctest_failure=False):
     record = json.loads(Path(receipt).read_text(encoding="utf-8"))
-    if record.get("status") != "passed" or record.get("returncode") != 0 or not record.get("process_tree", {}).get("drained"):
+    ctest_failure = (allow_ctest_failure and record.get("status") == "failed" and record.get("returncode") == 8
+                     and record.get("process_tree", {}).get("status") == "completed"
+                     and Path(record["identity"]["command"][0]).stem == "ctest"
+                     and "--output-junit" in record["identity"]["command"])
+    if (not ctest_failure and (record.get("status") != "passed" or record.get("returncode") != 0)
+            or not record.get("process_tree", {}).get("drained")):
         raise ValueError("failed, partial or undrained evidence cannot be reused")
     if digest(root / record["output"]) != record["output_sha256"]:
         raise ValueError("command evidence payload changed")
@@ -319,7 +324,7 @@ def _development_owned(args, *, started=None, lease_seconds=0.0):
             print(json.dumps(selection, indent=2), flush=True)
             phase = time.monotonic()
             _, built = prepare_build(campaign, "prepare", source=ROOT, build=build,
-                                     inputs=[*selection["inputs"], "scripts/verify.py", "scripts/check-quality.py"], timeout=1200,
+                                     inputs=[*selection["inputs"], "scripts/verify.py", "scripts/check-quality.py"], timeout=None,
                                      configure_args=["-DBUILD_TESTING=ON"], targets=selection["targets"])
             timings["preparation_seconds"] = time.monotonic() - phase
             record["build"] = str(built)
@@ -327,12 +332,12 @@ def _development_owned(args, *, started=None, lease_seconds=0.0):
             record["selection"] = selection
             phase = time.monotonic()
             quality = campaign.run("quality", quality_command(args.preset, selection), inputs=selected,
-                                   timeout=1200, repeat_reason="analyze selected development scope")
+                                   timeout=None, repeat_reason="analyze selected development scope")
             timings["quality_seconds"] = time.monotonic() - phase
             junit = campaign.directory / "tests.xml"
             phase = time.monotonic()
             tests = run_ctest(campaign, "tests", build=build, prepared=built,
-                              inputs=selection["inputs"], timeout=600, tests=selection["tests"], junit=junit)
+                              inputs=selection["inputs"], timeout=None, tests=selection["tests"], junit=junit)
             timings["ctest_seconds"] = time.monotonic() - phase
             payloads = [built, quality, tests, junit]
             for receipt in (built, quality, tests):
@@ -415,6 +420,8 @@ def main():
     checkpoint.add_argument("--base")
     checkpoint.add_argument("--campaign")
     checkpoint.add_argument("--repeat-reason", default="")
+    checkpoint.add_argument("--prepare", action="store_true",
+                            help="explicitly authorize building all testing-ON targets before qualification")
     collection = modes.add_parser("collect-qualification", help="aggregate complete retained native/profile checkpoints")
     collection.add_argument("--receipts", nargs="+", type=Path, required=True)
     collection.add_argument("--output", type=Path, required=True)
@@ -448,7 +455,7 @@ def main():
         with OutputLease(ROOT, build):
             campaign = Campaign(ROOT, args.preset, "preparation-" + uuid.uuid4().hex, ["prepare"])
             _, built = prepare_build(campaign, "prepare", source=ROOT, build=build,
-                                     inputs=[*selection["inputs"], "scripts/verify.py", "scripts/check-quality.py"], timeout=1200,
+                                     inputs=[*selection["inputs"], "scripts/verify.py", "scripts/check-quality.py"], timeout=None,
                                      configure_args=["-DBUILD_TESTING=ON"], targets=selection["targets"])
             print("Scoped preparation only; pending development state preserved:", built)
     else:

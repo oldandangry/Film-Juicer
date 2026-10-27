@@ -51,7 +51,7 @@ def require_tool(name: str, value: str, version_arg: str, pattern: str) -> Path:
     if executable is None:
         raise ToolingError(f"required tool is missing: {name} ({value})")
     path = Path(executable).resolve(strict=True)
-    result = subprocess.run([str(path), version_arg], check=True, capture_output=True, text=True, timeout=30)
+    result = subprocess.run([str(path), version_arg], check=True, capture_output=True, text=True, timeout=None)
     text = result.stdout + result.stderr
     if re.search(pattern, text, re.MULTILINE) is None:
         raise ToolingError(f"wrong {name} version: {text.strip()}")
@@ -74,7 +74,7 @@ def file_identities(paths: list[Path]) -> dict[Path, tuple[str, str]]:
 def check_python(root: Path, files: list[str], ruff: Path, config: Path) -> None:
     if files:
         subprocess.run([str(ruff), "check", "--no-cache", "--config", str(config), "--", *files],
-                       cwd=root, check=True, timeout=120)
+                       cwd=root, check=True, timeout=None)
 
 
 def check(root: Path, ruff: str, shellcheck: str, actionlint: str) -> dict[str, int]:
@@ -92,10 +92,10 @@ def check(root: Path, ruff: str, shellcheck: str, actionlint: str) -> dict[str, 
     check_python(root, files["python"], tools["ruff"], config)
     if files["shell"]:
         subprocess.run([str(tools["shellcheck"]), "--external-sources", "--source-path=SCRIPTDIR", "--", *files["shell"]],
-                       cwd=root, check=True, timeout=120)
+                       cwd=root, check=True, timeout=None)
     if files["workflow"]:
         subprocess.run([str(tools["actionlint"]), "-shellcheck", str(tools["shellcheck"]), "-pyflakes", "", "--", *files["workflow"]],
-                       cwd=root, check=True, timeout=120)
+                       cwd=root, check=True, timeout=None)
     after = file_identities(inputs)
     if before != after or files != source_files(root):
         raise ToolingError("tooling inputs changed during checks")

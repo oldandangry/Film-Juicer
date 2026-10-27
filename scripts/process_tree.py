@@ -288,7 +288,7 @@ class WindowsJob:
 
 def main():
     receipt = Path(sys.argv[1])
-    timeout = float(sys.argv[2])
+    timeout = None if sys.argv[2] == "None" else float(sys.argv[2])
     cleanup = json.loads(sys.argv[4]) if sys.argv[3] == "--vctip-cleanup" else None
     command = sys.argv[5:] if cleanup else sys.argv[3:]
     interrupted = threading.Event()
@@ -337,7 +337,7 @@ def main():
         owner.start(command, receipt.with_suffix(".gate.json"))
         record["command_pid"] = owner.process.pid
         save()
-        deadline = time.monotonic() + timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
         stopping = None
         command_end = None
         failed_parent = None
@@ -353,13 +353,15 @@ def main():
                     save()
                 elif cleanup:
                     next_vctip_check = command_end + cleanup["grace_seconds"]
-                    deadline = min(deadline, command_end + cleanup["drain_cap_seconds"])
+                    if cleanup["drain_cap_seconds"] is not None:
+                        cap = command_end + cleanup["drain_cap_seconds"]
+                        deadline = cap if deadline is None else min(deadline, cap)
             if not active:
                 break
             now = time.monotonic()
             if (
                 cleanup and next_vctip_check is not None
-                and now >= next_vctip_check and now < deadline
+                and now >= next_vctip_check and (deadline is None or now < deadline)
                 and not interrupted.is_set()
             ):
                 def record_termination(child):
@@ -372,7 +374,7 @@ def main():
                 next_vctip_check = now + 0.5
             if stopping is None and (
                 interrupted.is_set()
-                or now >= deadline
+                or deadline is not None and now >= deadline
                 or failed_parent is not None
                 and now >= failed_parent
             ):

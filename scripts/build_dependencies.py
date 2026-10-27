@@ -109,7 +109,7 @@ class NinjaGraph:
             env=self.environment,
             text=True,
             encoding="utf-8",
-            timeout=60,
+            timeout=None,
         )
 
     def path(self, name):
@@ -325,7 +325,7 @@ def configuration_outputs(build, environment=None):
         env=environment,
         text=True,
         encoding="utf-8",
-        timeout=30,
+        timeout=None,
     )
     names = [
         line.rsplit(": ", 1)[0]
@@ -402,7 +402,7 @@ def header_consumers(root, build, headers, *, require_compiled=True, compilation
     wanted = {str(compilation.resolve(root / name)) for name in headers}
     outputs = [str(compilation.resolve(Path(row["directory"]) / row["output"]).relative_to(build)) for row in entries if row.get("output")]
     current = subprocess.run([graph.ninja, "-C", str(build), "-n", "-d", "explain", *outputs],
-                             env=graph.environment, text=True, capture_output=True, timeout=60, check=True)
+                             env=graph.environment, text=True, capture_output=True, timeout=None, check=True)
     changed_commands = {str((build / name).resolve()) for name in re.findall(r"^ninja explain: command line changed for (.+)$", current.stderr, re.M)}
     targets, sources, found, macros = set(), set(), set(), {}
     for row in entries:
