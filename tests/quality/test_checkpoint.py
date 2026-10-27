@@ -122,8 +122,17 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(self.state["tooling"]["status"], "failed")
 
     def test_product_cli_requires_explicit_build_then_reuses_completed_checks(self):
+        import shutil
         import verify
         self.compiled_project()
+        if os.name == "nt":
+            compiler = shutil.which("clang-cl.exe")
+            self.assertIsNotNone(compiler, "qualified Windows compiler is missing")
+            presets_path = self.root / "CMakePresets.json"
+            presets = json.loads(presets_path.read_text())
+            for preset in presets["configurePresets"]:
+                preset["cacheVariables"].update(CMAKE_C_COMPILER=compiler, CMAKE_CXX_COMPILER=compiler)
+            write_json(presets_path, presets)
         self.configure_fixture(self.preset, True, "cli-configured")
         argv = ["verify.py", "qualification", "--preset", self.preset, "--reason", "admission regression",
                 "--selection", "product", "--runtime", "host", "--base", "fixture", "--campaign", "cli-admit"]
@@ -685,15 +694,19 @@ class CheckpointTests(unittest.TestCase):
         fixture.parent.mkdir(parents=True)
         fixture.write_text('{"value": 1}\n')
         loader = self.root / "tests/runtime_loader.py"
-        loader.write_text("import json, pathlib, sys\n"
-                          "value = json.loads(pathlib.Path(sys.argv[1]).read_text())['value']\n"
-                          "pathlib.Path(sys.argv[2]).write_text(str(value))\n"
+        loader.write_text("import argparse, json, pathlib\n"
+                          "parser = argparse.ArgumentParser()\n"
+                          "parser.add_argument('fixture', type=pathlib.Path)\n"
+                          "parser.add_argument('--output-dir', type=pathlib.Path, required=True)\n"
+                          "args = parser.parse_args()\n"
+                          "value = json.loads(args.fixture.read_text())['value']\n"
+                          "(args.output_dir / 'observed.txt').write_text(str(value))\n"
                           "assert value > 0\n")
         cmake = self.root / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() +
             f'add_test(NAME runtime COMMAND "{Path(self.python).as_posix()}" '
             '"${CMAKE_SOURCE_DIR}/tests/runtime_loader.py" "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" '
-            '"${CMAKE_BINARY_DIR}/observed.txt")\n'
+            '--output-dir "${CMAKE_BINARY_DIR}")\n'
             'set_tests_properties(runtime PROPERTIES LABELS "host;corpus")\n')
         self.configure_fixture(self.preset, True, "runtime-on")
         return fixture, loader
@@ -706,6 +719,12 @@ class CheckpointTests(unittest.TestCase):
         args = SimpleNamespace(reason="runtime preparation boundary", selection=["corpus"], preset=self.preset,
                                runtime="host", campaign="runtime-first", repeat_reason="", base=None, prepare=True)
         original = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["corpus"]
+        observed = self.build / "observed.txt"
+        self.assertEqual(observed.read_text(), "1")
+        inventory = json.loads(subprocess.check_output(
+            ["ctest", "--test-dir", str(self.build), "--show-only=json-v1"], text=True))
+        self.assertEqual(qualification.ctest_artifacts(inventory, ["runtime"], self.build), ([], []))
+        self.assertNotIn(str(observed), original["identity"]["tools"])
         protected = {p: p.read_bytes() for p in (
             Path(first["receipt"]), *build_evidence.preparation_paths(self.build, ["all"])[:1],
             *(Path(name) for name in first["payloads"]))}
@@ -726,7 +745,9 @@ class CheckpointTests(unittest.TestCase):
                 current = json.loads(record_path.read_text())["stages"]["corpus"]
                 self.assertNotIn("reused_from", current)
                 self.assertNotEqual(current["receipt"], original["receipt"])
-                self.assertEqual((self.build / "observed.txt").read_text(), str(index))
+                self.assertNotIn(str(observed), current["identity"]["tools"])
+                self.assertNotEqual(current["identity"]["inputs"], original["identity"]["inputs"])
+                self.assertEqual(observed.read_text(), str(index))
                 original = current
 
     def test_runtime_variable_configure_copy_requires_fresh_preparation(self):
