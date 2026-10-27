@@ -9,4 +9,3 @@ fn complete(input: Input) -> Result<Option<Frame>, Error> {
     }
     result
 }
-

@@ -8,4 +8,3 @@ fn fixed_thread_owned() {
     fn assert_owned<T: Send + Sync + 'static>() {}
     assert_owned::<Frame>();
 }
-
