@@ -38,6 +38,7 @@
 #include "RustDiffusionBridge.h"
 #include "RustDirBridge.h"
 #include "RustGrainFrameBridge.h"
+#include "RustEffectsFrameBridge.h"
 #include "RustDirBoundaryBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
@@ -313,7 +314,21 @@ namespace {
 #include "dir_frame_test.inc"
 #include "dir_boundary_test.inc"
 #include "grain_frame_test.inc"
+#include "effects_frame_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "effects-frame" || std::string_view(argv[3]) == "effects-frame-products")) {
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = load_shared_fixture(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
+        require(captured.at("preset") == argv[4], "effects independent native context");
+        if (std::string_view(argv[3]) == "effects-frame-products")
+            require(EffectsFrameTest::product_rows(argv[1], read(directory / "inputs.json")) == captured.at("products"), "complete genuine effects frame products");
+        else {
+            EffectsFrameTest::values(captured, read(directory / "checked.json"));
+            EffectsFrameTest::raw_and_faults(captured);
+        }
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "grain-frame" || std::string_view(argv[3]) == "grain-frame-products")) {
         const auto manifest = read(argv[2]);
         const auto directory = std::filesystem::path(argv[2]).parent_path();

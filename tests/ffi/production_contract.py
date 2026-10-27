@@ -12,6 +12,11 @@ import subprocess
 import sys
 
 from shared_fixture import load_shared_fixture, original_capture_bytes
+from effects_frame_probe_contract import (
+    EFFECTS_FRAME_CASE_COUNT, EFFECTS_FRAME_CASE_IDS,
+    EFFECTS_FRAME_INPUT_WORD_COUNT, EFFECTS_FRAME_OUTPUT_WORD_COUNT,
+    EFFECTS_FRAME_FAILURE_WORD_COUNT,
+)
 from grain_probe_contract import (
     GRAIN_FRAME_CASE_COUNT,
     GRAIN_FRAME_CASE_IDS,
@@ -120,6 +125,12 @@ def execute(arguments):
         b"JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK",
         b"JuicerGrainCapture",
         b"GrainFrameObservation",
+        b"EffectsFrameObservation",
+        b"physical effects frame fixture entry panic",
+        b"fj_test_effects_frame",
+        b"capture-effects-frames",
+        b"JUICER_EFFECTS_FRAME_CAPTURE_TEST_HOOK",
+        b"--effects-frame",
         b"fj_test_grain_frame",
         b"capture-grain-frames",
         b"--grain-frame",
@@ -235,6 +246,10 @@ def execute(arguments):
     consumed_paths.extend([dir_boundary_manifest, dir_boundary_payload, dir_boundary_checked, dir_boundary_manifest.parent / "inputs.json"])
     grain_frame_manifest, grain_frame_payload, grain_frame_checked, _, grain_frame_spec = grain_frame_fixture(arguments.preset)
     consumed_paths.extend([grain_frame_manifest, grain_frame_payload, grain_frame_checked, grain_frame_manifest.parent / "inputs.json"])
+    effects_frame_manifest, effects_frame_payload, effects_frame_context, effects_frame_checked, effects_frame_spec = effects_frame_fixture(arguments.preset)
+    consumed_paths.extend([effects_frame_manifest, effects_frame_payload, effects_frame_context, effects_frame_checked,
+                           effects_frame_manifest.parent / "inputs.json", fixtures / "effects_frame_abi_assertions.inc",
+                           fixtures / "effects_frame_probe_contract.py"])
     dir_manifest, dir_payload, dir_checked, _, dir_spec = dir_frame_fixture(arguments.preset)
     consumed_paths.extend([dir_manifest, dir_payload, dir_checked, dir_manifest.parent / "inputs.json"])
     gaussian_manifest, gaussian_payload, gaussian_context, _, _ = gaussian_fixture(arguments.preset)
@@ -279,6 +294,7 @@ def execute(arguments):
         "fj_legacy_dir_boundary_view",
         "fj_legacy_dir_boundary_release",
         "fj_legacy_grain_frame_prepare",
+        "fj_legacy_effects_frame_prepare",
         "fj_legacy_dir_frame_prepare",
         "fj_legacy_scatter_halation_frame_prepare",
         "fj_legacy_diffusion_sample_prepare",
@@ -361,6 +377,7 @@ def execute(arguments):
     dir_boundary_results = []
     dir_frame_results = []
     grain_frame_results = []
+    effects_frame_results = []
     reference_results = []
     for name, source in probes:
         executable = out / (name + suffix)
@@ -437,6 +454,9 @@ def execute(arguments):
                               "source_sha256": source_sha256, "archive": str(archive),
                               "archive_sha256": digest(archive)})
         if name == "film":
+            effects_frame_results = [json.loads(line.removeprefix("EFFECTS_FRAME_RESULT "))
+                                     for line in output.splitlines() if line.startswith("EFFECTS_FRAME_RESULT ")]
+            assert effects_frame_results == effects_frame_spec["production_cases"][arguments.preset], "complete effects frame production values/failures/diagnostic membership"
             grain_frame_results = [json.loads(line.removeprefix("GRAIN_FRAME_RESULT "))
                                    for line in output.splitlines() if line.startswith("GRAIN_FRAME_RESULT ")]
             assert len(grain_frame_results) == GRAIN_FRAME_CASE_COUNT and grain_frame_results == grain_frame_spec["production_cases"], "complete grain frame production values/metadata/failures/clearing/diagnostic membership"
@@ -682,6 +702,10 @@ def execute(arguments):
                 "dir_boundary_fixture": {"manifest": str(dir_boundary_manifest), "payload": str(dir_boundary_payload), "normative": str(dir_boundary_checked),
                                          "input_spec": str(dir_boundary_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
                 "grain_frame_results": grain_frame_results,
+                "effects_frame_results": effects_frame_results,
+                "effects_frame_fixture": {"manifest": str(effects_frame_manifest), "payload": str(effects_frame_payload),
+                                          "context": str(effects_frame_context), "normative": str(effects_frame_checked),
+                                          "input_spec": str(effects_frame_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
                 "grain_frame_fixture": {"manifest": str(grain_frame_manifest), "payload": str(grain_frame_payload), "normative": str(grain_frame_checked),
                                         "input_spec": str(grain_frame_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
                 "dir_frame_results": dir_frame_results,
@@ -1231,6 +1255,53 @@ def expected_dir_boundary_header(out):
 
 
 
+def effects_frame_fixture(preset):
+    directory = root / "tests/film/effects-frame-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_bytes())
+    logical = spec["presets"][preset]["native"]
+    payload = directory / spec["payloads"][logical]
+    context = directory / spec["contexts"][logical]
+    checked = directory / spec["checked"]
+    for path in (payload, context, checked, directory / "inputs.json"):
+        assert digest(path) == spec["sha256"][path.name]
+    captured = load_shared_fixture(directory / logical)
+    assert captured["preset"] == preset
+    assert [len(captured[key]) for key in ("cases", "products", "primitives")] == [347, 72, 57]
+    rows = spec["production_cases"][preset]
+    assert tuple(row["case"] for row in rows) == EFFECTS_FRAME_CASE_IDS
+    assert len(rows) == EFFECTS_FRAME_CASE_COUNT and len({row["case"] for row in rows}) == EFFECTS_FRAME_CASE_COUNT
+    assert set(spec["production_inputs"][preset]) == set(EFFECTS_FRAME_CASE_IDS)
+    return manifest, payload, context, checked, spec
+
+
+def expected_effects_frame_header(out):
+    _, _, _, _, spec = effects_frame_fixture(arguments.preset)
+
+    def words(values):
+        return "{" + ",".join("UINT64_C(" + str(v) + ")" for v in values) + "}"
+
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write(f"#define FJ_EFFECTS_FRAME_CASE_COUNT {EFFECTS_FRAME_CASE_COUNT}U\n")
+        stream.write(f"#define FJ_EFFECTS_FRAME_INPUT_WORD_COUNT {EFFECTS_FRAME_INPUT_WORD_COUNT}U\n")
+        stream.write(f"#define FJ_EFFECTS_FRAME_OUTPUT_WORD_COUNT {EFFECTS_FRAME_OUTPUT_WORD_COUNT}U\n")
+        stream.write(f"#define FJ_EFFECTS_FRAME_FAILURE_WORD_COUNT {EFFECTS_FRAME_FAILURE_WORD_COUNT}U\n")
+        stream.write("typedef struct { const char* name; uint32_t mode; size_t capacity; uint64_t input[FJ_EFFECTS_FRAME_INPUT_WORD_COUNT]; FjStatus status; uint64_t output[FJ_EFFECTS_FRAME_OUTPUT_WORD_COUNT], failure[FJ_EFFECTS_FRAME_FAILURE_WORD_COUNT]; int output_valid, failure_valid, error_valid; const char* diagnostic; } EffectsFrameRow;\n")
+        stream.write("static const EffectsFrameRow effects_frame_rows[] = {\n")
+        for row in spec["production_cases"][arguments.preset]:
+            source = spec["production_inputs"][arguments.preset][row["case"]]
+            assert len(source["words"]) == EFFECTS_FRAME_INPUT_WORD_COUNT
+            assert row["output"] is None or len(row["output"]) == EFFECTS_FRAME_OUTPUT_WORD_COUNT
+            assert row["failure"] is None or len(row["failure"]) == EFFECTS_FRAME_FAILURE_WORD_COUNT
+            stream.write("{%s,%d,%d,%s,%s,%s,%s,%d,%d,%d,%s},\n" % (
+                json.dumps(row["case"]), source["mode"], source["capacity"], words(source["words"]),
+                "{" + ",".join(str(v) for v in row["envelope"]) + "}",
+                words(row["output"] or [0]), words(row["failure"] or [0]),
+                row["output"] is not None, row["failure"] is not None, row["diagnostic"] is not None,
+                json.dumps(row["diagnostic"]) if row["diagnostic"] is not None else "NULL"))
+        stream.write("};\n")
+
+
 def grain_frame_fixture(preset):
     directory = root / "tests/grain/frame-fixtures"
     manifest = directory / "manifest.json"
@@ -1641,6 +1712,7 @@ if __name__ == "__main__":
     expected_halation_frame_header(arguments.artifacts)
     expected_diffusion_frame_header(arguments.artifacts)
     expected_grain_frame_header(arguments.artifacts)
+    expected_effects_frame_header(arguments.artifacts)
     expected_dir_frame_header(arguments.artifacts)
     expected_dir_boundary_header(arguments.artifacts)
     execute(arguments)

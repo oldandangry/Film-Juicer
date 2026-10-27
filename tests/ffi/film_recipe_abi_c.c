@@ -2,6 +2,161 @@
 #include <string.h>
 #include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
+#define JUICER_EFFECTS_FRAME_ON_ASSERTIONS 1
+#include "effects_frame_abi_assertions.inc"
+
+static int effects_frame_equal(const FjEffectsFrameMath* a, const FjEffectsFrameMath* b) {
+    return memcmp(&a->present, &b->present, sizeof(a->present)) == 0 &&
+           memcmp(&a->flags, &b->flags, sizeof(a->flags)) == 0 &&
+           memcmp(&a->render_extent, &b->render_extent, sizeof(a->render_extent)) == 0 &&
+           memcmp(&a->full_frame_extent, &b->full_frame_extent, sizeof(a->full_frame_extent)) == 0 &&
+           memcmp(&a->origins, &b->origins, sizeof(a->origins)) == 0 &&
+           memcmp(&a->sample_step_x_mm, &b->sample_step_x_mm, sizeof(a->sample_step_x_mm)) == 0 &&
+           memcmp(&a->sample_step_y_mm, &b->sample_step_y_mm, sizeof(a->sample_step_y_mm)) == 0 &&
+           memcmp(&a->roi_offset_x, &b->roi_offset_x, sizeof(a->roi_offset_x)) == 0 &&
+           memcmp(&a->roi_offset_y, &b->roi_offset_y, sizeof(a->roi_offset_y)) == 0 &&
+           memcmp(&a->gate_width, &b->gate_width, sizeof(a->gate_width)) == 0 &&
+           memcmp(&a->gate_height, &b->gate_height, sizeof(a->gate_height)) == 0 &&
+           memcmp(&a->session_seed, &b->session_seed, sizeof(a->session_seed)) == 0 &&
+           memcmp(&a->clip_token, &b->clip_token, sizeof(a->clip_token)) == 0 &&
+           memcmp(&a->weave_dx_px, &b->weave_dx_px, sizeof(a->weave_dx_px)) == 0 &&
+           memcmp(&a->weave_dy_px, &b->weave_dy_px, sizeof(a->weave_dy_px)) == 0 &&
+           memcmp(&a->weave_cos_rot, &b->weave_cos_rot, sizeof(a->weave_cos_rot)) == 0 &&
+           memcmp(&a->weave_sin_rot, &b->weave_sin_rot, sizeof(a->weave_sin_rot)) == 0 &&
+           memcmp(&a->recipe_hash, &b->recipe_hash, sizeof(a->recipe_hash)) == 0 &&
+           memcmp(&a->hash, &b->hash, sizeof(a->hash)) == 0;
+}
+int fj_test_effects_frame_c_check(uint32_t facade, const FjEffectsFrameInput* input, const FjEffectsFrameMath* expected, FjStatus expected_status, FjEffectsFrameFailure expected_failure, const char* diagnostic) {
+    const size_t length = strlen(diagnostic);
+    const size_t capacities[] = {0, 1, 7, length, length + 1};
+    for (size_t index = 0; index < 5; ++index) {
+        FjEffectsFrameMath out;
+        FjEffectsFrameFailure failure;
+        char bytes[256];
+        const size_t capacity = capacities[index];
+        const size_t count = length < (capacity ? capacity - 1 : 0) ? length : (capacity ? capacity - 1 : 0);
+        FjErrorBuffer error = {bytes, capacity, 99};
+        memset(&out, 0xa5, sizeof(out));
+        memset(&failure, 0xa5, sizeof(failure));
+        memset(bytes, 0x5a, sizeof(bytes));
+        const FjStatus actual = facade ? fj_test_effects_frame_prepare(input, &out, &failure, &error)
+                                       : fj_legacy_effects_frame_prepare(input, &out, &failure, &error);
+        if (actual.category != expected_status.category || actual.api != expected_status.api || actual.native_code != expected_status.native_code || failure.reason != expected_failure.reason || error.length != count)
+            return 0;
+        if (capacity ? (bytes[count] != '\0' || memcmp(bytes, diagnostic, count) != 0) : bytes[0] != 0x5a)
+            return 0;
+        if (!effects_frame_equal(&out, expected))
+            return 0;
+    }
+    return 1;
+}
+
+int fj_test_effects_frame_c_raw(uint32_t facade, const FjEffectsFrameInput* baseline, uint32_t mode, const FjEffectsFrameMath* expected) {
+    FjEffectsFrameInput input = *baseline;
+    FjEffectsFrameMath math;
+    FjEffectsFrameFailure failure;
+    char bytes[256];
+    FjErrorBuffer error = {bytes, sizeof(bytes), 99};
+    const FjEffectsFrameInput* source = &input;
+    FjEffectsFrameMath* output = &math;
+    FjEffectsFrameFailure* details = &failure;
+    FjErrorBuffer* diagnostic = &error;
+    memset(&math, 0xa5, sizeof(math));
+    memset(&failure, 0xa5, sizeof(failure));
+    memset(bytes, 0x5a, sizeof(bytes));
+    switch (mode) {
+        case 1:
+            source = NULL;
+            break;
+        case 2:
+            source = (const FjEffectsFrameInput*)(uintptr_t)1;
+            break;
+        case 3:
+            source = (const FjEffectsFrameInput*)(UINTPTR_MAX & ~((uintptr_t)_Alignof(FjEffectsFrameInput) - 1));
+            break;
+        case 4:
+            output = NULL;
+            break;
+        case 5:
+            output = (FjEffectsFrameMath*)(uintptr_t)1;
+            break;
+        case 6:
+            output = (FjEffectsFrameMath*)(UINTPTR_MAX & ~((uintptr_t)_Alignof(FjEffectsFrameMath) - 1));
+            break;
+        case 7:
+            details = NULL;
+            break;
+        case 8:
+            details = (FjEffectsFrameFailure*)(uintptr_t)1;
+            break;
+        case 9:
+            details = (FjEffectsFrameFailure*)(UINTPTR_MAX & ~((uintptr_t)_Alignof(FjEffectsFrameFailure) - 1));
+            break;
+        case 10:
+            diagnostic = (FjErrorBuffer*)(uintptr_t)1;
+            break;
+        case 11:
+            diagnostic = (FjErrorBuffer*)(UINTPTR_MAX & ~((uintptr_t)_Alignof(FjErrorBuffer) - 1));
+            break;
+        case 12:
+            error.data = NULL;
+            error.capacity = 1;
+            break;
+        case 13:
+            error.data = (char*)(UINTPTR_MAX - 3);
+            error.capacity = 8;
+            break;
+        case 14:
+            error.capacity = (size_t)PTRDIFF_MAX + 1;
+            break;
+        case 15:
+            input.active = 2;
+            break;
+        case 16:
+            diagnostic = NULL;
+            break;
+        case 17:
+            error.data = NULL;
+            error.capacity = 0;
+            break;
+        case 18:
+            error.data = (char*)(uintptr_t)1;
+            error.capacity = 0;
+            break;
+        case 19:
+            input.active = 2;
+            diagnostic = NULL;
+            break;
+        default:
+            break;
+    }
+    const int rejected = (mode >= 1 && mode <= 15) || mode == 19;
+    const FjStatus result = facade ? fj_test_effects_frame_prepare(source, output, details, diagnostic)
+                                   : fj_legacy_effects_frame_prepare(source, output, details, diagnostic);
+    if (result.category != (rejected ? 2u : 0u) || result.api != 0 || result.native_code != 0)
+        return 0;
+    if (mode >= 4 && mode <= 6) {
+        if (math.present != UINT32_C(0xa5a5a5a5))
+            return 0;
+    } else {
+        const FjEffectsFrameMath zero = {0};
+        if (!effects_frame_equal(&math, rejected ? &zero : expected))
+            return 0;
+    }
+    if (failure.reason != (mode >= 7 && mode <= 9 ? UINT32_C(0xa5a5a5a5) : rejected ? 1u
+                                                                                    : 0u))
+        return 0;
+    if (mode <= 9 || mode == 15) {
+        const char* message = rejected ? "physical effects frame arguments are invalid" : "";
+        if (error.length != strlen(message) || memcmp(bytes, message, error.length + 1) != 0)
+            return 0;
+    } else if ((mode >= 12 && mode <= 14) || mode == 17 || mode == 18) {
+        if (error.length != 0 || bytes[0] != 0x5a)
+            return 0;
+    }
+    return 1;
+}
+
 
 int fj_test_grain_frame_c_check(uint32_t facade, const FjGrainFrameInput* input, const FjGrainFrameMath* expected, FjStatus expected_status, FjGrainFrameFailure expected_failure, const char* diagnostic) {
     FjGrainFrameMath out;

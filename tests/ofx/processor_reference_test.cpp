@@ -180,7 +180,18 @@ namespace JuicerCuda::ExecutorTest {
     namespace {
         thread_local DirFrameObservation s_dirFrameObservation;
         thread_local GrainFrameObservation s_grainFrameObservation;
+        thread_local EffectsFrameObservation s_effectsFrameObservation;
     } // namespace
+    void reset_effects_frame_observation() noexcept {
+        s_effectsFrameObservation = {};
+    }
+    EffectsFrameObservation effects_frame_observation() noexcept {
+        return s_effectsFrameObservation;
+    }
+    void observe_effects_frame(EffectsFrameObservation observation) noexcept {
+        observation.count = std::min(s_effectsFrameObservation.count + 1, 2u);
+        s_effectsFrameObservation = observation;
+    }
     void reset_grain_frame_observation() noexcept {
         s_grainFrameObservation = {};
     }
@@ -1245,6 +1256,225 @@ namespace {
     }
 
 
+    enum class EffectsCallerPath : std::uint8_t {
+        Pixels,
+        StopBeforePreparation,
+        BeforeBuilder
+    };
+
+    void run_effects_frame_cases(const std::filesystem::path& manifestPath, const std::string& preset) {
+        using Json = nlohmann::json;
+        const auto manifest = Json::parse(std::ifstream(manifestPath));
+        const auto captured = load_shared_fixture(manifestPath.parent_path() / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
+        if (captured.at("preset") != preset || captured.at("cases").size() != 347 || captured.at("products").size() != 72)
+            throw std::runtime_error("effects caller independent context/membership changed");
+        const auto scalar = [](const Json& v) {
+            return std::bit_cast<float>(v.get<std::uint32_t>());
+        };
+        const auto wide = [](const Json& v) {
+            return std::bit_cast<double>(v.get<std::uint64_t>());
+        };
+        const auto extent = [](const Json& v) -> Spektrafilm::FilmJuicerEffectsFrameExtent {
+            return {v.at(0), v.at(1), v.at(2), v.at(3)};
+        };
+        const auto rect = [](const Spektrafilm::FilmJuicerEffectsFrameExtent& v) -> JuicerCuda::FrameRect {
+            return {v.x, v.y, v.x + v.width, v.y + v.height};
+        };
+        const auto fields = [](const Spektrafilm::FilmJuicerEffectsFrameExtent& v) -> Json {
+            return {v.x, v.y, v.width, v.height};
+        };
+        DeviceFrame device;
+        require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "effects caller stream");
+        constexpr std::size_t kSamples = std::size_t{96} * 71 * 4;
+        constexpr std::size_t kBytes = kSamples * sizeof(float);
+        require_cuda(cudaMalloc(&device.source, kBytes), "effects caller input");
+        require_cuda(cudaMalloc(&device.destination, kBytes), "effects caller output");
+        const std::vector<float> source(kSamples, 0.18f), canary(kSamples, kCanary);
+        require_cuda(cudaMemcpy(device.source, source.data(), kBytes, cudaMemcpyHostToDevice), "effects caller initialized input");
+        int deviceId = 0;
+        CUcontext context = nullptr;
+        require_cuda(cudaGetDevice(&deviceId), "effects caller device");
+        if (cuCtxGetCurrent(&context) != CUDA_SUCCESS || !context)
+            throw std::runtime_error("effects caller exact context");
+        unsigned runs = 0, pixels = 0, constructions = 0, failures = 0;
+        for (unsigned route = 0; route < 4; ++route) {
+            const auto run = [&](const Json& row, EffectsCallerPath path, bool fullFallback = false) {
+                const bool genuine = row.contains("spec");
+                if (!genuine && path == EffectsCallerPath::Pixels)
+                    throw std::runtime_error("literal effects construction cannot execute pixels");
+                const auto& v = row.at("input");
+                const auto render = extent(v.at("render_extent")), full = extent(v.at("pixel_definition"));
+                ParamSnapshot params;
+                params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
+                params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+                params.cameraFilmFormatLongEdgeMm = 36.0f;
+                params.dirCouplers.active = false;
+                params.grainControls.active = false;
+                if (genuine) {
+                    const auto& spec = row.at("spec");
+                    params.grainControls.active = spec.at("grain_active");
+                    params.grainControls.debugView = spec.at("debug");
+                    params.filmDustAmount = scalar(spec.at("amounts")[0]);
+                    params.filmScratchAmount = scalar(spec.at("amounts")[1]);
+                    params.gateDustAmount = scalar(spec.at("amounts")[2]);
+                    params.gateScratchAmount = scalar(spec.at("amounts")[3]);
+                    params.gateWeaveAmount = wide(spec.at("weave"));
+                }
+                FocusedRenderStateBuildProduct product;
+                std::string diagnostic;
+                if (!(route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic)))
+                    throw std::runtime_error(diagnostic);
+                if (!genuine) {
+                    // Literal contracts retain genuine route/payload chemistry but stop
+                    // before resource admission; these overrides are not authenticated recipes.
+                    static_cast<void>(JuicerTestSupport::effects_frame_input(v, product.recipe.filmJuicerEffects));
+                    product.recipe.filmRaw.filmFormatLongEdgeMm = scalar(v.at("film_format_long_edge_mm"));
+                }
+                std::shared_ptr<const DirectRenderState> direct;
+                std::shared_ptr<const PrintRenderState> print;
+                if (route % 2) {
+                    print = frame_state<PrintRenderState>(std::move(product));
+                } else {
+                    direct = frame_state<DirectRenderState>(std::move(product));
+                }
+                const auto& recipe = print ? print->recipe : direct->recipe;
+                const auto& payload = print ? print->payload : direct->payload;
+                const auto bounds = rect(full);
+                const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(bounds, bounds, recipe.filmRaw.autoExposureMethod);
+                const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
+                const std::optional<ScatterHalationFrameDescriptor> halation;
+                Spektrafilm::FilmJuicerEffectsRecipe ignored;
+                const auto geometry = JuicerTestSupport::effects_frame_input(v, ignored).geometry;
+                const auto rowBytes = static_cast<std::ptrdiff_t>(static_cast<std::size_t>(full.width) * 4 * sizeof(float));
+                const JuicerCuda::ExecutionFrame frame{
+                    bounds, rect(render), fullFallback ? JuicerCuda::FrameRect{} : bounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), rowBytes, rowBytes, path == EffectsCallerPath::BeforeBuilder ? 2 : 4, device.stream, diffusion, halation, geometry, scalar(v.at("pixel_size_um")), wide(v.at("frame_time")), wide(v.at("frame_rate")), v.at("session_seed").get<std::uint64_t>(), v.at("clip_token").get<std::uintptr_t>(), meter, false, false};
+                JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+                snapshot.instanceToken.value = 0x645700 + route;
+                snapshot.frameToken.value = 37;
+                snapshot.snapshotId = ++runs;
+                snapshot.deviceContextKey = {deviceId, context};
+                snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
+                unsigned abortCalls = 0;
+                const FjAbortCallback stop{[](void* user) -> std::uint32_t {
+                                               ++*static_cast<unsigned*>(user);
+                                               return FJ_ABORT_REQUESTED;
+                                           },
+                                           &abortCalls};
+                require_cuda(cudaMemcpy(device.destination, canary.data(), kBytes, cudaMemcpyHostToDevice), "effects caller canary");
+                JuicerCuda::ExecutorTest::reset_effects_frame_observation();
+                JuicerCuda::ExecutorTest::FailureObservation events;
+                JuicerCuda::ExecutorTest::ResourceFailures resources;
+                const bool success = !v.at("active").get<bool>() || row.at("success").get<bool>();
+                const bool early = path == EffectsCallerPath::BeforeBuilder || !success;
+                if (early) {
+                    resources.lutPosition = 1;
+                    JuicerCuda::ExecutorTest::observation = &events;
+                    JuicerCuda::ExecutorTest::resourceFailures = &resources;
+                }
+                FjStatus result{0, 0, 0};
+                std::string failureText;
+                JuicerCuda::PendingContextLossRecovery recovery;
+                auto admission = JuicerProcess::root().begin_frame_preparation();
+                if (!admission.active())
+                    throw std::runtime_error("effects caller admission");
+                try {
+                    if (route % 2)
+                        JuicerCuda::execute_print({print->recipe, print->payload, frame, snapshot}, recovery, path == EffectsCallerPath::Pixels ? FjAbortCallback{} : stop);
+                    else
+                        JuicerCuda::execute_direct({direct->recipe, direct->payload, frame, snapshot}, recovery, path == EffectsCallerPath::Pixels ? FjAbortCallback{} : stop);
+                } catch (const JuicerCuda::ExecutionFailure& error) {
+                    result = error.failure.status;
+                    failureText = error.failure.diagnostic;
+                } catch (...) {
+                    JuicerCuda::ExecutorTest::observation = nullptr;
+                    JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+                    throw;
+                }
+                JuicerCuda::ExecutorTest::observation = nullptr;
+                JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+                const auto observed = JuicerCuda::ExecutorTest::effects_frame_observation();
+                const auto name = v.at("id").get<std::string>();
+                if (observed.count != (path == EffectsCallerPath::BeforeBuilder ? 0u : 1u))
+                    throw std::runtime_error(name + ": effects helper invocation count");
+                if (path != EffectsCallerPath::BeforeBuilder) {
+                    const auto geometryFields = [&](const Spektrafilm::FilmJuicerEffectsGeometry& g) -> Json {
+                        return {fields(g.pixelDefinition), std::bit_cast<std::uint64_t>(g.canonicalX), std::bit_cast<std::uint64_t>(g.canonicalY), std::bit_cast<std::uint64_t>(g.canonicalWidth), std::bit_cast<std::uint64_t>(g.canonicalHeight), std::bit_cast<std::uint64_t>(g.scaleX), std::bit_cast<std::uint64_t>(g.scaleY), std::bit_cast<std::uint64_t>(g.pixelAspectRatio)};
+                    };
+                    if (observed.route != params.scanRoute || fields(observed.renderExtent) != v.at("render_extent") || fields(observed.fullFrameExtent) != fields(full) || geometryFields(observed.geometry) != geometryFields(geometry) || std::bit_cast<std::uint32_t>(observed.filmFormatLongEdgeMm) != v.at("film_format_long_edge_mm") || std::bit_cast<std::uint32_t>(observed.pixelSizeUm) != v.at("pixel_size_um") || std::bit_cast<std::uint64_t>(observed.frameTime) != v.at("frame_time") || std::bit_cast<std::uint64_t>(observed.frameRate) != v.at("frame_rate") || observed.sessionSeed != v.at("session_seed") || observed.clipToken != v.at("clip_token") || observed.success != success)
+                        throw std::runtime_error(name + ": current callback effects facts");
+                    const bool present = success && v.at("active").get<bool>();
+                    if (observed.descriptor.has_value() != present || (present && JuicerTestSupport::effects_frame_fields(*observed.descriptor) != row.at("native")))
+                        throw std::runtime_error(name + ": complete effects policies/geometry/identity or failed/inactive omission");
+                }
+                const auto expectedStatus = early ? FJ_STATUS_PREPARATION_FAILURE : path == EffectsCallerPath::Pixels ? FJ_STATUS_SUCCESS
+                                                                                                                      : FJ_STATUS_CANCELLED;
+                if (result.category != expectedStatus || result.api != 0 || result.native_code != 0 || recovery.pending || abortCalls != (!early && path != EffectsCallerPath::Pixels ? 1u : 0u))
+                    throw std::runtime_error(std::string(name).append(": effects caller stage/status: ").append(failureText));
+                if (early) {
+                    const auto expectedText = path == EffectsCallerPath::BeforeBuilder
+                                                  ? route % 2 ? "UnsupportedPrintComponentCountForPhase4C" : "UnsupportedDirectComponentCountForPhase3C"
+                                                  : row.at("diagnostic").get<std::string>();
+                    if (failureText != expectedText || events.count != 0 || !events.armed || resources.lutAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0)
+                        throw std::runtime_error(name + ": failed effects reached preparation/upload/launch");
+                    ++failures;
+                }
+                std::vector<float> actual(kSamples);
+                require_cuda(cudaMemcpyAsync(actual.data(), device.destination, kBytes, cudaMemcpyDeviceToHost, device.stream), "effects caller readback");
+                require_cuda(cudaStreamSynchronize(device.stream), "effects caller completion");
+                if (path == EffectsCallerPath::Pixels) {
+                    if (!genuine || early || actual == canary)
+                        throw std::runtime_error("genuine effects pixel execution missing");
+                    const auto count = static_cast<std::size_t>(full.width) * static_cast<std::size_t>(full.height) * 4;
+                    for (std::size_t i = 0; i < count; ++i) {
+                        if (i % 4 == 3 ? std::bit_cast<std::uint32_t>(actual[i]) != std::bit_cast<std::uint32_t>(0.18f) : !std::isfinite(actual[i]) || actual[i] < 0.0f || actual[i] > 1.0f)
+                            throw std::runtime_error("effects genuine pixel/alpha contract");
+                    }
+                    ++pixels;
+                } else {
+                    if (actual != canary)
+                        throw std::runtime_error("effects construction-only execution wrote pixels");
+                    if (!early)
+                        ++constructions;
+                }
+                std::cout << "effects caller route=" << route << " name=" << name << " pixels=" << (path == EffectsCallerPath::Pixels) << " fallback=" << fullFallback << " builder_calls=" << observed.count << " success=" << success << " passed\n";
+            };
+            for (const auto& row : captured.at("products")) {
+                if (row.at("route") != route)
+                    continue;
+                const auto& spec = row.at("spec");
+                const bool pixel = spec.at("pixels");
+                const bool witness = spec.at("id") == "off";
+                if (witness && fj_test_effects_frame_fault(1).category != 0)
+                    throw std::runtime_error("arm inactive effects delegation witness");
+                run(row, pixel ? EffectsCallerPath::Pixels : EffectsCallerPath::StopBeforePreparation);
+                if (witness) {
+                    FjEffectsFrameInput active{};
+                    active.active = 1;
+                    FjEffectsFrameMath output{};
+                    FjEffectsFrameFailure failure{};
+                    if (fj_test_effects_frame_prepare(&active, &output, &failure, nullptr).category != 8 || failure.reason != 4)
+                        throw std::runtime_error("inactive effects helper consumed Rust mathematics");
+                }
+                if (spec.at("id") == "mixed") {
+                    run(row, EffectsCallerPath::BeforeBuilder);
+                    run(row, EffectsCallerPath::StopBeforePreparation, true);
+                }
+            }
+            const std::array names{
+                "mixed", "active-zero-work", "active-zero-work-recipe-zero", "inactive", "inactive-bad-identity", "film_dust", "film_scratch", "gate_dust", "gate_scratch", "weave-1", "weave-nan", "geometry-roi", "geometry-negative", "weave-roi", "film-time--1.75", "film_dust-ignored-frame_rate", "gate_dust-ignored-frame_time", "gate_dust-ignored-frame_rate", "gate_dust-ignored-pixel_size_um", "weave-frame_rate-0", "film_format_long_edge_mm-zero"};
+            for (const auto& row : captured.at("cases")) {
+                const auto name = row.at("input").at("id").get<std::string>();
+                if (std::find(names.begin(), names.end(), name) != names.end())
+                    run(row, EffectsCallerPath::StopBeforePreparation);
+            }
+            if (fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), 0x645700 + route, nullptr).category != 0)
+                throw std::runtime_error("effects caller membership retirement");
+        }
+        if (runs != 164 || pixels != 32 || constructions != 112 || failures != 20)
+            throw std::runtime_error("effects caller exact pixel/failure/stop membership");
+        std::cout << "effects caller runs=" << runs << " genuine pixels=" << pixels << " construction-only=" << constructions << " failures=" << failures << " passed\n";
+    }
+
     enum class GrainCallerPath : std::uint8_t {
         Pixels,
         StopBeforePreparation,
@@ -2155,6 +2385,12 @@ int main(int argc, char** argv) {
         }
 #endif
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (argc == 4 && std::string(argv[1]) == "--effects-frame") {
+            run_effects_frame_cases(argv[2], argv[3]);
+            if (cudaOwner.close().category != FJ_STATUS_SUCCESS)
+                throw std::runtime_error("effects caller owner cleanup failed");
+            return 0;
+        }
         if (argc == 4 && std::string(argv[1]) == "--grain-frame") {
             run_grain_frame_cases(argv[2], argv[3]);
             if (cudaOwner.close().category != FJ_STATUS_SUCCESS)

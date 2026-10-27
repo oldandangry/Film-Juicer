@@ -8,6 +8,10 @@
 #include "FilmEffectsFrameDescriptors.h"
 
 namespace JuicerTestSupport {
+    bool prepare_effects_frame(const Spektrafilm::FilmJuicerEffectsFrameDescriptorInput&, Spektrafilm::FilmJuicerEffectsFrameDescriptor&, std::string&);
+    Spektrafilm::FilmJuicerEffectsFrameDescriptorInput effects_frame_input(const nlohmann::json&, Spektrafilm::FilmJuicerEffectsRecipe&);
+    nlohmann::json effects_frame_fields(const Spektrafilm::FilmJuicerEffectsFrameDescriptor&);
+
     // Literal characterization only; existing production recipes go directly to prepare_grain_frame.
     Spektrafilm::VisualGrainFrameDescriptorInput grain_frame_input(const nlohmann::json&, Spektrafilm::VisualGrainRecipe&, Spektrafilm::FilmDevelopRecipe&);
     bool prepare_grain_frame(const Spektrafilm::VisualGrainFrameDescriptorInput&, Spektrafilm::VisualGrainFrameDescriptor&, std::string&);

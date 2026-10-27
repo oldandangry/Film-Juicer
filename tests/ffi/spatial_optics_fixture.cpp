@@ -1,3 +1,4 @@
+#include "RustEffectsFrameBridge.h"
 #include "spatial_optics_fixture.h"
 
 #include <algorithm>
@@ -498,5 +499,187 @@ namespace JuicerTestSupport {
         frame.sessionSeed = v.at("session_seed");
         frame.clipToken = v.at("clip_token");
         return frame;
+    }
+} // namespace JuicerTestSupport
+
+namespace JuicerTestSupport {
+    bool prepare_effects_frame(const Spektrafilm::FilmJuicerEffectsFrameDescriptorInput& input, Spektrafilm::FilmJuicerEffectsFrameDescriptor& out, std::string& diagnostic) {
+        out = {};
+        FjEffectsFrameInput raw{};
+        if (!JuicerEffects::project_input(input, raw, diagnostic))
+            return false;
+        FjEffectsFrameMath math{};
+        FjEffectsFrameFailure failure{};
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const auto status = fj_test_effects_frame_prepare(&raw, &math, &failure, &error);
+        return JuicerEffects::accept_result(input, status, math, failure, error, text, out, diagnostic);
+    }
+} // namespace JuicerTestSupport
+
+namespace JuicerTestSupport {
+    namespace {
+        float effects_scalar(const nlohmann::json& v) {
+            return std::bit_cast<float>(v.get<std::uint32_t>());
+        }
+        double effects_wide(const nlohmann::json& v) {
+            return std::bit_cast<double>(v.get<std::uint64_t>());
+        }
+        Spektrafilm::FilmJuicerEffectsFrameExtent effects_extent(const nlohmann::json& v) {
+            return {v.at(0), v.at(1), v.at(2), v.at(3)};
+        }
+        DefectDustRecipe effects_dust(const nlohmann::json& v) {
+            DefectDustRecipe out;
+            out.cellWidthMm = effects_scalar(v.at("cell_width_mm"));
+            out.cellHeightMm = effects_scalar(v.at("cell_height_mm"));
+            out.slotProbability = effects_scalar(v.at("slot_probability"));
+            out.softnessMinMm = effects_scalar(v.at("softness_min_mm"));
+            out.softnessMaxMm = effects_scalar(v.at("softness_max_mm"));
+            out.softnessSizeCapFraction = effects_scalar(v.at("softness_size_cap_fraction"));
+            out.supportXMm = effects_scalar(v.at("support_x_mm"));
+            out.supportYMm = effects_scalar(v.at("support_y_mm"));
+            out.fiberFraction = effects_scalar(v.at("fiber_fraction"));
+            out.fiberDriftFraction = effects_scalar(v.at("fiber_drift_fraction"));
+            out.fiberFirstKnotMin = effects_scalar(v.at("fiber_first_knot_min"));
+            out.fiberFirstKnotMax = effects_scalar(v.at("fiber_first_knot_max"));
+            out.fiberSecondKnotMin = effects_scalar(v.at("fiber_second_knot_min"));
+            out.fiberSecondKnotMax = effects_scalar(v.at("fiber_second_knot_max"));
+            out.fiberInteriorWidthMinFraction = effects_scalar(v.at("fiber_interior_width_min_fraction"));
+            out.fiberInteriorWidthMaxFraction = effects_scalar(v.at("fiber_interior_width_max_fraction"));
+            out.diameterMinMm = effects_scalar(v.at("diameter_min_mm"));
+            out.diameterBulkMaxMm = effects_scalar(v.at("diameter_bulk_max_mm"));
+            out.diameterMaxMm = effects_scalar(v.at("diameter_max_mm"));
+            out.diameterTailFraction = effects_scalar(v.at("diameter_tail_fraction"));
+            out.fiberLengthMinMm = effects_scalar(v.at("fiber_length_min_mm"));
+            out.fiberLengthMaxMm = effects_scalar(v.at("fiber_length_max_mm"));
+            out.fiberWidthMinMm = effects_scalar(v.at("fiber_width_min_mm"));
+            out.fiberWidthMaxMm = effects_scalar(v.at("fiber_width_max_mm"));
+            out.opacityFaintCumulative = effects_scalar(v.at("opacity_faint_cumulative"));
+            out.opacityIntermediateCumulative = effects_scalar(v.at("opacity_intermediate_cumulative"));
+            out.compactOpacityMin = effects_scalar(v.at("compact_opacity_min"));
+            out.compactOpacityFaintEnd = effects_scalar(v.at("compact_opacity_faint_end"));
+            out.compactOpacityIntermediateEnd = effects_scalar(v.at("compact_opacity_intermediate_end"));
+            out.compactOpacityMax = effects_scalar(v.at("compact_opacity_max"));
+            out.fiberOpacityMin = effects_scalar(v.at("fiber_opacity_min"));
+            out.fiberOpacityFaintEnd = effects_scalar(v.at("fiber_opacity_faint_end"));
+            out.fiberOpacityIntermediateEnd = effects_scalar(v.at("fiber_opacity_intermediate_end"));
+            out.fiberOpacityMax = effects_scalar(v.at("fiber_opacity_max"));
+            out.compactDominantAspectMin = effects_scalar(v.at("compact_dominant_aspect_min"));
+            out.compactDominantAspectMax = effects_scalar(v.at("compact_dominant_aspect_max"));
+            out.compactSubsidiaryScaleMin = effects_scalar(v.at("compact_subsidiary_scale_min"));
+            out.compactSubsidiaryScaleMax = effects_scalar(v.at("compact_subsidiary_scale_max"));
+            out.compactSubsidiaryAspectMin = effects_scalar(v.at("compact_subsidiary_aspect_min"));
+            out.compactSubsidiaryAspectMax = effects_scalar(v.at("compact_subsidiary_aspect_max"));
+            out.compactSubsidiaryOffsetMax = effects_scalar(v.at("compact_subsidiary_offset_max"));
+            out.compactSubsidiaryAngleMaxRadians = effects_scalar(v.at("compact_subsidiary_angle_max_radians"));
+            return out;
+        }
+        DefectScratchRecipe effects_scratch(const nlohmann::json& v) {
+            DefectScratchRecipe out;
+            out.cellWidthMm = effects_scalar(v.at("cell_width_mm"));
+            out.cellHeightMm = effects_scalar(v.at("cell_height_mm"));
+            out.slotProbability = effects_scalar(v.at("slot_probability"));
+            out.softnessMinMm = effects_scalar(v.at("softness_min_mm"));
+            out.softnessMaxMm = effects_scalar(v.at("softness_max_mm"));
+            out.softnessSizeCapFraction = effects_scalar(v.at("softness_size_cap_fraction"));
+            out.supportXMm = effects_scalar(v.at("support_x_mm"));
+            out.supportYMm = effects_scalar(v.at("support_y_mm"));
+            out.lengthMinMm = effects_scalar(v.at("length_min_mm"));
+            out.lengthBulkMaxMm = effects_scalar(v.at("length_bulk_max_mm"));
+            out.lengthMaxMm = effects_scalar(v.at("length_max_mm"));
+            out.lengthTailFraction = effects_scalar(v.at("length_tail_fraction"));
+            out.widthMinMm = effects_scalar(v.at("width_min_mm"));
+            out.widthBulkMaxMm = effects_scalar(v.at("width_bulk_max_mm"));
+            out.widthMaxMm = effects_scalar(v.at("width_max_mm"));
+            out.widthTailFraction = effects_scalar(v.at("width_tail_fraction"));
+            out.driftFraction = effects_scalar(v.at("drift_fraction"));
+            out.firstKnotMin = effects_scalar(v.at("first_knot_min"));
+            out.firstKnotMax = effects_scalar(v.at("first_knot_max"));
+            out.secondKnotMin = effects_scalar(v.at("second_knot_min"));
+            out.secondKnotMax = effects_scalar(v.at("second_knot_max"));
+            out.interiorWidthMinFraction = effects_scalar(v.at("interior_width_min_fraction"));
+            out.interiorWidthMaxFraction = effects_scalar(v.at("interior_width_max_fraction"));
+            out.interiorDepthMinFraction = effects_scalar(v.at("interior_depth_min_fraction"));
+            out.interiorDepthMaxFraction = effects_scalar(v.at("interior_depth_max_fraction"));
+            out.endpointAbruptProbability = effects_scalar(v.at("endpoint_abrupt_probability"));
+            out.interruptionProbability = effects_scalar(v.at("interruption_probability"));
+            out.gapCenterMin = effects_scalar(v.at("gap_center_min"));
+            out.gapCenterMax = effects_scalar(v.at("gap_center_max"));
+            out.gapSpanMin = effects_scalar(v.at("gap_span_min"));
+            out.gapSpanMax = effects_scalar(v.at("gap_span_max"));
+            out.scuffProbability = effects_scalar(v.at("scuff_probability"));
+            out.scuffLengthMaxMm = effects_scalar(v.at("scuff_length_max_mm"));
+            out.scuffAngleMaxRadians = effects_scalar(v.at("scuff_angle_max_radians"));
+            out.strengthMin = effects_scalar(v.at("strength_min"));
+            out.strengthMax = effects_scalar(v.at("strength_max"));
+            return out;
+        }
+    } // namespace
+    Spektrafilm::FilmJuicerEffectsFrameDescriptorInput effects_frame_input(const nlohmann::json& v, Spektrafilm::FilmJuicerEffectsRecipe& recipe) {
+        Spektrafilm::FilmJuicerEffectsFrameDescriptorInput frame;
+        recipe.active = v.at("active");
+        recipe.hash = v.at("recipe_hash");
+        recipe.gateWeaveAmount = effects_wide(v.at("gate_weave_amount"));
+        recipe.filmDust = effects_dust(v.at("film_dust"));
+        recipe.filmScratch = effects_scratch(v.at("film_scratch"));
+        recipe.gateDust = effects_dust(v.at("gate_dust"));
+        recipe.gateScratch = effects_scratch(v.at("gate_scratch"));
+        frame.recipe = v.value("missing_recipe", false) ? nullptr : &recipe;
+        frame.renderExtent = effects_extent(v.at("render_extent"));
+        frame.fullFrameExtent = effects_extent(v.at("full_frame_extent"));
+        frame.geometry.pixelDefinition = effects_extent(v.at("pixel_definition"));
+        frame.pixelSizeUm = effects_scalar(v.at("pixel_size_um"));
+        frame.filmFormatLongEdgeMm = effects_scalar(v.at("film_format_long_edge_mm"));
+        frame.frameTime = effects_wide(v.at("frame_time"));
+        frame.frameRate = effects_wide(v.at("frame_rate"));
+        frame.sessionSeed = v.at("session_seed");
+        frame.clipToken = v.at("clip_token");
+        frame.geometry.canonicalX = effects_wide(v.at("canonical_x"));
+        frame.geometry.canonicalY = effects_wide(v.at("canonical_y"));
+        frame.geometry.canonicalWidth = effects_wide(v.at("canonical_width"));
+        frame.geometry.canonicalHeight = effects_wide(v.at("canonical_height"));
+        frame.geometry.scaleX = effects_wide(v.at("scale_x"));
+        frame.geometry.scaleY = effects_wide(v.at("scale_y"));
+        frame.geometry.pixelAspectRatio = effects_wide(v.at("pixel_aspect_ratio"));
+        return frame;
+    }
+    namespace {
+        nlohmann::json effects_policy(const DefectDustRecipe& v) {
+            return nlohmann::json::array({std::bit_cast<std::uint32_t>(v.cellWidthMm), std::bit_cast<std::uint32_t>(v.cellHeightMm), std::bit_cast<std::uint32_t>(v.slotProbability), std::bit_cast<std::uint32_t>(v.softnessMinMm), std::bit_cast<std::uint32_t>(v.softnessMaxMm), std::bit_cast<std::uint32_t>(v.softnessSizeCapFraction), std::bit_cast<std::uint32_t>(v.supportXMm), std::bit_cast<std::uint32_t>(v.supportYMm), std::bit_cast<std::uint32_t>(v.fiberFraction), std::bit_cast<std::uint32_t>(v.fiberDriftFraction), std::bit_cast<std::uint32_t>(v.fiberFirstKnotMin), std::bit_cast<std::uint32_t>(v.fiberFirstKnotMax), std::bit_cast<std::uint32_t>(v.fiberSecondKnotMin), std::bit_cast<std::uint32_t>(v.fiberSecondKnotMax), std::bit_cast<std::uint32_t>(v.fiberInteriorWidthMinFraction), std::bit_cast<std::uint32_t>(v.fiberInteriorWidthMaxFraction), std::bit_cast<std::uint32_t>(v.diameterMinMm), std::bit_cast<std::uint32_t>(v.diameterBulkMaxMm), std::bit_cast<std::uint32_t>(v.diameterMaxMm), std::bit_cast<std::uint32_t>(v.diameterTailFraction), std::bit_cast<std::uint32_t>(v.fiberLengthMinMm), std::bit_cast<std::uint32_t>(v.fiberLengthMaxMm), std::bit_cast<std::uint32_t>(v.fiberWidthMinMm), std::bit_cast<std::uint32_t>(v.fiberWidthMaxMm), std::bit_cast<std::uint32_t>(v.opacityFaintCumulative), std::bit_cast<std::uint32_t>(v.opacityIntermediateCumulative), std::bit_cast<std::uint32_t>(v.compactOpacityMin), std::bit_cast<std::uint32_t>(v.compactOpacityFaintEnd), std::bit_cast<std::uint32_t>(v.compactOpacityIntermediateEnd), std::bit_cast<std::uint32_t>(v.compactOpacityMax), std::bit_cast<std::uint32_t>(v.fiberOpacityMin), std::bit_cast<std::uint32_t>(v.fiberOpacityFaintEnd), std::bit_cast<std::uint32_t>(v.fiberOpacityIntermediateEnd), std::bit_cast<std::uint32_t>(v.fiberOpacityMax), std::bit_cast<std::uint32_t>(v.compactDominantAspectMin), std::bit_cast<std::uint32_t>(v.compactDominantAspectMax), std::bit_cast<std::uint32_t>(v.compactSubsidiaryScaleMin), std::bit_cast<std::uint32_t>(v.compactSubsidiaryScaleMax), std::bit_cast<std::uint32_t>(v.compactSubsidiaryAspectMin), std::bit_cast<std::uint32_t>(v.compactSubsidiaryAspectMax), std::bit_cast<std::uint32_t>(v.compactSubsidiaryOffsetMax), std::bit_cast<std::uint32_t>(v.compactSubsidiaryAngleMaxRadians)});
+        }
+        nlohmann::json effects_policy(const DefectScratchRecipe& v) {
+            return nlohmann::json::array({std::bit_cast<std::uint32_t>(v.cellWidthMm), std::bit_cast<std::uint32_t>(v.cellHeightMm), std::bit_cast<std::uint32_t>(v.slotProbability), std::bit_cast<std::uint32_t>(v.softnessMinMm), std::bit_cast<std::uint32_t>(v.softnessMaxMm), std::bit_cast<std::uint32_t>(v.softnessSizeCapFraction), std::bit_cast<std::uint32_t>(v.supportXMm), std::bit_cast<std::uint32_t>(v.supportYMm), std::bit_cast<std::uint32_t>(v.lengthMinMm), std::bit_cast<std::uint32_t>(v.lengthBulkMaxMm), std::bit_cast<std::uint32_t>(v.lengthMaxMm), std::bit_cast<std::uint32_t>(v.lengthTailFraction), std::bit_cast<std::uint32_t>(v.widthMinMm), std::bit_cast<std::uint32_t>(v.widthBulkMaxMm), std::bit_cast<std::uint32_t>(v.widthMaxMm), std::bit_cast<std::uint32_t>(v.widthTailFraction), std::bit_cast<std::uint32_t>(v.driftFraction), std::bit_cast<std::uint32_t>(v.firstKnotMin), std::bit_cast<std::uint32_t>(v.firstKnotMax), std::bit_cast<std::uint32_t>(v.secondKnotMin), std::bit_cast<std::uint32_t>(v.secondKnotMax), std::bit_cast<std::uint32_t>(v.interiorWidthMinFraction), std::bit_cast<std::uint32_t>(v.interiorWidthMaxFraction), std::bit_cast<std::uint32_t>(v.interiorDepthMinFraction), std::bit_cast<std::uint32_t>(v.interiorDepthMaxFraction), std::bit_cast<std::uint32_t>(v.endpointAbruptProbability), std::bit_cast<std::uint32_t>(v.interruptionProbability), std::bit_cast<std::uint32_t>(v.gapCenterMin), std::bit_cast<std::uint32_t>(v.gapCenterMax), std::bit_cast<std::uint32_t>(v.gapSpanMin), std::bit_cast<std::uint32_t>(v.gapSpanMax), std::bit_cast<std::uint32_t>(v.scuffProbability), std::bit_cast<std::uint32_t>(v.scuffLengthMaxMm), std::bit_cast<std::uint32_t>(v.scuffAngleMaxRadians), std::bit_cast<std::uint32_t>(v.strengthMin), std::bit_cast<std::uint32_t>(v.strengthMax)});
+        }
+    } // namespace
+    nlohmann::json effects_frame_fields(const Spektrafilm::FilmJuicerEffectsFrameDescriptor& v) {
+        nlohmann::json origins = nlohmann::json::array();
+        for (const auto& o : v.origins)
+            origins.push_back({o.cellX, o.cellY, std::bit_cast<std::uint32_t>(o.localXMm), std::bit_cast<std::uint32_t>(o.localYMm)});
+        return {{"render_extent", {v.renderExtent.x, v.renderExtent.y, v.renderExtent.width, v.renderExtent.height}},
+                {"full_frame_extent", {v.fullFrameExtent.x, v.fullFrameExtent.y, v.fullFrameExtent.width, v.fullFrameExtent.height}},
+                {"film_dust", effects_policy(v.filmDust)},
+                {"film_scratch", effects_policy(v.filmScratch)},
+                {"gate_dust", effects_policy(v.gateDust)},
+                {"gate_scratch", effects_policy(v.gateScratch)},
+                {"origins", origins},
+                {"sample_step_x_mm", std::bit_cast<std::uint32_t>(v.sampleStepXMm)},
+                {"sample_step_y_mm", std::bit_cast<std::uint32_t>(v.sampleStepYMm)},
+                {"roi_offset_x", v.roiOffsetX},
+                {"roi_offset_y", v.roiOffsetY},
+                {"gate_width", v.gateWidth},
+                {"gate_height", v.gateHeight},
+                {"session_seed", v.sessionSeed},
+                {"clip_token", v.clipToken},
+                {"weave_active", v.weaveActive},
+                {"weave_dx_px", std::bit_cast<std::uint32_t>(v.weaveDxPx)},
+                {"weave_dy_px", std::bit_cast<std::uint32_t>(v.weaveDyPx)},
+                {"weave_cos_rot", std::bit_cast<std::uint32_t>(v.weaveCosRot)},
+                {"weave_sin_rot", std::bit_cast<std::uint32_t>(v.weaveSinRot)},
+                {"film_active", v.filmActive},
+                {"gate_transmittance_active", v.gateTransmittanceActive},
+                {"gate_output_active", v.gateOutputActive},
+                {"requires_full_frame", v.requiresFullFrame},
+                {"recipe_hash", v.recipeHash},
+                {"hash", v.hash}};
     }
 } // namespace JuicerTestSupport

@@ -119,6 +119,24 @@ namespace JuicerCuda {
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
     namespace ExecutorTest {
+        struct EffectsFrameObservation {
+            Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
+            unsigned count = 0;
+            Spektrafilm::FilmJuicerEffectsFrameExtent renderExtent;
+            Spektrafilm::FilmJuicerEffectsFrameExtent fullFrameExtent;
+            Spektrafilm::FilmJuicerEffectsGeometry geometry;
+            float filmFormatLongEdgeMm = 0.0f;
+            float pixelSizeUm = 0.0f;
+            double frameTime = 0.0;
+            double frameRate = 0.0;
+            std::uint64_t sessionSeed = 0;
+            std::uint64_t clipToken = 0;
+            bool success = false;
+            std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> descriptor;
+        };
+        void reset_effects_frame_observation() noexcept;
+        EffectsFrameObservation effects_frame_observation() noexcept;
+        void observe_effects_frame(EffectsFrameObservation observation) noexcept;
         struct GrainFrameObservation {
             Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
             unsigned count = 0;

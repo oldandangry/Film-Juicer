@@ -906,7 +906,7 @@ class CheckpointTests(unittest.TestCase):
 
     def production_fixture(self):
         """Native tiny probes exercise retained proof, not product mathematics."""
-        for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py"):
+        for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py", "effects_frame_abi_assertions.inc", "effects_frame_probe_contract.py"):
             target = self.root / "tests/ffi" / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((ROOT / "tests/ffi" / name).read_bytes())
@@ -1006,6 +1006,19 @@ class CheckpointTests(unittest.TestCase):
             "production_cases": [{"case": case, "envelope": [0, 0, 0], "failure": [0, 0, 3, 3],
                                   "output": [0] * 114 + [i], "diagnostic": "", "diagnostic_length": 0}
                                  for i, case in enumerate(qualification.GRAIN_FRAME_CASE_IDS)]})
+        effects_directory = self.root / "tests/film/effects-frame-fixtures"
+        effects_directory.mkdir(parents=True, exist_ok=True)
+        effects_files = {name: effects_directory / name for name in ("native.json", "context.json", "checked.json", "inputs.json")}
+        for name, path in effects_files.items():
+            write_json(path, {"scope": "effects frame retained full-value/failure protocol only", "file": name})
+        write_json(effects_directory / "manifest.json", {
+            "presets": {preset: {"native": "logical.json"} for preset in qualification.PRESETS},
+            "payloads": {"logical.json": "native.json"}, "contexts": {"logical.json": "context.json"},
+            "checked": "checked.json", "sha256": {name: digest(path) for name, path in effects_files.items()},
+            "production_cases": {preset: [{"case": case, "envelope": [0, 0, 0], "failure": [0],
+                                          "output": [0] * 39 + [index], "diagnostic": "", "diagnostic_length": 0}
+                                         for index, case in enumerate(qualification.EFFECTS_FRAME_CASE_IDS)]
+                                 for preset in qualification.PRESETS}})
         boundary_directory = self.root / "tests/dir/boundary-fixtures"
         boundary_directory.mkdir(parents=True, exist_ok=True)
         boundary_files = {name: boundary_directory / name for name in ("native.json", "checked.json", "inputs.json")}
@@ -1047,7 +1060,7 @@ def execute(name, command):
 header=out/'production-film-expected.h'
 header.write_text('#define EXPECTED 10\n')
 consumed={str(header):checksum(header)}
-for name in ('grain_frame_abi_assertions.inc', 'grain_probe_contract.py'):
+for name in ('grain_frame_abi_assertions.inc', 'grain_probe_contract.py', 'effects_frame_abi_assertions.inc', 'effects_frame_probe_contract.py'):
     helper=(Path('tests/ffi')/name).resolve()
     consumed[str(helper)]=checksum(helper)
 reference_manifest=(Path('tests/film/reference-fixtures')/'manifest.json').resolve()
@@ -1103,6 +1116,14 @@ grain_checked=grain_manifest.parent/'checked.json'
 grain_inputs=grain_manifest.parent/'inputs.json'
 consumed.update({str(path):checksum(path) for path in (grain_manifest,grain_payload,grain_checked,grain_inputs)})
 grain_results=grain_spec['production_cases']
+effects_manifest=(Path('tests/film/effects-frame-fixtures')/'manifest.json').resolve()
+effects_spec=json.loads(effects_manifest.read_text())
+effects_payload=effects_manifest.parent/'native.json'
+effects_context=effects_manifest.parent/'context.json'
+effects_checked=effects_manifest.parent/'checked.json'
+effects_inputs=effects_manifest.parent/'inputs.json'
+consumed.update({str(path):checksum(path) for path in (effects_manifest,effects_payload,effects_context,effects_checked,effects_inputs)})
+effects_results=effects_spec['production_cases'][preset]
 boundary_manifest=(Path('tests/dir/boundary-fixtures')/'manifest.json').resolve()
 boundary_spec=json.loads(boundary_manifest.read_text())
 boundary_payload=boundary_manifest.parent/'native.json'
@@ -1135,6 +1156,7 @@ for name in ['film','accepted-output-color']:
     source=out/(name+'.c')
     result_lines = ''.join('puts('+json.dumps('DIFFUSION_FRAME_RESULT '+json.dumps(row))+');' for row in diffusion_results) if name=='film' else ''
     if name=='film':result_lines += ''.join('puts('+json.dumps('GRAIN_FRAME_RESULT '+json.dumps(row))+');' for row in grain_results)
+    if name=='film':result_lines += ''.join('puts('+json.dumps('EFFECTS_FRAME_RESULT '+json.dumps(row))+');' for row in effects_results)
     if name=='film':result_lines += ''.join('puts('+json.dumps('DIR_FRAME_RESULT '+json.dumps(row))+');' for row in dir_results)
     if name=='film':result_lines += ''.join('puts('+json.dumps('DIR_BOUNDARY_RESULT '+json.dumps(row))+');' for row in boundary_results)
     source.write_text('#include "production-film-expected.h"\n#include <stdio.h>\n'
@@ -1183,6 +1205,9 @@ record.write_text(json.dumps(commands))
     'grain_frame_fixture':{'manifest':str(grain_manifest),'payload':str(grain_payload),
                           'normative':str(grain_checked),'input_spec':str(grain_inputs),'logical_preset':preset},
     'grain_frame_results':grain_results,
+    'effects_frame_fixture':{'manifest':str(effects_manifest),'payload':str(effects_payload),'context':str(effects_context),
+                            'normative':str(effects_checked),'input_spec':str(effects_inputs),'logical_preset':preset},
+    'effects_frame_results':effects_results,
     'dir_boundary_fixture':{'manifest':str(boundary_manifest),'payload':str(boundary_payload),
                             'normative':str(boundary_checked),'input_spec':str(boundary_inputs),'logical_preset':preset},
     'dir_boundary_results':boundary_results,
@@ -1226,7 +1251,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                            "executable": str(executable), "linked_sha256": digest(executable),
                            "before_run_sha256": digest(executable), "after_run_sha256": digest(executable)})
         helpers = [self.root / "tests/ffi" / name for name in
-                   ("grain_frame_abi_assertions.inc", "grain_probe_contract.py")]
+                   ("grain_frame_abi_assertions.inc", "grain_probe_contract.py", "effects_frame_abi_assertions.inc", "effects_frame_probe_contract.py")]
         for helper in helpers:
             helper.parent.mkdir(parents=True, exist_ok=True)
             helper.write_bytes((ROOT / helper.relative_to(self.root)).read_bytes())
@@ -1515,6 +1540,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertEqual(len(document["diffusion_frame_results"]), 507)
         self.assertEqual(len(document["dir_frame_results"]), 121)
         self.assertEqual(len(document["grain_frame_results"]), 188)
+        self.assertEqual(len(document["effects_frame_results"]), 453)
         self.assertEqual(len(document["dir_boundary_results"]), 171)
         stdout = manifest.parent / "film-values.stdout"
         commands_path = manifest.parent / "commands.json"
@@ -1591,6 +1617,41 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             with self.assertRaisesRegex(ValueError, "DIR boundary"):
                 qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
 
+        for mode in ("missing", "word", "failure", "diagnostic"):
+            damaged = json.loads(json.dumps(document))
+            rows = damaged["effects_frame_results"]
+            if mode == "missing":
+                rows.pop()
+            elif mode == "word":
+                rows[0]["output"][-1] ^= 1
+            elif mode == "failure":
+                rows[0]["failure"][0] = 1
+            else:
+                rows[0]["diagnostic"] = "wrong"
+            damaged_path = manifest.with_name("effects-" + mode + ".json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "effects frame"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        try:
+            line = next(line for line in original_stdout.decode().splitlines() if line.startswith("EFFECTS_FRAME_RESULT "))
+            row = json.loads(line.removeprefix("EFFECTS_FRAME_RESULT "))
+            changed = json.loads(json.dumps(row))
+            changed["output"][-1] ^= 1
+            stdout.write_bytes(original_stdout.replace(json.dumps(row).encode(), json.dumps(changed).encode(), 1))
+            commands = json.loads(original_commands)
+            next(command for command in commands if command["name"] == "film-values")["stdout_sha256"] = digest(stdout)
+            write_json(commands_path, commands)
+            damaged = json.loads(json.dumps(document))
+            damaged["commands"]["sha256"] = digest(commands_path)
+            damaged["command_outputs"][str(stdout)] = digest(stdout)
+            damaged_path = manifest.with_name("effects-rehashed-executed-output.json")
+            write_json(damaged_path, damaged)
+            with self.assertRaisesRegex(ValueError, "effects frame executed stdout"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+        finally:
+            stdout.write_bytes(original_stdout)
+            commands_path.write_bytes(original_commands)
+
         for mode in ("missing", "duplicate", "case", "word", "envelope", "failure", "diagnostic", "length"):
             damaged = json.loads(json.dumps(document))
             rows = damaged["grain_frame_results"]
@@ -1614,7 +1675,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             write_json(damaged_path, damaged)
             with self.assertRaisesRegex(ValueError, "grain frame"):
                 qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
-        for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py"):
+        for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py", "effects_frame_abi_assertions.inc", "effects_frame_probe_contract.py"):
             target = self.root / "tests/ffi" / name
             original = target.read_bytes()
             try:
@@ -1811,10 +1872,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             write_json(damaged_path, damaged)
             with self.assertRaisesRegex(ValueError, "post-effects value/failure"):
                 qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
-        for field in ("grain_frame_results", "grain_frame_fixture", "dir_boundary_results", "dir_boundary_fixture", "dir_frame_results", "dir_frame_fixture", "diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture", "gaussian_results", "gaussian_fixture"):
+        for field in ("effects_frame_results", "effects_frame_fixture", "grain_frame_results", "grain_frame_fixture", "dir_boundary_results", "dir_boundary_fixture", "dir_frame_results", "dir_frame_fixture", "diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture", "gaussian_results", "gaussian_fixture"):
             missing = manifest.with_name("without-" + field + ".json")
             write_json(missing, {key: value for key, value in document.items() if key != field})
-            expected = "grain frame" if field.startswith("grain_frame") else "DIR boundary" if field.startswith("dir_boundary") else "DIR frame" if field.startswith("dir_frame") else "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "Gaussian" if field.startswith("gaussian") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
+            expected = "effects frame" if field.startswith("effects_frame") else "grain frame" if field.startswith("grain_frame") else "DIR boundary" if field.startswith("dir_boundary") else "DIR frame" if field.startswith("dir_frame") else "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "Gaussian" if field.startswith("gaussian") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
             with self.assertRaisesRegex(ValueError, expected):
                 qualification.production_payloads(missing, digest(missing), root=self.root,
                     inputs=stage["identity"]["inputs"])
@@ -1915,7 +1976,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
-        for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py"):
+        for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py", "effects_frame_abi_assertions.inc", "effects_frame_probe_contract.py"):
             relative = "tests/ffi/" + name
             content = (ROOT / relative).read_text()
             (self.root / relative).write_text(content)
@@ -2445,7 +2506,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def test_production_inputs_do_not_require_test_registration(self):
         self.native_project()
-        helpers = ("tests/ffi/grain_frame_abi_assertions.inc", "tests/ffi/grain_probe_contract.py")
+        helpers = ("tests/ffi/grain_frame_abi_assertions.inc", "tests/ffi/grain_probe_contract.py", "tests/ffi/effects_frame_abi_assertions.inc", "tests/ffi/effects_frame_probe_contract.py")
         for name in helpers:
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)

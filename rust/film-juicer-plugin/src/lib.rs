@@ -128,3 +128,8 @@ mod dir_boundary_bridge;
     reason = "the grain frame edge admits synchronous foreign storage and contains whole-operation unwind"
 )]
 mod grain_frame_bridge;
+#[allow(
+    unsafe_code,
+    reason = "the physical effects frame edge admits fixed foreign records and contains whole-operation unwind"
+)]
+mod effects_frame_bridge;

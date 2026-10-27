@@ -7,6 +7,7 @@
 #include <wchar.h>
 #include "juicer_legacy_api.h"
 #include "grain_frame_abi_assertions.inc"
+#include "effects_frame_abi_assertions.inc"
 #include "production-film-expected.h"
 
 /* Fixed reflected-boundary layouts, types, extents, tags and real signatures. */
@@ -2950,6 +2951,300 @@ static int grain_frame_values(void) {
     return 0;
 }
 
+static uint64_t effects_float_word(float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+static size_t effects_frame_words(const FjEffectsFrameMath* v, uint64_t words[FJ_EFFECTS_FRAME_OUTPUT_WORD_COUNT]) {
+    size_t n = 0;
+    words[n++] = v->present;
+    words[n++] = v->flags;
+    words[n++] = (uint64_t)(int64_t)v->render_extent.x;
+    words[n++] = (uint64_t)(int64_t)v->render_extent.y;
+    words[n++] = (uint64_t)(int64_t)v->render_extent.width;
+    words[n++] = (uint64_t)(int64_t)v->render_extent.height;
+    words[n++] = (uint64_t)(int64_t)v->full_frame_extent.x;
+    words[n++] = (uint64_t)(int64_t)v->full_frame_extent.y;
+    words[n++] = (uint64_t)(int64_t)v->full_frame_extent.width;
+    words[n++] = (uint64_t)(int64_t)v->full_frame_extent.height;
+    for (size_t index = 0; index < 4; ++index) {
+        words[n++] = (uint64_t)v->origins[index].cell_x;
+        words[n++] = (uint64_t)v->origins[index].cell_y;
+        words[n++] = effects_float_word(v->origins[index].local_x_mm);
+        words[n++] = effects_float_word(v->origins[index].local_y_mm);
+    }
+    words[n++] = effects_float_word(v->sample_step_x_mm);
+    words[n++] = effects_float_word(v->sample_step_y_mm);
+    words[n++] = (uint64_t)(int64_t)v->roi_offset_x;
+    words[n++] = (uint64_t)(int64_t)v->roi_offset_y;
+    words[n++] = (uint64_t)(int64_t)v->gate_width;
+    words[n++] = (uint64_t)(int64_t)v->gate_height;
+    words[n++] = v->session_seed;
+    words[n++] = v->clip_token;
+    words[n++] = effects_float_word(v->weave_dx_px);
+    words[n++] = effects_float_word(v->weave_dy_px);
+    words[n++] = effects_float_word(v->weave_cos_rot);
+    words[n++] = effects_float_word(v->weave_sin_rot);
+    words[n++] = v->recipe_hash;
+    words[n++] = v->hash;
+    return n;
+}
+static void effects_frame_decode(const uint64_t words[FJ_EFFECTS_FRAME_INPUT_WORD_COUNT], FjEffectsFrameInput* v) {
+    size_t n = 0;
+    v->active = (uint32_t)words[n++];
+    v->render_extent.x = (int32_t)words[n++];
+    v->render_extent.y = (int32_t)words[n++];
+    v->render_extent.width = (int32_t)words[n++];
+    v->render_extent.height = (int32_t)words[n++];
+    v->pixel_definition.x = (int32_t)words[n++];
+    v->pixel_definition.y = (int32_t)words[n++];
+    v->pixel_definition.width = (int32_t)words[n++];
+    v->pixel_definition.height = (int32_t)words[n++];
+    v->pixel_size_um = dir_frame_float(words[n++]);
+    v->film_format_long_edge_mm = dir_frame_float(words[n++]);
+    v->canonical_x = diffusion_double(words[n++]);
+    v->canonical_y = diffusion_double(words[n++]);
+    v->canonical_width = diffusion_double(words[n++]);
+    v->canonical_height = diffusion_double(words[n++]);
+    v->scale_x = diffusion_double(words[n++]);
+    v->scale_y = diffusion_double(words[n++]);
+    v->pixel_aspect_ratio = diffusion_double(words[n++]);
+    v->frame_time = diffusion_double(words[n++]);
+    v->frame_rate = diffusion_double(words[n++]);
+    v->gate_weave_amount = diffusion_double(words[n++]);
+    v->session_seed = words[n++];
+    v->clip_token = words[n++];
+    v->recipe_hash = words[n++];
+    v->film_dust.cell_width_mm = dir_frame_float(words[n++]);
+    v->film_dust.cell_height_mm = dir_frame_float(words[n++]);
+    v->film_dust.slot_probability = dir_frame_float(words[n++]);
+    v->film_dust.softness_min_mm = dir_frame_float(words[n++]);
+    v->film_dust.softness_max_mm = dir_frame_float(words[n++]);
+    v->film_dust.softness_size_cap_fraction = dir_frame_float(words[n++]);
+    v->film_dust.support_x_mm = dir_frame_float(words[n++]);
+    v->film_dust.support_y_mm = dir_frame_float(words[n++]);
+    v->film_dust.fiber_fraction = dir_frame_float(words[n++]);
+    v->film_dust.fiber_drift_fraction = dir_frame_float(words[n++]);
+    v->film_dust.fiber_first_knot_min = dir_frame_float(words[n++]);
+    v->film_dust.fiber_first_knot_max = dir_frame_float(words[n++]);
+    v->film_dust.fiber_second_knot_min = dir_frame_float(words[n++]);
+    v->film_dust.fiber_second_knot_max = dir_frame_float(words[n++]);
+    v->film_dust.fiber_interior_width_min_fraction = dir_frame_float(words[n++]);
+    v->film_dust.fiber_interior_width_max_fraction = dir_frame_float(words[n++]);
+    v->film_dust.diameter_min_mm = dir_frame_float(words[n++]);
+    v->film_dust.diameter_bulk_max_mm = dir_frame_float(words[n++]);
+    v->film_dust.diameter_max_mm = dir_frame_float(words[n++]);
+    v->film_dust.diameter_tail_fraction = dir_frame_float(words[n++]);
+    v->film_dust.fiber_length_min_mm = dir_frame_float(words[n++]);
+    v->film_dust.fiber_length_max_mm = dir_frame_float(words[n++]);
+    v->film_dust.fiber_width_min_mm = dir_frame_float(words[n++]);
+    v->film_dust.fiber_width_max_mm = dir_frame_float(words[n++]);
+    v->film_dust.opacity_faint_cumulative = dir_frame_float(words[n++]);
+    v->film_dust.opacity_intermediate_cumulative = dir_frame_float(words[n++]);
+    v->film_dust.compact_opacity_min = dir_frame_float(words[n++]);
+    v->film_dust.compact_opacity_faint_end = dir_frame_float(words[n++]);
+    v->film_dust.compact_opacity_intermediate_end = dir_frame_float(words[n++]);
+    v->film_dust.compact_opacity_max = dir_frame_float(words[n++]);
+    v->film_dust.fiber_opacity_min = dir_frame_float(words[n++]);
+    v->film_dust.fiber_opacity_faint_end = dir_frame_float(words[n++]);
+    v->film_dust.fiber_opacity_intermediate_end = dir_frame_float(words[n++]);
+    v->film_dust.fiber_opacity_max = dir_frame_float(words[n++]);
+    v->film_dust.compact_dominant_aspect_min = dir_frame_float(words[n++]);
+    v->film_dust.compact_dominant_aspect_max = dir_frame_float(words[n++]);
+    v->film_dust.compact_subsidiary_scale_min = dir_frame_float(words[n++]);
+    v->film_dust.compact_subsidiary_scale_max = dir_frame_float(words[n++]);
+    v->film_dust.compact_subsidiary_aspect_min = dir_frame_float(words[n++]);
+    v->film_dust.compact_subsidiary_aspect_max = dir_frame_float(words[n++]);
+    v->film_dust.compact_subsidiary_offset_max = dir_frame_float(words[n++]);
+    v->film_dust.compact_subsidiary_angle_max_radians = dir_frame_float(words[n++]);
+    v->film_scratch.cell_width_mm = dir_frame_float(words[n++]);
+    v->film_scratch.cell_height_mm = dir_frame_float(words[n++]);
+    v->film_scratch.slot_probability = dir_frame_float(words[n++]);
+    v->film_scratch.softness_min_mm = dir_frame_float(words[n++]);
+    v->film_scratch.softness_max_mm = dir_frame_float(words[n++]);
+    v->film_scratch.softness_size_cap_fraction = dir_frame_float(words[n++]);
+    v->film_scratch.support_x_mm = dir_frame_float(words[n++]);
+    v->film_scratch.support_y_mm = dir_frame_float(words[n++]);
+    v->film_scratch.length_min_mm = dir_frame_float(words[n++]);
+    v->film_scratch.length_bulk_max_mm = dir_frame_float(words[n++]);
+    v->film_scratch.length_max_mm = dir_frame_float(words[n++]);
+    v->film_scratch.length_tail_fraction = dir_frame_float(words[n++]);
+    v->film_scratch.width_min_mm = dir_frame_float(words[n++]);
+    v->film_scratch.width_bulk_max_mm = dir_frame_float(words[n++]);
+    v->film_scratch.width_max_mm = dir_frame_float(words[n++]);
+    v->film_scratch.width_tail_fraction = dir_frame_float(words[n++]);
+    v->film_scratch.drift_fraction = dir_frame_float(words[n++]);
+    v->film_scratch.first_knot_min = dir_frame_float(words[n++]);
+    v->film_scratch.first_knot_max = dir_frame_float(words[n++]);
+    v->film_scratch.second_knot_min = dir_frame_float(words[n++]);
+    v->film_scratch.second_knot_max = dir_frame_float(words[n++]);
+    v->film_scratch.interior_width_min_fraction = dir_frame_float(words[n++]);
+    v->film_scratch.interior_width_max_fraction = dir_frame_float(words[n++]);
+    v->film_scratch.interior_depth_min_fraction = dir_frame_float(words[n++]);
+    v->film_scratch.interior_depth_max_fraction = dir_frame_float(words[n++]);
+    v->film_scratch.endpoint_abrupt_probability = dir_frame_float(words[n++]);
+    v->film_scratch.interruption_probability = dir_frame_float(words[n++]);
+    v->film_scratch.gap_center_min = dir_frame_float(words[n++]);
+    v->film_scratch.gap_center_max = dir_frame_float(words[n++]);
+    v->film_scratch.gap_span_min = dir_frame_float(words[n++]);
+    v->film_scratch.gap_span_max = dir_frame_float(words[n++]);
+    v->film_scratch.scuff_probability = dir_frame_float(words[n++]);
+    v->film_scratch.scuff_length_max_mm = dir_frame_float(words[n++]);
+    v->film_scratch.scuff_angle_max_radians = dir_frame_float(words[n++]);
+    v->film_scratch.strength_min = dir_frame_float(words[n++]);
+    v->film_scratch.strength_max = dir_frame_float(words[n++]);
+    v->gate_dust.cell_width_mm = dir_frame_float(words[n++]);
+    v->gate_dust.cell_height_mm = dir_frame_float(words[n++]);
+    v->gate_dust.slot_probability = dir_frame_float(words[n++]);
+    v->gate_dust.softness_min_mm = dir_frame_float(words[n++]);
+    v->gate_dust.softness_max_mm = dir_frame_float(words[n++]);
+    v->gate_dust.softness_size_cap_fraction = dir_frame_float(words[n++]);
+    v->gate_dust.support_x_mm = dir_frame_float(words[n++]);
+    v->gate_dust.support_y_mm = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_fraction = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_drift_fraction = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_first_knot_min = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_first_knot_max = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_second_knot_min = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_second_knot_max = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_interior_width_min_fraction = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_interior_width_max_fraction = dir_frame_float(words[n++]);
+    v->gate_dust.diameter_min_mm = dir_frame_float(words[n++]);
+    v->gate_dust.diameter_bulk_max_mm = dir_frame_float(words[n++]);
+    v->gate_dust.diameter_max_mm = dir_frame_float(words[n++]);
+    v->gate_dust.diameter_tail_fraction = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_length_min_mm = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_length_max_mm = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_width_min_mm = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_width_max_mm = dir_frame_float(words[n++]);
+    v->gate_dust.opacity_faint_cumulative = dir_frame_float(words[n++]);
+    v->gate_dust.opacity_intermediate_cumulative = dir_frame_float(words[n++]);
+    v->gate_dust.compact_opacity_min = dir_frame_float(words[n++]);
+    v->gate_dust.compact_opacity_faint_end = dir_frame_float(words[n++]);
+    v->gate_dust.compact_opacity_intermediate_end = dir_frame_float(words[n++]);
+    v->gate_dust.compact_opacity_max = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_opacity_min = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_opacity_faint_end = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_opacity_intermediate_end = dir_frame_float(words[n++]);
+    v->gate_dust.fiber_opacity_max = dir_frame_float(words[n++]);
+    v->gate_dust.compact_dominant_aspect_min = dir_frame_float(words[n++]);
+    v->gate_dust.compact_dominant_aspect_max = dir_frame_float(words[n++]);
+    v->gate_dust.compact_subsidiary_scale_min = dir_frame_float(words[n++]);
+    v->gate_dust.compact_subsidiary_scale_max = dir_frame_float(words[n++]);
+    v->gate_dust.compact_subsidiary_aspect_min = dir_frame_float(words[n++]);
+    v->gate_dust.compact_subsidiary_aspect_max = dir_frame_float(words[n++]);
+    v->gate_dust.compact_subsidiary_offset_max = dir_frame_float(words[n++]);
+    v->gate_dust.compact_subsidiary_angle_max_radians = dir_frame_float(words[n++]);
+    v->gate_scratch.cell_width_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.cell_height_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.slot_probability = dir_frame_float(words[n++]);
+    v->gate_scratch.softness_min_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.softness_max_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.softness_size_cap_fraction = dir_frame_float(words[n++]);
+    v->gate_scratch.support_x_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.support_y_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.length_min_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.length_bulk_max_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.length_max_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.length_tail_fraction = dir_frame_float(words[n++]);
+    v->gate_scratch.width_min_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.width_bulk_max_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.width_max_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.width_tail_fraction = dir_frame_float(words[n++]);
+    v->gate_scratch.drift_fraction = dir_frame_float(words[n++]);
+    v->gate_scratch.first_knot_min = dir_frame_float(words[n++]);
+    v->gate_scratch.first_knot_max = dir_frame_float(words[n++]);
+    v->gate_scratch.second_knot_min = dir_frame_float(words[n++]);
+    v->gate_scratch.second_knot_max = dir_frame_float(words[n++]);
+    v->gate_scratch.interior_width_min_fraction = dir_frame_float(words[n++]);
+    v->gate_scratch.interior_width_max_fraction = dir_frame_float(words[n++]);
+    v->gate_scratch.interior_depth_min_fraction = dir_frame_float(words[n++]);
+    v->gate_scratch.interior_depth_max_fraction = dir_frame_float(words[n++]);
+    v->gate_scratch.endpoint_abrupt_probability = dir_frame_float(words[n++]);
+    v->gate_scratch.interruption_probability = dir_frame_float(words[n++]);
+    v->gate_scratch.gap_center_min = dir_frame_float(words[n++]);
+    v->gate_scratch.gap_center_max = dir_frame_float(words[n++]);
+    v->gate_scratch.gap_span_min = dir_frame_float(words[n++]);
+    v->gate_scratch.gap_span_max = dir_frame_float(words[n++]);
+    v->gate_scratch.scuff_probability = dir_frame_float(words[n++]);
+    v->gate_scratch.scuff_length_max_mm = dir_frame_float(words[n++]);
+    v->gate_scratch.scuff_angle_max_radians = dir_frame_float(words[n++]);
+    v->gate_scratch.strength_min = dir_frame_float(words[n++]);
+    v->gate_scratch.strength_max = dir_frame_float(words[n++]);
+}
+static int effects_frame_values(void) {
+    CHECK(sizeof(effects_frame_rows) / sizeof(effects_frame_rows[0]) == FJ_EFFECTS_FRAME_CASE_COUNT);
+    for (size_t row = 0; row < FJ_EFFECTS_FRAME_CASE_COUNT; ++row) {
+        const EffectsFrameRow* expected = &effects_frame_rows[row];
+        const uint32_t mode = expected->mode;
+        FjEffectsFrameInput input;
+        FjEffectsFrameMath math;
+        FjEffectsFrameFailure failure;
+        char text[257];
+        FjErrorBuffer error = {text, expected->capacity, 99};
+        effects_frame_decode(expected->input, &input);
+        const FjEffectsFrameInput* source = &input;
+        FjEffectsFrameMath* output = &math;
+        FjEffectsFrameFailure* details = &failure;
+        FjErrorBuffer* diagnostic = &error;
+        memset(&math, 0xa5, sizeof(math));
+        memset(&failure, 0xa5, sizeof(failure));
+        memset(text, 'Q', sizeof(text));
+        switch (mode) {
+            case 1: source = NULL; break;
+            case 2: source = (const FjEffectsFrameInput*)(uintptr_t)1; break;
+            case 3: source = (const FjEffectsFrameInput*)(UINTPTR_MAX & ~((uintptr_t)_Alignof(FjEffectsFrameInput) - 1)); break;
+            case 4: output = NULL; break;
+            case 5: output = (FjEffectsFrameMath*)(uintptr_t)1; break;
+            case 6: output = (FjEffectsFrameMath*)(UINTPTR_MAX & ~((uintptr_t)_Alignof(FjEffectsFrameMath) - 1)); break;
+            case 7: details = NULL; break;
+            case 8: details = (FjEffectsFrameFailure*)(uintptr_t)1; break;
+            case 9: details = (FjEffectsFrameFailure*)(UINTPTR_MAX & ~((uintptr_t)_Alignof(FjEffectsFrameFailure) - 1)); break;
+            case 10: diagnostic = (FjErrorBuffer*)(uintptr_t)1; break;
+            case 11: diagnostic = (FjErrorBuffer*)(UINTPTR_MAX & ~((uintptr_t)_Alignof(FjErrorBuffer) - 1)); break;
+            case 12: error.data = NULL; error.capacity = 1; break;
+            case 13: error.data = (char*)(UINTPTR_MAX - 3); error.capacity = 8; break;
+            case 14: error.capacity = (size_t)PTRDIFF_MAX + 1; break;
+            case 15: input.active = 2; break;
+            case 16: diagnostic = NULL; break;
+            case 17: error.data = NULL; error.capacity = 0; break;
+            case 18: error.data = (char*)(uintptr_t)1; error.capacity = 0; break;
+            case 19: input.active = 2; diagnostic = NULL; break;
+            default: break;
+        }
+        const FjStatus actual = fj_legacy_effects_frame_prepare(source, output, details, diagnostic);
+        CHECK(actual.category == expected->status.category && actual.api == expected->status.api && actual.native_code == expected->status.native_code);
+        uint64_t words[FJ_EFFECTS_FRAME_OUTPUT_WORD_COUNT] = {0};
+        if (expected->output_valid) {
+            CHECK(effects_frame_words(&math, words) == FJ_EFFECTS_FRAME_OUTPUT_WORD_COUNT);
+            for (size_t i = 0; i < FJ_EFFECTS_FRAME_OUTPUT_WORD_COUNT; ++i) CHECK(words[i] == expected->output[i]);
+        } else CHECK(math.present == UINT32_C(0xa5a5a5a5));
+        if (expected->failure_valid) CHECK(failure.reason == expected->failure[0]);
+        else CHECK(failure.reason == UINT32_C(0xa5a5a5a5));
+        const char* actual_text = expected->error_valid && error.capacity ? error.data : "";
+        if (expected->error_valid) {
+            CHECK(error.length == strlen(expected->diagnostic));
+            CHECK(memcmp(actual_text, expected->diagnostic, error.length) == 0);
+            if (error.capacity) {
+                CHECK(actual_text[error.length] == '\0');
+                CHECK(text[error.capacity] == 'Q');
+            } else CHECK(text[0] == 'Q');
+        } else if (mode >= 12 && mode <= 14) CHECK(error.length == 0);
+        printf("EFFECTS_FRAME_RESULT {\"case\":\"%s\",\"envelope\":[%" PRIu32 ",%" PRIu32 ",%" PRId32 "],\"output\":", expected->name, actual.category, actual.api, actual.native_code);
+        if (expected->output_valid) {
+            printf("[");
+            for (size_t i = 0; i < FJ_EFFECTS_FRAME_OUTPUT_WORD_COUNT; ++i) printf("%s%" PRIu64, i ? "," : "", words[i]);
+            printf("]");
+        } else printf("null");
+        if (expected->failure_valid) printf(",\"failure\":[%" PRIu32 "]", failure.reason);
+        else printf(",\"failure\":null");
+        if (expected->error_valid) printf(",\"diagnostic\":\"%.*s\",\"diagnostic_length\":%zu}\n", (int)error.length, actual_text, error.length);
+        else printf(",\"diagnostic\":null,\"diagnostic_length\":null}\n");
+    }
+    return 0;
+}
+
 static double dir_boundary_double(uint64_t word) {
     double value;
     memcpy(&value, &word, sizeof(value));
@@ -3243,6 +3538,7 @@ int main(int argc, char** argv) {
     CHECK(diffusion_frame_values() == 0);
     CHECK(dir_frame_values() == 0);
     CHECK(grain_frame_values() == 0);
+    CHECK(effects_frame_values() == 0);
     CHECK(dir_boundary_values() == 0);
     CHECK(dir_boundary_raw() == 0);
     CHECK(dir_boundary_lifetime() == 0);

@@ -1305,22 +1305,26 @@ namespace {
         }
 
         std::string directEffectsDescriptorDiagnostic;
-        if (!build_film_juicer_effects_descriptor_for_frame(
-                directRecipe->filmJuicerEffects,
-                {win.x1, win.y1, width, height},
-                {directFullFrameRect.x1,
-                 directFullFrameRect.y1,
-                 directFullFrameRect.x2 - directFullFrameRect.x1,
-                 directFullFrameRect.y2 - directFullFrameRect.y1},
-                frame.effectsGeometry,
-                directRecipe->filmRaw.filmFormatLongEdgeMm,
-                frame.pixelSizeUm,
-                frame.timeFrames,
-                frame.frameRate,
-                frame.sessionSeed,
-                static_cast<std::uint64_t>(frame.clipToken),
-                descriptors.effects,
-                directEffectsDescriptorDiagnostic)) {
+        const bool effectsFrameBuilt = build_film_juicer_effects_descriptor_for_frame(
+            directRecipe->filmJuicerEffects,
+            {win.x1, win.y1, width, height},
+            {directFullFrameRect.x1,
+             directFullFrameRect.y1,
+             directFullFrameRect.x2 - directFullFrameRect.x1,
+             directFullFrameRect.y2 - directFullFrameRect.y1},
+            frame.effectsGeometry,
+            directRecipe->filmRaw.filmFormatLongEdgeMm,
+            frame.pixelSizeUm,
+            frame.timeFrames,
+            frame.frameRate,
+            frame.sessionSeed,
+            static_cast<std::uint64_t>(frame.clipToken),
+            descriptors.effects,
+            directEffectsDescriptorDiagnostic);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_effects_frame({directRecipe->profileRoute.scanRoute, 0, {win.x1, win.y1, width, height}, {directFullFrameRect.x1, directFullFrameRect.y1, directFullFrameRect.x2 - directFullFrameRect.x1, directFullFrameRect.y2 - directFullFrameRect.y1}, frame.effectsGeometry, directRecipe->filmRaw.filmFormatLongEdgeMm, frame.pixelSizeUm, frame.timeFrames, frame.frameRate, frame.sessionSeed, static_cast<std::uint64_t>(frame.clipToken), effectsFrameBuilt, effectsFrameBuilt ? descriptors.effects : std::nullopt});
+#endif
+        if (!effectsFrameBuilt) {
             errors.fail_route(
                 directEffectsDescriptorDiagnostic.c_str());
         }
@@ -2098,22 +2102,26 @@ namespace {
         }
 
         std::string printEffectsDescriptorDiagnostic;
-        if (!build_film_juicer_effects_descriptor_for_frame(
-                printRecipe->filmJuicerEffects,
-                {win.x1, win.y1, width, height},
-                {printFullFrameRect.x1,
-                 printFullFrameRect.y1,
-                 printFullFrameRect.x2 - printFullFrameRect.x1,
-                 printFullFrameRect.y2 - printFullFrameRect.y1},
-                frame.effectsGeometry,
-                printRecipe->filmRaw.filmFormatLongEdgeMm,
-                frame.pixelSizeUm,
-                frame.timeFrames,
-                frame.frameRate,
-                frame.sessionSeed,
-                static_cast<std::uint64_t>(frame.clipToken),
-                descriptors.effects,
-                printEffectsDescriptorDiagnostic)) {
+        const bool effectsFrameBuilt = build_film_juicer_effects_descriptor_for_frame(
+            printRecipe->filmJuicerEffects,
+            {win.x1, win.y1, width, height},
+            {printFullFrameRect.x1,
+             printFullFrameRect.y1,
+             printFullFrameRect.x2 - printFullFrameRect.x1,
+             printFullFrameRect.y2 - printFullFrameRect.y1},
+            frame.effectsGeometry,
+            printRecipe->filmRaw.filmFormatLongEdgeMm,
+            frame.pixelSizeUm,
+            frame.timeFrames,
+            frame.frameRate,
+            frame.sessionSeed,
+            static_cast<std::uint64_t>(frame.clipToken),
+            descriptors.effects,
+            printEffectsDescriptorDiagnostic);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_effects_frame({printRecipe->profileRoute.scanRoute, 0, {win.x1, win.y1, width, height}, {printFullFrameRect.x1, printFullFrameRect.y1, printFullFrameRect.x2 - printFullFrameRect.x1, printFullFrameRect.y2 - printFullFrameRect.y1}, frame.effectsGeometry, printRecipe->filmRaw.filmFormatLongEdgeMm, frame.pixelSizeUm, frame.timeFrames, frame.frameRate, frame.sessionSeed, static_cast<std::uint64_t>(frame.clipToken), effectsFrameBuilt, effectsFrameBuilt ? descriptors.effects : std::nullopt});
+#endif
+        if (!effectsFrameBuilt) {
             errors.fail_route(
                 printEffectsDescriptorDiagnostic.c_str());
         }
