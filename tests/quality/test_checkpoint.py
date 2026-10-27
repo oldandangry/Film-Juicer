@@ -1534,6 +1534,11 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertEqual(reused["reused_from"], stage["receipt"])
         self.assertEqual(len(calls), before, "unchanged retained evidence executed probes again")
         outcomes = [{"operation": "reuse", "case": "unchanged", "status": "passed", "commands": 0}]
+        reused = json.loads(checkpoint("retained-retry-reason",
+            "retry another failed check").read_text())["stages"]["production"]
+        self.assertEqual(reused["reused_from"], stage["receipt"])
+        self.assertEqual(len(calls), before, "retry reason reran completed production probes")
+        outcomes.append({"operation": "reuse", "case": "retry-reason", "status": "passed", "commands": 0})
         for target in self.production_mutations(stage):
             data, stamp = target.read_bytes(), target.stat()
             for mutation in ("replace", "remove"):
@@ -1579,10 +1584,17 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                         manifest.write_text(json.dumps(document))
                 return receipt
             try:
+                # Initial registration has no completed stage to reuse. A retry
+                # reason must preserve a matching pass rather than force this run.
+                state = json.loads(owner_bytes)
+                del state["production"]
+                write_json(owner, state)
+                registration_start = len(calls)
                 with patch.object(Campaign, "run", new=drift):
                     with self.assertRaisesRegex(ValueError, cause):
-                        checkpoint("retained-registration-drift-" + target_kind,
-                                   "intentional post-execution retained-payload drift control")
+                        checkpoint("retained-registration-drift-" + target_kind)
+                self.assertEqual([call["stage"] for call in calls[registration_start:]], ["production"],
+                                 "registration control must execute one probe run without rebuilding")
                 self.assertEqual(json.loads(owner.read_text())["production"]["status"], "failed")
                 self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
                 outcomes.append({"operation": "registration", "case": "post-drain-drift-" + target_kind,
