@@ -10,6 +10,7 @@
 #include <variant>
 
 #include "../../RenderRecipe.h"
+#include "../../FilmEffectsFrameDescriptors.h"
 
 namespace JuicerCuda {
     namespace ResourceManager {
@@ -108,6 +109,7 @@ namespace JuicerCuda {
                 const Layout& target) noexcept;
 
         private:
+            friend class WorkspaceLayout;
             ActiveDirScratch() = default;
 
             std::uint64_t _descriptorHash = 0;
@@ -122,6 +124,49 @@ namespace JuicerCuda {
 
         // Inactive DIR has no hash, tier or roles to contradict the selected state.
         using DirScratchRequest = std::variant<std::monostate, ActiveDirScratch>;
+
+        enum class ScannerStorage : unsigned char {
+            Absent,
+            Dedicated,
+            DirFiltered
+        };
+
+        enum class GrainStorage : unsigned char {
+            Absent,
+            Dedicated,
+            DirRaw
+        };
+
+        // A resolved native value, scoped by its consumer's frame lease. It owns no resources.
+        class WorkspaceLayout final {
+        public:
+            // Grain's four raw attachment flags must be absent here; grainShape owns them.
+            static std::optional<WorkspaceLayout> create(
+                const ScratchRequestExtent& extent,
+                const DirScratchRequest& spatialDir,
+                const ScratchRequestAttachments& attachments,
+                Spektrafilm::VisualGrainScratchShape grainShape) noexcept;
+
+            const ScratchRequestDescriptor& allocation() const noexcept;
+            ScannerStorage scanner_storage() const noexcept;
+            GrainStorage grain_storage() const noexcept;
+            Spektrafilm::VisualGrainScratchShape grain_shape() const noexcept;
+            bool grain_uses_layers() const noexcept;
+            bool grain_uses_shared() const noexcept;
+            bool operator==(const WorkspaceLayout& other) const noexcept;
+
+            std::optional<WorkspaceLayout> with_dir_layout(
+                const ActiveDirScratch::Layout& source,
+                const ActiveDirScratch::Layout& target) const noexcept;
+
+        private:
+            WorkspaceLayout(ScratchRequestDescriptor allocation, ScannerStorage scanner, GrainStorage grain, Spektrafilm::VisualGrainScratchShape shape) noexcept;
+
+            ScratchRequestDescriptor _allocation;
+            ScannerStorage _scanner;
+            GrainStorage _grain;
+            Spektrafilm::VisualGrainScratchShape _grainShape;
+        };
 
         std::optional<ScratchRequestDescriptor> make_scratch_request_descriptor(
             const ScratchRequestExtent& extent,

@@ -93,6 +93,27 @@ def find_llvm_nm():
 
 
 class NativeBoundary(unittest.TestCase):
+    def test_workspace_layout_owns_coupled_storage_and_scanner_inputs_are_closed(self):
+        root = (ROOT / "src/ProcessRoot.cpp").read_text()
+        header = (ROOT / "src/ProcessRoot.h").read_text()
+        core = (ROOT / "src/Cuda/ResourceManager/JuicerCudaResourceCore.h").read_text()
+        executor = (ROOT / "src/Cuda/JuicerCudaExecutor.cpp").read_text()
+        retired = r"\b(?:WorkspaceRequest|derive_workspace_request|grain_reuses_spatial_dir_raw|make_workspace_scratch_request_descriptor)\b|\w*UseFocusedSplit|\w*UseFusedScannerPostSpatialDirHandoff|\w*CaptureDensityReady"
+        self.assertNotRegex(root + header + executor, retired)
+        for text in ("WorkspaceRequest request;", "derive_workspace_request()", "grain_reuses_spatial_dir_raw()",
+                     "make_workspace_scratch_request_descriptor()", "directUseFocusedSplit", "printUseFusedScannerPostSpatialDirHandoff", "directCaptureDensityReady"):
+            self.assertRegex(text, retired)
+        self.assertIn("class WorkspaceLayout final", core)
+        self.assertIn("const ScratchRequestDescriptor& allocation() const noexcept", core)
+        self.assertIn("WorkspaceLayout::create", root)
+        self.assertIn("WorkspaceDerivation requestedWorkspace", root)
+        for name in ("admittedLayout", "postFrameLayout"):
+            self.assertIn("std::optional<WorkspaceLayout> " + name, root)
+        self.assertIn("with_dir_layout", root)
+        self.assertIn("std::variant<MonolithicScan, FusedDirScanner, MaterializedDensity>", executor)
+        self.assertEqual(executor.count("const ScannerInput scannerInput ="), 2)
+        self.assertEqual(executor.count("dirBuild = build_"), 2)
+
     def test_synthetic_reference_has_one_safe_owner_and_native_completion_only(self):
         native = [path for directory in (ROOT / "src", ROOT / "native")
                   for path in directory.rglob("*")

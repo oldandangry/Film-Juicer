@@ -6059,6 +6059,12 @@ namespace JuicerCuda {
             return false;
         }
 
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (ExecutorTest::inject_workspace_candidate_failure(outError)) {
+            return false;
+        }
+#endif
+
         Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
         const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
         const bool dimsMatch = (scratch.width == width && scratch.height == height);

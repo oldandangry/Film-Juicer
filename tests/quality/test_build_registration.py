@@ -99,28 +99,45 @@ class BuildTests(unittest.TestCase):
         self.assertIn('include("${JUICER_TOOLING_ROOT}/tests/ToolingTests.cmake")', standalone_entry.read_text())
         self.assertIn("juicer_register_tooling_tests(", product_entry.read_text())
         self.assertIn("juicer_register_tooling_tests(", standalone_entry.read_text())
+        self.assertIn('"${JUICER_TEST_ARTIFACT_ROOT}" CACHE PATH "Tooling test artifact root"', product_entry.read_text())
+        self.assertIn('ARTIFACT_ROOT "${JUICER_TOOLING_ARTIFACT_ROOT}"', product_entry.read_text())
 
         cmake = shutil.which("cmake")
         ctest = shutil.which("ctest")
         ninja = shutil.which("ninja")
         self.assertTrue(cmake and ctest and ninja, "standalone registration needs CMake, CTest and Ninja")
 
-        def tooling_members(module_text):
+        def tooling_members(module_text, *, override_artifacts=False):
             with tempfile.TemporaryDirectory(dir=self.root) as directory:
                 checkout = Path(directory) / "checkout"
                 (checkout / "tests/tooling").mkdir(parents=True)
                 (checkout / "tests/ToolingTests.cmake").write_text(module_text)
                 (checkout / "tests/tooling/CMakeLists.txt").write_text(standalone_entry.read_text())
                 build = Path(directory) / "build"
+                artifacts = Path(directory) / "routed-artifacts"
                 subprocess.run(
                     [cmake, "-S", str(checkout / "tests/tooling"), "-B", str(build), "-G", "Ninja",
                      "-DCMAKE_BUILD_TYPE=Debug", "-DPython3_EXECUTABLE=" + sys.executable,
                      "-DCMAKE_C_COMPILER=" + ("clang-cl.exe" if os.name == "nt" else "/usr/bin/gcc-13"),
-                     "-DJUICER_TOOLING_CARGO=" + sys.executable, "-DJUICER_TOOLING_ROOT=" + str(checkout)],
+                     "-DJUICER_TOOLING_CARGO=" + sys.executable, "-DJUICER_TOOLING_ROOT=" + str(checkout)]
+                    + (["-DJUICER_TOOLING_ARTIFACT_ROOT=" + str(artifacts)] if override_artifacts else []),
                     check=True, capture_output=True, text=True, timeout=120)
                 inventory = json.loads(subprocess.check_output(
                     [ctest, "--test-dir", str(build), "--show-only=json-v1"],
                     text=True, timeout=30))
+                if override_artifacts:
+                    routed = set()
+                    for test in inventory["tests"]:
+                        properties = {row["name"]: row["value"] for row in test.get("properties", [])}
+                        for variable in properties.get("ENVIRONMENT", []):
+                            if variable.startswith("JUICER_TEST_ARTIFACT_DIR="):
+                                self.assertTrue(Path(variable.split("=", 1)[1]).is_relative_to(artifacts))
+                                routed.add(test["name"])
+                        if test["name"] == "Ffi.Host.RustBuild":
+                            command = test["command"]
+                            self.assertEqual(Path(command[command.index("--artifacts") + 1]), artifacts / "ffi/rust-build")
+                    self.assertEqual(routed, {"Quality.Execution", "Quality.BuildEvidence", "Quality.BuildRegistration",
+                                              "Quality.Verify", "Quality.Checkpoint", "Quality.PreparationRenewal", "Ctest.Host.Repetition"})
                 return {
                     test["name"] for test in inventory["tests"]
                     if "tooling" in next((property_["value"] for property_ in test.get("properties", [])
@@ -129,6 +146,7 @@ class BuildTests(unittest.TestCase):
 
         source = shared_module.read_text()
         self.assertEqual(tooling_members(source), set(TOOLING_TESTS))
+        self.assertEqual(tooling_members(source, override_artifacts=True), set(TOOLING_TESTS))
         omitted_source = source.replace("    list(APPEND tooling_tests Ctest.Host.Report)\n", "", 1)
         self.assertNotEqual(omitted_source, source)
         with self.assertRaises(AssertionError):

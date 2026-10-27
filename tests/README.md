@@ -103,9 +103,12 @@ changing that policy. The qualified tool versions alone do not establish this
 filesystem capability.
 
 For WSL filesystem diagnosis, `JUICER_TOOLING_ARTIFACT_ROOT` can place synthetic
-fixtures under an absolute native Linux `out/validation/linux-debug` root. Configure
-a separate standalone build directory on that filesystem and record both paths;
-do not relocate an existing cache. This preserves the same tests and deadlines
+fixtures under an absolute native Linux `out/validation/linux-debug` root. Both
+the product and standalone CMake entries accept this cache PATH option; it
+defaults to the native preset's ordinary validation root. Product builds keep
+other test artifacts at their usual locations. For the standalone entry, configure
+a separate build directory on that filesystem and record both paths; do not
+relocate an existing cache. This preserves the same tests and deadlines
 while separating Windows-mounted filesystem costs from test execution. Retain
 failed fixtures at their configured paths and keep the resulting qualification
 explicit about the filesystem used.
@@ -793,6 +796,19 @@ with diagnostic wording varied independently of status. These are bounded
 operation failures on a live GPU, not actual driver-loss tests; production
 objects contain none of their injection hooks.
 
+`Ofx.Gpu.WorkspaceTransitions` uses the same isolated executable with
+`--workspace-transitions` (GPU prerequisite, `juicer_gpu` lock, 300 seconds).
+It checks the actual direct/print schedules and completed native workspace layouts,
+logical grain work versus physical allocation, scanner/grain plane associations,
+source/staged cache channels and the strict-YVV candidate order. The bounded seam
+rejects the first zero through six outer candidates after normal backend validation;
+its decision stays fixed through any reclaim retry of that candidate. Observations
+count outer candidates and backend calls separately. Ordinary and context-loss
+statuses stop the ladder. These synthetic rejections establish failure propagation,
+not allocator failure, device loss or hardware recovery. Genuine pixel renders,
+construction failures and injected failures are counted separately; existing grain,
+DIR, scatter/halation and retirement groups retain the actual lifetime witnesses.
+
 `Ofx.Gpu.AdapterTrace` implements the C variadic parameter calls used by the
 plug-in rather than returning fabricated success. It records current-value and
 time-specific getter calls, authored and nested edit events, admitted exposure,
@@ -1150,8 +1166,10 @@ instance retirement across exact contexts. See the FFI guide for the ownership
 contract and the remaining host/hardware qualification limits.
 
 `Ffi.Host.PreparedProjection` checks fixed C/native descriptor mappings and
-malformed records. `Resource.Host.ScratchRequest` checks closed DIR construction,
-extent and attachment constraints, and accepted direct/print scratch generations.
+malformed records. `Resource.Host.ScratchRequest` checks closed DIR/workspace
+construction, private coupled storage, explicit inactive state, logical grain shape
+and physical projection, extent/attachment constraints, canonical raw sentinels,
+generation consistency and all eight accepted direct/print scratch generations.
 These are product contracts and need no device at runtime.
 
 `Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.

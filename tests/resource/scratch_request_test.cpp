@@ -11,12 +11,16 @@
 namespace {
     using JuicerCuda::ResourceManager::ActiveDirScratch;
     using JuicerCuda::ResourceManager::DirScratchRequest;
+    using JuicerCuda::ResourceManager::GrainStorage;
     using JuicerCuda::ResourceManager::make_scratch_request_descriptor;
+    using JuicerCuda::ResourceManager::ScannerStorage;
     using JuicerCuda::ResourceManager::scratch_request_descriptor_is_valid;
     using JuicerCuda::ResourceManager::ScratchRequestAttachments;
     using JuicerCuda::ResourceManager::ScratchRequestDescriptor;
     using JuicerCuda::ResourceManager::ScratchRequestExtent;
+    using JuicerCuda::ResourceManager::WorkspaceLayout;
     using Spektrafilm::DirScratchTier;
+    using Spektrafilm::VisualGrainScratchShape;
 
     constexpr ScratchRequestExtent kExtent{1920, 1080};
     constexpr std::uint64_t kDescriptorHash = 0x12345678;
@@ -29,6 +33,9 @@ namespace {
     static_assert(!std::is_constructible_v<DirScratchRequest, std::optional<ActiveDirScratch>>);
     static_assert(std::is_standard_layout_v<ScratchRequestDescriptor>);
     static_assert(std::is_trivially_copyable_v<ScratchRequestDescriptor>);
+    static_assert(!std::is_default_constructible_v<WorkspaceLayout>);
+    static_assert(!std::is_aggregate_v<WorkspaceLayout>);
+    static_assert(std::is_same_v<decltype(std::declval<const WorkspaceLayout&>().allocation()), const ScratchRequestDescriptor&>);
 
     TEST(ScratchRequest, InactiveDirHasNoDependentFields) {
         ScratchRequestAttachments attachments;
@@ -220,5 +227,118 @@ namespace {
             EXPECT_EQ(request->spatialDirTargetPlaneRoles.cachedLogRawPlanes, composition.target.roles.cachedLogRawPlanes);
             EXPECT_EQ(request->generation, composition.generation);
         }
+    }
+
+    TEST(ScratchRequest, CompletedLayoutKeepsLogicalGrainSeparateFromAllocation) {
+        const auto dir = ActiveDirScratch::create(kDescriptorHash, kYvv, kYvv);
+        ASSERT_TRUE(dir);
+        ScratchRequestAttachments attachments;
+        attachments.needOptics = true;
+        attachments.needSharedTmp = true;
+        attachments.aliasScannerRgbFromSpatialDirFiltered = true;
+        const std::array shapes{VisualGrainScratchShape::Streamed, VisualGrainScratchShape::StreamedShared, VisualGrainScratchShape::StreamedLayers, VisualGrainScratchShape::StreamedLayersShared};
+        for (std::size_t index = 0; index < shapes.size(); ++index) {
+            const auto layout = WorkspaceLayout::create(kExtent, *dir, attachments, shapes[index]);
+            ASSERT_TRUE(layout);
+            EXPECT_EQ(layout->grain_shape(), shapes[index]);
+            EXPECT_EQ(layout->grain_storage(), GrainStorage::DirRaw);
+            EXPECT_EQ(layout->scanner_storage(), ScannerStorage::DirFiltered);
+            EXPECT_EQ(layout->grain_uses_layers(), index >= 2);
+            EXPECT_EQ(layout->grain_uses_shared(), index % 2 == 1);
+            const auto& physical = layout->allocation();
+            EXPECT_TRUE(physical.needGrainFrameUniforms);
+            EXPECT_TRUE(physical.needBlurred);
+            EXPECT_FALSE(physical.needAux);
+            EXPECT_FALSE(physical.needGrainLayerWork);
+            EXPECT_FALSE(physical.needGrainShared);
+            EXPECT_TRUE(scratch_request_descriptor_is_valid(physical));
+            const auto streamed = layout->with_dir_layout({DirScratchTier::Tier1IChannels, {1, 3, 1, 0}},
+                                                          {DirScratchTier::Tier1IChannels, {1, 3, 1, 0}});
+            ASSERT_TRUE(streamed);
+            EXPECT_EQ(streamed->grain_storage(), GrainStorage::Dedicated);
+            EXPECT_EQ(streamed->grain_shape(), shapes[index]);
+            EXPECT_TRUE(streamed->allocation().needAux);
+            EXPECT_EQ(streamed->allocation().needGrainLayerWork, index >= 2);
+            EXPECT_EQ(streamed->allocation().needGrainShared, index % 2 == 1);
+        }
+    }
+
+    TEST(ScratchRequest, LayoutConstructionRejectsContradictionsAndKeepsInactiveExplicit) {
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, std::monostate{}, {}, VisualGrainScratchShape::None));
+        ScratchRequestAttachments attachments;
+        attachments.needOptics = true;
+        EXPECT_FALSE(WorkspaceLayout::create({0, 1080}, std::monostate{}, attachments, VisualGrainScratchShape::None));
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, std::monostate{}, attachments, static_cast<VisualGrainScratchShape>(255)));
+        attachments.aliasScannerRgbFromSpatialDirFiltered = true;
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, std::monostate{}, attachments, VisualGrainScratchShape::None));
+        const auto dir = ActiveDirScratch::create(kDescriptorHash, kFir, {});
+        ASSERT_TRUE(dir);
+        attachments.needSharedTmp = true;
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, *dir, attachments, VisualGrainScratchShape::None));
+        attachments.aliasScannerRgbFromSpatialDirFiltered = false;
+        attachments.needAux = true;
+        EXPECT_FALSE(WorkspaceLayout::create(kExtent, *dir, attachments, VisualGrainScratchShape::None));
+        attachments.needAux = false;
+        const auto dedicated = WorkspaceLayout::create(kExtent, *dir, attachments, VisualGrainScratchShape::StreamedLayersShared);
+        ASSERT_TRUE(dedicated);
+        EXPECT_EQ(dedicated->scanner_storage(), ScannerStorage::Dedicated);
+        EXPECT_EQ(dedicated->grain_storage(), GrainStorage::Dedicated);
+        EXPECT_TRUE(dedicated->allocation().needAux);
+        EXPECT_TRUE(dedicated->allocation().needGrainLayerWork);
+        EXPECT_TRUE(dedicated->allocation().needGrainShared);
+        EXPECT_FALSE(dedicated->with_dir_layout({DirScratchTier::Unsupported, {}}, kFir));
+    }
+
+    TEST(ScratchRequest, BuildToFinalLayoutPreservesRetentionAndGenerationAuthority) {
+        const auto dir = ActiveDirScratch::create(kDescriptorHash, kYvv, kCached);
+        ASSERT_TRUE(dir);
+        ScratchRequestAttachments attachments;
+        attachments.needSharedTmp = true;
+        const auto build = WorkspaceLayout::create(kExtent, *dir, attachments, VisualGrainScratchShape::None);
+        ASSERT_TRUE(build);
+        EXPECT_EQ(build->scanner_storage(), ScannerStorage::Absent);
+        EXPECT_EQ(build->grain_storage(), GrainStorage::Absent);
+        const auto final = build->with_dir_layout(kCached, kCached);
+        ASSERT_TRUE(final);
+        EXPECT_EQ(build->allocation().spatialDirScratchTier, kYvv.tier);
+        EXPECT_EQ(final->allocation().spatialDirScratchTier, kCached.tier);
+        EXPECT_EQ(final->allocation().spatialDirPlaneRoles.cachedLogRawPlanes, 3);
+        EXPECT_NE(build->allocation().generation, final->allocation().generation);
+        EXPECT_TRUE(scratch_request_descriptor_is_valid(final->allocation()));
+        EXPECT_EQ(*final, *build->with_dir_layout(kCached, kCached));
+        EXPECT_FALSE(*final == *build);
+    }
+
+    TEST(ScratchRequest, RawAdmissionRequiresCanonicalSentinelAndConsistentGeneration) {
+        EXPECT_TRUE(scratch_request_descriptor_is_valid({}));
+        const std::array<int ScratchRequestDescriptor::*, 4> extents{
+            &ScratchRequestDescriptor::requestedWidth, &ScratchRequestDescriptor::requestedHeight, &ScratchRequestDescriptor::gateWidth, &ScratchRequestDescriptor::gateHeight};
+        for (auto field : extents) {
+            ScratchRequestDescriptor invalid;
+            invalid.*field = 1;
+            EXPECT_FALSE(scratch_request_descriptor_is_valid(invalid));
+        }
+        ScratchRequestDescriptor invalid;
+        invalid.spatialDirDescriptorHash = 1;
+        EXPECT_FALSE(scratch_request_descriptor_is_valid(invalid));
+        invalid = {};
+        invalid.spatialDirScratchTier = DirScratchTier::Tier1F;
+        EXPECT_FALSE(scratch_request_descriptor_is_valid(invalid));
+        invalid = {};
+        invalid.spatialDirTargetPlaneRoles = kFir.roles;
+        EXPECT_FALSE(scratch_request_descriptor_is_valid(invalid));
+        invalid = {};
+        invalid.generation = 1;
+        EXPECT_FALSE(scratch_request_descriptor_is_valid(invalid));
+        ScratchRequestAttachments attachments;
+        attachments.needOptics = true;
+        const auto layout = WorkspaceLayout::create(kExtent, std::monostate{}, attachments, VisualGrainScratchShape::None);
+        ASSERT_TRUE(layout);
+        invalid = layout->allocation();
+        ++invalid.generation;
+        EXPECT_FALSE(scratch_request_descriptor_is_valid(invalid));
+        invalid = layout->allocation();
+        ++invalid.requestedWidth;
+        EXPECT_FALSE(scratch_request_descriptor_is_valid(invalid));
     }
 } // namespace

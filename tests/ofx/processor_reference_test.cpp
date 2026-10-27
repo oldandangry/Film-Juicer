@@ -135,6 +135,124 @@ namespace JuicerAssets::NoiseTest {
 } // namespace JuicerAssets::NoiseTest
 
 namespace JuicerCuda::ExecutorTest {
+    thread_local std::optional<WorkspaceHandoff> workspaceHandoff;
+    void observe_workspace_handoff(WorkspaceHandoff handoff) noexcept {
+        workspaceHandoff = handoff;
+    }
+    namespace {
+        thread_local WorkspaceTransitionObservation s_workspace;
+        struct WorkspaceRejectionState {
+            unsigned count = 0;
+            WorkspaceRejection kind = WorkspaceRejection::Capacity;
+            std::optional<unsigned> candidate;
+            bool armed = false;
+        };
+        thread_local WorkspaceRejectionState s_workspaceRejection;
+    } // namespace
+    void reset_workspace_transitions() noexcept {
+        s_workspace = {};
+        s_workspaceRejection = {};
+        workspaceHandoff.reset();
+    }
+    WorkspaceTransitionObservation workspace_transitions() noexcept {
+        return s_workspace;
+    }
+    bool arm_workspace_rejection(unsigned count, WorkspaceRejection kind) noexcept {
+        if (count > 6 || (kind != WorkspaceRejection::Capacity && kind != WorkspaceRejection::InvalidValue && kind != WorkspaceRejection::ContextLoss) ||
+            s_workspaceRejection.armed) {
+            return false;
+        }
+        s_workspaceRejection = {count, kind, std::nullopt, true};
+        return true;
+    }
+    void begin_workspace_candidate(unsigned index, const ResourceManager::WorkspaceLayout& layout) noexcept {
+        if (index < s_workspace.candidates.size()) {
+            s_workspace.candidateCount = index + 1;
+            s_workspace.candidates[index].layout = layout;
+            s_workspaceRejection.candidate = index;
+        }
+    }
+    void end_workspace_candidate(bool success, const Failure& failure) noexcept {
+        if (s_workspaceRejection.candidate) {
+            auto& candidate = s_workspace.candidates[*s_workspaceRejection.candidate];
+            candidate.succeeded = success;
+            candidate.result = success ? FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0} : failure.status;
+            s_workspaceRejection.candidate.reset();
+        }
+    }
+    bool inject_workspace_candidate_failure(Failure& failure) {
+        const auto index = s_workspaceRejection.candidate;
+        if (!index) {
+            return false;
+        }
+        ++s_workspace.candidates[*index].backendCalls;
+        if (!s_workspaceRejection.armed || *index >= s_workspaceRejection.count) {
+            return false;
+        }
+        switch (s_workspaceRejection.kind) {
+            case WorkspaceRejection::Capacity:
+                failure = {{FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "workspace candidate capacity rejection"};
+                break;
+            case WorkspaceRejection::InvalidValue:
+                failure = {runtime_failure_status(cudaErrorInvalidValue), "workspace candidate invalid-value rejection"};
+                break;
+            case WorkspaceRejection::ContextLoss:
+                failure = {runtime_failure_status(cudaErrorContextIsDestroyed), "workspace candidate context-loss rejection"};
+                break;
+        }
+        return true;
+    }
+    void observe_workspace_requested(const std::optional<ResourceManager::WorkspaceLayout>& layout) noexcept {
+        s_workspace.requested = layout;
+    }
+    void observe_workspace_resource_acquired() noexcept {
+        ++s_workspace.resourcesAcquired;
+    }
+    void observe_workspace_admitted(const ResourceManager::WorkspaceLayout& layout) noexcept {
+        s_workspace.admitted = layout;
+    }
+    void observe_workspace_final(const ResourceManager::WorkspaceLayout& layout) noexcept {
+        s_workspace.finalDevelopment = layout;
+    }
+    void observe_workspace_post_frame(const std::optional<ResourceManager::WorkspaceLayout>& layout) noexcept {
+        s_workspace.postFrame = layout;
+    }
+    void observe_workspace_finish() noexcept {
+        ++s_workspace.finishes;
+    }
+    void observe_workspace_dir_build(WorkspaceCacheChannels channels) noexcept {
+        s_workspace.sourceCacheChannels = channels.source;
+        s_workspace.finalCacheChannels = channels.final;
+    }
+    void observe_workspace_capture() noexcept {
+        s_workspace.captureEnqueued = true;
+    }
+    void observe_workspace_scanner() noexcept {
+        s_workspace.scannerEnqueued = true;
+    }
+    void observe_workspace_bindings(JuicerProcess::Root::PreparedCudaFrame& frame,
+                                    const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& marker) noexcept {
+        if (!s_workspace.admitted) {
+            return;
+        }
+        const auto scanner = frame.scanner_workspace(marker);
+        const auto dir = frame.spatial_dir_scratch(marker);
+        const auto grain = frame.visual_grain_workspace(marker);
+        const auto& layout = *s_workspace.admitted;
+        s_workspace.bindingsObserved = true;
+        s_workspace.scannerMapping = layout.scanner_storage() == ResourceManager::ScannerStorage::Absent
+                                         ? !scanner.active
+                                     : layout.scanner_storage() == ResourceManager::ScannerStorage::DirFiltered
+                                         ? scanner.active && scanner.rgbR == dir.filteredCorrectionC && scanner.rgbG == dir.filteredCorrectionM && scanner.rgbB == dir.filteredCorrectionY
+                                         : scanner.active && !scanner.rgbAliasedFromSpatialDirFiltered;
+        const bool raw = layout.grain_storage() == ResourceManager::GrainStorage::DirRaw;
+        s_workspace.grainMapping = layout.grain_storage() == ResourceManager::GrainStorage::Absent
+                                       ? !grain.active
+                                       : grain.active && grain.deltaAccum == (raw ? dir.rawCorrectionY : scanner.aux) &&
+                                             grain.layerWork == (layout.grain_uses_layers() ? raw ? dir.rawCorrectionM : scanner.grainTmp : nullptr) &&
+                                             grain.sharedDelta == (layout.grain_uses_shared() ? raw ? dir.rawCorrectionC : scanner.grainTmpShared : nullptr) &&
+                                             (!raw || (!scanner.aux && !scanner.grainTmp && !scanner.grainTmpShared));
+    }
     enum class Event : std::uint8_t {
         Injected,
         Message,
@@ -297,6 +415,8 @@ namespace JuicerCuda::ExecutorTest {
         return true;
     }
     void observe_classification(const char* stage, const Failure& failure, bool recoveryPending) noexcept {
+        s_workspace.classified = failure.status;
+        s_workspace.recoveryPending = recoveryPending;
         if (observation) {
             observation->failureStageMatches = std::strcmp(stage, observation->stage) == 0;
             observation->failureStatusMatches = failure.status.category == observation->status.category && failure.status.api == observation->status.api && failure.status.native_code == observation->status.native_code;
@@ -307,6 +427,7 @@ namespace JuicerCuda::ExecutorTest {
         }
     }
     void observe_frame_abort() noexcept {
+        ++s_workspace.aborts;
         if (observation) {
             observation->record(Event::FrameAborted);
         }
@@ -956,8 +1077,7 @@ namespace {
                 const auto& payload = print ? admitted.printState->payload : admitted.directState->payload;
                 const JuicerCuda::FrameRect nativeBounds{bounds.x1, bounds.y1, bounds.x2, bounds.y2};
                 const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(nativeBounds, nativeBounds, recipe.filmRaw.autoExposureMethod);
-                const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
-                const JuicerCuda::ExecutionFrame frame{nativeBounds, nativeBounds, nativeBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), imageInput.rowBytes, imageInput.rowBytes, test.components, device.stream, diffusion, halation, geometry, pixelSizeUm, test.time, 24.0, 0x20260923, 0x5312, meter, false, false};
+                const JuicerCuda::ExecutionFrame frame{nativeBounds, nativeBounds, nativeBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), imageInput.rowBytes, imageInput.rowBytes, test.components, device.stream, diffusion, halation, effectsGeometry, pixelSizeUm, test.time, 24.0, 0x20260923, 0x5312, meter, false, false};
                 JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
                 snapshot.instanceToken.value = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
                 snapshot.frameToken.value = static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(test.time)));
@@ -1246,6 +1366,395 @@ namespace {
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
 namespace {
+    void run_workspace_transitions() {
+        using Frame = JuicerProcess::Root::PreparedCudaFrame;
+        using namespace JuicerCuda::ResourceManager;
+        const auto require = [](bool ok, const std::string& message) {
+            if (!ok) {
+                throw std::runtime_error(message);
+            }
+        };
+        int deviceId = 0;
+        CUcontext context = nullptr;
+        require_cuda(cudaGetDevice(&deviceId), "workspace device");
+        require(cuCtxGetCurrent(&context) == CUDA_SUCCESS && context, "workspace context");
+        const DeviceContextKey key{deviceId, context};
+        DeviceFrame device;
+        require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "workspace stream");
+        std::uint64_t next = 1;
+        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan}) {
+            const bool print = Spektrafilm::scan_route_is_print(route);
+            ParamSnapshot params;
+            params.scanRoute = route;
+            params.grainControls.active = true;
+            params.scatterHalationControls = {};
+            FocusedRenderStateBuildProduct product;
+            std::string diagnostic;
+            require(print ? build_print_render_state_product(params, product, diagnostic)
+                          : build_direct_render_state_product(params, product, diagnostic),
+                    diagnostic);
+            Scanner::ScannerSpectralLutDescriptor scanner;
+            require(print ? Scanner::build_print_scanner_spectral_lut_descriptor(
+                                {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, diagnostic)
+                          : Scanner::build_direct_scanner_spectral_lut_descriptor(
+                                {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, diagnostic),
+                    diagnostic);
+            Spektrafilm::SpatialDirDescriptor dir;
+            require(JuicerTestSupport::prepare_dir_frame(product.recipe.dirCouplers, 10.0f, {0, 0, 64, 48}, {0, 0, 64, 48}, "workspace-transitions", dir), "workspace DIR descriptor");
+            require(dir.hash != 0, "workspace DIR must be active");
+            dir.scratchTier = Spektrafilm::DirScratchTier::Tier1F;
+            dir.planeRoles = {3, 3, 3, 0};
+            Spektrafilm::VisualGrainFrameDescriptor grain;
+            Spektrafilm::VisualGrainFrameDescriptorInput grainInput;
+            grainInput.recipe = &product.recipe.visualGrain;
+            grainInput.filmDevelop = &product.recipe.filmDevelop;
+            grainInput.capturePolarity = product.recipe.profileRoute.capturePolarity;
+            grainInput.renderExtent = {0, 0, 64, 48};
+            grainInput.fullFrameExtent = grainInput.renderExtent;
+            grainInput.pixelSizeUm = 10.0f;
+            grainInput.frameRate = 24.0;
+            grainInput.sessionSeed = 17;
+            grainInput.clipToken = 23;
+            require(JuicerTestSupport::prepare_grain_frame(grainInput, grain, diagnostic), diagnostic);
+            const auto request_for = [&] {
+                JuicerProcess::Root::CudaFramePreparationRequest request;
+                request.recipe = &product.recipe;
+                request.exposureTables = &product.payload.exposureTables;
+                request.filmRawConfig = &product.payload.filmRawConfig;
+                request.filmTcLut = product.payload.filmTcLut ? &*product.payload.filmTcLut : nullptr;
+                request.printMainIlluminant = product.payload.printMainIlluminant ? &*product.payload.printMainIlluminant : nullptr;
+                request.scannerTables = &product.payload.scannerTables;
+                request.scannerColor = &product.payload.scannerColor;
+                request.scannerLutDescriptor = &scanner;
+                request.outputBoundaryTable = product.payload.outputBoundaryTable.get();
+                request.spatialDirDescriptor = &dir;
+                request.visualGrainDescriptor = grain;
+                request.requestedWidth = 64;
+                request.requestedHeight = 48;
+                return request;
+            };
+            for (bool competing : {true, false}) {
+                auto request = request_for();
+                if (competing) {
+                    ++request.visualGrainDescriptor->renderExtent.width;
+                }
+                SubmissionSnapshot snapshot;
+                snapshot.instanceToken.value = 0x53344438;
+                snapshot.frameToken.value = next;
+                snapshot.snapshotId = next++;
+                snapshot.deviceContextKey = key;
+                snapshot.keyDigests = make_key_digests(product.payload.uploadCoreHash, product.recipe.dirCouplers.hash, product.payload.scannerHash, 0);
+                JuicerCuda::Failure error;
+                JuicerCuda::ExecutorTest::reset_workspace_transitions();
+                Frame frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, request, {}, device.stream, error);
+                const std::string routeKey = Spektrafilm::scan_route_key(route);
+                if (competing) {
+                    require(!frame.active() && !frame.workspace_lease().active(), "competing failure published frame/marker");
+                    require(error.diagnostic == "ResourceDescriptorMismatch phase=workspace field=grain_extent route=" + routeKey,
+                            "competing failure precedence: " + error.diagnostic);
+                    require(std::string(frame.failure_stage_tag()) == "derive_cuda_frame_workspace_request" &&
+                                std::string(frame.failure_prefix()) == "CUDA frame workspace derivation failed",
+                            "competing failure envelope");
+                } else {
+                    require(!frame.active() && !frame.workspace_lease().active(), "malformed roles published frame/marker");
+                    require(error.diagnostic == "invalid frame scratch request route=" + routeKey, "malformed role diagnostic: " + error.diagnostic);
+                    require(std::string(frame.failure_stage_tag()) == "derive_cuda_frame_workspace_request" &&
+                                std::string(frame.failure_prefix()) == "CUDA frame workspace derivation failed",
+                            "malformed role envelope");
+                }
+                require(error.status.category == FJ_STATUS_PREPARATION_FAILURE && error.status.api == FJ_API_NONE && error.status.native_code == 0,
+                        "workspace failure status changed");
+                const auto observed = JuicerCuda::ExecutorTest::workspace_transitions();
+                require(!observed.requested && !observed.admitted && observed.resourcesAcquired == 0 && observed.candidateCount == 0 &&
+                            observed.finishes == 0 && !observed.recoveryPending,
+                        "malformed construction acquired or published workspace");
+                const auto primary = error;
+                frame.abort();
+                require(error.diagnostic == primary.diagnostic && error.status.category == primary.status.category, "abort lost primary failure");
+                std::cout << "replacement R2 route=" << routeKey << " competing=" << competing << " status={3,0,0} diagnostic=" << error.diagnostic
+                          << " stage=derive_cuda_frame_workspace_request prefix=CUDA frame workspace derivation failed" << '\n';
+            }
+            for (unsigned carrier : {0u, 1u, 2u}) {
+                params.grainControls.active = false;
+                params.dirCouplers.active = false;
+                params.gateDustAmount = 1.0;
+                params.cameraDiffusion.active = carrier == 2;
+                require(Spektrafilm::build_scatter_halation_controls(
+                            ScatterHalationRawControls{carrier != 0, 1.0, 1.0, 1.0, 1.0}, params.scatterHalationControls, diagnostic),
+                        diagnostic);
+                require(print ? build_print_render_state_product(params, product, diagnostic)
+                              : build_direct_render_state_product(params, product, diagnostic),
+                        diagnostic);
+                require(print ? Scanner::build_print_scanner_spectral_lut_descriptor(
+                                    {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, diagnostic)
+                              : Scanner::build_direct_scanner_spectral_lut_descriptor(
+                                    {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, diagnostic),
+                        diagnostic);
+                Spektrafilm::FilmJuicerEffectsFrameDescriptorInput effectsInput;
+                effectsInput.recipe = &product.recipe.filmJuicerEffects;
+                effectsInput.renderExtent = {0, 0, 64, 48};
+                effectsInput.fullFrameExtent = effectsInput.renderExtent;
+                effectsInput.geometry = {{0, 0, 64, 48}, 0.0, 0.0, 64.0, 48.0, 1.0, 1.0, 1.0};
+                effectsInput.pixelSizeUm = 35'000.0f / 64;
+                effectsInput.filmFormatLongEdgeMm = 35.0f;
+                effectsInput.frameRate = 24.0;
+                effectsInput.sessionSeed = 17;
+                effectsInput.clipToken = 23;
+                Spektrafilm::FilmJuicerEffectsFrameDescriptor effects;
+                require(JuicerTestSupport::prepare_effects_frame(effectsInput, effects, diagnostic), diagnostic);
+                require(effects.gateTransmittanceActive && effects.hash != 0, "gate fixture not active");
+                effects.gateWidth = 0;
+                auto gateRequest = request_for();
+                gateRequest.visualGrainDescriptor.reset();
+                gateRequest.spatialDirDescriptor = nullptr;
+                gateRequest.effectsDescriptor = effects;
+                std::optional<ScatterHalationFrameDescriptor> halation;
+                std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
+                require(JuicerTestSupport::prepare_halation_frame(product.recipe.spatialOptics.scatterHalation, effectsInput.pixelSizeUm, halation, diagnostic), diagnostic);
+                if (params.cameraDiffusion.active) {
+                    require(JuicerTestSupport::prepare_diffusion_frame(product.recipe.spatialOptics, route, effectsInput.pixelSizeUm, {0, 0, 64, 48}, diffusion, diagnostic) && diffusion,
+                            diagnostic);
+                }
+                gateRequest.scatterHalationDescriptor = halation ? &*halation : nullptr;
+                gateRequest.diffusionFrameSetDescriptor = diffusion ? &*diffusion : nullptr;
+                SubmissionSnapshot snapshot;
+                snapshot.instanceToken.value = 0x53344438;
+                snapshot.frameToken.value = next;
+                snapshot.snapshotId = next++;
+                snapshot.deviceContextKey = key;
+                snapshot.keyDigests = make_key_digests(product.payload.uploadCoreHash, product.recipe.dirCouplers.hash, product.payload.scannerHash, 0);
+                JuicerCuda::ExecutorTest::reset_workspace_transitions();
+                JuicerCuda::Failure gateFailure;
+                auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, gateRequest, {}, device.stream, gateFailure);
+                const auto marker = frame.workspace_lease();
+                require(frame.active() && marker.active(), "attachment failure moved ahead of checkpoint: " + gateFailure.diagnostic);
+                require(!frame.scanner_workspace(marker).active && !frame.spatial_dir_scratch(marker).active, "failed construction exposed a workspace view");
+                auto halationView = frame.scatter_halation_resources();
+                require((halationView.descriptor != nullptr) == (carrier != 0), "attachment failure changed halation activation");
+                if (carrier != 0) {
+                    require(halationView.fullFrameWidth == 64 && halationView.fullFrameHeight == 48,
+                            "attachment failure erased prepared halation extent");
+                    require(halationView.carrierSource == (carrier == 2 ? JuicerCuda::ScatterHalationCarrierSource::CameraDiffusionStagePlanes
+                                                                        : JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes),
+                            "attachment failure changed halation carrier");
+                    if (carrier == 2) {
+                        const auto preparedDiffusion = frame.diffusion_resources();
+                        require(preparedDiffusion.active && !halationView.currentCarrier.redSensitive && !halationView.currentCarrier.greenSensitive && !halationView.currentCarrier.blueSensitive,
+                                "shared halation carrier was bound before diffusion");
+                        const auto& planes = preparedDiffusion.execution.stagePlanes;
+                        halationView.currentCarrier = {planes.redSensitive, planes.greenSensitive, planes.blueSensitive, planes.rowStrideFloats};
+                        frame.mark_diffusion_work_enqueued();
+                    }
+                    const std::size_t planeBytes = halationView.currentCarrier.rowStrideFloats * halationView.fullFrameHeight * sizeof(float);
+                    require_cuda(cudaMemsetAsync(halationView.currentCarrier.redSensitive, 0, planeBytes, device.stream), "attachment halation red carrier");
+                    require_cuda(cudaMemsetAsync(halationView.currentCarrier.greenSensitive, 0, planeBytes, device.stream), "attachment halation green carrier");
+                    require_cuda(cudaMemsetAsync(halationView.currentCarrier.blueSensitive, 0, planeBytes, device.stream), "attachment halation blue carrier");
+                    require_cuda(JuicerCuda::launch_scatter_halation(halationView, device.stream).status, "attachment halation launch");
+                }
+                require(!frame.checkpoint_large_scratch_transition(marker, device.stream, print ? "print_large_scratch_transition" : "direct_large_scratch_transition", gateFailure), "malformed attachment passed checkpoint");
+                require(gateFailure.status.category == FJ_STATUS_PREPARATION_FAILURE && gateFailure.status.api == FJ_API_NONE && gateFailure.status.native_code == 0 &&
+                            gateFailure.diagnostic == "invalid frame scratch request",
+                        "attachment checkpoint envelope changed");
+                const auto observed = JuicerCuda::ExecutorTest::workspace_transitions();
+                require(observed.resourcesAcquired == 1 && !observed.requested && !observed.admitted && observed.candidateCount == 0, "attachment failure fabricated a completed layout");
+                frame.abort();
+                require(gateFailure.diagnostic == "invalid frame scratch request" && gateFailure.status.category == FJ_STATUS_PREPARATION_FAILURE &&
+                            gateFailure.status.api == FJ_API_NONE && gateFailure.status.native_code == 0,
+                        "abort lost attachment checkpoint failure");
+                require(!frame.scatter_halation_resources().descriptor && !frame.diffusion_resources().active, "aborted attachment failure exposed prepared optics");
+                std::cout << "preserved attachment checkpoint route=" << Spektrafilm::scan_route_key(route) << " carrier=" << carrier << " status={3,0,0} diagnostic=" << gateFailure.diagnostic << '\n';
+            }
+        }
+        const std::array cases{Case{"negative-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                               Case{"negative-print", Spektrafilm::ScanRoute::NegativePrintScan, 1, 4, 0, 0},
+                               Case{"positive-direct", Spektrafilm::ScanRoute::PositiveDirectScan, 2, 3, 11, -3},
+                               Case{"positive-print", Spektrafilm::ScanRoute::PositivePrintScan, 0, 4, 0, 0}};
+        std::ifstream fixture(JUICER_PROCESSOR_REFERENCE_PATH);
+        require(static_cast<bool>(fixture), "workspace processor fixture unavailable");
+        unsigned pixels = 0;
+        for (const auto& test : cases) {
+            std::string name;
+            std::size_t count = 0;
+            fixture >> name >> count;
+            require(fixture && name == test.name && count > 0, "workspace fixture membership");
+            std::vector<float> expected(count);
+            for (float& value : expected) {
+                fixture >> value;
+            }
+            require(static_cast<bool>(fixture), "workspace fixture truncated");
+            nlohmann::json words = nlohmann::json::array();
+            for (float value : expected) {
+                words.push_back(std::bit_cast<std::uint32_t>(value));
+            }
+            words = PrintIlluminantFixtures::apply(std::string(JUICER_PROCESSOR_REFERENCE_PATH) + "." + test.name, words);
+            for (std::size_t i = 0; i < expected.size(); ++i) {
+                expected[i] = std::bit_cast<float>(words.at(i).get<std::uint32_t>());
+            }
+            InstanceState state;
+            JuicerCuda::ExecutorTest::reset_workspace_transitions();
+            compare_pixels(test.name, render_case(test, parameters_for(test), state, false, ExecutionPath::Direct, DestinationLayout::Matching, next++), expected);
+            require(JuicerCuda::ExecutorTest::workspaceHandoff.has_value(), "actual schedule handoff not observed");
+            ++pixels;
+            std::cout << "workspace actual schedule route=" << Spektrafilm::scan_route_key(test.route)
+                      << " handoff=" << static_cast<unsigned>(*JuicerCuda::ExecutorTest::workspaceHandoff) << '\n';
+        }
+        unsigned injectedFailures = 0;
+        std::vector<float> latestPixels;
+        const auto run = [&](const Case& test, const ParamSnapshot& params, unsigned reject, JuicerCuda::ExecutorTest::WorkspaceRejection kind, bool failureExpected) {
+            using namespace JuicerCuda::ExecutorTest;
+            reset_workspace_transitions();
+            require(arm_workspace_rejection(reject, kind), "workspace seam configuration rejected");
+            require(!arm_workspace_rejection(7, kind) && !arm_workspace_rejection(1, static_cast<WorkspaceRejection>(255)),
+                    "invalid seam configuration replaced armed input");
+            InstanceState state;
+            bool failed = false;
+            JuicerCuda::Failure failure;
+            try {
+                const auto actual = render_case(test, params, state, false, ExecutionPath::Direct, DestinationLayout::Matching, next++);
+                require(!actual.empty() && std::all_of(actual.begin(), actual.end(), [](float value) {
+                    return std::isfinite(value);
+                }),
+                        "workspace actual pixels unavailable");
+                latestPixels = actual;
+                ++pixels;
+            } catch (const JuicerCuda::ExecutionFailure& error) {
+                failure = error.failure;
+                failed = true;
+                ++injectedFailures;
+            }
+            require(failed == failureExpected, std::string(test.name) + ": unexpected workspace failure: " + failure.diagnostic);
+            const auto observed = workspace_transitions();
+            if (failed) {
+                const auto status = kind == WorkspaceRejection::Capacity       ? FjStatus{FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}
+                                    : kind == WorkspaceRejection::InvalidValue ? JuicerCuda::runtime_failure_status(cudaErrorInvalidValue)
+                                                                               : JuicerCuda::runtime_failure_status(cudaErrorContextIsDestroyed);
+                const std::string text = kind == WorkspaceRejection::Capacity       ? "workspace candidate capacity rejection"
+                                         : kind == WorkspaceRejection::InvalidValue ? "workspace candidate invalid-value rejection"
+                                                                                    : "workspace candidate context-loss rejection";
+                require(failure.status.category == status.category && failure.status.api == status.api && failure.status.native_code == status.native_code && failure.diagnostic == text,
+                        "workspace failure envelope or primary failure changed");
+                require(observed.classified.category == status.category && observed.recoveryPending == (kind == WorkspaceRejection::ContextLoss), "workspace typed recovery classification changed");
+                require(observed.candidateCount == (kind == WorkspaceRejection::Capacity ? 6u : 1u) && !observed.admitted &&
+                            observed.finishes == 0 && observed.aborts == 1 && !observed.captureEnqueued && !observed.scannerEnqueued,
+                        "failed workspace published or advanced candidates");
+                require(observed.postFrame && *observed.postFrame == *observed.candidates[observed.candidateCount - 1].layout,
+                        "failed candidate lost post-frame shedding layout");
+            } else {
+                require(observed.finishes == 1 && observed.aborts == 0 && observed.scannerEnqueued && workspaceHandoff.has_value(), "workspace successful schedule/finish missing");
+                if (observed.admitted) {
+                    require(observed.bindingsObserved && observed.scannerMapping && observed.grainMapping && observed.postFrame.has_value(), "workspace plane association or retention changed");
+                    require(JuicerCuda::ResourceManager::scratch_request_descriptor_is_valid(observed.admitted->allocation()), "admitted projection invalid");
+                    require(*observed.admitted == *observed.postFrame, "post-frame retention differs from admitted build candidate");
+                }
+                require(observed.captureEnqueued == (*workspaceHandoff == WorkspaceHandoff::MaterializedDensity), "capture result did not follow actual development");
+            }
+            for (unsigned i = 0; i < observed.candidateCount; ++i) {
+                const auto& candidate = observed.candidates[i];
+                require(candidate.layout.has_value() && candidate.backendCalls >= 1, "candidate did not reach validated backend");
+                require(candidate.succeeded == (!failureExpected && i == reject), "outer candidate decision changed across backend retries");
+                if (!candidate.succeeded) {
+                    require(candidate.result.category == (kind == WorkspaceRejection::Capacity       ? FJ_STATUS_ALLOCATION_FAILURE
+                                                          : kind == WorkspaceRejection::InvalidValue ? FJ_STATUS_CUDA_FAILURE
+                                                                                                     : FJ_STATUS_CONTEXT_LOSS),
+                            "candidate typed rejection changed");
+                }
+                std::cout << test.name << " candidate=" << i << " backend_calls=" << candidate.backendCalls << " success=" << candidate.succeeded
+                          << " generation=" << candidate.layout->allocation().generation << '\n';
+            }
+            std::cout << "workspace cohort route=" << Spektrafilm::scan_route_key(test.route) << " case=" << test.name
+                      << " reject=" << reject << " failed=" << failed << " source_cache=" << observed.sourceCacheChannels
+                      << " final_cache=" << observed.finalCacheChannels << '\n';
+            return observed;
+        };
+        for (unsigned route = 0; route < 4; ++route) {
+            const Case test{"workspace-route", static_cast<Spektrafilm::ScanRoute>(route), 0, 4, 0, 0};
+            auto params = parameters_for(test);
+            params.grainControls.active = false;
+            params.dirCouplers.active = false;
+            params.glareActive = false;
+            params.scannerUnsharpMask = {0.0, 0.0};
+            const auto noWork = run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+            require(!noWork.requested && !noWork.admitted && noWork.candidateCount == 0, "no-family schedule requested scratch");
+            params.dirCouplers.active = true;
+            params.scannerUnsharpMask = {0.5, 0.5};
+            run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+            params.grainControls.active = true;
+            params.grainControls.sublayersActive = true;
+            params.grainControls.chromaSharedWeight = 1.0f;
+            Case strict = test;
+            strict.name = "strict-yvv";
+            strict.width = 512;
+            strict.height = 48;
+            if (route < 2) {
+                std::vector<float> baseline;
+                for (unsigned reject = 0; reject <= 6; ++reject) {
+                    const auto observed = run(strict, params, reject, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, reject == 6);
+                    const std::array raw{3, 3, 3, 3, 3, 1};
+                    const std::array temp{3, 3, 3, 2, 1, 1};
+                    const std::array cache{3, 2, 0, 0, 0, 0};
+                    for (unsigned i = 0; i < observed.candidateCount; ++i) {
+                        const auto& allocation = observed.candidates[i].layout->allocation();
+                        require(allocation.spatialDirPlaneRoles.rawCorrectionPlanes == raw[i] && allocation.spatialDirPlaneRoles.filteredCorrectionPlanes == 3 &&
+                                    allocation.spatialDirPlaneRoles.filterTempPlanes == temp[i] && allocation.spatialDirPlaneRoles.cachedLogRawPlanes == cache[i] &&
+                                    allocation.spatialDirTargetPlaneRoles.rawCorrectionPlanes == raw[i] && allocation.spatialDirTargetPlaneRoles.filterTempPlanes == temp[i] &&
+                                    allocation.spatialDirTargetPlaneRoles.cachedLogRawPlanes == cache[i],
+                                "strict-YVV candidate order/target changed");
+                    }
+                    if (reject < 6) {
+                        if (reject == 0) {
+                            baseline = latestPixels;
+                        } else {
+                            require(latestPixels.size() == baseline.size(), "fallback pixel count changed");
+                            for (std::size_t i = 0; i < baseline.size(); ++i) {
+                                RenderAssertions::require_same_bits("strict-YVV candidate output", latestPixels[i], baseline[i]);
+                            }
+                        }
+                        require(observed.admitted->grain_storage() == (reject == 5 ? GrainStorage::Dedicated : GrainStorage::DirRaw), "fallback grain binding changed");
+                        require(observed.sourceCacheChannels == (reject == 0 ? 3u : reject == 1 ? 2u
+                                                                                                : 0u),
+                                "admitted source-cache count changed");
+                    }
+                }
+                run(strict, params, 1, JuicerCuda::ExecutorTest::WorkspaceRejection::InvalidValue, true);
+                run(strict, params, 1, JuicerCuda::ExecutorTest::WorkspaceRejection::ContextLoss, true);
+                for (unsigned shape = 0; shape < 4; ++shape) {
+                    params.grainControls.sublayersActive = shape >= 2;
+                    params.grainControls.chromaSharedWeight = shape % 2 ? 1.0f : 0.0f;
+                    params.grainControls.chromaIndependentWeight = shape % 2 ? 0.0f : 1.0f;
+                    run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+                }
+                params.grainControls.debugView = 1;
+                run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+                params.grainControls.debugView = 0;
+                params.cameraDiffusion.active = true;
+                const auto diffusion = run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+                require(diffusion.admitted->grain_storage() == GrainStorage::Dedicated, "diffusion used DIR raw grain");
+            } else {
+                const auto positive = run(strict, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+                require(positive.admitted->scanner_storage() == ScannerStorage::Dedicated && positive.admitted->grain_storage() == GrainStorage::Dedicated,
+                        "positive route aliased corrections");
+                require(positive.sourceCacheChannels == 0 && positive.finalCacheChannels == 3 && positive.finalDevelopment.has_value(), "later cache staging missing");
+            }
+            params.grainControls.active = false;
+            params.cameraDiffusion.active = false;
+            params.filmDustAmount = 1.0;
+            params.filmScratchAmount = 1.0;
+            params.gateDustAmount = 1.0;
+            params.gateScratchAmount = 1.0;
+            params.gateWeaveAmount = 1.0;
+            run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+        }
+        for (bool camera : {false, true}) {
+            Case test{"halation-carrier", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0, true};
+            auto params = parameters_for(test);
+            params.cameraDiffusion.active = camera;
+            params.enlargerDiffusion.active = true;
+            run(test, params, 0, JuicerCuda::ExecutorTest::WorkspaceRejection::Capacity, false);
+        }
+        JuicerCuda::ExecutorTest::reset_workspace_transitions();
+        std::cout << "WorkspaceTransitions replacement: genuine_pixels=" << pixels << " construction_failures=4 checkpoint_failures=6 injected_failures=" << injectedFailures << '\n';
+    }
+
     template <typename RouteState>
     std::shared_ptr<const RouteState> frame_state(FocusedRenderStateBuildProduct product) {
         auto state = std::make_shared<RouteState>();
@@ -2385,6 +2894,13 @@ int main(int argc, char** argv) {
         }
 #endif
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (argc == 2 && std::string(argv[1]) == "--workspace-transitions") {
+            run_workspace_transitions();
+            if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {
+                throw std::runtime_error("workspace transitions owner cleanup failed");
+            }
+            return 0;
+        }
         if (argc == 4 && std::string(argv[1]) == "--effects-frame") {
             run_effects_frame_cases(argv[2], argv[3]);
             if (cudaOwner.close().category != FJ_STATUS_SUCCESS)

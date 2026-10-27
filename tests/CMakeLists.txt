@@ -32,6 +32,8 @@ else()
 endif()
 set(JUICER_TEST_ARTIFACT_ROOT
     "${PROJECT_SOURCE_DIR}/out/validation/${JUICER_TEST_PRESET_NAME}")
+set(JUICER_TOOLING_ARTIFACT_ROOT
+    "${JUICER_TEST_ARTIFACT_ROOT}" CACHE PATH "Tooling test artifact root")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/ToolingTests.cmake")
 if(CMAKE_HOST_WIN32)
@@ -41,7 +43,7 @@ else()
 endif()
 juicer_register_tooling_tests(
     ROOT "${PROJECT_SOURCE_DIR}"
-    ARTIFACT_ROOT "${JUICER_TEST_ARTIFACT_ROOT}"
+    ARTIFACT_ROOT "${JUICER_TOOLING_ARTIFACT_ROOT}"
     PYTHON "${Python3_EXECUTABLE}"
     CMAKE_COMMAND "${CMAKE_COMMAND}"
     CTEST_COMMAND "${CMAKE_CTEST_COMMAND}"
@@ -843,6 +845,8 @@ if(UNIX)
 endif()
 add_test(NAME Ofx.Gpu.NoiseSourceLifetime COMMAND JuicerExecutorFailureOrderProbe --noise-lifetime)
 set_tests_properties(Ofx.Gpu.NoiseSourceLifetime PROPERTIES LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+add_test(NAME Ofx.Gpu.WorkspaceTransitions COMMAND JuicerExecutorFailureOrderProbe --workspace-transitions)
+set_tests_properties(Ofx.Gpu.WorkspaceTransitions PROPERTIES LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 add_test(NAME Ofx.Gpu.GrainFrame COMMAND JuicerExecutorFailureOrderProbe --grain-frame
     "${CMAKE_CURRENT_SOURCE_DIR}/grain/frame-fixtures/manifest.json" "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ofx.Gpu.GrainFrame PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)

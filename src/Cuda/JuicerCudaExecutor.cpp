@@ -1090,6 +1090,32 @@ namespace {
         JuicerCuda::GrainKernelPayload kernels{};
     };
 
+    enum class CaptureExecution : unsigned char {
+        Monolithic,
+        MaterializedDensity,
+        FusedDirScanner
+    };
+    struct MonolithicScan {};
+    struct FusedDirScanner {};
+    struct MaterializedDensity {
+        JuicerProcess::Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView planes;
+    };
+    // Materialized density is published after development enqueue; completion remains native.
+    using ScannerInput = std::variant<MonolithicScan, FusedDirScanner, MaterializedDensity>;
+
+    enum class DirCache : unsigned char {
+        Absent,
+        SourceBg,
+        SourceBgr,
+        StagedBgr
+    };
+    struct DirBuildResult {
+        DirCache cache;
+        bool uses_source_cache() const noexcept {
+            return cache == DirCache::SourceBg || cache == DirCache::SourceBgr;
+        }
+    };
+
     struct EffectsPayloads {
         JuicerCuda::FilmDefectsPayload film{};
         JuicerCuda::GateWeavePayload weave{};
@@ -1615,7 +1641,7 @@ namespace {
             grain.workspace.frameUniforms;
     }
 
-    bool build_direct_dir(
+    DirBuildResult build_direct_dir(
         JuicerCuda::DirectPipelineRunParams& run,
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
@@ -1623,7 +1649,7 @@ namespace {
         const JuicerCuda::CameraFilmLinearExposurePlanes& directCameraFilmLinear,
         bool cameraFilmLinearActive,
         void* stream,
-        bool directUseFusedScannerPostSpatialDirHandoff,
+        CaptureExecution execution,
         const ExecutionErrors& errors) {
         bool directDirUsesSourceBuildCachedLogRaw = false;
 
@@ -1705,7 +1731,7 @@ namespace {
                 "direct spatial DIR build failed",
                 dirError);
         }
-        if (!directUseFusedScannerPostSpatialDirHandoff &&
+        if (execution != CaptureExecution::FusedDirScanner &&
             !directDirUsesSourceBuildCachedLogRaw) {
             JuicerCuda::Failure stageError;
             if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
@@ -1721,7 +1747,7 @@ namespace {
         const auto finalScratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
         const bool directDirRequiresCachedLogRaw =
             directDirUsesSourceBuildCachedLogRaw ||
-            (!directUseFusedScannerPostSpatialDirHandoff &&
+            (execution != CaptureExecution::FusedDirScanner &&
              directDirAdmittedTargetRoles.cachedLogRawPlanes == 3);
         if (!finalScratch.filteredCorrectionY || !finalScratch.filteredCorrectionM ||
             !finalScratch.filteredCorrectionC) {
@@ -1759,7 +1785,14 @@ namespace {
         }
         bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
 
-        return directDirUsesSourceBuildCachedLogRaw;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_dir_build({.source = directDirUsesSourceBuildCachedLogRaw ? static_cast<unsigned>(directDirAdmittedRoles.cachedLogRawPlanes) : 0u,
+                                                               .final = directDirRequiresCachedLogRaw ? static_cast<unsigned>(directDirAdmittedTargetRoles.cachedLogRawPlanes) : 0u});
+#endif
+        return {directDirUsesSourceBuildCachedLogRaw
+                    ? (directDirAdmittedRoles.cachedLogRawPlanes == 2 ? DirCache::SourceBg : DirCache::SourceBgr)
+                : directDirRequiresCachedLogRaw ? DirCache::StagedBgr
+                                                : DirCache::Absent};
     }
 
     void pack_scan_stage(
@@ -1895,17 +1928,15 @@ namespace {
         const RouteDescriptors& descriptors,
         const OpticalWorkspace& optical,
         const EffectsPayloads& effects,
-        bool directUseFocusedSplit,
+        const ScannerInput& scannerInput,
         bool grainDebugActive,
-        bool directUseFusedScannerPostSpatialDirHandoff,
-        bool directCaptureDensityReady,
-        bool directDirUsesSourceBuildCachedLogRaw,
+        const std::optional<DirBuildResult>& dirBuild,
         bool gateOutputActive,
         const JuicerCuda::ExecutionFrame& frame,
         const ExecutionErrors& errors) {
         cudaError_t launchError = cudaSuccess;
 
-        if (directUseFocusedSplit) {
+        if (!std::holds_alternative<MonolithicScan>(scannerInput)) {
             JuicerProcess::Root::PreparedCudaFrame::ScannerPostEffectsPreparedView
                 post{};
             if (descriptors.post.active() && !grainDebugActive) {
@@ -1921,7 +1952,7 @@ namespace {
                 }
             }
             if (!grainDebugActive) {
-                if (directUseFusedScannerPostSpatialDirHandoff) {
+                if (std::holds_alternative<FusedDirScanner>(scannerInput)) {
                     launchError = juicer_cuda_direct_focused_scan_linear_rgb(
                         &run,
                         optical.rgb.r,
@@ -1929,15 +1960,12 @@ namespace {
                         optical.rgb.b,
                         frame.stream);
                 } else {
-                    if (!directCaptureDensityReady) {
-                        errors.fail_route(
-                            "MissingRequiredResource phase=grain_route field=capture_density");
-                    }
+                    const auto& density = std::get<MaterializedDensity>(scannerInput).planes;
                     launchError = juicer_cuda_direct_focused_scan_linear_density_rgb(
                         &run,
-                        optical.density.c,
-                        optical.density.m,
-                        optical.density.y,
+                        density.c,
+                        density.m,
+                        density.y,
                         optical.rgb.r,
                         optical.rgb.g,
                         optical.rgb.b,
@@ -1951,7 +1979,7 @@ namespace {
                         launchError);
                 }
             }
-            if (directDirUsesSourceBuildCachedLogRaw) {
+            if (dirBuild && dirBuild->uses_source_cache()) {
                 run.filmDevelop.spatialDir.logRawB = nullptr;
                 run.filmDevelop.spatialDir.logRawG = nullptr;
                 run.filmDevelop.spatialDir.logRawR = nullptr;
@@ -1996,7 +2024,7 @@ namespace {
         if (launchError != cudaSuccess) {
             errors.fail_stage("direct_negative_pipeline_launch", "direct negative pipeline launch failed", launchError);
         }
-        if (descriptors.dir.hash != 0 && !directUseFocusedSplit) {
+        if (descriptors.dir.hash != 0 && std::holds_alternative<MonolithicScan>(scannerInput)) {
             run.filmDevelop.spatialDir.logRawB = nullptr;
             run.filmDevelop.spatialDir.logRawG = nullptr;
             run.filmDevelop.spatialDir.logRawR = nullptr;
@@ -2387,7 +2415,7 @@ namespace {
         return optical;
     }
 
-    bool build_print_dir(
+    DirBuildResult build_print_dir(
         JuicerCuda::PrintPipelineRunParams& run,
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
@@ -2395,7 +2423,7 @@ namespace {
         const JuicerCuda::CameraFilmLinearExposurePlanes& printCameraFilmLinear,
         bool cameraFilmLinearActive,
         void* stream,
-        bool printUseFusedScannerPostSpatialDirHandoff,
+        CaptureExecution execution,
         const ExecutionErrors& errors) {
         bool printDirUsesSourceBuildCachedLogRaw = false;
 
@@ -2477,7 +2505,7 @@ namespace {
                 "print spatial DIR build failed",
                 dirError);
         }
-        if (!printUseFusedScannerPostSpatialDirHandoff &&
+        if (execution != CaptureExecution::FusedDirScanner &&
             !printDirUsesSourceBuildCachedLogRaw) {
             JuicerCuda::Failure stageError;
             if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
@@ -2493,7 +2521,7 @@ namespace {
         const auto finalScratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
         const bool printDirRequiresCachedLogRaw =
             printDirUsesSourceBuildCachedLogRaw ||
-            (!printUseFusedScannerPostSpatialDirHandoff &&
+            (execution != CaptureExecution::FusedDirScanner &&
              printDirAdmittedTargetRoles.cachedLogRawPlanes == 3);
         if (!finalScratch.filteredCorrectionY || !finalScratch.filteredCorrectionM ||
             !finalScratch.filteredCorrectionC) {
@@ -2531,7 +2559,14 @@ namespace {
         }
         bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
 
-        return printDirUsesSourceBuildCachedLogRaw;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_dir_build({.source = printDirUsesSourceBuildCachedLogRaw ? static_cast<unsigned>(printDirAdmittedRoles.cachedLogRawPlanes) : 0u,
+                                                               .final = printDirRequiresCachedLogRaw ? static_cast<unsigned>(printDirAdmittedTargetRoles.cachedLogRawPlanes) : 0u});
+#endif
+        return {printDirUsesSourceBuildCachedLogRaw
+                    ? (printDirAdmittedRoles.cachedLogRawPlanes == 2 ? DirCache::SourceBg : DirCache::SourceBgr)
+                : printDirRequiresCachedLogRaw ? DirCache::StagedBgr
+                                               : DirCache::Absent};
     }
 
     void develop_print_capture(
@@ -2727,11 +2762,9 @@ namespace {
         const RouteDescriptors& descriptors,
         const OpticalWorkspace& optical,
         const EffectsPayloads& effects,
-        bool printUseFocusedSplit,
+        const ScannerInput& scannerInput,
         bool grainDebugActive,
-        bool printUseFusedScannerPostSpatialDirHandoff,
-        bool printCaptureDensityReady,
-        bool printDirUsesSourceBuildCachedLogRaw,
+        const std::optional<DirBuildResult>& dirBuild,
         bool gateOutputActive,
         const JuicerCuda::ExecutionFrame& frame,
         std::uint64_t recipeHash,
@@ -2739,7 +2772,7 @@ namespace {
         const ExecutionErrors& errors) {
         cudaError_t launchError = cudaSuccess;
         const auto& srcBounds = frame.sourceBounds;
-        if (printUseFocusedSplit) {
+        if (!std::holds_alternative<MonolithicScan>(scannerInput)) {
             JuicerProcess::Root::PreparedCudaFrame::ScannerPostEffectsPreparedView
                 post{};
             if (descriptors.post.active() && !grainDebugActive) {
@@ -2760,7 +2793,7 @@ namespace {
                  static_cast<std::uint64_t>(srcBounds.x1),
                  static_cast<std::uint64_t>(srcBounds.y1)});
             if (!grainDebugActive) {
-                if (printUseFusedScannerPostSpatialDirHandoff) {
+                if (std::holds_alternative<FusedDirScanner>(scannerInput)) {
                     launchError = juicer_cuda_print_focused_scan_linear_rgb(
                         &run,
                         optical.rgb.r,
@@ -2777,15 +2810,12 @@ namespace {
                         post.glare.radius,
                         frame.stream);
                 } else {
-                    if (!printCaptureDensityReady) {
-                        errors.fail_route(
-                            "MissingRequiredResource phase=grain_route field=capture_density");
-                    }
+                    const auto& density = std::get<MaterializedDensity>(scannerInput).planes;
                     launchError = juicer_cuda_print_focused_scan_linear_density_rgb(
                         &run,
-                        optical.density.c,
-                        optical.density.m,
-                        optical.density.y,
+                        density.c,
+                        density.m,
+                        density.y,
                         optical.rgb.r,
                         optical.rgb.g,
                         optical.rgb.b,
@@ -2807,7 +2837,7 @@ namespace {
                         launchError);
                 }
             }
-            if (printDirUsesSourceBuildCachedLogRaw) {
+            if (dirBuild && dirBuild->uses_source_cache()) {
                 run.filmDevelop.spatialDir.logRawB = nullptr;
                 run.filmDevelop.spatialDir.logRawG = nullptr;
                 run.filmDevelop.spatialDir.logRawR = nullptr;
@@ -2855,7 +2885,7 @@ namespace {
                 "focused print pipeline launch failed",
                 launchError);
         }
-        if (descriptors.dir.hash != 0 && !printUseFocusedSplit) {
+        if (descriptors.dir.hash != 0 && std::holds_alternative<MonolithicScan>(scannerInput)) {
             run.filmDevelop.spatialDir.logRawB = nullptr;
             run.filmDevelop.spatialDir.logRawG = nullptr;
             run.filmDevelop.spatialDir.logRawR = nullptr;
@@ -2958,9 +2988,6 @@ namespace JuicerCuda {
         const bool halationExecutable = directHalation.descriptor != nullptr;
         const bool cameraFilmLinearActive =
             cameraDiffusionActive || halationExecutable;
-        const bool directUseFocusedSplit =
-            cameraFilmLinearActive || descriptors.post.active() ||
-            grainStageActive || filmEffectsActive || gateOutputActive;
         DiffusionStageBinding directCameraDiffusion{};
         bind_direct_diffusion(preparedFrame, frame, directCameraDiffusion, errors);
         const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView prepared =
@@ -3016,10 +3043,17 @@ namespace JuicerCuda {
             directCameraDiffusion,
             directHalation,
             errors);
-        const bool directUseFusedScannerPostSpatialDirHandoff =
-            !cameraFilmLinearActive && descriptors.dir.hash != 0 &&
-            descriptors.post.active() &&
-            !captureDensityConsumerActive;
+        const CaptureExecution execution = (!cameraFilmLinearActive && descriptors.dir.hash != 0 && descriptors.post.active() && !captureDensityConsumerActive)
+                                               ? CaptureExecution::FusedDirScanner
+                                           : (cameraFilmLinearActive || descriptors.post.active() || captureDensityConsumerActive || gateOutputActive)
+                                               ? CaptureExecution::MaterializedDensity
+                                               : CaptureExecution::Monolithic;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_handoff(
+            execution == CaptureExecution::FusedDirScanner       ? JuicerCuda::ExecutorTest::WorkspaceHandoff::FusedDirScanner
+            : execution == CaptureExecution::MaterializedDensity ? JuicerCuda::ExecutorTest::WorkspaceHandoff::MaterializedDensity
+                                                                 : JuicerCuda::ExecutorTest::WorkspaceHandoff::Monolithic);
+#endif
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
             preparedFrame.workspace_lease();
         if (focusedWorkspace.active()) {
@@ -3035,8 +3069,7 @@ namespace JuicerCuda {
                     transitionError);
             }
         }
-        bool directDirUsesSourceBuildCachedLogRaw = false;
-        bool directCaptureDensityReady = false;
+        std::optional<DirBuildResult> dirBuild;
         if (descriptors.dir.hash != 0) {
             JuicerCuda::Failure spatialError;
             if (!preparedFrame.prepare_spatial_dir_resources(
@@ -3052,15 +3085,18 @@ namespace JuicerCuda {
         }
         const EffectsPayloads effects = pack_effects_payloads(preparedFrame, descriptors.effects, errors);
         OpticalWorkspace optical;
-        if (directUseFocusedSplit) {
+        if (execution != CaptureExecution::Monolithic) {
             optical = bind_direct_optical_workspace(preparedFrame, focusedWorkspace, frame.stream, descriptors.effects, errors);
         }
         GrainBinding grain;
         if (grainStageActive) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_bindings(preparedFrame, focusedWorkspace);
+#endif
         if (descriptors.dir.hash != 0) {
-            directDirUsesSourceBuildCachedLogRaw = build_direct_dir(
+            dirBuild = build_direct_dir(
                 run,
                 preparedFrame,
                 focusedWorkspace,
@@ -3068,7 +3104,7 @@ namespace JuicerCuda {
                 directCameraFilmLinear,
                 cameraFilmLinearActive,
                 frame.stream,
-                directUseFusedScannerPostSpatialDirHandoff,
+                execution,
                 errors);
         }
         pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
@@ -3083,7 +3119,13 @@ namespace JuicerCuda {
         if (scanResult != JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready) {
             errors.fail_submission("direct_scan_error_stage", "direct scan error stage failed", scanError, scanResult == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::DeferredDirFailure);
         }
-        if (directUseFocusedSplit && !directUseFusedScannerPostSpatialDirHandoff) {
+        const ScannerInput scannerInput = [&]() -> ScannerInput {
+            if (execution == CaptureExecution::Monolithic) {
+                return MonolithicScan{};
+            }
+            if (execution == CaptureExecution::FusedDirScanner) {
+                return FusedDirScanner{};
+            }
             develop_direct_capture(
                 run,
                 directCameraFilmLinear,
@@ -3097,8 +3139,11 @@ namespace JuicerCuda {
                 grainDebugActive,
                 frame.stream,
                 errors);
-            directCaptureDensityReady = true;
-        }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            JuicerCuda::ExecutorTest::observe_workspace_capture();
+#endif
+            return MaterializedDensity{optical.density};
+        }();
         if (cameraDiffusionActive) {
             JuicerCuda::Failure diffusionReleaseError;
             if (!preparedFrame.release_diffusion_resources_after_use(
@@ -3123,14 +3168,15 @@ namespace JuicerCuda {
             descriptors,
             optical,
             effects,
-            directUseFocusedSplit,
+            scannerInput,
             grainDebugActive,
-            directUseFusedScannerPostSpatialDirHandoff,
-            directCaptureDensityReady,
-            directDirUsesSourceBuildCachedLogRaw,
+            dirBuild,
             gateOutputActive,
             frame,
             errors);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_scanner();
+#endif
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError)) {
             const std::string diagnostic = halationExecutable
                                                ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError.diagnostic)
@@ -3214,10 +3260,6 @@ namespace JuicerCuda {
         const bool halationExecutable = printHalation.descriptor != nullptr;
         const bool cameraFilmLinearActive =
             cameraDiffusionActive || halationExecutable;
-        const bool printUseFocusedSplit =
-            routeDiffusionActive || halationExecutable ||
-            descriptors.post.active() || grainStageActive ||
-            filmEffectsActive || gateOutputActive;
         DiffusionStageBinding printCameraDiffusion{};
         DiffusionStageBinding printEnlargerDiffusion{};
         bind_print_diffusion(preparedFrame, frame, printCameraDiffusion, printEnlargerDiffusion, errors);
@@ -3296,11 +3338,17 @@ namespace JuicerCuda {
             printCameraDiffusion,
             printHalation,
             errors);
-        const bool printUseFusedScannerPostSpatialDirHandoff =
-            !routeDiffusionActive && !halationExecutable &&
-            descriptors.dir.hash != 0 &&
-            descriptors.post.active() &&
-            !captureDensityConsumerActive;
+        const CaptureExecution execution = (!routeDiffusionActive && !halationExecutable && descriptors.dir.hash != 0 && descriptors.post.active() && !captureDensityConsumerActive)
+                                               ? CaptureExecution::FusedDirScanner
+                                           : (routeDiffusionActive || halationExecutable || descriptors.post.active() || captureDensityConsumerActive || gateOutputActive)
+                                               ? CaptureExecution::MaterializedDensity
+                                               : CaptureExecution::Monolithic;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_handoff(
+            execution == CaptureExecution::FusedDirScanner       ? JuicerCuda::ExecutorTest::WorkspaceHandoff::FusedDirScanner
+            : execution == CaptureExecution::MaterializedDensity ? JuicerCuda::ExecutorTest::WorkspaceHandoff::MaterializedDensity
+                                                                 : JuicerCuda::ExecutorTest::WorkspaceHandoff::Monolithic);
+#endif
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
             preparedFrame.workspace_lease();
         if (focusedWorkspace.active()) {
@@ -3316,8 +3364,7 @@ namespace JuicerCuda {
                     transitionError);
             }
         }
-        bool printDirUsesSourceBuildCachedLogRaw = false;
-        bool printCaptureDensityReady = false;
+        std::optional<DirBuildResult> dirBuild;
         if (descriptors.dir.hash != 0) {
             JuicerCuda::Failure spatialError;
             if (!preparedFrame.prepare_spatial_dir_resources(
@@ -3333,15 +3380,18 @@ namespace JuicerCuda {
         }
         const EffectsPayloads effects = pack_effects_payloads(preparedFrame, descriptors.effects, errors);
         OpticalWorkspace optical;
-        if (printUseFocusedSplit) {
+        if (execution != CaptureExecution::Monolithic) {
             optical = bind_print_optical_workspace(preparedFrame, focusedWorkspace, frame.stream, descriptors.effects, errors);
         }
         GrainBinding grain;
         if (grainStageActive) {
             bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_bindings(preparedFrame, focusedWorkspace);
+#endif
         if (descriptors.dir.hash != 0) {
-            printDirUsesSourceBuildCachedLogRaw = build_print_dir(
+            dirBuild = build_print_dir(
                 run,
                 preparedFrame,
                 focusedWorkspace,
@@ -3349,7 +3399,7 @@ namespace JuicerCuda {
                 printCameraFilmLinear,
                 cameraFilmLinearActive,
                 frame.stream,
-                printUseFusedScannerPostSpatialDirHandoff,
+                execution,
                 errors);
         }
         pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
@@ -3371,7 +3421,13 @@ namespace JuicerCuda {
                 scanError,
                 scanResult == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::DeferredDirFailure);
         }
-        if (printUseFocusedSplit && !printUseFusedScannerPostSpatialDirHandoff) {
+        const ScannerInput scannerInput = [&]() -> ScannerInput {
+            if (execution == CaptureExecution::Monolithic) {
+                return MonolithicScan{};
+            }
+            if (execution == CaptureExecution::FusedDirScanner) {
+                return FusedDirScanner{};
+            }
             develop_print_capture(
                 run,
                 printCameraFilmLinear,
@@ -3385,11 +3441,14 @@ namespace JuicerCuda {
                 grainDebugActive,
                 frame.stream,
                 errors);
-            printCaptureDensityReady = true;
             if (!grainDebugActive) {
                 develop_print_medium(run, preparedFrame, printEnlargerDiffusion, enlargerDiffusionActive, optical, frame.stream, errors);
             }
-        }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            JuicerCuda::ExecutorTest::observe_workspace_capture();
+#endif
+            return MaterializedDensity{optical.density};
+        }();
         if (routeDiffusionActive) {
             JuicerCuda::Failure diffusionReleaseError;
             if (!preparedFrame.release_diffusion_resources_after_use(
@@ -3415,16 +3474,17 @@ namespace JuicerCuda {
             descriptors,
             optical,
             effects,
-            printUseFocusedSplit,
+            scannerInput,
             grainDebugActive,
-            printUseFusedScannerPostSpatialDirHandoff,
-            printCaptureDensityReady,
-            printDirUsesSourceBuildCachedLogRaw,
+            dirBuild,
             gateOutputActive,
             frame,
             input.recipeHash,
             snapshot,
             errors);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_scanner();
+#endif
         if (!preparedFrame.finalize_scan_error_stage(
                 run.scanStage.scanErrorFlag,
                 frame.stream,

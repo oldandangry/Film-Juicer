@@ -244,33 +244,8 @@ namespace JuicerProcess {
             PreparedCudaFrame(const PreparedCudaFrame&) = delete;
             PreparedCudaFrame& operator=(const PreparedCudaFrame&) = delete;
 
-            // Shared frame scratch admission covers scanner post effects, grain, halation, and spatial DIR.
-            struct WorkspaceRequest {
-                bool needOptics = false;
-                bool needSpatialDir = false;
-                std::uint64_t spatialDirDescriptorHash = 0;
-                Spektrafilm::DirScratchTier spatialDirScratchTier = Spektrafilm::DirScratchTier::Tier0;
-                Spektrafilm::DirScratchPlaneRoles spatialDirPlaneRoles{};
-                Spektrafilm::DirScratchTier spatialDirTargetScratchTier = Spektrafilm::DirScratchTier::Tier0;
-                Spektrafilm::DirScratchPlaneRoles spatialDirTargetPlaneRoles{};
-                int requestedWidth = 0;
-                int requestedHeight = 0;
-                bool needBlurred = false;
-                bool aliasScannerRgbFromSpatialDirFiltered = false;
-                bool needAux = false;
-                bool needSharedTmp = false;
-                bool needGrainFrameUniforms = false;
-                bool needGrainLayerWork = false;
-                bool needGrainShared = false;
-                bool needGateTransmittance = false;
-                bool needFilmDustTransmittance = false;
-                int gateWidth = 0;
-                int gateHeight = 0;
-
-                [[nodiscard]] bool has_any_family() const noexcept {
-                    return needOptics || needSpatialDir;
-                }
-            };
+            struct WorkspaceConstructionFailure {};
+            using WorkspaceDerivation = std::variant<std::monostate, JuicerCuda::ResourceManager::WorkspaceLayout, WorkspaceConstructionFailure>;
 
             class WorkspaceLeaseMarker final {
             public:
@@ -281,11 +256,11 @@ namespace JuicerProcess {
             private:
                 friend class PreparedCudaFrame;
 
-                explicit WorkspaceLeaseMarker(const WorkspaceRequest& request, std::uint64_t leaseGeneration) noexcept;
+                explicit WorkspaceLeaseMarker(const WorkspaceDerivation& request, std::uint64_t leaseGeneration) noexcept;
+                const JuicerCuda::ResourceManager::WorkspaceLayout& layout() const noexcept;
 
-                WorkspaceRequest _request{};
+                WorkspaceDerivation _request;
                 std::uint64_t _leaseGeneration = 0;
-                bool _active = false;
             };
 
             struct KernelView {
@@ -507,7 +482,7 @@ namespace JuicerProcess {
 
             explicit PreparedCudaFrame(std::unique_ptr<State> state) noexcept;
 
-            const WorkspaceRequest& active_workspace_request(
+            const JuicerCuda::ResourceManager::WorkspaceLayout& active_workspace_layout(
                 const WorkspaceLeaseMarker& workspace) const noexcept;
             bool workspace_marker_matches_current_frame(const WorkspaceLeaseMarker& workspace) const noexcept;
             bool validate_workspace_lease_marker(
