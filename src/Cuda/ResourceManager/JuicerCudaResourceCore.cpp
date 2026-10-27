@@ -34,63 +34,83 @@ namespace JuicerCuda::ResourceManager {
         return active;
     }
 
+    namespace {
+        bool scratch_request_structure_is_valid(const ScratchRequestDescriptor& descriptor) noexcept {
+            if (descriptor.needGateTransmittance && (descriptor.gateWidth <= 0 || descriptor.gateHeight <= 0 ||
+                                                     static_cast<std::uint64_t>(descriptor.gateWidth) * descriptor.gateHeight >
+                                                         std::numeric_limits<std::size_t>::max() / sizeof(float))) {
+                return false;
+            }
+            if (!descriptor.has_any_family()) {
+                return false;
+            }
+            if (descriptor.requestedWidth <= 0 || descriptor.requestedHeight <= 0) {
+                return false;
+            }
+            if (!descriptor.needSpatialDir) {
+                if (descriptor.spatialDirDescriptorHash != 0 ||
+                    descriptor.spatialDirScratchTier != Spektrafilm::DirScratchTier::Tier0 ||
+                    !dir_roles_are_empty(descriptor.spatialDirPlaneRoles) ||
+                    descriptor.spatialDirTargetScratchTier != Spektrafilm::DirScratchTier::Tier0 ||
+                    !dir_roles_are_empty(descriptor.spatialDirTargetPlaneRoles)) {
+                    return false;
+                }
+            } else {
+                if (descriptor.spatialDirDescriptorHash == 0 ||
+                    descriptor.spatialDirScratchTier == Spektrafilm::DirScratchTier::Tier0 ||
+                    !dir_layout_is_valid({descriptor.spatialDirScratchTier, descriptor.spatialDirPlaneRoles}) ||
+                    !dir_layout_is_valid({descriptor.spatialDirTargetScratchTier, descriptor.spatialDirTargetPlaneRoles})) {
+                    return false;
+                }
+            }
+            if (!descriptor.needOptics &&
+                (descriptor.needBlurred ||
+                 descriptor.aliasScannerRgbFromSpatialDirFiltered ||
+                 descriptor.needAux ||
+                 descriptor.needGrainFrameUniforms ||
+                 descriptor.needGrainLayerWork ||
+                 descriptor.needGrainShared ||
+                 descriptor.needGateTransmittance || descriptor.needFilmDustTransmittance)) {
+                return false;
+            }
+            const bool spatialDirNeedsSharedTmp =
+                descriptor.needSpatialDir &&
+                descriptor.spatialDirPlaneRoles.filterTempPlanes > 0;
+            if ((spatialDirNeedsSharedTmp && !descriptor.needSharedTmp) ||
+                (descriptor.needSharedTmp &&
+                 !descriptor.needOptics &&
+                 !spatialDirNeedsSharedTmp)) {
+                return false;
+            }
+            if (descriptor.aliasScannerRgbFromSpatialDirFiltered &&
+                (!descriptor.needOptics ||
+                 !descriptor.needSpatialDir ||
+                 descriptor.spatialDirPlaneRoles.filteredCorrectionPlanes != 3 ||
+                 (descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0 &&
+                  descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 2 &&
+                  descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3))) {
+                return false;
+            }
+            return true;
+        }
+    } // namespace
+
     bool scratch_request_descriptor_is_valid(const ScratchRequestDescriptor& descriptor) noexcept {
-        if (descriptor.needGateTransmittance && (descriptor.gateWidth <= 0 || descriptor.gateHeight <= 0 ||
-                                                 static_cast<std::uint64_t>(descriptor.gateWidth) * descriptor.gateHeight >
-                                                     std::numeric_limits<std::size_t>::max() / sizeof(float))) {
-            return false;
-        }
         if (!descriptor.has_any_family()) {
-            return false;
+            return descriptor.spatialDirDescriptorHash == 0 &&
+                   descriptor.spatialDirScratchTier == Spektrafilm::DirScratchTier::Tier0 &&
+                   dir_roles_are_empty(descriptor.spatialDirPlaneRoles) &&
+                   descriptor.spatialDirTargetScratchTier == Spektrafilm::DirScratchTier::Tier0 &&
+                   dir_roles_are_empty(descriptor.spatialDirTargetPlaneRoles) &&
+                   descriptor.requestedWidth == 0 && descriptor.requestedHeight == 0 &&
+                   !descriptor.needBlurred && !descriptor.aliasScannerRgbFromSpatialDirFiltered &&
+                   !descriptor.needAux && !descriptor.needSharedTmp && !descriptor.needGrainFrameUniforms &&
+                   !descriptor.needGrainLayerWork && !descriptor.needGrainShared &&
+                   !descriptor.needGateTransmittance && !descriptor.needFilmDustTransmittance &&
+                   descriptor.gateWidth == 0 && descriptor.gateHeight == 0 && descriptor.generation == 0;
         }
-        if (descriptor.requestedWidth <= 0 || descriptor.requestedHeight <= 0) {
-            return false;
-        }
-        if (!descriptor.needSpatialDir) {
-            if (descriptor.spatialDirDescriptorHash != 0 ||
-                descriptor.spatialDirScratchTier != Spektrafilm::DirScratchTier::Tier0 ||
-                !dir_roles_are_empty(descriptor.spatialDirPlaneRoles) ||
-                descriptor.spatialDirTargetScratchTier != Spektrafilm::DirScratchTier::Tier0 ||
-                !dir_roles_are_empty(descriptor.spatialDirTargetPlaneRoles)) {
-                return false;
-            }
-        } else {
-            if (descriptor.spatialDirDescriptorHash == 0 ||
-                descriptor.spatialDirScratchTier == Spektrafilm::DirScratchTier::Tier0 ||
-                !dir_layout_is_valid({descriptor.spatialDirScratchTier, descriptor.spatialDirPlaneRoles}) ||
-                !dir_layout_is_valid({descriptor.spatialDirTargetScratchTier, descriptor.spatialDirTargetPlaneRoles})) {
-                return false;
-            }
-        }
-        if (!descriptor.needOptics &&
-            (descriptor.needBlurred ||
-             descriptor.aliasScannerRgbFromSpatialDirFiltered ||
-             descriptor.needAux ||
-             descriptor.needGrainFrameUniforms ||
-             descriptor.needGrainLayerWork ||
-             descriptor.needGrainShared ||
-             descriptor.needGateTransmittance || descriptor.needFilmDustTransmittance)) {
-            return false;
-        }
-        const bool spatialDirNeedsSharedTmp =
-            descriptor.needSpatialDir &&
-            descriptor.spatialDirPlaneRoles.filterTempPlanes > 0;
-        if ((spatialDirNeedsSharedTmp && !descriptor.needSharedTmp) ||
-            (descriptor.needSharedTmp &&
-             !descriptor.needOptics &&
-             !spatialDirNeedsSharedTmp)) {
-            return false;
-        }
-        if (descriptor.aliasScannerRgbFromSpatialDirFiltered &&
-            (!descriptor.needOptics ||
-             !descriptor.needSpatialDir ||
-             descriptor.spatialDirPlaneRoles.filteredCorrectionPlanes != 3 ||
-             (descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0 &&
-              descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 2 &&
-              descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3))) {
-            return false;
-        }
-        return true;
+        return scratch_request_structure_is_valid(descriptor) &&
+               descriptor.generation == hash_scratch_request_descriptor(descriptor);
     }
 
     std::uint64_t hash_scratch_request_descriptor(const ScratchRequestDescriptor& descriptor) noexcept {
@@ -157,11 +177,134 @@ namespace JuicerCuda::ResourceManager {
         descriptor.needFilmDustTransmittance = attachments.needFilmDustTransmittance;
         descriptor.gateWidth = descriptor.needGateTransmittance ? attachments.gateWidth : 0;
         descriptor.gateHeight = descriptor.needGateTransmittance ? attachments.gateHeight : 0;
-        if (!scratch_request_descriptor_is_valid(descriptor)) {
+        if (!scratch_request_structure_is_valid(descriptor)) {
             return std::nullopt;
         }
         descriptor.generation = hash_scratch_request_descriptor(descriptor);
         return descriptor;
+    }
+
+    WorkspaceLayout::WorkspaceLayout(ScratchRequestDescriptor allocation, ScannerStorage scanner, GrainStorage grain, Spektrafilm::VisualGrainScratchShape shape) noexcept
+        : _allocation(allocation), _scanner(scanner), _grain(grain), _grainShape(shape) {
+    }
+
+    std::optional<WorkspaceLayout> WorkspaceLayout::create(
+        const ScratchRequestExtent& extent, const DirScratchRequest& spatialDir, const ScratchRequestAttachments& attachments, Spektrafilm::VisualGrainScratchShape grainShape) noexcept {
+        if (attachments.needAux || attachments.needGrainFrameUniforms ||
+            attachments.needGrainLayerWork || attachments.needGrainShared) {
+            return std::nullopt;
+        }
+        bool layers = false;
+        bool shared = false;
+        switch (grainShape) {
+            case Spektrafilm::VisualGrainScratchShape::None:
+            case Spektrafilm::VisualGrainScratchShape::Streamed:
+                break;
+            case Spektrafilm::VisualGrainScratchShape::StreamedShared:
+                shared = true;
+                break;
+            case Spektrafilm::VisualGrainScratchShape::StreamedLayers:
+                layers = true;
+                break;
+            case Spektrafilm::VisualGrainScratchShape::StreamedLayersShared:
+                layers = true;
+                shared = true;
+                break;
+            default:
+                return std::nullopt;
+        }
+        const auto* dir = std::get_if<ActiveDirScratch>(&spatialDir);
+        if (attachments.aliasScannerRgbFromSpatialDirFiltered &&
+            (!dir || dir->_target.roles.filteredCorrectionPlanes != 3)) {
+            return std::nullopt;
+        }
+        const bool grainActive = grainShape != Spektrafilm::VisualGrainScratchShape::None;
+        const bool reuseRaw = grainActive && attachments.aliasScannerRgbFromSpatialDirFiltered && dir &&
+                              dir->_source.roles.rawCorrectionPlanes == 3 && dir->_target.roles.rawCorrectionPlanes == 3;
+        auto physical = attachments;
+        if (grainActive) {
+            physical.needOptics = true;
+            physical.needSharedTmp = true;
+            physical.needBlurred = true;
+            physical.needGrainFrameUniforms = true;
+            physical.needAux = !reuseRaw;
+            physical.needGrainLayerWork = layers && !reuseRaw;
+            physical.needGrainShared = shared && !reuseRaw;
+        }
+        const auto allocation = make_scratch_request_descriptor(extent, spatialDir, physical);
+        if (!allocation) {
+            return std::nullopt;
+        }
+        const auto scanner = !allocation->needOptics                             ? ScannerStorage::Absent
+                             : allocation->aliasScannerRgbFromSpatialDirFiltered ? ScannerStorage::DirFiltered
+                                                                                 : ScannerStorage::Dedicated;
+        const auto grain = !grainActive ? GrainStorage::Absent : reuseRaw ? GrainStorage::DirRaw
+                                                                          : GrainStorage::Dedicated;
+        return WorkspaceLayout(*allocation, scanner, grain, grainShape);
+    }
+
+    const ScratchRequestDescriptor& WorkspaceLayout::allocation() const noexcept {
+        return _allocation;
+    }
+
+    ScannerStorage WorkspaceLayout::scanner_storage() const noexcept {
+        return _scanner;
+    }
+
+    GrainStorage WorkspaceLayout::grain_storage() const noexcept {
+        return _grain;
+    }
+
+    Spektrafilm::VisualGrainScratchShape WorkspaceLayout::grain_shape() const noexcept {
+        return _grainShape;
+    }
+
+    bool WorkspaceLayout::grain_uses_layers() const noexcept {
+        return _grainShape == Spektrafilm::VisualGrainScratchShape::StreamedLayers ||
+               _grainShape == Spektrafilm::VisualGrainScratchShape::StreamedLayersShared;
+    }
+
+    bool WorkspaceLayout::grain_uses_shared() const noexcept {
+        return _grainShape == Spektrafilm::VisualGrainScratchShape::StreamedShared ||
+               _grainShape == Spektrafilm::VisualGrainScratchShape::StreamedLayersShared;
+    }
+
+    std::optional<WorkspaceLayout> WorkspaceLayout::with_dir_layout(
+        const ActiveDirScratch::Layout& source, const ActiveDirScratch::Layout& target) const noexcept {
+        const auto dir = ActiveDirScratch::create(_allocation.spatialDirDescriptorHash, source, target);
+        if (!dir) {
+            return std::nullopt;
+        }
+        ScratchRequestAttachments attachments;
+        attachments.needOptics = _allocation.needOptics;
+        attachments.needBlurred = _allocation.needBlurred;
+        attachments.aliasScannerRgbFromSpatialDirFiltered = _allocation.aliasScannerRgbFromSpatialDirFiltered;
+        attachments.needSharedTmp = _allocation.needSharedTmp;
+        attachments.needGateTransmittance = _allocation.needGateTransmittance;
+        attachments.needFilmDustTransmittance = _allocation.needFilmDustTransmittance;
+        attachments.gateWidth = _allocation.gateWidth;
+        attachments.gateHeight = _allocation.gateHeight;
+        return create({_allocation.requestedWidth, _allocation.requestedHeight}, *dir, attachments, _grainShape);
+    }
+
+    bool WorkspaceLayout::operator==(const WorkspaceLayout& other) const noexcept {
+        const auto& a = _allocation;
+        const auto& b = other._allocation;
+        const auto rolesEqual = [](const auto& x, const auto& y) {
+            return x.rawCorrectionPlanes == y.rawCorrectionPlanes && x.filteredCorrectionPlanes == y.filteredCorrectionPlanes &&
+                   x.filterTempPlanes == y.filterTempPlanes && x.cachedLogRawPlanes == y.cachedLogRawPlanes;
+        };
+        return _scanner == other._scanner && _grain == other._grain && _grainShape == other._grainShape &&
+               a.needOptics == b.needOptics && a.needSpatialDir == b.needSpatialDir &&
+               a.spatialDirDescriptorHash == b.spatialDirDescriptorHash && a.spatialDirScratchTier == b.spatialDirScratchTier &&
+               a.spatialDirTargetScratchTier == b.spatialDirTargetScratchTier &&
+               rolesEqual(a.spatialDirPlaneRoles, b.spatialDirPlaneRoles) && rolesEqual(a.spatialDirTargetPlaneRoles, b.spatialDirTargetPlaneRoles) &&
+               a.requestedWidth == b.requestedWidth && a.requestedHeight == b.requestedHeight &&
+               a.needBlurred == b.needBlurred && a.aliasScannerRgbFromSpatialDirFiltered == b.aliasScannerRgbFromSpatialDirFiltered &&
+               a.needAux == b.needAux && a.needSharedTmp == b.needSharedTmp && a.needGrainFrameUniforms == b.needGrainFrameUniforms &&
+               a.needGrainLayerWork == b.needGrainLayerWork && a.needGrainShared == b.needGrainShared &&
+               a.needGateTransmittance == b.needGateTransmittance && a.needFilmDustTransmittance == b.needFilmDustTransmittance &&
+               a.gateWidth == b.gateWidth && a.gateHeight == b.gateHeight;
     }
 
 } // namespace JuicerCuda::ResourceManager

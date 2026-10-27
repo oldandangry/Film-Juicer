@@ -108,6 +108,237 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(result["sha256"], digest(Path(first["receipt"])))
         self.assertFalse((self.campaign("renamed").directory / "attempts").exists())
 
+    def test_retry_reason_preserves_matching_successful_checks(self):
+        first = self.run_stage("boundary")
+        original = Path(first["receipt"]).read_bytes()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_stage("tooling", campaign="failed-tooling",
+                           command=[self.python, "-c", "raise SystemExit(7)"])
+        reused = self.run_stage("boundary", campaign="retry-tooling",
+                                repeat_reason="retry the failed tooling check")
+        self.assertEqual(reused["reused_from"], first["receipt"])
+        self.assertFalse((self.campaign("retry-tooling").directory / "attempts").exists())
+        self.assertEqual(Path(first["receipt"]).read_bytes(), original)
+        self.assertEqual(self.state["tooling"]["status"], "failed")
+
+    def test_product_cli_requires_explicit_build_then_reuses_completed_checks(self):
+        import shutil
+        import verify
+        self.compiled_project()
+        if os.name == "nt":
+            compiler = shutil.which("clang-cl.exe")
+            self.assertIsNotNone(compiler, "qualified Windows compiler is missing")
+            presets_path = self.root / "CMakePresets.json"
+            presets = json.loads(presets_path.read_text())
+            for preset in presets["configurePresets"]:
+                preset["cacheVariables"].update(CMAKE_C_COMPILER=compiler, CMAKE_CXX_COMPILER=compiler)
+            write_json(presets_path, presets)
+        self.configure_fixture(self.preset, True, "cli-configured")
+        argv = ["verify.py", "qualification", "--preset", self.preset, "--reason", "admission regression",
+                "--selection", "product", "--runtime", "host", "--base", "fixture", "--campaign", "cli-admit"]
+        with patch.object(verify, "ROOT", self.root), patch.object(sys, "argv", argv), \
+                patch.object(Campaign, "run", side_effect=AssertionError("default CLI built implicitly")):
+            with self.assertRaisesRegex(ValueError, "admission failed without changing outputs"):
+                verify.main()
+        self.assertFalse(self.state_path.exists())
+        self.assertFalse(list(self.build.glob("*.pending.json")))
+        argv[-1] = "cli-explicit"
+        with patch.object(verify, "ROOT", self.root), patch.object(sys, "argv", [*argv, "--prepare"]):
+            self.assertEqual(verify.main(), 0)
+        argv[-1] = "cli-reused"
+        with patch.object(verify, "ROOT", self.root), \
+                patch.object(sys, "argv", [*argv, "--repeat-reason", "finish another failed check"]), \
+                patch.object(Campaign, "run", side_effect=AssertionError("completed CLI checks reran")):
+            self.assertEqual(verify.main(), 0)
+        self.assertEqual((self.root / "out" / (self.preset + "-quality-count.txt")).read_text(), "1")
+
+    def test_readonly_admission_rejects_environment_source_and_artifact_changes(self):
+        from build_dependencies import NinjaGraph
+        first = self.prepare_compiled_project()
+        state_bytes = self.state_path.read_bytes()
+        outputs = {Path(name): Path(name).read_bytes() for name in first["payloads"]}
+        receipt = Path(first["receipt"]).read_bytes()
+        source = self.root / "src/native.cpp"
+        original_source, stamp = source.read_bytes(), source.stat()
+        cases = ["environment", "source", "artifact"]
+        for fault in cases:
+            with self.subTest(fault=fault):
+                environment = dict(os.environ)
+                if fault == "environment":
+                    environment["RUNNER_DIAGNOSTIC_ONLY"] = "changed"
+                elif fault == "source":
+                    source.write_bytes(original_source.replace(b"6+BINDING", b"7+BINDING"))
+                    os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                else:
+                    next(iter(outputs)).write_bytes(b"corrupt")
+                before = {path: path.read_bytes() for path in outputs}
+                with patch.object(Campaign, "run", side_effect=AssertionError("admission executed a command")), \
+                        patch.object(NinjaGraph, "invalidate", side_effect=AssertionError("admission deleted outputs")):
+                    with self.assertRaisesRegex(ValueError, "admission failed without changing outputs"):
+                        qualification.prepare_checkpoint(self.campaign("readonly-" + fault), self.build,
+                            self.state_path, self.state, environment)
+                self.assertEqual(before, {path: path.read_bytes() for path in outputs})
+                self.assertEqual(self.state_path.read_bytes(), state_bytes)
+                self.assertEqual(Path(first["receipt"]).read_bytes(), receipt)
+                self.assertFalse(list(self.build.glob("*.pending.json")))
+                source.write_bytes(original_source)
+                os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                for path, content in outputs.items():
+                    path.write_bytes(content)
+        reused = qualification.prepare_checkpoint(self.campaign("readonly-restored"), self.build,
+            self.state_path, self.state, dict(os.environ))
+        self.assertEqual(reused["receipt"], first["receipt"])
+
+    def test_explicit_glob_preparation_is_admitted_without_rebuilding(self):
+        from build_evidence import prepare_targets
+        self.compiled_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+                         '\nfile(GLOB sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")\n')
+        producer = prepare_targets(self.root, self.preset, ["all"])
+        stamp = self.build / "CMakeFiles/cmake.verify_globs"
+        stamp.touch()
+        with patch.object(Campaign, "run", side_effect=AssertionError("qualification rebuilt explicit targets")):
+            first = qualification.prepare_checkpoint(self.campaign("admit-explicit"), self.build,
+                self.state_path, self.state, dict(os.environ))
+        self.assertEqual(first["receipt"], str(producer))
+        state_bytes = self.state_path.read_bytes()
+        (self.root / "src/new.cpp").write_text("int new_source(){return 1;}\n")
+        with patch.object(Campaign, "run", side_effect=AssertionError("new glob input rebuilt implicitly")):
+            with self.assertRaisesRegex(ValueError, "admission failed without changing outputs"):
+                qualification.prepare_checkpoint(self.campaign("changed-glob"), self.build,
+                    self.state_path, self.state, dict(os.environ))
+        self.assertEqual(self.state_path.read_bytes(), state_bytes)
+
+    def test_gpu_retry_preserves_completed_host_partition(self):
+        args = self.mixed_project()
+        fault = self.root / "failure.txt"
+        fault.write_text("gpu")
+        with self.assertRaises(subprocess.CalledProcessError):
+            qualification.qualify(self.root, args)
+        directory = self.root / "out/validation" / self.preset / args.campaign
+        original = {p: p.read_bytes() for p in directory.glob("attempts/*/result.json")}
+        fault.unlink()
+        args.campaign = "retry-gpu-only"
+        args.repeat_reason = "diagnosed GPU fault removed"
+        result = json.loads(qualification.qualify(self.root, args).read_text())
+        self.assertEqual((self.root / "out/order.txt").read_text().splitlines(), ["host", "gpu", "gpu"])
+        self.assertEqual(result["scope_status"], "passed")
+        self.assertTrue(all(p.read_bytes() == content for p, content in original.items()))
+
+    def test_host_retry_runs_only_failed_case_and_composes_original_evidence(self):
+        args = self.mixed_project()
+        fault = self.root / "failure.txt"
+        fault.write_text("host")
+        with self.assertRaises(subprocess.CalledProcessError):
+            qualification.qualify(self.root, args)
+        fault.unlink()
+        args.campaign = "retry-one-host-case"
+        args.repeat_reason = "diagnosed host fault removed"
+        path = qualification.qualify(self.root, args)
+        record = json.loads(path.read_text())
+        stage = record["stages"]["boundary"]
+        self.assertEqual(len(stage["additional_receipts"]), 2)
+        paths = qualification.stage_receipts(stage)
+        raw = [json.loads(p.read_text()) for p in paths]
+        self.assertEqual([r["returncode"] for r in raw], [8, 0, 0])
+        self.assertEqual(raw[1]["identity"]["command"][3:5], ["-R", "^(host)$"])
+        self.assertEqual(record["scope_status"], "passed")
+        args.campaign = "reuse-composed"
+        with patch.object(Campaign, "run", side_effect=AssertionError("completed cases reran")):
+            reused = json.loads(qualification.qualify(self.root, args).read_text())
+        self.assertEqual(reused["stages"]["boundary"]["reused_from"], stage["receipt"])
+        with self.assertRaisesRegex(ValueError, "full checkpoint membership"):
+            qualification.collect_qualification(self.root, [path])
+
+    def test_partial_result_tampering_is_rejected_before_retry_execution(self):
+        args = self.mixed_project()
+        (self.root / "failure.txt").write_text("gpu")
+        with self.assertRaises(subprocess.CalledProcessError):
+            qualification.qualify(self.root, args)
+        state = json.loads(self.state_path.read_text())
+        report = Path(state["boundary"]["ctest_chunks"][0]["report"])
+        report.write_bytes(report.read_bytes() + b" ")
+        args.campaign = "tampered-partial"
+        args.repeat_reason = "retry GPU"
+        with patch.object(Campaign, "run", side_effect=AssertionError("tampered partial result executed")):
+            with self.assertRaisesRegex(ValueError, "partial result payload changed"):
+                qualification.qualify(self.root, args)
+
+    def test_nonzero_ctest_without_reported_case_failure_cannot_be_composed(self):
+        args = self.mixed_project()
+        record = json.loads(qualification.qualify(self.root, args).read_text())
+        stage = record["stages"]["boundary"]
+        raw = json.loads(Path(stage["receipt"]).read_text())
+        raw.update(status="failed", returncode=8)
+        unproved = self.root / "nonzero-ctest.json"
+        unproved.write_text(json.dumps(raw))
+        with self.assertRaisesRegex(ValueError, "did not execute completely"):
+            qualification.ctest_chunk(unproved, record["runtime_membership"]["boundary"],
+                                      stage["identity"]["command"])
+
+    def assert_runtime_artifact_change_invalidates_partial(self, *, directory):
+        args = self.mixed_project()
+        probe = self.root / "probe.py"
+        generated = self.build / "case.py"
+        resources = self.build / "Resources"
+        resources.mkdir()
+        mode = resources / "mode.txt"
+        mode.write_text("gpu")
+        source = probe.read_text().replace("root=Path(__file__).parent", "root=Path(__file__).parents[3]")
+        original_mode = "mode=(root/'failure.txt').read_text() if (root/'failure.txt').exists() else ''"
+        replacement = "mode=(Path(sys.argv[2])/'mode.txt').read_text()" if directory else "mode='gpu'"
+        probe.write_text(source.replace(original_mode, replacement))
+        cmake = self.root / "CMakeLists.txt"
+        text = cmake.read_text().replace(f'"{probe.as_posix()}"', f'"{generated.as_posix()}"')
+        if directory:
+            for role in ("host", "gpu"):
+                text = text.replace(f'" {role})', f'" {role} "{resources.as_posix()}")')
+        cmake.write_text(text + '\nconfigure_file(probe.py "${CMAKE_BINARY_DIR}/case.py" COPYONLY)\n')
+        self.configure_fixture(self.preset, True, "generated-consumers")
+        with self.assertRaises(subprocess.CalledProcessError):
+            qualification.qualify(self.root, args)
+        state = json.loads(self.state_path.read_text())
+        before = snapshot(self.root, list(state["boundary"]["identity"]["inputs"]))
+        if directory:
+            mode.write_text("host")
+        else:
+            generated.write_text(generated.read_text().replace("mode='gpu'", "mode='host'"))
+        self.assertEqual(snapshot(self.root, list(before)), before)
+        args.campaign = "changed-runtime-consumer"
+        args.repeat_reason = "retry after runtime artifact replacement"
+        with self.assertRaises(subprocess.CalledProcessError):
+            qualification.qualify(self.root, args)
+        self.assertEqual((self.root / "out/order.txt").read_text().splitlines(), ["host", "gpu", "host"])
+        self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "failed")
+
+    def test_partial_retry_rechecks_changed_generated_runtime_file(self):
+        self.assert_runtime_artifact_change_invalidates_partial(directory=False)
+
+    def test_partial_retry_rechecks_changed_runtime_resource_directory(self):
+        self.assert_runtime_artifact_change_invalidates_partial(directory=True)
+
+    def test_runtime_artifact_binding_excludes_cargo_output_and_seals_membership(self):
+        cargo = self.build / "cargo"
+        cargo.mkdir()
+        (cargo / "incremental-output").write_text("mutable")
+        resources = self.build / "Resources"
+        resources.mkdir()
+        resource = resources / "input.json"
+        resource.write_text("input")
+        script = self.build / "case.py"
+        script.write_text("runtime consumer")
+        inventory = {"tests": [{"name": "consumer", "command": ["cargo", "test", "--target-dir", str(cargo),
+                       str(script), str(resources)], "properties": [{"name": "WORKING_DIRECTORY", "value": str(self.build)}]}]}
+        files, directories = qualification.ctest_artifacts(inventory, ["consumer"], self.build)
+        self.assertEqual(set(files), {str(script), str(resource)})
+        self.assertEqual(directories, [str(resources)])
+        before = qualification.artifact_membership(directories)
+        (cargo / "new-output").write_text("does not change runtime input membership")
+        self.assertEqual(qualification.ctest_artifacts(inventory, ["consumer"], self.build), (files, directories))
+        (resources / "new-input.json").write_text("new runtime member")
+        self.assertNotEqual(qualification.artifact_membership(directories), before)
+
     def test_invalid_request_preserves_pass_before_reuse_or_input_change(self):
         first = self.run_stage("boundary")
         original_state = self.state_path.read_bytes()
@@ -378,7 +609,7 @@ class CheckpointTests(unittest.TestCase):
         self.native_project()
         self.configure_fixture(self.preset, True, "fixture-on")
         args = SimpleNamespace(reason="native caller regression", selection=["boundary"], preset=self.preset,
-                               runtime="host", campaign="caller-one", repeat_reason="", base=None)
+                               runtime="host", campaign="caller-one", repeat_reason="", base=None, prepare=True)
         import verify
         argv = ["verify.py", "qualification", "--preset", self.preset, "--reason", args.reason,
                 "--selection", "boundary", "--runtime", "host", "--campaign", args.campaign]
@@ -413,9 +644,9 @@ class CheckpointTests(unittest.TestCase):
         commit("Initial miniature source and documentation")
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, timeout=10)
         prepared = qualification.prepare_checkpoint(self.campaign("documentation-preparation"), self.build,
-            self.state_path, self.state, self.environment, timeout=60)
+            self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         args = SimpleNamespace(reason="documentation discovery and retained native evidence", selection=["corpus"],
-                               preset=self.preset, runtime="host", campaign="documentation-baseline", repeat_reason="", base=None)
+                               preset=self.preset, runtime="host", campaign="documentation-baseline", repeat_reason="", base=None, prepare=True)
         baseline = qualification.qualify(self.root, args)
         record = json.loads(baseline.read_text())
         stage = record["stages"]["corpus"]
@@ -445,7 +676,7 @@ class CheckpointTests(unittest.TestCase):
                         patch.object(qualification, "prepare_build", side_effect=AssertionError("documentation rebuilt the fixture")):
                     current_state = json.loads(self.state_path.read_text())
                     reused = qualification.prepare_checkpoint(self.campaign("documentation-prepare-" + operation),
-                        self.build, self.state_path, current_state, self.environment, timeout=60)
+                        self.build, self.state_path, current_state, self.environment, timeout=60, allow_build=True)
                     self.assertEqual(reused["reused_from"], prepared["receipt"])
                     args.campaign = "documentation-" + operation
                     current = json.loads(qualification.qualify(self.root, args).read_text())
@@ -463,15 +694,19 @@ class CheckpointTests(unittest.TestCase):
         fixture.parent.mkdir(parents=True)
         fixture.write_text('{"value": 1}\n')
         loader = self.root / "tests/runtime_loader.py"
-        loader.write_text("import json, pathlib, sys\n"
-                          "value = json.loads(pathlib.Path(sys.argv[1]).read_text())['value']\n"
-                          "pathlib.Path(sys.argv[2]).write_text(str(value))\n"
+        loader.write_text("import argparse, json, pathlib\n"
+                          "parser = argparse.ArgumentParser()\n"
+                          "parser.add_argument('fixture', type=pathlib.Path)\n"
+                          "parser.add_argument('--output-dir', type=pathlib.Path, required=True)\n"
+                          "args = parser.parse_args()\n"
+                          "value = json.loads(args.fixture.read_text())['value']\n"
+                          "(args.output_dir / 'observed.txt').write_text(str(value))\n"
                           "assert value > 0\n")
         cmake = self.root / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() +
             f'add_test(NAME runtime COMMAND "{Path(self.python).as_posix()}" '
             '"${CMAKE_SOURCE_DIR}/tests/runtime_loader.py" "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" '
-            '"${CMAKE_BINARY_DIR}/observed.txt")\n'
+            '--output-dir "${CMAKE_BINARY_DIR}")\n'
             'set_tests_properties(runtime PROPERTIES LABELS "host;corpus")\n')
         self.configure_fixture(self.preset, True, "runtime-on")
         return fixture, loader
@@ -480,10 +715,16 @@ class CheckpointTests(unittest.TestCase):
         import build_evidence
         fixture, loader = self.runtime_project()
         first = qualification.prepare_checkpoint(self.campaign("runtime-prepare"), self.build,
-            self.state_path, self.state, self.environment, timeout=60)
+            self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         args = SimpleNamespace(reason="runtime preparation boundary", selection=["corpus"], preset=self.preset,
-                               runtime="host", campaign="runtime-first", repeat_reason="", base=None)
+                               runtime="host", campaign="runtime-first", repeat_reason="", base=None, prepare=True)
         original = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["corpus"]
+        observed = self.build / "observed.txt"
+        self.assertEqual(observed.read_text(), "1")
+        inventory = json.loads(subprocess.check_output(
+            ["ctest", "--test-dir", str(self.build), "--show-only=json-v1"], text=True))
+        self.assertEqual(qualification.ctest_artifacts(inventory, ["runtime"], self.build), ([], []))
+        self.assertNotIn(str(observed), original["identity"]["tools"])
         protected = {p: p.read_bytes() for p in (
             Path(first["receipt"]), *build_evidence.preparation_paths(self.build, ["all"])[:1],
             *(Path(name) for name in first["payloads"]))}
@@ -496,7 +737,7 @@ class CheckpointTests(unittest.TestCase):
                 with patch.object(qualification, "prepare_build", side_effect=AssertionError("preparation redispatched")), \
                         patch.object(Campaign, "run", side_effect=AssertionError("configure/build/clean dispatched")):
                     reused = qualification.prepare_checkpoint(self.campaign("runtime-reuse-" + str(index)), self.build,
-                        self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60)
+                        self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60, allow_build=True)
                 self.assertEqual(reused["reused_from"], first["receipt"])
                 self.assertTrue(all(p.read_bytes() == value for p, value in protected.items()))
                 args.campaign = "runtime-changed-" + str(index)
@@ -504,7 +745,9 @@ class CheckpointTests(unittest.TestCase):
                 current = json.loads(record_path.read_text())["stages"]["corpus"]
                 self.assertNotIn("reused_from", current)
                 self.assertNotEqual(current["receipt"], original["receipt"])
-                self.assertEqual((self.build / "observed.txt").read_text(), str(index))
+                self.assertNotIn(str(observed), current["identity"]["tools"])
+                self.assertNotEqual(current["identity"]["inputs"], original["identity"]["inputs"])
+                self.assertEqual(observed.read_text(), str(index))
                 original = current
 
     def test_runtime_variable_configure_copy_requires_fresh_preparation(self):
@@ -609,7 +852,7 @@ class CheckpointTests(unittest.TestCase):
         campaign = self.campaign("new-membership-edit")
         with patch.object(Campaign, "run", new=edit_after_configure):
             with self.assertRaisesRegex(ValueError, "newly discovered preparation inputs changed"):
-                qualification.prepare_checkpoint(campaign, self.build, self.state_path, self.state, self.environment, timeout=60)
+                qualification.prepare_checkpoint(campaign, self.build, self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         self.assertTrue(edited)
         self.assertEqual(self.state["prepare"]["status"], "failed")
         write_json(campaign.directory / "failed-checkpoint.json", self.state)
@@ -619,7 +862,7 @@ class CheckpointTests(unittest.TestCase):
         original = Path(json.loads(baseline.read_text())["producer"])
         original_receipt = original.read_bytes()
         renewed = qualification.prepare_checkpoint(self.campaign("new-membership-repaired"), self.build,
-            self.state_path, self.state, self.environment, timeout=60)
+            self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         self.assertNotIn("reused_from", renewed)
         for name in ("configured.json", "staged.json"):
             self.assertEqual(json.loads((self.build / name).read_text())["value"], 2)
@@ -646,7 +889,7 @@ class CheckpointTests(unittest.TestCase):
             self.assertFalse(qualification.has_opaque_configure_commands(self.root / name for name in source_snapshot(self.root)))
         progress("first-preparation")
         first = qualification.prepare_checkpoint(self.campaign("variable-copy-first"), self.build,
-            self.state_path, self.state, self.environment, timeout=60)
+            self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         progress("first-preparation-complete")
         producer = Path(first["receipt"])
         original_receipt = producer.read_bytes()
@@ -670,7 +913,7 @@ class CheckpointTests(unittest.TestCase):
         with patch.object(qualification, "prepare_build", side_effect=AssertionError("unchanged opaque scope redispatched")), \
                 patch.object(Campaign, "run", side_effect=AssertionError("unchanged opaque scope executed")):
             unchanged = qualification.prepare_checkpoint(self.campaign("variable-copy-unchanged"), self.build,
-                self.state_path, self.state, self.environment, timeout=60)
+                self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         self.assertEqual(unchanged["reused_from"], first["receipt"])
         progress("unchanged-admission-complete")
         fixture.write_text('{"value": 2}\n')
@@ -684,7 +927,7 @@ class CheckpointTests(unittest.TestCase):
         progress("changed-preparation")
         with patch.object(Campaign, "run", new=observe):
             second = qualification.prepare_checkpoint(self.campaign("variable-copy-changed"), self.build,
-                self.state_path, self.state, self.environment, timeout=60)
+                self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         progress("changed-preparation-complete")
         write_json(self.build / "variable-copy-control.json", {
             "first_receipt": first["receipt"], "second_receipt": second["receipt"],
@@ -720,7 +963,7 @@ class CheckpointTests(unittest.TestCase):
             'add_custom_target(generator ALL COMMAND "${CMAKE_COMMAND}" -E true '
             'DEPENDS "${CMAKE_SOURCE_DIR}/generator.py")\n')
         first = qualification.prepare_checkpoint(self.campaign("build-consumers"), self.build,
-            self.state_path, self.state, self.environment, timeout=60)
+            self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         preparation = qualification.checkpoint_inputs(self.root, self.build, "prepare")
         for path in (fixture, loader, unknown, resources, cmake, tool):
             self.assertIn(path.relative_to(self.root).as_posix(), preparation)
@@ -770,14 +1013,14 @@ class CheckpointTests(unittest.TestCase):
         fixture, _ = self.runtime_project()
         with patch.object(qualification, "preparation_inputs", side_effect=lambda root, build, paths, **kwargs: paths):
             first = qualification.prepare_checkpoint(self.campaign("broad"), self.build,
-                self.state_path, self.state, self.environment, timeout=60)
+                self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         receipt = Path(first["receipt"])
         original = receipt.read_bytes()
         fixture.write_text('{"value": 2}\n')
         with self.assertRaisesRegex(ValueError, "dependency contents or membership changed"):
             build_evidence.check_scoped_preparation(self.campaign("broad"), self.build, receipt)
         renewed = qualification.prepare_checkpoint(self.campaign("narrow"), self.build,
-            self.state_path, self.state, self.environment, timeout=60)
+            self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         self.assertNotEqual(renewed["receipt"], first["receipt"])
         self.assertEqual(receipt.read_bytes(), original)
         # Direct prepare_build inputs remain authoritative even for a file the
@@ -795,7 +1038,7 @@ class CheckpointTests(unittest.TestCase):
         import build_evidence
         fixture, _ = self.runtime_project()
         first = qualification.prepare_checkpoint(self.campaign("owned"), self.build,
-            self.state_path, self.state, self.environment, timeout=60)
+            self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         baseline, pending = build_evidence.preparation_paths(self.build, ["all"])
         original_owner = baseline.read_bytes()
         original_receipt = Path(first["receipt"]).read_bytes()
@@ -813,7 +1056,7 @@ class CheckpointTests(unittest.TestCase):
                 with patch.object(Campaign, "run", side_effect=AssertionError("unsafe owner dispatched")):
                     with self.assertRaises((ValueError, FileNotFoundError)):
                         qualification.prepare_checkpoint(self.campaign("rejected-" + fault), self.build,
-                            self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60)
+                            self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60, allow_build=True)
                 self.assertEqual(Path(first["receipt"]).read_bytes(), original_receipt)
                 # Faults are isolated in this miniature, never shared owners.
                 artifact.write_bytes(original_artifact)
@@ -842,7 +1085,7 @@ class CheckpointTests(unittest.TestCase):
         quality.parent.mkdir()
         quality.write_text("print('miniature quality scheduling witness')\n")
         args = SimpleNamespace(reason="miniature preparation collection", selection=["product"], preset=self.preset,
-                               runtime="all", campaign="collection-first", repeat_reason="", base="fixture")
+                               runtime="all", campaign="collection-first", repeat_reason="", base="fixture", prepare=True)
         path = qualification.qualify(self.root, args)
         record = json.loads(path.read_text())
         self.assertEqual("tests/fixtures/runtime.json" in record["stages"]["prepare"]["identity"]["inputs"], bool(module))
@@ -879,7 +1122,7 @@ class CheckpointTests(unittest.TestCase):
         cmake.write_text(cmake.read_text() +
             'add_test(NAME runtime COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_SOURCE_DIR}/tests/runtime.txt")\n')
         first = qualification.prepare_checkpoint(self.campaign("cold-discovery"), self.build,
-            self.state_path, self.state, self.environment, timeout=60)
+            self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         proof = json.loads(Path(first["receipt"]).read_text())["scoped_preparation"]
         declared = {name for name in first["identity"]["inputs"] if not name.startswith("out/build/")}
         self.assertEqual(declared, set(proof["inputs"]))
@@ -1312,6 +1555,11 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertEqual(reused["reused_from"], stage["receipt"])
         self.assertEqual(len(calls), before, "unchanged retained evidence executed probes again")
         outcomes = [{"operation": "reuse", "case": "unchanged", "status": "passed", "commands": 0}]
+        reused = json.loads(checkpoint("retained-retry-reason",
+            "retry another failed check").read_text())["stages"]["production"]
+        self.assertEqual(reused["reused_from"], stage["receipt"])
+        self.assertEqual(len(calls), before, "retry reason reran completed production probes")
+        outcomes.append({"operation": "reuse", "case": "retry-reason", "status": "passed", "commands": 0})
         for target in self.production_mutations(stage):
             data, stamp = target.read_bytes(), target.stat()
             for mutation in ("replace", "remove"):
@@ -1357,10 +1605,17 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                         manifest.write_text(json.dumps(document))
                 return receipt
             try:
+                # Initial registration has no completed stage to reuse. A retry
+                # reason must preserve a matching pass rather than force this run.
+                state = json.loads(owner_bytes)
+                del state["production"]
+                write_json(owner, state)
+                registration_start = len(calls)
                 with patch.object(Campaign, "run", new=drift):
                     with self.assertRaisesRegex(ValueError, cause):
-                        checkpoint("retained-registration-drift-" + target_kind,
-                                   "intentional post-execution retained-payload drift control")
+                        checkpoint("retained-registration-drift-" + target_kind)
+                self.assertEqual([call["stage"] for call in calls[registration_start:]], ["production"],
+                                 "registration control must execute one probe run without rebuilding")
                 self.assertEqual(json.loads(owner.read_text())["production"]["status"], "failed")
                 self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
                 outcomes.append({"operation": "registration", "case": "post-drain-drift-" + target_kind,
@@ -1447,7 +1702,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         def checkpoint(preset, name, repeat_reason=""):
             args = SimpleNamespace(reason="native retained OFF payload controls", selection=["production"],
                                    preset=preset, runtime="all", campaign=name,
-                                   repeat_reason=repeat_reason, base=None)
+                                   repeat_reason=repeat_reason, base=None, prepare=True)
             if preset == ("windows-clang-release" if os.name == "nt" else "linux-release"):
                 return qualification.qualify(self.root, args)
             with OutputLease(self.root, self.root / "out/build" / preset):
@@ -1480,7 +1735,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 required = ["prepare", "quality", *groups]
                 campaign = Campaign(self.root, preset, "retained-unrelated-scaffold", required)
                 stages = {"prepare": qualification.prepare_checkpoint(campaign, build, state_path, state,
-                    self.environment, timeout=60)}
+                    self.environment, timeout=60, allow_build=True)}
                 dependency = qualification.preparation_identity(build, stages["prepare"])
                 for name in required[1:]:
                     stages[name] = qualification.run_stage(campaign, state_path, state, name,
@@ -1522,7 +1777,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                     state_path, state, "boundary", [self.python, "-c", "raise SystemExit(7)"],
                     inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
         args = SimpleNamespace(reason="retained OFF evidence across ON restoration", selection=["production"],
-                               preset=preset, runtime="all", campaign="original-off", repeat_reason="", base=None)
+                               preset=preset, runtime="all", campaign="original-off", repeat_reason="", base=None, prepare=True)
         path = qualification.qualify(self.root, args)
         original_record = path.read_bytes()
         record = json.loads(original_record)
@@ -2058,7 +2313,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 tool_checks.append(time.monotonic() - started)
         def checkpoint(preset, campaign, selection):
             args = SimpleNamespace(reason="miniature complete protocol replay", selection=selection, preset=preset,
-                                   runtime="all", campaign=campaign, repeat_reason="", base="fixture-baseline")
+                                   runtime="all", campaign=campaign, repeat_reason="", base="fixture-baseline", prepare=True)
             # Other names model collector membership with native binaries on this OS.
             # The public native-platform admission remains exercised for the native lane.
             if preset == self.preset:
@@ -2124,7 +2379,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                     repair, self.build, self.state_path, state, dict(os.environ),
                     timeout=60, repeat_reason="diagnosed checkpoint validation failure; completed artifact producer intact")
                 repair_seconds = time.monotonic() - repair_start
-                self.assertNotEqual(renewed["sha256"], first["stages"]["prepare"]["sha256"])
+                self.assertEqual(renewed["sha256"], first["stages"]["prepare"]["sha256"])
                 current = checkpoint(self.preset, f"continued-{trial}", first["selection"])
                 paths = [current if p == initial or p.parent.name.startswith("continued-") and p.parent.parent.name == self.preset else p for p in paths]
                 collection_start = time.monotonic()
@@ -2136,7 +2391,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 value = subprocess.check_output([str(self.build / ("behavior.exe" if os.name == "nt" else "behavior")), "10"], text=True, timeout=10)
                 self.assertIn("value=10 abi=8 offset=4", value)
                 logs = [self.root / json.loads(p.read_text())["output"] for p in repair.directory.glob("attempts/*/result.json")]
-                self.assertTrue(any("no work to do" in p.read_text() for p in logs))
+                self.assertFalse(logs, "proof-only renewal executed build commands")
                 warm.append({"seconds": time.monotonic() - start, "commands": calls[call_start:], "deleted": deletions[delete_start:],
                              "repair_seconds": repair_seconds, "collection_seconds": collection_seconds,
                              "artifact_hash_reads": len(artifact_reads) - hash_start,
@@ -2155,14 +2410,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                        "rust_recovery": "not applicable; no Rust fixture", "cold_and_warm_commands": calls}
             for trial in warm:
                 self.assertFalse(trial["deleted"])
-                # Compiler/linker modules keep configure opaque. Require that
-                # refresh plus one no-op build, with no downstream work.
-                self.assertEqual([c["stage"] for c in trial["commands"]], ["prepare", "prepare"],
-                                 "proof renewal repeated unchanged quality/product work")
-                configure, build = [c["command"] for c in trial["commands"]]
-                self.assertEqual(configure[:4], ["cmake", "--preset", self.preset, "-DBUILD_TESTING=ON"])
-                self.assertIn("--trace-expand", configure[4:])
-                self.assertEqual(build, ["cmake", "--build", str(self.build), "--parallel", "2", "--target", "all"])
+                self.assertEqual(trial["commands"], [], "proof-only renewal repeated completed work")
             write_json(self.root / "out/validation" / self.preset / "replay.json", summary)
             progress.update(complete=True, seconds=time.monotonic() - started)
             write_json(progress_path, progress)
@@ -2171,7 +2419,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.compiled_project()
         self.configure_fixture(self.preset, True, "fixture-on", timeout=60)
         return qualification.prepare_checkpoint(self.campaign("compiled"), self.build, self.state_path, self.state,
-                                                dict(os.environ), timeout=60)
+                                                dict(os.environ), timeout=60, allow_build=True)
 
     def test_preparation_output_bytes_are_required_for_reuse(self):
         self.assert_output_mutation("behavior.exe" if os.name == "nt" else "behavior")
@@ -2193,7 +2441,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
     def assert_collection_input_mutations(self, mutations, *, retain_mutation=False):
         self.prepare_compiled_project()
         args = SimpleNamespace(reason="collection input drift control", selection=["product"], preset=self.preset,
-                               runtime="all", campaign="admitted", repeat_reason="", base="fixture-baseline")
+                               runtime="all", campaign="admitted", repeat_reason="", base="fixture-baseline", prepare=True)
         path = qualification.qualify(self.root, args)
         record = json.loads(path.read_text())
         stage = record["stages"]["prepare"]
@@ -2240,7 +2488,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         files = self.compiled_project()
         self.configure_fixture(self.preset, True, "fixture-on", timeout=60)
         args = SimpleNamespace(reason="consumed runtime environment control", selection=["product"], preset=self.preset,
-                               runtime="all", campaign="environment-baseline", repeat_reason="", base="fixture-baseline")
+                               runtime="all", campaign="environment-baseline", repeat_reason="", base="fixture-baseline", prepare=True)
         outcomes = {}
         with patch.dict(os.environ, {"JUICER_P0_A_RUNTIME_OFFSET": "0"}):
             first = qualification.qualify(self.root, args)
@@ -2279,13 +2527,13 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         os.utime(artifact, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         with self.assertRaisesRegex(ValueError, "payload changed|artifacts changed"):
             qualification.prepare_checkpoint(self.campaign("mutated"), self.build, self.state_path, self.state,
-                                             dict(os.environ), timeout=60)
+                                             dict(os.environ), timeout=60, allow_build=True)
         self.assertEqual(self.state["prepare"]["status"], "failed")
         self.assertEqual(original, Path(first["receipt"]).read_bytes())
         for attempt in range(2):
             with self.assertRaisesRegex(ValueError, "artifacts changed"):
                 qualification.prepare_checkpoint(self.campaign(f"repair-mutated-{attempt}"), self.build, self.state_path,
-                    self.state, dict(os.environ), timeout=60, repeat_reason="diagnosed artifact admission failure")
+                    self.state, dict(os.environ), timeout=60, repeat_reason="diagnosed artifact admission failure", allow_build=True)
             self.assertEqual(self.state["prepare"]["status"], "failed")
             self.assertEqual(first["payloads"], self.state["prepare"]["payloads"])
 
@@ -2301,7 +2549,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             for trial in range(2):
                 with self.assertRaisesRegex(ValueError, "process evidence"):
                     qualification.prepare_checkpoint(self.campaign(f"undrained-{trial}"), self.build, self.state_path,
-                        self.state, dict(os.environ), timeout=60, repeat_reason="diagnosed process proof failure")
+                        self.state, dict(os.environ), timeout=60, repeat_reason="diagnosed process proof failure", allow_build=True)
                 self.assertEqual(self.state["prepare"]["status"], "failed")
                 self.assertEqual(first["payloads"], self.state["prepare"]["payloads"])
         process.write_bytes(original_process)
@@ -2343,7 +2591,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         with self.assertRaisesRegex(ValueError, "dependency contents"):
             qualification.check_scoped_preparation(self.campaign("stale"), self.build, Path(first["receipt"]))
         qualification.prepare_checkpoint(self.campaign("rebuilt"), self.build, self.state_path, self.state,
-                                         dict(os.environ), timeout=60)
+                                         dict(os.environ), timeout=60, allow_build=True)
         new = subprocess.run([str(executable), "11"], check=True, capture_output=True, text=True, timeout=10)
         self.assertIn("value=11 abi=8 offset=4", new.stdout)
 
@@ -2371,15 +2619,14 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         cmake.write_text(text)
         self.configure_fixture(self.preset, True, "fixture-on")
         return SimpleNamespace(reason="mixed runtime regression", selection=["boundary"], preset=self.preset,
-                               runtime="all", campaign="mixed", repeat_reason="", base=None)
+                               runtime="all", campaign="mixed", repeat_reason="", base=None, prepare=True)
 
     def test_mixed_ctest_owns_partitions_and_reuses_without_gpu_lease(self):
         args = self.mixed_project()
         actual_lease = qualification.OutputLease
         def bounded_lease(root, build=None, **kwargs):
             if build is None:
-                self.assertGreater(kwargs["timeout"], 30, "GPU wait must use the remaining stage budget")
-                self.assertLessEqual(kwargs["timeout"], 1800)
+                self.assertIsNone(kwargs["timeout"], "ordinary GPU queueing has no elapsed deadline")
                 self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "pending")
             return actual_lease(root, build, **kwargs)
         with patch.object(qualification, "OutputLease", side_effect=bounded_lease):
@@ -2541,7 +2788,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             "assert (root/'out/build'/a.preset/'juicer.pdb').is_file()\n"
             + self.production_fixture())
         args = SimpleNamespace(reason="production PDB identity regression", selection=["production"],
-                               preset=self.preset, runtime="host", campaign="first", repeat_reason="", base=None)
+                               preset=self.preset, runtime="host", campaign="first", repeat_reason="", base=None, prepare=True)
         count = self.root / "out/production-count.txt"
         with patch("build_dependencies.NinjaGraph", return_value=SimpleNamespace(outputs={str(module)})), \
                 patch.object(qualification, "checkpoint_tools", return_value=[self.python]):

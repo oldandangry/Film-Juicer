@@ -103,9 +103,12 @@ changing that policy. The qualified tool versions alone do not establish this
 filesystem capability.
 
 For WSL filesystem diagnosis, `JUICER_TOOLING_ARTIFACT_ROOT` can place synthetic
-fixtures under an absolute native Linux `out/validation/linux-debug` root. Configure
-a separate standalone build directory on that filesystem and record both paths;
-do not relocate an existing cache. This preserves the same tests and deadlines
+fixtures under an absolute native Linux `out/validation/linux-debug` root. Both
+the product and standalone CMake entries accept this cache PATH option; it
+defaults to the native preset's ordinary validation root. Product builds keep
+other test artifacts at their usual locations. For the standalone entry, configure
+a separate build directory on that filesystem and record both paths; do not
+relocate an existing cache. This preserves the same tests and deadlines
 while separating Windows-mounted filesystem costs from test execution. Retain
 failed fixtures at their configured paths and keep the resulting qualification
 explicit about the filesystem used.
@@ -517,6 +520,15 @@ before execution. Successful stages reuse original records across campaign names
 failed or incomplete gates remain pending. Legacy sealed-build adapters are
 unsupported. `collect-qualification` accepts only the complete explicit native,
 profile, runtime, corpus and production gate set described in CONTRIBUTING.md.
+Product admission never builds implicitly. First use `verify.py prepare --preset
+<preset> --targets all --testing ON`, or explicitly authorize preparation with the
+qualification command's `--prepare` flag. A mismatch preserves existing outputs.
+Retry reasons apply to failed checks; matching passed checks and CTest cases retain
+their original evidence and do not run again. A composed result validates every
+original process/JUnit report and requires complete, nonduplicated passed-case coverage.
+Ordinary stages and CTest groups have no elapsed kill deadline (`TIMEOUT 0`).
+Progressing or quiet work continues under its existing owner. Diagnose suspected
+stalls before cancellation; failure/cancellation still requires descendant drainage.
 Mixed checkpoint selections run their host and GPU parts separately under one
 build-tree owner and one aggregate group result. Only the GPU part holds the
 shared device lease; reuse requires exact membership and completed results from
@@ -545,10 +557,10 @@ Each variant still runs the real build/publication path and checks rejection,
 pending state and owner preservation. Cold preparation, renewal, missing-scope
 admission and recovery remain separate scenarios. File-identity and lease tests
 use lightweight fixtures without Cargo setup. Production freshness checks and
-CTest deadlines are unchanged.
+CTest groups have no elapsed kill deadline.
 
 Preparation and checkpoint entry points validate stage names, declared membership,
-nonempty commands/inputs and finite positive timeouts before creating pending
+nonempty commands/inputs and any explicitly supplied finite positive timeout before creating pending
 owners or reusing results. Invalid requests leave prior receipts, artifacts and
 absent/pending owners unchanged. Focused build-evidence and checkpoint regressions
 exercise rejection and subsequent valid reuse; actual execution or evidence
@@ -696,7 +708,7 @@ before disposal. There is no background expiry or separate retention collector.
 CTest directly owns compiler execution for both probe groups. Ordinary quality
 checks retain formatting, Clippy and native/CUDA analysis; they do not dispatch
 these probes. No publisher, manifest, alias receipt or recursive runtime seal is
-involved. Compiler commands have finite timeouts and keep separate diagnostics
+involved. Compiler commands have no elapsed limit and keep separate diagnostics
 for every run. Probe-workspace Cargo configuration must match repository ancestry.
 
 Relevance labels form one disjoint partition: `product`, `boundary`, `tooling`,
@@ -715,9 +727,9 @@ failed production owners still prevent aggregate completion. Fresh production
 execution remains restricted to a testing-OFF Release tree. Older receipts without
 retained build inputs require fresh OFF execution; never backfill or rewrite them.
 `Quality.Checkpoint` replaces retired publication/sealing protocol controls.
-Its control module keeps its 600-second limit. `Quality.PreparationRenewal` owns
-the complete native miniature repair/checkpoint/collection replay separately,
-with a 600-second limit on Linux/WSL and a 300-second limit on Windows.
+`Quality.PreparationRenewal` owns the complete native miniature
+repair/checkpoint/collection replay separately. Neither outer suite has an elapsed
+limit. Intentional timeout fault controls retain their explicit deadlines.
 Both are required host/tooling tests in Debug. The
 miniature replay does not establish real product, GPU or OFX qualification.
 `JUICER_TEST_ARTIFACT_DIR` supplied by CTest selects artifact output without
@@ -792,6 +804,19 @@ followed by context loss, the reverse order, and failure followed by success,
 with diagnostic wording varied independently of status. These are bounded
 operation failures on a live GPU, not actual driver-loss tests; production
 objects contain none of their injection hooks.
+
+`Ofx.Gpu.WorkspaceTransitions` uses the same isolated executable with
+`--workspace-transitions` (GPU prerequisite, `juicer_gpu` lock, 300 seconds).
+It checks the actual direct/print schedules and completed native workspace layouts,
+logical grain work versus physical allocation, scanner/grain plane associations,
+source/staged cache channels and the strict-YVV candidate order. The bounded seam
+rejects the first zero through six outer candidates after normal backend validation;
+its decision stays fixed through any reclaim retry of that candidate. Observations
+count outer candidates and backend calls separately. Ordinary and context-loss
+statuses stop the ladder. These synthetic rejections establish failure propagation,
+not allocator failure, device loss or hardware recovery. Genuine pixel renders,
+construction failures and injected failures are counted separately; existing grain,
+DIR, scatter/halation and retirement groups retain the actual lifetime witnesses.
 
 `Ofx.Gpu.AdapterTrace` implements the C variadic parameter calls used by the
 plug-in rather than returning fabricated success. It records current-value and
@@ -907,7 +932,7 @@ the assertion at a product boundary.
 For gamma comparator behavior, add a `unittest.TestCase` method to
 `test_compare.py`. For a new integration executable or destructive lifecycle
 group, declare one explicit CTest process in `tests/CMakeLists.txt`, give it a
-finite timeout and its actual `host`/`gpu` requirement, and keep destructive
+`TIMEOUT 0` and its actual `host`/`gpu` requirement, and keep destructive
 transitions isolated.
 
 Fixtures must state whether they express a product contract, a Film-Juicer
@@ -1150,8 +1175,10 @@ instance retirement across exact contexts. See the FFI guide for the ownership
 contract and the remaining host/hardware qualification limits.
 
 `Ffi.Host.PreparedProjection` checks fixed C/native descriptor mappings and
-malformed records. `Resource.Host.ScratchRequest` checks closed DIR construction,
-extent and attachment constraints, and accepted direct/print scratch generations.
+malformed records. `Resource.Host.ScratchRequest` checks closed DIR/workspace
+construction, private coupled storage, explicit inactive state, logical grain shape
+and physical projection, extent/attachment constraints, canonical raw sentinels,
+generation consistency and all eight accepted direct/print scratch generations.
 These are product contracts and need no device at runtime.
 
 `Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.
@@ -1447,7 +1474,7 @@ Existing diffusion and scatter/halation fixtures prepare their recipes through
 The OFX adapter group compares all 96 captured getter/publication rows. Both
 Release testing-OFF production gates execute 15 optics cases against the actual
 archive, including complete seeded semantic clearing. Compiler privacy retains
-the existing 60-second individual and 240-second boundary deadlines and two
+the ordinary unbounded individual and boundary execution and two
 isolated workers. These checks do not establish installed Resolve or visual
 acceptance.
 
@@ -1460,7 +1487,7 @@ It has explicit boundary relevance. `Print.Host.IlluminantProducts` checks 72
 actual route/reconstruction/control products against immutable
 [print illuminant fixtures](print/illuminant-fixtures/README.md), including direct
 omission, main/preflash samples and consumed descriptor/balance/final identities.
-Both are host groups with a 180-second deadline and an exact preset argument.
+Both are host groups without an elapsed deadline and with an exact preset argument.
 The six `print_illuminant_*` compiler fixtures enforce construction, privacy,
 read-only access and source-independent ownership under existing deadlines.
 The Release production probe includes twelve print illuminant calls, with frozen
@@ -1539,7 +1566,7 @@ ordered patch validation and independent caller-owned patched JSON still apply.
 complete frozen values, independent clearing, raw admission, bounded diagnostics
 and contained panic. `Frame.Host.GeometryProducts` checks the native projection's
 complete signed fields, final f32 pixel word and its f64 diffusion widening.
-Both are host groups with 180-second deadlines. The immutable
+Both are host groups without elapsed deadlines. The immutable
 [frame fixtures](frame/geometry-fixtures/README.md) retain four native contexts.
 
 `Ofx.Gpu.FrameGeometry` calls the real render callback in the existing isolated
@@ -1560,7 +1587,7 @@ no later than S6.D; prepared-state integration remains separate.
 
 `Ffi.Host.HalationFrame` and `Optics.Host.HalationFrameProducts` exercise the fixed
 Rust-backed twenty-one-record schedule boundary and completed route products.
-Both need no driver/device and have 180-second deadlines. See the owning
+Both need no driver/device and have no elapsed deadline. See the owning
 [scatter/halation guide](scatter_halation/README.md) and
 [fixture authority](scatter_halation/frame-fixtures/README.md). The existing
 strict C11 Release testing-OFF film probe also executes the complete frozen
@@ -1597,7 +1624,7 @@ owners, key bytes, typed failures and native adapters against
 a 180-second limit. Comparisons cover 114 whole products and 56 bounded primitives
 in each native profile, including the original explicit fused product residual.
 
-The existing `Dir.Gpu.ExposureCache` group retains its 300-second limit and GPU
+The existing `Dir.Gpu.ExposureCache` group has no elapsed deadline and retains its GPU
 lock. It also downloads entire actual Root boundary arrays, checks terminal
 packing, warm reuse without acquisition, native staging after host-owner release,
 failure rollback, same-key candidate disposal and context retirement. The native

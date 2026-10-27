@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -119,6 +120,64 @@ namespace JuicerCuda {
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
     namespace ExecutorTest {
+        enum class WorkspaceHandoff : unsigned char {
+            Monolithic,
+            MaterializedDensity,
+            FusedDirScanner
+        };
+        void observe_workspace_handoff(WorkspaceHandoff handoff) noexcept;
+        enum class WorkspaceRejection : unsigned char {
+            Capacity,
+            InvalidValue,
+            ContextLoss
+        };
+        struct WorkspaceCandidateObservation {
+            std::optional<ResourceManager::WorkspaceLayout> layout;
+            unsigned backendCalls = 0;
+            FjStatus result{};
+            bool succeeded = false;
+        };
+        struct WorkspaceTransitionObservation {
+            std::optional<ResourceManager::WorkspaceLayout> requested;
+            std::optional<ResourceManager::WorkspaceLayout> admitted;
+            std::optional<ResourceManager::WorkspaceLayout> finalDevelopment;
+            std::optional<ResourceManager::WorkspaceLayout> postFrame;
+            std::array<WorkspaceCandidateObservation, 6> candidates;
+            unsigned candidateCount = 0;
+            unsigned resourcesAcquired = 0;
+            unsigned finishes = 0;
+            unsigned aborts = 0;
+            unsigned sourceCacheChannels = 0;
+            unsigned finalCacheChannels = 0;
+            bool bindingsObserved = false;
+            bool scannerMapping = false;
+            bool grainMapping = false;
+            bool captureEnqueued = false;
+            bool scannerEnqueued = false;
+            FjStatus classified{};
+            bool recoveryPending = false;
+        };
+        void reset_workspace_transitions() noexcept;
+        WorkspaceTransitionObservation workspace_transitions() noexcept;
+        bool arm_workspace_rejection(unsigned count, WorkspaceRejection kind) noexcept;
+        void begin_workspace_candidate(unsigned index, const ResourceManager::WorkspaceLayout& layout) noexcept;
+        void end_workspace_candidate(bool success, const Failure& failure) noexcept;
+        bool inject_workspace_candidate_failure(Failure& failure);
+        void observe_workspace_requested(const std::optional<ResourceManager::WorkspaceLayout>& layout) noexcept;
+        void observe_workspace_resource_acquired() noexcept;
+        void observe_workspace_admitted(const ResourceManager::WorkspaceLayout& layout) noexcept;
+        void observe_workspace_final(const ResourceManager::WorkspaceLayout& layout) noexcept;
+        void observe_workspace_post_frame(const std::optional<ResourceManager::WorkspaceLayout>& layout) noexcept;
+        void observe_workspace_finish() noexcept;
+        void observe_workspace_bindings(JuicerProcess::Root::PreparedCudaFrame& frame,
+                                        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& marker) noexcept;
+        struct WorkspaceCacheChannels {
+            unsigned source = 0;
+            unsigned final = 0;
+        };
+        void observe_workspace_dir_build(WorkspaceCacheChannels channels) noexcept;
+        void observe_workspace_capture() noexcept;
+        void observe_workspace_scanner() noexcept;
         struct EffectsFrameObservation {
             Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
             unsigned count = 0;

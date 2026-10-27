@@ -14,7 +14,7 @@ import time
 import tomllib
 import uuid
 
-from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, preparation_inventory, prepare_build, registration_files
+from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, preparation_inventory, preparation_paths, prepare_build, registration_files
 from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/ffi"))
@@ -111,54 +111,160 @@ def ctest_identity(command):
     return identity
 
 
+def artifact_membership(directories, resolve=Path):
+    return {str(directory): sorted(str(path) for path in resolve(str(directory)).rglob("*") if path.is_file())
+            if resolve(str(directory)).is_dir() else None for directory in directories}
+
+
+def ctest_artifacts(inventory, names, build):
+    """Bind registered runtime consumers, excluding explicit output destinations."""
+    files, directories = set(), set()
+    output_options = {"--target-dir", "--artifacts", "--scratch-root", "--output-dir", "--output-junit"}
+    for test in inventory["tests"]:
+        if test["name"] not in names:
+            continue
+        properties = {prop["name"]: prop["value"] for prop in test.get("properties", [])}
+        working = Path(properties.get("WORKING_DIRECTORY", build))
+        if not working.is_absolute():
+            working = build / working
+        command = test.get("command", [])
+        for index, operand in enumerate(command):
+            if (index and command[index - 1] in output_options
+                    or operand.split("=", 1)[0] in output_options
+                    or operand.startswith("CARGO_TARGET_DIR=")):
+                continue
+            path = Path(shutil.which(operand) or operand) if index == 0 else Path(operand)
+            path = Path(os.path.abspath(path if path.is_absolute() else working / path))
+            if not path.is_relative_to(build):
+                continue
+            if path.is_file():
+                files.add(str(path))
+            elif index and path.is_dir():
+                directories.add(str(path))
+                files.update(str(member) for member in path.rglob("*") if member.is_file())
+    return sorted(files), sorted(directories)
+
+
 def stage_receipts(result, resolve=Path):
     return [resolve(result["receipt"]), *(resolve(p) for p in result.get("additional_receipts", {}))]
 
 
+def ctest_chunk(path, parts, commands, resolve=Path):
+    """Read an exact invocation; a failed invocation can still contain passed cases."""
+    import xml.etree.ElementTree as ET
+    raw = json.loads(resolve(str(path)).read_text())
+    command = raw["identity"]["command"]
+    role = "host" if "-LE" in command else "gpu"
+    if role not in parts:
+        raise ValueError("checkpoint runtime partition is unexpected")
+    report = resolve(command[command.index("--output-junit") + 1])
+    cases = list(ET.parse(report).getroot().iter("testcase"))
+    members = sorted(c.get("name") for c in cases)
+    if not members or len(members) != len(set(members)) or set(members) - set(parts[role]):
+        raise ValueError("checkpoint CTest partition membership is incomplete or duplicated")
+    expected = list(commands[list(parts).index(role)])
+    expected[expected.index("-R") + 1] = "^(" + "|".join(re.escape(n) for n in members) + ")$"
+    if ctest_identity(command) != expected:
+        raise ValueError("checkpoint CTest command does not bind its runtime partition")
+    passed = {c.get("name") for c in cases if c.get("status") == "run"
+              and not any(c.find(n) is not None for n in ("failure", "error", "skipped"))}
+    valid = (raw.get("status") == "passed" and raw.get("returncode") == 0 and passed == set(members)
+             or raw.get("status") == "failed" and raw.get("returncode") == 8 and passed != set(members)
+             and raw.get("process_tree", {}).get("status") == "completed")
+    if not valid or not raw.get("process_tree", {}).get("drained"):
+        raise ValueError("checkpoint CTest did not execute completely")
+    return role, passed, report
+
+
 def validate_ctest_stage(paths, parts, names, commands, resolve=Path):
-    """Both runtime partitions must prove the one selected relevance group."""
+    """Compose exact passed cases while retaining original failed invocations."""
     paths = paths if isinstance(paths, list) else [paths]
     selected = [name for members in parts.values() for name in members]
     if (not parts or list(parts) != [role for role in ("host", "gpu") if role in parts]
             or any(not members for members in parts.values())
             or len(selected) != len(set(selected)) or sorted(selected) != sorted(names)
-            or len(paths) != len(parts) or len(commands) != len(parts)):
+            or len(commands) != len(parts)):
         raise ValueError("checkpoint runtime partition membership is incomplete or duplicated")
-    for path, (role, members), expected in zip(paths, parts.items(), commands, strict=True):
-        command = json.loads(path.read_text())["identity"]["command"]
-        pattern = "^(" + "|".join(re.escape(n) for n in members) + ")$"
-        runtime_flag = "-LE" if role == "host" else "-L"
-        if (ctest_identity(command) != expected or command[command.index("-R") + 1] != pattern
-                or command[command.index(runtime_flag) + 1] != "gpu"):
-            raise ValueError("checkpoint CTest command does not bind its runtime partition")
-        validate_ctest_report(resolve(command[command.index("--output-junit") + 1]), members)
+    complete = set()
+    for path in paths:
+        role, passed, _ = ctest_chunk(path, parts, commands, resolve)
+        if role == "gpu" and set(parts.get("host", [])) - complete:
+            raise ValueError("checkpoint GPU partition precedes completed host cases")
+        if complete & passed:
+            raise ValueError("checkpoint CTest success is duplicated")
+        complete.update(passed)
+    if complete != set(names):
+        raise ValueError("checkpoint CTest membership did not execute completely")
 
 
 def run_ctest_parts(campaign, group, commands, roles, *, inputs, tools, environment,
-                    timeout, repeat_reason):
-    # A single pending stage owns both invocations and their common deadline.
-    deadline = time.monotonic() + timeout
+                    timeout, repeat_reason, state=None, state_path=None, reports=None):
+    # Normal qualification has no elapsed deadline. A finite timeout is only
+    # supplied by deliberate failure controls.
+    deadline = None if timeout is None else time.monotonic() + timeout
     expected_inputs = snapshot(campaign.root, inputs)
     present_tools = [p for p in tools if Path(p).is_file()]
     expected_tools = tool_snapshot(present_tools)
-    paths = []
+    chunks = state[group].setdefault("ctest_chunks", []) if state is not None else []
+    identities = [ctest_identity(command) for command in commands]
+    paths, complete, retained_reports = [], set(), []
+    from verify import check_receipt_payloads
+    for chunk in chunks:
+        path = Path(chunk["receipt"])
+        if digest(path) != chunk["sha256"] or digest(Path(chunk["report"])) != chunk["report_sha256"]:
+            raise ValueError("checkpoint partial result payload changed")
+        raw = check_receipt_payloads(campaign.root, path, allow_ctest_failure=True)
+        if (raw["identity"]["inputs"] != expected_inputs or raw["identity"]["tools"] != expected_tools):
+            raise ValueError("checkpoint partial result inputs changed")
+        role, passed, report = ctest_chunk(path, roles, identities)
+        if role == "gpu" and set(roles.get("host", [])) - complete:
+            raise ValueError("checkpoint GPU partition precedes completed host cases")
+        if passed & complete:
+            raise ValueError("checkpoint partial success is duplicated")
+        complete.update(passed)
+        paths.append(path)
+        retained_reports.append(report)
     for role, command in zip(roles, commands, strict=True):
+        remaining = sorted(set(roles[role]) - complete)
+        if not remaining:
+            continue
+        command = list(command)
+        command[command.index("-R") + 1] = "^(" + "|".join(re.escape(n) for n in remaining) + ")$"
         def run():
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("checkpoint CTest stage deadline expired")
             return campaign.run(group, command, inputs=inputs, tools=present_tools,
                 expected_inputs=expected_inputs, expected_tools=expected_tools,
-                env=environment, timeout=deadline - time.monotonic(),
+                env=environment, timeout=None if deadline is None else deadline - time.monotonic(),
                 repeat_reason=repeat_reason)
-        if role == "gpu":
-            with OutputLease(campaign.root, timeout=max(0, deadline - time.monotonic())):
-                paths.append(run())
-        else:
-            paths.append(run())
-        # Exit zero alone cannot admit the next runtime partition.
-        validate_ctest_report(Path(command[command.index("--output-junit") + 1]), roles[role])
-        if time.monotonic() > deadline:
-            raise TimeoutError("checkpoint CTest stage deadline expired")
+        failure = None
+        try:
+            if role == "gpu":
+                with OutputLease(campaign.root, timeout=None if deadline is None else max(0, deadline - time.monotonic())):
+                    path = run()
+            else:
+                path = run()
+        except subprocess.CalledProcessError as error:
+            if error.returncode != 8:
+                raise
+            failure = error
+            raw = campaign.attempts(group)[-1]
+            path = (campaign.root / raw["output"]).with_name("result.json")
+        check_receipt_payloads(campaign.root, path, allow_ctest_failure=True)
+        if snapshot(campaign.root, inputs) != expected_inputs or tool_snapshot(present_tools) != expected_tools:
+            raise ValueError("checkpoint inputs changed during CTest")
+        _, passed, report = ctest_chunk(path, roles, identities)
+        complete.update(passed)
+        paths.append(path)
+        retained_reports.append(report)
+        chunks.append({"receipt": str(path), "sha256": digest(path),
+                       "report": str(report), "report_sha256": digest(report)})
+        if state_path is not None:
+            write_json(state_path, state)
+        if failure is not None:
+            raise failure
+    if reports is not None:
+        reports[:] = retained_reports
     return paths
 
 
@@ -564,7 +670,8 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
 
 def run_stage(campaign, state_path, state, name, command, *, inputs, tools, environment,
           timeout, semantic_command=None, action=None, validate=None, payloads=(),
-          dependencies=(), repeat_reason="", refresh_inputs=None, admission_observations=None):
+          dependencies=(), repeat_reason="", refresh_inputs=None, admission_observations=None, ctest=False,
+          artifact_directories=()):
     """Reuse the latest gate across attempt names; pending work is never a pass."""
     campaign.check_run_request(name, command, inputs=inputs, timeout=timeout)
     identity = {"command": list(semantic_command or command),
@@ -572,17 +679,20 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
                 "environment": hashlib.sha256(json.dumps({k: v for k, v in environment.items()
                     if k not in {"JUICER_OUTPUT_LEASES", "JUICER_TEST_ARTIFACT_DIR"}}, sort_keys=True).encode()).hexdigest(),
                 "dependencies": list(dependencies)}
+    if artifact_directories:
+        identity["artifact_directories"] = artifact_membership(artifact_directories)
     previous = state.get(name)
-    if previous and previous["identity"] == identity and not repeat_reason:
-        if previous["status"] != "passed":
-            raise ValueError("pending checkpoint gate requires a relevant repair or a diagnosed repeat reason: " + name)
+    matching = previous and previous["identity"] == identity
+    if matching and previous["status"] != "passed" and not repeat_reason:
+        raise ValueError("pending checkpoint gate requires a relevant repair or a diagnosed repeat reason: " + name)
+    if matching and previous["status"] == "passed":
         try:
             from verify import check_receipt_payloads
             paths = stage_receipts(previous)
             for path, expected in zip(paths, [previous["sha256"], *previous.get("additional_receipts", {}).values()], strict=True):
                 if digest(path) != expected:
                     raise ValueError("checkpoint command receipt changed")
-                check_receipt_payloads(campaign.root, path)
+                check_receipt_payloads(campaign.root, path, allow_ctest_failure=ctest)
             path = paths[0]
             if name == "production" and payloads:
                 production_payloads(*production_manifest_identity(path, root=campaign.root),
@@ -594,6 +704,8 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
                 validate(paths if len(paths) > 1 else path)
             if snapshot(campaign.root, inputs) != identity["inputs"] or tool_snapshot(tools, allow_missing=True) != identity["tools"]:
                 raise ValueError("checkpoint inputs changed during reuse")
+            if artifact_directories and artifact_membership(artifact_directories) != identity["artifact_directories"]:
+                raise ValueError("checkpoint runtime artifact membership changed during reuse")
             print("Reused checkpoint gate:", name, path, flush=True)
             return {**previous, "reused_from": str(path)}
         except BaseException as error:
@@ -601,6 +713,8 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
             write_json(state_path, state)
             raise
     state[name] = {"status": "pending", "identity": identity}
+    if ctest and matching:
+        state[name]["ctest_chunks"] = previous.get("ctest_chunks", []).copy()
     write_json(state_path, state)
     try:
         executed = action() if action else campaign.run(name, command, inputs=inputs, tools=[p for p in tools if Path(p).is_file()],
@@ -619,6 +733,8 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
         if (any(actual.get(p) != value for p, value in identity["inputs"].items() if p not in generated)
                 or tool_snapshot(tools, allow_missing=True) != identity["tools"]):
             raise ValueError("checkpoint relevant inputs changed")
+        if artifact_directories and artifact_membership(artifact_directories) != identity["artifact_directories"]:
+            raise ValueError("checkpoint runtime artifact membership changed")
         refreshed = snapshot(campaign.root, refresh_inputs()) if refresh_inputs else actual
         if name == "prepare" and action:
             generated.update(p for p in refreshed if (campaign.root / p).is_relative_to(build))
@@ -633,6 +749,8 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
         result = {"status": "passed", "identity": identity, "receipt": str(paths[0]),
                   "sha256": digest(paths[0]),
                   "additional_receipts": {str(p): digest(p) for p in paths[1:]}, "payloads": retained}
+        if ctest:
+            result["ctest_chunks"] = state[name].get("ctest_chunks", [])
         state[name] = result
         write_json(state_path, state)
         return result
@@ -841,7 +959,7 @@ def checkpoint_tools(build, environment, group=None):
     rustup = shutil.which("rustup", path=environment.get("PATH"))
     if rustup:
         for name in ("cargo", "rustc", "clippy-driver"):
-            tools.add(Path(subprocess.check_output([rustup, "which", name], env=environment, text=True, timeout=30).strip()))
+            tools.add(Path(subprocess.check_output([rustup, "which", name], env=environment, text=True, timeout=None).strip()))
     return [str(p.absolute()) for p in sorted(tools)]
 
 
@@ -857,14 +975,42 @@ def qualify(root, args):
         return _qualify_owned(root, build, args)
 
 
-def prepare_checkpoint(campaign, build, state_path, state, environment, *, repeat_reason="", timeout=1800, source_files=None):
-    """Preparation repair and ordinary admission share the same producer and artifacts."""
+def prepare_checkpoint(campaign, build, state_path, state, environment, *, repeat_reason="", timeout=None,
+                       source_files=None, allow_build=False):
+    """Admit completed preparation; building requires explicit authorization."""
+    admitted = None
+    try:
+        baseline, pending = preparation_paths(build, ["all"])
+        if pending.exists():
+            raise ValueError("pending preparation still owns the build outputs")
+        owner = json.loads(baseline.read_text())
+        admitted = Path(owner["producer"])
+        proof = check_scoped_preparation(campaign, build, admitted, environment)["scoped_preparation"]
+        from build_dependencies import file_identities
+        if file_identities([Path(name) for name in proof["outputs"]]) != proof["output_identities"]:
+            raise ValueError("completed preparation artifact bytes changed")
+        if proof["targets"] != ["all"] or proof["configure_args"] != ["-DBUILD_TESTING=ON"]:
+            raise ValueError("checkpoint requires all-target testing-ON preparation")
+        required = checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files,
+                                     preparation=proof["context"])
+        missing = [name for name in required if not name.startswith("out/build/")
+                   and str((campaign.root / name).resolve()) not in proof["context"]["files"]]
+        if missing:
+            raise ValueError("preparation input membership is incomplete: " + ", ".join(missing[:5]))
+    except (OSError, ValueError, KeyError) as error:
+        admitted = None
+        if not allow_build:
+            raise ValueError(f"preparation admission failed without changing outputs: {error}; "
+                             f"inspect the difference, then explicitly run verify.py prepare --preset {build.name} "
+                             "--targets all --testing ON if a build is needed") from error
     inputs = checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files)
     outputs = []
     prepared_context = None
     admission_observations = {}
     previous = state.get("prepare")
     def prepare():
+        if admitted is not None:
+            return admitted
         if previous and previous.get("payloads"):
             try:
                 path = Path(previous["receipt"])
@@ -969,7 +1115,7 @@ def _qualify_owned(root, build, args):
         if tools is None:
             tools = checkpoint_tools(build, environment, name if name in GROUPS else "product")
         result = run_stage(campaign, state_path, state, name, command, inputs=inputs, tools=tools,
-                       environment=environment, timeout=1800, repeat_reason=args.repeat_reason, **kwargs)
+                       environment=environment, timeout=None, repeat_reason=args.repeat_reason, **kwargs)
         record["stages"][name] = result
         return result
     try:
@@ -977,14 +1123,15 @@ def _qualify_owned(root, build, args):
         prepared_identity = None
         if "product" in groups:
             built = prepare_checkpoint(campaign, build, state_path, state, environment,
-                                       repeat_reason=args.repeat_reason, source_files=current)
+                                       repeat_reason=args.repeat_reason, source_files=current,
+                                       allow_build=getattr(args, "prepare", False))
             record["stages"]["prepare"] = built
             prepared_identity = preparation_identity(build, built)
             inputs = checkpoint_inputs(root, build, "product", source_files=current)
             run("quality", [sys.executable, "-B", "scripts/check-quality.py", "--preset", args.preset,
                 "--qualification", "--base", args.base], inputs, dependencies=[prepared_identity])
         if groups != {"production"}:
-            query = subprocess.check_output(["ctest", "--test-dir", str(build), "--show-only=json-v1"], cwd=root, env=environment, text=True, timeout=30)
+            query = subprocess.check_output(["ctest", "--test-dir", str(build), "--show-only=json-v1"], cwd=root, env=environment, text=True, timeout=None)
             inventory = json.loads(query)
             selected = membership(inventory, groups, args.runtime)
             gpu_tests = {test["name"] for test in inventory["tests"]
@@ -1012,11 +1159,15 @@ def _qualify_owned(root, build, args):
                         check_scoped_preparation(campaign, build, Path(built["receipt"]))
                 inputs = checkpoint_inputs(root, build, group, source_files=current)
                 tools = checkpoint_tools(build, environment, group)
+                artifacts, directories = ctest_artifacts(inventory, names, build) if group != "product" else ([], [])
+                tools = sorted(set(tools) | set(artifacts))
                 run(group, commands[0], inputs, tools=tools, semantic_command=identities,
                     action=lambda group=group, commands=commands, parts=parts, inputs=inputs, tools=tools:
                         run_ctest_parts(campaign, group, commands, parts, inputs=inputs, tools=tools,
-                            environment=environment, timeout=1800, repeat_reason=args.repeat_reason),
+                            environment=environment, timeout=None, repeat_reason=args.repeat_reason,
+                            state=state, state_path=state_path, reports=reports),
                     validate=validate, payloads=reports,
+                    ctest=True, artifact_directories=directories,
                     dependencies=[prepared_identity] if built and group == "product" else [])
         else:
             cache = (build / "CMakeCache.txt").read_text()
@@ -1103,7 +1254,7 @@ def _collect_owned(root, paths):
     # The terminal scan seals content and lexical-to-resolved path bindings.
     bindings, tools = observe_tools()
     inputs = snapshot(root, source_paths)
-    members, preparations = {}, {}
+    members, preparations, artifact_seals = {}, {}, []
     for record in records:
         owner = root / "out/build" / record["preset"] / "verification-checkpoint.json"
         state = json.loads(owner.read_text())
@@ -1114,13 +1265,21 @@ def _collect_owned(root, paths):
             if current.get("status") != "passed" or any(current.get(key) != result.get(key)
                     for key in ("sha256", "identity", "additional_receipts", "payloads")):
                 raise ValueError("pending or newer checkpoint ownership prevents collection: " + name)
+            directories = result["identity"].get("artifact_directories", {})
+            expected_directories = {str(local(directory)): sorted(str(local(path)) for path in paths) if paths is not None else None
+                                    for directory, paths in directories.items()}
+            if artifact_membership(expected_directories) != expected_directories:
+                raise ValueError("checkpoint runtime artifact membership changed")
+            artifact_seals.append(expected_directories)
             raw_paths = stage_receipts(result, local)
             for path, expected in zip(raw_paths, [result["sha256"], *result.get("additional_receipts", {}).values()], strict=True):
                 if digest(path) != expected:
                     raise ValueError("checkpoint command receipt changed")
                 command = json.loads(path.read_text())
                 process = json.loads(local(command["process_tree"]["receipt"]).read_text())
-                if (command.get("status") != "passed" or command.get("returncode") != 0
+                ctest_failure = (name in record.get("membership", {}) and command.get("status") == "failed"
+                                 and command.get("returncode") == 8 and process.get("status") == "completed")
+                if (not ctest_failure and (command.get("status") != "passed" or command.get("returncode") != 0)
                         or not process.get("drained") or any(command["process_tree"].get(k) != v for k, v in process.items())
                         or digest(root / command["output"]) != command["output_sha256"]):
                     raise ValueError("checkpoint terminal evidence is invalid")
@@ -1166,6 +1325,8 @@ def _collect_owned(root, paths):
                 raise ValueError("checkpoint stages do not bind the current preparation artifacts")
     if observe_tools() != (bindings, tools):
         raise ValueError("checkpoint toolchain/configuration changed during collection")
+    if any(artifact_membership(expected) != expected for expected in artifact_seals):
+        raise ValueError("checkpoint runtime artifact membership changed during collection")
     if snapshot(root, source_paths) != inputs:
         raise ValueError("checkpoint declared source/data inputs changed during collection")
     current = source_snapshot(root) if observed_source is not None else None

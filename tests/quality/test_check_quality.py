@@ -640,6 +640,19 @@ class CommandOutputTests(unittest.TestCase):
 
 
 class CompletionTests(unittest.TestCase):
+    def test_analysis_supervision_has_no_elapsed_deadline(self):
+        sys.path.insert(0, str(SCRIPT_PATH.parent))
+        import execution
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(execution, "run_process_tree", wraps=execution.run_process_tree) as run:
+                result = check_quality.supervised_run(
+                    [sys.executable, "-u", "-c", "import time;print('progress');time.sleep(.3);print('done')"],
+                    cwd=root, env=dict(os.environ), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=True, process_prefix=root / "analysis")
+            self.assertIsNone(run.call_args.args[4])
+            self.assertIn(b"done", result.stdout)
+
     def test_failed_parent_cancels_delayed_writer_before_quality_returns(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

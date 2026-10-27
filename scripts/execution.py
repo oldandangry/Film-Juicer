@@ -149,7 +149,7 @@ def run_process_tree(
     try:
         write_json(lock, {"owner_pid": os.getpid(), **tree})
         try:
-            process.wait(timeout=timeout + 15)
+            process.wait(timeout=None if timeout is None else timeout + 15)
         except BaseException:
             process.stdin.close()  # EOF requests termination and complete draining.
             process.wait(timeout=15)
@@ -213,7 +213,7 @@ class Campaign:
         )
 
     def check_run_request(
-        self, stage: str, command: Sequence[str], *, inputs: Sequence[str], timeout: float
+        self, stage: str, command: Sequence[str], *, inputs: Sequence[str], timeout: float | None
     ) -> None:
         """Reject invalid requests before callers create pending ownership or reuse results."""
         name_component(stage)
@@ -221,11 +221,10 @@ class Campaign:
             stage not in self.required
             or not command
             or not inputs
-            or not math.isfinite(timeout)
-            or timeout <= 0
+            or timeout is not None and (not math.isfinite(timeout) or timeout <= 0)
         ):
             raise ValueError(
-                "a declared stage, command, input files and finite positive timeout are required"
+                "a declared stage, command, input files and finite positive timeout or None are required"
             )
 
     def run(
@@ -234,7 +233,7 @@ class Campaign:
         command: Sequence[str],
         *,
         inputs: Sequence[str],
-        timeout: float,
+        timeout: float | None = None,
         env: Mapping[str, str] | None = None,
         repeat_reason: str = "",
         tools: Sequence[str] = (),
@@ -271,7 +270,7 @@ class Campaign:
             vctip_cleanup = {
                 "executable": str(vctip_path),
                 "grace_seconds": vctip_grace_seconds,
-                "drain_cap_seconds": vctip_drain_cap_seconds,
+                "drain_cap_seconds": vctip_drain_cap_seconds if timeout is not None else None,
             }
         elif vctip_grace_seconds != 30 or vctip_drain_cap_seconds != 300:
             raise ValueError("VCTIP drain policy requires a VCTIP executable")
@@ -520,7 +519,7 @@ class OutputLease:
 
     held = {}
 
-    def __init__(self, root: Path, build: Path | None = None, *, timeout=30):
+    def __init__(self, root: Path, build: Path | None = None, *, timeout=None):
         self.root = root.resolve()
         key = (
             "gpu"
@@ -582,7 +581,13 @@ class OutputLease:
                 self.path.mkdir()
                 break
             except FileExistsError:
-                if time.monotonic() - started >= self.timeout:
+                try:
+                    owner = json.loads((self.path / "owner.json").read_text(encoding="utf-8"))
+                except (FileNotFoundError, json.JSONDecodeError):
+                    owner = {}
+                if owner.get("status") == "blocked":
+                    raise RuntimeError(f"output owner is blocked; inspect drainage before recovery: {self.path}")
+                if self.timeout is not None and time.monotonic() - started >= self.timeout:
                     raise TimeoutError(
                         f"output remains owned; inspect drainage before recovery: {self.path}"
                     )

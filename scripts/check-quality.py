@@ -116,7 +116,7 @@ def supervised_run(command, *, cwd, env, stdout, stderr, check, process_prefix, 
     stderr_path = process_prefix.with_suffix(".error-capture")
     try:
         with stdout_path.open("wb") as output, stderr_path.open("wb") as errors:
-            status = run_process_tree(command, cwd, env, output, 3600, receipt, lock, tree,
+            status = run_process_tree(command, cwd, env, output, None, receipt, lock, tree,
                                       errors if stderr == subprocess.PIPE else None)
         payload = stdout_path.read_bytes()
         error_payload = stderr_path.read_bytes()

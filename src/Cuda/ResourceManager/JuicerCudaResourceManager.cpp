@@ -433,7 +433,7 @@ namespace JuicerCuda {
             const ScratchRequestDescriptor& descriptor,
             const char* commandName,
             std::string& outError) noexcept {
-            if (!scratch_request_descriptor_is_valid(descriptor)) {
+            if (!descriptor.has_any_family() || !scratch_request_descriptor_is_valid(descriptor)) {
                 try {
                     outError = std::string(trace_or_non_empty(commandName, "scratch_request")) +
                                ": invalid scratch request descriptor";
@@ -479,14 +479,7 @@ namespace JuicerCuda {
             std::string& outError) {
             outActiveScratchRequest = nullptr;
             if (!scratchRequest.has_any_family()) {
-                if (scratchRequest.needBlurred ||
-                    scratchRequest.aliasScannerRgbFromSpatialDirFiltered ||
-                    scratchRequest.needAux ||
-                    scratchRequest.needSharedTmp ||
-                    scratchRequest.needGrainFrameUniforms ||
-                    scratchRequest.needGrainLayerWork ||
-                    scratchRequest.needGrainShared ||
-                    scratchRequest.needGateTransmittance || scratchRequest.needFilmDustTransmittance) {
+                if (!scratch_request_descriptor_is_valid(scratchRequest)) {
                     outError = std::string(trace_or_non_empty(commandName, "scratch_request")) + ": invalid scratch request descriptor";
                     return false;
                 }

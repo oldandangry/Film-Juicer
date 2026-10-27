@@ -27,6 +27,36 @@ PROCESS_SPEC.loader.exec_module(process_tree)
 
 
 class CampaignTests(unittest.TestCase):
+    def test_default_supervision_allows_progress_and_quiet_work_without_elapsed_kill(self):
+        code = ("import time\n"
+                "for i in range(8):\n"
+                " print(i, flush=True);time.sleep(.04)\n"
+                "time.sleep(.2)\nprint('finished', flush=True)\n")
+        result = self.campaign.run("quality", self.command(code), inputs=["source.txt"])
+        raw = json.loads(result.read_text())
+        self.assertIsNone(raw["timeout"])
+        self.assertEqual(raw["process_tree"]["status"], "completed")
+        self.assertTrue(raw["process_tree"]["drained"])
+        self.assertIn("finished", (self.root / raw["output"]).read_text())
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job descendant drainage")
+    def test_unbounded_build_waits_for_progressing_descendants_after_parent_exit(self):
+        child = "import time;print('child start',flush=True);time.sleep(.8);print('child done',flush=True)"
+        code = "import subprocess,sys;subprocess.Popen([sys.executable,'-u','-c'," + repr(child) + "])"
+        result = self.campaign.run("quality", self.command(code), inputs=["source.txt"],
+            vctip_executable=str(self.vctip_fixture()), vctip_grace_seconds=.1, vctip_drain_cap_seconds=.3)
+        raw = json.loads(result.read_text())
+        self.assertEqual(raw["process_tree"]["status"], "completed")
+        self.assertIsNone(raw["identity"]["vctip_cleanup"]["drain_cap_seconds"])
+        self.assertIn("child done", (self.root / raw["output"]).read_text())
+
+    def test_unbounded_lease_rejects_known_blocked_owner_without_waiting(self):
+        lease = campaign.OutputLease(self.root, self.root / "blocked-build")
+        lease.path.mkdir(parents=True)
+        (lease.path / "owner.json").write_text(json.dumps({"status": "blocked"}))
+        with self.assertRaisesRegex(RuntimeError, "owner is blocked"):
+            lease.__enter__()
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

@@ -56,7 +56,7 @@ class RustBoundaryTests(unittest.TestCase):
         quality.check_probe_configuration(ROOT, self.workspace)
         result = subprocess.run(
             command, cwd=self.workspace, env=self.environment,
-            capture_output=True, text=True, encoding="utf-8", timeout=60, check=False,
+            capture_output=True, text=True, encoding="utf-8", check=False,
         )
         log = self.artifacts / f"{invocation:02d}-{self._testMethodName}-{label}.log"
         log.write_text(

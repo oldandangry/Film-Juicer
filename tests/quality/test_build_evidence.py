@@ -533,9 +533,12 @@ class BuildEvidenceTests(unittest.TestCase):
             owner = lease.path / "owner.json"
             write_json(owner, {"owner_pid": 999999999, "status": status, "token": "unproved"})
             saved = owner.read_bytes()
+            error, message = ((TimeoutError, "output remains owned") if status == "owned" else
+                              (RuntimeError, "output owner is blocked"))
             try:
                 with patch.object(build_evidence, "S4C1_PENDING", {preset: expected}), \
-                        patch.object(build_evidence, "OutputLease", return_value=lease), self.assertRaises(TimeoutError):
+                        patch.object(build_evidence, "OutputLease", return_value=lease), \
+                        self.assertRaisesRegex(error, message):
                     build_evidence.retire_s4c1_pending(self.root, preset)
                 self.assertEqual(owner.read_bytes(), saved)
                 self.assertEqual(marker.read_bytes(), original)

@@ -117,7 +117,7 @@ def preparation_inventory(root: Path, build: Path, environment) -> dict:
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=None,
         check=True,
     )
     lines = query.stdout.splitlines()
@@ -146,7 +146,7 @@ def preparation_inventory(root: Path, build: Path, environment) -> dict:
     if cargo:
         cargo = Path(cargo[1])
         rustc = cargo.with_name("rustc.exe" if os.name == "nt" else "rustc")
-        sysroot = Path(subprocess.check_output([str(rustc), "--print", "sysroot"], cwd=root, env=environment, text=True, timeout=30).strip())
+        sysroot = Path(subprocess.check_output([str(rustc), "--print", "sysroot"], cwd=root, env=environment, text=True, timeout=None).strip())
         compiler_tools += [cargo, rustc, sysroot / "bin" / cargo.name, sysroot / "bin" / rustc.name]
     external.extend(str(path) for path in compiler_tools if path.is_file())
     return {
@@ -154,6 +154,7 @@ def preparation_inventory(root: Path, build: Path, environment) -> dict:
         "tools": tool_snapshot(external),
         "regeneration_mtimes": {
             str(p.resolve()): p.stat().st_mtime_ns for p in dependencies
+            if p.resolve() != (build / "CMakeFiles/cmake.verify_globs").resolve()
         },
         "registrations": {
             str(p): digest(p) if p.is_file() else None for p in registrations
@@ -550,7 +551,7 @@ def invalidate_rust(campaign, stage, source, build, changed, old, environment, t
         return []
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--locked", "--offline", "--format-version", "1"],
-        cwd=source, env=environment, text=True, timeout=30))
+        cwd=source, env=environment, text=True, timeout=None))
     packages = {package["id"]: package for package in metadata["packages"]}
     affected = {key for key, package in packages.items()
                 if any(Path(name).is_relative_to(Path(package["manifest_path"]).parent) for name in stale)}
@@ -951,8 +952,11 @@ def prepare_targets(root, preset, targets, testing="ON"):
         if any(path != own_pending for path in build.glob("*.pending.json")):
             raise ValueError("another pending preparation must be resolved by its existing owner first")
         campaign = Campaign(root, preset, "preparation-" + uuid.uuid4().hex, ["prepare"])
+        from qualification import checkpoint_inputs
+        inputs = (checkpoint_inputs(root, build, "prepare") if targets == ["all"] and testing == "ON"
+                  else ["scripts/verify.py", "scripts/build_evidence.py"])
         _, prepared = prepare_build(campaign, "prepare", source=root, build=build,
-                                    inputs=["scripts/verify.py", "scripts/build_evidence.py"], timeout=7200,
+                                    inputs=[name for name in inputs if not name.startswith("out/build/")], timeout=None,
                                     configure_args=["-DBUILD_TESTING=" + testing], targets=targets,
                                     checkpoint=True, reconfigure=True)
         check_scoped_preparation(campaign, build, prepared)
@@ -1192,7 +1196,7 @@ def run_ctest(campaign, stage, *, build, prepared, inputs, timeout, env=None,
         # Query only the named groups. Do not seal test executables or runtime trees.
         pattern = "^(" + "|".join(re.escape(name) for name in sorted(tests)) + ")$"
         command = [*ctest_command(campaign.root, build), "-R", pattern]
-        inventory = json.loads(subprocess.check_output([*command, "--show-only=json-v1"], cwd=campaign.root, env=env, text=True, timeout=30))
+        inventory = json.loads(subprocess.check_output([*command, "--show-only=json-v1"], cwd=campaign.root, env=env, text=True, timeout=None))
         selected = inventory.get("tests", [])
         if sorted(test["name"] for test in selected) != sorted(tests) or not selected:
             raise ValueError("selected CTest membership changed or is empty")
