@@ -391,7 +391,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13 ninja-build
+          sudo apt-get install -y gcc-13 g++-13 ninja-build lld
+          ld.lld --version
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
           python -m pip install --upgrade pip
