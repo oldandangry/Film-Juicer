@@ -188,7 +188,8 @@ add_library(juicer_profile_conversion_test_objects OBJECT ../src/RustAssetBridge
 target_link_libraries(juicer_profile_conversion_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_profile_conversion_test_objects PRIVATE JUICER_PROFILE_CONVERSION_TEST_HOOK=1)
 add_executable(JuicerProductionProfileOwnerTests ffi/production_profile_abi_c.c ffi/production_profile_owner_test.cpp
-    $<TARGET_OBJECTS:juicer_profile_conversion_test_objects>)
+    $<TARGET_OBJECTS:juicer_profile_conversion_test_objects>
+    $<TARGET_OBJECTS:juicer_spectral_allocation_test_objects>)
 target_link_libraries(JuicerProductionProfileOwnerTests PRIVATE juicer_core GTest::gtest)
 
 add_library(juicer_film_input_test_objects OBJECT ../src/RustFilmInputBridge.cpp)
@@ -634,6 +635,20 @@ endif()
 add_test(NAME Ffi.Host.PreparedProjection COMMAND JuicerPreparedProjectionTests)
 set_tests_properties(Ffi.Host.PreparedProjection PROPERTIES LABELS "host" TIMEOUT 0)
 set_tests_properties(Ffi.Host.PreparedProjection PROPERTIES ENVIRONMENT "JUICER_TEST_PRESET_NAME=${JUICER_TEST_PRESET_NAME}")
+add_executable(JuicerPreparedStateTests
+    ffi/prepared_state_test.cpp ffi/prepared_state_abi_c.c
+    ffi/prepared_descriptors.cpp ffi/spatial_optics_fixture.cpp)
+target_link_libraries(JuicerPreparedStateTests PRIVATE juicer_core GTest::gtest)
+set_target_properties(JuicerPreparedStateTests PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerPreparedStateTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerPreparedStateTests juicer_test_resources)
+add_test(NAME Ffi.Host.PreparedState COMMAND JuicerPreparedStateTests "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/s4-e-slice-1" --gtest_filter=PreparedStateAbi.*)
+add_test(NAME Prepare.Host.StateProducts COMMAND JuicerPreparedStateTests "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/s4-e-slice-1" --gtest_filter=PreparedStateProducts.*)
+set_tests_properties(Ffi.Host.PreparedState Prepare.Host.StateProducts PROPERTIES LABELS "host" TIMEOUT 0)
 include(ffi/prepared_sanitizers.cmake)
 add_test(NAME Ffi.Host.SanitizerRunner
     COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
@@ -671,16 +686,18 @@ endif()
 add_test(NAME Assets.Host.LookupSafety COMMAND JuicerAssetLookupTests)
 set_tests_properties(Assets.Host.LookupSafety PROPERTIES LABELS "host" TIMEOUT 0)
 
+# GoogleTest treats DISCOVERY_TIMEOUT 0 as unset and falls back to five seconds.
+# Give post-build executable startup an explicit allowance during parallel links.
 gtest_discover_tests(JuicerHashContractTests
     TEST_PREFIX "Hash.Host."
     DISCOVERY_MODE POST_BUILD
-    DISCOVERY_TIMEOUT 0
+    DISCOVERY_TIMEOUT 30
     PROPERTIES LABELS "host\\;product" TIMEOUT 0)
 
 gtest_discover_tests(JuicerScatterHalationHostTests
     TEST_PREFIX "ScatterHalation.Host."
     DISCOVERY_MODE POST_BUILD
-    DISCOVERY_TIMEOUT 0
+    DISCOVERY_TIMEOUT 30
     PROPERTIES
         LABELS "host\\;product"
         TIMEOUT 0
@@ -705,6 +722,8 @@ add_custom_command(
         diffusion/fixtures/diffusion_reference_v1.npz
     COMMENT "Generating diffusion host reference cases"
     VERBATIM)
+add_custom_target(juicer_diffusion_reference DEPENDS "${DIFFUSION_GENERATED_HEADER}")
+add_dependencies(juicer_analysis_inputs juicer_diffusion_reference)
 add_executable(JuicerDiffusionHostReferenceTest
     diffusion/host_reference_test.cpp
     "${DIFFUSION_GENERATED_HEADER}")
@@ -817,10 +836,15 @@ endforeach()
 
 foreach(render_case IN ITEMS negative-direct negative-print)
     add_test(NAME "Ffi.Gpu.CudaRender.${render_case}"
-        COMMAND JuicerPreparedBoundaryProbe --render-contract "${render_case}")
+        COMMAND JuicerPreparedBoundaryProbe --state-contract "${render_case}")
     set_tests_properties("Ffi.Gpu.CudaRender.${render_case}" PROPERTIES
         LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 endforeach()
+
+add_test(NAME Ffi.Gpu.PreparedStateLifetime
+    COMMAND JuicerPreparedBoundaryProbe --state-lifetime direct-and-print)
+set_tests_properties(Ffi.Gpu.PreparedStateLifetime PROPERTIES
+    LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
 # Isolated copies keep failure injection and observations out of juicer_core.
 add_library(juicer_executor_failure_test_objects OBJECT
@@ -1083,6 +1107,7 @@ add_library(juicer_illuminant_test_objects OBJECT ../src/RustAssetBridge.cpp ../
 target_link_libraries(juicer_illuminant_test_objects PRIVATE juicer_settings juicer_ofx_headers)
 target_compile_definitions(juicer_illuminant_test_objects PRIVATE JUICER_ILLUMINANT_TEST_HOOK=1)
 add_executable(JuicerIlluminantCalibrationTests ffi/illuminant_calibration_abi_c.c ffi/illuminant_calibration_test.cpp ffi/illuminant_construction_test.cpp
+    ffi/prepared_descriptors.cpp ffi/spectral_allocation_probe.cpp
     $<TARGET_OBJECTS:juicer_illuminant_test_objects>)
 target_link_libraries(JuicerIlluminantCalibrationTests PRIVATE juicer_core GTest::gtest)
 target_compile_definitions(JuicerIlluminantCalibrationTests PRIVATE JUICER_ILLUMINANT_TEST_HOOK=1)
@@ -1306,10 +1331,7 @@ set_tests_properties(Reconstruction.Host.TcLut.Lifetime PROPERTIES LABELS "host"
 add_test(NAME Reconstruction.Host.TcLut.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_tc_lut_fixtures.py -v)
 set_tests_properties(Reconstruction.Host.TcLut.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 0 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
-add_library(juicer_input_hull_test_objects OBJECT ../src/RustGamutBridge.cpp)
-target_link_libraries(juicer_input_hull_test_objects PRIVATE juicer_settings)
-target_compile_definitions(juicer_input_hull_test_objects PRIVATE JUICER_INPUT_HULL_TEST_HOOK=1)
-add_executable(JuicerInputHullTests ffi/input_hull_abi_c.c ffi/input_hull_test.cpp $<TARGET_OBJECTS:juicer_spectral_fixture_objects> $<TARGET_OBJECTS:juicer_spectral_allocation_test_objects> $<TARGET_OBJECTS:juicer_input_hull_test_objects>)
+add_executable(JuicerInputHullTests ffi/input_hull_abi_c.c ffi/input_hull_test.cpp $<TARGET_OBJECTS:juicer_spectral_fixture_objects> $<TARGET_OBJECTS:juicer_spectral_allocation_test_objects> ffi/prepared_descriptors.cpp)
 target_link_libraries(JuicerInputHullTests PRIVATE juicer_core)
 set_target_properties(JuicerInputHullTests PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 if(UNIX)
@@ -1344,10 +1366,7 @@ add_test(NAME Gamut.Host.Output.Math
         ${JUICER_RUST_TEST_COMMAND} --features test-support --test output_gamut)
 set_tests_properties(Gamut.Host.Output.Math PROPERTIES LABELS "host" TIMEOUT 0 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
-add_library(juicer_output_gamut_test_objects OBJECT ../src/ResourceAssetLibrary.cpp ../src/RustGamutBridge.cpp)
-target_link_libraries(juicer_output_gamut_test_objects PRIVATE juicer_settings)
-target_compile_definitions(juicer_output_gamut_test_objects PRIVATE JUICER_OUTPUT_GAMUT_TEST_HOOK=1)
-add_executable(JuicerOutputGamutCacheTests ffi/output_gamut_cache_test.cpp $<TARGET_OBJECTS:juicer_output_gamut_test_objects>)
+add_executable(JuicerOutputGamutCacheTests ffi/output_gamut_cache_test.cpp ffi/spectral_allocation_probe.cpp)
 target_link_libraries(JuicerOutputGamutCacheTests PRIVATE juicer_core)
 set_target_properties(JuicerOutputGamutCacheTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 if(UNIX)
@@ -1392,7 +1411,7 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 
 
 # Relevance and runtime prerequisites are independent. Every group has one owner.
-set(juicer_boundary_tests Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
+set(juicer_boundary_tests Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat

@@ -85,7 +85,7 @@ namespace JuicerAssets::InputTest {
     thread_local bool releaseCaches = false;
     thread_local unsigned failureMode = 0;
     thread_local const Profiles::FilmProfile* selectedProfile = nullptr;
-    thread_local std::weak_ptr<const Gamut::InputCompressionHull> selectedHull;
+    thread_local std::weak_ptr<const Gamut::InputHullHold> selectedHull;
     thread_local InstanceState* supersedeState = nullptr;
     thread_local ParamSnapshot newer;
     void before_prepare(const FilmSource& source, const Spektrafilm::FilmFoundationBuildInput& input) {
@@ -534,8 +534,8 @@ namespace {
         auto& assets = JuicerProcess::root().assets();
         const auto illuminants = assets.illuminant_filter_curves();
         Scanner::ScannerIlluminant reference, d65;
-        require(JuicerSpectral::integrate_white(illuminants->d55, "D55", reference) &&
-                    JuicerSpectral::integrate_white(illuminants->d65, "D65", d65),
+        require(JuicerSpectral::integrate_white(illuminants->d55.copy_curve(), "D55", reference) &&
+                    JuicerSpectral::integrate_white(illuminants->d65.copy_curve(), "D65", d65),
                 "integrated input whites");
         std::array<float, 81> reconstructed{};
         std::string diagnostic;

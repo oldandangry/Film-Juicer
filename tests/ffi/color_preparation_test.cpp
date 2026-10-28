@@ -655,7 +655,7 @@ namespace {
             changed.outputCctfEncoding = 0;
             const auto encodedOff = build(changed);
             require(product.recipe.filmRaw.inputXyzAdapt == encodedOff.recipe.filmRaw.inputXyzAdapt && product.recipe.filmRaw.tcLutHash == encodedOff.recipe.filmRaw.tcLutHash, "encoding change preserves film/TC family");
-            require(product.payload.outputBoundaryTable == encodedOff.payload.outputBoundaryTable, "encoding change reuses actual boundary owner");
+            require(product.payload.outputBoundaryTable && encodedOff.payload.outputBoundaryTable && product.payload.outputBoundaryTable->entryIdentity == encodedOff.payload.outputBoundaryTable->entryIdentity && product.payload.outputBoundaryTable->cmax.data() == encodedOff.payload.outputBoundaryTable->cmax.data(), "encoding change reuses actual boundary owner");
             require(scanner_descriptor(product).hash == scanner_descriptor(encodedOff).hash, "encoding change preserves scanner descriptor identity");
             require(product.recipe.scannerOutput.hash != encodedOff.recipe.scannerOutput.hash && product.recipe.hash != encodedOff.recipe.hash && product.payload.scannerColor.hash != encodedOff.payload.scannerColor.hash, "encoding identities change at actual owners");
             const auto retained = product.payload.outputBoundaryTable;
@@ -663,7 +663,7 @@ namespace {
             expect_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
             require(bits(retained->cmax) == retainedBits && complete_result(product) == complete_result(build(controls)), "retained state/table stays readable across cache release");
             const auto rebuilt = build(controls);
-            require(rebuilt.payload.outputBoundaryTable != retained && bits(rebuilt.payload.outputBoundaryTable->cmax) == retainedBits, "cache release creates new equal owner without mutating retained table");
+            require(rebuilt.payload.outputBoundaryTable && rebuilt.payload.outputBoundaryTable->entryIdentity != retained->entryIdentity && rebuilt.payload.outputBoundaryTable->cmax.data() != retained->cmax.data() && bits(rebuilt.payload.outputBoundaryTable->cmax) == retainedBits, "cache release creates new equal owner without mutating retained table");
             InstanceState state;
             pending(state, controls);
             const auto old = admit_pending_render_state(state);
@@ -1058,7 +1058,8 @@ namespace {
         std::vector<std::uint32_t> printIlluminant;
         std::vector<std::uint32_t> boundary;
         std::array<std::uint64_t, 3> boundaryHashes{};
-        std::string boundaryDiagnostic;
+        std::uintptr_t boundaryEntryIdentity = 0;
+        const float* boundaryBacking = nullptr;
     };
     template <typename State>
     RetainedValues retain_values(const State& state) {
@@ -1073,10 +1074,11 @@ namespace {
         }
         require(bool(state.payload.outputBoundaryTable), "completed state boundary owner");
         const auto& boundary = *state.payload.outputBoundaryTable;
-        require(boundary.valid, "retained completed boundary table validity");
+        require(boundary.entryIdentity != 0 && boundary.cmax.size() == Gamut::kOutputBoundaryValueCount, "retained completed boundary owner and extent");
         out.boundary = retained_bits(boundary.cmax);
         out.boundaryHashes = {boundary.transformHash, boundary.contractHash, boundary.hash};
-        out.boundaryDiagnostic = boundary.diagnostic;
+        out.boundaryEntryIdentity = boundary.entryIdentity;
+        out.boundaryBacking = boundary.cmax.data();
         return out;
     }
     template <typename State>
@@ -1088,9 +1090,9 @@ namespace {
         const bool printExact = payload.printMainIlluminant ? same_retained_bits(*payload.printMainIlluminant, expected.printIlluminant) : expected.printIlluminant.empty();
         require(bool(payload.outputBoundaryTable), "completed state boundary owner");
         const auto& boundary = *payload.outputBoundaryTable;
-        require(boundary.valid, "retained completed boundary table validity");
+        require(boundary.entryIdentity != 0 && boundary.cmax.size() == Gamut::kOutputBoundaryValueCount, "retained completed boundary owner and extent");
         const std::array<std::uint64_t, 3> boundaryHashes{boundary.transformHash, boundary.contractHash, boundary.hash};
-        require(complete == expected.complete && exposureTables == expected.exposureTables && tcExact && printExact && same_retained_bits(boundary.cmax, expected.boundary) && boundaryHashes == expected.boundaryHashes && boundary.diagnostic == expected.boundaryDiagnostic, "retained complete route/color/tables/TC/boundary values remain exact");
+        require(complete == expected.complete && exposureTables == expected.exposureTables && tcExact && printExact && same_retained_bits(boundary.cmax, expected.boundary) && boundaryHashes == expected.boundaryHashes && boundary.entryIdentity == expected.boundaryEntryIdentity && boundary.cmax.data() == expected.boundaryBacking, "retained complete route/color/tables/TC/boundary values remain exact");
     }
     RetainedValues retain_values(const PendingRenderAdmissionResult& result) {
         if (result.printState) {
@@ -1252,7 +1254,7 @@ namespace {
                 encoding.outputCctfEncoding = 0;
                 const auto encodedOff = Cat02Fixtures::build(encoding);
                 require(product.recipe.filmRaw.inputXyzAdapt == encodedOff.recipe.filmRaw.inputXyzAdapt && product.recipe.filmRaw.hash == encodedOff.recipe.filmRaw.hash && product.recipe.filmRaw.tcLutHash == encodedOff.recipe.filmRaw.tcLutHash, "output CCTF-only changes preserve film/TC family");
-                require(product.payload.outputBoundaryTable == encodedOff.payload.outputBoundaryTable, "output CCTF-only reuses actual boundary table owner");
+                require(product.payload.outputBoundaryTable && encodedOff.payload.outputBoundaryTable && product.payload.outputBoundaryTable->entryIdentity == encodedOff.payload.outputBoundaryTable->entryIdentity && product.payload.outputBoundaryTable->cmax.data() == encodedOff.payload.outputBoundaryTable->cmax.data(), "output CCTF-only reuses actual boundary table owner");
                 require(Cat02Fixtures::tables_result(product.payload.scannerTables) == Cat02Fixtures::tables_result(encodedOff.payload.scannerTables) && Cat02Fixtures::scanner_descriptor(product) == Cat02Fixtures::scanner_descriptor(encodedOff), "output CCTF-only preserves complete scanner tables/descriptor");
                 require(bits(product.payload.scannerColor.cat02) == bits(encodedOff.payload.scannerColor.cat02) && product.payload.scannerColor.hash != encodedOff.payload.scannerColor.hash && product.recipe.scannerOutput.hash != encodedOff.recipe.scannerOutput.hash && product.recipe.hash != encodedOff.recipe.hash, "output CCTF-only changes identities at color/output owners");
                 InstanceState state;
@@ -1273,7 +1275,7 @@ namespace {
                 require_retained_values(product, productHeld);
                 const auto rebuilt = Cat02Fixtures::build(controls);
                 const auto& oldPayload = old.printState ? old.printState->payload : old.directState->payload;
-                require(rebuilt.payload.outputBoundaryTable != oldPayload.outputBoundaryTable && retained_bits(rebuilt.payload.outputBoundaryTable->cmax) == held.boundary, "cache release makes a new equal table without mutating admitted hold");
+                require(rebuilt.payload.outputBoundaryTable && oldPayload.outputBoundaryTable && rebuilt.payload.outputBoundaryTable->entryIdentity != oldPayload.outputBoundaryTable->entryIdentity && rebuilt.payload.outputBoundaryTable->cmax.data() != oldPayload.outputBoundaryTable->cmax.data() && retained_bits(rebuilt.payload.outputBoundaryTable->cmax) == held.boundary, "cache release makes a new equal table without mutating admitted hold");
                 pending(state, output);
                 const auto replacement = admit_pending_render_state(state);
                 require(admitted(replacement, route % 2 == 1) && (replacement.directState != old.directState || replacement.printState != old.printState) && state.lastHash.load() == hash_params(output) && state.buildCounterNext.load() == counter + 1, "output-space state replacement publishes complete owner/hash/counter");

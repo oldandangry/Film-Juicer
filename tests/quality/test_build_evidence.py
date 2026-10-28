@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/ctest"))
 from control_artifacts import MARKER, record_fixture
 import build_evidence
-from execution import Campaign, OutputLease, digest, write_json
+from execution import Campaign, OutputLease, digest, tool_snapshot, write_json
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -349,6 +350,82 @@ class BuildEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "positive integer"):
                     self.prepare()
         self.assertEqual(self.campaign.attempts("prepare"), [])
+
+    @unittest.skipIf(os.name == "nt", "GNU driver selection is a Linux build contract")
+    def test_selected_linker_bytes_and_selection_invalidate_preparation_and_checkpoint(self):
+        import qualification
+
+        installed = Path(shutil.which("ld.lld") or "/usr/lib/llvm-22/bin/ld.lld").resolve(strict=True)
+        linkers = self.root / "linkers"
+        linkers.mkdir()
+        for name in ("first", "second"):
+            directory = linkers / name
+            directory.mkdir()
+            target = directory / "lld"
+            shutil.copy2(installed, target)
+            # ELF permits trailing bytes. Keep a same-size mutation outside its
+            # executable image, without changing the selected tool's behavior.
+            with target.open("ab") as stream:
+                stream.write(b"\0linker-proof-a")
+            stamp = target.stat()
+            os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns // 1_000_000_000 * 1_000_000_000))
+        selected = linkers / "ld.lld"
+        selected.symlink_to("first/lld")
+        self.args.append("-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -B" + linkers.as_posix() + "/")
+        self.prepare()
+        self.prepare(reconfigure=True)
+        first = json.loads(self.prepared.read_text())["scoped_preparation"]
+        cache = (self.build / "CMakeCache.txt").read_text()
+        self.assertRegex(cache, r"(?m)^CMAKE_LINKER:[^=]+=/usr/bin/ld$")
+        self.assertEqual(first["context"]["configuration"]["tools"][str(selected.resolve())], digest(selected))
+        build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+        self.prepare(reconfigure=True)
+        unchanged = json.loads(self.prepared.read_text())["scoped_preparation"]
+        self.assertEqual(unchanged["invalidated"], [])
+        self.assertEqual(unchanged["output_identities"], first["output_identities"])
+
+        state = {}
+
+        def checkpoint():
+            tools = qualification.checkpoint_tools(self.build, dict(os.environ), "boundary")
+            self.assertEqual(tool_snapshot(tools, allow_missing=True)[str(selected.resolve())], digest(selected))
+            return qualification.run_stage(
+                self.campaign, self.build / "checkpoint.json", state, "tests",
+                [str(self.build / "behavior"), "10"], inputs=self.inputs(),
+                tools=tools, environment=dict(os.environ), timeout=None)
+
+        checked = checkpoint()
+        self.assertEqual(checkpoint()["reused_from"], checked["receipt"])
+        owned = selected.resolve()
+        stamp = owned.stat()
+        with owned.open("r+b") as stream:
+            stream.seek(-1, os.SEEK_END)
+            stream.write(b"b")
+        os.utime(owned, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertEqual(owned.stat().st_mtime_ns, stamp.st_mtime_ns)
+        self.assertEqual(owned.stat().st_size, stamp.st_size)
+        with self.assertRaisesRegex(ValueError, "dependency contents or membership changed"):
+            build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+        changed = checkpoint()
+        self.assertNotIn("reused_from", changed)
+        self.assertNotEqual(changed["identity"]["tools"], checked["identity"]["tools"])
+        self.prepare()
+        rebound = json.loads(self.prepared.read_text())["scoped_preparation"]
+        self.assertIn(str(self.build / "behavior"), rebound["invalidated"])
+        self.assertEqual(rebound["context"]["configuration"]["tools"][str(owned)], digest(owned))
+
+        selected.unlink()
+        selected.symlink_to("second/lld")
+        with self.assertRaisesRegex(ValueError, "dependency contents or membership changed"):
+            build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+        retargeted = checkpoint()
+        self.assertNotIn("reused_from", retargeted)
+        self.assertNotEqual(retargeted["identity"]["tools"], changed["identity"]["tools"])
+        self.prepare()
+        final = json.loads(self.prepared.read_text())["scoped_preparation"]
+        self.assertIn(str(self.build / "behavior"), final["invalidated"])
+        self.assertIn(str(selected.resolve()), final["context"]["configuration"]["tools"])
+        build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
 
     def test_worker_count_cannot_become_an_untracked_compiler_input(self):
         with (self.source / "CMakeLists.txt").open("a") as stream:

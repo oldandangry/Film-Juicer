@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -102,6 +103,89 @@ def ctest_command(root: Path, build: Path) -> list[str]:
     return ["ctest", "--test-dir", str(build), "--parallel", "4", "--no-tests=error"]
 
 
+def linker_tools(build: Path, cache: str, environment) -> list[Path]:
+    """Bind configured linkers and explicit Linux compiler-driver selections."""
+    configured = re.search(r"^CMAKE_LINKER:[^=]+=(.+)$", cache, re.M)
+    tools = {Path(configured[1])} if configured else set()
+    if os.name == "nt":
+        return sorted(tools)
+    compilers = {value for value in re.findall(
+        r"^CMAKE_(?:C|CXX)_COMPILER:[^=]+=(.+)$", cache, re.M)}
+    if not compilers:
+        return sorted(tools)
+    ninja = re.search(r"^CMAKE_MAKE_PROGRAM:[^=]+=(.+)$", cache, re.M)
+    if not ninja or not (build / "build.ninja").is_file():
+        raise ValueError("selected linker discovery requires the configured Ninja commands")
+    commands = subprocess.check_output(
+        [ninja[1], "-C", str(build), "-t", "commands"], env=environment,
+        text=True, encoding="utf-8", timeout=None)
+    selected = set()
+    for command in commands.splitlines():
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+        for index, token in enumerate(tokens):
+            if token in {"&&", "||", ";", "|"} or not token.startswith("/"):
+                continue
+            if token not in compilers:
+                continue
+            end = next((i for i in range(index + 1, len(tokens))
+                        if tokens[i] in {"&&", "||", ";", "|"}), len(tokens))
+            arguments = tokens[index + 1:end]
+            if "-c" in arguments or "-E" in arguments or "-S" in arguments:
+                continue
+            selector = None
+            explicit = None
+            lookup = []
+            position = 0
+            while position < len(arguments):
+                argument = arguments[position]
+                if argument.startswith("-fuse-ld="):
+                    selector = argument.split("=", 1)[1]
+                elif argument.startswith("--ld-path="):
+                    explicit = argument.split("=", 1)[1]
+                elif argument == "--ld-path":
+                    if position + 1 == len(arguments):
+                        raise ValueError("selected linker option has no operand: " + argument)
+                    position += 1
+                    explicit = arguments[position]
+                elif argument in {"-B", "--sysroot", "--target", "--gcc-toolchain"}:
+                    if position + 1 == len(arguments):
+                        raise ValueError("selected linker option has no operand: " + argument)
+                    position += 1
+                    lookup.extend((argument, arguments[position]))
+                elif (argument.startswith(("-B", "--sysroot=", "--target=", "--gcc-toolchain="))
+                      or argument in {"-m32", "-m64"}):
+                    lookup.append(argument)
+                position += 1
+            if selector is None and explicit is None:
+                continue
+            start = next((i + 1 for i in range(index - 1, -1, -1)
+                          if tokens[i] in {"&&", "||", ";", "|"}), 0)
+            if index != start or any(a.startswith(("@", "-specs", "--specs", "-wrapper", "--config")) for a in arguments):
+                raise ValueError("unsupported selected-linker launch or search configuration")
+            selected.add((token, selector or "", explicit or "", tuple(lookup)))
+    for compiler, selector, explicit, lookup in sorted(selected):
+        if explicit:
+            name = explicit
+        elif Path(selector).is_absolute():
+            name = selector
+        else:
+            name = subprocess.check_output(
+                [compiler, *lookup, "-fuse-ld=" + selector, "-print-prog-name=ld." + selector],
+                cwd=build, env=environment, text=True, timeout=None).strip()
+        path = Path(name)
+        if not path.is_absolute():
+            found = shutil.which(name, path=environment.get("PATH")) if path.parent == Path(".") else str(build / path)
+            if not found:
+                raise ValueError("selected linker executable is missing: " + name)
+            path = Path(found)
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise ValueError("selected linker executable is unavailable: " + str(path))
+        tools.add(path)
+    return sorted(tools)
+
+
 def preparation_inventory(root: Path, build: Path, environment) -> dict:
     """Bind Ninja's regeneration dependencies, including external CMake modules."""
     paths = configuration_files(build)
@@ -142,6 +226,7 @@ def preparation_inventory(root: Path, build: Path, environment) -> dict:
         else []
     )
     compiler_tools = [Path(value) for value in re.findall(r"^CMAKE_(?:C|CXX|CUDA)_COMPILER:[^=]+=(.+)$", cache, re.M)]
+    compiler_tools += linker_tools(build, cache, environment)
     cargo = re.search(r"^JUICER_CARGO_EXECUTABLE:[^=]+=(.+)$", cache, re.M)
     if cargo:
         cargo = Path(cargo[1])
@@ -931,7 +1016,7 @@ def retire_s4c1_pending(root, preset):
         return result
 
 
-PREPARATION_TARGETS = {"all", "juicer", "JuicerFilmRecipeTests", "JuicerRouteBridgeTests", "JuicerOutputColorTests"}
+PREPARATION_TARGETS = {"all", "juicer", "juicer_analysis_inputs", "JuicerFilmRecipeTests", "JuicerRouteBridgeTests", "JuicerOutputColorTests"}
 
 
 def prepare_targets(root, preset, targets, testing="ON"):

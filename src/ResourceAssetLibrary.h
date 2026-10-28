@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <span>
 #include <vector>
 
 #include "GamutCompression.h"
@@ -16,14 +17,26 @@
 
 namespace JuicerAssets {
 
-    struct IlluminantFilterCurveSet {
-        Spectral::Curve d65;
-        Spectral::Curve d55;
-        Spectral::Curve d50;
-        Spectral::Curve tungsten;
-        Spectral::Curve kinoton75P;
-        Spectral::Curve tungstenKg3;
-        Spectral::Curve tungstenKg3Lens;
+    struct IlluminantCurveView {
+        std::span<const float> lambda_nm;
+        std::span<const float> linear;
+        // Existing native scalar/illuminant transports still require an owning
+        // curve. This explicit copy retires with those S4.E integration callers.
+        Spectral::Curve copy_curve() const;
+    };
+
+    class IlluminantFilterCurveSet final {
+    public:
+        ~IlluminantFilterCurveSet();
+        IlluminantFilterCurveSet(const IlluminantFilterCurveSet&) = delete;
+        IlluminantFilterCurveSet& operator=(const IlluminantFilterCurveSet&) = delete;
+        const IlluminantCurveView d65, d55, d50, tungsten, kinoton75P, tungstenKg3, tungstenKg3Lens;
+        const std::uintptr_t entryIdentity;
+
+    private:
+        friend class AssetBridge;
+        IlluminantFilterCurveSet(FjIlluminantsOwner*, const FjIlluminantsView&) noexcept;
+        FjIlluminantsOwner* _owner;
     };
 
     using SelectedProfileRequest = Profiles::SelectedProfileRequest;
@@ -45,9 +58,9 @@ namespace JuicerAssets {
             const SelectedProfileRequest& request);
         NoiseSource noise();
         std::shared_ptr<const IlluminantFilterCurveSet> illuminant_filter_curves();
-        std::shared_ptr<const Gamut::InputCompressionHull>
+        std::shared_ptr<const Gamut::InputHullHold>
         input_compression_hull();
-        std::shared_ptr<const Gamut::OutputBoundaryTable>
+        std::shared_ptr<const Gamut::OutputBoundaryHold>
         output_boundary_table(
             const Gamut::OutputGamutTransform& transform,
             std::string& diagnostic);
@@ -57,24 +70,15 @@ namespace JuicerAssets {
             const std::string& filmStock);
         FjStatus release_cached_payloads(FjErrorBuffer* error = nullptr) noexcept;
         FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
+        FjAssets* borrow_rust_assets() const noexcept;
 
     private:
         void ensure_catalogs();
         void load_catalogs();
 
-        struct IlluminantFilterCurveCacheState;
-        struct InputCompressionHullCacheState;
-        struct OutputBoundaryTableCacheState;
-
         std::once_flag _catalogOnce;
         AssetBridge _bridge;
         Spektrafilm::ProfileCatalog _spektrafilmProfileCatalog;
-        std::unique_ptr<IlluminantFilterCurveCacheState>
-            _illuminantFilterCurveCache;
-        std::unique_ptr<InputCompressionHullCacheState>
-            _inputCompressionHullCache;
-        std::unique_ptr<OutputBoundaryTableCacheState>
-            _outputBoundaryTableCache;
     };
 
 } // namespace JuicerAssets

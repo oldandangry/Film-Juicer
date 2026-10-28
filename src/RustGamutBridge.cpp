@@ -15,16 +15,6 @@
 #include "juicer_legacy_api.h"
 
 namespace JuicerGamut {
-#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
-    namespace OutputTest {
-        void before_build();
-    }
-#endif
-#if defined(JUICER_INPUT_HULL_TEST_HOOK)
-    namespace Test {
-        void before_build(Gamut::InputCompressionHull& out);
-    }
-#endif
     namespace {
         bool has_reference_samples(const Spectral::Curve& curve) {
             return curve.linear.size() == 81 && curve.lambda_nm.size() == 81;
@@ -54,9 +44,6 @@ namespace JuicerGamut {
         FjInputHull result{};
         std::array<char, 512> bytes{};
         FjErrorBuffer error{bytes.data(), bytes.size(), 0};
-#if defined(JUICER_INPUT_HULL_TEST_HOOK)
-        Test::before_build(out);
-#endif
         const auto status = fj_legacy_gamut_input_hull(&source, &result, &error);
         if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
             out.diagnostic.assign(bytes.data(), error.length);
@@ -165,9 +152,6 @@ namespace JuicerGamut {
         FjOutputBoundaryFailure detail{};
         std::array<char, 512> bytes{};
         FjErrorBuffer error{bytes.data(), bytes.size(), 0};
-#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
-        OutputTest::before_build();
-#endif
         const auto status = fj_legacy_gamut_output_boundary(&source, out.cmax.data(), out.cmax.size(), &identity, &detail, &error);
         if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
             switch (detail.requirement) {

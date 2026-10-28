@@ -10,6 +10,7 @@ use crate::hash;
 use crate::profile::Polarity;
 use super::Development;
 
+#[derive(Clone, Copy)]
 pub struct Params {
     pub active: bool,
     pub amount: f32,

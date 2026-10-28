@@ -235,7 +235,10 @@ class NativeBoundary(unittest.TestCase):
         self.assertFalse((ROOT / "src/GamutCompression.cpp").exists())
         self.assertNotIn("build_input_compression_hull", (ROOT / "src/GamutCompression.h").read_text(encoding="utf-8"))
         library = (ROOT / "src/ResourceAssetLibrary.cpp").read_text(encoding="utf-8")
-        self.assertEqual(library.count("JuicerGamut::input_hull("), 1)
+        self.assertNotIn("JuicerGamut::input_hull(", library)
+        self.assertIn("return _bridge.input_hull();", library)
+        bridge = (ROOT / "src/RustAssetBridge.cpp").read_text(encoding="utf-8")
+        self.assertEqual(bridge.count("fj_legacy_assets_input_hull_acquire("), 1)
         core = (ROOT / "rust/film-juicer-core/src/gamut.rs").read_text(encoding="utf-8")
         self.assertEqual(core.count("fn ray_polygon_distance<"), 1)
 

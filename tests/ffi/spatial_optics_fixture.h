@@ -7,6 +7,8 @@
 #include "RenderRecipe.h"
 #include "FilmEffectsFrameDescriptors.h"
 
+struct FjDirFrameInput;
+
 namespace JuicerTestSupport {
     bool prepare_effects_frame(const Spektrafilm::FilmJuicerEffectsFrameDescriptorInput&, Spektrafilm::FilmJuicerEffectsFrameDescriptor&, std::string&);
     Spektrafilm::FilmJuicerEffectsFrameDescriptorInput effects_frame_input(const nlohmann::json&, Spektrafilm::FilmJuicerEffectsRecipe&);
@@ -17,6 +19,7 @@ namespace JuicerTestSupport {
     bool prepare_grain_frame(const Spektrafilm::VisualGrainFrameDescriptorInput&, Spektrafilm::VisualGrainFrameDescriptor&, std::string&);
     nlohmann::json grain_frame_fields(const Spektrafilm::VisualGrainFrameDescriptor&);
     nlohmann::json dir_frame_fields(const SpatialDirDescriptor&);
+    bool prepare_dir_frame(const FjDirFrameInput&, const char* traceRouteLabel, SpatialDirDescriptor&);
     bool prepare_dir_frame(const DirCouplersRecipe&, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent, const char* traceRouteLabel, SpatialDirDescriptor&);
     bool matches_diffusion_frame(const std::optional<Spektrafilm::DiffusionFrameSetDescriptor>&, const nlohmann::json& expected);
     bool prepare_diffusion_sample(const Spektrafilm::DiffusionFilterResolvedParameters&, double pixelSizeUm, int width, int height, Spektrafilm::DiffusionPsfSampleDescriptor&, std::string& diagnostic);

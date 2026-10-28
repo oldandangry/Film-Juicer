@@ -760,12 +760,33 @@ void fj_test_input_hull_admission(std::uint32_t fault) {
     require(fault >= 1 && fault <= 6, "closed hull admission witness");
     auto controls = snapshot(Spektrafilm::ScanRoute::PositivePrintScan, Spektrafilm::RgbToRawMethod::Arctic2026beta04);
     controls.inputCompressionEnabled = 1;
+    auto& library = JuicerProcess::root().assets();
+    FjAssets* const cacheOwner = library.borrow_rust_assets();
+    struct ClearOwnerFault {
+        FjAssets* owner;
+        ~ClearOwnerFault() {
+            (void)fj_test_assets_input_hull_fault(owner, 0, nullptr);
+        }
+    } clearOwnerFault{cacheOwner};
+    const auto armOwnerFault = [&](std::uint32_t selected) {
+        require(fj_test_assets_input_hull_fault(cacheOwner, selected, nullptr).category == FJ_STATUS_SUCCESS, "arm actual input-hull owner");
+    };
+    const auto consumed = [&] {
+        std::uint64_t count = 0;
+        require(fj_test_cache_fault_consumed(cacheOwner, FJ_TEST_CACHE_INPUT_HULL, &count, nullptr).category == FJ_STATUS_SUCCESS, "read actual hull fault consumption");
+        return count;
+    };
+    const auto pendingFault = [&] {
+        std::uint32_t active = 0;
+        require(fj_test_assets_input_hull_fault_pending(cacheOwner, &active, nullptr).category == FJ_STATUS_SUCCESS, "read actual pending hull fault");
+        return active;
+    };
     InstanceState cold;
     pending(cold, controls);
-    require(fj_test_gamut_arm_fault(0, fault).category == FJ_STATUS_SUCCESS, "arm cold hull failure");
+    armOwnerFault(fault);
     const auto coldFailure = admit_pending_render_state(cold);
     require(coldFailure.status == PendingRenderAdmissionStatus::RebuildFailed && !admitted(coldFailure) && cold.lastHash.load() == 0 && !JuicerAtomic::load_shared_ptr(&cold.activePrintState), "cold hull failure admits and publishes nothing");
-    require(fj_test_gamut_fault_consumed(0, fault) == 1, "cold fault consumed before cleanup/retry");
+    require(consumed() == 1, "cold fault consumed before cleanup/retry");
     InstanceState current;
     auto disabled = controls;
     disabled.inputCompressionEnabled = 0;
@@ -775,30 +796,37 @@ void fj_test_input_hull_admission(std::uint32_t fault) {
     const auto retained = held(old);
     const auto previousHash = current.lastHash.load(), counter = current.buildCounterNext.load();
     pending(current, controls);
-    require(fj_test_gamut_arm_fault(0, fault).category == FJ_STATUS_SUCCESS, "arm changed-current hull failure");
+    armOwnerFault(fault);
     const auto failed = admit_pending_render_state(current);
     require(failed.status == PendingRenderAdmissionStatus::RebuildFailed && !admitted(failed), "failed current cannot admit old publication");
-    require(fj_test_gamut_fault_consumed(0, fault) == 1, "current fault consumed before cleanup/recovery");
+    require(consumed() == 1, "current fault consumed before cleanup/recovery");
     require(current.lastHash.load() == previousHash && current.buildCounterNext.load() == counter && held(old) == retained, "failed build preserves counters and admitted immutable hold");
     if (fault >= 3)
         require(!JuicerAtomic::load_shared_ptr(&current.activePrintState), "ordinary missing hull clears publication");
     else
         require(JuicerAtomic::load_shared_ptr(&current.activePrintState) == old.printState, "exceptional hull fault preserves publication");
-    fj_test_gamut_clear_fault();
+    armOwnerFault(0);
     const auto recovered = admit_pending_render_state(current);
     require(admitted(recovered) && current.lastHash.load() == hash_params(controls) && current.buildCounterNext.load() == counter + 1, "current recovery publishes complete state once");
     require(admitted(admit_pending_render_state(cold)), "cold retry recovers");
-    require(fj_test_gamut_arm_fault(0, 1).category == FJ_STATUS_SUCCESS, "arm warm skip");
+    armOwnerFault(1);
     auto changed = controls;
     changed.cameraExposureCompensationEv += .25;
     pending(current, changed);
-    require(admitted(admit_pending_render_state(current)) && fj_test_gamut_fault_consumed(0, 1) == 0, "warm Library bypasses hull construction");
+    require(admitted(admit_pending_render_state(current)) && consumed() == 0 && pendingFault() == 1, "warm Library bypasses hull construction");
     const auto& hull = recovered.printState->recipe.filmRaw.inputCompressionHull;
-    require(hull && hull == JuicerProcess::root().assets().input_compression_hull(), "recipe retains sole cached winner");
+    const auto warm = library.input_compression_hull();
+    require(hull && warm && hull->entryIdentity == warm->entryIdentity && hull->xy.data() == warm->xy.data(), "recipe retains sole cached Rust backing");
+    JuicerAssets::Library unrelated(JuicerProcess::data_directory());
+    require(unrelated.input_compression_hull() && pendingFault() == 1, "another owner cannot consume the armed warm-owner fault");
+    armOwnerFault(0);
+    require(pendingFault() == 0, "explicit owner fault cleanup");
+    // The standalone raw ABI retains its separate ownerless fault witness.
+    require(fj_test_gamut_arm_fault(0, 1).category == FJ_STATUS_SUCCESS, "arm standalone mathematical boundary");
     const auto curves = JuicerProcess::root().assets().illuminant_filter_curves();
     FjInputHullSource source{{Spectral::gXBar.linear.data(), 81}, {Spectral::gYBar.linear.data(), 81}, {Spectral::gZBar.linear.data(), 81}, {curves->d65.linear.data(), 81}};
     FjInputHull out{};
     FjErrorBuffer error{nullptr, 0, 0};
-    require(fj_legacy_gamut_input_hull(&source, &out, &error).category == FJ_STATUS_UNSUPPORTED_INPUT && fj_test_gamut_fault_consumed(0, 1) == 1, "warm skipped fault remains armed until actual operation");
+    require(fj_legacy_gamut_input_hull(&source, &out, &error).category == FJ_STATUS_UNSUPPORTED_INPUT && fj_test_gamut_fault_consumed(0, 1) == 1, "standalone mathematical boundary consumes its separate fault");
     fj_test_gamut_clear_fault();
 }

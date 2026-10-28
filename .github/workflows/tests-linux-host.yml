@@ -307,7 +307,7 @@ jobs:
 
       - name: Build Debug analysis inputs
         shell: bash
-        run: cmake --build --preset linux-debug
+        run: cmake --build --preset linux-debug --target juicer_analysis_inputs
 
       - name: Configure Release Rust inputs
         shell: bash
@@ -325,16 +325,16 @@ jobs:
           set -euo pipefail
           if [[ -n "$QUALITY_BASE" && ! "$QUALITY_BASE" =~ ^0+$ ]] \
             && git cat-file -e "${QUALITY_BASE}^{commit}" 2>/dev/null; then
-            python -u scripts/check-quality.py --base "$QUALITY_BASE" --preset linux-debug --jobs 2
+            python -u scripts/check-quality.py --base "$QUALITY_BASE" --preset linux-debug
           else
-            python -u scripts/check-quality.py --all-owned --preset linux-debug --jobs 2
+            python -u scripts/check-quality.py --all-owned --preset linux-debug
           fi
 
       - name: Run matching Release Rust quality
         shell: bash
         run: |
           set -euo pipefail
-          python -u scripts/check-quality.py --files Cargo.toml --preset linux-release --jobs 2
+          python -u scripts/check-quality.py --files Cargo.toml --preset linux-release
 
       - name: Select failed analysis control evidence
         if: always()
@@ -391,7 +391,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13 ninja-build
+          sudo apt-get install -y gcc-13 g++-13 ninja-build lld
+          ld.lld --version
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
           python -m pip install --upgrade pip
@@ -445,7 +446,7 @@ jobs:
           set -euo pipefail
           ctest --test-dir out/build/tooling-linux -N -L tooling
           ctest --test-dir out/build/tooling-linux -L tooling --parallel 4 \
-            --no-tests=error --output-on-failure \
+            --no-tests=error --output-on-failure --test-output-size-passed 65536 --test-output-truncation middle \
             --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/tooling-junit.xml"
 
       - name: Select failed tooling controls

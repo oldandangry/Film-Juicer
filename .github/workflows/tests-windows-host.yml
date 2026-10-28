@@ -427,7 +427,7 @@ jobs:
 
       - name: Build Debug analysis inputs
         shell: pwsh
-        run: cmake --build --preset windows-clang-debug
+        run: cmake --build --preset windows-clang-debug --target juicer_analysis_inputs
 
       - name: Configure Release Rust inputs
         shell: pwsh
@@ -450,9 +450,9 @@ jobs:
             $hasBase = ($LASTEXITCODE -eq 0)
           }
           if ($hasBase) {
-            python -u scripts/check-quality.py --base $qualityBase --preset windows-clang-debug --jobs 2
+            python -u scripts/check-quality.py --base $qualityBase --preset windows-clang-debug
           } else {
-            python -u scripts/check-quality.py --all-owned --preset windows-clang-debug --jobs 2
+            python -u scripts/check-quality.py --all-owned --preset windows-clang-debug
           }
           if ($LASTEXITCODE -ne 0) { throw "Debug quality gate failed" }
 
@@ -460,7 +460,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          python -u scripts/check-quality.py --files Cargo.toml --preset windows-clang-release --jobs 2
+          python -u scripts/check-quality.py --files Cargo.toml --preset windows-clang-release
           if ($LASTEXITCODE -ne 0) { throw "Release Rust quality gate failed" }
 
       - name: Select failed analysis control evidence
@@ -494,7 +494,11 @@ jobs:
           if-no-files-found: warn
 
   windows-tooling:
-    name: Windows CTest Tooling
+    name: Windows CTest Tooling (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, BuildEvidence, Checkpoint, PreparationRenewal]
     runs-on: windows-2025-vs2026
     timeout-minutes: 90
     env:
@@ -596,10 +600,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          ctest --test-dir out/build/tooling-windows -N -L tooling
+          ctest --test-dir out/build/tooling-windows -N -L "^tooling-${{ matrix.shard }}$"
           if ($LASTEXITCODE -ne 0) { throw "Tooling test discovery failed" }
-          ctest --test-dir out/build/tooling-windows -L tooling --parallel 4 `
-            --no-tests=error --output-on-failure `
+          ctest --test-dir out/build/tooling-windows -L "^tooling-${{ matrix.shard }}$" --parallel 4 `
+            --no-tests=error --output-on-failure --test-output-size-passed 65536 --test-output-truncation middle `
             --output-junit "$env:GITHUB_WORKSPACE\out\validation\windows-clang-debug\tooling-junit.xml"
           if ($LASTEXITCODE -ne 0) { throw "Tooling tests failed" }
 
@@ -613,7 +617,7 @@ jobs:
         if: always() && steps.failed-controls.outputs.paths != ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: windows-tooling-failed-controls
+          name: windows-tooling-${{ matrix.shard }}-failed-controls
           path: ${{ steps.failed-controls.outputs.paths }}
           include-hidden-files: true
           if-no-files-found: warn
@@ -622,7 +626,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: windows-tooling-results
+          name: windows-tooling-${{ matrix.shard }}-results
           path: |
             out/validation/windows-clang-debug/tooling-junit.xml
             out/validation/windows-clang-debug/verifier-scope.json

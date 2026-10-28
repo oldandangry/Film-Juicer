@@ -283,8 +283,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--rustc", help="rustc executable override")
     parser.add_argument("--clang-format", dest="clang_format")
     parser.add_argument("--clang-tidy", dest="clang_tidy")
-    parser.add_argument("--jobs", type=int, default=2,
-                        help="maximum concurrent native/CUDA analysis commands (default: 2)")
+    parser.add_argument("--jobs", type=int, default=min(os.process_cpu_count() or 1, 4),
+                        help="maximum concurrent native/CUDA analysis commands (default: up to 4 available CPUs)")
     arguments = parser.parse_args()
     if (arguments.rust_packages or arguments.rust_test_filters) and not arguments.development:
         parser.error("named Rust checks require development verification")

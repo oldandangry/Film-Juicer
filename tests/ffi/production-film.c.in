@@ -3507,6 +3507,103 @@ static int dir_boundary_lifetime(void) {
     return 0;
 }
 
+/* Real production held-state calls; accepted native film words remain the
+ * numerical oracle. Cache identity/pointer comparisons prove shared ownership. */
+static int prepared_state_values(FjPathView path) {
+    for (uint32_t route = 0; route < 2; ++route) {
+        FjAssets* assets = NULL;
+        FjPreparedState* state = NULL;
+        FjPreparationParams params = {0};
+        params.film_profile_key = (FjStringView){"kodak_portra_400", sizeof("kodak_portra_400") - 1};
+        params.print_profile_key = (FjStringView){"kodak_portra_endura", sizeof("kodak_portra_endura") - 1};
+        params.scan_route = route;
+        params.print_exposure = params.print_gamma_factor = 1;
+        params.print_preflash_exposure = route ? .1 : 0;
+        params.print_shadow_compensation_density = 1.2;
+        params.print_shadow_compensation_transition = .3;
+        params.camera_film_format_long_edge_mm = 35;
+        params.film_gamma_factor = 1;
+        params.scanner_white_level = .98;
+        params.scanner_black_level = .01;
+        params.input_compression_enabled = 1;
+        params.scanner_lut_resolution = 17;
+        params.output_gamut_compression_enabled = 1;
+        params.output_cctf_encoding = 1;
+        params.normalize_print_exposure = params.print_exposure_compensation = 1;
+        params.enl_ill = 3;
+        params.camera_diffusion.spatial_scale = params.enlarger_diffusion.spatial_scale = 1;
+        params.camera_diffusion.family = params.enlarger_diffusion.family = 1;
+        params.dir_couplers.active = 1;
+        params.dir_couplers.amount = params.dir_couplers.inhibition_same_layer = params.dir_couplers.inhibition_interlayer = 1;
+        params.dir_couplers.gamma_use_stock = 1;
+        for (size_t channel = 0; channel < 3; ++channel) {
+            params.dir_couplers.langmuir_donor_k_rgb[channel] = 1;
+            params.dir_couplers.langmuir_receiver_k_rgb[channel] = 1;
+        }
+        params.dir_couplers.diffusion_size_um = 20;
+        params.dir_couplers.diffusion_tail_um = 200;
+        params.dir_couplers.diffusion_tail_weight = .03f;
+        CHECK(status(fj_legacy_assets_create(path, &assets, NULL), FJ_STATUS_SUCCESS));
+        char diagnostic[512] = {0};
+        FjErrorBuffer error = {diagnostic, sizeof(diagnostic), 99};
+        CHECK(status(fj_legacy_prepared_state_create(assets, &params, &state, &error), FJ_STATUS_SUCCESS) && state && error.length == 0);
+        FjPreparedStateView view = {0};
+        CHECK(status(fj_legacy_prepared_state_view(state, &view, &error), FJ_STATUS_SUCCESS) && error.length == 0);
+        CHECK(view.route == route && view.polarity == 0 && view.recipe_hash && view.recipe_hash == view.upload_core_hash && view.scanner_hash);
+        CHECK(view.dir_recipe.hash && !view.optics.hash && !view.grain.hash && !view.effects.hash);
+        CHECK(view.film_development.log_exposure.count == FILM_N && view.film_development.density_rgb.count == 3 * FILM_N);
+        CHECK(words(view.film_development.log_exposure.data, film_axis, FILM_N));
+        CHECK(words(view.film_development.density_rgb.data, film_normalized, 3 * FILM_N));
+        CHECK(view.film_development.density_curves_hash == FILM_NORMALIZED_HASH);
+        FjIlluminantsOwner* illuminants = NULL;
+        FjInputHullOwner* hull = NULL;
+        FjOutputBoundaryOwner* boundary = NULL;
+        CHECK(status(fj_legacy_assets_illuminants_acquire(assets, &illuminants, &error), FJ_STATUS_SUCCESS));
+        CHECK(status(fj_legacy_assets_input_hull_acquire(assets, &hull, &error), FJ_STATUS_SUCCESS));
+        FjOutputBoundarySource source = {0};
+        source.output_space = view.output_color.color_space;
+        memcpy(source.d65_xyz_to_native_rgb, view.output_color.d65_xyz_to_native_rgb, sizeof(source.d65_xyz_to_native_rgb));
+        source.transform_hash = view.output_boundary.transform_hash;
+        CHECK(status(fj_legacy_assets_output_boundary_acquire(assets, &source, view.output_boundary.contract_hash, &boundary, &error), FJ_STATUS_SUCCESS));
+        FjIlluminantsView light = {0};
+        FjInputHullView input = {0};
+        FjOutputBoundaryView output = {0};
+        CHECK(status(fj_legacy_illuminants_view(illuminants, &light, &error), FJ_STATUS_SUCCESS));
+        CHECK(status(fj_legacy_input_hull_view(hull, &input, &error), FJ_STATUS_SUCCESS));
+        CHECK(status(fj_legacy_output_boundary_view(boundary, &output, &error), FJ_STATUS_SUCCESS));
+        CHECK(light.entry_identity && light.d65.count == 81 && light.tungsten_kg3_lens.count == 81);
+        CHECK(input.entry_identity == view.input_hull.entry_identity && input.xy.data == view.input_hull.xy.data && input.xy.count == 2050);
+        CHECK(output.entry_identity == view.output_boundary.entry_identity && output.cmax.data == view.output_boundary.cmax.data && output.cmax.count == 46080);
+        const float d65 = light.d65.data[0], xy = input.xy.data[0], cmax = output.cmax.data[0];
+        const uint64_t identity = view.recipe_hash;
+        CHECK(status(fj_legacy_assets_release_derived_payloads(assets, &error), FJ_STATUS_SUCCESS));
+        CHECK(status(fj_legacy_assets_release_source_payloads(assets, &error), FJ_STATUS_SUCCESS));
+        CHECK(status(fj_legacy_assets_release_cached_payloads(assets, &error), FJ_STATUS_SUCCESS));
+        CHECK(status(fj_legacy_assets_destroy(assets, &error), FJ_STATUS_SUCCESS));
+        CHECK(light.d65.data[0] == d65 && input.xy.data[0] == xy && output.cmax.data[0] == cmax);
+        CHECK(status(fj_legacy_illuminants_release(illuminants, &error), FJ_STATUS_SUCCESS));
+        CHECK(status(fj_legacy_input_hull_release(hull, &error), FJ_STATUS_SUCCESS));
+        CHECK(status(fj_legacy_output_boundary_release(boundary, &error), FJ_STATUS_SUCCESS));
+        CHECK(status(fj_legacy_prepared_state_view(state, &view, &error), FJ_STATUS_SUCCESS) && view.recipe_hash == identity);
+        CHECK(words(view.film_development.density_rgb.data, film_normalized, 3 * FILM_N));
+        FjErrorBuffer malformed = {NULL, 1, 99};
+        CHECK(status(fj_legacy_prepared_state_release(state, &malformed), FJ_STATUS_UNSUPPORTED_INPUT));
+        state = NULL;
+        CHECK(status(fj_legacy_prepared_state_release(NULL, NULL), FJ_STATUS_SUCCESS));
+        view.recipe_hash = 99;
+        view.film_development.density_rgb = (FjFloatSpan){(const float*)(uintptr_t)1, 99};
+        CHECK(status(fj_legacy_prepared_state_view(NULL, &view, &error), FJ_STATUS_UNSUPPORTED_INPUT));
+        CHECK(!view.recipe_hash && !view.film_development.density_rgb.data && !view.film_development.density_rgb.count && !view.output_boundary.entry_identity);
+        CHECK(status(fj_legacy_assets_create(path, &assets, NULL), FJ_STATUS_SUCCESS));
+        params.scan_route = 99;
+        state = (FjPreparedState*)(uintptr_t)1;
+        CHECK(status(fj_legacy_prepared_state_create(assets, &params, &state, &error), FJ_STATUS_UNSUPPORTED_INPUT) && !state);
+        CHECK(status(fj_legacy_assets_destroy(assets, NULL), FJ_STATUS_SUCCESS));
+        printf("PREPARED_STATE_RESULT {\"case\":\"negative-%s\",\"envelope\":[0,0,0],\"axis_count\":%u,\"density_count\":%u,\"cache_holds\":3,\"expiry_and_clearing\":true}\n", route ? "print" : "direct", (unsigned)FILM_N, (unsigned)(3 * FILM_N));
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -3522,6 +3619,7 @@ int main(int argc, char** argv) {
     FjPathView path = {argv[1], strlen(argv[1]), FJ_PATH_UNIX_BYTES};
     FjPathView duplicate_path = {argv[2], strlen(argv[2]), FJ_PATH_UNIX_BYTES};
 #endif
+    CHECK(prepared_state_values(path) == 0);
     CHECK(effects_values() == 0);
     CHECK(optics_values() == 0);
     CHECK(print_illuminant_values() == 0);

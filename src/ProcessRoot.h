@@ -189,7 +189,7 @@ namespace JuicerProcess {
             const Spectral::SpectralTables* scannerTables = nullptr;
             const Scanner::ColorRuntime* scannerColor = nullptr;
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
-            const Gamut::OutputBoundaryTable* outputBoundaryTable = nullptr;
+            const Gamut::OutputBoundaryHold* outputBoundaryTable = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
             const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSetDescriptor = nullptr;

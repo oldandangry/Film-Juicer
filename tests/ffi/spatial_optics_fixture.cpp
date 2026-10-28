@@ -101,6 +101,9 @@ namespace JuicerTestSupport {
     bool prepare_dir_frame(const DirCouplersRecipe& recipe, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent, const char* traceRouteLabel, SpatialDirDescriptor& out) {
         const FjDirFrameInput input{
             recipe.active ? 1u : 0u, recipe.diffusionSizeUm, recipe.diffusionTailUm, recipe.diffusionTailWeight, pixelSizeUm, {renderExtent.x, renderExtent.y, renderExtent.width, renderExtent.height}, {fullFrameExtent.x, fullFrameExtent.y, fullFrameExtent.width, fullFrameExtent.height}, recipe.hash};
+        return prepare_dir_frame(input, traceRouteLabel, out);
+    }
+    bool prepare_dir_frame(const FjDirFrameInput& input, const char* traceRouteLabel, SpatialDirDescriptor& out) {
         FjDirFrameMath math{};
         FjDirFrameFailure failure{};
         std::array<char, 256> text{};

@@ -4,8 +4,17 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <span>
 
 #include "OutputColor.h"
+
+struct FjInputHullOwner;
+struct FjInputHullView;
+struct FjOutputBoundaryOwner;
+struct FjOutputBoundaryView;
+namespace JuicerAssets {
+    class AssetBridge;
+}
 
 namespace Spectral {
     struct FilmTcLut;
@@ -33,7 +42,7 @@ namespace Gamut {
         bool valid = false;
     };
 
-    // FJ_TEMP_BRIDGE: native fixed boundary/cache carrier; remove S4.E.
+    // FJ_TEMP_BRIDGE: standalone mathematical fixture value; remove at its last S4.E caller.
     struct OutputBoundaryTable {
         std::array<float, kOutputBoundaryValueCount> cmax{};
         std::uint64_t transformHash = 0;
@@ -41,6 +50,76 @@ namespace Gamut {
         std::uint64_t hash = 0;
         bool valid = false;
         std::string diagnostic;
+    };
+
+    // SF_TEMP_BRIDGE_PREPARED_CACHE_HOLD: foreign backing held for remaining
+    // native recipe/payload consumers; remove at S4E-INTEGRATION's last caller.
+    // The foreign polygon is flat scalar storage. Row views preserve native
+    // consumers without pretending that it contains C++ std::array objects.
+    class InputHullPoints final {
+    public:
+        struct Iterator {
+            const float* point;
+            std::span<const float, 2> operator*() const noexcept {
+                return std::span<const float, 2>(point, 2);
+            }
+            Iterator& operator++() noexcept {
+                point += 2;
+                return *this;
+            }
+            bool operator==(const Iterator&) const = default;
+        };
+        Iterator begin() const noexcept {
+            return {_coordinates.data()};
+        }
+        Iterator end() const noexcept {
+            return {_coordinates.data() + _coordinates.size()};
+        }
+        std::span<const float, 2> operator[](std::size_t index) const noexcept {
+            return std::span<const float, 2>(_coordinates.data() + 2 * index, 2);
+        }
+        const float* data() const noexcept {
+            return _coordinates.data();
+        }
+        std::size_t size() const noexcept {
+            return _coordinates.size() / 2;
+        }
+
+    private:
+        friend class InputHullHold;
+        explicit InputHullPoints(std::span<const float> coordinates) noexcept : _coordinates(coordinates) {}
+        std::span<const float> _coordinates;
+    };
+
+    class InputHullHold final {
+    public:
+        ~InputHullHold();
+        InputHullHold(const InputHullHold&) = delete;
+        InputHullHold& operator=(const InputHullHold&) = delete;
+        const InputHullPoints xy;
+        const std::array<float, 2> center;
+        const std::uint64_t hash;
+        const std::uintptr_t entryIdentity;
+
+    private:
+        friend class JuicerAssets::AssetBridge;
+        InputHullHold(FjInputHullOwner*, const FjInputHullView&) noexcept;
+        FjInputHullOwner* _owner;
+    };
+
+    class OutputBoundaryHold final {
+    public:
+        ~OutputBoundaryHold();
+        OutputBoundaryHold(const OutputBoundaryHold&) = delete;
+        OutputBoundaryHold& operator=(const OutputBoundaryHold&) = delete;
+        const std::span<const float> cmax;
+        const std::uint64_t transformHash, contractHash, hash;
+        const std::uintptr_t entryIdentity;
+
+    private:
+        friend class JuicerAssets::AssetBridge;
+        OutputBoundaryHold(FjOutputBoundaryOwner*, const FjOutputBoundaryView&) noexcept;
+        FjOutputBoundaryOwner* _owner;
     };
 
     // Pinned colour-science 0.4.6 OkLab matrices, shared by host construction
@@ -228,7 +307,7 @@ namespace Gamut {
 
 #undef JUICER_GAMUT_HOST_DEVICE
 
-    // FJ_TEMP_BRIDGE: completed Rust hull in native cache/recipe holds; remove S4.E.
+    // FJ_TEMP_BRIDGE: standalone mathematical fixture value; remove at its last S4.E caller.
     struct InputCompressionHull {
         std::array<std::array<float, 2>, kInputHullDirectionCount + 1> xy{};
         std::array<float, 2> center{};

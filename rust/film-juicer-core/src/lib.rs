@@ -25,3 +25,5 @@ pub mod print;
 pub mod scanner;
 
 pub mod frame;
+
+pub mod recipe;

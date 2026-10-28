@@ -1,4 +1,4 @@
-//! Synchronous fixed input-hull projection. The native Library owns its cache.
+//! Synchronous scalar gamut projections for retained native math/ABI callers.
 
 use film_juicer_core::color;
 use film_juicer_core::gamut;
@@ -110,7 +110,7 @@ fn production_fault() -> Result<(), Failure> {
     #[cfg(not(feature = "test-support"))]
     Ok(())
 }
-// FJ_TEMP_BRIDGE: completed input hull into the sole native cache; remove S4.E.
+// FJ_TEMP_BRIDGE: standalone input-hull carrier for retained callers; remove at S4.E last use.
 /// # Safety
 /// The required fixed source/output/error storage obeys the legacy header.
 #[unsafe(no_mangle)]
@@ -486,7 +486,7 @@ pub(crate) unsafe extern "C" fn fj_legacy_gamut_output_transform(
     // SAFETY: Shared checked operation scopes all foreign accesses and containment.
     unsafe { output_transform_call(source, out, error, || output_fault(1)) }
 }
-// FJ_TEMP_BRIDGE: complete boundary copied into native cache carrier; remove S4.E.
+// FJ_TEMP_BRIDGE: standalone boundary carrier for retained callers; remove at S4.E last use.
 /// # Safety
 /// The synchronous fixed records/exact Cmax/optional diagnostic contract applies.
 #[unsafe(no_mangle)]

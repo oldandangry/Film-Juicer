@@ -91,7 +91,7 @@ namespace Spectral {
         }
         const bool surface = recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 && recipe.hanatos.applySurface;
         const auto* hull = recipe.inputCompressionActive ? recipe.inputCompressionHull.get() : nullptr;
-        const bool available = hull && hull->valid && hull->hash != 0;
+        const bool available = hull && hull->hash != 0;
         const FjFilmTcLutInput input{
             {spectra.data.data(), spectra.data.size()},
             {recipe.finalSensitivity.front().data(), 243},
@@ -104,7 +104,7 @@ namespace Spectral {
             recipe.inputCompressionActive ? 1u : 0u,
             available ? 1u : 0u,
             {available ? hull->center[0] : 0.0f, available ? hull->center[1] : 0.0f},
-            {available ? hull->xy.front().data() : nullptr, available ? 2050u : 0u}};
+            {available ? hull->xy.data() : nullptr, available ? 2050u : 0u}};
         FjOwnedFilmTcLut result{};
         Diagnostic error;
         if (!completed(fj_legacy_reconstruction_tc_lut(&input, &result, &error.error), error, diagnostic, "Film TC preparation")) {

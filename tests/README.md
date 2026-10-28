@@ -85,7 +85,8 @@ not configure the product, CUDA or GoogleTest. Supply the same qualified Python
 cmake -S tests/tooling -B out/build/tooling-linux -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc-13
 ctest --test-dir out/build/tooling-linux -L tooling --parallel 4 \
-  --no-tests=error --output-on-failure
+  --no-tests=error --output-on-failure \
+  --test-output-size-passed 65536 --test-output-truncation middle
 ```
 
 On Windows use `out/build/tooling-windows` and `-DCMAKE_C_COMPILER=clang-cl.exe`
@@ -95,6 +96,16 @@ use `tests/ToolingTests.cmake`; ordinary product CTest retains the same eleven
 Debug tooling members. Artifacts still route to the native Debug preset's
 `out/validation/` tree. Each entry uses its own CTest binary directory as the
 default working directory; commands and fixture roots use explicit checkout paths.
+Linux also needs LLD for the compiler-selected-linker freshness control.
+
+Hosted Windows tooling uses four independent runners labelled `tooling-core`,
+`tooling-BuildEvidence`, `tooling-Checkpoint` and `tooling-PreparationRenewal`.
+These disjoint selections cover the complete tooling membership once. Every
+shard must succeed, and a failed shard does not cancel the others. The heavy
+groups retain their local CTest processor reservations to avoid competing for
+I/O on the same machine. Local unfiltered tooling still runs all eleven groups.
+Passed output retains up to 64 KiB with middle truncation, preserving both the
+initial diagnostics and final duration summaries.
 
 Windows verification controls require Win32 long-path support for nested
 preparation receipts. An administrator can enable `LongPathsEnabled` under
@@ -122,6 +133,9 @@ mean a test passed.
 Hosted Debug product, Release product, analysis and tooling jobs run independently
 on each OS. Product jobs compile every configured target, including GPU-only tests,
 then execute the host selection; Linux Debug also runs corpus checks. Analysis
+prepares `juicer_analysis_inputs`, preserving ordinary-object isolation and all
+configured compiler variants while avoiding product/test executable links. It
+also generates the diffusion reference header needed by its compiler consumer. It
 owns cumulative PR Debug quality and matching Release Rust quality. The original
 required check names aggregate all four child results and accept only success.
 
@@ -1183,9 +1197,19 @@ and physical projection, extent/attachment constraints, canonical raw sentinels,
 generation consistency and all eight accepted direct/print scratch generations.
 These are product contracts and need no device at runtime.
 
+`Ffi.Host.PreparedState` checks complete-state C11/C++/Rust layouts, clearing,
+consume-once ownership and retained cache backing. `Prepare.Host.StateProducts`
+compares complete Rust preparation with accepted family expectations and native
+composition for all twelve route/reconstruction combinations, perturbations and
+competing failures. `Ffi.Gpu.PreparedStateLifetime` consumes held direct/print
+states after enqueue with active spatial DIR and verifies native staging survives
+borrow expiry. The fixture keeps optics, grain and physical effects disabled.
+These groups add preparation/ownership evidence; production callback publication
+and installed-host acceptance remain separate. See [the FFI guide](ffi/README.md#complete-prepared-state).
+
 `Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.
 It checks bit-exact equivalence between cold/warm C-boundary execution, the direct
-executor and the processor adapter for all seven scenarios. Each case starts a
+executor and the processor adapter for all nine scenarios. Each case starts a
 fresh process and native owner, calls the C boundary before any other render to
 exercise cold uploads, then repeats with warm resources and calls the other paths.
 Independent numerical expectations are checked separately by

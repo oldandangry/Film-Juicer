@@ -62,8 +62,13 @@ namespace JuicerProcess::TestSupport {
 } // namespace JuicerProcess::TestSupport
 
 namespace JuicerCuda::PinnedUploadTest {
-    std::int32_t injected_error(Operation) noexcept {
-        return 0;
+    thread_local std::array<std::int32_t, 5> errors{};
+    thread_local std::array<unsigned, 5> consumed{};
+    std::int32_t injected_error(Operation operation) noexcept {
+        const auto index = static_cast<std::size_t>(operation);
+        const auto error = std::exchange(errors[index], 0);
+        consumed[index] += error != 0 ? 1u : 0u;
+        return error;
     }
     void before_diagnostic() {}
 } // namespace JuicerCuda::PinnedUploadTest
@@ -142,6 +147,8 @@ namespace JuicerCuda::RenderTest {
         cudaStream_t stream = nullptr;
         FjFloatSpan source{};
         PinnedUploadTest::Snapshot staging;
+        JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream;
+        unsigned calls = 0;
 
         ~ExpiringUpload() {
             (void)cudaStreamSynchronize(stream);
@@ -149,6 +156,7 @@ namespace JuicerCuda::RenderTest {
             (void)cudaFree(second);
         }
         void enqueue() {
+            ++calls;
             for (unsigned i = 0; i < 128; ++i) {
                 if (cudaMemcpyAsync(second, first, kBytes, cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
                     cudaMemcpyAsync(first, second, kBytes, cudaMemcpyDeviceToDevice, stream) != cudaSuccess) {
@@ -156,13 +164,35 @@ namespace JuicerCuda::RenderTest {
                 }
             }
             Failure failure;
-            if (!PinnedUploadTest::upload(*resources, second, source.data, source.count * sizeof(float), stream, failure)) {
-                throw std::runtime_error(failure.diagnostic);
+            using Case = JuicerCudaTest::StateLifetimeCase;
+            using Operation = PinnedUploadTest::Operation;
+            if (lifetimeCase == Case::PinnedAllocation || lifetimeCase == Case::PinnedEventCreation) {
+                // Occupy each existing reusable block before requesting a real cold
+                // allocation. These uploads use the held state's actual first word.
+                const auto available = PinnedUploadTest::snapshot(resources->ownerContextKey).available;
+                for (std::size_t i = 0; i < available; ++i) {
+                    if (!PinnedUploadTest::upload(*resources, second, source.data, sizeof(float), stream, failure))
+                        throw ExecutionFailure{failure};
+                }
+                const auto operation = lifetimeCase == Case::PinnedAllocation ? Operation::Allocate : Operation::CreateEvent;
+                PinnedUploadTest::errors[static_cast<std::size_t>(operation)] = cudaErrorInvalidValue;
+            } else if (lifetimeCase == Case::PinnedCopy) {
+                PinnedUploadTest::errors[static_cast<std::size_t>(Operation::Copy)] = cudaErrorInvalidValue;
+            } else if (lifetimeCase == Case::PinnedEventRecord || lifetimeCase == Case::PinnedSynchronization) {
+                PinnedUploadTest::errors[static_cast<std::size_t>(Operation::RecordEvent)] = cudaErrorInvalidValue;
+                if (lifetimeCase == Case::PinnedSynchronization)
+                    PinnedUploadTest::errors[static_cast<std::size_t>(Operation::Synchronize)] = cudaErrorInvalidValue;
             }
+            const bool uploaded = PinnedUploadTest::upload(*resources, second, source.data, source.count * sizeof(float), stream, failure);
             staging = PinnedUploadTest::snapshot(resources->ownerContextKey);
+            if (!uploaded)
+                throw ExecutionFailure{failure};
         }
     };
     thread_local ExpiringUpload* expiringUpload = nullptr;
+    thread_local ExpiringUpload* cancellingUpload = nullptr;
+    thread_local unsigned cancellationCalls = 0;
+    thread_local unsigned uploadAtCancellation = 0;
 
     thread_local PendingWork* completionWork = nullptr;
 
@@ -180,6 +210,8 @@ namespace JuicerCuda::RenderTest {
     }
 
     void before_abort_query() {
+        if (cancellingUpload && ++cancellationCalls == uploadAtCancellation)
+            cancellingUpload->enqueue();
         if (pendingWork && ++pendingWork->calls == pendingWork->checkpoint) {
             if (cudaLaunchHostFunc(pendingWork->stream, PendingWork::wait, pendingWork) != cudaSuccess ||
                 cudaEventRecord(pendingWork->event, pendingWork->stream) != cudaSuccess) {
@@ -258,7 +290,146 @@ namespace {
 } // namespace
 
 namespace JuicerCudaTest {
-    void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const RenderRecipe& recipe) {
+    void check_prepared_state_lifetime(PreparedStateHold& owner, FjAssets* assets, FjCuda* cuda, const FjCudaContext& context, const FjFrame& inputFrame, const FjSubmission& submission, FjPreparedHostData& prepared, FjErrorBuffer* error, StateLifetimeCase lifetimeCase) {
+        require(prepared.spatial_dir.hash != 0 && prepared.optics.flags == 0 && prepared.grain.hash == 0 && prepared.effects.hash == 0, "held-state lifetime retains active spatial DIR");
+        const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
+        const auto route = prepared.route;
+        require(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(inputFrame.stream)) == cudaSuccess, "complete prior held-state warm render");
+        JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, JuicerCuda::PinnedUploadPurgeDisposition::NormalRetire);
+        auto frame = inputFrame;
+        if (lifetimeCase == StateLifetimeCase::PresentNullStream || lifetimeCase == StateLifetimeCase::AbsentStream)
+            frame.stream = 0;
+        if (lifetimeCase == StateLifetimeCase::AbsentStream)
+            frame.flags &= ~FJ_FRAME_STREAM_PRESENT;
+        JuicerCuda::RenderTest::ExpiringUpload upload;
+        upload.lifetimeCase = lifetimeCase;
+        upload.resources = JuicerProcess::TestSupport::RootLifetimeObserver::resources(JuicerProcess::root(), key);
+        require(upload.resources != nullptr, "held-state expiry has native resources");
+        std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deferredLedger;
+        if (lifetimeCase == StateLifetimeCase::DeferredDestruction) {
+            std::string diagnostic;
+            deferredLedger = JuicerCuda::DeviceAllocationLedger::create({context.device_id, 2 * upload.kBytes}, diagnostic);
+            require(deferredLedger && deferredLedger->bind_or_validate_cap(2 * upload.kBytes, diagnostic), "bind deferred held-state upload ledger");
+            upload.resources = std::shared_ptr<JuicerCuda::Resources>(new JuicerCuda::Resources(key, 1, deferredLedger), JuicerCuda::destroy);
+        }
+        upload.stream = reinterpret_cast<cudaStream_t>(frame.stream);
+        require(cudaMalloc(&upload.first, upload.kBytes) == cudaSuccess && cudaMalloc(&upload.second, upload.kBytes) == cudaSuccess, "allocate held-state expiry workspace");
+        require(cudaMemsetAsync(upload.first, 0x28, upload.kBytes, upload.stream) == cudaSuccess, "initialize held-state expiry work");
+        upload.source = prepared.film_exposure.tc_lut_rgba.count != 0 ? prepared.film_exposure.tc_lut_rgba : prepared.film_development.density_rgb;
+        require(upload.source.count != 0, "held-state source is substantial storage");
+        const float* address = upload.source.data;
+        const std::vector<float> expected(address, address + upload.source.count);
+        JuicerCuda::Failure failure;
+        require(JuicerCuda::PinnedUploadTest::upload(*upload.resources, upload.second, address, expected.size() * sizeof(float), upload.stream, failure), "warm held-state native staging");
+        require(cudaStreamSynchronize(upload.stream) == cudaSuccess, "complete held-state staging warmup");
+        JuicerCuda::PinnedUploadTest::poll(key);
+        JuicerCuda::PinnedUploadTest::consumed = {};
+        AbortQuery cancel;
+        const bool cancellation = lifetimeCase == StateLifetimeCase::CancelAfterPrepare || lifetimeCase == StateLifetimeCase::CancelAfterExecute;
+        cancel.cancelAt = lifetimeCase == StateLifetimeCase::CancelAfterPrepare ? 2u : 3u;
+        JuicerCuda::RenderTest::cancellationCalls = 0;
+        JuicerCuda::RenderTest::uploadAtCancellation = cancel.cancelAt;
+        JuicerCuda::RenderTest::cancellingUpload = cancellation ? &upload : nullptr;
+        JuicerCuda::RenderTest::expiringUpload = cancellation ? nullptr : &upload;
+        const auto result = fj_cuda_render(cuda, &context, &frame, &submission, &prepared, cancellation ? FjAbortCallback{AbortQuery::query, &cancel} : FjAbortCallback{}, error);
+        JuicerCuda::RenderTest::expiringUpload = nullptr;
+        JuicerCuda::RenderTest::cancellingUpload = nullptr;
+        const bool failed = lifetimeCase == StateLifetimeCase::PinnedAllocation || lifetimeCase == StateLifetimeCase::PinnedEventCreation || lifetimeCase == StateLifetimeCase::PinnedCopy || lifetimeCase == StateLifetimeCase::PinnedSynchronization;
+        const FjStatus expectedStatus = failed ? FjStatus{FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, cudaErrorInvalidValue} : FjStatus{cancellation ? FJ_STATUS_CANCELLED : FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+        require_status(result, expectedStatus, "held-state lifetime C return");
+        require(upload.calls == 1, "held-state upload executed exactly once at actual native boundary");
+        require(upload.staging.reserved == 0, "held-state upload has no escaped reservation");
+        if (cancellation)
+            require(cancel.calls == cancel.cancelAt && cancel.sameThread, "held-state cancellation checkpoint and thread");
+        using Operation = JuicerCuda::PinnedUploadTest::Operation;
+        const auto consumed = [&](Operation operation) {
+            return JuicerCuda::PinnedUploadTest::consumed[static_cast<std::size_t>(operation)];
+        };
+        if (lifetimeCase == StateLifetimeCase::PinnedAllocation)
+            require(consumed(Operation::Allocate) == 1 && consumed(Operation::CreateEvent) == 0, "actual pinned allocation failure consumed");
+        if (lifetimeCase == StateLifetimeCase::PinnedEventCreation)
+            require(consumed(Operation::CreateEvent) == 1, "actual pinned event creation failure consumed");
+        if (lifetimeCase == StateLifetimeCase::PinnedCopy)
+            require(consumed(Operation::Copy) == 1 && consumed(Operation::RecordEvent) == 0, "actual pinned copy failure consumed");
+        if (lifetimeCase == StateLifetimeCase::PinnedEventRecord || lifetimeCase == StateLifetimeCase::PinnedSynchronization)
+            require(consumed(Operation::RecordEvent) == 1, "actual pinned event record failure consumed");
+        if (lifetimeCase == StateLifetimeCase::PinnedSynchronization)
+            require(consumed(Operation::Synchronize) == 1 && upload.staging.quarantined == 1, "actual pinned synchronization failure quarantines backing");
+        cudaEvent_t event = nullptr;
+        for (const auto& block : upload.staging.blocks) {
+            if (block.capacity >= expected.size() * sizeof(float) && std::memcmp(block.pointer, expected.data(), expected.size() * sizeof(float)) == 0) {
+                require(block.pointer != address, "held-state source copied to native staging");
+                event = static_cast<cudaEvent_t>(block.event);
+                break;
+            }
+        }
+        const bool asynchronous = lifetimeCase == StateLifetimeCase::SuppliedStream || lifetimeCase == StateLifetimeCase::PresentNullStream || lifetimeCase == StateLifetimeCase::IdleRetirement || lifetimeCase == StateLifetimeCase::DeferredDestruction;
+        if (asynchronous)
+            require(event && cudaEventQuery(event) == cudaErrorNotReady, "held-state native staging is pending at C return");
+        if (lifetimeCase == StateLifetimeCase::AbsentStream || lifetimeCase == StateLifetimeCase::PinnedEventRecord)
+            require(cudaStreamQuery(upload.stream) == cudaSuccess, "held-state required return-time completion");
+        require_status(fj_legacy_assets_release_cached_payloads(assets, error), {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "release held-state asset cache");
+        const auto live = fj_test_prepared_live_states();
+        owner.reset();
+        require(fj_test_prepared_live_states() + 1 == live, "consume held state exactly once after C return");
+        prepared = {};
+        upload.source = {};
+        if (asynchronous)
+            require(cudaEventQuery(event) == cudaErrorNotReady, "state and invocation expire while native staging remains pending");
+        void* const destination = upload.second;
+        if (lifetimeCase == StateLifetimeCase::DeferredDestruction) {
+            JuicerCuda::DeviceByteReservation reservation;
+            require(deferredLedger->reserve({key, 1, upload.kBytes}, reservation, failure), "reserve deferred upload destination");
+            std::string diagnostic;
+            require(reservation.commit(upload.kBytes, diagnostic), "commit deferred upload destination");
+            upload.resources->deviceAllocationRecords.emplace(upload.second, std::move(reservation));
+            upload.second = nullptr; // The exact-context native queue now owns it.
+            CUdevice device = 0;
+            CUcontext foreign = nullptr;
+            require(cuDeviceGet(&device, context.device_id) == CUDA_SUCCESS && cuCtxCreate(&foreign, nullptr, 0, device) == CUDA_SUCCESS, "create fixture-owned foreign context");
+            upload.resources.reset();
+            require(deferredLedger->snapshot().chargedBytes == upload.kBytes && deferredLedger->snapshot().recordCount == 1, "foreign-context destruction retains actual native upload allocation");
+            require(cuCtxSetCurrent(reinterpret_cast<CUcontext>(context.context)) == CUDA_SUCCESS, "restore exact held-state upload context");
+            require(cuCtxDestroy(foreign) == CUDA_SUCCESS, "destroy only fixture-owned foreign context");
+            require(cudaEventSynchronize(event) == cudaSuccess, "complete native deferred upload after state and resource-handle expiry");
+        } else if (lifetimeCase == StateLifetimeCase::IdleRetirement) {
+            const std::weak_ptr<JuicerCuda::Resources> nativeOwner = upload.resources;
+            std::string diagnostic;
+            require(JuicerProcess::root().retire_idle_context(context.device_id, reinterpret_cast<void*>(context.context), diagnostic), "retire native owner after Rust state expiry");
+            require(!nativeOwner.expired(), "test retains native retirement owner independently of Rust state");
+            upload.resources.reset();
+            require(nativeOwner.expired(), "final native retirement owner released");
+            require(JuicerCuda::PinnedUploadTest::snapshot(key).totalBytes == 0, "native retirement drains pinned backing");
+        } else {
+            require(cudaStreamSynchronize(upload.stream) == cudaSuccess, "complete native staging after state expiry");
+        }
+        if (!failed || lifetimeCase == StateLifetimeCase::PinnedSynchronization) {
+            std::vector<float> actual(expected.size());
+            require(cudaMemcpy(actual.data(), destination, actual.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess, "read retained native upload");
+            require(std::memcmp(actual.data(), expected.data(), actual.size() * sizeof(float)) == 0, "all held-state words survive native staging");
+        }
+        if (lifetimeCase == StateLifetimeCase::DeferredDestruction) {
+            require(JuicerCuda::drain_deferred_resources(key, failure), "drain actual held-state native deferred queue on exact owner context");
+            require(deferredLedger->snapshot().chargedBytes == 0 && deferredLedger->snapshot().recordCount == 0, "native deferred upload ownership drains exactly once to zero");
+            require(JuicerCuda::drain_deferred_resources(key, failure), "empty deferred held-state drain is inert");
+        }
+        if (lifetimeCase == StateLifetimeCase::PinnedSynchronization) {
+            // A failed record leaves no completion proof in the pool. After an
+            // actual stream completion, the fixture reclaims that abandoned host
+            // allocation explicitly, as the owning pinned-upload test does.
+            require(upload.staging.blocks.size() == 1, "quarantined held-state staging has one actual allocation");
+            void* pointer = upload.staging.blocks.front().pointer;
+            JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, JuicerCuda::PinnedUploadPurgeDisposition::NormalRetire);
+            require(cudaFreeHost(pointer) == cudaSuccess, "reclaim completed quarantined held-state staging");
+        }
+        require(std::all_of(JuicerCuda::PinnedUploadTest::errors.begin(), JuicerCuda::PinnedUploadTest::errors.end(), [](auto code) {
+                    return code == 0;
+                }),
+                "all held-state operation faults consumed");
+        std::cout << "held-state lifetime route=" << route << " case=" << static_cast<unsigned>(lifetimeCase) << " consumed=1 native-reservation=0\n";
+    }
+
+    void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const RenderRecipe* recipe) {
         const auto check = [&](const FjFrame& candidateFrame, const FjSubmission& candidateSubmission, const FjPreparedHostData& candidate, const char* rejectedField) {
             std::array<char, 256> message{};
             FjErrorBuffer error{message.data(), message.size(), 0};
@@ -298,6 +469,7 @@ namespace JuicerCudaTest {
             }
         }
         if (prepared.grain.hash != 0) {
+            require(recipe != nullptr, "retained grain frame probes require their authoritative recipe");
             for (int fault = 0; fault < 5; ++fault) {
                 auto changed = frame;
                 auto identity = submission;
@@ -333,12 +505,12 @@ namespace JuicerCudaTest {
                 Spektrafilm::VisualGrainFrameDescriptor grain;
                 std::string diagnostic;
                 require(JuicerTestSupport::prepare_grain_frame(
-                            {&recipe.visualGrain, &recipe.filmDevelop, recipe.profileRoute.capturePolarity, {render.x, render.y, render.width, render.height}, {full.x, full.y, full.width, full.height}, frame.pixel_size_um, time, frame.frame_rate, frame.session_seed, frame.clip_token},
+                            {&recipe->visualGrain, &recipe->filmDevelop, recipe->profileRoute.capturePolarity, {render.x, render.y, render.width, render.height}, {full.x, full.y, full.width, full.height}, frame.pixel_size_um, time, frame.frame_rate, frame.session_seed, frame.clip_token},
                             grain,
                             diagnostic),
                         "produce temporal grain descriptor");
                 JuicerCuda::PreparedDescriptors descriptors;
-                descriptors.grainRecipe = recipe.visualGrain;
+                descriptors.grainRecipe = recipe->visualGrain;
                 descriptors.grain = grain;
                 FjPreparedHostData encoded{};
                 encode_prepared_descriptors(descriptors, encoded);

@@ -637,25 +637,25 @@ namespace {
             JuicerProcess::root().assets().illuminant_filter_curves();
 
         if (IlluminantKeys::matches_any(normalized, {"D65"})) {
-            return curveAssets->d65;
+            return curveAssets->d65.copy_curve();
         }
         if (IlluminantKeys::matches_any(normalized, {"D55"})) {
-            return curveAssets->d55;
+            return curveAssets->d55.copy_curve();
         }
         if (IlluminantKeys::matches_any(normalized, {"D50"})) {
-            return curveAssets->d50;
+            return curveAssets->d50.copy_curve();
         }
         if (IlluminantKeys::matches_any(normalized, {"TH-KG3-L", "THKG3L", "TH-KG3L"})) {
-            return curveAssets->tungstenKg3Lens;
+            return curveAssets->tungstenKg3Lens.copy_curve();
         }
         if (IlluminantKeys::matches_any(normalized, {"TH-KG3", "THKG3"})) {
-            return curveAssets->tungstenKg3;
+            return curveAssets->tungstenKg3.copy_curve();
         }
         if (IlluminantKeys::matches_any(normalized, {"T", "INCANDESCENT"})) {
-            return curveAssets->tungsten;
+            return curveAssets->tungsten.copy_curve();
         }
         if (IlluminantKeys::matches_any(normalized, {"K75P", "KINOTON75P"})) {
-            return curveAssets->kinoton75P;
+            return curveAssets->kinoton75P.copy_curve();
         }
         if (IlluminantKeys::matches_any(normalized, {"EQUAL", "EQUALENERGY", "EQUAL-ENERGY"})) {
             return JuicerIlluminant::equal_energy();
@@ -894,11 +894,13 @@ namespace {
         const std::string illuminantKey =
             IlluminantKeys::normalize(
                 filmProfile->info.referenceIlluminant.value);
-        const Spectral::Curve* referenceIlluminant = nullptr;
+        const JuicerAssets::IlluminantCurveView* referenceIlluminant = nullptr;
+        JuicerAssets::IlluminantCurveView blackbodyView;
         Spectral::Curve blackbodyReference;
         if (std::holds_alternative<Profiles::BlackbodyIlluminant>(filmProfile->info.referenceIlluminant.kind)) {
             blackbodyReference = build_profile_illuminant(filmProfile->info.referenceIlluminant);
-            referenceIlluminant = &blackbodyReference;
+            blackbodyView = {blackbodyReference.lambda_nm, blackbodyReference.linear};
+            referenceIlluminant = &blackbodyView;
         } else if (IlluminantKeys::matches_any(illuminantKey, {"D65"})) {
             referenceIlluminant = &illuminants->d65;
         } else if (IlluminantKeys::matches_any(illuminantKey, {"D55"})) {

@@ -4,6 +4,7 @@ from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -125,6 +126,20 @@ class BuildTests(unittest.TestCase):
                 inventory = json.loads(subprocess.check_output(
                     [ctest, "--test-dir", str(build), "--show-only=json-v1"],
                     text=True, timeout=30))
+                members = {test["name"] for test in inventory["tests"]}
+                partitions = {}
+                for shard in ("core", "BuildEvidence", "Checkpoint", "PreparationRenewal"):
+                    selected = json.loads(subprocess.check_output(
+                        [ctest, "--test-dir", str(build), "--show-only=json-v1",
+                         "-L", "^tooling-" + shard + "$"], text=True, timeout=30))
+                    names = {test["name"] for test in selected["tests"]}
+                    self.assertTrue(names, "empty tooling shard: " + shard)
+                    self.assertFalse(set().union(*partitions.values()) & names,
+                                     "tooling test assigned to multiple shards")
+                    partitions[shard] = names
+                    if shard != "core":
+                        self.assertEqual(names, {"Quality." + shard})
+                self.assertEqual(set().union(*partitions.values()), members)
                 if override_artifacts:
                     routed = set()
                     for test in inventory["tests"]:
@@ -151,6 +166,85 @@ class BuildTests(unittest.TestCase):
         self.assertNotEqual(omitted_source, source)
         with self.assertRaises(AssertionError):
             self.assertEqual(tooling_members(omitted_source), set(TOOLING_TESTS))
+
+    def test_gtest_discovery_retains_slow_startup_and_exact_membership(self):
+        entry = (ROOT / "tests/CMakeLists.txt").read_text()
+        discoveries = re.findall(r"(?ms)^gtest_discover_tests\((\w+)\n(.*?)\)\n", entry)
+        self.assertCountEqual([target for target, _ in discoveries],
+                              ["JuicerHashContractTests", "JuicerScatterHalationHostTests"])
+        (self.source / "discovery.cpp").write_text(
+            '#include <chrono>\n#include <cstdio>\n#include <cstring>\n#include <thread>\n'
+            'int main(int argc, char** argv) {\n'
+            '  if (argc > 1 && std::strcmp(argv[1], "--gtest_list_tests") == 0) {\n'
+            '    std::puts("RegistrationProbe.\\n  SlowStartup");\n'
+            '    std::fflush(stdout);\n'
+            '    std::this_thread::sleep_for(std::chrono::seconds(6));\n'
+            '  }\n  return 0;\n}\n')
+        cmake = ('cmake_minimum_required(VERSION 3.24)\n'
+                 'project(DiscoveryProbe LANGUAGES CXX)\nenable_testing()\ninclude(GoogleTest)\n'
+                 'set(JUICER_TEST_ARTIFACT_ROOT "${CMAKE_BINARY_DIR}/artifacts")\n')
+        # Consume the production calls verbatim, including prefixes and properties.
+        for target, arguments in discoveries:
+            cmake += (f'add_executable({target} discovery.cpp)\n'
+                      f'gtest_discover_tests({target}\n{arguments})\n')
+        (self.source / "CMakeLists.txt").write_text(cmake)
+        subprocess.run(["cmake", "-S", str(self.source), "-B", str(self.build), "-G", "Ninja",
+                        "-DCMAKE_CXX_COMPILER=" + ("clang-cl.exe" if os.name == "nt" else "/usr/bin/g++-13")],
+                       check=True, capture_output=True, text=True, timeout=60)
+        for target, _ in discoveries:
+            commands = subprocess.check_output(["ninja", "-C", str(self.build), "-t", "commands", target],
+                                               text=True, timeout=30)
+            deadlines = re.findall(r"\bTEST_DISCOVERY_TIMEOUT=([0-9.]+)\b", commands)
+            self.assertEqual(len(deadlines), 1, commands)
+            self.assertGreaterEqual(float(deadlines[0]), 30,
+                                    "zero silently restores CMake's five-second discovery default")
+        built = subprocess.run(["cmake", "--build", str(self.build), "--parallel", "2"],
+                               capture_output=True, text=True, timeout=90)
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        inventory = json.loads(subprocess.check_output(
+            ["ctest", "--test-dir", str(self.build), "--show-only=json-v1"], text=True, timeout=30))
+        expected = {prefix + "RegistrationProbe.SlowStartup" for prefix in ("Hash.Host.", "ScatterHalation.Host.")}
+        self.assertCountEqual([test["name"] for test in inventory["tests"]], expected)
+        for test in inventory["tests"]:
+            properties = {row["name"]: row["value"] for row in test["properties"]}
+            self.assertCountEqual(properties["LABELS"], ["host", "product"])
+            self.assertEqual(properties["TIMEOUT"], 0)
+        report = self.root / "discovery.xml"
+        subprocess.run(["ctest", "--test-dir", str(self.build), "--no-tests=error", "--output-junit", str(report)],
+                       check=True, capture_output=True, text=True, timeout=30)
+        from xml.etree import ElementTree
+        cases = ElementTree.parse(report).getroot().findall("testcase")
+        self.assertCountEqual([case.get("name") for case in cases], expected)
+        for case in cases:
+            self.assertEqual(case.get("status"), "run")
+            self.assertIsNone(case.find("failure"))
+            self.assertIsNone(case.find("skipped"))
+
+    def test_passed_output_preserves_initial_diagnostics_and_duration_tail(self):
+        from xml.etree import ElementTree
+
+        presets = json.loads((ROOT / "CMakePresets.json").read_text())
+        output = next(p for p in presets["testPresets"] if p["name"] == "test-base")["output"]
+        (self.source / "case.py").write_text(
+            "print('initial-diagnostic')\n"
+            + "print('x'*" + str(output["maxPassedTestOutputSize"] * 2) + ")\n"
+            + "print('final-duration-summary')\n")
+        (self.source / "CMakePresets.json").write_text(json.dumps({
+            "version": 6, "configurePresets": [{"name": "control", "generator": "Ninja",
+                "binaryDir": str(self.build), "cacheVariables": {"PYTHON": self.python}}],
+            "testPresets": [{"name": "control", "configurePreset": "control", "output": output}]}))
+        subprocess.run(["cmake", "--preset", "control"], cwd=self.source,
+                       check=True, capture_output=True, timeout=30)
+        report = self.root / "passed-output.xml"
+        subprocess.run(["ctest", "--preset", "control", "--no-tests=error", "--output-junit", str(report)],
+                       cwd=self.source, check=True, capture_output=True, timeout=30)
+        case = ElementTree.parse(report).getroot().find("testcase")
+        self.assertEqual(case.get("status"), "run")
+        self.assertIsNone(case.find("failure"))
+        retained = case.findtext("system-out")
+        self.assertIn("initial-diagnostic", retained)
+        self.assertIn("final-duration-summary", retained)
+        self.assertLess(len(retained), output["maxPassedTestOutputSize"] * 2)
 
     def prepare(self):
         _, self.prepared = build_evidence.prepare_build(self.campaign, "prepare", source=self.source,

@@ -384,6 +384,7 @@ def execute(arguments):
     grain_frame_results = []
     effects_frame_results = []
     reference_results = []
+    prepared_state_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -459,6 +460,13 @@ def execute(arguments):
                               "source_sha256": source_sha256, "archive": str(archive),
                               "archive_sha256": digest(archive)})
         if name == "film":
+            prepared_state_results = [json.loads(line.removeprefix("PREPARED_STATE_RESULT "))
+                                      for line in output.splitlines() if line.startswith("PREPARED_STATE_RESULT ")]
+            film_count = len(json.loads((root / "tests/film/fixtures" / (arguments.preset + ".json")).read_text())["profiles"]["kodak_portra_400"]["axis"])
+            expected_prepared = [{"case": "negative-" + route, "envelope": [0, 0, 0], "axis_count": film_count,
+                                  "density_count": film_count * 3, "cache_holds": 3, "expiry_and_clearing": True}
+                                 for route in ("direct", "print")]
+            assert prepared_state_results == expected_prepared, "production held-state executed membership/values/cache holds/expiry/clearing"
             effects_frame_results = [json.loads(line.removeprefix("EFFECTS_FRAME_RESULT "))
                                      for line in output.splitlines() if line.startswith("EFFECTS_FRAME_RESULT ")]
             assert effects_frame_results == effects_frame_spec["production_cases"][arguments.preset], "complete effects frame production values/failures/diagnostic membership"
@@ -727,6 +735,7 @@ def execute(arguments):
                 "gaussian_fixture": {"manifest": str(gaussian_manifest), "payload": str(gaussian_payload), "context": str(gaussian_context), "logical_preset": arguments.preset},
                 "scanner_post_fixture": {"manifest": str(post_manifest), "payload": str(post_payload), "context": str(post_context), "logical_preset": arguments.preset},
                 "scanner_descriptor_fixture": {"manifest": str(descriptor_manifest), "payload": str(descriptor_payload), "context": str(descriptor_context), "logical_preset": arguments.preset},
+                "prepared_state_results": prepared_state_results,
                 "reference_results": reference_results,
                 "reference_fixture": {"manifest": str(reference_manifest), "payload": str(reference_payload), "logical_preset": arguments.preset},
                 "scanner_color_fixture": {"manifest": str(color_manifest), "payload": str(color_payload), "normative": str(color_checked), "logical_preset": arguments.preset},

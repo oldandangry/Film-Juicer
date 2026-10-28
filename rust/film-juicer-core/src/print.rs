@@ -1,6 +1,408 @@
 //! Complete print illumination, balance and raw preflash exposure on the fixed spectral axis.
 
 use crate::hash;
+use crate::profile::PrintDensityCurves;
+
+pub(crate) const CURRENT_NEUTRAL_CMY_CC: [f32; 3] = [0.0, 65.0, 55.0];
+const DICHROIC_EDGES_NM: [f32; 4] = [516.0, 500.0, 610.0, 607.0];
+const DICHROIC_TRANSITIONS_NM: [f32; 4] = [12.0, 8.0, 8.0, 8.0];
+
+/// Remaining print-route composition, separate from the accepted leaf producers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompositionError {
+    DensityBounds,
+    RecipeIdentity,
+    ResourceDescriptors,
+}
+impl std::fmt::Display for CompositionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::DensityBounds => {
+                "MalformedRequiredProfileData phase=4C field=print_density_bounds"
+            }
+            Self::RecipeIdentity => "ResourceDescriptorMismatch phase=4A field=print_recipe_hash",
+            Self::ResourceDescriptors => {
+                "ResourceDescriptorMismatch phase=4B field=print_resource_descriptors"
+            }
+        })
+    }
+}
+impl std::error::Error for CompositionError {}
+
+pub struct Bounds {
+    minimum_cmy: [f32; 3],
+    maximum_cmy: [f32; 3],
+    inv_span_cmy: [f32; 3],
+    hash: u64,
+}
+impl Bounds {
+    pub fn new(
+        profile: &crate::profile::PrintProfile,
+        route: crate::route::ScanRoute,
+        polarity: crate::profile::Polarity,
+    ) -> Result<Self, CompositionError> {
+        let curves = profile.tables().density_curves();
+        let mut minimum_cmy = curves[0];
+        let mut maximum_cmy = curves[0];
+        for row in curves {
+            for c in 0..3 {
+                // Ordered comparisons retain first-operand NaNs and zero signs.
+                if row[c] < minimum_cmy[c] {
+                    minimum_cmy[c] = row[c];
+                }
+                if maximum_cmy[c] < row[c] {
+                    maximum_cmy[c] = row[c];
+                }
+            }
+        }
+        let mut inv_span_cmy = [0.0; 3];
+        for c in 0..3 {
+            let span = maximum_cmy[c] - minimum_cmy[c];
+            if !(span.is_finite() && span > 0.0) {
+                return Err(CompositionError::DensityBounds);
+            }
+            inv_span_cmy[c] = 1.0 / span;
+        }
+        let route = match route {
+            crate::route::ScanRoute::NegativeDirect => 0,
+            crate::route::ScanRoute::NegativePrint => 1,
+            crate::route::ScanRoute::PositiveDirect => 2,
+            crate::route::ScanRoute::PositivePrint => 3,
+        };
+        let polarity = match polarity {
+            crate::profile::Polarity::Negative => 0,
+            crate::profile::Polarity::Positive => 1,
+        };
+        let mut hash = hash::FNV_OFFSET;
+        hash::update_bytes(&mut hash, &[route, 1, polarity, 2]);
+        for values in [
+            &minimum_cmy,
+            &maximum_cmy,
+            &inv_span_cmy,
+            &minimum_cmy,
+            &maximum_cmy,
+        ] {
+            for value in values {
+                hash::update_bytes(&mut hash, &value.to_bits().to_le_bytes());
+            }
+        }
+        if hash == 0 {
+            return Err(CompositionError::DensityBounds);
+        }
+        Ok(Self {
+            minimum_cmy,
+            maximum_cmy,
+            inv_span_cmy,
+            hash,
+        })
+    }
+    pub fn minimum_cmy(&self) -> &[f32; 3] {
+        &self.minimum_cmy
+    }
+    pub fn maximum_cmy(&self) -> &[f32; 3] {
+        &self.maximum_cmy
+    }
+    pub fn inv_span_cmy(&self) -> &[f32; 3] {
+        &self.inv_span_cmy
+    }
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+}
+
+pub struct Filters {
+    main_cmy_cc: [f32; 3],
+    preflash_cmy_cc: [f32; 3],
+    dichroic_hash: u64,
+    hash: u64,
+}
+impl Filters {
+    pub fn new(
+        neutral_cmy_cc: [f32; 3],
+        ui_ymc_cc: [f32; 3],
+        preflash_m_cc: f32,
+        preflash_y_cc: f32,
+    ) -> Result<Self, CompositionError> {
+        let main_cmy_cc = std::array::from_fn(|c| neutral_cmy_cc[c] + ui_ymc_cc[2 - c]);
+        let preflash_cmy_cc = [
+            neutral_cmy_cc[0],
+            neutral_cmy_cc[1] + preflash_m_cc,
+            neutral_cmy_cc[2] + preflash_y_cc,
+        ];
+        let mut dichroic_hash = hash::FNV_OFFSET;
+        for value in DICHROIC_EDGES_NM.iter().chain(&DICHROIC_TRANSITIONS_NM) {
+            hash::update_bytes(&mut dichroic_hash, &value.to_bits().to_le_bytes());
+        }
+        let mut hash = hash::FNV_OFFSET;
+        for value in main_cmy_cc.iter().chain(&preflash_cmy_cc) {
+            hash::update_bytes(&mut hash, &value.to_bits().to_le_bytes());
+        }
+        hash::update_bytes(&mut hash, &dichroic_hash.to_le_bytes());
+        if hash == 0 {
+            return Err(CompositionError::RecipeIdentity);
+        }
+        Ok(Self {
+            main_cmy_cc,
+            preflash_cmy_cc,
+            dichroic_hash,
+            hash,
+        })
+    }
+    pub fn main_cmy_cc(&self) -> &[f32; 3] {
+        &self.main_cmy_cc
+    }
+    pub fn preflash_cmy_cc(&self) -> &[f32; 3] {
+        &self.preflash_cmy_cc
+    }
+    pub fn dichroic_hash(&self) -> u64 {
+        self.dichroic_hash
+    }
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+    pub fn illumination_params(&self, preflash: bool) -> FilterParams {
+        FilterParams {
+            edges_nm: DICHROIC_EDGES_NM,
+            transitions_nm: DICHROIC_TRANSITIONS_NM,
+            cmy_cc: if preflash {
+                self.preflash_cmy_cc
+            } else {
+                self.main_cmy_cc
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ExposureParams {
+    pub print_exposure: f32,
+    pub preflash_exposure: f32,
+    pub camera_exposure_ev: f32,
+    pub normalize: bool,
+    pub compensate: bool,
+}
+pub struct Exposure {
+    params: ExposureParams,
+    normalization_mode: u8,
+    hash: u64,
+}
+impl Exposure {
+    pub fn new(params: ExposureParams) -> Result<Self, CompositionError> {
+        let normalization_mode = u8::from(params.normalize) * 2 + u8::from(params.compensate);
+        let mut hash = hash::FNV_OFFSET;
+        for value in [
+            params.print_exposure,
+            params.preflash_exposure,
+            params.camera_exposure_ev,
+        ] {
+            hash::update_bytes(&mut hash, &value.to_bits().to_le_bytes());
+        }
+        hash::update_bytes(
+            &mut hash,
+            &[
+                u8::from(params.normalize),
+                u8::from(params.compensate),
+                normalization_mode,
+            ],
+        );
+        if hash == 0 {
+            return Err(CompositionError::RecipeIdentity);
+        }
+        Ok(Self {
+            params,
+            normalization_mode,
+            hash,
+        })
+    }
+    pub fn params(&self) -> &ExposureParams {
+        &self.params
+    }
+    pub fn normalization_mode(&self) -> u8 {
+        self.normalization_mode
+    }
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+}
+
+pub struct ResourceDescriptorInput<'a> {
+    pub film: &'a crate::profile::FilmProfile,
+    pub profile: &'a crate::profile::PrintProfile,
+    pub curves: &'a PrintDensityCurves,
+    pub filters: &'a Filters,
+    pub exposure: &'a Exposure,
+    pub balance: &'a Balance,
+    pub film_input_hash: u64,
+    pub film_development_hash: u64,
+    pub illuminant_hash: u64,
+}
+
+pub struct ResourceDescriptors {
+    sensitivities_hash: u64,
+    density_tables_hash: u64,
+    profile_tables_hash: u64,
+    film_density_hash: u64,
+    main_illuminant_hash: u64,
+    preflash_illuminant_hash: u64,
+    preflash_raw_hash: u64,
+    balance_hash: u64,
+    hash: u64,
+}
+impl ResourceDescriptors {
+    pub fn new(input: ResourceDescriptorInput<'_>) -> Result<Self, CompositionError> {
+        let sensitivities =
+            hash::f32s_with_nan_mask(input.profile.tables().linear_sensitivity().as_flattened());
+        let sensitivities_hash = hash::u64s(&[sensitivities.values, sensitivities.nan_mask]);
+        let dyes = hash::f32s_with_nan_mask(input.film.tables().channel_density().as_flattened());
+        let base = hash::f32s_with_nan_mask(input.film.tables().base_density());
+        let density_tables_hash = hash::u64s(&[
+            hash::resource_f32s(input.film.tables().wavelengths()),
+            dyes.values,
+            dyes.nan_mask,
+            base.values,
+            base.nan_mask,
+        ]);
+        let mut profile_tables_hash = hash::FNV_OFFSET;
+        hash::update_bytes(&mut profile_tables_hash, &2_u32.to_le_bytes());
+        for word in [
+            input.profile.asset_token(),
+            input.curves.hash(),
+            sensitivities_hash,
+        ] {
+            hash::update_bytes(&mut profile_tables_hash, &word.to_le_bytes());
+        }
+        hash::update_bytes(
+            &mut profile_tables_hash,
+            &(input.curves.totals().len() as u32).to_le_bytes(),
+        );
+        hash::update_bytes(&mut profile_tables_hash, &81_u32.to_le_bytes());
+        let mut film_density_hash = hash::FNV_OFFSET;
+        hash::update_bytes(&mut film_density_hash, &1_u32.to_le_bytes());
+        for word in [input.film.asset_token(), density_tables_hash] {
+            hash::update_bytes(&mut film_density_hash, &word.to_le_bytes());
+        }
+        hash::update_bytes(&mut film_density_hash, &81_u32.to_le_bytes());
+        let filtered = |preflash: bool| {
+            let mut identity = hash::FNV_OFFSET;
+            hash::update_bytes(&mut identity, &1_u32.to_le_bytes());
+            for word in [input.illuminant_hash, input.filters.dichroic_hash()] {
+                hash::update_bytes(&mut identity, &word.to_le_bytes());
+            }
+            for value in if preflash {
+                input.filters.preflash_cmy_cc()
+            } else {
+                input.filters.main_cmy_cc()
+            } {
+                hash::update_bytes(&mut identity, &value.to_bits().to_le_bytes());
+            }
+            hash::update_bytes(&mut identity, &[u8::from(preflash)]);
+            identity
+        };
+        let main_illuminant_hash = filtered(false);
+        let (preflash_illuminant_hash, preflash_raw_hash) =
+            if input.exposure.params().preflash_exposure > 0.0 {
+                let illuminant = filtered(true);
+                let mut raw = hash::FNV_OFFSET;
+                hash::update_bytes(&mut raw, &2_u32.to_le_bytes());
+                for word in [
+                    input.film.asset_token(),
+                    input.profile.asset_token(),
+                    illuminant,
+                ] {
+                    hash::update_bytes(&mut raw, &word.to_le_bytes());
+                }
+                (illuminant, raw)
+            } else {
+                (0, 0)
+            };
+        let mut balance_hash = hash::FNV_OFFSET;
+        hash::update_bytes(&mut balance_hash, &3_u32.to_le_bytes());
+        for word in [
+            input.film.asset_token(),
+            input.film_input_hash,
+            input.film_development_hash,
+            input.profile.asset_token(),
+            main_illuminant_hash,
+        ] {
+            hash::update_bytes(&mut balance_hash, &word.to_le_bytes());
+        }
+        hash::update_bytes(&mut balance_hash, &[input.exposure.normalization_mode()]);
+        let camera_ev = if input.exposure.params().compensate {
+            input.exposure.params().camera_exposure_ev
+        } else {
+            0.0
+        };
+        hash::update_bytes(&mut balance_hash, &camera_ev.to_bits().to_le_bytes());
+        hash::update_bytes(&mut balance_hash, &input.balance.hash().to_le_bytes());
+        let hash = hash::u64s(&[
+            profile_tables_hash,
+            film_density_hash,
+            main_illuminant_hash,
+            preflash_illuminant_hash,
+            preflash_raw_hash,
+            balance_hash,
+        ]);
+        if [
+            input.curves.hash(),
+            sensitivities_hash,
+            profile_tables_hash,
+            input.film.asset_token(),
+            density_tables_hash,
+            film_density_hash,
+            main_illuminant_hash,
+            balance_hash,
+            input.film_input_hash,
+            input.film_development_hash,
+            input.balance.hash(),
+            hash,
+        ]
+        .contains(&0)
+            || input.curves.totals().is_empty()
+            || (input.exposure.params().preflash_exposure > 0.0
+                && (preflash_illuminant_hash == 0 || preflash_raw_hash == 0))
+        {
+            return Err(CompositionError::ResourceDescriptors);
+        }
+        Ok(Self {
+            sensitivities_hash,
+            density_tables_hash,
+            profile_tables_hash,
+            film_density_hash,
+            main_illuminant_hash,
+            preflash_illuminant_hash,
+            preflash_raw_hash,
+            balance_hash,
+            hash,
+        })
+    }
+    pub fn sensitivities_hash(&self) -> u64 {
+        self.sensitivities_hash
+    }
+    pub fn density_tables_hash(&self) -> u64 {
+        self.density_tables_hash
+    }
+    pub fn profile_tables_hash(&self) -> u64 {
+        self.profile_tables_hash
+    }
+    pub fn film_density_hash(&self) -> u64 {
+        self.film_density_hash
+    }
+    pub fn main_illuminant_hash(&self) -> u64 {
+        self.main_illuminant_hash
+    }
+    pub fn preflash_illuminant_hash(&self) -> u64 {
+        self.preflash_illuminant_hash
+    }
+    pub fn preflash_raw_hash(&self) -> u64 {
+        self.preflash_raw_hash
+    }
+    pub fn balance_hash(&self) -> u64 {
+        self.balance_hash
+    }
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct BalanceParams {
