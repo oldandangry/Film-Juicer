@@ -3929,7 +3929,7 @@ namespace JuicerCuda {
                    curve.domainEnd < curve.n;
         }
 
-        const Spectral::Curve* select_print_illuminant(
+        const JuicerAssets::IlluminantCurveView* select_print_illuminant(
             const JuicerAssets::IlluminantFilterCurveSet& curves,
             const std::string& key) {
             if (key == "D65")
@@ -3960,7 +3960,7 @@ namespace JuicerCuda {
                 return true;
             }
             const auto curves = assets.illuminant_filter_curves();
-            const Spectral::Curve* selected = select_print_illuminant(*curves, key);
+            const JuicerAssets::IlluminantCurveView* selected = select_print_illuminant(*curves, key);
             if (!selected ||
                 selected->linear.size() != out.size() ||
                 selected->lambda_nm.size() != out.size()) {

@@ -21,8 +21,14 @@ namespace JuicerCuda {
     struct StaticNoiseInput;
 }
 
+namespace Gamut {
+    class InputHullHold;
+    class OutputBoundaryHold;
+    struct OutputGamutTransform;
+} // namespace Gamut
+
 namespace JuicerAssets {
-    struct IlluminantFilterCurveSet;
+    class IlluminantFilterCurveSet;
     struct FilmDevelopment;
 #if defined(JUICER_FILM_DEVELOPMENT_TEST_HOOK)
     namespace DevelopmentTest {
@@ -99,7 +105,6 @@ namespace JuicerAssets {
         void after_csv_copy(CsvSource source, std::size_t rows, std::size_t capacity);
         void calibration_result(FjNeutralCalibrationResult& result);
         void film_reference_samples(const std::array<float, 81>& samples);
-        void before_curve_publication(const std::shared_ptr<const IlluminantFilterCurveSet>& candidate);
         void before_native_render() noexcept;
         void frame_abort() noexcept;
     } // namespace IlluminantTest
@@ -208,6 +213,9 @@ namespace JuicerAssets {
         AssetBridge(const AssetBridge&) = delete;
         AssetBridge& operator=(const AssetBridge&) = delete;
 
+        std::shared_ptr<const IlluminantFilterCurveSet> illuminants();
+        std::shared_ptr<const Gamut::InputHullHold> input_hull();
+        std::shared_ptr<const Gamut::OutputBoundaryHold> output_boundary(const Gamut::OutputGamutTransform&, std::string& diagnostic);
         NoiseSource noise();
         Spectral::ReconstructionLut copy_hanatos_lut();
         Spectral::ReconstructionLut copy_arctic_lut();
@@ -224,6 +232,9 @@ namespace JuicerAssets {
         std::shared_ptr<const PrintProfileSource> print(const std::string& key);
         FjStatus release_cached_payloads(FjErrorBuffer* error = nullptr) noexcept;
         FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
+        // SF_TEMP_BRIDGE_PREPARED_ASSET_BORROW: synchronous existing-owner borrow;
+        // remove with the remaining process-owner forwarding at S5.C.
+        FjAssets* borrow_assets() const noexcept;
 
     private:
         struct ConversionSlots;

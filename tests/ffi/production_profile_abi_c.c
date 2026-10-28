@@ -32,4 +32,6 @@ FJ_SIGNATURE(fj_legacy_film_profile_release, FjStatus (*)(FjFilmProfile*, FjErro
 FJ_SIGNATURE(fj_legacy_print_profile_release, FjStatus (*)(FjPrintProfile*, FjErrorBuffer*));
 FJ_SIGNATURE(fj_legacy_print_density_release, FjStatus (*)(FjPrintDensityCurves*, FjErrorBuffer*));
 FJ_SIGNATURE(fj_legacy_assets_release_cached_payloads, FjStatus (*)(const FjAssets*, FjErrorBuffer*));
+FJ_SIGNATURE(fj_legacy_assets_release_derived_payloads, FjStatus (*)(const FjAssets*, FjErrorBuffer*));
+FJ_SIGNATURE(fj_legacy_assets_release_source_payloads, FjStatus (*)(const FjAssets*, FjErrorBuffer*));
 #undef FJ_SIGNATURE

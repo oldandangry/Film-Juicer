@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <exception>
 #include <limits>
 #include <optional>
@@ -12,6 +13,7 @@
 #include <string_view>
 
 #include "prepared_descriptors.h"
+#include "spatial_optics_fixture.h"
 #include "juicer_cuda_owner.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "FocusedRenderPayload.h"
@@ -137,14 +139,101 @@ namespace {
 
 namespace JuicerCudaTest {
 
+    bool execute_prepared_state(FjAssets* assets, const ParamSnapshot& params, const FjFrame& frame, std::uint64_t instanceToken, bool contract, bool lifetime, std::string& diagnostic, StateLifetimeCase lifetimeCase) {
+        FjStatus status{};
+        auto owner = prepare_state(assets, params, status, diagnostic);
+        if (status.category != FJ_STATUS_SUCCESS)
+            return false;
+        std::array<char, 2048> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjPreparedStateView state{};
+        if (fj_test_prepared_state_view(owner.get(), &state, &error).category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(message.data(), error.length);
+            return false;
+        }
+        if (state.optics.hash != 0 || state.grain.hash != 0 || state.effects.hash != 0 || state.dir_recipe.hash == 0) {
+            diagnostic = "held-state fixture requires active DIR and disabled frame effects";
+            return false;
+        }
+        FjPreparedHostData prepared{};
+        prepared.route = state.route;
+        prepared.capture_polarity = state.polarity;
+        prepared.film_profile_key = state.film_profile_key;
+        prepared.print_profile_key = state.print_profile_key;
+        prepared.film_profile_asset_version = state.film_profile_asset_version;
+        prepared.print_profile_asset_version = state.print_profile_asset_version;
+        prepared.recipe_hash = state.recipe_hash;
+        prepared.film_exposure = state.film_exposure;
+        prepared.film_development = state.film_development;
+        const auto& dir = state.dir_recipe;
+        auto& executionDir = prepared.dir_couplers;
+        executionDir.mode = dir.mode;
+        std::copy_n(dir.matrix_rgb, 9, executionDir.matrix_rgb);
+        std::copy_n(dir.density_max_rgb, 3, executionDir.density_max_rgb);
+        std::copy_n(dir.density_ref_rgb, 3, executionDir.density_ref_rgb);
+        std::copy_n(dir.donor_k_rgb, 3, executionDir.donor_k_rgb);
+        std::copy_n(dir.receiver_c_ref_rgb, 3, executionDir.receiver_c_ref_rgb);
+        std::copy_n(dir.receiver_kr_rgb, 3, executionDir.receiver_kr_rgb);
+        std::copy_n(dir.compensated_axes_rgb, 3, executionDir.compensated_axes_rgb);
+        executionDir.compensated_axes_hash = dir.compensated_axes_hash;
+        executionDir.hash = dir.hash;
+        const auto bounds = [](const FjFilmDensityBounds& source) {
+            FjDensityBounds out{};
+            std::copy_n(source.minimum_cmy, 3, out.min_cmy);
+            std::copy_n(source.inv_span_cmy, 3, out.inv_span_cmy);
+            out.hash = source.hash;
+            return out;
+        };
+        prepared.scanner_bounds = bounds(state.scanner_bounds);
+        prepared.enlarger_film_bounds = bounds(state.enlarger_film_bounds);
+        const auto& scanner = state.scanner_tables;
+        prepared.scanner_spectra = {scanner.dyes_cmy[2], scanner.dyes_cmy[1], scanner.dyes_cmy[0], scanner.weighted_xyz[0], scanner.weighted_xyz[1], scanner.weighted_xyz[2], scanner.has_baseline ? scanner.baseline_min : FjFloatSpan{}, scanner.inv_yn};
+        prepared.scanner_lut = {state.scanner_lut.density_bounds_hash, state.scanner_lut.resolution, state.scanner_lut.hash};
+        const auto& correction = state.scanner_correction;
+        prepared.scanner_correction = {correction.active ? FJ_CORRECTION_ACTIVE : 0u, correction.xyz_slope, correction.xyz_offset, correction.exposure_scale};
+        const auto& post = state.scanner_post_effects;
+        prepared.scanner_post = {post.glare_active ? FJ_POST_GLARE : 0u, post.glare_percent, post.glare_roughness, post.glare_blur_sigma_px, post.glare_blur_radius, post.lens_blur_sigma_px, post.lens_blur_radius, post.unsharp_sigma_px, post.unsharp_radius, post.unsharp_amount, post.hash};
+        prepared.output_color = state.output_color;
+        prepared.print = state.print;
+        const auto extent = [](FjRect rect) {
+            return FjExtent{rect.x1, rect.y1, rect.x2 - rect.x1, rect.y2 - rect.y1};
+        };
+        const FjDirFrameInput input{1, dir.diffusion_size_um, dir.diffusion_tail_um, dir.diffusion_tail_weight, frame.pixel_size_um, extent(frame.render_window), extent(frame.full_frame_extent), dir.hash};
+        Spektrafilm::SpatialDirDescriptor spatial;
+        if (!JuicerTestSupport::prepare_dir_frame(input, "prepared-state", spatial)) {
+            diagnostic = "held-state DIR frame completion failed";
+            return false;
+        }
+        encode_spatial_dir_descriptor(spatial, prepared.spatial_dir);
+        const JuicerCuda::FrameRect nativeBounds{frame.source.bounds.x1, frame.source.bounds.y1, frame.source.bounds.x2, frame.source.bounds.y2};
+        const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(nativeBounds, nativeBounds, static_cast<Spektrafilm::AutoExposureMethod>(state.input_policy.meter));
+        prepared.auto_exposure = {{meter.sourceX1, meter.sourceY1, meter.sourceX2, meter.sourceY2}, {meter.meterX1, meter.meterY1, meter.meterX2, meter.meterY2}, meter.previewWidth, meter.previewHeight, static_cast<std::uint32_t>(meter.method), meter.hash};
+        FjCudaContext context{};
+        if (fj_cuda_inspect(JuicerCuda::borrowed_owner(), &frame, &context, &error).category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(message.data(), error.length);
+            return false;
+        }
+        const FjSubmission submission{instanceToken, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(frame.time_frames))), 1, state.upload_core_hash, dir.hash, state.scanner_hash, meter.hash};
+        check_frame_bindings(JuicerCuda::borrowed_owner(), context, frame, submission, prepared);
+        const bool success = (contract || (lifetime && lifetimeCase == StateLifetimeCase::SuppliedStream))
+                                 ? check_render_contract(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &error).category == FJ_STATUS_SUCCESS
+                                 : fj_test_execute_prepared_c(JuicerCuda::borrowed_owner(), &prepared, &frame, &context, &submission, &error) != 0;
+        if (!success) {
+            diagnostic.assign(message.data(), error.length);
+            return false;
+        }
+        if (lifetime)
+            check_prepared_state_lifetime(owner, assets, JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &error, lifetimeCase);
+        return true;
+    }
+
     bool execute_boundary(
         const RenderRecipe& recipe,
         const FocusedRenderPayload& payload,
         const JuicerCuda::ExecutionFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const JuicerCuda::PreparedDescriptors& descriptors,
-        std::string& diagnostic,
-        bool checkContract) {
+        std::string& diagnostic) {
         diagnostic.clear();
         const auto sourceBaseline = fj_test_noise_acquisition_count();
         JuicerCuda::PreparedDescriptors preparedDescriptors = descriptors;
@@ -250,10 +339,8 @@ namespace JuicerCudaTest {
         std::array<char, 2048> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
         const auto sourceAcquisitions = fj_test_noise_acquisition_count();
-        check_frame_bindings(JuicerCuda::borrowed_owner(), context, projectedFrame, submission, prepared, recipe);
-        const int result = checkContract
-                               ? check_render_contract(JuicerCuda::borrowed_owner(), context, projectedFrame, submission, prepared, &error).category == FJ_STATUS_SUCCESS
-                               : fj_test_execute_prepared_c(JuicerCuda::borrowed_owner(), &prepared, &projectedFrame, &context, &submission, &error);
+        check_frame_bindings(JuicerCuda::borrowed_owner(), context, projectedFrame, submission, prepared, &recipe);
+        const int result = fj_test_execute_prepared_c(JuicerCuda::borrowed_owner(), &prepared, &projectedFrame, &context, &submission, &error);
         if (fj_test_noise_acquisition_count() != sourceAcquisitions) {
             diagnostic = "supplied noise performed a fallback acquisition";
             return false;

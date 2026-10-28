@@ -3,6 +3,78 @@
 use crate::asset_illuminant::{self, FjIlluminant, FjIlluminantCoverage};
 use film_juicer_core::illuminant;
 use crate::scanner_bridge;
+use crate::asset_bridge::FjAssets;
+use crate::preparation::{
+    self, FjIlluminantsOwner, FjIlluminantsView, FjInputHullOwner, FjInputHullView,
+    FjOutputBoundaryOwner, FjOutputBoundarySource, FjOutputBoundaryView, FjPreparationParams,
+    FjPreparedState, FjPreparedStateView, FjOutputCacheHooks, FjCacheMetrics,
+};
+use crate::preparation::FjIlluminantCacheHooks;
+use crate::preparation::{FjInputHullCacheHooks, FjCacheObservationOwner};
+
+macro_rules! preparation_export {
+    ($name:ident($($arg:ident: $ty:ty),*) => $operation:ident($($value:ident),*)) => {
+        /// # Safety
+        /// Live matching owners, snapshot/spans, exclusive outputs and optional
+        /// diagnostic storage obey the held-state contract in juicer_test_api.h.
+        #[unsafe(no_mangle)]
+        unsafe extern "C" fn $name($($arg: $ty),*) -> FjStatus {
+            // SAFETY: Both facade and production use this same private operation.
+            unsafe { preparation::$operation($($value),*) }
+        }
+    };
+}
+preparation_export!(fj_test_assets_illuminants_acquire(assets: *const FjAssets, out: *mut *mut FjIlluminantsOwner, error: *mut FjErrorBuffer) => illuminants_acquire(assets, out, error));
+preparation_export!(fj_test_illuminants_view(owner: *const FjIlluminantsOwner, out: *mut FjIlluminantsView, error: *mut FjErrorBuffer) => illuminants_view(owner, out, error));
+preparation_export!(fj_test_illuminants_release(owner: *mut FjIlluminantsOwner, error: *mut FjErrorBuffer) => illuminants_release(owner, error));
+preparation_export!(fj_test_assets_input_hull_acquire(assets: *const FjAssets, out: *mut *mut FjInputHullOwner, error: *mut FjErrorBuffer) => hull_acquire(assets, out, error));
+preparation_export!(fj_test_input_hull_view(owner: *const FjInputHullOwner, out: *mut FjInputHullView, error: *mut FjErrorBuffer) => hull_view(owner, out, error));
+preparation_export!(fj_test_input_hull_release(owner: *mut FjInputHullOwner, error: *mut FjErrorBuffer) => hull_release(owner, error));
+preparation_export!(fj_test_assets_output_boundary_acquire(assets: *const FjAssets, source: *const FjOutputBoundarySource, expected: u64, out: *mut *mut FjOutputBoundaryOwner, error: *mut FjErrorBuffer) => boundary_acquire(assets, source, expected, out, error));
+preparation_export!(fj_test_output_boundary_view(owner: *const FjOutputBoundaryOwner, out: *mut FjOutputBoundaryView, error: *mut FjErrorBuffer) => boundary_view(owner, out, error));
+preparation_export!(fj_test_output_boundary_release(owner: *mut FjOutputBoundaryOwner, error: *mut FjErrorBuffer) => boundary_release(owner, error));
+preparation_export!(fj_test_prepared_state_create(assets: *mut FjAssets, params: *const FjPreparationParams, out: *mut *mut FjPreparedState, error: *mut FjErrorBuffer) => state_create(assets, params, out, error));
+preparation_export!(fj_test_prepared_state_view(owner: *const FjPreparedState, out: *mut FjPreparedStateView, error: *mut FjErrorBuffer) => state_view(owner, out, error));
+preparation_export!(fj_test_prepared_state_release(owner: *mut FjPreparedState, error: *mut FjErrorBuffer) => state_release(owner, error));
+preparation_export!(fj_test_assets_calibration_source(destination: *const FjAssets, source: *const FjAssets, error: *mut FjErrorBuffer) => calibration_source(destination, source, error));
+preparation_export!(fj_test_assets_input_hull_fault(owner: *const FjAssets, fault: u32, error: *mut FjErrorBuffer) => hull_operation_fault(owner, fault, error));
+preparation_export!(fj_test_assets_input_hull_fault_pending(owner: *const FjAssets, out: *mut u32, error: *mut FjErrorBuffer) => hull_operation_pending(owner, out, error));
+preparation_export!(fj_test_assets_illuminant_operation_fault(owner: *const FjAssets, operation: u32, fault: u32, error: *mut FjErrorBuffer) => illuminant_operation_fault(owner, operation, fault, error));
+preparation_export!(fj_test_assets_illuminant_operation_consumed(owner: *const FjAssets, out: *mut u32, error: *mut FjErrorBuffer) => illuminant_operation_consumed(owner, out, error));
+preparation_export!(fj_test_assets_curve_fault(owner: *const FjAssets, source: u32, fault: u32, error: *mut FjErrorBuffer) => curve_fault(owner, source, fault, error));
+preparation_export!(fj_test_assets_curve_fault_pending(owner: *const FjAssets, out: *mut u32, error: *mut FjErrorBuffer) => curve_fault_pending(owner, out, error));
+preparation_export!(fj_test_assets_output_boundary_acquire_observed(owner: *const FjAssets, source: *const FjOutputBoundarySource, expected: u64, hooks: *const FjOutputCacheHooks, out: *mut *mut FjOutputBoundaryOwner, error: *mut FjErrorBuffer) => boundary_acquire_observed(owner, source, expected, hooks, out, error));
+preparation_export!(fj_test_output_cache_generation(owner: *const FjAssets, out: *mut u64, error: *mut FjErrorBuffer) => output_cache_generation(owner, out, error));
+preparation_export!(fj_test_output_cache_set_generation(owner: *const FjAssets, generation: u64, error: *mut FjErrorBuffer) => output_cache_set_generation(owner, generation, error));
+preparation_export!(fj_test_cache_metrics(owner: *const FjAssets, family: u32, out: *mut FjCacheMetrics, error: *mut FjErrorBuffer) => cache_metrics(owner, family, out, error));
+preparation_export!(fj_test_cache_fault(owner: *const FjAssets, family: u32, fault: u32, error: *mut FjErrorBuffer) => cache_fault(owner, family, fault, error));
+preparation_export!(fj_test_cache_fault_consumed(owner: *const FjAssets, family: u32, out: *mut u64, error: *mut FjErrorBuffer) => cache_fault_consumed(owner, family, out, error));
+preparation_export!(fj_test_cache_clear_failures(owner: *const FjAssets, early: u32, late: u32, error: *mut FjErrorBuffer) => cache_clear_failures(owner, early, late, error));
+preparation_export!(fj_test_cache_drop_reentry(owner: *const FjAssets, family: u32, error: *mut FjErrorBuffer) => cache_drop_reentry(owner, family, error));
+preparation_export!(fj_test_cache_entry_live(owner: *const FjAssets, family: u32, entry: usize, out: *mut u32, error: *mut FjErrorBuffer) => cache_entry_live(owner, family, entry, out, error));
+preparation_export!(fj_test_assets_illuminants_acquire_observed(owner: *const FjAssets, hooks: *const FjIlluminantCacheHooks, out: *mut *mut FjIlluminantsOwner, error: *mut FjErrorBuffer) => illuminants_acquire_observed(owner, hooks, out, error));
+preparation_export!(fj_test_assets_input_hull_acquire_observed(owner: *const FjAssets, hooks: *const FjInputHullCacheHooks, out: *mut *mut FjInputHullOwner, error: *mut FjErrorBuffer) => hull_acquire_observed(owner, hooks, out, error));
+preparation_export!(fj_test_input_hull_entry_fault(owner: *const FjAssets, active: u32, error: *mut FjErrorBuffer) => hull_entry_fault(owner, active, error));
+preparation_export!(fj_test_input_hull_entry_fault_consumed(owner: *const FjAssets, out: *mut u32, error: *mut FjErrorBuffer) => hull_entry_fault_consumed(owner, out, error));
+preparation_export!(fj_test_input_hull_source_tail(owner: *const FjAssets, active: u32, add: f32, error: *mut FjErrorBuffer) => hull_source_tail(owner, active, add, error));
+preparation_export!(fj_test_cache_observation_acquire(owner: *const FjAssets, out: *mut *mut FjCacheObservationOwner, error: *mut FjErrorBuffer) => cache_observation_acquire(owner, out, error));
+preparation_export!(fj_test_cache_observation_metrics(owner: *const FjCacheObservationOwner, family: u32, out: *mut FjCacheMetrics, error: *mut FjErrorBuffer) => cache_observation_metrics(owner, family, out, error));
+preparation_export!(fj_test_cache_observation_entry_live(owner: *const FjCacheObservationOwner, family: u32, entry: usize, out: *mut u32, error: *mut FjErrorBuffer) => cache_observation_entry_live(owner, family, entry, out, error));
+preparation_export!(fj_test_cache_observation_release(owner: *mut FjCacheObservationOwner, error: *mut FjErrorBuffer) => cache_observation_release(owner, error));
+
+/// # Safety
+/// count is one initialized, aligned, exclusively writable usize slot. The
+/// returned immutable static facts are borrowed and cannot be freed.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_prepared_state_abi_facts(count: *mut usize) -> *const usize {
+    if count.is_null() || !(count as usize).is_multiple_of(std::mem::align_of::<usize>()) {
+        return std::ptr::null();
+    }
+    let facts = preparation::layout_facts();
+    // SAFETY: The caller authorizes the checked exclusive output slot.
+    unsafe { count.write(facts.len()) };
+    facts.as_ptr()
+}
 
 thread_local! { static ILLUMINANT_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[unsafe(no_mangle)]
@@ -2491,4 +2563,39 @@ unsafe extern "C" fn fj_test_effects_frame_prepare(
 #[unsafe(no_mangle)]
 extern "C" fn fj_test_effects_frame_fault(fault: u32) -> FjStatus {
     crate::effects_frame_bridge::faults::arm(fault)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_prepared_live_states() -> usize {
+    crate::preparation::live_states()
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_prepared_trace() -> crate::preparation::FjPreparationTrace {
+    let (stages, count) = film_juicer_core::recipe::testing::trace();
+    crate::preparation::FjPreparationTrace { count, stages }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_prepared_identity_fault(target: u32) -> FjStatus {
+    use film_juicer_core::recipe::testing::{self, ZeroIdentity};
+    testing::arm_zero_identity(None);
+    let target = match target {
+        0 => None,
+        1 => Some(ZeroIdentity::Recipe),
+        2 => Some(ZeroIdentity::Scanner),
+        _ => {
+            return FjStatus {
+                category: FJ_STATUS_UNSUPPORTED_INPUT,
+                api: FJ_API_NONE,
+                native_code: 0,
+            };
+        }
+    };
+    testing::arm_zero_identity(target);
+    FjStatus {
+        category: FJ_STATUS_SUCCESS,
+        api: FJ_API_NONE,
+        native_code: 0,
+    }
 }

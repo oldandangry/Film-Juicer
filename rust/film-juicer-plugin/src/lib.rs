@@ -18,6 +18,12 @@ mod asset_catalog;
 )]
 mod asset_bridge;
 
+#[allow(
+    unsafe_code,
+    reason = "held preparation and cache views admit foreign storage and keep raw projections at their owner-bounded C edge"
+)]
+mod preparation;
+
 mod asset_profile;
 
 #[allow(

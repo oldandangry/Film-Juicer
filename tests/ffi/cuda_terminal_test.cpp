@@ -463,9 +463,19 @@ int main(int argc, char** argv) {
             } catch (const std::bad_alloc&) {
                 failed = true;
             }
-            require(failed && !failLibraryConstruction, "partial Library allocation fault did not run");
-            require(!JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 0, "partial Library leaked acquired Rust Assets");
-            require(destructions == 0, "partial Library published/completed FjCuda");
+            // The transferred caches leave no required native allocation after
+            // Assets creation. Some standard-library implementations still
+            // allocate while constructing the remaining native members.
+            const bool pending = std::exchange(failLibraryConstruction, false);
+            if (failed) {
+                require(!pending, "partial Library allocation fault did not run");
+                require(!JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 0, "partial Library leaked acquired Rust Assets");
+                require(destructions == 0, "partial Library published/completed FjCuda");
+            } else {
+                require(pending, "Library allocation failure was swallowed");
+                require(JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 1 && destructions == 0, "allocation-free Library construction lost its owner");
+                require(owner.close().category == FJ_STATUS_SUCCESS && !JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 0 && destructions == 1, "allocation-free Library construction did not close exactly once");
+            }
         } else if (mode == "construction") {
             injection = "construction";
             JuicerCuda::Owner owner;

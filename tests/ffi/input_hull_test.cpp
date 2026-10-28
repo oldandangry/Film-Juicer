@@ -22,11 +22,13 @@
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
 #include "RenderRecipe.h"
+#include "JuicerState.h"
 #include "RustGamutBridge.h"
 #include "SpectralData.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "print_illuminant_fixture.h"
+#include "prepared_boundary.h"
 #include "spectral_allocation_probe.h"
 
 #define FJ_HULL_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
@@ -39,17 +41,6 @@ extern "C" FjStatus fj_test_input_hull_abi_c(const FjInputHullSource*, FjInputHu
 void fj_test_input_hull_products(const nlohmann::json&, const std::filesystem::path&);
 void fj_test_input_hull_admission(std::uint32_t fault);
 
-namespace JuicerGamut::Test {
-    std::barrier<>* start = nullptr;
-    std::atomic<std::size_t> entered{0};
-    std::array<Gamut::InputCompressionHull*, 4> candidates{};
-    void before_build(Gamut::InputCompressionHull& out) {
-        if (start) {
-            candidates.at(entered.fetch_add(1)) = &out;
-            start->arrive_and_wait();
-        }
-    }
-} // namespace JuicerGamut::Test
 
 namespace {
     using Json = nlohmann::json;
@@ -59,6 +50,97 @@ namespace {
     }
     void status(FjStatus value, std::uint32_t category) {
         require(value.category == category && value.api == FJ_API_NONE && value.native_code == 0, "complete status category/API/code");
+    }
+    struct HullHold {
+        std::shared_ptr<FjInputHullOwner> owner;
+        FjInputHullView view{};
+        explicit operator bool() const {
+            return bool(owner);
+        }
+        void reset() {
+            owner.reset();
+            view = {};
+        }
+        friend bool operator==(const HullHold& a, const HullHold& b) {
+            return a.view.entry_identity == b.view.entry_identity;
+        }
+    };
+    struct ObservationRelease {
+        void operator()(FjCacheObservationOwner* owner) const noexcept {
+            (void)fj_test_cache_observation_release(owner, nullptr);
+        }
+    };
+    using ObservationHold = std::unique_ptr<FjCacheObservationOwner, ObservationRelease>;
+    std::barrier<>* rustHullStart = nullptr;
+    std::atomic<unsigned> rustHullEntered{0};
+    std::array<std::uintptr_t, 4> rustHullCandidates{};
+    std::uint32_t before_rust_hull(std::uintptr_t entry, std::size_t bytes) noexcept {
+        try {
+            require(entry != 0 && bytes >= sizeof(FjInputHull), "actual substantial Rust candidate allocation before math");
+            if (rustHullStart) {
+                rustHullCandidates.at(rustHullEntered.fetch_add(1)) = entry;
+                rustHullStart->arrive_and_wait();
+            }
+            return FJ_STATUS_SUCCESS;
+        } catch (const std::bad_alloc&) {
+            return FJ_STATUS_ALLOCATION_FAILURE;
+        } catch (...) {
+            return FJ_STATUS_INTERNAL_FAILURE;
+        }
+    }
+    class InputHullCacheProbe {
+        JuicerAssets::Library native;
+
+    public:
+        explicit InputHullCacheProbe(const std::filesystem::path& root) : native(root) {}
+        FjAssets* owner() const {
+            return native.borrow_rust_assets();
+        }
+        HullHold acquire() {
+            FjInputHullOwner* acquired = nullptr;
+            const FjInputHullCacheHooks hooks{before_rust_hull};
+            const auto result = fj_test_assets_input_hull_acquire_observed(owner(), &hooks, &acquired, nullptr);
+            if (result.category != FJ_STATUS_SUCCESS) {
+                require(acquired == nullptr, "failed hull returns no hold");
+                if (result.category == FJ_STATUS_ALLOCATION_FAILURE)
+                    throw std::bad_alloc{};
+                if (result.category == FJ_STATUS_PREPARATION_FAILURE)
+                    return {};
+                throw JuicerCuda::ExecutionFailure{{result, "Rust input hull acquisition failed"}};
+            }
+            HullHold held{std::shared_ptr<FjInputHullOwner>(acquired, [](FjInputHullOwner* value) {
+                              (void)fj_test_input_hull_release(value, nullptr);
+                          }),
+                          {}};
+            status(fj_test_input_hull_view(acquired, &held.view, nullptr), FJ_STATUS_SUCCESS);
+            return held;
+        }
+        ObservationHold observation() const {
+            FjCacheObservationOwner* acquired = nullptr;
+            status(fj_test_cache_observation_acquire(owner(), &acquired, nullptr), FJ_STATUS_SUCCESS);
+            return ObservationHold(acquired);
+        }
+        void clear() const {
+            status(fj_legacy_assets_release_cached_payloads(owner(), nullptr), FJ_STATUS_SUCCESS);
+        }
+        void fault(unsigned value) const {
+            status(fj_test_cache_fault(owner(), FJ_TEST_CACHE_INPUT_HULL, value, nullptr), FJ_STATUS_SUCCESS);
+        }
+        std::uint64_t consumed() const {
+            std::uint64_t value = 0;
+            status(fj_test_cache_fault_consumed(owner(), FJ_TEST_CACHE_INPUT_HULL, &value, nullptr), FJ_STATUS_SUCCESS);
+            return value;
+        }
+    };
+    FjCacheMetrics hull_metrics(const ObservationHold& owner) {
+        FjCacheMetrics out{};
+        status(fj_test_cache_observation_metrics(owner.get(), FJ_TEST_CACHE_INPUT_HULL, &out, nullptr), FJ_STATUS_SUCCESS);
+        return out;
+    }
+    bool entry_live(const ObservationHold& owner, unsigned family, std::uintptr_t entry) {
+        std::uint32_t value = 0;
+        status(fj_test_cache_observation_entry_live(owner.get(), family, entry, &value, nullptr), FJ_STATUS_SUCCESS);
+        return value != 0;
     }
     std::vector<float> values(const Json& data) {
         std::vector<float> out;
@@ -273,95 +355,156 @@ namespace {
         }).join();
     }
     void cache(const std::filesystem::path& resources, const Json& fixture) {
-        {
-            JuicerAssets::Library library(resources);
-            const auto curves = library.illuminant_filter_curves();
-            require(bool(curves), "prewarm source before native candidate allocation witness");
-            status(fj_test_gamut_arm_fault(0, 1), FJ_STATUS_SUCCESS);
-            SpectralAllocationProbe::arm();
-            bool memory = false;
+        for (unsigned allocation = 1; allocation <= 2; ++allocation) {
+            JuicerAssets::Library native(resources);
+            (void)native.input_compression_hull();
+            FjCacheObservationOwner* raw = nullptr;
+            status(fj_test_cache_observation_acquire(native.borrow_rust_assets(), &raw, nullptr), FJ_STATUS_SUCCESS);
+            ObservationHold observation(raw);
+            const auto before = hull_metrics(observation);
+            SpectralAllocationProbe::arm(allocation);
+            bool failed = false;
             try {
-                (void)library.input_compression_hull();
+                (void)native.input_compression_hull();
             } catch (const std::bad_alloc&) {
-                memory = true;
+                failed = true;
             }
             const auto bytes = SpectralAllocationProbe::bytes();
             SpectralAllocationProbe::clear();
-            require(memory && bytes >= sizeof(Gamut::InputCompressionHull), "real native shared candidate allocation retains bad_alloc");
-            require(fj_test_gamut_fault_consumed(0, 1) == 0, "allocation precedes Rust computation");
+            require(failed && bytes != 0 && bytes < sizeof(FjInputHull), "actual native hull handle/control-block allocation failure");
+            require(hull_metrics(observation).allocations == before.allocations, "native wrapper failure does not allocate another Rust hull");
+            status(native.close(), FJ_STATUS_SUCCESS);
+            require(hull_metrics(observation).live_bytes == 0, "failed native hull wrapper releases its acquired foreign hold");
+        }
+        {
+            InputHullCacheProbe library(resources);
+            auto observation = library.observation();
+            library.fault(1);
+            status(fj_test_input_hull_entry_fault(library.owner(), 1, nullptr), FJ_STATUS_SUCCESS);
+            bool memory = false;
+            try {
+                (void)library.acquire();
+            } catch (const std::bad_alloc&) {
+                memory = true;
+            }
+            std::uint32_t allocationConsumed = 0;
+            status(fj_test_input_hull_entry_fault_consumed(library.owner(), &allocationConsumed, nullptr), FJ_STATUS_SUCCESS);
+            require(memory && allocationConsumed == 1 && hull_metrics(observation).allocations == 0, "real failed entry reservation precedes math and publishes no backing");
+            require(library.consumed() == 0, "entry reservation failure leaves mathematical fault pending");
             bool exceptional = false;
             try {
-                (void)library.input_compression_hull();
+                (void)library.acquire();
             } catch (const JuicerCuda::ExecutionFailure& failure) {
                 exceptional = true;
                 status(failure.failure.status, FJ_STATUS_UNSUPPORTED_INPUT);
             }
-            require(exceptional && fj_test_gamut_fault_consumed(0, 1) == 1, "next cold candidate consumes pending fault before cleanup");
-            fj_test_gamut_clear_fault();
-            require(bool(library.input_compression_hull()), "allocation/exceptional failure permits retry");
+            require(exceptional && library.consumed() == 1, "next actual cold operation consumes pending math fault once");
+            require(hull_metrics(observation).allocations == 1 && hull_metrics(observation).destructions == 1 && hull_metrics(observation).live_bytes == 0, "failed cold candidate's actual storage reclaimed");
+            const auto recovered = library.acquire();
+            require(bool(recovered), "entry and mathematical failures permit independent retry");
+            const auto before = hull_metrics(observation);
+            SpectralAllocationProbe::arm();
+            bool wrapperFailure = false;
+            try {
+                (void)library.acquire();
+            } catch (const std::bad_alloc&) {
+                wrapperFailure = true;
+            }
+            const auto bytes = SpectralAllocationProbe::bytes();
+            SpectralAllocationProbe::clear();
+            require(wrapperFailure && bytes != 0 && bytes < sizeof(FjInputHull), "native wrapper allocation failure is separate from substantial Rust entry allocation");
+            require(hull_metrics(observation).allocations == before.allocations && library.acquire() == recovered, "wrapper allocation failure preserves the Rust winner");
         }
         {
-            JuicerAssets::Library retry(resources);
-            status(fj_test_gamut_arm_fault(0, 4), FJ_STATUS_SUCCESS);
-            require(!retry.input_compression_hull(), "ordinary cold failure publishes no hull");
-            require(fj_test_gamut_fault_consumed(0, 4) == 1, "cold Library consumes fault before retry");
-            const auto recovered = retry.input_compression_hull();
-            require(recovered && recovered->hash == fixture["math"][0]["expected"]["hash"], "cold retry constructs complete hull");
+            InputHullCacheProbe retry(resources);
+            retry.fault(4);
+            require(!retry.acquire(), "ordinary cold failure publishes no hull");
+            require(retry.consumed() == 1, "cold owner consumes fault before retry");
+            const auto recovered = retry.acquire();
+            require(recovered && recovered.view.hash == fixture["math"][0]["expected"]["hash"], "cold retry constructs complete hull");
         }
-        std::shared_ptr<const Gamut::InputCompressionHull> retained;
-        FilmRawRecipe recipe;
+        HullHold retained;
+        JuicerCudaTest::PreparedStateHold recipeHold;
+        ObservationHold observation;
+        std::uintptr_t identity = 0;
         {
-            JuicerAssets::Library library(resources);
-            std::array<std::shared_ptr<const Gamut::InputCompressionHull>, 4> results;
+            InputHullCacheProbe library(resources);
+            observation = library.observation();
+            std::array<HullHold, 4> results;
             std::barrier start(4);
-            JuicerGamut::Test::start = &start;
-            JuicerGamut::Test::entered = 0;
+            rustHullStart = &start;
+            rustHullEntered = 0;
             std::array<std::thread, 4> workers;
             for (std::size_t i = 0; i < workers.size(); ++i)
                 workers[i] = std::thread([&, i] {
-                    results[i] = library.input_compression_hull();
+                    results[i] = library.acquire();
                 });
             for (auto& worker : workers)
                 worker.join();
-            JuicerGamut::Test::start = nullptr;
-            require(JuicerGamut::Test::entered == 4, "four cold candidates rendezvous before computation outside cache mutex");
+            rustHullStart = nullptr;
+            require(rustHullEntered == 4, "four actual cold candidates rendezvous before math outside cache mutex");
             for (std::size_t i = 0; i < 4; ++i) {
-                require(results[i] && results[i] == results[0], "one published concurrent winner");
+                require(results[i] && results[i] == results[0], "one published Rust winner");
                 for (std::size_t j = 0; j < i; ++j)
-                    require(JuicerGamut::Test::candidates[i] != JuicerGamut::Test::candidates[j], "distinct concurrent native candidates");
+                    require(rustHullCandidates[i] != rustHullCandidates[j], "distinct fallible Rust candidate allocations");
             }
+            const auto metrics = hull_metrics(observation);
+            require(metrics.allocations == 4 && metrics.derivations == 4 && metrics.destructions == 3 && metrics.live_bytes != 0, "all losing Rust candidates reclaimed, one live backing");
             retained = results[0];
-            recipe.inputCompressionHull = retained;
+            identity = retained.view.entry_identity;
+            const ParamSnapshot captured;
+            const auto input = JuicerCudaTest::preparation_params(captured);
+            FjPreparedState* acquired = nullptr;
+            status(fj_test_prepared_state_create(library.owner(), &input, &acquired, nullptr), FJ_STATUS_SUCCESS);
+            recipeHold.reset(acquired);
+            FjPreparedStateView state{};
+            status(fj_test_prepared_state_view(recipeHold.get(), &state, nullptr), FJ_STATUS_SUCCESS);
+            require(state.input_hull.entry_identity == identity && state.input_hull.xy.data == retained.view.xy.data, "complete recipe and foreign cache holds share actual backing");
             for (auto& result : results)
                 result.reset();
-            require(retained.use_count() == 3, "only Library, external and recipe holds survive publication");
-            std::weak_ptr source = library.illuminant_filter_curves();
-            status(library.release_cached_payloads(), FJ_STATUS_SUCCESS);
-            require(source.expired(), "source curves expire independently of hull");
+            FjIlluminantsOwner* source = nullptr;
+            status(fj_test_assets_illuminants_acquire(library.owner(), &source, nullptr), FJ_STATUS_SUCCESS);
+            FjIlluminantsView sourceView{};
+            status(fj_test_illuminants_view(source, &sourceView, nullptr), FJ_STATUS_SUCCESS);
+            const auto sourceIdentity = sourceView.entry_identity;
+            status(fj_test_illuminants_release(source, nullptr), FJ_STATUS_SUCCESS);
+            library.clear();
+            require(!entry_live(observation, FJ_TEST_CACHE_ILLUMINANTS, sourceIdentity), "source curves expire independently of hull and complete state");
+            library.fault(1);
+            status(fj_test_input_hull_source_tail(library.owner(), 1, .125f, nullptr), FJ_STATUS_SUCCESS);
+            require(library.acquire() == retained && library.consumed() == 0, "warm owner bypasses changed cold source and mathematical fault");
             status(fj_test_gamut_arm_fault(0, 1), FJ_STATUS_SUCCESS);
-            const float old = Spectral::gXBar.linear[80];
-            Spectral::gXBar.linear[80] += .125f;
-            require(library.input_compression_hull() == retained && fj_test_gamut_fault_consumed(0, 1) == 0, "warm acquisition ignores changed source and bypasses computation");
-            const auto curves = library.illuminant_filter_curves();
-            FjInputHullSource request{{Spectral::gXBar.linear.data(), 81}, {Spectral::gYBar.linear.data(), 81}, {Spectral::gZBar.linear.data(), 81}, {curves->d65.linear.data(), 81}};
+            status(fj_test_assets_illuminants_acquire(library.owner(), &source, nullptr), FJ_STATUS_SUCCESS);
+            status(fj_test_illuminants_view(source, &sourceView, nullptr), FJ_STATUS_SUCCESS);
+            auto x = Spectral::gXBar.linear;
+            x[80] += .125f;
+            const FjInputHullSource request{{x.data(), 81}, {Spectral::gYBar.linear.data(), 81}, {Spectral::gZBar.linear.data(), 81}, sourceView.d65};
             FjInputHull output{};
-            FjErrorBuffer error{nullptr, 0, 0};
-            status(fj_test_input_hull_abi_c(&request, &output, &error), FJ_STATUS_UNSUPPORTED_INPUT);
-            require(fj_test_gamut_fault_consumed(0, 1) == 1, "warm fault consumed by next actual call before cleanup");
-            JuicerAssets::Library changed(resources);
-            const auto rebuilt = changed.input_compression_hull();
-            Spectral::gXBar.linear[80] = old;
-            require(rebuilt && rebuilt->hash == fixture["math"][1]["expected"]["hash"] && rebuilt->hash != retained->hash, "new cold Library observes changed tail source");
-            require(library.input_compression_hull() == retained, "warm pointer/hash retained after source/cache release");
+            FjErrorBuffer diagnostic{nullptr, 0, 0};
+            status(fj_test_input_hull_abi_c(&request, &output, &diagnostic), FJ_STATUS_UNSUPPORTED_INPUT);
+            require(fj_test_gamut_fault_consumed(0, 1) == 1, "standalone mathematical fault consumed by next actual C call");
+            status(fj_test_illuminants_release(source, nullptr), FJ_STATUS_SUCCESS);
+            InputHullCacheProbe changed(resources);
+            status(fj_test_input_hull_source_tail(changed.owner(), 1, .125f, nullptr), FJ_STATUS_SUCCESS);
+            const auto rebuilt = changed.acquire();
+            require(rebuilt && rebuilt.view.hash == fixture["math"][1]["expected"]["hash"] && rebuilt.view.hash != retained.view.hash, "separate cold owner observes controlled tail variation without published-source mutation");
+            for (std::size_t i = 0; i < 1025; ++i)
+                require(bits(std::array{rebuilt.view.xy.data[i * 2], rebuilt.view.xy.data[i * 2 + 1]}) == fixture["math"][1]["expected"]["xy"][i], "all varied-source hull words");
+            require(library.acquire() == retained && library.consumed() == 0, "independent owner never consumes this warm owner's fault");
+            library.fault(0);
+            require(hull_metrics(observation).allocations == 4 && hull_metrics(observation).derivations == 4, "warm state and cache acquisition allocate/derive no hull");
         }
-        require(retained.use_count() == 2 && recipe.inputCompressionHull == retained && retained->valid, "Library expiry releases only its own hold");
-        recipe.inputCompressionHull.reset();
-        require(retained.use_count() == 1, "external final hold");
-        std::weak_ptr weak = retained;
+        require(entry_live(observation, FJ_TEST_CACHE_INPUT_HULL, identity), "Assets destruction releases only its cache hold");
+        FjPreparedStateView heldState{};
+        status(fj_test_prepared_state_view(recipeHold.get(), &heldState, nullptr), FJ_STATUS_SUCCESS);
+        require(heldState.input_hull.entry_identity == identity && heldState.input_hull.hash == retained.view.hash, "complete state remains readable after Assets expires");
+        heldState = {};
+        recipeHold.reset();
+        require(entry_live(observation, FJ_TEST_CACHE_INPUT_HULL, identity), "external final hold survives complete state release");
         std::thread([hold = std::move(retained)] {
-            require(hold->hash == 0x5cda57333bb9b653ULL, "retained hull thread transfer");
+            require(hold.view.hash == 0x5cda57333bb9b653ULL, "retained Rust hull thread transfer");
         }).join();
-        require(weak.expired(), "last external hold releases completed value");
+        require(hull_metrics(observation).live_bytes == 0 && hull_metrics(observation).destructions == 4, "last external hold reclaims actual backing after owner destruction");
         fj_test_gamut_clear_fault();
     }
 } // namespace
@@ -399,6 +542,9 @@ int main(int argc, char** argv) {
         }
         std::puts("PASS input hull contract");
         return 0;
+    } catch (const JuicerCuda::ExecutionFailure& error) {
+        std::fprintf(stderr, "%s\n", error.failure.diagnostic.c_str());
+        return 1;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
         return 1;

@@ -243,6 +243,52 @@ return and exception cleanup before image leases expire. Supplied streams receiv
 no new final wait or device-wide synchronization. The small local OFXS presence
 patch is removed with the support library's compiled consumer at S6.
 
+## Complete prepared state
+
+`JuicerPreparedStateTests` registers `Ffi.Host.PreparedState` and
+`Prepare.Host.StateProducts`. The C11 helper and C++ reader compare every declared
+layout fact with Rust. The product reader uses accepted family fixtures and the
+native composition to check all four routes with Hanatos, Mallett and Arctic,
+plus contributing/ignored controls, Boolean snapshot casts, signed zero, failure
+order and final identities. Its six competing-failure cases also check visitation
+and nonconsumption of a later fault. Checked-in expectations are never regenerated
+by these tests.
+
+The temporary `fj_legacy_prepared_state_{create,view,release}` family returns one
+completed immutable owner or a typed failure. A view borrows that owner; its
+arrays are not detached application storage. Create nulls the owner output before
+work, view clears every defined field on failure, and release consumes one hold
+even when diagnostic admission fails. The test facade calls the same private
+construction and projection as production. Rust compiler fixtures reject public
+construction, Default, mutation and detached borrowing in both feature forms.
+
+The three asset-bound illuminant, input-hull and output-boundary families share
+the entries used by complete preparation. Their holds retain live backing across
+cache release and Assets destruction. Entry identity describes that backing while
+held, rather than a fresh foreign wrapper. The existing cache-owner processes
+observe allocation, publication/selection, generation, failures and reclamation at
+the Rust owner; test-only observation holds retain no Assets or payload.
+
+`Ffi.Gpu.PreparedStateLifetime` uses the real C render entry for direct and print
+with active spatial DIR and disabled optics, grain and physical effects. DIR frame
+completion uses the literal `FjDirFrameInput` helper and the existing native
+composer/encoder. The state and invocation expire after enqueue while a real native
+staging event remains pending; completion checks every staged source word. The
+12 scenarios per route include supplied, present-null and absent streams, both
+post-preparation cancellation checkpoints, actual pinned allocation/copy/event
+failures, quarantine, idle retirement and actual deferred destruction/drain after
+Rust expiry. Rust
+holds do not replace native staging, frame fences, finish/abort or retirement.
+Production callback publication remains native during this boundary's adoption.
+
+```sh
+cmake --build --preset <preset> --target JuicerPreparedStateTests JuicerPreparedBoundaryProbe
+ctest --preset <preset> -R '^(Ffi\.Host\.PreparedState|Prepare\.Host\.StateProducts|Ffi\.Gpu\.PreparedStateLifetime)$' --no-tests=error --output-on-failure
+```
+
+These focused checks supplement the affected family, owner and downstream GPU
+groups. They do not establish installed-host or visual acceptance.
+
 ## Native render entry
 
 `Ffi.Host.NativeBoundary` checks the native message/OFX exclusion, direct C++

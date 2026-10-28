@@ -14,7 +14,7 @@ import time
 import tomllib
 import uuid
 
-from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, ctest_command, preparation_inventory, preparation_paths, prepare_build, registration_files
+from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, ctest_command, linker_tools, preparation_inventory, preparation_paths, prepare_build, registration_files
 from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/ffi"))
@@ -910,6 +910,7 @@ def preparation_inputs(root, build, paths, *, context=None, resolve=Path):
 def checkpoint_tools(build, environment, group=None):
     tools = {Path(sys.executable)}
     cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    tools.update(linker_tools(build, cache, environment))
     tools.update(Path(value) for value in re.findall(r"^(?:CMAKE_(?:(?:C|CXX|CUDA|CUDA_HOST)_COMPILER|LINKER|AR|RANLIB)|JUICER_CARGO_EXECUTABLE):[^=]+=(.+)$", cache, re.M))
     for name in ("cmake", "ctest", "cargo", "rustc"):
         value = shutil.which(name, path=environment.get("PATH"))

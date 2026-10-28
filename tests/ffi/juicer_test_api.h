@@ -7,6 +7,114 @@
 extern "C" {
 #endif
 
+/* Owner-bound complete preparation/cache facade, sharing private construction
+ * and projection with production. Same synchronous and consuming contracts as
+ * the sole held-state section in juicer_legacy_api.h. */
+FjStatus fj_test_assets_illuminants_acquire(const FjAssets*, FjIlluminantsOwner**, FjErrorBuffer*);
+FjStatus fj_test_illuminants_view(const FjIlluminantsOwner*, FjIlluminantsView*, FjErrorBuffer*);
+FjStatus fj_test_illuminants_release(FjIlluminantsOwner*, FjErrorBuffer*);
+FjStatus fj_test_assets_input_hull_acquire(const FjAssets*, FjInputHullOwner**, FjErrorBuffer*);
+FjStatus fj_test_input_hull_view(const FjInputHullOwner*, FjInputHullView*, FjErrorBuffer*);
+FjStatus fj_test_input_hull_release(FjInputHullOwner*, FjErrorBuffer*);
+FjStatus fj_test_assets_output_boundary_acquire(const FjAssets*, const FjOutputBoundarySource*, uint64_t expected_contract_hash, FjOutputBoundaryOwner**, FjErrorBuffer*);
+FjStatus fj_test_output_boundary_view(const FjOutputBoundaryOwner*, FjOutputBoundaryView*, FjErrorBuffer*);
+FjStatus fj_test_output_boundary_release(FjOutputBoundaryOwner*, FjErrorBuffer*);
+FjStatus fj_test_prepared_state_create(FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
+FjStatus fj_test_prepared_state_view(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*);
+FjStatus fj_test_prepared_state_release(FjPreparedState*, FjErrorBuffer*);
+const size_t* fj_test_prepared_state_abi_facts(size_t* count);
+size_t fj_test_prepared_live_states(void);
+
+/* Owner cache observations are non-default test controls. The two callbacks
+ * borrow their table only during acquire, run outside owner locks, contain all
+ * C++ exceptions, and return an FJ_STATUS category. No callback is retained. */
+typedef struct FjOutputCacheHooks {
+    uint32_t (*after_miss)(uint64_t generation);
+    uint32_t (*after_selection)(uint32_t warm, uint64_t generation);
+} FjOutputCacheHooks;
+typedef struct FjIlluminantCacheHooks {
+    /* source uses FJ_CSV_*; lens_prepared is 0/1 at the actual source visit. */
+    uint32_t (*before_source)(uint32_t source, uint32_t lens_prepared);
+    uint32_t (*before_publication)(uintptr_t entry, size_t backing_bytes);
+} FjIlluminantCacheHooks;
+typedef struct FjInputHullCacheHooks {
+    uint32_t (*before_build)(uintptr_t entry, size_t backing_bytes);
+} FjInputHullCacheHooks;
+typedef struct FjCacheObservationOwner FjCacheObservationOwner;
+typedef struct FjCacheMetrics {
+    uint64_t allocations, derivations, destructions, live_bytes, peak_bytes;
+    uint64_t reentries, reentry_failures;
+} FjCacheMetrics;
+#define FJ_TEST_CACHE_ILLUMINANTS 0U
+#define FJ_TEST_CACHE_INPUT_HULL 1U
+#define FJ_TEST_CACHE_OUTPUT_BOUNDARY 2U
+FjStatus fj_test_assets_output_boundary_acquire_observed(const FjAssets*, const FjOutputBoundarySource*, uint64_t expected_contract, const FjOutputCacheHooks*, FjOutputBoundaryOwner**, FjErrorBuffer*);
+FjStatus fj_test_assets_illuminants_acquire_observed(const FjAssets*, const FjIlluminantCacheHooks*, FjIlluminantsOwner**, FjErrorBuffer*);
+FjStatus fj_test_assets_input_hull_acquire_observed(const FjAssets*, const FjInputHullCacheHooks*, FjInputHullOwner**, FjErrorBuffer*);
+FjStatus fj_test_input_hull_entry_fault(const FjAssets*, uint32_t active, FjErrorBuffer*);
+FjStatus fj_test_input_hull_entry_fault_consumed(const FjAssets*, uint32_t*, FjErrorBuffer*);
+FjStatus fj_test_input_hull_source_tail(const FjAssets*, uint32_t active, float add, FjErrorBuffer*);
+/* Observation holds retain no Assets or entry. Every release consumes once. */
+FjStatus fj_test_cache_observation_acquire(const FjAssets*, FjCacheObservationOwner**, FjErrorBuffer*);
+FjStatus fj_test_cache_observation_metrics(const FjCacheObservationOwner*, uint32_t family, FjCacheMetrics*, FjErrorBuffer*);
+FjStatus fj_test_cache_observation_entry_live(const FjCacheObservationOwner*, uint32_t family, uintptr_t entry, uint32_t*, FjErrorBuffer*);
+FjStatus fj_test_cache_observation_release(FjCacheObservationOwner*, FjErrorBuffer*);
+FjStatus fj_test_output_cache_generation(const FjAssets*, uint64_t*, FjErrorBuffer*);
+FjStatus fj_test_output_cache_set_generation(const FjAssets*, uint64_t, FjErrorBuffer*);
+FjStatus fj_test_cache_metrics(const FjAssets*, uint32_t family, FjCacheMetrics*, FjErrorBuffer*);
+/* Faults: 0 clear, 1 unsupported, 2 panic, 3 actual failed reserve, 4/5 preparation.
+ * Fault selection/consumption belongs to this owner and the arming thread. */
+FjStatus fj_test_cache_fault(const FjAssets*, uint32_t family, uint32_t fault, FjErrorBuffer*);
+FjStatus fj_test_cache_fault_consumed(const FjAssets*, uint32_t family, uint64_t*, FjErrorBuffer*);
+FjStatus fj_test_cache_clear_failures(const FjAssets*, uint32_t illuminants, uint32_t late, FjErrorBuffer*);
+FjStatus fj_test_cache_drop_reentry(const FjAssets*, uint32_t family, FjErrorBuffer*);
+FjStatus fj_test_cache_entry_live(const FjAssets*, uint32_t family, uintptr_t entry, uint32_t*, FjErrorBuffer*);
+/* Quiescent actual-owner observations. Calibration comes from the source owner's
+ * real decoded file. Curve faults are one-shot on D65/D55/D50/T/K75P derived
+ * acquisition: 0 clear, 1 real unaddressable scratch reservation, 2 panic,
+ * 3 decoded-row integrity failure.
+ * Warm entry hits skip the fault. These controls never enter production. */
+FjStatus fj_test_assets_calibration_source(const FjAssets* destination, const FjAssets* source, FjErrorBuffer*);
+/* Actual Assets hull owner; existing faults 1 unsupported, 2 panic,
+ * 3 locus/center, 4 ray intersections, 5 inscribed scale, 6 identity; 0 clears.
+ * Warm retained hulls leave faults pending. No cross-owner/global consumption. */
+FjStatus fj_test_assets_input_hull_fault(const FjAssets*, uint32_t fault, FjErrorBuffer*);
+FjStatus fj_test_assets_input_hull_fault_pending(const FjAssets*, uint32_t*, FjErrorBuffer*);
+/* Existing cache-owned leaf operations 1/4/5/6; faults 0 clear, 1 unsupported,
+ * 2 panic, 3 actual unaddressable scratch reserve. Owner and arming thread scoped. */
+FjStatus fj_test_assets_illuminant_operation_fault(const FjAssets*, uint32_t operation, uint32_t fault, FjErrorBuffer*);
+FjStatus fj_test_assets_illuminant_operation_consumed(const FjAssets*, uint32_t*, FjErrorBuffer*);
+FjStatus fj_test_assets_curve_fault(const FjAssets*, uint32_t source, uint32_t fault, FjErrorBuffer*);
+FjStatus fj_test_assets_curve_fault_pending(const FjAssets*, uint32_t* pending, FjErrorBuffer*);
+/* Last synchronous core preparation on this thread; observation only. Raw
+ * record rejection does not enter/reset that constructor. No stage injects policy. */
+typedef struct FjPreparationTrace {
+    uint32_t count, stages[24];
+} FjPreparationTrace;
+FjPreparationTrace fj_test_prepared_trace(void);
+/* One-shot zero at the actual completed identity check: 0 clear, 1 recipe,
+ * 2 scanner resource. Unreached targets remain armed; trace reset does not clear. */
+FjStatus fj_test_prepared_identity_fault(uint32_t target);
+#define FJ_PREPARE_SELECTED_FILM 1U
+#define FJ_PREPARE_SELECTED_PRINT 2U
+#define FJ_PREPARE_ILLUMINANTS 3U
+#define FJ_PREPARE_DEVELOPMENT 4U
+#define FJ_PREPARE_OBSERVER 5U
+#define FJ_PREPARE_RECONSTRUCTION_SOURCE 6U
+#define FJ_PREPARE_INPUT_HULL 7U
+#define FJ_PREPARE_CALIBRATION 8U
+#define FJ_PREPARE_ROUTE_PRECHECKS 9U
+#define FJ_PREPARE_FOUNDATION 10U
+#define FJ_PREPARE_FILM_PAYLOAD 11U
+#define FJ_PREPARE_PRINT_MAIN_ILLUMINANT 12U
+#define FJ_PREPARE_FILM_REFERENCE 13U
+#define FJ_PREPARE_PRINT_BALANCE 14U
+#define FJ_PREPARE_SCANNER_PAYLOAD 15U
+#define FJ_PREPARE_OUTPUT_BOUNDARY 16U
+#define FJ_PREPARE_PRINT_PREFLASH 17U
+#define FJ_PREPARE_SCANNER_CORRECTION 18U
+#define FJ_PREPARE_FINAL_IDENTITY 19U
+
 /* Feature-only film-input facade; identical synchronous storage rules and safe constructor/projector. */
 FjStatus fj_test_film_input_prepare(const FjFilmProfile*, const FjFilmInputParams*, const FjFilmInputResources*, FjFilmInput*, FjFilmInputFailure*, FjErrorBuffer*);
 const size_t* fj_test_film_input_abi_facts(size_t* count);

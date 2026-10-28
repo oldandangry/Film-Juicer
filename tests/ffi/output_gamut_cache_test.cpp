@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -31,16 +33,15 @@
 #include "RustGamutBridge.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "spectral_allocation_probe.h"
 
 namespace JuicerAssets::OutputGamutTest {
-    thread_local bool locked = false;
     thread_local bool rejectAllocation = false;
+    thread_local bool rejectWrapperAllocation = false;
     thread_local std::optional<std::uint64_t> forcedGeneration;
     thread_local std::uint64_t observedGeneration = 0;
     thread_local bool rejectIlluminantClear = false;
     std::atomic<unsigned> violations{0};
-    std::atomic<unsigned> allocations{0};
-    std::atomic<unsigned> destructions{0};
     struct Gate {
         std::mutex mutex;
         std::condition_variable condition;
@@ -71,79 +72,19 @@ namespace JuicerAssets::OutputGamutTest {
     thread_local Gate* missGate = nullptr;
     thread_local Gate* selectedGate = nullptr;
     thread_local bool selectedWarm = false;
-    void enter_lock() noexcept {
-        locked = true;
-    }
-    void leave_lock() noexcept {
-        locked = false;
-    }
-    void observe_generation(std::uint64_t& generation) noexcept {
-        if (forcedGeneration) {
-            generation = *forcedGeneration;
-            forcedGeneration.reset();
-        }
-    }
     void after_miss(std::uint64_t generation) {
-        if (locked)
-            ++violations;
         observedGeneration = generation;
         if (missGate)
             missGate->pause();
     }
-    void after_selection(bool warm, std::uint64_t generation, const std::shared_ptr<const Gamut::OutputBoundaryTable>&) {
-        if (locked)
-            ++violations;
+    void after_selection(bool warm, std::uint64_t generation, std::uintptr_t) {
         observedGeneration = generation;
         if (selectedGate && warm == selectedWarm)
             selectedGate->pause();
     }
-    void before_illuminant_clear() {
-        if (locked)
-            ++violations;
-        if (std::exchange(rejectIlluminantClear, false))
-            throw std::bad_alloc{};
-    }
-    void after_clear(bool, std::uint64_t generation) noexcept {
-        if (locked)
-            ++violations;
-        observedGeneration = generation;
-    }
 } // namespace JuicerAssets::OutputGamutTest
-namespace JuicerGamut::OutputTest {
-    void before_build() {
-        if (JuicerAssets::OutputGamutTest::locked)
-            ++JuicerAssets::OutputGamutTest::violations;
-    }
-} // namespace JuicerGamut::OutputTest
-// Fixture-only allocator observations/rejection; never linked into the product.
-// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
-void* operator new(std::size_t bytes) {
-    if (JuicerAssets::OutputGamutTest::locked)
-        ++JuicerAssets::OutputGamutTest::violations;
-    if (bytes >= sizeof(Gamut::OutputBoundaryTable))
-        ++JuicerAssets::OutputGamutTest::allocations;
-    if (std::exchange(JuicerAssets::OutputGamutTest::rejectAllocation, false))
-        throw std::bad_alloc{};
-    if (void* storage = std::malloc(bytes == 0 ? 1 : bytes))
-        return storage;
-    throw std::bad_alloc{};
-}
-void operator delete(void* storage) noexcept {
-    if (JuicerAssets::OutputGamutTest::locked)
-        ++JuicerAssets::OutputGamutTest::violations;
-    ++JuicerAssets::OutputGamutTest::destructions;
-    std::free(storage);
-}
-void operator delete(void* storage, std::size_t) noexcept {
-    if (JuicerAssets::OutputGamutTest::locked)
-        ++JuicerAssets::OutputGamutTest::violations;
-    ++JuicerAssets::OutputGamutTest::destructions;
-    std::free(storage);
-}
-// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 namespace {
-    using Hold = std::shared_ptr<const Gamut::OutputBoundaryTable>;
     using Json = nlohmann::json;
     namespace Hooks = JuicerAssets::OutputGamutTest;
     void require(bool condition, const std::string& message) {
@@ -153,6 +94,148 @@ namespace {
     void status(FjStatus value, std::uint32_t category) {
         require(value.category == category && value.api == FJ_API_NONE && value.native_code == 0, "complete cache/cleanup status");
     }
+    struct BoundaryHold {
+        FjOutputBoundaryOwner* owner = nullptr;
+        FjOutputBoundaryView view{};
+        std::span<const float> cmax;
+        std::uint64_t transformHash = 0, contractHash = 0, hash = 0;
+        bool valid = false;
+        ~BoundaryHold() {
+            (void)fj_test_output_boundary_release(owner, nullptr);
+        }
+    };
+    class Hold {
+        std::shared_ptr<BoundaryHold> value;
+
+    public:
+        Hold() = default;
+        explicit Hold(std::shared_ptr<BoundaryHold> input) : value(std::move(input)) {}
+        explicit operator bool() const {
+            return bool(value);
+        }
+        const BoundaryHold* operator->() const {
+            return value.get();
+        }
+        void reset() {
+            value.reset();
+        }
+        friend bool operator==(const Hold& a, const Hold& b) {
+            return (!a && !b) || (a && b && a->view.entry_identity == b->view.entry_identity);
+        }
+    };
+    struct HullHold {
+        std::shared_ptr<FjInputHullOwner> owner;
+        FjInputHullView view{};
+        explicit operator bool() const {
+            return bool(owner);
+        }
+        friend bool operator==(const HullHold& a, const HullHold& b) {
+            return a.view.entry_identity == b.view.entry_identity;
+        }
+    };
+    std::atomic<std::uint64_t> rustAllocations{0}, rustDestructions{0};
+    class OutputCacheProbe {
+        // Observed calls borrow the native Library's existing Assets owner and
+        // select/retain its actual Rust entries.
+        JuicerAssets::Library native;
+        bool lateFailure = false;
+        static std::uint32_t after_miss(std::uint64_t generation) noexcept {
+            try {
+                Hooks::after_miss(generation);
+                return FJ_STATUS_SUCCESS;
+            } catch (...) {
+                return FJ_STATUS_INTERNAL_FAILURE;
+            }
+        }
+        static std::uint32_t after_selection(std::uint32_t warm, std::uint64_t generation) noexcept {
+            try {
+                Hooks::after_selection(warm != 0, generation, 0);
+                return FJ_STATUS_SUCCESS;
+            } catch (...) {
+                return FJ_STATUS_INTERNAL_FAILURE;
+            }
+        }
+
+    public:
+        explicit OutputCacheProbe(const std::filesystem::path& resources) : native(resources) {}
+        ~OutputCacheProbe() {
+            FjCacheMetrics m{};
+            const auto result = fj_test_cache_metrics(owner(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &m, nullptr);
+            if (result.category != FJ_STATUS_SUCCESS || result.api != FJ_API_NONE || result.native_code != 0)
+                ++Hooks::violations;
+            rustAllocations += m.allocations;
+            rustDestructions += m.destructions;
+        }
+        FjAssets* owner() const {
+            return native.borrow_rust_assets();
+        }
+        FjCacheMetrics metrics() const {
+            FjCacheMetrics out{};
+            status(fj_test_cache_metrics(owner(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &out, nullptr), FJ_STATUS_SUCCESS);
+            return out;
+        }
+        Hold output_boundary_table(const Gamut::OutputGamutTransform& transform, std::string& diagnostic) {
+            if (Hooks::forcedGeneration) {
+                status(fj_test_output_cache_set_generation(owner(), *Hooks::forcedGeneration, nullptr), FJ_STATUS_SUCCESS);
+                Hooks::forcedGeneration.reset();
+            }
+            if (std::exchange(Hooks::rejectAllocation, false))
+                status(fj_test_cache_fault(owner(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, 3, nullptr), FJ_STATUS_SUCCESS);
+            FjOutputBoundarySource source{};
+            source.output_space = static_cast<std::uint32_t>(transform.outputColorSpace);
+            std::copy(transform.d65XyzToNativeRgb.begin(), transform.d65XyzToNativeRgb.end(), source.d65_xyz_to_native_rgb);
+            source.transform_hash = transform.hash;
+            const FjOutputCacheHooks hooks{after_miss, after_selection};
+            FjOutputBoundaryOwner* acquired = nullptr;
+            std::array<char, 512> bytes{};
+            FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+            diagnostic.clear();
+            const auto result = fj_test_assets_output_boundary_acquire_observed(owner(), &source, transform.contractHash, &hooks, &acquired, &error);
+            if (result.category != FJ_STATUS_SUCCESS) {
+                require(acquired == nullptr, "failed Rust acquisition publishes no hold");
+                diagnostic.assign(bytes.data(), error.length);
+                if (result.category == FJ_STATUS_ALLOCATION_FAILURE)
+                    throw std::bad_alloc{};
+                if (result.category != FJ_STATUS_PREPARATION_FAILURE)
+                    throw JuicerCuda::ExecutionFailure{{result, diagnostic}};
+                return {};
+            }
+            std::unique_ptr<FjOutputBoundaryOwner, decltype([](FjOutputBoundaryOwner* value) {
+                                (void)fj_test_output_boundary_release(value, nullptr);
+                            })>
+                guard(acquired);
+            if (std::exchange(Hooks::rejectWrapperAllocation, false))
+                SpectralAllocationProbe::arm();
+            auto held = std::make_shared<BoundaryHold>();
+            held->owner = guard.release();
+            status(fj_test_output_boundary_view(held->owner, &held->view, nullptr), FJ_STATUS_SUCCESS);
+            held->cmax = {held->view.cmax.data, held->view.cmax.count};
+            held->transformHash = held->view.transform_hash;
+            held->contractHash = held->view.contract_hash;
+            held->hash = held->view.hash;
+            held->valid = true;
+            return Hold(std::move(held));
+        }
+        HullHold input_compression_hull() {
+            FjInputHullOwner* acquired = nullptr;
+            status(fj_test_assets_input_hull_acquire(owner(), &acquired, nullptr), FJ_STATUS_SUCCESS);
+            HullHold out{std::shared_ptr<FjInputHullOwner>(acquired, [](FjInputHullOwner* value) {
+                             (void)fj_test_input_hull_release(value, nullptr);
+                         }),
+                         {}};
+            status(fj_test_input_hull_view(acquired, &out.view, nullptr), FJ_STATUS_SUCCESS);
+            return out;
+        }
+        void fail_clear_late() {
+            lateFailure = true;
+        }
+        FjStatus release_cached_payloads(FjErrorBuffer* error = nullptr) {
+            status(fj_test_cache_clear_failures(owner(), std::exchange(Hooks::rejectIlluminantClear, false), std::exchange(lateFailure, false), nullptr), FJ_STATUS_SUCCESS);
+            const auto result = fj_legacy_assets_release_cached_payloads(owner(), error);
+            status(fj_test_output_cache_generation(owner(), &Hooks::observedGeneration, nullptr), FJ_STATUS_SUCCESS);
+            return result;
+        }
+    };
     struct Expected {
         Gamut::OutputGamutTransform transform;
         std::vector<std::uint32_t> words;
@@ -197,16 +280,16 @@ namespace {
     }
     void completed(const Hold& hold, const Expected& expected) {
         require(hold && hold->valid && hold->transformHash == expected.transform.hash && hold->contractHash == expected.transform.contractHash && hold->hash == expected.hash, "retained complete identities");
-        require(std::memcmp(hold->cmax.data(), expected.words.data(), sizeof(hold->cmax)) == 0, "retained every table word");
+        require(hold->cmax.size() == expected.words.size() && std::memcmp(hold->cmax.data(), expected.words.data(), expected.words.size() * sizeof(std::uint32_t)) == 0, "retained every table word");
     }
-    Hold acquire(JuicerAssets::Library& library, const Expected& expected) {
+    Hold acquire(OutputCacheProbe& library, const Expected& expected) {
         std::string diagnostic;
         auto hold = library.output_boundary_table(expected.transform, diagnostic);
         require(bool(hold), diagnostic);
         completed(hold, expected);
         return hold;
     }
-    void clear(JuicerAssets::Library& library, std::uint64_t generation) {
+    void clear(OutputCacheProbe& library, std::uint64_t generation) {
         status(library.release_cached_payloads(), FJ_STATUS_SUCCESS);
         require(Hooks::observedGeneration == generation, "clear generation/completion acknowledgement");
     }
@@ -221,18 +304,18 @@ namespace {
         Hooks::Gate selected;
         std::future<Outcome> result;
         std::thread thread;
-        Worker(JuicerAssets::Library& library, const Expected& input, bool pauseMiss, bool pauseSelected = false, bool warm = false, unsigned fault = 0, bool nativeAllocation = false) {
+        Worker(OutputCacheProbe& library, const Expected& input, bool pauseMiss, bool pauseSelected = false, bool warm = false, unsigned fault = 0, bool entryAllocation = false) {
             std::promise<Outcome> promise;
             result = promise.get_future();
-            thread = std::thread([&, pauseMiss, pauseSelected, warm, fault, nativeAllocation, promise = std::move(promise)]() mutable {
+            thread = std::thread([&, pauseMiss, pauseSelected, warm, fault, entryAllocation, promise = std::move(promise)]() mutable {
                 Hooks::missGate = pauseMiss ? &miss : nullptr;
                 Hooks::selectedGate = pauseSelected ? &selected : nullptr;
                 Hooks::selectedWarm = warm;
                 Outcome out;
                 try {
                     if (fault)
-                        status(fj_test_output_gamut_arm_fault(2, 0, fault), FJ_STATUS_SUCCESS);
-                    Hooks::rejectAllocation = nativeAllocation;
+                        status(fj_test_cache_fault(library.owner(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, fault, nullptr), FJ_STATUS_SUCCESS);
+                    Hooks::rejectAllocation = entryAllocation;
                     out.hold = library.output_boundary_table(input.transform, out.diagnostic);
                     if (!out.hold)
                         out.category = FJ_STATUS_PREPARATION_FAILURE;
@@ -245,9 +328,13 @@ namespace {
                     out.category = FJ_STATUS_INTERNAL_FAILURE;
                     out.diagnostic = error.what();
                 }
-                if (fault)
-                    out.consumed = fj_test_output_gamut_fault_consumed(2, 0, fault) == 1 && fj_test_output_gamut_fault_consumed(2, 0, fault) == 0;
-                fj_test_output_gamut_clear_fault();
+                if (fault) {
+                    std::uint64_t first = 0, second = 0;
+                    status(fj_test_cache_fault_consumed(library.owner(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &first, nullptr), FJ_STATUS_SUCCESS);
+                    status(fj_test_cache_fault_consumed(library.owner(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &second, nullptr), FJ_STATUS_SUCCESS);
+                    out.consumed = first == 1 && second == 0;
+                }
+                status(fj_test_cache_fault(library.owner(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, 0, nullptr), FJ_STATUS_SUCCESS);
                 Hooks::rejectAllocation = false;
                 Hooks::missGate = nullptr;
                 Hooks::selectedGate = nullptr;
@@ -267,7 +354,7 @@ namespace {
             return out;
         }
     };
-    void stale(JuicerAssets::Library& library, const Expected& a, const Expected& b, bool repeated) {
+    void stale(OutputCacheProbe& library, const Expected& a, const Expected& b, bool repeated) {
         Worker actor(library, a, true);
         actor.miss.acknowledge();
         const auto old = acquire(library, b);
@@ -298,7 +385,7 @@ namespace {
         completed(result.hold, a);
         completed(old, b);
     }
-    void selection(JuicerAssets::Library& library, const Expected& a, const Expected& b, int variant, bool matching) {
+    void selection(OutputCacheProbe& library, const Expected& a, const Expected& b, int variant, bool matching) {
         Hold old;
         if (variant == 0)
             old = acquire(library, b);
@@ -325,8 +412,8 @@ namespace {
         if (old)
             completed(old, b);
     }
-    void own_failure(JuicerAssets::Library& library, const Expected& a, const Expected& b, FailureTiming timing, unsigned fault, bool matching, bool nativeAllocation) {
-        Worker actor(library, a, true, false, false, fault, nativeAllocation);
+    void own_failure(OutputCacheProbe& library, const Expected& a, const Expected& b, FailureTiming timing, unsigned fault, bool matching, bool entryAllocation) {
+        Worker actor(library, a, true, false, false, fault, entryAllocation);
         actor.miss.acknowledge();
         const auto old = acquire(library, b);
         Hold current = old;
@@ -343,10 +430,10 @@ namespace {
         const auto generation = static_cast<std::uint64_t>(timing);
         actor.miss.resume();
         const auto result = actor.finish();
-        require(!result.hold && result.category == (nativeAllocation || fault == 3 ? FJ_STATUS_ALLOCATION_FAILURE : fault == 2 ? FJ_STATUS_INTERNAL_FAILURE
-                                                                                                                               : FJ_STATUS_PREPARATION_FAILURE),
+        require(!result.hold && result.category == (entryAllocation || fault == 3 ? FJ_STATUS_ALLOCATION_FAILURE : fault == 2 ? FJ_STATUS_INTERNAL_FAILURE
+                                                                                                                              : FJ_STATUS_PREPARATION_FAILURE),
                 "own failure never substitutes winner/private success");
-        require(nativeAllocation || result.consumed, "one operation-specific fault consumed with no hidden retry");
+        require(entryAllocation || result.consumed, "one operation-specific fault consumed with no hidden retry");
         completed(old, b);
         if (n1)
             completed(n1, b);
@@ -370,7 +457,7 @@ namespace {
         const auto& a = inputs.matching;
         const auto& conflict = inputs.conflicting;
         {
-            JuicerAssets::Library library(resources);
+            OutputCacheProbe library(resources);
             Worker actor(library, a, true);
             actor.miss.acknowledge();
             const auto winner = acquire(library, a);
@@ -380,7 +467,7 @@ namespace {
             completed(winner, a);
         }
         {
-            JuicerAssets::Library library(resources);
+            OutputCacheProbe library(resources);
             Worker actor(library, conflict, true);
             actor.miss.acknowledge();
             const auto winner = acquire(library, a);
@@ -389,7 +476,7 @@ namespace {
             require(!result.hold && result.diagnostic.find("published_identity") != std::string::npos && acquire(library, a) == winner, "same-generation conflicts reject without replacement");
         }
         {
-            JuicerAssets::Library library(resources);
+            OutputCacheProbe library(resources);
             Worker actor(library, a, true);
             actor.miss.acknowledge();
             clear(library, 1);
@@ -399,25 +486,33 @@ namespace {
             require(acquire(library, a) != result.hold, "clear before any publication leaves stale candidate uncached");
         }
         {
-            JuicerAssets::Library library(resources);
+            OutputCacheProbe library(resources);
             const auto winner = acquire(library, a);
             auto bad = a.transform;
             bad.hash ^= 1;
             bad.contractHash ^= 1;
             std::string diagnostic;
-            auto before = fj_test_output_gamut_visits(2);
+            auto before = library.metrics().derivations;
             require(!library.output_boundary_table(bad, diagnostic) && diagnostic.find("published_identity") != std::string::npos, "transform mismatch precedes contract");
             bad.hash = a.transform.hash;
             require(!library.output_boundary_table(bad, diagnostic) && diagnostic.find("contract_identity") != std::string::npos, "ordered contract mismatch");
-            require(fj_test_output_gamut_visits(2) == before && acquire(library, a) == winner, "warm mismatches do not rebuild/replace");
-            before = fj_test_output_gamut_visits(2);
-            const auto allocations = Hooks::allocations.load();
+            require(library.metrics().derivations == before && acquire(library, a) == winner, "warm mismatches do not rebuild/replace");
+            before = library.metrics().derivations;
+            const auto allocations = library.metrics().allocations;
             for (int i = 0; i < 100; ++i)
                 require(acquire(library, a) == winner, "warm owner");
-            require(fj_test_output_gamut_visits(2) == before && Hooks::allocations.load() == allocations, "warm no foreign build or table allocation");
+            require(library.metrics().derivations == before && library.metrics().allocations == allocations, "warm no foreign build or table allocation");
+            Hooks::rejectWrapperAllocation = true;
+            bool wrapperFailure = false;
+            try {
+                (void)library.output_boundary_table(a.transform, diagnostic);
+            } catch (const std::bad_alloc&) {
+                wrapperFailure = true;
+            }
+            require(wrapperFailure && library.metrics().allocations == allocations && acquire(library, a) == winner, "native wrapper allocation failure leaves actual Rust winner intact");
         }
         {
-            JuicerAssets::Library library(resources);
+            OutputCacheProbe library(resources);
             auto old = acquire(library, a);
             auto peer = old;
             clear(library, 1);
@@ -425,26 +520,29 @@ namespace {
             old.reset();
             completed(peer, a);
             require(acquire(library, a) == current, "older payload release preserves current winner and peer");
+            const auto before = library.metrics();
             peer.reset();
+            const auto after = library.metrics();
+            require(after.destructions == before.destructions + 1 && after.live_bytes != 0 && after.live_bytes < before.live_bytes, "last hold reclaims actual old Rust backing");
             completed(current, a);
             require(acquire(library, a) == current, "last older payload release preserves current winner");
         }
         for (bool earlier : {false, true}) {
-            JuicerAssets::Library library(resources);
+            OutputCacheProbe library(resources);
             const auto winner = acquire(library, a);
             const auto hull = library.input_compression_hull();
             require(bool(hull), "A8 retained hull available");
             Hooks::forcedGeneration = std::numeric_limits<std::uint64_t>::max();
             require(acquire(library, a) == winner && Hooks::observedGeneration == std::numeric_limits<std::uint64_t>::max(), "forced exhaustion established before clear");
             Hooks::rejectIlluminantClear = earlier;
-            fj_test_cache_release_failure();
+            library.fail_clear_late();
             std::array<char, 256> bytes{};
             FjErrorBuffer error{bytes.data(), bytes.size(), 0};
             status(library.release_cached_payloads(&error), earlier ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_INTERNAL_FAILURE);
             require(Hooks::observedGeneration == std::numeric_limits<std::uint64_t>::max() && acquire(library, a) == winner, "exhaustion preserves slots/generation");
             require(std::string(bytes.data(), error.length) == (earlier ? "host cache cleanup allocation failed" : "output boundary cache generation exhausted"), "cleanup first-failure text/precedence");
             {
-                JuicerAssets::Library independent(resources);
+                OutputCacheProbe independent(resources);
                 status(independent.release_cached_payloads(), FJ_STATUS_SUCCESS);
             }
             status(library.release_cached_payloads(), FJ_STATUS_INTERNAL_FAILURE);
@@ -470,39 +568,66 @@ int main(int argc, char** argv) {
         std::ifstream tables(directory / member["tables"].get<std::string>(), std::ios::binary);
         const auto b = expected(fixture["rows"][0], tables);
         const auto conflict = expected(fixture["rows"][1], tables);
+        for (unsigned allocation = 1; allocation <= 2; ++allocation) {
+            JuicerAssets::Library native(argv[1]);
+            std::string diagnostic;
+            auto warm = native.output_boundary_table(b.transform, diagnostic);
+            require(warm && warm->hash == b.hash && std::memcmp(warm->cmax.data(), b.words.data(), b.words.size() * sizeof(std::uint32_t)) == 0, "native forwarded boundary matches every frozen word");
+            SpectralAllocationProbe::arm(allocation);
+            bool failed = false;
+            try {
+                (void)native.output_boundary_table(b.transform, diagnostic);
+            } catch (const std::bad_alloc&) {
+                failed = true;
+            }
+            require(failed && SpectralAllocationProbe::bytes() != 0, "actual native boundary handle/control-block allocation failure");
+            SpectralAllocationProbe::clear();
+            status(native.release_cached_payloads(), FJ_STATUS_SUCCESS);
+            FjCacheMetrics metrics{};
+            status(fj_test_cache_metrics(native.borrow_rust_assets(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &metrics, nullptr), FJ_STATUS_SUCCESS);
+            require(metrics.allocations == 1 && metrics.destructions == 0, "native warm hold survives cache clear without a replacement allocation");
+            // Releasing the only successful wrapper must reclaim the entry; no
+            // failed wrapper may have leaked its earlier foreign acquisition.
+            warm.reset();
+            status(fj_test_cache_metrics(native.borrow_rust_assets(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &metrics, nullptr), FJ_STATUS_SUCCESS);
+            require(metrics.destructions == 1 && metrics.live_bytes == 0, "failed native boundary wrappers release their foreign holds");
+        }
         for (bool matching : {true, false}) {
             const auto& a = matching ? b : conflict;
             for (bool repeated : {false, true}) {
-                JuicerAssets::Library library(argv[1]);
+                OutputCacheProbe library(argv[1]);
                 stale(library, a, b, repeated);
                 std::printf("W%u completion/identity/all-word/retention PASS\n", repeated ? matching ? 3u : 4u : matching ? 1u
                                                                                                                           : 2u);
             }
             for (int variant = 0; variant < 2; ++variant) {
-                JuicerAssets::Library library(argv[1]);
+                OutputCacheProbe library(argv[1]);
                 selection(library, a, b, variant, matching);
                 std::printf("W%u selected hold %s PASS\n", variant == 0 ? 6u : 7u, matching ? "matching" : "conflicting");
             }
             for (auto timing : {FailureTiming::SameGeneration, FailureTiming::AfterClear, FailureTiming::AfterRepeatedClear})
                 for (unsigned fault : {2u, 3u, 5u}) {
-                    JuicerAssets::Library library(argv[1]);
+                    OutputCacheProbe library(argv[1]);
                     own_failure(library, a, b, timing, fault, matching, false);
                 }
         }
         {
-            JuicerAssets::Library library(argv[1]);
+            OutputCacheProbe library(argv[1]);
             selection(library, b, b, 2, true);
             std::puts("W7 self-publication selection before clear PASS");
         }
         for (auto timing : {FailureTiming::SameGeneration, FailureTiming::AfterClear, FailureTiming::AfterRepeatedClear}) {
-            JuicerAssets::Library library(argv[1]);
+            OutputCacheProbe library(argv[1]);
             own_failure(library, b, b, timing, 0, true, true);
         }
         controls(argv[1], {b, conflict});
-        require(Hooks::violations.load() == 0 && Hooks::allocations.load() > 0 && Hooks::destructions.load() > 0, "allocation/free/foreign/format/wait scope controls");
+        require(Hooks::violations.load() == 0 && rustAllocations.load() > 0 && rustDestructions.load() > 0, "allocation/free/foreign/format/wait scope controls");
         status(owner.close(), FJ_STATUS_SUCCESS);
         std::puts("W1-W7, own failures/retries, same-generation, mismatch order, exhaustion/precedence/Rust cleanup, destruction scopes and A8 lifetime PASS");
         return 0;
+    } catch (const JuicerCuda::ExecutionFailure& error) {
+        std::fprintf(stderr, "%s\n", error.failure.diagnostic.c_str());
+        return 1;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
         return 1;

@@ -208,7 +208,7 @@ struct FilmRawRecipe {
     std::string projectionIlluminant;
     bool inputCompressionActive = true;
     std::uint64_t inputCompressionHullHash = 0;
-    std::shared_ptr<const Gamut::InputCompressionHull> inputCompressionHull;
+    std::shared_ptr<const Gamut::InputHullHold> inputCompressionHull;
     std::uint64_t tcSourceAssetHash = 0;
     std::array<std::array<float, 3>, 81> finalSensitivity{};
     std::uint64_t finalSensitivityHash = 0;
@@ -791,7 +791,7 @@ namespace Spektrafilm {
         std::uint64_t tcSourceAssetHash = 0;
         // The selected source hold in the caller covers synchronous foundation construction.
         const JuicerAssets::FilmSource* filmSource = nullptr;
-        std::shared_ptr<const Gamut::InputCompressionHull> inputCompressionHull;
+        std::shared_ptr<const Gamut::InputHullHold> inputCompressionHull;
         std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
         std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
         std::string filmProfileKey;

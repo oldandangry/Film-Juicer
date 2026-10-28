@@ -1183,9 +1183,19 @@ and physical projection, extent/attachment constraints, canonical raw sentinels,
 generation consistency and all eight accepted direct/print scratch generations.
 These are product contracts and need no device at runtime.
 
+`Ffi.Host.PreparedState` checks complete-state C11/C++/Rust layouts, clearing,
+consume-once ownership and retained cache backing. `Prepare.Host.StateProducts`
+compares complete Rust preparation with accepted family expectations and native
+composition for all twelve route/reconstruction combinations, perturbations and
+competing failures. `Ffi.Gpu.PreparedStateLifetime` consumes held direct/print
+states after enqueue with active spatial DIR and verifies native staging survives
+borrow expiry. The fixture keeps optics, grain and physical effects disabled.
+These groups add preparation/ownership evidence; production callback publication
+and installed-host acceptance remain separate. See [the FFI guide](ffi/README.md#complete-prepared-state).
+
 `Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.
 It checks bit-exact equivalence between cold/warm C-boundary execution, the direct
-executor and the processor adapter for all seven scenarios. Each case starts a
+executor and the processor adapter for all nine scenarios. Each case starts a
 fresh process and native owner, calls the C boundary before any other render to
 exercise cold uploads, then repeats with warm resources and calls the other paths.
 Independent numerical expectations are checked separately by

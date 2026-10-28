@@ -90,6 +90,10 @@ fn normalize_curves(curves: &mut [[f32; 3]]) -> ([f32; 3], [f32; 3]) {
 }
 
 impl Development {
+    pub fn profile(&self) -> &FilmProfile {
+        &self.profile
+    }
+
     pub fn new(profile: Arc<FilmProfile>, params: Params) -> Result<Self, Error> {
         if !params.gamma_factor.is_finite() || !(0.05..=4.0).contains(&params.gamma_factor) {
             return Err(Error::InvalidGamma);

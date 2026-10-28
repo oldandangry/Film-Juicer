@@ -4,7 +4,7 @@
 #include <new>
 
 namespace {
-    thread_local bool rejectNativeAllocation = false;
+    thread_local unsigned rejectNativeAllocation = 0;
     thread_local std::size_t rejectedNativeBytes = 0;
 } // namespace
 // Fixture-only rejection of real native projection/cache allocations.
@@ -13,8 +13,7 @@ namespace {
 // Keep this exception on the fixture's three replacement operators only.
 // NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(std::size_t bytes) {
-    if (rejectNativeAllocation) {
-        rejectNativeAllocation = false;
+    if (rejectNativeAllocation != 0 && --rejectNativeAllocation == 0) {
         rejectedNativeBytes = bytes;
         throw std::bad_alloc{};
     }
@@ -32,12 +31,12 @@ void operator delete(void* storage, std::size_t) noexcept {
 // NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 namespace SpectralAllocationProbe {
-    void arm() {
+    void arm(unsigned allocation) {
         rejectedNativeBytes = 0;
-        rejectNativeAllocation = true;
+        rejectNativeAllocation = allocation;
     }
     void clear() {
-        rejectNativeAllocation = false;
+        rejectNativeAllocation = 0;
     }
     std::size_t bytes() {
         return rejectedNativeBytes;

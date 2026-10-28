@@ -35,7 +35,7 @@ namespace Scanner {
 } // namespace Scanner
 namespace Gamut {
     struct OutputGamutTransform;
-    struct OutputBoundaryTable;
+    class OutputBoundaryHold;
 } // namespace Gamut
 namespace JuicerAssets {
     class Library;
@@ -582,7 +582,7 @@ namespace JuicerCuda {
         const Spectral::SpectralTables* scannerTables = nullptr;
         const Scanner::ColorRuntime* scannerColor = nullptr;
         const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
-        const Gamut::OutputBoundaryTable* outputBoundaryTable = nullptr;
+        const Gamut::OutputBoundaryHold* outputBoundaryTable = nullptr;
     };
 
     // Descriptor-driven film and selected scan-route preparation. This is called only behind

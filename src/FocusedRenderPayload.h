@@ -18,7 +18,7 @@ struct FocusedRenderPayload {
     std::optional<std::array<float, Spectral::kNumSamples>> printMainIlluminant;
     Spectral::SpectralTables scannerTables;
     Scanner::ColorRuntime scannerColor;
-    std::shared_ptr<const Gamut::OutputBoundaryTable> outputBoundaryTable;
+    std::shared_ptr<const Gamut::OutputBoundaryHold> outputBoundaryTable;
     std::uint64_t uploadCoreHash = 0;
     std::uint64_t scannerHash = 0;
 };

@@ -1110,6 +1110,21 @@ class RustBoundaryTests(unittest.TestCase):
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assertEqual(status, 0, diagnostics)
 
+    def test_prepared_state_is_complete_private_and_borrowed(self) -> None:
+        self.check_fixture_cases(
+            "film-juicer-plugin/src/lib.rs",
+            "film-juicer-plugin",
+            cases=(
+                ('prepared_state_complete', None),
+                ('prepared_state_private', {'E0616': ('state.hash',), 'E0603': ('crate::preparation::project_state',)}),
+                ('prepared_state_construction', {'E0451': ('RenderState { ..state }',)}),
+                ('prepared_state_default', {'E0599': ('RenderState::default()',)}),
+                ('prepared_state_mutation', {'E0594': ('state.s_inverse()[0]',)}),
+                ('prepared_state_borrow', {'E0515': ('state.s_inverse()',), 'E0505': ('drop(state)',)}),
+            ),
+            feature_forms=(False, True),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

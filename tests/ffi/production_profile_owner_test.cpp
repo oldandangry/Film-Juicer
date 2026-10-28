@@ -33,6 +33,7 @@
 #include "RustAssetBridge.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
+#include "spectral_allocation_probe.h"
 
 extern "C" const std::size_t* fj_test_production_profile_abi_c_facts(std::size_t* count);
 extern "C" const std::size_t* fj_test_production_profile_abi_facts(std::size_t* count);
@@ -54,6 +55,8 @@ static_assert(std::is_same_v<decltype(&fj_legacy_film_profile_release), FjStatus
 static_assert(std::is_same_v<decltype(&fj_legacy_print_profile_release), FjStatus (*)(FjPrintProfile*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_legacy_print_density_release), FjStatus (*)(FjPrintDensityCurves*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_legacy_assets_release_cached_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_legacy_assets_release_derived_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_legacy_assets_release_source_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
 
 namespace {
     namespace fs = std::filesystem;
@@ -98,9 +101,10 @@ namespace {
     };
     struct Film {
         FjFilmProfile* owner = nullptr;
-        Film(const Assets& assets, const std::string& key) {
-            expect_status(fj_legacy_film_profile_acquire(assets.owner, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
+        Film(const FjAssets* assets, const std::string& key) {
+            expect_status(fj_legacy_film_profile_acquire(assets, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
         }
+        Film(const Assets& assets, const std::string& key) : Film(assets.owner, key) {}
         ~Film() {
             require_release(fj_legacy_film_profile_release(owner, nullptr));
         }
@@ -483,6 +487,65 @@ namespace {
         failed.join();
         EXPECT_EQ(failedResult, winner);
         EXPECT_EQ(fj_test_profile_live_owners(), 1u);
+    }
+
+    void check_cleanup_precedence(bool earlier, bool allocationFailure) {
+        JuicerAssets::AssetBridge bridge(resources);
+        ASSERT_TRUE(bridge.load_catalog().valid);
+        std::weak_ptr<const JuicerAssets::FilmSource> converted;
+        {
+            const auto source = bridge.film_source("kodak_portra_400");
+            ASSERT_NE(source, nullptr);
+            converted = source;
+            const auto curves = bridge.illuminants();
+            ASSERT_NE(curves, nullptr);
+        }
+        Film original(bridge.borrow_assets(), "kodak_portra_400");
+        Film warm(bridge.borrow_assets(), "kodak_portra_400");
+        const auto before = original.view();
+        ASSERT_EQ(before.tables.log_exposure.data, warm.view().tables.log_exposure.data);
+        ASSERT_FALSE(converted.expired());
+        expect_status(fj_test_cache_clear_failures(bridge.borrow_assets(), earlier, 1, nullptr), FJ_STATUS_SUCCESS);
+        std::array<char, 256> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        if (allocationFailure)
+            SpectralAllocationProbe::arm();
+        const auto result = bridge.release_cached_payloads(&error);
+        const auto rejectedBytes = SpectralAllocationProbe::bytes();
+        SpectralAllocationProbe::clear();
+        expect_status(result, earlier || allocationFailure ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_INTERNAL_FAILURE);
+        EXPECT_STREQ(message.data(), earlier ? "host cache cleanup allocation failed" : allocationFailure ? "native profile cache detachment allocation failed"
+                                                                                                          : "injected post-release cache failure");
+        EXPECT_EQ(error.length, std::strlen(message.data()));
+        EXPECT_EQ(converted.expired(), !allocationFailure);
+        if (allocationFailure) {
+            EXPECT_GT(rejectedBytes, 0u);
+            EXPECT_EQ(bridge.film_source("kodak_portra_400"), converted.lock());
+        }
+        FjCacheMetrics metrics{};
+        expect_status(fj_test_cache_metrics(bridge.borrow_assets(), FJ_TEST_CACHE_ILLUMINANTS, &metrics, nullptr), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(metrics.destructions, earlier ? 0u : 1u);
+        // Direct acquisition bypasses retained native slots and observes the
+        // actual Rust source cache, whose old backing is still held above.
+        Film fresh(bridge.borrow_assets(), "kodak_portra_400");
+        const auto after = fresh.view();
+        EXPECT_NE(before.tables.log_exposure.data, after.tables.log_exposure.data);
+        ASSERT_EQ(before.tables.log_exposure.count, after.tables.log_exposure.count);
+        EXPECT_EQ(std::memcmp(before.tables.log_exposure.data, after.tables.log_exposure.data, before.tables.log_exposure.count * sizeof(float)), 0);
+        // The late source fault must have run despite any earlier failure.
+        expect_status(fj_legacy_assets_release_source_payloads(bridge.borrow_assets(), nullptr), FJ_STATUS_SUCCESS);
+        expect_status(bridge.release_cached_payloads(), FJ_STATUS_SUCCESS);
+        EXPECT_TRUE(converted.expired());
+    }
+
+    TEST(ProductionProfileOwner, NativeConversionCleanupPrecedesSourceFailure) {
+        for (bool allocationFailure : {false, true})
+            check_cleanup_precedence(false, allocationFailure);
+    }
+
+    TEST(ProductionProfileOwner, DerivedCleanupFailurePrecedesNativeAndSourceFailures) {
+        for (bool allocationFailure : {false, true})
+            check_cleanup_precedence(true, allocationFailure);
     }
 
     TEST(ProductionProfileOwner, CacheReleaseOverlapsFirstCatalogPublication) {

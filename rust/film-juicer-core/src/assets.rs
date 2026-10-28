@@ -1,5 +1,12 @@
 //! Process asset ownership. Published handles outlive cache release and this owner.
 
+mod derived;
+pub use derived::{DerivedError, Illuminants, InputHull, OutputBoundary};
+#[cfg(feature = "test-support")]
+pub mod testing;
+#[cfg(feature = "test-support")]
+pub use derived::CurveFault;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -32,6 +39,7 @@ pub enum AssetError {
     CalibrationCachePoisoned,
     Noise(Arc<noise::Error>),
     NoiseCachePoisoned,
+    Derived(DerivedError),
 }
 
 impl fmt::Display for AssetError {
@@ -50,6 +58,7 @@ impl fmt::Display for AssetError {
             Self::CalibrationCachePoisoned => write!(f, "neutral calibration cache poisoned"),
             Self::Noise(source) => write!(f, "{source}"),
             Self::NoiseCachePoisoned => write!(f, "noise cache poisoned"),
+            Self::Derived(source) => write!(f, "{source}"),
         }
     }
 }
@@ -65,6 +74,7 @@ impl std::error::Error for AssetError {
             Self::CsvSource { error, .. } => Some(error),
             Self::Calibration(source) => Some(source.as_ref()),
             Self::Noise(source) => Some(source.as_ref()),
+            Self::Derived(source) => Some(source),
             Self::MissingProfile { .. }
             | Self::ProfileCachePoisoned { .. }
             | Self::CsvCachePoisoned { .. }
@@ -166,6 +176,13 @@ pub struct Assets {
     csv_sources: [Mutex<Option<Arc<CsvPairs>>>; 7],
     calibration: Mutex<Option<CalibrationSnapshot>>,
     noise: Mutex<Option<NoiseSnapshot>>,
+    illuminants: Mutex<Option<Arc<Illuminants>>>,
+    input_hull: Mutex<Option<Arc<InputHull>>>,
+    output_boundaries: Mutex<derived::OutputCache>,
+    #[cfg(feature = "test-support")]
+    curve_fault: Mutex<Option<(CsvSource, CurveFault)>>,
+    #[cfg(feature = "test-support")]
+    cache_observations: Arc<testing::Observations>,
 }
 
 impl Assets {
@@ -181,6 +198,13 @@ impl Assets {
             csv_sources: std::array::from_fn(|_| Mutex::new(None)),
             calibration: Mutex::new(None),
             noise: Mutex::new(None),
+            illuminants: Mutex::new(None),
+            input_hull: Mutex::new(None),
+            output_boundaries: Mutex::new(derived::OutputCache::new()),
+            #[cfg(feature = "test-support")]
+            curve_fault: Mutex::new(None),
+            #[cfg(feature = "test-support")]
+            cache_observations: Arc::new(testing::Observations::default()),
         }
     }
 
@@ -251,6 +275,20 @@ impl Assets {
     /// Retain the load snapshot until release. Selected branches are checked by lookup.
     pub fn neutral_calibration(&self) -> Result<Arc<NeutralCalibration>, AssetError> {
         self.calibration_with(|path| load_neutral_calibration(path).map(Arc::new))
+    }
+
+    /// Install a real decoded fixture snapshot in a quiescent test owner's
+    /// actual calibration slot. Existing holders retain the detached snapshot.
+    #[cfg(feature = "test-support")]
+    pub fn replace_calibration_source_for_test(&self, source: &Self) -> Result<(), AssetError> {
+        let replacement = source.neutral_calibration()?;
+        let detached = self
+            .calibration
+            .lock()
+            .map_err(|_| AssetError::CalibrationCachePoisoned)?
+            .replace(Ok(replacement));
+        drop(detached);
+        Ok(())
     }
 
     /// Acquire only for an enabled consumer. Capacity failures are not cached.
@@ -510,26 +548,50 @@ impl Assets {
         published.map(Ok).unwrap_or(prepared)
     }
 
-    /// Detach profile, CSV, calibration and noise holds. Catalog, reconstruction and CMF
-    /// outcomes remain fixed. Retained
+    /// Detach illuminants, output boundaries, then source payload holds. Input hull,
+    /// catalog, reconstruction and CMF outcomes remain fixed. Retained
     /// handles stay valid. An overlapping cold load may publish after release;
     /// callers requiring a drained cache must first exclude new loads.
     pub fn release_cached_payloads(&self) -> Result<(), AssetError> {
+        let derived = self.release_derived_payloads();
+        let sources = self.release_source_payloads();
+        derived.and(sources)
+    }
+
+    /// Detach derived holds before the retained native conversion layer is cleared.
+    /// Source holds are detached separately after that native phase.
+    pub fn release_derived_payloads(&self) -> Result<(), AssetError> {
+        let illuminants = self.release_illuminants();
+        let boundaries = self.release_output_boundaries();
+        illuminants.and(boundaries)
+    }
+
+    /// Detach source holds after derived and retained native conversion cleanup.
+    /// Every source is attempted, retaining the first failure and dropping outside locks.
+    pub fn release_source_payloads(&self) -> Result<(), AssetError> {
+        let mut first = None;
+        let mut record = |result: Result<(), AssetError>| {
+            if let Err(error) = result
+                && first.is_none()
+            {
+                first = Some(error);
+            }
+        };
         // Release on a new owner must not trigger catalog I/O.
         if let Some(Ok(snapshot)) = self.catalog.get() {
             for slot in snapshot.films.values() {
                 let removed = slot
                     .lock()
-                    .map_err(|_| AssetError::ProfileCachePoisoned { role: Role::Film })?
-                    .take();
-                drop(removed);
+                    .map_err(|_| AssetError::ProfileCachePoisoned { role: Role::Film })
+                    .map(|mut slot| slot.take());
+                record(removed.map(drop));
             }
             for slot in snapshot.prints.values() {
                 let removed = slot
                     .lock()
-                    .map_err(|_| AssetError::ProfileCachePoisoned { role: Role::Print })?
-                    .take();
-                drop(removed);
+                    .map_err(|_| AssetError::ProfileCachePoisoned { role: Role::Print })
+                    .map(|mut slot| slot.take());
+                record(removed.map(drop));
             }
         }
         for source in [
@@ -543,23 +605,25 @@ impl Assets {
         ] {
             let removed = self.csv_sources[source as usize]
                 .lock()
-                .map_err(|_| AssetError::CsvCachePoisoned { source })?
-                .take();
-            drop(removed);
+                .map_err(|_| AssetError::CsvCachePoisoned { source })
+                .map(|mut slot| slot.take());
+            record(removed.map(drop));
         }
         let calibration = self
             .calibration
             .lock()
-            .map_err(|_| AssetError::CalibrationCachePoisoned)?
-            .take();
-        drop(calibration);
+            .map_err(|_| AssetError::CalibrationCachePoisoned)
+            .map(|mut slot| slot.take());
+        record(calibration.map(drop));
         let noise = self
             .noise
             .lock()
-            .map_err(|_| AssetError::NoiseCachePoisoned)?
-            .take();
-        drop(noise);
-        Ok(())
+            .map_err(|_| AssetError::NoiseCachePoisoned)
+            .map(|mut slot| slot.take());
+        record(noise.map(drop));
+        #[cfg(feature = "test-support")]
+        record(self.cache_observations.after_payload_clear());
+        first.map_or(Ok(()), Err)
     }
 }
 

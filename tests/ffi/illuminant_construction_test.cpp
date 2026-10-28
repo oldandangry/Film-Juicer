@@ -22,6 +22,7 @@
 #include "ResourceAssetLibrary.h"
 #include "RustAssetBridge.h"
 #include "Cuda/JuicerCudaResources.h"
+#include "prepared_boundary.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "CudaRenderProjection.h"
 #include "juicer_cuda_owner.h"
@@ -536,9 +537,31 @@ namespace IlluminantConstruction {
             std::string diagnostic;
             const bool built = route ? build_print_render_state_product(controls, product, diagnostic) : build_direct_render_state_product(controls, product, diagnostic);
             ASSERT_EQ(built, row["built"].get<bool>()) << diagnostic;
+            FjStatus preparedStatus{};
+            std::string preparedDiagnostic;
+            auto preparedState = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), controls, preparedStatus, preparedDiagnostic);
+            ASSERT_EQ(bool(preparedState), built) << preparedDiagnostic;
             if (!built) {
                 EXPECT_FALSE(diagnostic.empty());
+                EXPECT_NE(preparedStatus.category, FJ_STATUS_SUCCESS);
+                EXPECT_FALSE(preparedDiagnostic.empty());
                 continue;
+            }
+            status(preparedStatus, FJ_STATUS_SUCCESS);
+            FjPreparedStateView prepared{};
+            status(fj_test_prepared_state_view(preparedState.get(), &prepared, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(prepared.recipe_hash, product.recipe.hash);
+            EXPECT_EQ(prepared.film_reference.hash, product.recipe.scannerOutput.syntheticFilmReference.hash);
+            ASSERT_EQ(prepared.exposure_tables.illuminant.count, product.payload.exposureTables.illum.size());
+            EXPECT_EQ(std::memcmp(prepared.exposure_tables.illuminant.data, product.payload.exposureTables.illum.data(), prepared.exposure_tables.illuminant.count * sizeof(float)), 0);
+            ASSERT_EQ(prepared.scanner_tables.illuminant.count, product.payload.scannerTables.illum.size());
+            EXPECT_EQ(std::memcmp(prepared.scanner_tables.illuminant.data, product.payload.scannerTables.illum.data(), prepared.scanner_tables.illuminant.count * sizeof(float)), 0);
+            if (product.payload.filmTcLut) {
+                ASSERT_EQ(prepared.film_exposure.tc_lut_rgba.count, product.payload.filmTcLut->samples().size());
+                EXPECT_EQ(std::memcmp(prepared.film_exposure.tc_lut_rgba.data, product.payload.filmTcLut->samples().data(), prepared.film_exposure.tc_lut_rgba.count * sizeof(float)), 0);
+            }
+            if (product.recipe.filmRaw.inputCompressionHull) {
+                EXPECT_EQ(prepared.input_hull.hash, product.recipe.filmRaw.inputCompressionHull->hash);
             }
             auto result = complete_result(product);
             result["exposure_tables"] = tables_result(product.payload.exposureTables);
@@ -555,6 +578,12 @@ namespace IlluminantConstruction {
                 result["preflash_light"] = bits(preflash);
                 result["preflash_raw"] = bits(input.preflashRawCmy);
                 result["print_descriptors"] = {input.descriptors.hash, input.descriptors.mainIlluminant.hash, input.descriptors.preflashIlluminant.hash, input.descriptors.preflashRaw.hash, input.descriptors.balance.hash};
+                EXPECT_EQ(prepared.print.hash, input.descriptors.hash);
+                EXPECT_EQ(prepared.print_balance.hash, product.recipe.print.balance.hash);
+                ASSERT_EQ(prepared.print.main_illuminant.count, product.payload.printMainIlluminant->size());
+                EXPECT_EQ(std::memcmp(prepared.print.main_illuminant.data, product.payload.printMainIlluminant->data(), prepared.print.main_illuminant.count * sizeof(float)), 0);
+                ASSERT_EQ(prepared.print.preflash_illuminant.count, preflash.size());
+                EXPECT_EQ(std::memcmp(prepared.print.preflash_illuminant.data, preflash.data(), preflash.size() * sizeof(float)), 0);
             }
             EXPECT_EQ(result, row["expected"]);
         }
@@ -588,7 +617,10 @@ namespace IlluminantConstruction {
                 InstanceState cold;
                 pending(cold, controls);
                 status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
-                status(fj_test_illuminant_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+                if (operation == 2 || operation == 3)
+                    status(fj_test_illuminant_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+                else
+                    status(fj_test_assets_illuminant_operation_fault(assets.borrow_rust_assets(), operation, fault, nullptr), FJ_STATUS_SUCCESS);
                 if (fault == 3) {
                     try {
                         (void)admit_pending_render_state(cold);
@@ -598,6 +630,11 @@ namespace IlluminantConstruction {
                     }
                 } else {
                     EXPECT_EQ(admit_pending_render_state(cold).status, PendingRenderAdmissionStatus::RebuildFailed);
+                }
+                if (operation != 2 && operation != 3) {
+                    std::uint32_t consumed = 0;
+                    status(fj_test_assets_illuminant_operation_consumed(assets.borrow_rust_assets(), &consumed, nullptr), FJ_STATUS_SUCCESS);
+                    EXPECT_EQ(consumed, 1u);
                 }
                 EXPECT_FALSE(JuicerAtomic::load_shared_ptr(&cold.activeDirectState));
                 EXPECT_FALSE(JuicerAtomic::load_shared_ptr(&cold.activePrintState));
@@ -614,7 +651,10 @@ namespace IlluminantConstruction {
                 changed.cameraExposureCompensationEv = 1.25;
                 pending(state, changed);
                 status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
-                status(fj_test_illuminant_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+                if (operation == 2 || operation == 3)
+                    status(fj_test_illuminant_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+                else
+                    status(fj_test_assets_illuminant_operation_fault(assets.borrow_rust_assets(), operation, fault, nullptr), FJ_STATUS_SUCCESS);
                 if (fault == 3) {
                     try {
                         (void)admit_pending_render_state(state);
@@ -633,6 +673,11 @@ namespace IlluminantConstruction {
                 EXPECT_EQ(state.buildCounterNext.load(), counter);
                 EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
                 EXPECT_EQ(fj_test_csv_live_owners(), 0u);
+                if (operation != 2 && operation != 3) {
+                    std::uint32_t consumed = 0;
+                    status(fj_test_assets_illuminant_operation_consumed(assets.borrow_rust_assets(), &consumed, nullptr), FJ_STATUS_SUCCESS);
+                    EXPECT_EQ(consumed, 1u);
+                }
                 const auto recovered = admit_pending_render_state(state);
                 ASSERT_TRUE(recovered.directState || recovered.printState);
                 EXPECT_TRUE(recovered.directState != old.directState || recovered.printState != old.printState);

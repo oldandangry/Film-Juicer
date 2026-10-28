@@ -1059,6 +1059,13 @@ FjStatus fj_legacy_print_density_view(const FjPrintDensityCurves* curves,
                                       FjErrorBuffer* error);
 FjStatus fj_legacy_print_density_release(FjPrintDensityCurves* curves, FjErrorBuffer* error);
 FjStatus fj_legacy_assets_release_cached_payloads(const FjAssets* assets, FjErrorBuffer* error);
+/* FJ_TEMP_BRIDGE: preserve retained native conversion cleanup order; remove S4.E.
+ * The native bridge releases derived holds, detaches/drops its conversion holds,
+ * then releases sources. Both phases borrow live Assets and preserve acquired
+ * owners. Each phase continues its own cleanup after failure. Callers without
+ * native conversion holds use release_cached_payloads above for both phases. */
+FjStatus fj_legacy_assets_release_derived_payloads(const FjAssets* assets, FjErrorBuffer* error);
+FjStatus fj_legacy_assets_release_source_payloads(const FjAssets* assets, FjErrorBuffer* error);
 
 /* FJ_TEMP_BRIDGE: spectral source conversion; remove S4.E.
  * Source views borrow their matching family owner, independently of Assets.
@@ -1926,6 +1933,146 @@ typedef struct FjEffectsFrameFailure {
     uint32_t reason;
 } FjEffectsFrameFailure;
 FjStatus fj_legacy_effects_frame_prepare(const FjEffectsFrameInput*, FjEffectsFrameMath*, FjEffectsFrameFailure*, FjErrorBuffer*);
+
+/* SF_TEMP_BRIDGE_PREPARED_STATE: captured snapshot and held immutable state.
+ * Remove at the last C++ snapshot/state caller in S5/S6. This section is the
+ * sole temporary snapshot inventory; it mirrors ParamSnapshot, including its
+ * captured resolved grain controls and currently unconsumed controls.
+ * Source records/keys are initialized, aligned, immutable and live through the
+ * synchronous call. Counts are elements, string lengths are bytes. Keys are
+ * UTF-8 without embedded NUL. Writable outputs/error backing are mutually
+ * disjoint and disjoint from inputs. Nonnull error records have initialized
+ * capacity and exclusive writable length; at zero capacity data is not read.
+ * View arrays borrow the actual retained state/entry backing until owner release.
+ * No view grants ownership. Acquire/create clears the owner slot before fallible
+ * work; view clears every defined field on failure. Release consumes one live
+ * matching handle once, even if diagnostic reporting fails. NULL release is inert.
+ * Caller excludes release while a call/view borrow is active; stale pointers and
+ * copied addresses are never additional holds. No borrowed span survives a native
+ * fj_cuda_render return, regardless of the longer state hold's lifetime.
+ * Entry identities identify payload allocations only while held. Never dereference
+ * them or include them in a content/recipe hash, seed or persisted identity.
+ * Recoverable substantial reservations return AllocationFailure; incidental small
+ * Box/Arc/path/parser allocation aborts retain their existing limitation.
+ */
+typedef struct FjIlluminantsOwner FjIlluminantsOwner;
+typedef struct FjInputHullOwner FjInputHullOwner;
+typedef struct FjOutputBoundaryOwner FjOutputBoundaryOwner;
+typedef struct FjIlluminantsView {
+    FjFloatSpan d65, d55, d50, tungsten, k75p, tungsten_kg3, tungsten_kg3_lens;
+    uintptr_t entry_identity;
+} FjIlluminantsView;
+typedef struct FjInputHullView {
+    float center_xy[2];
+    FjFloatSpan xy; /* 2050 f32, 1025 ordered xy points, closed polygon. */
+    uint64_t hash;
+    uintptr_t entry_identity;
+} FjInputHullView;
+typedef struct FjOutputBoundaryView {
+    FjFloatSpan cmax; /* 46080 f32, lightness-major [64][720]. */
+    uint64_t transform_hash, contract_hash, hash;
+    uintptr_t entry_identity;
+} FjOutputBoundaryView;
+FjStatus fj_legacy_assets_illuminants_acquire(const FjAssets*, FjIlluminantsOwner**, FjErrorBuffer*);
+FjStatus fj_legacy_illuminants_view(const FjIlluminantsOwner*, FjIlluminantsView*, FjErrorBuffer*);
+FjStatus fj_legacy_illuminants_release(FjIlluminantsOwner*, FjErrorBuffer*);
+FjStatus fj_legacy_assets_input_hull_acquire(const FjAssets*, FjInputHullOwner**, FjErrorBuffer*);
+FjStatus fj_legacy_input_hull_view(const FjInputHullOwner*, FjInputHullView*, FjErrorBuffer*);
+FjStatus fj_legacy_input_hull_release(FjInputHullOwner*, FjErrorBuffer*);
+FjStatus fj_legacy_assets_output_boundary_acquire(const FjAssets*, const FjOutputBoundarySource*, uint64_t expected_contract_hash, FjOutputBoundaryOwner**, FjErrorBuffer*);
+FjStatus fj_legacy_output_boundary_view(const FjOutputBoundaryOwner*, FjOutputBoundaryView*, FjErrorBuffer*);
+FjStatus fj_legacy_output_boundary_release(FjOutputBoundaryOwner*, FjErrorBuffer*);
+
+typedef struct FjPreparationHalation {
+    uint32_t active;
+    float scatter_amount, scatter_spatial_scale, halation_amount, halation_spatial_scale;
+} FjPreparationHalation;
+typedef struct FjPreparationParams {
+    double print_exposure, print_preflash_exposure, print_gamma_factor;
+    double preflash_m_filter_cc, preflash_y_filter_cc;
+    double print_shadow_compensation_factor, print_shadow_compensation_density, print_shadow_compensation_transition;
+    double glare_percent, glare_roughness, glare_blur_sigma_px;
+    double camera_exposure_compensation_ev; /* EV; print exposure/preflash are linear. */
+    float camera_film_format_long_edge_mm, film_gamma_factor;
+    double scanner_lens_blur_sigma_px, scanner_black_level, scanner_white_level, gate_weave_amount;
+    double scanner_unsharp_mask[2], print_ui_ymc_cc[3], camera_filter_uv[3], camera_filter_ir[3];
+    FjDiffusionParams camera_diffusion, enlarger_diffusion;
+    FjFilmDirParams dir_couplers;
+    FjStringView film_profile_key, print_profile_key;
+    int32_t spectral_upsampling_mode, ref_ill, enl_ill;
+    int32_t normalize_print_exposure, print_exposure_compensation;
+    int32_t input_color_space, input_cctf_decoding, input_compression_enabled;
+    int32_t hanatos2025_adaptation_window, hanatos2025_adaptation_surface;
+    int32_t camera_auto_exposure_enabled, camera_metering_method;
+    FjPreparationHalation scatter_halation;
+    int32_t scanner_black_correction, scanner_white_correction, scanner_lut_resolution;
+    int32_t output_color_space, output_cctf_encoding, output_gamut_compression_enabled;
+    FjVisualGrainParams grain;
+    float film_dust_amount, film_scratch_amount, gate_dust_amount, gate_scratch_amount;
+    uint32_t scan_route, glare_active, camera_filter_override;
+} FjPreparationParams;
+
+typedef struct FjPreparedSpectralView {
+    FjFloatSpan lambda_nm, illuminant;
+    FjFloatSpan observer_xyz[3], weighted_xyz[3], dyes_cmy[3];
+    FjFloatSpan baseline_min, baseline_mid;
+    float inv_yn, white_xyz[3];
+    uint32_t has_baseline;
+    uint64_t illuminant_hash, hash;
+} FjPreparedSpectralView;
+typedef struct FjPreparedInputPolicy {
+    uint32_t meter, band_pass_active, apply_hanatos_window, apply_hanatos_surface;
+    uint32_t projection_illuminant, input_compression_active;
+    float film_format_long_edge_mm, uv[3], ir[3], hanatos_spectral_blur;
+    float nominal_white_xyz[3], projection_white_xyz[3];
+    FjFloatSpan hanatos_window, hanatos_surface_rgb;
+    uint64_t input_hull_hash, tc_source_hash;
+} FjPreparedInputPolicy;
+typedef struct FjPreparedScannerPolicy {
+    uint32_t black_correction, white_correction, glare_active;
+    float black_level, white_level, glare_percent, glare_roughness, glare_blur_sigma_px;
+    float lens_blur_sigma_px, unsharp_sigma_px, unsharp_amount;
+} FjPreparedScannerPolicy;
+typedef struct FjPreparedStateView {
+    FjStringView film_profile_key, print_profile_key;
+    uint64_t film_profile_asset_version, print_profile_asset_version, profile_route_hash;
+    uint64_t recipe_hash, upload_core_hash, scanner_hash;
+    uint32_t route, polarity;
+    FjPreparedInputPolicy input_policy;
+    FjPreparedScannerPolicy scanner_policy;
+    FjFilmExposure film_exposure;
+    FjFilmDevelopment film_development;
+    FjFilmDirView dir_recipe;
+    FjFilmDensityMinimum grain_minimum;
+    FjFilmDensityBounds scanner_bounds, enlarger_film_bounds;
+    FjFilmReference film_reference;
+    FjSpatialOpticsRecipe optics;
+    FjVisualGrainRecipe grain;
+    FjPhysicalEffectsRecipe effects;
+    FjPreparedSpectralView exposure_tables, scanner_tables;
+    float s_inverse[9], midgray_dwg_rgb[3], raw_midgray[3], raw_green, midgray_scale;
+    uint32_t raw_midgray_bgr; /* 1 Mallett B/G/R; 0 TC R/G/B. */
+    FjInputHullView input_hull;
+    FjOutputBoundaryView output_boundary;
+    FjScannerLutDescriptor scanner_lut;
+    FjScannerColor scanner_color;
+    FjScannerColorCorrection scanner_correction;
+    FjScannerPostEffectsDescriptor scanner_post_effects;
+    FjOutputColor output_color;
+    FjPrint print;
+    double print_gamma;
+    float print_filter_main_cmy_cc[3], print_filter_preflash_cmy_cc[3];
+    uint32_t print_normalization_mode, normalize_print_exposure, print_exposure_compensation;
+    uint32_t calibration; /* 0 MissingFile, 1 MissingEntry, 2 Calibrated. */
+    float neutral_cmy_cc[3];
+    FjFloatSpan print_source_illuminant;
+    FjPrintBalance print_balance;
+    uint64_t scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash;
+} FjPreparedStateView;
+typedef struct FjPreparedState FjPreparedState;
+FjStatus fj_legacy_prepared_state_create(FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
+FjStatus fj_legacy_prepared_state_view(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*);
+FjStatus fj_legacy_prepared_state_release(FjPreparedState*, FjErrorBuffer*);
 
 #ifdef __cplusplus
 }

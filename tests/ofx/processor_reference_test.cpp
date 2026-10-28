@@ -1,6 +1,7 @@
 #include "../ffi/spatial_optics_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
 #include "../ffi/exposure_fixture.h"
+#include "../ffi/prepared_boundary.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -39,7 +40,6 @@
 
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
 #include "Cuda/JuicerCudaExecutor.h"
-#include "../ffi/prepared_boundary.h"
 #endif
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -848,7 +848,9 @@ namespace {
         Processor,
         Direct,
         Boundary,
-        Contract
+        State,
+        StateContract,
+        StateLifetime
     };
 
     enum class DestinationLayout : std::uint8_t {
@@ -858,7 +860,7 @@ namespace {
         DisjointRows
     };
 
-    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1) {
+    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream) {
         const int width = test.width;
         const int height = test.height;
         const int pitch = width * test.components + 5;
@@ -905,229 +907,253 @@ namespace {
         require_cuda(cudaMemcpy(device.source, input.data(), bytes, cudaMemcpyHostToDevice), "copy source");
         require_cuda(cudaMemcpy(device.destination, initialDestination.data(), destinationBytes, cudaMemcpyHostToDevice), "copy destination");
 
-        Properties effectProperties;
-        effectProperties.strings[kOfxImageEffectPropContext] = {kOfxImageEffectContextFilter};
-        Properties sourceProperties;
-        Properties destinationProperties;
-        const OfxRectI bounds{test.originX, test.originY, test.originX + width, test.originY + height};
-        const ImagePropertiesInput imageInput{bounds, test.components, pitch * static_cast<int>(sizeof(float))};
-        fill_image_properties(sourceProperties, device.source, imageInput);
-        const OfxRectI destinationBounds{bounds.x1 - border, bounds.y1 - border, bounds.x2 + border - (destinationLayout == DestinationLayout::Uncovered ? 1 : 0), bounds.y2 + border};
-        fill_image_properties(destinationProperties, device.destination, {destinationBounds, test.components, destinationPitch * static_cast<int>(sizeof(float))});
-        if (test.fullWidth > 0 && test.fullHeight > 0) {
-            sourceProperties.ints[kOfxImagePropRegionOfDefinition] = {0, 0, test.fullWidth, test.fullHeight};
-            destinationProperties.ints[kOfxImagePropRegionOfDefinition] = {0, 0, test.fullWidth, test.fullHeight};
-        }
-        sourceProperties.doubles[kOfxImageEffectPropRenderScale] = {test.scaleX, test.scaleY};
-        destinationProperties.doubles[kOfxImageEffectPropRenderScale] = {test.scaleX, test.scaleY};
-        const OfxPropertySetHandle sourceHandle =
-            reinterpret_cast<OfxPropertySetHandle>(&sourceProperties);
-        const OfxPropertySetHandle destinationHandle =
-            reinterpret_cast<OfxPropertySetHandle>(&destinationProperties);
-        ImageLeaseAudit imageLeaseAudit;
-        imageLeaseAudit.acquire(sourceHandle, "source");
-        imageLeaseAudit.acquire(destinationHandle, "destination");
-        {
-            ScopedImageLeaseAudit activeImageLeaseAudit(imageLeaseAudit);
-            NarrowEffect effect(reinterpret_cast<OfxImageEffectHandle>(&effectProperties));
-            OFX::Image sourceImage(sourceHandle);
-            OFX::Image destinationImage(destinationHandle);
-            {
-                std::lock_guard<std::mutex> lock(state.pending.m);
-                state.pending.value = PendingParamsState::Valid{parameters, hash_params(parameters)};
-            }
-            PendingRenderAdmissionResult admitted = admit_pending_render_state(state);
-#if defined(JUICER_NOISE_TEST_HOOK)
-            if (JuicerAssets::NoiseTest::observation) {
-                const auto earlier = JuicerAssets::NoiseTest::observation->earlier;
-                const auto change = [&](auto& published) {
-                    if (!published || earlier == JuicerAssets::NoiseTest::EarlierFailure::None || earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
-                        return;
-                    }
-                    FocusedRenderStateBuildProduct product;
-                    std::string diagnostic;
-                    const bool print = Spektrafilm::scan_route_is_print(parameters.scanRoute);
-                    if (!(print ? build_print_render_state_product(parameters, product, diagnostic) : build_direct_render_state_product(parameters, product, diagnostic))) {
-                        throw std::runtime_error("failure fixture preparation: " + diagnostic);
-                    }
-                    auto copy = std::make_shared<std::remove_const_t<typename std::remove_reference_t<decltype(published)>::element_type>>();
-                    copy->recipe = std::move(product.recipe);
-                    copy->payload = std::move(product.payload);
-                    copy->buildCounter = published->buildCounter;
-                    if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Preflight) {
-                        copy->recipe.spatialOptics.cameraLensBlur.sigmaUm = 1;
-                        copy->recipe.spatialOptics.cameraLensBlur.hash = 1;
-                    }
-                    if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Focused) {
-                        copy->recipe.filmRaw.rgbToRawMethod = Spektrafilm::RgbToRawMethod::Mallett2019;
-                    }
-                    if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Print) {
-                        copy->recipe.print.develop.densityCurves.clear();
-                    }
-                    published = std::move(copy);
-                };
-                change(admitted.directState);
-                change(admitted.printState);
-            }
-#endif
-            const bool print = Spektrafilm::scan_route_is_print(test.route);
-            if (admitted.status != (print ? PendingRenderAdmissionStatus::AdmittedPrint
-                                          : PendingRenderAdmissionStatus::AdmittedDirect)) {
-                throw std::runtime_error(std::string(test.name) + ": admission failed: " + admitted.diagnostic);
-            }
-            if ((print && !admitted.printState) || (!print && !admitted.directState)) {
-                throw std::runtime_error("admitted fixture state unavailable");
-            }
-            JuicerProcessor processor(effect);
-            OFX::RenderArguments args{};
-            args.isEnabledCudaRender = true;
-            args.pCudaStream = device.stream;
-            args.cudaStreamPropertyPresent = true;
-            processor.setGPURenderArgs(args);
-            processor.setSrcDst({&sourceImage, &destinationImage});
-            const OfxRectI renderWindow = emptyWindow
-                                              ? OfxRectI{test.originX, test.originY, test.originX, test.originY}
-                                              : bounds;
-            const OfxRectI fullBounds = test.fullWidth > 0 && test.fullHeight > 0
-                                            ? OfxRectI{0, 0, test.fullWidth, test.fullHeight}
-                                            : bounds;
-            const int physicalWidth = test.fullWidth > 0 ? test.fullWidth : width;
-            const float pixelSizeUm = 35'000.0f / static_cast<float>(physicalWidth);
-            const Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{
-                {fullBounds.x1, fullBounds.y1, fullBounds.x2 - fullBounds.x1, fullBounds.y2 - fullBounds.y1},
-                static_cast<double>(fullBounds.x1),
-                static_cast<double>(fullBounds.y1),
-                static_cast<double>(fullBounds.x2 - fullBounds.x1),
-                static_cast<double>(fullBounds.y2 - fullBounds.y1),
-                test.scaleX,
-                test.scaleY,
-                1.0};
-            std::optional<ScatterHalationFrameDescriptor> halation;
-            std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
-            const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
-            std::string descriptorDiagnostic;
-            if (test.combined && (!JuicerTestSupport::prepare_halation_frame(
-                                      recipe.spatialOptics.scatterHalation, pixelSizeUm, halation, descriptorDiagnostic) ||
-                                  !halation)) {
-                throw std::runtime_error("halation descriptor: " + descriptorDiagnostic);
-            }
-            if (parameters.cameraDiffusion.active || parameters.enlargerDiffusion.active) {
-                if (!JuicerTestSupport::prepare_diffusion_frame(
-                        recipe.spatialOptics, test.route, pixelSizeUm, Spektrafilm::DiffusionFrameDomain{test.originX, test.originY, width, height}, diffusion, descriptorDiagnostic) ||
-                    !diffusion) {
-                    throw std::runtime_error("diffusion descriptor: " + descriptorDiagnostic);
-                }
-            }
-            if (print) {
-                JuicerProcessor::PrintFrameRequest request;
-                request.state = admitted.printState;
-#if defined(JUICER_NOISE_TEST_HOOK)
-                if (JuicerAssets::NoiseTest::observation && JuicerAssets::NoiseTest::observation->earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
-                    request.state.reset();
-                }
-#endif
-                request.diffusionFrameSet = diffusion;
-                request.scatterHalation = halation;
-                request.renderWindow = renderWindow;
-                request.fullFrameExtent = fullBounds;
-                request.sessionSeed = 0x20260923;
-                request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
-                request.clipToken = 0x5312;
-                request.frameTime = test.time;
-                request.frameRate = 24.0;
-                request.pixelSizeUm = pixelSizeUm;
-                request.effectsGeometry = effectsGeometry;
-                processor.setPrintFrameRequest(request);
-            } else {
-                JuicerProcessor::DirectFrameRequest request;
-                request.state = admitted.directState;
-#if defined(JUICER_NOISE_TEST_HOOK)
-                if (JuicerAssets::NoiseTest::observation && JuicerAssets::NoiseTest::observation->earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
-                    request.state.reset();
-                }
-#endif
-                request.diffusionFrameSet = diffusion;
-                request.scatterHalation = halation;
-                request.renderWindow = renderWindow;
-                request.fullFrameExtent = fullBounds;
-                request.sessionSeed = 0x20260923;
-                request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
-                request.clipToken = 0x5312;
-                request.frameTime = test.time;
-                request.frameRate = 24.0;
-                request.pixelSizeUm = pixelSizeUm;
-                request.effectsGeometry = effectsGeometry;
-                processor.setDirectFrameRequest(request);
-            }
-            processor.setInstanceState(&state);
-            JuicerProcess::Root::FramePreparationToken preparation;
-#if defined(JUICER_NOISE_TEST_HOOK)
-            const bool testingClosedAdmission = JuicerAssets::NoiseTest::observation && JuicerAssets::NoiseTest::observation->closeBeforeAdmission;
-#else
-            constexpr bool testingClosedAdmission = false;
-#endif
-            if (!testingClosedAdmission) {
-                preparation = JuicerProcess::root().begin_frame_preparation();
-                if (!preparation.active()) {
-                    throw std::runtime_error("frame preparation guard unavailable");
-                }
-            }
-#if defined(JUICER_PREPARED_BOUNDARY_TEST) || defined(JUICER_NOISE_TEST_HOOK)
-            if (path != ExecutionPath::Processor) {
-                const auto& payload = print ? admitted.printState->payload : admitted.directState->payload;
-                const JuicerCuda::FrameRect nativeBounds{bounds.x1, bounds.y1, bounds.x2, bounds.y2};
-                const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(nativeBounds, nativeBounds, recipe.filmRaw.autoExposureMethod);
-                const JuicerCuda::ExecutionFrame frame{nativeBounds, nativeBounds, nativeBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), imageInput.rowBytes, imageInput.rowBytes, test.components, device.stream, diffusion, halation, effectsGeometry, pixelSizeUm, test.time, 24.0, 0x20260923, 0x5312, meter, false, false};
-                JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
-                snapshot.instanceToken.value = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
-                snapshot.frameToken.value = static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(test.time)));
-                snapshot.snapshotId = snapshotId;
-                const FjImage rawSource{reinterpret_cast<std::uintptr_t>(device.source), {bounds.x1, bounds.y1, bounds.x2, bounds.y2}, imageInput.rowBytes, static_cast<std::uint32_t>(test.components), FJ_DEPTH_FLOAT32};
-                FjFrame raw{};
-                raw.source = rawSource;
-                raw.destination = rawSource;
-                raw.destination.address = reinterpret_cast<std::uintptr_t>(device.destination);
-                raw.render_window = rawSource.bounds;
-                raw.full_frame_extent = rawSource.bounds;
-                raw.stream = reinterpret_cast<std::uintptr_t>(device.stream);
-                raw.flags = FJ_FRAME_STREAM_PRESENT;
-                FjCudaContext context{};
-                if (fj_cuda_inspect(JuicerCuda::borrowed_owner(), &raw, &context, nullptr).category != FJ_STATUS_SUCCESS) {
-                    throw std::runtime_error("reference frame inspection failed");
-                }
-                snapshot.deviceContextKey = {context.device_id, reinterpret_cast<void*>(context.context)};
-                snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-                    payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
-                if (path == ExecutionPath::Boundary || path == ExecutionPath::Contract) {
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
-                    const auto descriptors = JuicerCuda::describe_execution(recipe, payload, frame);
-                    std::string diagnostic;
-                    if (!JuicerCudaTest::execute_boundary(recipe, payload, frame, snapshot, descriptors, diagnostic, path == ExecutionPath::Contract)) {
-                        throw std::runtime_error(std::string(test.name) + ": C boundary: " + diagnostic);
-                    }
-#else
-                    throw std::runtime_error("boundary path requires the prepared fixture target");
+        if (path == ExecutionPath::State || path == ExecutionPath::StateContract || path == ExecutionPath::StateLifetime) {
+            const FjRect bounds{test.originX, test.originY, test.originX + width, test.originY + height};
+            FjFrame frame{};
+            frame.source = {reinterpret_cast<std::uintptr_t>(device.source), bounds, pitch * static_cast<std::ptrdiff_t>(sizeof(float)), static_cast<std::uint32_t>(test.components), FJ_DEPTH_FLOAT32};
+            frame.destination = frame.source;
+            frame.destination.address = reinterpret_cast<std::uintptr_t>(device.destination);
+            frame.render_window = bounds;
+            frame.full_frame_extent = bounds;
+            frame.stream = reinterpret_cast<std::uintptr_t>(device.stream);
+            frame.flags = FJ_FRAME_STREAM_PRESENT;
+            frame.pixel_size_um = 35'000.0f / static_cast<float>(width);
+            frame.time_frames = test.time;
+            frame.frame_rate = 24.0;
+            frame.session_seed = 0x20260923;
+            frame.clip_token = 0x5312;
+            std::string diagnostic;
+            if (!JuicerCudaTest::execute_prepared_state(JuicerProcess::root().assets().borrow_rust_assets(), parameters, frame, 0x641207 + static_cast<int>(test.route), path == ExecutionPath::StateContract, path == ExecutionPath::StateLifetime, diagnostic, lifetimeCase)) {
+                throw std::runtime_error(std::string(test.name) + ": held state: " + diagnostic);
+            }
+        } else
 #endif
-                } else {
-                    JuicerCuda::PendingContextLossRecovery recovery;
-                    if (print) {
-                        JuicerCuda::execute_print({recipe, payload, frame, snapshot}, recovery);
-                    } else {
-                        JuicerCuda::execute_direct({recipe, payload, frame, snapshot}, recovery);
+        {
+            Properties effectProperties;
+            effectProperties.strings[kOfxImageEffectPropContext] = {kOfxImageEffectContextFilter};
+            Properties sourceProperties;
+            Properties destinationProperties;
+            const OfxRectI bounds{test.originX, test.originY, test.originX + width, test.originY + height};
+            const ImagePropertiesInput imageInput{bounds, test.components, pitch * static_cast<int>(sizeof(float))};
+            fill_image_properties(sourceProperties, device.source, imageInput);
+            const OfxRectI destinationBounds{bounds.x1 - border, bounds.y1 - border, bounds.x2 + border - (destinationLayout == DestinationLayout::Uncovered ? 1 : 0), bounds.y2 + border};
+            fill_image_properties(destinationProperties, device.destination, {destinationBounds, test.components, destinationPitch * static_cast<int>(sizeof(float))});
+            if (test.fullWidth > 0 && test.fullHeight > 0) {
+                sourceProperties.ints[kOfxImagePropRegionOfDefinition] = {0, 0, test.fullWidth, test.fullHeight};
+                destinationProperties.ints[kOfxImagePropRegionOfDefinition] = {0, 0, test.fullWidth, test.fullHeight};
+            }
+            sourceProperties.doubles[kOfxImageEffectPropRenderScale] = {test.scaleX, test.scaleY};
+            destinationProperties.doubles[kOfxImageEffectPropRenderScale] = {test.scaleX, test.scaleY};
+            const OfxPropertySetHandle sourceHandle =
+                reinterpret_cast<OfxPropertySetHandle>(&sourceProperties);
+            const OfxPropertySetHandle destinationHandle =
+                reinterpret_cast<OfxPropertySetHandle>(&destinationProperties);
+            ImageLeaseAudit imageLeaseAudit;
+            imageLeaseAudit.acquire(sourceHandle, "source");
+            imageLeaseAudit.acquire(destinationHandle, "destination");
+            {
+                ScopedImageLeaseAudit activeImageLeaseAudit(imageLeaseAudit);
+                NarrowEffect effect(reinterpret_cast<OfxImageEffectHandle>(&effectProperties));
+                OFX::Image sourceImage(sourceHandle);
+                OFX::Image destinationImage(destinationHandle);
+                {
+                    std::lock_guard<std::mutex> lock(state.pending.m);
+                    state.pending.value = PendingParamsState::Valid{parameters, hash_params(parameters)};
+                }
+                PendingRenderAdmissionResult admitted = admit_pending_render_state(state);
+#if defined(JUICER_NOISE_TEST_HOOK)
+                if (JuicerAssets::NoiseTest::observation) {
+                    const auto earlier = JuicerAssets::NoiseTest::observation->earlier;
+                    const auto change = [&](auto& published) {
+                        if (!published || earlier == JuicerAssets::NoiseTest::EarlierFailure::None || earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
+                            return;
+                        }
+                        FocusedRenderStateBuildProduct product;
+                        std::string diagnostic;
+                        const bool print = Spektrafilm::scan_route_is_print(parameters.scanRoute);
+                        if (!(print ? build_print_render_state_product(parameters, product, diagnostic) : build_direct_render_state_product(parameters, product, diagnostic))) {
+                            throw std::runtime_error("failure fixture preparation: " + diagnostic);
+                        }
+                        auto copy = std::make_shared<std::remove_const_t<typename std::remove_reference_t<decltype(published)>::element_type>>();
+                        copy->recipe = std::move(product.recipe);
+                        copy->payload = std::move(product.payload);
+                        copy->buildCounter = published->buildCounter;
+                        if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Preflight) {
+                            copy->recipe.spatialOptics.cameraLensBlur.sigmaUm = 1;
+                            copy->recipe.spatialOptics.cameraLensBlur.hash = 1;
+                        }
+                        if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Focused) {
+                            copy->recipe.filmRaw.rgbToRawMethod = Spektrafilm::RgbToRawMethod::Mallett2019;
+                        }
+                        if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Print) {
+                            copy->recipe.print.develop.densityCurves.clear();
+                        }
+                        published = std::move(copy);
+                    };
+                    change(admitted.directState);
+                    change(admitted.printState);
+                }
+#endif
+                const bool print = Spektrafilm::scan_route_is_print(test.route);
+                if (admitted.status != (print ? PendingRenderAdmissionStatus::AdmittedPrint
+                                              : PendingRenderAdmissionStatus::AdmittedDirect)) {
+                    throw std::runtime_error(std::string(test.name) + ": admission failed: " + admitted.diagnostic);
+                }
+                if ((print && !admitted.printState) || (!print && !admitted.directState)) {
+                    throw std::runtime_error("admitted fixture state unavailable");
+                }
+                JuicerProcessor processor(effect);
+                OFX::RenderArguments args{};
+                args.isEnabledCudaRender = true;
+                args.pCudaStream = device.stream;
+                args.cudaStreamPropertyPresent = true;
+                processor.setGPURenderArgs(args);
+                processor.setSrcDst({&sourceImage, &destinationImage});
+                const OfxRectI renderWindow = emptyWindow
+                                                  ? OfxRectI{test.originX, test.originY, test.originX, test.originY}
+                                                  : bounds;
+                const OfxRectI fullBounds = test.fullWidth > 0 && test.fullHeight > 0
+                                                ? OfxRectI{0, 0, test.fullWidth, test.fullHeight}
+                                                : bounds;
+                const int physicalWidth = test.fullWidth > 0 ? test.fullWidth : width;
+                const float pixelSizeUm = 35'000.0f / static_cast<float>(physicalWidth);
+                const Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{
+                    {fullBounds.x1, fullBounds.y1, fullBounds.x2 - fullBounds.x1, fullBounds.y2 - fullBounds.y1},
+                    static_cast<double>(fullBounds.x1),
+                    static_cast<double>(fullBounds.y1),
+                    static_cast<double>(fullBounds.x2 - fullBounds.x1),
+                    static_cast<double>(fullBounds.y2 - fullBounds.y1),
+                    test.scaleX,
+                    test.scaleY,
+                    1.0};
+                std::optional<ScatterHalationFrameDescriptor> halation;
+                std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
+                const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
+                std::string descriptorDiagnostic;
+                if (test.combined && (!JuicerTestSupport::prepare_halation_frame(
+                                          recipe.spatialOptics.scatterHalation, pixelSizeUm, halation, descriptorDiagnostic) ||
+                                      !halation)) {
+                    throw std::runtime_error("halation descriptor: " + descriptorDiagnostic);
+                }
+                if (parameters.cameraDiffusion.active || parameters.enlargerDiffusion.active) {
+                    if (!JuicerTestSupport::prepare_diffusion_frame(
+                            recipe.spatialOptics, test.route, pixelSizeUm, Spektrafilm::DiffusionFrameDomain{test.originX, test.originY, width, height}, diffusion, descriptorDiagnostic) ||
+                        !diffusion) {
+                        throw std::runtime_error("diffusion descriptor: " + descriptorDiagnostic);
                     }
                 }
-            } else {
-                processor.process();
-            }
-#else
-            (void)path;
-            processor.process();
+                if (print) {
+                    JuicerProcessor::PrintFrameRequest request;
+                    request.state = admitted.printState;
+#if defined(JUICER_NOISE_TEST_HOOK)
+                    if (JuicerAssets::NoiseTest::observation && JuicerAssets::NoiseTest::observation->earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
+                        request.state.reset();
+                    }
 #endif
-        }
-        imageLeaseAudit.require_complete(test.name);
-        if (s_abortObservation && s_abortObservation->cancelAt != 0 &&
-            s_abortObservation->calls >= s_abortObservation->cancelAt) {
-            return {};
+                    request.diffusionFrameSet = diffusion;
+                    request.scatterHalation = halation;
+                    request.renderWindow = renderWindow;
+                    request.fullFrameExtent = fullBounds;
+                    request.sessionSeed = 0x20260923;
+                    request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
+                    request.clipToken = 0x5312;
+                    request.frameTime = test.time;
+                    request.frameRate = 24.0;
+                    request.pixelSizeUm = pixelSizeUm;
+                    request.effectsGeometry = effectsGeometry;
+                    processor.setPrintFrameRequest(request);
+                } else {
+                    JuicerProcessor::DirectFrameRequest request;
+                    request.state = admitted.directState;
+#if defined(JUICER_NOISE_TEST_HOOK)
+                    if (JuicerAssets::NoiseTest::observation && JuicerAssets::NoiseTest::observation->earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
+                        request.state.reset();
+                    }
+#endif
+                    request.diffusionFrameSet = diffusion;
+                    request.scatterHalation = halation;
+                    request.renderWindow = renderWindow;
+                    request.fullFrameExtent = fullBounds;
+                    request.sessionSeed = 0x20260923;
+                    request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
+                    request.clipToken = 0x5312;
+                    request.frameTime = test.time;
+                    request.frameRate = 24.0;
+                    request.pixelSizeUm = pixelSizeUm;
+                    request.effectsGeometry = effectsGeometry;
+                    processor.setDirectFrameRequest(request);
+                }
+                processor.setInstanceState(&state);
+                JuicerProcess::Root::FramePreparationToken preparation;
+#if defined(JUICER_NOISE_TEST_HOOK)
+                const bool testingClosedAdmission = JuicerAssets::NoiseTest::observation && JuicerAssets::NoiseTest::observation->closeBeforeAdmission;
+#else
+                constexpr bool testingClosedAdmission = false;
+#endif
+                if (!testingClosedAdmission) {
+                    preparation = JuicerProcess::root().begin_frame_preparation();
+                    if (!preparation.active()) {
+                        throw std::runtime_error("frame preparation guard unavailable");
+                    }
+                }
+#if defined(JUICER_PREPARED_BOUNDARY_TEST) || defined(JUICER_NOISE_TEST_HOOK)
+                if (path != ExecutionPath::Processor) {
+                    const auto& payload = print ? admitted.printState->payload : admitted.directState->payload;
+                    const JuicerCuda::FrameRect nativeBounds{bounds.x1, bounds.y1, bounds.x2, bounds.y2};
+                    const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(nativeBounds, nativeBounds, recipe.filmRaw.autoExposureMethod);
+                    const JuicerCuda::ExecutionFrame frame{nativeBounds, nativeBounds, nativeBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), imageInput.rowBytes, imageInput.rowBytes, test.components, device.stream, diffusion, halation, effectsGeometry, pixelSizeUm, test.time, 24.0, 0x20260923, 0x5312, meter, false, false};
+                    JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+                    snapshot.instanceToken.value = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
+                    snapshot.frameToken.value = static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(test.time)));
+                    snapshot.snapshotId = snapshotId;
+                    const FjImage rawSource{reinterpret_cast<std::uintptr_t>(device.source), {bounds.x1, bounds.y1, bounds.x2, bounds.y2}, imageInput.rowBytes, static_cast<std::uint32_t>(test.components), FJ_DEPTH_FLOAT32};
+                    FjFrame raw{};
+                    raw.source = rawSource;
+                    raw.destination = rawSource;
+                    raw.destination.address = reinterpret_cast<std::uintptr_t>(device.destination);
+                    raw.render_window = rawSource.bounds;
+                    raw.full_frame_extent = rawSource.bounds;
+                    raw.stream = reinterpret_cast<std::uintptr_t>(device.stream);
+                    raw.flags = FJ_FRAME_STREAM_PRESENT;
+                    FjCudaContext context{};
+                    if (fj_cuda_inspect(JuicerCuda::borrowed_owner(), &raw, &context, nullptr).category != FJ_STATUS_SUCCESS) {
+                        throw std::runtime_error("reference frame inspection failed");
+                    }
+                    snapshot.deviceContextKey = {context.device_id, reinterpret_cast<void*>(context.context)};
+                    snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                        payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
+                    if (path == ExecutionPath::Boundary) {
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+                        const auto descriptors = JuicerCuda::describe_execution(recipe, payload, frame);
+                        std::string diagnostic;
+                        if (!JuicerCudaTest::execute_boundary(recipe, payload, frame, snapshot, descriptors, diagnostic)) {
+                            throw std::runtime_error(std::string(test.name) + ": C boundary: " + diagnostic);
+                        }
+#else
+                        throw std::runtime_error("boundary path requires the prepared fixture target");
+#endif
+                    } else {
+                        JuicerCuda::PendingContextLossRecovery recovery;
+                        if (print) {
+                            JuicerCuda::execute_print({recipe, payload, frame, snapshot}, recovery);
+                        } else {
+                            JuicerCuda::execute_direct({recipe, payload, frame, snapshot}, recovery);
+                        }
+                    }
+                } else {
+                    processor.process();
+                }
+#else
+                (void)path;
+                processor.process();
+#endif
+            }
+            imageLeaseAudit.require_complete(test.name);
+            if (s_abortObservation && s_abortObservation->cancelAt != 0 &&
+                s_abortObservation->calls >= s_abortObservation->cancelAt) {
+                return {};
+            }
         }
         require_cuda(cudaMemcpyAsync(output.data(), device.destination, destinationBytes, cudaMemcpyDeviceToHost, device.stream),
                      "copy destination");
@@ -2954,8 +2980,9 @@ int main(int argc, char** argv) {
         }
 #endif
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
-        const bool renderContract = argc == 3 && std::string(argv[1]) == "--render-contract";
-        if (argc != 3 || (!renderContract && std::string(argv[1]) != "--prepared-case")) {
+        const bool stateContract = argc == 3 && std::string(argv[1]) == "--state-contract";
+        const bool stateLifetime = argc == 3 && std::string(argv[1]) == "--state-lifetime";
+        if (argc != 3 || (!stateContract && !stateLifetime && std::string(argv[1]) != "--prepared-case")) {
             throw std::runtime_error("usage: JuicerPreparedBoundaryProbe --prepared-case <name>");
         }
         const std::string preparedCase = argv[2];
@@ -2982,6 +3009,23 @@ int main(int argc, char** argv) {
                            {"arctic-print", Spektrafilm::ScanRoute::NegativePrintScan, 2, 4, 0, 0}
 #endif
         };
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+        if (stateLifetime) {
+            for (std::size_t index = 0; index < 2; ++index) {
+                InstanceState unused;
+                for (unsigned lifetimeCase = 0; lifetimeCase < static_cast<unsigned>(JuicerCudaTest::StateLifetimeCase::Count); ++lifetimeCase) {
+                    (void)render_case(cases[index], parameters_for(cases[index]), unused, false, ExecutionPath::StateLifetime, DestinationLayout::Matching, 1, static_cast<JuicerCudaTest::StateLifetimeCase>(lifetimeCase));
+                }
+                if (cudaOwner.close().category != FJ_STATUS_SUCCESS)
+                    throw std::runtime_error("held-state lifetime owner close");
+                if (index == 0) {
+                    cudaOwner.create(JuicerProcess::data_directory());
+                    JuicerProcess::root().ensure_bootstrap();
+                }
+            }
+            return 0;
+        }
+#endif
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
         constexpr bool numericalFixture = false;
 #else
@@ -3020,8 +3064,8 @@ int main(int argc, char** argv) {
             // boundary first, so no other caller can hide its table uploads.
             std::cerr << "cold C case: " << test.name << '\n';
             InstanceState boundaryState;
-            const auto boundary = render_case(test, parameters_for(test), boundaryState, false, renderContract ? ExecutionPath::Contract : ExecutionPath::Boundary);
-            const auto warmBoundary = render_case(test, parameters_for(test), boundaryState, false, ExecutionPath::Boundary);
+            const auto boundary = render_case(test, parameters_for(test), boundaryState, false, stateContract ? ExecutionPath::StateContract : ExecutionPath::Boundary);
+            const auto warmBoundary = render_case(test, parameters_for(test), boundaryState, false, stateContract ? ExecutionPath::State : ExecutionPath::Boundary);
             const auto direct = [&] {
                 InstanceState directState;
                 return render_case(test, parameters_for(test), directState, false, ExecutionPath::Direct);
@@ -3148,7 +3192,7 @@ int main(int argc, char** argv) {
                 RenderAssertions::compare_bits(std::string(test.name) + ": direct/cold C", direct, boundary);
                 RenderAssertions::compare_bits(std::string(test.name) + ": cold/warm C", boundary, warmBoundary);
                 std::cerr << test.name << ": processor/direct/cold C/warm C bit-exact\n";
-                if (renderContract) {
+                if (stateContract) {
                     auto grainParameters = parameters_for(test);
                     grainParameters.grainControls.active = true;
                     InstanceState grainState;

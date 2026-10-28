@@ -15,8 +15,34 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Logging.h"
 #include "RenderRecipe.h"
+#include "ResourceAssetLibrary.h"
 
 namespace JuicerAssets {
+    FjAssets* AssetBridge::borrow_assets() const noexcept {
+        return _assets;
+    }
+
+    namespace {
+        constexpr Spectral::SpectralShape kIlluminantAxis{};
+        IlluminantCurveView curve_view(FjFloatSpan samples) noexcept {
+            return {samples.count ? std::span<const float>(kIlluminantAxis.wavelengths) : std::span<const float>{}, {samples.data, samples.count}};
+        }
+    } // namespace
+
+    Spectral::Curve IlluminantCurveView::copy_curve() const {
+        Spectral::Curve curve;
+        if (!linear.empty()) {
+            curve.lambda_nm.assign(lambda_nm.begin(), lambda_nm.end());
+            curve.linear.assign(linear.begin(), linear.end());
+        }
+        return curve;
+    }
+    IlluminantFilterCurveSet::IlluminantFilterCurveSet(FjIlluminantsOwner* owner, const FjIlluminantsView& view) noexcept
+        : d65(curve_view(view.d65)), d55(curve_view(view.d55)), d50(curve_view(view.d50)), tungsten(curve_view(view.tungsten)), kinoton75P(curve_view(view.k75p)), tungstenKg3(curve_view(view.tungsten_kg3)), tungstenKg3Lens(curve_view(view.tungsten_kg3_lens)), entryIdentity(view.entry_identity), _owner(owner) {}
+    IlluminantFilterCurveSet::~IlluminantFilterCurveSet() {
+        (void)fj_legacy_illuminants_release(_owner, nullptr);
+    }
+
     namespace {
         [[noreturn]] void fail(FjStatus status, std::string_view message) {
             if (status.category == FJ_STATUS_ALLOCATION_FAILURE) {
@@ -40,6 +66,21 @@ namespace JuicerAssets {
                 }
             }
         }
+        struct IlluminantsDeleter {
+            void operator()(FjIlluminantsOwner* owner) const noexcept {
+                report_cleanup(fj_legacy_illuminants_release(owner, nullptr));
+            }
+        };
+        struct HullDeleter {
+            void operator()(FjInputHullOwner* owner) const noexcept {
+                report_cleanup(fj_legacy_input_hull_release(owner, nullptr));
+            }
+        };
+        struct BoundaryDeleter {
+            void operator()(FjOutputBoundaryOwner* owner) const noexcept {
+                report_cleanup(fj_legacy_output_boundary_release(owner, nullptr));
+            }
+        };
         struct NoiseDeleter {
             void operator()(FjNoise* owner) const noexcept {
 #if defined(JUICER_NOISE_TEST_HOOK)
@@ -801,7 +842,9 @@ namespace JuicerAssets {
     }
 
     FjStatus AssetBridge::release_cached_payloads(FjErrorBuffer* error) noexcept {
-        FjStatus first{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+        // Rust keeps both cache owners. The retained native conversion phase
+        // stays between derived and source cleanup to preserve first failure.
+        FjStatus first = fj_legacy_assets_release_derived_payloads(_assets, error);
         try {
             ConversionSlots* slots = nullptr;
             {
@@ -823,14 +866,19 @@ namespace JuicerAssets {
                 }
             }
         } catch (const std::bad_alloc&) {
-            first = JuicerCuda::write_status({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "native profile cache detachment allocation failed", error);
+            if (first.category == FJ_STATUS_SUCCESS)
+                first = JuicerCuda::write_status({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "native profile cache detachment allocation failed", error);
         } catch (const std::exception& detail) {
-            first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), error);
+            if (first.category == FJ_STATUS_SUCCESS)
+                first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), error);
         } catch (...) {
-            first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "native profile cache detachment failed", error);
+            if (first.category == FJ_STATUS_SUCCESS)
+                first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "native profile cache detachment failed", error);
         }
-        const auto result = fj_legacy_assets_release_cached_payloads(_assets, first.category == FJ_STATUS_SUCCESS ? error : nullptr);
-        return first.category == FJ_STATUS_SUCCESS ? result : first;
+        const auto sources = fj_legacy_assets_release_source_payloads(_assets, first.category == FJ_STATUS_SUCCESS ? error : nullptr);
+        if (first.category == FJ_STATUS_SUCCESS)
+            first = sources;
+        return first;
     }
 
     AssetBridge::AssetBridge(const std::filesystem::path& resourceRoot) {
@@ -1162,3 +1210,81 @@ namespace JuicerAssets {
         return result;
     }
 } // namespace JuicerAssets
+
+namespace JuicerAssets {
+    std::shared_ptr<const IlluminantFilterCurveSet> AssetBridge::illuminants() {
+        FjIlluminantsOwner* raw = nullptr;
+        std::array<char, 1024> bytes{};
+        FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+        const auto result = fj_legacy_assets_illuminants_acquire(_assets, &raw, &error);
+        if (result.category != FJ_STATUS_SUCCESS)
+            throw JuicerCuda::ExecutionFailure{{result, std::string(bytes.data(), error.length)}};
+        std::unique_ptr<FjIlluminantsOwner, IlluminantsDeleter> hold(raw);
+        FjIlluminantsView view{};
+        const auto projected = fj_legacy_illuminants_view(raw, &view, &error);
+        if (projected.category != FJ_STATUS_SUCCESS)
+            fail(projected, std::string_view(bytes.data(), error.length));
+        return std::shared_ptr<const IlluminantFilterCurveSet>(new IlluminantFilterCurveSet(hold.release(), view));
+    }
+
+    std::shared_ptr<const Gamut::InputHullHold> AssetBridge::input_hull() {
+        FjInputHullOwner* raw = nullptr;
+        std::array<char, 1024> bytes{};
+        FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+        const auto result = fj_legacy_assets_input_hull_acquire(_assets, &raw, &error);
+        if (result.category == FJ_STATUS_PREPARATION_FAILURE)
+            return {};
+        if (result.category != FJ_STATUS_SUCCESS)
+            fail(result, "Input hull preparation: " + std::string(bytes.data(), error.length));
+        std::unique_ptr<FjInputHullOwner, HullDeleter> hold(raw);
+        FjInputHullView view{};
+        const auto projected = fj_legacy_input_hull_view(raw, &view, &error);
+        if (projected.category != FJ_STATUS_SUCCESS)
+            fail(projected, std::string_view(bytes.data(), error.length));
+        return std::shared_ptr<const Gamut::InputHullHold>(new Gamut::InputHullHold(hold.release(), view));
+    }
+
+    std::shared_ptr<const Gamut::OutputBoundaryHold> AssetBridge::output_boundary(const Gamut::OutputGamutTransform& transform, std::string& diagnostic) {
+        diagnostic.clear();
+        // valid is the accepted transform's native transport marker. No cache
+        // selection/generation or table derivation takes place on this side.
+        const int index = OutputEncoding::toIndex(transform.outputColorSpace);
+        if (!transform.valid || transform.hash == 0 || transform.contractHash == 0 || index < 0 || index >= static_cast<int>(OutputEncoding::kColorSpaceCount)) {
+            diagnostic = "ResourceDescriptorMismatch component=output_boundary_cache field=transform";
+            return {};
+        }
+        FjOutputBoundarySource source{};
+        source.output_space = static_cast<std::uint32_t>(transform.outputColorSpace);
+        std::copy(transform.d65XyzToNativeRgb.begin(), transform.d65XyzToNativeRgb.end(), source.d65_xyz_to_native_rgb);
+        source.transform_hash = transform.hash;
+        FjOutputBoundaryOwner* raw = nullptr;
+        std::array<char, 1024> bytes{};
+        FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+        const auto result = fj_legacy_assets_output_boundary_acquire(_assets, &source, transform.contractHash, &raw, &error);
+        if (result.category == FJ_STATUS_PREPARATION_FAILURE || result.category == FJ_STATUS_UNSUPPORTED_INPUT) {
+            diagnostic.assign(bytes.data(), error.length);
+            return {};
+        }
+        if (result.category != FJ_STATUS_SUCCESS)
+            fail(result, "Output boundary: " + std::string(bytes.data(), error.length));
+        std::unique_ptr<FjOutputBoundaryOwner, BoundaryDeleter> hold(raw);
+        FjOutputBoundaryView view{};
+        const auto projected = fj_legacy_output_boundary_view(raw, &view, &error);
+        if (projected.category != FJ_STATUS_SUCCESS)
+            fail(projected, std::string_view(bytes.data(), error.length));
+        return std::shared_ptr<const Gamut::OutputBoundaryHold>(new Gamut::OutputBoundaryHold(hold.release(), view));
+    }
+} // namespace JuicerAssets
+
+namespace Gamut {
+    InputHullHold::InputHullHold(FjInputHullOwner* owner, const FjInputHullView& view) noexcept
+        : xy(std::span<const float>(view.xy.data, view.xy.count)), center{view.center_xy[0], view.center_xy[1]}, hash(view.hash), entryIdentity(view.entry_identity), _owner(owner) {}
+    InputHullHold::~InputHullHold() {
+        (void)fj_legacy_input_hull_release(_owner, nullptr);
+    }
+    OutputBoundaryHold::OutputBoundaryHold(FjOutputBoundaryOwner* owner, const FjOutputBoundaryView& view) noexcept
+        : cmax(view.cmax.data, view.cmax.count), transformHash(view.transform_hash), contractHash(view.contract_hash), hash(view.hash), entryIdentity(view.entry_identity), _owner(owner) {}
+    OutputBoundaryHold::~OutputBoundaryHold() {
+        (void)fj_legacy_output_boundary_release(_owner, nullptr);
+    }
+} // namespace Gamut

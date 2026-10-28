@@ -1,6 +1,5 @@
 //! Private raw edge for the native process asset/catalog conversion.
 
-#[cfg(any(test, feature = "test-support"))]
 use std::collections::TryReserveError;
 use std::fmt::{self, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -34,7 +33,7 @@ const FJ_PROFILE_ROLE_FILM: u32 = 0;
 const FJ_PROFILE_ROLE_PRINT: u32 = 1;
 
 #[repr(C)]
-struct FjAssets {
+pub(crate) struct FjAssets {
     _opaque: [u8; 0],
 }
 #[repr(C)]
@@ -264,8 +263,8 @@ pub(crate) enum Failure {
     Input(&'static str),
     Film(film_juicer_core::film::Error),
     Asset(AssetError),
-    #[cfg(any(test, feature = "test-support"))]
     Capacity(TryReserveError),
+    Preparation(film_juicer_core::recipe::PrepareError),
     Gamma(PrintDensityError),
     Illuminant(film_juicer_core::illuminant::Error),
     Spectral(film_juicer_core::spectral::WhiteError),
@@ -325,6 +324,23 @@ impl Failure {
             Self::Spectral(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::Exposure(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::Hull(_) | Self::OutputTransform(_) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::Asset(AssetError::Derived(error)) => {
+                use film_juicer_core::assets::DerivedError;
+                match error {
+                    DerivedError::Allocation(_)
+                    | DerivedError::Boundary(
+                        film_juicer_core::gamut::BoundaryError::AllocationFailure,
+                    ) => FJ_STATUS_ALLOCATION_FAILURE,
+                    DerivedError::Internal(_) => FJ_STATUS_INTERNAL_FAILURE,
+                    DerivedError::Unsupported(_) => FJ_STATUS_UNSUPPORTED_INPUT,
+                    DerivedError::Illuminant { error, .. }
+                        if error.kind == film_juicer_core::illuminant::ErrorKind::Capacity =>
+                    {
+                        FJ_STATUS_ALLOCATION_FAILURE
+                    }
+                    _ => FJ_STATUS_PREPARATION_FAILURE,
+                }
+            }
             Self::OutputBoundary(film_juicer_core::gamut::BoundaryError::AllocationFailure) => {
                 FJ_STATUS_ALLOCATION_FAILURE
             }
@@ -350,8 +366,8 @@ impl Failure {
                     FJ_STATUS_PREPARATION_FAILURE
                 }
             },
-            #[cfg(any(test, feature = "test-support"))]
             Self::Capacity(_) => FJ_STATUS_ALLOCATION_FAILURE,
+            Self::Preparation(error) => crate::preparation::failure_category(error),
             Self::Asset(AssetError::Noise(error)) => noise_category(error.kind()),
             Self::Asset(AssetError::NoiseCachePoisoned) => FJ_STATUS_INTERNAL_FAILURE,
             Self::Asset(_) => FJ_STATUS_INTERNAL_FAILURE,
@@ -368,8 +384,8 @@ impl fmt::Display for Failure {
             #[cfg(any(test, feature = "test-support"))]
             Self::Internal(message) => formatter.write_str(message),
             Self::Asset(error) => write!(formatter, "{error}"),
-            #[cfg(any(test, feature = "test-support"))]
             Self::Capacity(error) => write!(formatter, "asset boundary capacity: {error}"),
+            Self::Preparation(error) => write!(formatter, "{error}"),
             Self::Gamma(error) => write!(formatter, "{error}"),
             Self::Illuminant(error) => write!(formatter, "{error}"),
             Self::Spectral(error) => write!(formatter, "{error}"),
@@ -524,10 +540,12 @@ unsafe extern "C" fn fj_legacy_assets_create(
             if out_assets.is_null() {
                 return Err(Failure::Input("NULL Assets output"));
             }
-            let assets = Box::new(Assets::new(path(resource_root)?));
+            let assets = Arc::new(Assets::new(path(resource_root)?));
+            #[cfg(feature = "test-support")]
+            assets.observe_cache_owner();
             #[cfg(feature = "test-support")]
             LIVE_ASSETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            out_assets.write(Box::into_raw(assets).cast());
+            out_assets.write(Arc::into_raw(assets).cast_mut().cast());
             Ok(())
         })
     }
@@ -550,8 +568,8 @@ unsafe extern "C" fn fj_legacy_assets_destroy(
     let owner = if assets.is_null() {
         None
     } else {
-        // SAFETY: The matching live Box allocation is taken exactly once.
-        Some(unsafe { Box::from_raw(assets.cast::<Assets>()) })
+        // SAFETY: The matching live Arc allocation is taken exactly once.
+        Some(unsafe { Arc::from_raw(assets.cast::<Assets>()) })
     };
     // SAFETY: Captured owner cleanup and diagnostics are contained by run.
     unsafe {
@@ -1139,6 +1157,55 @@ unsafe extern "C" fn fj_legacy_assets_release_cached_payloads(
     .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
 }
 
+/// # Safety
+/// Assets and diagnostics obey the same borrowing/disjoint contract as full release.
+/// Native conversion holds are detached after this phase and before source release.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_assets_release_derived_payloads(
+    assets: *const FjAssets,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Live Assets and caller-authorized diagnostics follow the contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() {
+                return Err(Failure::Input("NULL Assets derived cache release"));
+            }
+            (&*assets.cast::<Assets>())
+                .release_derived_payloads()
+                .map_err(Failure::Asset)
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Assets and diagnostics obey the same borrowing/disjoint contract as full release.
+/// The native caller has already attempted derived and conversion cleanup.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_assets_release_source_payloads(
+    assets: *const FjAssets,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Live Assets and caller-authorized diagnostics follow the contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() {
+                return Err(Failure::Input("NULL Assets source cache release"));
+            }
+            (&*assets.cast::<Assets>())
+                .release_source_payloads()
+                .map_err(Failure::Asset)?;
+            #[cfg(any(test, feature = "test-support"))]
+            if CACHE_FAILURE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                return Err(Failure::Internal("injected post-release cache failure"));
+            }
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
 #[cfg(feature = "test-support")]
 static LIVE_PROFILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(feature = "test-support")]
@@ -1438,6 +1505,10 @@ fn production_profile_signatures() {
         fj_legacy_print_density_release;
     let _: unsafe extern "C" fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus =
         fj_legacy_assets_release_cached_payloads;
+    let _: unsafe extern "C" fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus =
+        fj_legacy_assets_release_derived_payloads;
+    let _: unsafe extern "C" fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus =
+        fj_legacy_assets_release_source_payloads;
 }
 
 // FJ_TEMP_BRIDGE: spectral source conversion; remove S4.E.
@@ -1936,7 +2007,20 @@ const _: () = {
     assert!(std::mem::offset_of!(FjNeutralCalibrationResult, field) == 4);
     assert!(std::mem::offset_of!(FjNeutralCalibrationResult, cmy_cc) == 8);
 };
-fn csv_source(tag: u32) -> Result<CsvSource, Failure> {
+#[cfg(feature = "test-support")]
+pub(crate) fn csv_source_tag(source: CsvSource) -> u32 {
+    match source {
+        CsvSource::D65 => 1,
+        CsvSource::D55 => 2,
+        CsvSource::D50 => 3,
+        CsvSource::T => 4,
+        CsvSource::K75p => 5,
+        CsvSource::Kg3 => 6,
+        CsvSource::Canon24F28Is => 7,
+    }
+}
+
+pub(crate) fn csv_source(tag: u32) -> Result<CsvSource, Failure> {
     match tag {
         FJ_CSV_D65 => Ok(CsvSource::D65),
         FJ_CSV_D55 => Ok(CsvSource::D55),
