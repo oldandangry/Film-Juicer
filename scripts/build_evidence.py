@@ -13,7 +13,7 @@ import subprocess
 import time
 import uuid
 
-from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
+from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json
 from build_dependencies import (
     CompilationInputs,
     NinjaGraph,
@@ -329,10 +329,11 @@ def environment_digest(environment):
         json.dumps(
             {
                 key: value
-                for key, value in environment.items()
+                for key, value in command_environment(environment).items()
                 if key
                 not in {
                     "JUICER_OUTPUT_LEASES",
+                    "CMAKE_BUILD_PARALLEL_LEVEL",
                 }
             },
             sort_keys=True,
@@ -497,7 +498,10 @@ def _check_preparation_command(campaign, build, prepared):
         raise ValueError("scoped preparation command evidence changed")
     if proof["build"] != str(build.resolve()):
         raise ValueError("scoped preparation belongs to another build tree")
-    expected_command = ["cmake", "--build", str(build.resolve()), "--parallel", "2", "--target", *proof["targets"]]
+    jobs = proof.get("build_jobs", 2)
+    if type(jobs) is not int or jobs < 1:
+        raise ValueError("invalid scoped preparation build worker count")
+    expected_command = ["cmake", "--build", str(build.resolve()), "--parallel", str(jobs), "--target", *proof["targets"]]
     if record["identity"]["command"] != expected_command:
         raise ValueError("scoped preparation command/targets changed")
     return record
@@ -976,9 +980,16 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
         if sorted(targets) != selected["targets"]:
             raise ValueError(LEGACY_ADMISSION_UNSUPPORTED)
     targets, inputs = sorted(set(targets)), sorted(set(inputs))
-    build_command = ["cmake", "--build", str(build), "--parallel", "2", "--target", *targets]
+    environment = command_environment(os.environ if env is None else env)
+    workers = environment.get("CMAKE_BUILD_PARALLEL_LEVEL", "")
+    if workers and (not workers.isascii() or not workers.isdecimal() or int(workers) < 1):
+        raise ValueError("CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer")
+    jobs = int(workers) if workers else min(os.cpu_count() or 2, 8)
+    # Scheduling is bound by the explicit command, not an input available to
+    # configure scripts, compilers or build scripts whose outputs we retain.
+    environment.pop("CMAKE_BUILD_PARALLEL_LEVEL", None)
+    build_command = ["cmake", "--build", str(build), "--parallel", str(jobs), "--target", *targets]
     campaign.check_run_request(stage, build_command, inputs=inputs, timeout=timeout)
-    environment = dict(os.environ if env is None else env)
     with OutputLease(campaign.root, build) as lease, ExitStack() as preparation:
         configured = None
         baseline, pending_path = preparation_paths(build, targets)
@@ -1158,7 +1169,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
                 raise ValueError("superseded preparation command receipt changed")
             _check_preparation_command(campaign, build, producer)
         proof = {"protocol": SCOPED_PROTOCOL, "producer": str(built.resolve()), "source": str(source), "build": str(build),
-                 "targets": targets, "inputs": inputs, "configure_args": list(configure_args), "context": after,
+                 "targets": targets, "build_jobs": jobs, "inputs": inputs, "configure_args": list(configure_args), "context": after,
                  "output_identities": output_identities,
                  "outputs": sorted(fresh_graph.outputs), "invalidated": invalidated, "rust_invalidated_packages": rust_invalidated}
         record = json.loads(built.read_text(encoding="utf-8"))

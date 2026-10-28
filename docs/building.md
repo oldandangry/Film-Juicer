@@ -12,7 +12,10 @@ tools, MSVC v145, the Windows SDK, and CUDA 13.2. Set `CUDA_PATH_V13_2` to that 
 Visual Studio supplies the x64 developer environment when selecting a Windows
 preset. Command-line Windows builds need an x64 developer command prompt with
 CMake, Ninja and the VS LLVM tools available. ClangCl builds use MSVC explicitly
-as NVCC's host compiler; Release retains ThinLTO for C++.
+as NVCC's host compiler; both configurations use ThinLTO for C++.
+Linux also requires LLVM LLD on `PATH` as `ld.lld` (for example, LLVM 22's
+`bin` directory). The Linux presets select LLD without changing the GCC or
+NVCC compilers, CUDA runtime linkage, or exported OFX symbols.
 
 Install the exact Rust/Cargo 1.98.1 toolchain selected by
 `rust-toolchain.toml` before configuring. rustfmt and Clippy are also required
@@ -32,10 +35,20 @@ target instead of falling back.
 
 | Preset | Compiler | Configuration |
 | --- | --- | --- |
-| `windows-clang-debug` | ClangCl + NVCC/MSVC | Debug |
+| `windows-clang-debug` | ClangCl + NVCC/MSVC | Optimised Debug with ThinLTO |
 | `windows-clang-release` | ClangCl + NVCC/MSVC | Release with ThinLTO |
-| `linux-debug` | GCC + NVCC/GCC | Debug |
+| `linux-debug` | GCC + NVCC/GCC | Optimised Debug |
 | `linux-release` | GCC + NVCC/GCC | Release |
+
+Debug and Release share compiler optimisation levels: `/O2` for Windows host
+C++, `-O3` for Linux host C++ and CUDA, and Rust `opt-level = 3` with sixteen
+code-generation units. Debug retains symbols, assertions, Rust debug assertions,
+overflow checks, and invariant diagnostics. Both configurations retain standard
+C/C++ assertions and Rust overflow checks. Optimised debugging can show inlined
+calls, reordered stepping, or variables that have been optimised away. Fast math
+remains disabled; the existing numerical fixtures are unchanged.
+MSVC `/RTC` checks are incompatible with `/O2`; optimised Debug retains `/sdl`
+and assertions instead of requesting those incompatible compiler options.
 
 For example:
 
@@ -66,6 +79,27 @@ Do not bypass NVCC's supported-compiler checks. WSL and native Linux use these
 same presets in separate checkouts or build caches. WSL needs only the Linux
 CUDA toolkit and Windows NVIDIA driver integration; never install a Linux
 display driver into WSL.
+
+Keep a Windows checkout and its build caches on the Windows filesystem, and a
+WSL checkout and its caches on the Linux filesystem, such as under `/home`.
+Compiling Linux sources and writing large static-linked test binaries through
+`/mnt/c` adds cross-filesystem overhead. Configure fresh caches in the appropriate
+checkout; existing CMake/Cargo caches contain absolute paths and cannot be moved
+while retaining their preparation evidence.
+
+Ninja uses separate pools of at most eight compile jobs and two link jobs.
+The verification runner defaults to at most eight available CPU workers and
+honours a positive `CMAKE_BUILD_PARALLEL_LEVEL`; ordinary CMake builds also accept
+`--parallel <count>`. Changing this scheduling limit preserves compiled artifacts.
+Preparation receipts bind the actual build command and worker count. The desktop
+`CODEX_TOOL_CALL_ID` is removed from compiler/test subprocess environments and
+freshness identities. Preparation consumes `CMAKE_BUILD_PARALLEL_LEVEL` before
+removing it from configure/compiler subprocess environments, so it cannot become
+an untracked compiler input. Other environment inputs remain tracked.
+CMake creates the required `CACHEDIR.TAG` in its dedicated Cargo directory so
+the pinned Cargo can perform package-scoped cleanup safely when preparation
+requires it. CUDA library discovery uses the toolkit already selected by NVCC
+and system library locations, avoiding unrelated environment `PATH` scans.
 
 The build preserves explicit SM 7.5 machine code plus compute_75 PTX. It does
 not select the build machine's CPU/GPU architecture. Windows uses the CUDA

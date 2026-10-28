@@ -29,6 +29,12 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def command_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    # The desktop call ID identifies orchestration, not a compiler/test input.
+    # Remove it from child processes too, so an ignored value cannot affect output.
+    return {key: value for key, value in environment.items() if key != "CODEX_TOOL_CALL_ID"}
+
+
 def snapshot(root: Path, paths: Sequence[str]) -> dict[str, str]:
     """Hash declared files only. Never discover previous campaigns recursively."""
     names = sorted(set(paths))
@@ -245,7 +251,7 @@ class Campaign:
     ) -> Path:
         OutputLease.check_held()
         self.check_run_request(stage, command, inputs=inputs, timeout=timeout)
-        environment = dict(os.environ if env is None else env)
+        environment = command_environment(os.environ if env is None else env)
         if "JUICER_OUTPUT_LEASES" in os.environ:
             environment["JUICER_OUTPUT_LEASES"] = os.environ["JUICER_OUTPUT_LEASES"]
         executable = shutil.which(command[0], path=environment.get("PATH", ""))

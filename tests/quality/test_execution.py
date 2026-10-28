@@ -141,6 +141,13 @@ class CampaignTests(unittest.TestCase):
         for path, content in preserved.items():
             self.assertEqual(path.read_bytes(), content)
 
+    def test_orchestration_id_cannot_reach_child_processes(self):
+        with patch.dict(os.environ, {"CODEX_TOOL_CALL_ID": "desktop-call"}):
+            result = self.campaign.run("quality", self.command(
+                "import os; assert 'CODEX_TOOL_CALL_ID' not in os.environ; print('checked')"
+            ), inputs=["source.txt"])
+        self.assertEqual(json.loads(result.read_text())["status"], "passed")
+
     def test_source_changes_invalidate_report_and_allow_fresh_execution(self):
         self.execute("print('pass')")
         (self.root / "source.txt").write_text("changed", encoding="utf-8")

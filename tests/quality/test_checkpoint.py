@@ -108,6 +108,49 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(result["sha256"], digest(Path(first["receipt"])))
         self.assertFalse((self.campaign("renamed").directory / "attempts").exists())
 
+    def test_call_id_change_reuses_gate_but_unknown_environment_change_does_not(self):
+        self.environment["CODEX_TOOL_CALL_ID"] = "first"
+        first = self.run_stage("boundary")
+        self.environment["CODEX_TOOL_CALL_ID"] = "second"
+        with patch.object(Campaign, "run", side_effect=AssertionError("call ID reran a completed gate")):
+            reused = self.run_stage("boundary", campaign="new-call")
+        self.assertEqual(reused["reused_from"], first["receipt"])
+        self.environment["UNKNOWN_BUILD_CONTROL"] = "changed"
+        changed = self.run_stage("boundary", campaign="changed-control")
+        self.assertNotIn("reused_from", changed)
+
+    def test_checkpoint_presets_overlap_independent_tests_and_preserve_resource_locks(self):
+        self.native_project()
+        worker = self.root / "worker.py"
+        scratch = self.root / "out/scheduling"
+        scratch.mkdir(parents=True)
+        worker.write_text(
+            "import sys,time\nfrom pathlib import Path\n"
+            "role=sys.argv[1];root=Path(sys.argv[2])\n"
+            "if role in ('first','second'):\n"
+            " (root/(role+'.ready')).touch()\n"
+            " peer=root/(('second' if role=='first' else 'first')+'.ready')\n"
+            " deadline=time.monotonic()+10\n"
+            " while not peer.exists():\n"
+            "  if time.monotonic()>deadline:raise RuntimeError('independent tests did not overlap')\n"
+            "  time.sleep(.01)\n"
+            "else:\n"
+            " guard=root/'exclusive-owner';guard.mkdir()\n"
+            " time.sleep(.15)\n guard.rmdir()\n"
+        )
+        with (self.root / "CMakeLists.txt").open("a") as stream:
+            for role in ("first", "second", "locked-first", "locked-second"):
+                stream.write(f'add_test(NAME {role} COMMAND "{Path(self.python).as_posix()}" '
+                             f'"{worker.as_posix()}" {role} "{scratch.as_posix()}")\n'
+                             f'set_tests_properties({role} PROPERTIES LABELS "host;boundary")\n')
+            stream.write('set_tests_properties(locked-first locked-second PROPERTIES RESOURCE_LOCK fixture_owner)\n')
+        self.configure_fixture(self.preset, True, "fixture-parallel")
+        args = SimpleNamespace(reason="real checkpoint scheduling and lock witnesses", selection=["boundary"],
+                               preset=self.preset, runtime="host", campaign="parallel", repeat_reason="", base=None, prepare=True)
+        result = json.loads(qualification.qualify(self.root, args).read_text())
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(len(result["membership"]["boundary"]), 5)
+
     def test_retry_reason_preserves_matching_successful_checks(self):
         first = self.run_stage("boundary")
         original = Path(first["receipt"]).read_bytes()
@@ -602,7 +645,9 @@ class CheckpointTests(unittest.TestCase):
             'if(BUILD_TESTING)\nadd_test(NAME boundary COMMAND "${CMAKE_COMMAND}" -E true)\n'
             'set_tests_properties(boundary PROPERTIES LABELS "host;boundary")\nendif()\n')
         (self.root / "CMakePresets.json").write_text(json.dumps({"version": 6, "configurePresets": [{
-            "name": self.preset, "generator": "Ninja", "binaryDir": str(self.build)}]}))
+            "name": self.preset, "generator": "Ninja", "binaryDir": str(self.build)}], "testPresets": [{
+                "name": self.preset, "configurePreset": self.preset,
+                "execution": {"jobs": 4, "noTestsAction": "error"}}]}))
         self.configure_fixture(self.preset, False, "fixture-base")
 
     def test_real_native_dispatcher_executes_and_reuses_exact_ctest_membership(self):
@@ -2242,7 +2287,9 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         (self.root / "CMakePresets.json").write_text(json.dumps({"version": 6, "configurePresets": [
             {"name": p, "generator": "Ninja", "binaryDir": str(self.root / "out/build" / p),
              "cacheVariables": {**compiler, "CMAKE_BUILD_TYPE": "Release" if p.endswith("release") else "Debug"}}
-            for p in qualification.PRESETS]}))
+            for p in qualification.PRESETS], "testPresets": [
+                {"name": p, "configurePreset": p, "execution": {"jobs": 4, "noTestsAction": "error"}}
+                for p in qualification.PRESETS]}))
         return files
 
     def replay_preparation_renewal(self):

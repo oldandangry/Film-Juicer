@@ -14,8 +14,8 @@ import time
 import tomllib
 import uuid
 
-from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, preparation_inventory, preparation_paths, prepare_build, registration_files
-from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
+from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, ctest_command, preparation_inventory, preparation_paths, prepare_build, registration_files
+from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/ffi"))
 from grain_probe_contract import GRAIN_FRAME_CASE_COUNT, GRAIN_FRAME_CASE_IDS
@@ -676,7 +676,7 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
     campaign.check_run_request(name, command, inputs=inputs, timeout=timeout)
     identity = {"command": list(semantic_command or command),
                 "inputs": snapshot(campaign.root, inputs), "tools": tool_snapshot(tools, allow_missing=True), "tool_paths": list(tools),
-                "environment": hashlib.sha256(json.dumps({k: v for k, v in environment.items()
+                "environment": hashlib.sha256(json.dumps({k: v for k, v in command_environment(environment).items()
                     if k not in {"JUICER_OUTPUT_LEASES", "JUICER_TEST_ARTIFACT_DIR"}}, sort_keys=True).encode()).hexdigest(),
                 "dependencies": list(dependencies)}
     if artifact_directories:
@@ -1148,7 +1148,7 @@ def _qualify_owned(root, build, args):
                 for role, members in parts.items():
                     junit = campaign.directory / (group + "-" + role + ".xml")
                     pattern = "^(" + "|".join(re.escape(n) for n in members) + ")$"
-                    commands.append(["ctest", "--test-dir", str(build), "-R", pattern,
+                    commands.append([*ctest_command(root, build), "-R", pattern,
                         "-LE" if role == "host" else "-L", "gpu", "--no-tests=error",
                         "--output-on-failure", "--output-junit", str(junit)])
                     reports.append(junit)

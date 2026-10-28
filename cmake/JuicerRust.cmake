@@ -63,6 +63,10 @@ else()
     set(JUICER_RUST_PROFILE_ARGUMENT)
 endif()
 set(JUICER_RUST_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo")
+# This dedicated directory is owned by CMake/Cargo; Cargo requires its cache
+# signature before package-scoped cleanup can safely recover restored inputs.
+file(CONFIGURE OUTPUT "${JUICER_RUST_TARGET_DIR}/CACHEDIR.TAG"
+    CONTENT "Signature: 8a477f597d28d172789f06886806bc55\n" @ONLY)
 set(JUICER_RUST_ARCHIVE
     "${JUICER_RUST_TARGET_DIR}/${JUICER_RUST_TARGET}/${JUICER_RUST_CARGO_PROFILE}/${JUICER_RUST_ARCHIVE_NAME}")
 set(JUICER_RUST_BUILD_STAMP "${CMAKE_BINARY_DIR}/cargo-build.stamp")

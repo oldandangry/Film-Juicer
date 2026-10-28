@@ -52,7 +52,8 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/llvm-22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | \
             sudo tee /etc/apt/sources.list.d/llvm-22.list > /dev/null
           sudo apt-get update
-          sudo apt-get install -y llvm-22
+          sudo apt-get install -y llvm-22 lld-22
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
           llvm-nm-22 --version
           for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
             test -f "$CUDAToolkit_ROOT/include/$header" || {
@@ -162,7 +163,8 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/llvm-22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | \
             sudo tee /etc/apt/sources.list.d/llvm-22.list > /dev/null
           sudo apt-get update
-          sudo apt-get install -y llvm-22
+          sudo apt-get install -y llvm-22 lld-22
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
           llvm-nm-22 --version
           for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
             test -f "$CUDAToolkit_ROOT/include/$header" || {
@@ -273,7 +275,8 @@ jobs:
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 22
-          sudo apt-get install -y clang-format-22 clang-tidy-22
+          sudo apt-get install -y clang-format-22 clang-tidy-22 lld-22
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
           for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
             test -f "$CUDAToolkit_ROOT/include/$header" || {
               echo "::error::CUDA analysis header missing: $CUDAToolkit_ROOT/include/$header"

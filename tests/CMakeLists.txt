@@ -1,6 +1,12 @@
 include(FetchContent)
 
 enable_language(C)
+string(REGEX REPLACE "(^| )[/-]DNDEBUG( |$)" " "
+    CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_RELEASE}")
+if(NOT WIN32)
+    string(APPEND CMAKE_C_FLAGS_DEBUG " -g")
+endif()
 
 find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Interpreter)
 
@@ -1140,8 +1146,20 @@ add_test(NAME Color.Gpu.ScannerReuse COMMAND JuicerColorPreparationTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" reuse-gpu)
 set_tests_properties(Color.Gpu.ScannerReuse PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
+# These consumers use identical fixture flags; hook-specific replacements stay local.
+add_library(juicer_spectral_fixture_objects OBJECT ffi/spectral_products_test.cpp)
+add_library(juicer_spectral_allocation_test_objects OBJECT ffi/spectral_allocation_probe.cpp)
+foreach(fixture_target IN ITEMS juicer_spectral_fixture_objects juicer_spectral_allocation_test_objects)
+    target_link_libraries(${fixture_target} PRIVATE juicer_settings juicer_ofx_headers)
+    set_target_properties(${fixture_target} PROPERTIES POSITION_INDEPENDENT_CODE OFF)
+    if(UNIX)
+        target_compile_options(${fixture_target} PRIVATE -fPIE)
+    endif()
+endforeach()
+
 add_executable(JuicerExposurePreparationTests ffi/exposure_abi_c.c ffi/exposure_preparation_test.cpp
-    ffi/spectral_products_test.cpp ffi/spectral_allocation_probe.cpp)
+    $<TARGET_OBJECTS:juicer_spectral_fixture_objects>
+    $<TARGET_OBJECTS:juicer_spectral_allocation_test_objects>)
 target_link_libraries(JuicerExposurePreparationTests PRIVATE juicer_core)
 set_target_properties(JuicerExposurePreparationTests PROPERTIES
     LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
@@ -1222,7 +1240,7 @@ add_test(NAME Exposure.Host.Mallett.FixtureFormat COMMAND "${Python3_EXECUTABLE}
 set_tests_properties(Exposure.Host.Mallett.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 0
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
-add_executable(JuicerSpectralPreparationTests ffi/spectral_preparation_abi_c.c ffi/spectral_preparation_test.cpp ffi/spectral_products_test.cpp ffi/spectral_allocation_probe.cpp)
+add_executable(JuicerSpectralPreparationTests ffi/spectral_preparation_abi_c.c ffi/spectral_preparation_test.cpp $<TARGET_OBJECTS:juicer_spectral_fixture_objects> $<TARGET_OBJECTS:juicer_spectral_allocation_test_objects>)
 target_link_libraries(JuicerSpectralPreparationTests PRIVATE juicer_core)
 set_target_properties(JuicerSpectralPreparationTests PROPERTIES
     LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
@@ -1259,7 +1277,7 @@ foreach(spectral_case IN ITEMS products admission)
     set_tests_properties(${spectral_name} PROPERTIES LABELS "host" TIMEOUT 0)
 endforeach()
 
-add_executable(JuicerTcLutTests ffi/tc_lut_abi_c.c ffi/tc_lut_test.cpp ffi/spectral_products_test.cpp)
+add_executable(JuicerTcLutTests ffi/tc_lut_abi_c.c ffi/tc_lut_test.cpp $<TARGET_OBJECTS:juicer_spectral_fixture_objects>)
 target_link_libraries(JuicerTcLutTests PRIVATE juicer_core)
 set_target_properties(JuicerTcLutTests PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 if(UNIX)
@@ -1291,7 +1309,7 @@ set_tests_properties(Reconstruction.Host.TcLut.FixtureFormat PROPERTIES LABELS "
 add_library(juicer_input_hull_test_objects OBJECT ../src/RustGamutBridge.cpp)
 target_link_libraries(juicer_input_hull_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_input_hull_test_objects PRIVATE JUICER_INPUT_HULL_TEST_HOOK=1)
-add_executable(JuicerInputHullTests ffi/input_hull_abi_c.c ffi/input_hull_test.cpp ffi/spectral_products_test.cpp ffi/spectral_allocation_probe.cpp $<TARGET_OBJECTS:juicer_input_hull_test_objects>)
+add_executable(JuicerInputHullTests ffi/input_hull_abi_c.c ffi/input_hull_test.cpp $<TARGET_OBJECTS:juicer_spectral_fixture_objects> $<TARGET_OBJECTS:juicer_spectral_allocation_test_objects> $<TARGET_OBJECTS:juicer_input_hull_test_objects>)
 target_link_libraries(JuicerInputHullTests PRIVATE juicer_core)
 set_target_properties(JuicerInputHullTests PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 if(UNIX)

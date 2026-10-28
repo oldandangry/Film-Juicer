@@ -99,6 +99,8 @@ class RustBuild(unittest.TestCase):
                     "stamp": stamp.stat().st_mtime_ns, "link": links[-1]}
 
         configure("ON")
+        self.assertEqual((build / "cargo/CACHEDIR.TAG").read_text(),
+                         "Signature: 8a477f597d28d172789f06886806bc55\n")
         run(command)
         self.assertEqual(run([str(consumer)]).strip(), "7")
         before = state()
