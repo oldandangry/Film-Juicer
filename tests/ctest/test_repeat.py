@@ -348,8 +348,30 @@ class ArtifactSelectionTests(unittest.TestCase):
             self.assertEqual(text.count("Testing/Temporary/LastTest.log"), 3)
             artifacts = re.findall(r"^          name: (.+)$", text, re.M)
             self.assertEqual(len(artifacts), len(set(artifacts)))
-            self.assertIn(f"{native}-tooling-results", artifacts)
-            for lane in ("product-debug", "product-release", "analysis", "tooling"):
+            tooling = f"{native}-tooling"
+            expanded = artifacts
+            if native == "windows":
+                tooling += "-${{ matrix.shard }}"
+                job = re.search(r"^  windows-tooling:\n((?:    [^\n]*\n|\n)+)", text, re.M)
+                self.assertIsNotNone(job)
+                matrix = re.findall(r"^        shard: \[([^\]\n]+)\]$", job[1], re.M)
+                self.assertEqual(len(matrix), 1)
+                shards = [value.strip() for value in matrix[0].split(",")]
+                self.assertCountEqual(shards, ["core", "BuildEvidence", "Checkpoint", "PreparationRenewal"])
+                tooling_artifacts = re.findall(r"^          name: (.+)$", job[1], re.M)
+                self.assertTrue(tooling_artifacts)
+                self.assertTrue(all("${{ matrix.shard }}" in artifact for artifact in tooling_artifacts),
+                                "every matrix artifact needs a shard-specific name")
+                expanded = [artifact.replace("${{ matrix.shard }}", shard)
+                            for artifact in artifacts
+                            for shard in (shards if artifact in tooling_artifacts else [""])]
+                for shard in shards:
+                    self.assertIn(f"windows-tooling-{shard}-results", expanded)
+                    self.assertIn(f"windows-tooling-{shard}-failed-controls", expanded)
+            self.assertEqual(len(expanded), len(set(expanded)), "artifact names must be unique across matrix jobs")
+            self.assertIn(tooling + "-results", artifacts)
+            self.assertIn(tooling + "-failed-controls", artifacts)
+            for lane in ("product-debug", "product-release", "analysis"):
                 self.assertIn(f"{native}-{lane}-failed-controls", artifacts)
             self.assertNotIn("out/validation/**", text)
 

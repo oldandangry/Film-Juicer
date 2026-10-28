@@ -4,6 +4,7 @@ import json
 import os
 import re
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -3353,7 +3354,9 @@ class MembershipTests(unittest.TestCase):
                 self.assertIn(trigger, text)
             self.assertNotRegex(text, re.compile(r"^    paths(?:-ignore)?:", re.M))
             for name in children:
-                self.assertNotRegex(jobs[name], re.compile(r"^    (?:needs|if|strategy):", re.M))
+                self.assertNotRegex(jobs[name], re.compile(r"^    (?:needs|if):", re.M))
+                if name != "windows-tooling":
+                    self.assertNotRegex(jobs[name], re.compile(r"^    strategy:", re.M))
                 self.assertIn("fetch-depth: 0", jobs[name])
                 self.assertIn("tests/ctest/control_artifacts.py --preset", jobs[name])
                 self.assertIn("include-hidden-files: true", jobs[name])
@@ -3378,7 +3381,22 @@ class MembershipTests(unittest.TestCase):
                         self.assertIn(operation, block)
             tooling = jobs[f"{native}-tooling"]
             self.assertIn(f"cmake -S tests/tooling -B out/build/tooling-{native}", tooling)
-            self.assertIn(f"ctest --test-dir out/build/tooling-{native} -L tooling", tooling)
+            label = "tooling"
+            if native == "windows":
+                strategy = re.search(r"^    strategy:\n((?:      [^\n]*\n)+)", tooling, re.M)
+                self.assertIsNotNone(strategy)
+                matrix = re.fullmatch(r"      fail-fast: false\n      matrix:\n        shard: \[([^\]\n]+)\]\n",
+                                      strategy[1])
+                self.assertIsNotNone(matrix, "only the complete tooling shard matrix may add a strategy")
+                self.assertCountEqual([value.strip() for value in matrix[1].split(",")],
+                                      ["core", "BuildEvidence", "Checkpoint", "PreparationRenewal"])
+                label = '"^tooling-${{ matrix.shard }}$"'
+            selections = re.findall(rf"^          ctest --test-dir out/build/tooling-{native}( -N)? -L (\"[^\"\n]+\"|\S+)",
+                                    tooling, re.M)
+            self.assertEqual(selections, [(" -N", label), ("", label)])
+            # Include arguments on Bash and PowerShell continuation lines.
+            commands = re.sub(r"(?:\\|`)\n[ \t]*", " ", tooling)
+            self.assertNotRegex(commands, r"ctest[^\n]* (?:-R|-E|-LE|--tests-regex|--exclude-regex|--label-exclude)\b")
             self.assertIn("--no-tests=error", tooling)
             self.assertIn(f"out/validation/{family}-debug", tooling)
             self.assertNotIn("Install CUDA", tooling)
@@ -3393,19 +3411,39 @@ class MembershipTests(unittest.TestCase):
                 self.assertNotIn(obsolete, text)
 
     def test_native_ci_analysis_owns_cumulative_debug_and_release_quality(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ci_checkpoint_quality", ROOT / "scripts/check-quality.py")
+        quality = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = quality
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(quality)
         for native, family in (("linux", "linux"), ("windows", "windows-clang")):
             _, jobs = self.ci_jobs(native)
             block = jobs[f"{native}-analysis"]
-            self.assertIn(f"cmake --build --preset {family}-debug", block)
+            self.assertRegex(block, re.compile(
+                rf"^        run: cmake --build --preset {family}-debug --target juicer_analysis_inputs$", re.M))
             self.assertIn(f"cmake --preset {family}-release -DBUILD_TESTING=ON", block)
             self.assertIn(f"cmake --build --preset {family}-release --target juicer_rust_build", block)
             self.assertIn("github.event.pull_request.base.sha", block)
             self.assertIn("github.event.before", block)
             self.assertIn("git cat-file -e", block)
             self.assertNotIn("HEAD^", block)
-            for selection in ("--base", "--all-owned"):
-                self.assertRegex(block, rf"scripts/check-quality.py {selection}[^\n]*--preset {family}-debug --jobs 2")
-            self.assertIn(f"scripts/check-quality.py --files Cargo.toml --preset {family}-release --jobs 2", block)
+            commands = [shlex.split(arguments) for arguments in re.findall(
+                r"^          (?:  )?python -u scripts/check-quality.py ([^\n]+)$", block, re.M)]
+            base = "$QUALITY_BASE" if native == "linux" else "$qualityBase"
+            self.assertEqual(commands, [
+                ["--base", base, "--preset", f"{family}-debug"],
+                ["--all-owned", "--preset", f"{family}-debug"],
+                ["--files", "Cargo.toml", "--preset", f"{family}-release"],
+            ])
+            # Exercise the real parser with the workflow arguments: every gate
+            # inherits the bounded CPU-aware default instead of fixing two workers.
+            for available, expected in ((None, 1), (1, 1), (2, 2), (4, 4), (16, 4)):
+                for command in commands:
+                    with self.subTest(native=native, available=available, command=command), \
+                            patch.object(sys, "argv", [str(spec.origin), *command]), \
+                            patch.object(quality.os, "process_cpu_count", return_value=available):
+                        self.assertEqual(quality.parse_arguments().jobs, expected)
             for profile in ("debug", "release"):
                 self.assertIn(f"out/validation/{family}-{profile}/quality/**/*.log", block)
                 self.assertIn(f"out/build/{family}-{profile}/compile_commands.json", block)
