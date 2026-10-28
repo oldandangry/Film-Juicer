@@ -686,16 +686,18 @@ endif()
 add_test(NAME Assets.Host.LookupSafety COMMAND JuicerAssetLookupTests)
 set_tests_properties(Assets.Host.LookupSafety PROPERTIES LABELS "host" TIMEOUT 0)
 
+# GoogleTest treats DISCOVERY_TIMEOUT 0 as unset and falls back to five seconds.
+# Give post-build executable startup an explicit allowance during parallel links.
 gtest_discover_tests(JuicerHashContractTests
     TEST_PREFIX "Hash.Host."
     DISCOVERY_MODE POST_BUILD
-    DISCOVERY_TIMEOUT 0
+    DISCOVERY_TIMEOUT 30
     PROPERTIES LABELS "host\\;product" TIMEOUT 0)
 
 gtest_discover_tests(JuicerScatterHalationHostTests
     TEST_PREFIX "ScatterHalation.Host."
     DISCOVERY_MODE POST_BUILD
-    DISCOVERY_TIMEOUT 0
+    DISCOVERY_TIMEOUT 30
     PROPERTIES
         LABELS "host\\;product"
         TIMEOUT 0
