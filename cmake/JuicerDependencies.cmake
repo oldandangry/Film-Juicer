@@ -2,10 +2,15 @@ if(NOT CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA" OR
    NOT CMAKE_CUDA_COMPILER_VERSION MATCHES "^13\\.2\\.")
     message(FATAL_ERROR "Film-Juicer requires NVIDIA CUDA 13.2; no toolkit or dialect fallback")
 endif()
-find_package(CUDAToolkit 13.2 REQUIRED)
-if(NOT CUDAToolkit_VERSION MATCHES "^13\\.2\\.")
-    message(FATAL_ERROR "FindCUDAToolkit must resolve the same CUDA 13.2 installation as NVCC")
-endif()
+# The CUDA language already selected NVCC's toolkit. Searching every PATH entry
+# again for optional CUDA libraries is particularly expensive across WSL mounts.
+block(PROPAGATE CUDAToolkit_VERSION CUDAToolkit_LIBRARY_ROOT CUDAToolkit_BIN_DIR)
+    set(CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH FALSE)
+    find_package(CUDAToolkit 13.2 REQUIRED)
+    if(NOT CUDAToolkit_VERSION MATCHES "^13\\.2\\.")
+        message(FATAL_ERROR "FindCUDAToolkit must resolve the same CUDA 13.2 installation as NVCC")
+    endif()
+endblock()
 find_package(Threads REQUIRED)
 
 add_library(juicer_dependencies INTERFACE)

@@ -12,6 +12,8 @@ if(CMAKE_HOST_WIN32)
     endif()
     set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT ProgramDatabase)
+    # MSVC's /RTC stack/uninitialised checks cannot be combined with /O2.
+    set(CMAKE_MSVC_RUNTIME_CHECKS "")
 endif()
 
 project(FilmJuicer LANGUAGES CXX CUDA)
@@ -33,12 +35,20 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-# The supported Release configurations retain standard assertions.
-# Keep that behavior on both platforms instead of CMake's default NDEBUG.
+# Both configurations use the same optimisation policy and retain assertions.
+# Debug adds symbols and invariant diagnostics to the optimised product.
 foreach(language IN ITEMS CXX CUDA)
     string(REGEX REPLACE "(^| )[/-]DNDEBUG( |$)" " "
         CMAKE_${language}_FLAGS_RELEASE "${CMAKE_${language}_FLAGS_RELEASE}")
+    set(CMAKE_${language}_FLAGS_DEBUG "${CMAKE_${language}_FLAGS_RELEASE}")
+    if(NOT WIN32)
+        string(APPEND CMAKE_${language}_FLAGS_DEBUG " -g")
+    endif()
 endforeach()
+# Bound memory use independently of Ninja's overall worker count.
+set_property(GLOBAL PROPERTY JOB_POOLS juicer_compile=8 juicer_link=2)
+set(CMAKE_JOB_POOL_COMPILE juicer_compile)
+set(CMAKE_JOB_POOL_LINK juicer_link)
 if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "75-real;75-virtual")
     message(FATAL_ERROR "The supported GPU policy is SM 7.5 plus compute_75 PTX; use the shared presets")
 endif()
@@ -63,15 +73,14 @@ if(WIN32)
         $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>:UNICODE;_UNICODE>)
     target_compile_options(juicer_settings INTERFACE
         $<$<COMPILE_LANGUAGE:CXX>:/W3;/WX;/sdl;/permissive-;/EHsc>
-        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/O2;/Oi;/Ob2;/Gy>
-        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-O3;-Xptxas=-O3;-Xcompiler=/EHsc,/O2,/Oi,/Ob2,/Gy,/Gw,/GF>)
-    target_link_options(juicer_settings INTERFACE /DEBUG /INCREMENTAL:NO
-        $<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>)
+        $<$<COMPILE_LANGUAGE:CXX>:/O2;/Oi;/Ob2;/Gy>
+        $<$<COMPILE_LANGUAGE:CUDA>:-O3;-Xptxas=-O3;-Xcompiler=/EHsc,/O2,/Oi,/Ob2,/Gy,/Gw,/GF>)
+    target_link_options(juicer_settings INTERFACE /DEBUG /INCREMENTAL:NO /OPT:REF /OPT:ICF)
     if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         message(FATAL_ERROR "Windows requires ClangCl with NVCC/MSVC")
     endif()
     target_compile_options(juicer_settings INTERFACE
-        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/Gw;/GF;-flto=thin>)
+        $<$<COMPILE_LANGUAGE:CXX>:/Gw;/GF;-flto=thin>)
 else()
     if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
        CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10 OR
@@ -81,7 +90,7 @@ else()
     target_compile_options(juicer_settings INTERFACE
         $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Werror>
         $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fvisibility=hidden>
-        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-O3;-Xptxas=-O3>)
+        $<$<COMPILE_LANGUAGE:CUDA>:-O3;-Xptxas=-O3>)
 endif()
 
 add_library(juicer_native OBJECT ${JUICER_NATIVE_SOURCES})

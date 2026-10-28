@@ -30,11 +30,16 @@ unimplemented = "deny"
 dbg_macro = "deny"
 
 [profile.dev]
+opt-level = 3
+codegen-units = 16
 debug = 2
+debug-assertions = true
 overflow-checks = true
 panic = "unwind"
 
 [profile.release]
+opt-level = 3
+codegen-units = 16
 debug = 2
 overflow-checks = true
 panic = "unwind"

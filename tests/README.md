@@ -379,6 +379,8 @@ product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
 alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
 shared device; CTest resource locks apply within one invocation. Override the
 worker count with `--parallel <count>` when the machine needs a smaller limit.
+Checkpoint host/GPU partitions use these same test presets, preserving their
+worker accounting, named locks, exact membership and complete-result checks.
 
 `Rust.Core` uses two libtest workers and reserves two CTest slots. Tests that
 spawn threads still exercise their internal concurrent publication and lifetime

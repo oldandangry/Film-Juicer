@@ -285,12 +285,6 @@ class BuildEvidenceTests(unittest.TestCase):
             build_evidence.check_scoped_preparation(self.campaign, self.build, producer)
 
     def prepare(self, **kwargs):
-        if "-DENABLE_RUST=ON" in self.args:
-            # Model the supported tagged Cargo cache; production keeps Cargo's
-            # refusal to clean arbitrary untagged output directories.
-            cargo_cache = self.build / "cargo"
-            cargo_cache.mkdir(parents=True, exist_ok=True)
-            (cargo_cache / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
         _, self.prepared = build_evidence.prepare_build(
             self.campaign,
             "prepare",
@@ -327,6 +321,59 @@ class BuildEvidenceTests(unittest.TestCase):
                          configurations[-1]["configuration_evidence"]["trace_sha256"])
         self.assertEqual(renewed["scoped_preparation"]["outputs"], proof["outputs"])
         self.assertIn(self.build / "generated/binding.h", build_evidence.configuration_outputs(self.build))
+
+    def test_call_id_and_worker_changes_preserve_native_and_rust_artifacts(self):
+        self.enable_rust()
+        with patch.dict(os.environ, {"CODEX_TOOL_CALL_ID": "first", "CMAKE_BUILD_PARALLEL_LEVEL": "2"}):
+            self.prepare()
+            self.prepare(reconfigure=True)
+            first = json.loads(self.prepared.read_text())["scoped_preparation"]
+            stamps = {name: Path(name).stat().st_mtime_ns for name in first["outputs"]}
+            with patch.dict(os.environ, {"CODEX_TOOL_CALL_ID": "second", "CMAKE_BUILD_PARALLEL_LEVEL": "3"}):
+                self.prepare(reconfigure=True)
+                record = json.loads(self.prepared.read_text())
+                proof = record["scoped_preparation"]
+                self.assertEqual(proof["invalidated"], [])
+                self.assertEqual(proof["rust_invalidated_packages"], [])
+                self.assertEqual(proof["context"], first["context"])
+                self.assertEqual(proof["output_identities"], first["output_identities"])
+                self.assertEqual(stamps, {name: Path(name).stat().st_mtime_ns for name in first["outputs"]})
+                self.assertEqual(proof["build_jobs"], 3)
+                command = record["identity"]["command"]
+                self.assertEqual(command[command.index("--parallel") + 1], "3")
+                build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+
+    def test_invalid_worker_count_starts_no_preparation(self):
+        for workers in ("0", "-1", "1.5", "unlimited", "２"):
+            with self.subTest(workers=workers), patch.dict(os.environ, {"CMAKE_BUILD_PARALLEL_LEVEL": workers}):
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    self.prepare()
+        self.assertEqual(self.campaign.attempts("prepare"), [])
+
+    def test_worker_count_cannot_become_an_untracked_compiler_input(self):
+        with (self.source / "CMakeLists.txt").open("a") as stream:
+            stream.write(
+                'if(DEFINED ENV{CMAKE_BUILD_PARALLEL_LEVEL})\n'
+                'target_compile_definitions(behavior PRIVATE WORKERS=$ENV{CMAKE_BUILD_PARALLEL_LEVEL})\n'
+                'else()\ntarget_compile_definitions(behavior PRIVATE WORKERS=7)\nendif()\n'
+            )
+        (self.source / "native.cpp").write_text("int native(){return WORKERS;}\n")
+        with patch.dict(os.environ, {"CMAKE_BUILD_PARALLEL_LEVEL": "2"}):
+            self.prepare()
+            self.prepare(reconfigure=True)
+            first = json.loads(self.prepared.read_text())["scoped_preparation"]
+            with patch.dict(os.environ, {"CMAKE_BUILD_PARALLEL_LEVEL": "3"}):
+                self.prepare()
+                record = json.loads(self.prepared.read_text())
+                proof = record["scoped_preparation"]
+                self.assertFalse(record["preparation_admission"]["configured"])
+                self.assertEqual(proof["build_jobs"], 3)
+                self.assertEqual(proof["invalidated"], [])
+                self.assertEqual(proof["output_identities"], first["output_identities"])
+                build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+                binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
+                result = subprocess.run([str(binary), "16"], capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout.strip(), "value=16")
 
     def test_reconfigure_replaces_unproved_registry(self):
         self.prepare()
