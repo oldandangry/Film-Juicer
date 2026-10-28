@@ -100,6 +100,13 @@ target_link_libraries(juicer_host PRIVATE juicer_settings juicer_ofx_headers)
 add_library(juicer_adapter OBJECT ${JUICER_ADAPTER_SOURCES})
 target_link_libraries(juicer_adapter PRIVATE juicer_settings juicer_ofx_headers)
 
+# Compiler analysis consumes the ordinary objects for isolation checks and the
+# Rust archive. Testing adds generated headers consumed by compiler analysis;
+# the configured database retains every test-hook variant.
+add_custom_target(juicer_analysis_inputs)
+add_dependencies(juicer_analysis_inputs
+    juicer_native juicer_host juicer_adapter juicer_rust_build)
+
 # Preserve one aggregate archive for current product/test links and isolated
 # test-hook object replacement, without compiling a second CUDA implementation.
 add_library(juicer_core STATIC

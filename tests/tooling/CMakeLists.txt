@@ -49,5 +49,10 @@ juicer_register_tooling_tests(
 # cases belong to the tooling selection, including the product suite's existing
 # Ffi.Host.RustBuild consumer contract.
 foreach(tooling_test IN LISTS JUICER_TOOLING_TESTS)
-    set_property(TEST "${tooling_test}" APPEND PROPERTY LABELS tooling)
+    set(tooling_shard core)
+    if(tooling_test MATCHES "^Quality\\.(BuildEvidence|Checkpoint|PreparationRenewal)$")
+        set(tooling_shard "${CMAKE_MATCH_1}")
+    endif()
+    set_property(TEST "${tooling_test}" APPEND PROPERTY LABELS
+        tooling "tooling-${tooling_shard}")
 endforeach()

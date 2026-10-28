@@ -85,7 +85,8 @@ not configure the product, CUDA or GoogleTest. Supply the same qualified Python
 cmake -S tests/tooling -B out/build/tooling-linux -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc-13
 ctest --test-dir out/build/tooling-linux -L tooling --parallel 4 \
-  --no-tests=error --output-on-failure
+  --no-tests=error --output-on-failure \
+  --test-output-size-passed 65536 --test-output-truncation middle
 ```
 
 On Windows use `out/build/tooling-windows` and `-DCMAKE_C_COMPILER=clang-cl.exe`
@@ -95,6 +96,16 @@ use `tests/ToolingTests.cmake`; ordinary product CTest retains the same eleven
 Debug tooling members. Artifacts still route to the native Debug preset's
 `out/validation/` tree. Each entry uses its own CTest binary directory as the
 default working directory; commands and fixture roots use explicit checkout paths.
+Linux also needs LLD for the compiler-selected-linker freshness control.
+
+Hosted Windows tooling uses four independent runners labelled `tooling-core`,
+`tooling-BuildEvidence`, `tooling-Checkpoint` and `tooling-PreparationRenewal`.
+These disjoint selections cover the complete tooling membership once. Every
+shard must succeed, and a failed shard does not cancel the others. The heavy
+groups retain their local CTest processor reservations to avoid competing for
+I/O on the same machine. Local unfiltered tooling still runs all eleven groups.
+Passed output retains up to 64 KiB with middle truncation, preserving both the
+initial diagnostics and final duration summaries.
 
 Windows verification controls require Win32 long-path support for nested
 preparation receipts. An administrator can enable `LongPathsEnabled` under
@@ -122,6 +133,9 @@ mean a test passed.
 Hosted Debug product, Release product, analysis and tooling jobs run independently
 on each OS. Product jobs compile every configured target, including GPU-only tests,
 then execute the host selection; Linux Debug also runs corpus checks. Analysis
+prepares `juicer_analysis_inputs`, preserving ordinary-object isolation and all
+configured compiler variants while avoiding product/test executable links. It
+also generates the diffusion reference header needed by its compiler consumer. It
 owns cumulative PR Debug quality and matching Release Rust quality. The original
 required check names aggregate all four child results and accept only success.
 

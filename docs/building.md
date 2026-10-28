@@ -101,6 +101,26 @@ the pinned Cargo can perform package-scoped cleanup safely when preparation
 requires it. CUDA library discovery uses the toolkit already selected by NVCC
 and system library locations, avoiding unrelated environment `PATH` scans.
 
+For local compiler analysis, configure with `BUILD_TESTING=ON`, then prepare
+`juicer_analysis_inputs` instead of the complete product/test build:
+
+```sh
+cmake --preset linux-debug -DBUILD_TESTING=ON
+cmake --build --preset linux-debug --target juicer_analysis_inputs
+python scripts/check-quality.py --base <accepted-base> --preset linux-debug
+```
+
+The same target works with the Windows preset. It builds the ordinary native,
+host and adapter objects required by isolation checks, the Rust archive and
+the generated diffusion reference header consumed by compiler analysis.
+The compilation database still contains every configured test-hook variant.
+Quality analysis defaults to at most four CPUs available to the process;
+`--jobs <count>` provides an explicit limit, including `--jobs 1` for serial
+diagnosis. Compiler commands, checks and before/after content verification are
+unchanged by the worker count.
+Receipt-backed local preparation also accepts
+`python scripts/verify.py prepare --preset linux-debug --targets juicer_analysis_inputs`.
+
 The build preserves explicit SM 7.5 machine code plus compute_75 PTX. It does
 not select the build machine's CPU/GPU architecture. Windows uses the CUDA
 13.2 hybrid runtime through an explicit CMake integration; Linux links cudart

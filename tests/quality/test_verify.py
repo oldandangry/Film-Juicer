@@ -21,11 +21,12 @@ class SelectionTests(unittest.TestCase):
     def test_target_preparation_cli_dispatches_no_qualification(self):
         import verify
         for preset in ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"):
-            with self.subTest(preset=preset), patch.object(sys, "argv", ["verify.py", "prepare", "--preset", preset,
-                    "--targets", "JuicerFilmRecipeTests"]), patch.object(verify, "prepare_targets", return_value="receipt") as prepare, \
-                    patch("qualification.qualify", side_effect=AssertionError("runtime qualification dispatched")):
-                self.assertEqual(verify.main(), 0)
-                prepare.assert_called_once_with(verify.ROOT, preset, ["JuicerFilmRecipeTests"], "ON")
+            for target in ("JuicerFilmRecipeTests", "juicer_analysis_inputs"):
+                with self.subTest(preset=preset, target=target), patch.object(sys, "argv", ["verify.py", "prepare", "--preset", preset,
+                        "--targets", target]), patch.object(verify, "prepare_targets", return_value="receipt") as prepare, \
+                        patch("qualification.qualify", side_effect=AssertionError("runtime qualification dispatched")):
+                    self.assertEqual(verify.main(), 0)
+                    prepare.assert_called_once_with(verify.ROOT, preset, [target], "ON")
 
     def test_target_preparation_rejects_unsupported_requests_before_ownership(self):
         import build_evidence
@@ -36,7 +37,8 @@ class SelectionTests(unittest.TestCase):
                     (native + "-debug", [], "ON"), (native + "-debug", ["test"], "ON"),
                     (native + "-debug", ["clean"], "ON"), (native + "-debug", ["--help"], "ON"),
                     (native + "-debug", ["all", "juicer"], "ON"), (native + "-debug", ["juicer"], "OFF"),
-                    (native + "-release", ["JuicerFilmRecipeTests"], "OFF"), (native + "-release", ["juicer"], "invalid")]
+                    (native + "-release", ["JuicerFilmRecipeTests"], "OFF"),
+                    (native + "-release", ["juicer_analysis_inputs"], "OFF"), (native + "-release", ["juicer"], "invalid")]
         for preset, targets, testing in requests:
             with self.subTest(preset=preset, targets=targets, testing=testing), \
                     patch.object(build_evidence, "OutputLease", side_effect=AssertionError("invalid request took ownership")), \

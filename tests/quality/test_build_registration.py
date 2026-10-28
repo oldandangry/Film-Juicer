@@ -125,6 +125,20 @@ class BuildTests(unittest.TestCase):
                 inventory = json.loads(subprocess.check_output(
                     [ctest, "--test-dir", str(build), "--show-only=json-v1"],
                     text=True, timeout=30))
+                members = {test["name"] for test in inventory["tests"]}
+                partitions = {}
+                for shard in ("core", "BuildEvidence", "Checkpoint", "PreparationRenewal"):
+                    selected = json.loads(subprocess.check_output(
+                        [ctest, "--test-dir", str(build), "--show-only=json-v1",
+                         "-L", "^tooling-" + shard + "$"], text=True, timeout=30))
+                    names = {test["name"] for test in selected["tests"]}
+                    self.assertTrue(names, "empty tooling shard: " + shard)
+                    self.assertFalse(set().union(*partitions.values()) & names,
+                                     "tooling test assigned to multiple shards")
+                    partitions[shard] = names
+                    if shard != "core":
+                        self.assertEqual(names, {"Quality." + shard})
+                self.assertEqual(set().union(*partitions.values()), members)
                 if override_artifacts:
                     routed = set()
                     for test in inventory["tests"]:
@@ -151,6 +165,32 @@ class BuildTests(unittest.TestCase):
         self.assertNotEqual(omitted_source, source)
         with self.assertRaises(AssertionError):
             self.assertEqual(tooling_members(omitted_source), set(TOOLING_TESTS))
+
+    def test_passed_output_preserves_initial_diagnostics_and_duration_tail(self):
+        from xml.etree import ElementTree
+
+        presets = json.loads((ROOT / "CMakePresets.json").read_text())
+        output = next(p for p in presets["testPresets"] if p["name"] == "test-base")["output"]
+        (self.source / "case.py").write_text(
+            "print('initial-diagnostic')\n"
+            + "print('x'*" + str(output["maxPassedTestOutputSize"] * 2) + ")\n"
+            + "print('final-duration-summary')\n")
+        (self.source / "CMakePresets.json").write_text(json.dumps({
+            "version": 6, "configurePresets": [{"name": "control", "generator": "Ninja",
+                "binaryDir": str(self.build), "cacheVariables": {"PYTHON": self.python}}],
+            "testPresets": [{"name": "control", "configurePreset": "control", "output": output}]}))
+        subprocess.run(["cmake", "--preset", "control"], cwd=self.source,
+                       check=True, capture_output=True, timeout=30)
+        report = self.root / "passed-output.xml"
+        subprocess.run(["ctest", "--preset", "control", "--no-tests=error", "--output-junit", str(report)],
+                       cwd=self.source, check=True, capture_output=True, timeout=30)
+        case = ElementTree.parse(report).getroot().find("testcase")
+        self.assertEqual(case.get("status"), "run")
+        self.assertIsNone(case.find("failure"))
+        retained = case.findtext("system-out")
+        self.assertIn("initial-diagnostic", retained)
+        self.assertIn("final-duration-summary", retained)
+        self.assertLess(len(retained), output["maxPassedTestOutputSize"] * 2)
 
     def prepare(self):
         _, self.prepared = build_evidence.prepare_build(self.campaign, "prepare", source=self.source,

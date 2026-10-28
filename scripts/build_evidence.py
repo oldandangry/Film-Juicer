@@ -1016,7 +1016,7 @@ def retire_s4c1_pending(root, preset):
         return result
 
 
-PREPARATION_TARGETS = {"all", "juicer", "JuicerFilmRecipeTests", "JuicerRouteBridgeTests", "JuicerOutputColorTests"}
+PREPARATION_TARGETS = {"all", "juicer", "juicer_analysis_inputs", "JuicerFilmRecipeTests", "JuicerRouteBridgeTests", "JuicerOutputColorTests"}
 
 
 def prepare_targets(root, preset, targets, testing="ON"):

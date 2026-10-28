@@ -720,6 +720,8 @@ add_custom_command(
         diffusion/fixtures/diffusion_reference_v1.npz
     COMMENT "Generating diffusion host reference cases"
     VERBATIM)
+add_custom_target(juicer_diffusion_reference DEPENDS "${DIFFUSION_GENERATED_HEADER}")
+add_dependencies(juicer_analysis_inputs juicer_diffusion_reference)
 add_executable(JuicerDiffusionHostReferenceTest
     diffusion/host_reference_test.cpp
     "${DIFFUSION_GENERATED_HEADER}")

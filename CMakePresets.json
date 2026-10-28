@@ -114,7 +114,9 @@
       "name": "test-base",
       "hidden": true,
       "output": {
-        "outputOnFailure": true
+        "outputOnFailure": true,
+        "maxPassedTestOutputSize": 65536,
+        "testOutputTruncation": "middle"
       },
       "execution": {
         "noTestsAction": "error",

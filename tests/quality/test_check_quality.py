@@ -674,8 +674,10 @@ class ParallelAnalysisTests(unittest.TestCase):
         for count in (1, 2, 4):
             with self.subTest(count=count), patch.object(sys, "argv", [*base, "--jobs", str(count)]):
                 self.assertEqual(check_quality.parse_arguments().jobs, count)
-        with patch.object(sys, "argv", base):
-            self.assertEqual(check_quality.parse_arguments().jobs, 2)
+        for available, expected in ((None, 1), (1, 1), (2, 2), (4, 4), (16, 4)):
+            with self.subTest(available=available), patch.object(sys, "argv", base), \
+                    patch.object(check_quality.os, "process_cpu_count", return_value=available):
+                self.assertEqual(check_quality.parse_arguments().jobs, expected)
         for count in ("0", "-1", "invalid"):
             with self.subTest(count=count), patch.object(sys, "argv", [*base, "--jobs", count]), \
                  contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
