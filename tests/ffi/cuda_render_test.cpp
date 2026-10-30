@@ -1,4 +1,5 @@
 #include "prepared_boundary.h"
+#include "prepared_raw_render_fixture.h"
 #include "spatial_optics_fixture.h"
 
 #include <algorithm>
@@ -290,7 +291,7 @@ namespace {
 } // namespace
 
 namespace JuicerCudaTest {
-    void check_prepared_state_lifetime(PreparedStateHold& owner, FjAssets* assets, FjCuda* cuda, const FjCudaContext& context, const FjFrame& inputFrame, const FjSubmission& submission, FjPreparedHostData& prepared, FjErrorBuffer* error, StateLifetimeCase lifetimeCase) {
+    void check_prepared_state_lifetime(std::optional<PreparedState>& owner, FjAssets* assets, FjCuda* cuda, const FjCudaContext& context, const FjFrame& inputFrame, const FjSubmission& submission, FjPreparedHostData& prepared, FjErrorBuffer* error, StateLifetimeCase lifetimeCase) {
         require(prepared.spatial_dir.hash != 0 && prepared.optics.flags == 0 && prepared.grain.hash == 0 && prepared.effects.hash == 0, "held-state lifetime retains active spatial DIR");
         const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
         const auto route = prepared.route;
@@ -331,7 +332,7 @@ namespace JuicerCudaTest {
         JuicerCuda::RenderTest::uploadAtCancellation = cancel.cancelAt;
         JuicerCuda::RenderTest::cancellingUpload = cancellation ? &upload : nullptr;
         JuicerCuda::RenderTest::expiringUpload = cancellation ? nullptr : &upload;
-        const auto result = fj_cuda_render(cuda, &context, &frame, &submission, &prepared, cancellation ? FjAbortCallback{AbortQuery::query, &cancel} : FjAbortCallback{}, error);
+        const auto result = render_raw_prepared(cuda, frame, submission, prepared, cancellation ? FjAbortCallback{AbortQuery::query, &cancel} : FjAbortCallback{}, error);
         JuicerCuda::RenderTest::expiringUpload = nullptr;
         JuicerCuda::RenderTest::cancellingUpload = nullptr;
         const bool failed = lifetimeCase == StateLifetimeCase::PinnedAllocation || lifetimeCase == StateLifetimeCase::PinnedEventCreation || lifetimeCase == StateLifetimeCase::PinnedCopy || lifetimeCase == StateLifetimeCase::PinnedSynchronization;
@@ -435,7 +436,9 @@ namespace JuicerCudaTest {
             FjErrorBuffer error{message.data(), message.size(), 0};
             AbortQuery callback;
             callback.cancelAt = 1;
-            const auto result = fj_cuda_render(cuda, &context, &candidateFrame, &candidateSubmission, &candidate, {AbortQuery::query, &callback}, &error);
+            const auto result = rejectedField
+                                    ? fj_cuda_render(cuda, &context, &candidateFrame, &candidateSubmission, &candidate, {AbortQuery::query, &callback}, &error)
+                                    : render_raw_prepared(cuda, candidateFrame, candidateSubmission, candidate, {AbortQuery::query, &callback}, &error);
             require_status(result, {rejectedField ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_CANCELLED, FJ_API_NONE, 0}, "prepared frame binding");
             require(callback.calls == (rejectedField ? 0u : 1u), "frame binding admission precedes preparation");
             if (rejectedField) {
@@ -445,6 +448,18 @@ namespace JuicerCudaTest {
         // A valid producer projection reaches the first cancellation checkpoint;
         // malformed bindings must stop before that checkpoint or any GPU work.
         check(frame, submission, prepared, nullptr);
+        // These literal corruptions replace the retired post-copy recipe
+        // mutations; a complete held state cannot contain either mismatch.
+        if (prepared.film_exposure.method != FJ_RAW_MALLETT_2019) {
+            auto changed = prepared;
+            changed.film_exposure.method = FJ_RAW_MALLETT_2019;
+            check(frame, submission, changed, "film_exposure.tc_lut_rgba");
+        }
+        if (prepared.route == FJ_ROUTE_NEGATIVE_PRINT || prepared.route == FJ_ROUTE_POSITIVE_PRINT) {
+            auto changed = prepared;
+            changed.print.density_cmy = {};
+            check(frame, submission, changed, "print.density_cmy");
+        }
         if (prepared.spatial_dir.hash != 0) {
             for (int fault = 0; fault < 5; ++fault) {
                 auto changedFrame = frame;
@@ -534,7 +549,7 @@ namespace JuicerCudaTest {
         constexpr FjStatus cancelled{FJ_STATUS_CANCELLED, FJ_API_NONE, 0};
         require(prepared.spatial_dir.hash != 0 && prepared.optics.flags == 0 && prepared.grain.hash == 0 && prepared.effects.hash == 0, "render contract exercises partial spatial DIR admission");
         const auto render = [&](FjAbortCallback callback = {}) {
-            return fj_cuda_render(cuda, &context, &frame, &submission, &prepared, callback, error);
+            return render_raw_prepared(cuda, frame, submission, prepared, callback, error);
         };
         AbortQuery beforeEnqueue;
         beforeEnqueue.cancelAt = 1;
@@ -712,7 +727,7 @@ namespace JuicerCudaTest {
                 FjErrorBuffer output{capacity == 0 ? nullptr : message.data(), capacity, 92};
                 JuicerCuda::RenderTest::injection = Injection::Typed;
                 JuicerCuda::RenderTest::injectedStatus = typed;
-                const auto result = fj_cuda_render(cuda, &context, &frame, &submission, &prepared, {}, &output);
+                const auto result = render_raw_prepared(cuda, frame, submission, prepared, {}, &output);
                 JuicerCuda::RenderTest::injection = Injection::None;
                 require_status(result, typed, "status independent of diagnostic capacity");
                 const std::string full = "render injection 100% diagnostic";
@@ -728,11 +743,33 @@ namespace JuicerCudaTest {
                 JuicerCuda::RenderTest::injection = Injection::Typed;
                 JuicerCuda::RenderTest::injectedStatus = preparationFailure;
                 JuicerCuda::RenderTest::injectedDeferredDirError = deferred;
-                const auto outcome = fj_cuda_render(cuda, &context, &frame, &submission, &prepared, {}, &output);
+                const auto outcome = render_raw_prepared(cuda, frame, submission, prepared, {}, &output);
                 JuicerCuda::RenderTest::injection = Injection::None;
                 JuicerCuda::RenderTest::injectedDeferredDirError = false;
                 require_status(outcome.status, preparationFailure, "typed deferred DIR status");
                 require(outcome.flags == (deferred ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U), "deferred provenance independent of diagnostic capacity and text");
+            }
+        }
+        // EQUAL is prepared before publication. Its former late exception
+        // transport is covered here without adding preparation work to render.
+        for (const auto category : {FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_ALLOCATION_FAILURE}) {
+            for (const bool completionFailure : {false, true}) {
+                auto absentStream = frame;
+                absentStream.flags &= ~FJ_FRAME_STREAM_PRESENT;
+                absentStream.stream = 0;
+                JuicerCuda::RenderTest::completionCalls = 0;
+                JuicerCuda::RenderTest::injection = Injection::Typed;
+                JuicerCuda::RenderTest::injectedStatus = {category, FJ_API_NONE, 0};
+                JuicerCuda::RenderTest::completionOverride = completionFailure ? static_cast<int>(cudaErrorInvalidValue) : 0;
+                const auto outcome = render_raw_prepared(cuda, absentStream, submission, prepared, {}, error);
+                JuicerCuda::RenderTest::injection = Injection::None;
+                const FjStatus expected = completionFailure
+                                              ? JuicerCuda::runtime_failure_status(cudaErrorInvalidValue)
+                                              : FjStatus{category, FJ_API_NONE, 0};
+                require_status(outcome, expected, "native exception/absent-stream completion precedence");
+                require(JuicerCuda::RenderTest::completionCalls == 1 && JuicerCuda::RenderTest::lastCompletion == cudaSuccess,
+                        "actual absent-stream completion precedes its test-only status override");
+                require(cudaStreamQuery(nullptr) == cudaSuccess, "native exception unwind completes absent-stream work");
             }
         }
         // The production adapter uses this same admitted body after inspection
@@ -798,7 +835,7 @@ namespace JuicerCudaTest {
                 streamFrame.flags &= ~FJ_FRAME_STREAM_PRESENT;
             JuicerCuda::RenderTest::PendingWork pending(reinterpret_cast<cudaStream_t>(streamFrame.stream), 0);
             JuicerCuda::RenderTest::completionWork = &pending;
-            const auto result = fj_cuda_render(cuda, &context, &streamFrame, &submission, &prepared, {}, error);
+            const auto result = render_raw_prepared(cuda, streamFrame, submission, prepared, {}, error);
             JuicerCuda::RenderTest::completionWork = nullptr;
             require_status(result, success, "stream-presence return contract");
             require(pending.observedPending, "stream completion probe actually queued pending work");
@@ -811,12 +848,12 @@ namespace JuicerCudaTest {
             defaultFrame.stream = 0;
             if (!supplied)
                 defaultFrame.flags &= ~FJ_FRAME_STREAM_PRESENT;
-            require_status(fj_cuda_render(cuda, &context, &defaultFrame, &submission, &prepared, {}, error), success, "default stream render");
+            require_status(render_raw_prepared(cuda, defaultFrame, submission, prepared, {}, error), success, "default stream render");
             if (!supplied)
                 require(cudaStreamQuery(nullptr) == cudaSuccess, "absent stream must complete before return");
             AbortQuery cancel;
             cancel.cancelAt = 2;
-            require_status(fj_cuda_render(cuda, &context, &defaultFrame, &submission, &prepared, {AbortQuery::query, &cancel}, error), cancelled, "default stream cancellation");
+            require_status(render_raw_prepared(cuda, defaultFrame, submission, prepared, {AbortQuery::query, &cancel}, error), cancelled, "default stream cancellation");
             if (!supplied)
                 require(cudaStreamQuery(nullptr) == cudaSuccess, "absent stream abort completion");
         }
@@ -862,7 +899,7 @@ namespace JuicerCudaTest {
             if (!rustTc)
                 expired.film_development.density_rgb = upload.source;
             JuicerCuda::RenderTest::expiringUpload = &upload;
-            const auto outcome = fj_cuda_render(cuda, &context, &frame, &submission, &expired, {}, error);
+            const auto outcome = render_raw_prepared(cuda, frame, submission, expired, {}, error);
             JuicerCuda::RenderTest::expiringUpload = nullptr;
             require_status(outcome, success, "render with expiring borrowed storage");
             require(upload.staging.inFlight != 0, "native upload remains outstanding at C return");
@@ -911,6 +948,8 @@ namespace JuicerCudaTest {
                        cancelled,
                        "query with null user");
 
+        // SF_TEMP_BRIDGE_NATIVE_EQUAL_COMPLETION: retain the original six rows
+        // until I7 after the constructor and typed-transport G2 witnesses pass.
         if (prepared.route == 1) {
             ParamSnapshot controls;
             controls.filmProfileKey = "kodak_portra_400";
@@ -959,7 +998,7 @@ namespace JuicerCudaTest {
                     require(fj_test_illuminant_arm_fault(3, 1, fault).category == FJ_STATUS_SUCCESS, "arm native preflash export");
                     JuicerCuda::RenderTest::injection = JuicerCuda::RenderTest::Injection::Preflash;
                     JuicerCuda::RenderTest::completionOverride = completionFailure ? static_cast<int>(cudaErrorInvalidValue) : 0;
-                    const auto failed = fj_cuda_render(cuda, &context, &failureFrame, &submission, &prepared, {}, error);
+                    const auto failed = render_raw_prepared(cuda, failureFrame, submission, prepared, {}, error);
                     JuicerCuda::RenderTest::injection = JuicerCuda::RenderTest::Injection::None;
                     const FjStatus expected = completionFailure ? JuicerCuda::runtime_failure_status(cudaErrorInvalidValue) : FjStatus{fault == 1 ? FJ_STATUS_UNSUPPORTED_INPUT : fault == 2 ? FJ_STATUS_INTERNAL_FAILURE
                                                                                                                                                                                              : FJ_STATUS_ALLOCATION_FAILURE,

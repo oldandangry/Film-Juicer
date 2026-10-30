@@ -8,6 +8,20 @@ use film_juicer_core::effects::frame::{self, Frame};
 use film_juicer_core::frame::Domain;
 use crate::cuda::sys::{FjDefectOrigin, FjDust, FjScratch, FjExtent, FjErrorBuffer, FjStatus};
 
+/// Shared checked construction for the resolved effects frame. Fault values
+/// above one remain fixed-wire corruption owned by the unsafe ABI projection.
+pub(crate) fn checked_frame(
+    input: frame::Input,
+    fault: u32,
+) -> Result<Option<Frame>, frame::Error> {
+    #[cfg(feature = "test-support")]
+    if fault == 1 {
+        panic!("physical effects frame fixture entry panic");
+    }
+    let _ = fault;
+    Frame::new(input)
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct FjEffectsFrameInput {
@@ -377,7 +391,7 @@ fn input(v: FjEffectsFrameInput) -> frame::Input {
     }
 }
 
-fn project(v: &Frame) -> FjEffectsFrameMath {
+pub(crate) fn project(v: &Frame) -> FjEffectsFrameMath {
     let extent = |e: Domain| FjExtent {
         x: e.x,
         y: e.y,
@@ -414,6 +428,10 @@ fn project(v: &Frame) -> FjEffectsFrameMath {
         recipe_hash: v.recipe_hash(),
         hash: v.hash(),
     }
+}
+
+pub(crate) fn empty_math() -> FjEffectsFrameMath {
+    EMPTY_MATH
 }
 fn status(category: u32) -> FjStatus {
     FjStatus {
@@ -477,11 +495,16 @@ pub(crate) unsafe fn prepare(
             }
             return status(2);
         }
-        #[cfg(feature = "test-support")]
-        if fault == 1 {
-            panic!("physical effects frame fixture entry panic");
-        }
-        match Frame::new(input(raw.unwrap())) {
+        match checked_frame(input(raw.unwrap()), {
+            #[cfg(feature = "test-support")]
+            {
+                fault
+            }
+            #[cfg(not(feature = "test-support"))]
+            {
+                0
+            }
+        }) {
             Ok(frame) => {
                 let wire = frame.as_ref().map_or(EMPTY_MATH, project);
                 #[cfg(feature = "test-support")]
@@ -559,7 +582,7 @@ pub(crate) mod faults {
         PENDING.with(|pending| pending.set(code));
         status(0)
     }
-    pub(super) fn take() -> u32 {
+    pub(crate) fn take() -> u32 {
         PENDING.with(|pending| pending.replace(0))
     }
     pub(super) fn corrupt(mut wire: FjEffectsFrameMath, fault: u32) -> FjEffectsFrameMath {

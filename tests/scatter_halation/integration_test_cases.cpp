@@ -1310,21 +1310,16 @@ namespace {
             {row.width, row.height});
         const std::uint64_t expectedHash = parse_hash(
             fixture.at("descriptorInput").at("expectedRecipeHash"));
-        if (!inputs.scatter_descriptor() ||
-            inputs.scatter_descriptor()->recipeHash != expectedHash) {
-            throw std::runtime_error("captured route descriptor identity mismatch");
-        }
         CudaStream stream;
         const auto contextKey = current_context_key(0);
-        auto request = inputs.request({row.width, row.height});
         JuicerCuda::Failure diagnostic;
-        auto frame = JuicerProcess::root().prepare_cuda_frame(
+        auto frame = inputs.prepare_frame(
             contextKey,
-            inputs.submission_snapshot(contextKey, identity),
-            request,
-            {},
+            identity,
+            {row.width, row.height},
             stream.get(),
-            diagnostic);
+            diagnostic,
+            expectedHash);
         if (!frame.active()) {
             throw std::runtime_error(diagnostic.diagnostic);
         }
@@ -1521,14 +1516,11 @@ namespace ScatterHalationValidation {
                 {arguments.performanceWidth, arguments.performanceHeight});
             CudaStream stream;
             const auto contextKey = current_context_key(arguments.deviceIndex);
-            auto request = inputs.request(
-                {arguments.performanceWidth, arguments.performanceHeight});
             JuicerCuda::Failure diagnostic;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(
+            auto frame = inputs.prepare_frame(
                 contextKey,
-                inputs.submission_snapshot(contextKey, 0x50455246),
-                request,
-                {},
+                0x50455246,
+                {arguments.performanceWidth, arguments.performanceHeight},
                 stream.get(),
                 diagnostic);
             if (!frame.active()) {

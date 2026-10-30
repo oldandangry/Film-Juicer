@@ -2204,6 +2204,8 @@ namespace JuicerProcess {
         return true;
     }
 
+    Root::PreparedCudaFrame::PreparedCudaFrame() noexcept = default;
+
     Root::PreparedCudaFrame::PreparedCudaFrame(std::unique_ptr<State> state) noexcept
         : _state(std::move(state)) {
     }
@@ -2610,7 +2612,8 @@ namespace JuicerProcess {
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
-        JuicerCuda::Failure& outError) {
+        JuicerCuda::Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!validate_workspace_lease_marker(workspace, outError.diagnostic) || !workspace.layout().allocation().needSpatialDir) {
             if (outError.diagnostic.empty()) {
@@ -2942,7 +2945,8 @@ namespace JuicerProcess {
                         _state->resources->spatialDirKernels[static_cast<std::size_t>(slot)],
                         component.radius,
                         component.sigmaPixels,
-                        outError)) {
+                        outError,
+                        hostPreparation)) {
                     _state->set_failure(
                         PreparedCudaFailureStage{"command_ensure_spatial_dir_kernel"},
                         "CUDA spatial DIR kernel upload failed");
@@ -3060,7 +3064,8 @@ namespace JuicerProcess {
 
     bool Root::PreparedCudaFrame::prepare_scanner_post_effects(
         const Scanner::ScannerPostEffectsDescriptor& descriptor,
-        JuicerCuda::Failure& outError) {
+        JuicerCuda::Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError = {};
         if (!descriptor.active()) {
             return true;
@@ -3070,7 +3075,8 @@ namespace JuicerProcess {
                 _state->resources->scannerLensBlurKernel,
                 descriptor.lensBlurSigmaPx,
                 descriptor.lensBlurRadius,
-                outError)) {
+                outError,
+                hostPreparation)) {
             return false;
         }
         if (descriptor.unsharpSigmaPx > 0.0f &&
@@ -3078,7 +3084,8 @@ namespace JuicerProcess {
                 _state->resources->scannerUnsharpKernel,
                 descriptor.unsharpSigmaPx,
                 descriptor.unsharpRadius,
-                outError)) {
+                outError,
+                hostPreparation)) {
             return false;
         }
         if (descriptor.glareActive && descriptor.glareBlurSigmaPx > 0.0f &&
@@ -3086,7 +3093,8 @@ namespace JuicerProcess {
                 _state->resources->scannerGlareKernel,
                 descriptor.glareBlurSigmaPx,
                 descriptor.glareBlurRadius,
-                outError)) {
+                outError,
+                hostPreparation)) {
             return false;
         }
         _state->scannerPostEffectsDescriptor = descriptor;
@@ -3271,7 +3279,8 @@ namespace JuicerProcess {
         JuicerCuda::Resources::DeviceGaussianKernel& kernel,
         float sigma,
         int radius,
-        JuicerCuda::Failure& outError) {
+        JuicerCuda::Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError = {};
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
             outError.diagnostic = "prepared frame is not active";
@@ -3283,7 +3292,8 @@ namespace JuicerProcess {
                 kernel,
                 sigma,
                 radius,
-                outError)) {
+                outError,
+                hostPreparation)) {
             _state->set_failure(
                 PreparedCudaFailureStage{"command_ensure_gaussian_kernel"},
                 "CUDA gaussian kernel upload failed");
@@ -3297,7 +3307,8 @@ namespace JuicerProcess {
         const JuicerCuda::StaticNoiseInput* noise,
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         void* cudaStreamOpaque,
-        JuicerCuda::Failure& outError) {
+        JuicerCuda::Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError = {};
         if (!_state || !_state->resources || !_state->transaction.active ||
             _state->transaction.committed) {
@@ -3401,7 +3412,8 @@ namespace JuicerProcess {
                         kernel,
                         gaussian.sigmaPx,
                         gaussian.radius,
-                        outError) ||
+                        outError,
+                        hostPreparation) ||
                     !kernel.weights || kernel.radius != gaussian.radius ||
                     kernel.sigma != gaussian.sigmaPx) {
                     if (outError.diagnostic.empty()) {
@@ -5000,7 +5012,8 @@ namespace JuicerProcess {
         const CudaFramePreparationRequest& request,
         const AutoExposureBufferRequest& autoExposureBufferRequest,
         void* cudaStreamOpaque,
-        JuicerCuda::Failure& outError) {
+        JuicerCuda::Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         PreparedCudaFrame frame = create_prepared_frame(cudaStreamOpaque, outError);
         if (!frame._state) {
@@ -5060,7 +5073,7 @@ namespace JuicerProcess {
         prepared.effectsDescriptor = request.effectsDescriptor;
         prepared.requestedWidth = request.requestedWidth;
         prepared.requestedHeight = request.requestedHeight;
-        return prepare_cuda_frame(std::move(frame), deviceContextKey, snapshot, prepared, autoExposureBufferRequest, cudaStreamOpaque, outError);
+        return prepare_cuda_frame(std::move(frame), deviceContextKey, snapshot, prepared, autoExposureBufferRequest, cudaStreamOpaque, outError, hostPreparation);
     }
 
     Root::PreparedCudaFrame Root::prepare_cuda_frame(
@@ -5069,13 +5082,14 @@ namespace JuicerProcess {
         const PreparedFrameInput& request,
         const AutoExposureBufferRequest& autoExposureBufferRequest,
         void* cudaStreamOpaque,
-        JuicerCuda::Failure& outError) {
+        JuicerCuda::Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         PreparedCudaFrame frame = create_prepared_frame(cudaStreamOpaque, outError);
         if (!frame._state) {
             return frame;
         }
-        return prepare_cuda_frame(std::move(frame), deviceContextKey, snapshot, request, autoExposureBufferRequest, cudaStreamOpaque, outError);
+        return prepare_cuda_frame(std::move(frame), deviceContextKey, snapshot, request, autoExposureBufferRequest, cudaStreamOpaque, outError, hostPreparation);
     }
 
     Root::PreparedCudaFrame Root::create_prepared_frame(void* cudaStreamOpaque, JuicerCuda::Failure& outError) {
@@ -5104,7 +5118,8 @@ namespace JuicerProcess {
         const PreparedFrameInput& request,
         const AutoExposureBufferRequest& autoExposureBufferRequest,
         void* cudaStreamOpaque,
-        JuicerCuda::Failure& outError) {
+        JuicerCuda::Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         const Spektrafilm::ScanRoute route = request.identity.scanRoute;
         const Spektrafilm::ScanRouteMetadata& routeMetadata =
@@ -5265,7 +5280,8 @@ namespace JuicerProcess {
                 *frame._state->resources,
                 request.focused,
                 cudaStreamOpaque,
-                outError)) {
+                outError,
+                hostPreparation)) {
             recordFailure(
                 "prepare_focused_route_resources",
                 "CUDA focused route resource preparation failed");
@@ -5313,7 +5329,8 @@ namespace JuicerProcess {
         if (request.scannerPostEffects) {
             if (!frame.prepare_scanner_post_effects(
                     *request.scannerPostEffects,
-                    outError)) {
+                    outError,
+                    hostPreparation)) {
                 recordFailure(
                     "prepare_scanner_post_effects",
                     "CUDA scanner post-effect preparation failed");
@@ -5366,7 +5383,8 @@ namespace JuicerProcess {
                 selectedNoise,
                 deviceContextKey,
                 cudaStreamOpaque,
-                outError)) {
+                outError,
+                hostPreparation)) {
             appendRoute();
             frame.abort();
             return frame;

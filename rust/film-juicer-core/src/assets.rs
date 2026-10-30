@@ -8,9 +8,14 @@ pub mod testing;
 pub use derived::CurveFault;
 
 use std::collections::HashMap;
+#[cfg(feature = "test-support")]
+use std::collections::TryReserveError;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+
+#[cfg(all(feature = "test-support", unix))]
+use std::os::unix::ffi::OsStrExt;
 
 use crate::data_io::{
     CsvPairs, CmfRows, ReadError, load_csv_pairs, load_cmf_csv, load_mallett_basis,
@@ -166,6 +171,113 @@ type MallettBasis = [[f32; 3]; 81];
 type CalibrationSnapshot = Result<Arc<NeutralCalibration>, Arc<calibration::Error>>;
 type NoiseSnapshot = Result<Arc<NoiseBundle>, Arc<noise::Error>>;
 
+#[cfg(all(feature = "test-support", unix))]
+thread_local! {
+    static MALLETT_SOURCE_OVERRIDE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+    static MALLETT_SOURCE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(all(feature = "test-support", windows))]
+thread_local! {
+    static MALLETT_SOURCE_OVERRIDE: std::cell::RefCell<Option<Vec<u16>>> = const { std::cell::RefCell::new(None) };
+    static MALLETT_SOURCE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+pub enum MallettSourceOverrideError {
+    InvalidPath,
+    AlreadyArmed,
+    Allocation(TryReserveError),
+}
+
+/// Arm one decoded-source call on this thread without changing the normal cache.
+#[cfg(all(feature = "test-support", unix))]
+pub fn arm_mallett_source_override(path: &[u8]) -> Result<(), MallettSourceOverrideError> {
+    if path.is_empty() || path.contains(&0) {
+        return Err(MallettSourceOverrideError::InvalidPath);
+    }
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(path.len())
+        .map_err(MallettSourceOverrideError::Allocation)?;
+    copy.extend_from_slice(path);
+    MALLETT_SOURCE_OVERRIDE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return Err(MallettSourceOverrideError::AlreadyArmed);
+        }
+        *slot = Some(copy);
+        MALLETT_SOURCE_CONSUMED.set(false);
+        Ok(())
+    })
+}
+
+/// Arm one decoded-source call on this thread without changing the normal cache.
+#[cfg(all(feature = "test-support", windows))]
+pub fn arm_mallett_source_override(
+    path: impl Iterator<Item = u16>,
+) -> Result<(), MallettSourceOverrideError> {
+    let mut copy = Vec::new();
+    for unit in path {
+        if unit == 0 {
+            return Err(MallettSourceOverrideError::InvalidPath);
+        }
+        copy.try_reserve(1)
+            .map_err(MallettSourceOverrideError::Allocation)?;
+        copy.push(unit);
+    }
+    if copy.is_empty() {
+        return Err(MallettSourceOverrideError::InvalidPath);
+    }
+    MALLETT_SOURCE_OVERRIDE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return Err(MallettSourceOverrideError::AlreadyArmed);
+        }
+        *slot = Some(copy);
+        MALLETT_SOURCE_CONSUMED.set(false);
+        Ok(())
+    })
+}
+
+#[cfg(feature = "test-support")]
+pub fn clear_mallett_source_override() {
+    MALLETT_SOURCE_OVERRIDE.with(|slot| *slot.borrow_mut() = None);
+}
+
+#[cfg(feature = "test-support")]
+pub fn mallett_source_override_consumed() -> bool {
+    MALLETT_SOURCE_CONSUMED.take()
+}
+
+#[cfg(feature = "test-support")]
+fn take_mallett_source_override() -> Option<MallettSourcePath> {
+    let path = MALLETT_SOURCE_OVERRIDE.with(|slot| slot.borrow_mut().take());
+    if path.is_some() {
+        MALLETT_SOURCE_CONSUMED.set(true);
+    }
+    path.map(MallettSourcePath)
+}
+
+#[cfg(all(feature = "test-support", unix))]
+struct MallettSourcePath(Vec<u8>);
+#[cfg(all(feature = "test-support", windows))]
+struct MallettSourcePath(Vec<u16>);
+
+#[cfg(all(feature = "test-support", unix))]
+impl MallettSourcePath {
+    fn load(self) -> Result<MallettBasis, ReadError> {
+        load_mallett_basis(Path::new(std::ffi::OsStr::from_bytes(&self.0)))
+    }
+}
+#[cfg(all(feature = "test-support", windows))]
+impl MallettSourcePath {
+    fn load(self) -> Result<MallettBasis, ReadError> {
+        use std::os::windows::ffi::OsStringExt;
+        let path = std::ffi::OsString::from_wide(&self.0);
+        load_mallett_basis(Path::new(&path))
+    }
+}
+
 pub struct Assets {
     resource_dir: PathBuf,
     catalog: OnceLock<Result<CatalogSnapshot, Arc<CatalogError>>>,
@@ -259,6 +371,13 @@ impl Assets {
 
     /// Wavelength-major RGB basis; no standalone resource identity is needed.
     pub fn mallett(&self) -> Result<Arc<MallettBasis>, AssetError> {
+        #[cfg(feature = "test-support")]
+        if let Some(source) = take_mallett_source_override() {
+            return source
+                .load()
+                .map(Arc::new)
+                .map_err(|error| AssetError::Reconstruction(Arc::new(error)));
+        }
         self.mallett_with(|path| load_mallett_basis(path).map(Arc::new))
     }
 
@@ -1299,6 +1418,23 @@ mod tests {
             assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
             assert!(loser.upgrade().is_none());
         });
+    }
+
+    #[test]
+    fn mallett_source_failure_remains_cached_after_payload_release() {
+        let assets = assets();
+        let failed =
+            assets.mallett_with(|path| load_mallett_basis(path.join("missing")).map(Arc::new));
+        let Err(AssetError::Reconstruction(first)) = failed else {
+            panic!("expected actual source-read failure");
+        };
+        assets.release_cached_payloads().unwrap();
+        let Err(AssetError::Reconstruction(cached)) = assets.mallett_with(|_| {
+            panic!("payload release must not retry a retained Mallett outcome");
+        }) else {
+            panic!("expected cached source-read failure");
+        };
+        assert!(Arc::ptr_eq(&first, &cached));
     }
 
     #[test]

@@ -141,6 +141,11 @@ pub(crate) struct FjPreparedState {
     // The foreign Box owns only this small header; projections never self-point.
     state: Vec<recipe::RenderState>,
 }
+impl FjPreparedState {
+    pub(crate) fn render_state(&self) -> &recipe::RenderState {
+        &self.state[0]
+    }
+}
 #[cfg(feature = "test-support")]
 static LIVE_STATES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(feature = "test-support")]
@@ -1214,7 +1219,7 @@ unsafe fn run<T>(
 /// # Safety
 /// A matching live Assets allocation remains borrowed for the caller's scope;
 /// the caller excludes destruction. Alignment does not establish pointer validity.
-unsafe fn assets<'a>(pointer: *const FjAssets) -> Result<&'a Assets, Failure> {
+pub(crate) unsafe fn assets<'a>(pointer: *const FjAssets) -> Result<&'a Assets, Failure> {
     let pointer = pointer.cast::<Assets>();
     if !aligned(pointer) {
         return Err(Failure::Input("invalid preparation Assets owner"));
@@ -2335,6 +2340,36 @@ pub(crate) fn failure_category(error: &recipe::PrepareError) -> u32 {
         | E::PrintDevelopment(film_juicer_core::profile::PrintDensityError::Capacity) => {
             FJ_STATUS_ALLOCATION_FAILURE
         }
+        E::EqualEnergy(film_juicer_core::illuminant::EqualEnergyError::Unsupported) => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
+        E::EqualEnergy(film_juicer_core::illuminant::EqualEnergyError::Illuminant(error)) => {
+            match error.kind {
+                film_juicer_core::illuminant::ErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
+                film_juicer_core::illuminant::ErrorKind::Preparation => {
+                    FJ_STATUS_PREPARATION_FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "test-support")]
+        E::MallettMidgray(film_juicer_core::exposure::BoundaryError::Unsupported)
+        | E::TcMidgray(film_juicer_core::exposure::BoundaryError::Unsupported) => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
+        #[cfg(feature = "test-support")]
+        E::MallettMidgray(film_juicer_core::exposure::BoundaryError::Preparation)
+        | E::TcMidgray(film_juicer_core::exposure::BoundaryError::Preparation) => {
+            FJ_STATUS_PREPARATION_FAILURE
+        }
+        E::SpectralBoundary(error) => match error.kind {
+            film_juicer_core::spectral::BoundaryKind::Unsupported => FJ_STATUS_UNSUPPORTED_INPUT,
+            film_juicer_core::spectral::BoundaryKind::AllocationCategory => {
+                FJ_STATUS_ALLOCATION_FAILURE
+            }
+            film_juicer_core::spectral::BoundaryKind::PreparationCategory => {
+                FJ_STATUS_PREPARATION_FAILURE
+            }
+        },
         E::Input(film_juicer_core::film::input::Error::Panic(_)) => FJ_STATUS_INTERNAL_FAILURE,
         #[cfg(feature = "test-support")]
         E::Input(film_juicer_core::film::input::Error::Boundary(_, category)) => *category,

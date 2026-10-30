@@ -549,11 +549,11 @@ namespace {
             params.gateWeaveAmount = controls.gate_weave_amount;
             params.grainControls.active = controls.grain_active != 0;
             params.grainControls.debugView = controls.grain_debug_view;
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            const bool print = Spektrafilm::scan_route_is_print(params.scanRoute);
-            require(print ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic), "genuine physical effects route product");
-            require(effects_projection(product.recipe.filmJuicerEffects) == row.at("recipe") && product.recipe.hash == row.at("final_hash") && hash_params(params) == row.at("snapshot_hash") && product.recipe.visualGrain.hash == row.at("grain_hash") && product.recipe.filmDevelop.hash == row.at("development_hash"), "all four routes preserve complete effects, final identity and preceding products");
+            auto product = JuicerTestSupport::prepare_product(params);
+            FjPreparedStateView view{};
+            FjErrorBuffer error{};
+            status(product.view(view, error));
+            require(effects_projection(view.effects) == row.at("recipe") && view.recipe_hash == row.at("final_hash") && hash_params(params) == row.at("snapshot_hash") && view.grain.hash == row.at("grain_hash") && view.film_development.hash == row.at("development_hash"), "all four routes preserve complete effects, final identity and preceding products");
         }
         for (unsigned route = 0; route < 4; ++route) {
             ParamSnapshot params;
@@ -600,13 +600,12 @@ namespace {
             status(fj_test_film_recipe_fault(8, 4));
             const auto preceding = admit_pending_render_state(state);
             require(preceding.status == PendingRenderAdmissionStatus::RebuildFailed && preceding.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain", "required grain failure precedes effects suppression or injected guard");
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            const bool print = Spektrafilm::scan_route_is_print(params.scanRoute);
             auto badDir = params;
             badDir.dirCouplers.active = true;
             badDir.dirCouplers.amount = -1;
-            require(!(print ? build_print_render_state_product(badDir, product, diagnostic) : build_direct_render_state_product(badDir, product, diagnostic)) && diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy", "unconsumed effects guard precedes competing DIR failure");
+            pending(badDir);
+            const auto blockedDir = admit_pending_render_state(state);
+            require(blockedDir.status == PendingRenderAdmissionStatus::RebuildFailed && blockedDir.diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy" && !blockedDir.directState && !blockedDir.printState, "unconsumed effects guard precedes competing DIR failure");
             status(fj_test_film_recipe_fault(8, 0));
             require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "effects failures drain temporary development/DIR holds");
         }

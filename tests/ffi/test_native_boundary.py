@@ -193,7 +193,10 @@ class NativeBoundary(unittest.TestCase):
         self.assertNotIn("ColorRuntime build_color_runtime(", scanner)
         core = (ROOT / "rust/film-juicer-core/src/scanner/color.rs").read_text(encoding="utf-8")
         self.assertLess(core.index("if input.illuminant_hash == 0"), core.index("color::output_color"))
-        self.assertLess(core.index("if output.hash() == 0"), core.index("color::cat02_matrix"))
+        self.assertLess(core.index("if output.hash() == 0"), core.index("color::checked_cat02_matrix"))
+        color = (ROOT / "rust/film-juicer-core/src/color.rs").read_text(encoding="utf-8")
+        checked = color.split("pub fn checked_cat02_matrix", 1)[1].split("\n}", 1)[0]
+        self.assertIn("cat02_matrix(", checked)
         bridge = (ROOT / "src/RustScannerBridge.cpp").read_text(encoding="utf-8")
         self.assertIn("ColorRuntime build_color_runtime(", bridge)
         self.assertIn("SF_TEMP_BRIDGE_SCANNER_COLOR", bridge)
@@ -456,9 +459,9 @@ class NativeBoundary(unittest.TestCase):
         source = (ROOT / "src/FilmEffectsFrameDescriptors.cpp").read_text()
         grain = source.split("constexpr std::uint64_t kSeedPassWeave", 1)[0]
         bridge = (ROOT / "src/RustGrainFrameBridge.cpp").read_text()
-        setup = [(ROOT / path).read_text() for path in (
+        setup = {path: (ROOT / path).read_text() for path in (
             "tests/grain/scratch_reuse_test.cpp", "tests/ffi/gaussian_kernel_test.inc",
-            "tests/ffi/cuda_render_test.cpp")]
+            "tests/ffi/cuda_render_test.cpp")}
         readers = "".join((ROOT / path).read_text() for path in (
             "tests/CMakeLists.txt", "tests/ffi/grain_frame_test.inc", "tests/ffi/film_recipe_test.cpp"))
         retired = r"\b(?:nanmax|make_gaussian|kernel_energy_2d|make_seed_base|kSeedPassGrain|kMaxGrainGaussianRadius|JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK|JuicerGrainCapture|juicer_grain_frame_capture_objects)\b|capture-grain-frames|grain_frame_capture\.h"
@@ -470,9 +473,20 @@ class NativeBoundary(unittest.TestCase):
         self.assertRegex(grain, r"bool build_visual_grain_frame_descriptor\([^{}]+\)\s*\{\s*return JuicerGrain::prepare_frame\(input, out, diagnostic\);\s*\}")
         self.assertEqual(grain.count("hash_descriptor("), 2)
         self.assertEqual(grain.count("out = descriptor;"), 1)
-        for consumer in setup:
+        for path, consumer in setup.items():
             self.assertNotIn("build_visual_grain_frame_descriptor", consumer)
-            self.assertIn("JuicerTestSupport::prepare_grain_frame", consumer)
+            if path == "tests/ffi/gaussian_kernel_test.inc":
+                self.assertIn("JuicerTestSupport::prepare_product(p)", consumer)
+                self.assertIn("GrainFrameTest::product_input(view, grainFrame)", consumer)
+                self.assertIn("fj_test_grain_frame_prepare(&rawGrain", consumer)
+            elif path == "tests/grain/scratch_reuse_test.cpp":
+                self.assertIn("JuicerTestSupport::prepare_product(make_controls(route, variant))", consumer)
+                self.assertIn("FrameFixture::with_prepared_frame_inputs(", consumer)
+                helper = (ROOT / "tests/ffi/prepared_frame_fixture.cpp").read_text()
+                self.assertIn("fj_test_grain_frame_prepare(", helper)
+                self.assertIn("compose_visual_grain_frame_descriptor(", helper)
+            else:
+                self.assertIn("JuicerTestSupport::prepare_grain_frame", consumer)
         header = (ROOT / "src/RustGrainFrameBridge.h").read_text()
         self.assertIn("SF_TEMP_BRIDGE_GRAIN_FRAME", header)
         self.assertIn("S6.D", header)

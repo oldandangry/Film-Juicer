@@ -43,6 +43,21 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+#[derive(Debug)]
+pub enum EqualEnergyError {
+    Unsupported,
+    Illuminant(Error),
+}
+impl fmt::Display for EqualEnergyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsupported => f.write_str("illuminant injected unsupported input"),
+            Self::Illuminant(error) => error.fmt(f),
+        }
+    }
+}
+impl std::error::Error for EqualEnergyError {}
+
 fn preparation(detail: &'static str) -> Error {
     Error {
         kind: ErrorKind::Preparation,
@@ -156,6 +171,50 @@ pub fn blackbody(temperature_kelvin: f32) -> [f32; 81] {
 }
 pub fn equal_energy() -> [f32; 81] {
     [1.0; 81]
+}
+
+/// Checked equal-energy leaf shared by literal callers and complete recipe
+/// construction. The test-only fault is owned here with the computation.
+pub fn checked_equal_energy() -> Result<[f32; 81], EqualEnergyError> {
+    #[cfg(feature = "test-support")]
+    if let Some(fault) = testing::take_equal_energy_fault() {
+        match fault {
+            1 => return Err(EqualEnergyError::Unsupported),
+            2 => panic!("illuminant injected panic"),
+            3 => return Err(EqualEnergyError::Illuminant(capacity())),
+            4 => return Err(EqualEnergyError::Illuminant(from_samples(&[]).unwrap_err())),
+            _ => unreachable!("closed equal-energy fault selector"),
+        }
+    }
+    Ok(equal_energy())
+}
+
+#[cfg(feature = "test-support")]
+pub mod testing {
+    use std::cell::Cell;
+
+    thread_local! {
+        static EQUAL_ENERGY_FAULT: Cell<Option<(u32, u32)>> = const { Cell::new(None) };
+    }
+
+    pub fn arm_equal_energy(call_index: u32, fault: u32) -> bool {
+        clear_equal_energy_fault();
+        if call_index == 0 || !(1..=4).contains(&fault) {
+            return false;
+        }
+        EQUAL_ENERGY_FAULT.set(Some((call_index, fault)));
+        true
+    }
+
+    pub fn clear_equal_energy_fault() {
+        EQUAL_ENERGY_FAULT.set(None);
+    }
+
+    pub(super) fn take_equal_energy_fault() -> Option<u32> {
+        let (remaining, fault) = EQUAL_ENERGY_FAULT.get()?;
+        EQUAL_ENERGY_FAULT.set((remaining > 1).then_some((remaining - 1, fault)));
+        (remaining == 1).then_some(fault)
+    }
 }
 
 fn scratch(count: usize) -> Result<Vec<f64>, Error> {

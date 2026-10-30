@@ -8,6 +8,7 @@
 #include <fstream>
 #include <limits>
 #include <new>
+#include <optional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -27,6 +28,7 @@
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "print_illuminant_fixture.h"
+#include "prepared_product_fixture.h"
 
 extern "C" const std::size_t* fj_test_film_input_abi_c_facts(std::size_t* count);
 extern "C" FjStatus fj_test_film_input_c_call(const FjFilmProfile*, const FjFilmInputParams*, const FjFilmInputResources*, FjFilmInput*, FjFilmInputFailure*, FjErrorBuffer*);
@@ -138,13 +140,19 @@ namespace {
         }
         return result;
     }
-    Json native_values(const FilmRawRecipe& v) {
+    Json native_values(const FjPreparedStateView& state, const FjFilmProfileView& profile) {
+        const auto& v = state.film_exposure;
+        const auto& policy = state.input_policy;
         Json sensitivity = Json::array(), surface = Json::array();
-        for (const auto& row : v.finalSensitivity)
-            sensitivity.push_back(words(row));
-        for (const auto& row : v.hanatos.surfaceParams)
-            surface.push_back(words(row));
-        return {{"input_space", v.inputColorSpace}, {"decode_cctf", v.inputCctfDecoding}, {"method", static_cast<unsigned>(v.rgbToRawMethod)}, {"auto_exposure", v.autoExposureEnabled}, {"meter", static_cast<unsigned>(v.autoExposureMethod)}, {"ev_mm", words(std::array{v.manualExposureCompensationEv, v.filmFormatLongEdgeMm})}, {"filter_active", v.cameraBandPass.active}, {"uv", words(v.cameraBandPass.uv)}, {"ir", words(v.cameraBandPass.ir)}, {"rgb_to_xyz", words(v.inputRgbToXyz)}, {"xyz_adapt", words(v.inputXyzAdapt)}, {"xyz_to_linear_srgb", words(v.xyzToLinearSrgb)}, {"nominal_white", words(v.inputNominalWhiteXYZ)}, {"projection_white", words(v.projectionWhiteXYZ)}, {"reference_label", v.referenceIlluminant}, {"projection_label", v.projectionIlluminant}, {"hanatos_label", v.hanatos.referenceIlluminant}, {"window_enabled", v.hanatos.applyWindow}, {"surface_enabled", v.hanatos.applySurface}, {"blur", words(std::array{v.hanatos.spectralGaussianBlur})}, {"window", words(v.hanatos.windowParams)}, {"surface", surface}, {"compression", v.inputCompressionActive}, {"hull_hash", v.inputCompressionHullHash}, {"source_hash", v.tcSourceAssetHash}, {"sensitivity", sensitivity}, {"sensitivity_hash", v.finalSensitivityHash}, {"mallett_scale", words(std::array{v.mallettGreenMidgrayScale})}, {"tc_hash", v.tcLutHash}, {"hash", v.hash}};
+        require(v.sensitivity_rgb.count == std::size_t{81} * 3 && policy.hanatos_surface_rgb.count == std::size_t{3} * 15, "complete prepared input shapes");
+        for (std::size_t row = 0; row < 81; ++row)
+            sensitivity.push_back(words(v.sensitivity_rgb.data + row * 3, 3));
+        for (std::size_t row = 0; row < 3; ++row)
+            surface.push_back(words(policy.hanatos_surface_rgb.data + row * 15, 15));
+        const auto label = [](FjStringView value) {
+            return std::string(value.data, value.count);
+        };
+        return {{"input_space", v.input_color_space}, {"decode_cctf", bool(v.flags & FJ_FILM_DECODE_CCTF)}, {"method", v.method}, {"auto_exposure", bool(v.flags & FJ_FILM_AUTO_EXPOSURE)}, {"meter", policy.meter}, {"ev_mm", words(std::array{v.manual_exposure_ev, policy.film_format_long_edge_mm})}, {"filter_active", bool(policy.band_pass_active)}, {"uv", words(policy.uv)}, {"ir", words(policy.ir)}, {"rgb_to_xyz", words(v.input_rgb_to_xyz)}, {"xyz_adapt", words(v.input_xyz_adapt)}, {"xyz_to_linear_srgb", words(v.xyz_to_linear_srgb)}, {"nominal_white", words(policy.nominal_white_xyz)}, {"projection_white", words(policy.projection_white_xyz)}, {"reference_label", label(profile.reference_illuminant.label)}, {"projection_label", policy.projection_illuminant == 0 ? label(profile.reference_illuminant.label) : "D65"}, {"hanatos_label", v.method == FJ_RAW_HANATOS_2025 ? label(profile.reference_illuminant.label) : ""}, {"window_enabled", bool(policy.apply_hanatos_window)}, {"surface_enabled", bool(policy.apply_hanatos_surface)}, {"blur", words(std::array{policy.hanatos_spectral_blur})}, {"window", words(policy.hanatos_window.data, policy.hanatos_window.count)}, {"surface", surface}, {"compression", bool(policy.input_compression_active)}, {"hull_hash", policy.input_hull_hash}, {"source_hash", policy.tc_source_hash}, {"sensitivity", sensitivity}, {"sensitivity_hash", v.sensitivity_hash}, {"mallett_scale", words(std::array{v.mallett_green_midgray_scale})}, {"tc_hash", v.tc_lut_hash}, {"hash", v.hash}};
     }
     Json projected(const FjFilmInput& v) {
         Json sensitivity = Json::array(), surface = Json::array();
@@ -281,7 +289,7 @@ namespace {
         }
         require(out.color.adapt_xyz == 0 && out.projection_illuminant == 0, "adaptation and projection tag clear");
     }
-    void native_products(const Json& fixture) {
+    void native_products(const std::filesystem::path& resources, const Json& fixture) {
         for (const auto& row : fixture.at("rows")) {
             ParamSnapshot controls;
             controls.filmProfileKey = row.at("key");
@@ -307,14 +315,16 @@ namespace {
                 controls.cameraFilterUV = {0.314159265358979, 413.123456789012, 9.123456789012};
                 controls.cameraFilterIR = {0.271828182845904, 679.123456789012, 17.123456789012};
             }
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            const bool built = Spektrafilm::scan_route_is_print(controls.scanRoute)
-                                   ? build_print_render_state_product(controls, product, diagnostic)
-                                   : build_direct_render_state_product(controls, product, diagnostic);
-            require(built, diagnostic.c_str());
-            require(native_values(product.recipe.filmRaw) == row.at("raw"), "actual native family exactly matches independent compound capture");
-            require(product.recipe.hash == row.at("final_hash") && hash_params(controls) == row.at("snapshot_hash"), "complete native product and captured-control identities remain exact");
+            auto product = JuicerTestSupport::prepare_product(controls);
+            std::array<char, 2048> errorText{};
+            FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+            FjPreparedStateView view{};
+            status(product.view(view, error));
+            Profile profile(resources, controls.filmProfileKey);
+            FjFilmProfileView source{};
+            status(fj_legacy_film_profile_view(profile.film, &source, nullptr));
+            require(native_values(view, source) == row.at("raw"), "actual native family exactly matches independent compound capture");
+            require(view.recipe_hash == row.at("final_hash") && hash_params(controls) == row.at("snapshot_hash"), "complete native product and captured-control identities remain exact");
         }
         std::puts("PASS 140 actual native direct/print family, final and snapshot products");
     }
@@ -384,17 +394,37 @@ namespace {
                     invalid.cameraMeteringMethod = -1;
                 }
                 status(fj_test_color_arm_fault(5, 1, 1));
-                FocusedRenderStateBuildProduct product;
-                std::string diagnostic;
-                const bool built = route % 2 ? build_print_render_state_product(invalid, product, diagnostic) : build_direct_render_state_product(invalid, product, diagnostic);
-                require(!built && diagnostic.starts_with("UnsupportedMode phase=3B field="), "native signed selectors retain ordinary precheck failure before raw packing");
-                bool propagated = false;
+                std::optional<PreparedState> product;
+                std::array<char, 2048> errorText{};
+                FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+                const auto invalidResult = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), invalid, product, error);
+                require(invalidResult.category == FJ_STATUS_UNSUPPORTED_INPUT && std::string_view(errorText.data(), error.length).starts_with("UnsupportedMode phase=3B field="), "native signed selectors retain ordinary precheck failure before raw packing");
+                error = {errorText.data(), errorText.size(), 0};
+                const auto propagated = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls, product, error);
+                require(propagated.category == FJ_STATUS_UNSUPPORTED_INPUT && propagated.api == FJ_API_NONE && propagated.native_code == 0 && !product &&
+                            std::string_view(errorText.data(), error.length) == "exposure production boundary fault",
+                        "complete-state selector precheck preserves the shared matrix fault and its exact core status/diagnostic");
+                error = {errorText.data(), errorText.size(), 0};
+                status(prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls, product, error));
+                require(product.has_value(), "matrix fault is consumed once before complete-state retry");
+
+                // SF_TEMP_BRIDGE_NATIVE_INPUT_SELECTOR_PRECHECK: retain the
+                // old wrapper's boolean/typed diagnostic through its I7 gate.
+                status(fj_test_color_arm_fault(5, 1, 1));
+                FocusedRenderStateBuildProduct comparison;
+                std::string comparisonDiagnostic;
+                const bool built = route % 2 ? build_print_render_state_product(invalid, comparison, comparisonDiagnostic)
+                                             : build_direct_render_state_product(invalid, comparison, comparisonDiagnostic);
+                require(!built && comparisonDiagnostic.starts_with("UnsupportedMode phase=3B field="),
+                        "native signed selectors retain ordinary precheck failure before raw packing");
+                bool nativePropagated = false;
                 try {
-                    (void)(route % 2 ? build_print_render_state_product(controls, product, diagnostic) : build_direct_render_state_product(controls, product, diagnostic));
-                } catch (const JuicerCuda::ExecutionFailure& error) {
-                    propagated = error.failure.diagnostic == "Input matrix preparation failed";
+                    (void)(route % 2 ? build_print_render_state_product(controls, comparison, comparisonDiagnostic)
+                                     : build_direct_render_state_product(controls, comparison, comparisonDiagnostic));
+                } catch (const JuicerCuda::ExecutionFailure& failure) {
+                    nativePropagated = failure.failure.diagnostic == "Input matrix preparation failed";
                 }
-                require(propagated, "each native selector precheck preserves the armed matrix fault for the next valid call");
+                require(nativePropagated, "each native selector precheck preserves the armed matrix fault for the next valid call");
             }
         }
         std::puts("PASS actual source/hull lifetimes, slot return/throw distinctions, admission, supersession, recovery and selector priority");
@@ -763,7 +793,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
     owner.create(std::filesystem::path(argv[1]));
     JuicerProcess::root().ensure_bootstrap();
     if (argc == 4) {
-        native_products(fixture);
+        native_products(argv[1], fixture);
         lifetime_and_admission();
         native_resource_prechecks();
     } else {

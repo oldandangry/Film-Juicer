@@ -1,5 +1,6 @@
 #include "Cuda/JuicerCudaFilmPayloads.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <memory>
@@ -310,25 +311,60 @@ namespace {
 
 namespace JuicerCuda {
 
+    // SF_TEMP_BRIDGE_GRAIN_PAYLOAD: old-model callers delegate to resolved
+    // execution coefficients; remove after their matching I6 proof, in I7.
     bool pack_visual_grain_payload(
         const Spektrafilm::VisualGrainRecipe& recipe,
         const PreparedVisualGrainView& prepared,
         GrainPayload& outGrain,
         GrainKernelPayload& outKernels,
         std::string& diagnostic) {
+        VisualGrainPayloadInput input;
+        input.recipeHash = recipe.hash;
+        input.densityLayersHash = recipe.densityCurvesLayersHash;
+        auto& coefficients = input.coefficients;
+        coefficients.flags = (recipe.active ? FJ_GRAIN_ACTIVE : 0u) |
+                             (recipe.sublayersActive ? FJ_GRAIN_SUBLAYERS : 0u);
+        coefficients.debug_view = static_cast<std::uint32_t>(recipe.debugView);
+        coefficients.sublayer_count = static_cast<std::size_t>(recipe.nSubLayers);
+        std::copy_n(recipe.microStructure.data(), 2, coefficients.micro_structure);
+        coefficients.clump_temporal_mix = recipe.clumpTemporalMix;
+        coefficients.size_mix_scale = recipe.sizeMixScale;
+        coefficients.amplitude = recipe.amplitude;
+        coefficients.chroma_mix = recipe.chromaMix;
+        coefficients.chroma_shared_weight = recipe.chromaSharedWeight;
+        coefficients.chroma_independent_weight = recipe.chromaIndependentWeight;
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            coefficients.flags |= recipe.grainLayerAxisFinite[channel] ? (1u << (3u + channel)) : 0u;
+            coefficients.particle_density_min_cmy[channel] = recipe.visualParticleDensityMinCmy[channel];
+            coefficients.uniformity_cmy[channel] = recipe.uniformityCmy[channel];
+            std::copy_n(recipe.grainLayerAxisBlockPrefixMax[channel].data(), 16, coefficients.layer_axis_block_prefix_max[channel]);
+        }
+        return pack_visual_grain_payload(input, prepared, outGrain, outKernels, diagnostic);
+    }
+
+    bool pack_visual_grain_payload(
+        const VisualGrainPayloadInput& input,
+        const PreparedVisualGrainView& prepared,
+        GrainPayload& outGrain,
+        GrainKernelPayload& outKernels,
+        std::string& diagnostic) {
+        const auto& coefficients = input.coefficients;
+        const bool active = (coefficients.flags & FJ_GRAIN_ACTIVE) != 0;
+        const bool sublayers = (coefficients.flags & FJ_GRAIN_SUBLAYERS) != 0;
         reset_payload_to_defaults(outGrain);
         reset_payload_to_defaults(outKernels);
         diagnostic.clear();
 
-        if (!recipe.active) {
-            if (recipe.hash != 0 || prepared.active || prepared.descriptor) {
+        if (!active) {
+            if (input.recipeHash != 0 || prepared.active || prepared.descriptor) {
                 diagnostic =
                     "ResourceDescriptorMismatch phase=grain_payload field=inactive_state";
                 return false;
             }
             return true;
         }
-        if (recipe.hash == 0 || !prepared.active || !prepared.descriptor) {
+        if (input.recipeHash == 0 || !prepared.active || !prepared.descriptor) {
             diagnostic =
                 "MissingRequiredResource phase=grain_payload field=prepared_view";
             return false;
@@ -337,7 +373,7 @@ namespace JuicerCuda {
         const Spektrafilm::VisualGrainFrameDescriptor& descriptor =
             *prepared.descriptor;
         if (!descriptor.active || descriptor.hash == 0 ||
-            descriptor.recipeHash != recipe.hash ||
+            descriptor.recipeHash != input.recipeHash ||
             (descriptor.capturePolarity !=
                  Spektrafilm::ProfilePolarity::Negative &&
              descriptor.capturePolarity !=
@@ -388,10 +424,10 @@ namespace JuicerCuda {
             }
         }
 
-        if (recipe.sublayersActive) {
+        if (sublayers) {
             if (descriptor.densityCurvesLayersHash == 0 ||
                 descriptor.densityCurvesLayersHash !=
-                    recipe.densityCurvesLayersHash ||
+                    input.densityLayersHash ||
                 !prepared.densityLayers.active ||
                 prepared.densityLayers.hash !=
                     descriptor.densityCurvesLayersHash) {
@@ -429,13 +465,13 @@ namespace JuicerCuda {
         }
 
         outGrain.active = 1;
-        outGrain.sublayersActive = recipe.sublayersActive ? 1 : 0;
+        outGrain.sublayersActive = sublayers ? 1 : 0;
         outGrain.positiveFilm =
             descriptor.capturePolarity ==
                     Spektrafilm::ProfilePolarity::Positive
                 ? 1
                 : 0;
-        outGrain.nSubLayers = recipe.nSubLayers;
+        outGrain.nSubLayers = static_cast<int>(coefficients.sublayer_count);
         outGrain.originX = descriptor.renderExtent.x;
         outGrain.originY = descriptor.renderExtent.y;
         outGrain.seedBase = descriptor.seedBase;
@@ -470,45 +506,45 @@ namespace JuicerCuda {
         outGrain.breathingMix = descriptor.breathingMix;
         outGrain.breathingDriftUmPerFrame =
             descriptor.breathingDriftUmPerFrame;
-        outGrain.debugView = recipe.debugView;
+        outGrain.debugView = static_cast<int>(coefficients.debug_view);
         outGrain.pixelSizeUm = descriptor.pixelSizeUm;
         outGrain.pitchPx = descriptor.pitchPx;
-        outGrain.microStructure[0] = recipe.microStructure[0];
-        outGrain.microStructure[1] = recipe.microStructure[1];
-        outGrain.clumpTemporalMix = recipe.clumpTemporalMix;
+        outGrain.microStructure[0] = coefficients.micro_structure[0];
+        outGrain.microStructure[1] = coefficients.micro_structure[1];
+        outGrain.clumpTemporalMix = coefficients.clump_temporal_mix;
         outGrain.clumpMorphPeriodFrames =
             descriptor.clumpMorphPeriodFrames;
         outGrain.sizeMixWeightFine = descriptor.effectiveFineWeight;
         outGrain.sizeMixWeight = descriptor.effectiveCoarseWeight;
         outGrain.sizeMixWeightMid = descriptor.effectiveMidWeight;
-        outGrain.sizeMixScale = recipe.sizeMixScale;
+        outGrain.sizeMixScale = coefficients.size_mix_scale;
         outGrain.sizeMixGain = descriptor.sizeMixGain;
-        outGrain.amplitude = recipe.amplitude;
-        outGrain.chromaMix = recipe.chromaMix;
-        outGrain.chromaSharedWeight = recipe.chromaSharedWeight;
-        outGrain.chromaIndWeight = recipe.chromaIndependentWeight;
+        outGrain.amplitude = coefficients.amplitude;
+        outGrain.chromaMix = coefficients.chroma_mix;
+        outGrain.chromaSharedWeight = coefficients.chroma_shared_weight;
+        outGrain.chromaIndWeight = coefficients.chroma_independent_weight;
         outGrain.debugScale = descriptor.debugScale;
 
         for (std::size_t channel = 0; channel < 3; ++channel) {
             outGrain.densityMin[channel] =
-                recipe.visualParticleDensityMinCmy[channel];
-            outGrain.uniformity[channel] = recipe.uniformityCmy[channel];
+                coefficients.particle_density_min_cmy[channel];
+            outGrain.uniformity[channel] = coefficients.uniformity_cmy[channel];
             outGrain.densityMax[channel] = descriptor.densityMaxCmy[channel];
             outGrain.nParticles[channel] = descriptor.nParticlesCmy[channel];
             outGrain.odParticle[channel] = descriptor.odParticleCmy[channel];
             outGrain.densityCurveCmy[channel] =
-                recipe.sublayersActive
+                sublayers
                     ? prepared.densityLayers.baseCurvesCmy[channel]
                     : DeviceCurveView{};
             outGrain.densityLayerAxisFinite[channel] =
-                recipe.sublayersActive &&
-                        recipe.grainLayerAxisFinite[channel]
+                sublayers &&
+                        ((coefficients.flags & (1u << (3u + channel))) != 0)
                     ? 1
                     : 0;
-            if (recipe.sublayersActive) {
+            if (sublayers) {
                 for (std::size_t block = 0; block < 16; ++block) {
                     outGrain.densityLayerAxisBlockPrefixMax[channel][block] =
-                        recipe.grainLayerAxisBlockPrefixMax[channel][block];
+                        coefficients.layer_axis_block_prefix_max[channel][block];
                 }
             }
         }
@@ -523,7 +559,7 @@ namespace JuicerCuda {
                 outGrain.odParticleLayers[layer][channel] =
                     descriptor.odParticleLayers[layer][channel];
                 outGrain.densityCurvesLayers[layer][channel] =
-                    recipe.sublayersActive
+                    sublayers
                         ? prepared.densityLayers.curves[layer][channel]
                         : nullptr;
                 outKernels.dyeKernel[layer][channel] =

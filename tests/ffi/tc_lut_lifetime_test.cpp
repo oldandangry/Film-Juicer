@@ -39,6 +39,8 @@ namespace {
         }
     }
     const float* current_pointer(InstanceState& state, bool print) {
+        // SF_TEMP_BRIDGE_NATIVE_PUBLICATION_TC_LUT_OBSERVER: I5 will replace
+        // these payload reads with PreparedState::view and FjFilmExposure spans.
         // This temporary lookup ends before replacement. Only the slot retains it.
         if (print) {
             const auto value = JuicerAtomic::load_shared_ptr(&state.activePrintState);

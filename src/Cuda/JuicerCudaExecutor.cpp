@@ -1076,6 +1076,7 @@ namespace {
         std::variant<const JuicerProcess::Root::CudaFramePreparationRequest*, const JuicerProcess::Root::PreparedFrameInput*> preparation;
         std::variant<Scanner::ScannerColorCorrectionDescriptor, PrintCorrectionSource> correction;
         PrintExposureRecipe printExposure{};
+        const FjHostPreparation* hostPreparation = nullptr;
     };
 
     struct OpticalWorkspace {
@@ -2969,7 +2970,7 @@ namespace JuicerCuda {
         check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
             std::visit([&](const auto* preparation) {
-                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, directPrepareError);
+                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, directPrepareError, input.hostPreparation);
             },
                        input.preparation);
         if (!preparedFrame.active()) {
@@ -3076,7 +3077,8 @@ namespace JuicerCuda {
                     descriptors.dir,
                     focusedWorkspace,
                     frame.stream,
-                    spatialError)) {
+                    spatialError,
+                    input.hostPreparation)) {
                 errors.fail_submission(
                     "direct_spatial_dir_prepare",
                     "direct spatial DIR preparation failed",
@@ -3241,7 +3243,7 @@ namespace JuicerCuda {
         check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
             std::visit([&](const auto* preparation) {
-                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, prepareError);
+                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, prepareError, input.hostPreparation);
             },
                        input.preparation);
         if (!preparedFrame.active()) {
@@ -3371,7 +3373,8 @@ namespace JuicerCuda {
                     descriptors.dir,
                     focusedWorkspace,
                     frame.stream,
-                    spatialError)) {
+                    spatialError,
+                    input.hostPreparation)) {
                 errors.fail_submission(
                     "print_spatial_dir_prepare",
                     "print spatial DIR preparation failed",
@@ -3645,7 +3648,7 @@ namespace JuicerCuda {
             errors.fail_route("ResourceDescriptorMismatch component=prepared_frame field=full_frame_domain");
         }
         const RouteDescriptors descriptors{input.descriptors.scanner, input.descriptors.post, input.descriptors.spatialDir, input.descriptors.grain, input.descriptors.effects};
-        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainRecipe, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.recipeHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, &input.preparation, input.descriptors.correction, input.printExposure};
+        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainRecipe, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.recipeHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, &input.preparation, input.descriptors.correction, input.printExposure, input.hostPreparation};
         if (Spektrafilm::scan_route_is_print(input.descriptors.route)) {
             execute_print_schedule(schedule, recovery, abortCallback);
         } else {

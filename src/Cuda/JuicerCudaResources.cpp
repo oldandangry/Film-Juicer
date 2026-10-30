@@ -18,6 +18,7 @@
 #include "RustScannerBridge.h"
 #include "RustGaussianBridge.h"
 #include "RustDirBoundaryBridge.h"
+#include "juicer_host_preparation.h"
 
 #include "Logging.h"
 #include "Hash.h"
@@ -796,7 +797,12 @@ namespace JuicerCuda {
         if (!wait_for_frame_use_events_locked(resources, record.cudaStreamOpaque, record.label, outError)) {
             return false;
         }
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+        const auto injected = static_cast<cudaError_t>(ScannerLutTest::retire_fence_error(resources, record.label));
+        const cudaError_t recErr = injected == cudaSuccess ? cudaEventRecord(retireEv, stream) : injected;
+#else
         const cudaError_t recErr = cudaEventRecord(retireEv, stream);
+#endif
         if (recErr != cudaSuccess) {
             outError.status = runtime_failure_status(recErr);
             outError.diagnostic = std::string("cudaEventRecord for ") + (record.label ? record.label : "resource") + " retire failed: " + (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
@@ -1123,6 +1129,10 @@ namespace JuicerCuda {
         if (ExecutorTest::inject_grain_upload_failure(label, outError)) {
             return false;
         }
+#endif
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+        if (!ScannerLutTest::before_upload(resources, label, outError))
+            return false;
 #endif
         if (!allocate_owned_device(
                 resources,
@@ -3411,14 +3421,15 @@ namespace JuicerCuda {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         FocusedRouteResourceInput input;
         return build_focused_route_resource_input(request, input, outError.diagnostic) &&
-               prepare_focused_route_resources(resources, input, cudaStreamOpaque, outError);
+               prepare_focused_route_resources(resources, input, cudaStreamOpaque, outError, request.hostPreparation);
     }
 
     bool prepare_focused_route_resources(
         Resources& resources,
         const FocusedRouteResourceInput& input,
         void* cudaStreamOpaque,
-        Failure& outError) {
+        Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError = {};
         const Spektrafilm::ScanRoute route = input.route;
         const Spektrafilm::ScanRouteMetadata& routeMetadata =
@@ -3748,20 +3759,34 @@ namespace JuicerCuda {
         }
 
         if (!routeLutAlreadyPrepared) {
-            // SF_TEMP_BRIDGE_SCANNER_LUT: scoped host owner; remove at S4.E.
             Failure constructionFailure;
+            FjScannerLutView lutView{};
+            std::optional<JuicerScanner::Lut> legacyLut;
             lock.unlock();
-            auto lut = JuicerScanner::Lut::acquire(
-                medium,
-                scannerDescriptor.lutResolution,
-                constructionFailure);
+            bool constructed = false;
+            if (hostPreparation) {
+                constructed = prepare_scanner_lut(*hostPreparation, medium, scannerDescriptor.lutResolution, lutView, constructionFailure);
+            } else {
+                // SF_TEMP_BRIDGE_SCANNER_LUT: comparison consumers; remove I7.
+                legacyLut = JuicerScanner::Lut::acquire(medium, scannerDescriptor.lutResolution, constructionFailure);
+                constructed = legacyLut.has_value();
+                if (legacyLut) {
+                    const auto span = [](std::span<const float> samples) -> FjFloatSpan {
+                        return {samples.data(), samples.size()};
+                    };
+                    lutView = {scannerDescriptor.lutResolution, span(legacyLut->log2_xyz()), span(legacyLut->slope_c()), span(legacyLut->slope_m()), span(legacyLut->slope_y()), span(legacyLut->cell_min()), span(legacyLut->cell_max())};
+                }
+            }
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+            ScannerLutTest::after_prepare(resources);
+#endif
             lock.lock();
             if (!validate_resource_owner_locked(resources, outError, false)) {
                 lock.unlock();
-                lut.reset();
+                legacyLut.reset();
                 return false;
             }
-            if (!lut) {
+            if (!constructed) {
                 outError = std::move(constructionFailure);
                 return false;
             }
@@ -3782,13 +3807,13 @@ namespace JuicerCuda {
                 free_owned_device_noexcept(resources, next.cellMax);
                 next = {};
             };
-            auto upload_next = [&](float*& destination, std::span<const float> source, const char* label) {
+            auto upload_next = [&](float*& destination, FjFloatSpan source, const char* label) {
                 void* raw = nullptr;
                 if (!alloc_and_upload_bytes(
                         resources,
                         raw,
-                        source.data(),
-                        source.size() * sizeof(float),
+                        source.data,
+                        source.count * sizeof(float),
                         cudaStreamOpaque,
                         label,
                         outError)) {
@@ -3800,15 +3825,18 @@ namespace JuicerCuda {
 
             lock.unlock();
             const bool canonicalUploaded =
-                upload_next(next.log2PchipXYZ, lut->log2_xyz(), "focused scan PCHIP log2 XYZ") &&
-                upload_next(next.slopeC, lut->slope_c(), "focused scan PCHIP C slopes") &&
-                upload_next(next.slopeM, lut->slope_m(), "focused scan PCHIP M slopes") &&
-                upload_next(next.slopeY, lut->slope_y(), "focused scan PCHIP Y slopes") &&
-                upload_next(next.cellMin, lut->cell_min(), "focused scan PCHIP cell minima") &&
-                upload_next(next.cellMax, lut->cell_max(), "focused scan PCHIP cell maxima");
+                upload_next(next.log2PchipXYZ, lutView.log2_xyz, "focused scan PCHIP log2 XYZ") &&
+                upload_next(next.slopeC, lutView.slope_c, "focused scan PCHIP C slopes") &&
+                upload_next(next.slopeM, lutView.slope_m, "focused scan PCHIP M slopes") &&
+                upload_next(next.slopeY, lutView.slope_y, "focused scan PCHIP Y slopes") &&
+                upload_next(next.cellMin, lutView.cell_min, "focused scan PCHIP cell minima") &&
+                upload_next(next.cellMax, lutView.cell_max, "focused scan PCHIP cell maxima");
             // Native pinned staging owns every enqueued source byte at return.
             // Release the large host buffers while the resource lock is open.
-            lut.reset();
+            legacyLut.reset();
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+            ScannerLutTest::after_upload(resources);
+#endif
             lock.lock();
             if (!validate_resource_owner_locked(resources, outError, false) || !canonicalUploaded) {
                 free_next();
@@ -6313,7 +6341,8 @@ namespace JuicerCuda {
         int radius,
         float sigma,
         const char* label,
-        Failure& outError) {
+        Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError = {};
         const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
         if (!sigmaOk || radius <= 0) {
@@ -6347,12 +6376,20 @@ namespace JuicerCuda {
             }
         }
 
-        // SF_TEMP_BRIDGE_GAUSSIAN_KERNEL: miss-only preparation; remove S4.E.
-        auto coefficients = JuicerGaussian::Kernel::acquire(radius, sigma, outError);
-        if (!coefficients) {
-            return false;
+        FjGaussianKernelView view{};
+        std::optional<JuicerGaussian::Kernel> legacyCoefficients;
+        std::span<const float> weights;
+        if (hostPreparation) {
+            if (!prepare_gaussian_kernel(*hostPreparation, {radius, sigma}, view, outError))
+                return false;
+            weights = {view.weights.data, view.weights.count};
+        } else {
+            // SF_TEMP_BRIDGE_GAUSSIAN_KERNEL: comparison consumers; remove I7.
+            legacyCoefficients = JuicerGaussian::Kernel::acquire(radius, sigma, outError);
+            if (!legacyCoefficients)
+                return false;
+            weights = legacyCoefficients->weights();
         }
-        const auto weights = coefficients->weights();
         const std::size_t bytes = weights.size_bytes();
         void* candidateRaw = nullptr;
         if (!allocate_owned_device(
@@ -6443,7 +6480,8 @@ namespace JuicerCuda {
         Resources::DeviceGaussianKernel& kernel,
         int radius,
         float sigma,
-        Failure& outError) {
+        Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         constexpr int kMaxRadius = 2048;
         if (!std::isfinite(sigma) || sigma <= 0.0f || radius <= 0 || radius > kMaxRadius) {
@@ -6456,7 +6494,8 @@ namespace JuicerCuda {
             radius,
             sigma,
             "spatial DIR kernel",
-            outError);
+            outError,
+            hostPreparation);
     }
 
     bool ensure_spatial_dir_boundary(
@@ -6602,7 +6641,8 @@ namespace JuicerCuda {
         Resources::DeviceGaussianKernel& kernel,
         float sigma,
         int radius,
-        Failure& outError) {
+        Failure& outError,
+        const FjHostPreparation* hostPreparation) {
         outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         constexpr int kMaxRadius = 75;
         if (!std::isfinite(sigma) || sigma <= 0.0f || radius <= 0 ||
@@ -6616,6 +6656,7 @@ namespace JuicerCuda {
             radius,
             sigma,
             "gaussian kernel",
-            outError);
+            outError,
+            hostPreparation);
     }
 } // namespace JuicerCuda

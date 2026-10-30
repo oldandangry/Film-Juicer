@@ -24,6 +24,7 @@
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 
 struct FjCuda;
+struct FjHostPreparation;
 namespace Scanner {
     struct ScannerPostEffectsDescriptor;
 } // namespace Scanner
@@ -238,7 +239,7 @@ namespace JuicerProcess {
 
         class PreparedCudaFrame final {
         public:
-            PreparedCudaFrame() noexcept = default;
+            PreparedCudaFrame() noexcept;
             ~PreparedCudaFrame();
 
             PreparedCudaFrame(const PreparedCudaFrame&) = delete;
@@ -448,7 +449,8 @@ namespace JuicerProcess {
                 const Spektrafilm::SpatialDirDescriptor& descriptor,
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
-                JuicerCuda::Failure& outError);
+                JuicerCuda::Failure& outError,
+                const FjHostPreparation* hostPreparation = nullptr);
             bool stage_spatial_dir_cached_log_raw_for_final_develop(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
@@ -492,16 +494,19 @@ namespace JuicerProcess {
                 JuicerCuda::Resources::DeviceGaussianKernel& kernel,
                 float sigma,
                 int radius,
-                JuicerCuda::Failure& outError);
+                JuicerCuda::Failure& outError,
+                const FjHostPreparation* hostPreparation = nullptr);
             bool prepare_scanner_post_effects(
                 const Scanner::ScannerPostEffectsDescriptor& descriptor,
-                JuicerCuda::Failure& outError);
+                JuicerCuda::Failure& outError,
+                const FjHostPreparation* hostPreparation = nullptr);
             bool prepare_visual_grain_resources(
                 Root& root,
                 const JuicerCuda::StaticNoiseInput* noise,
                 const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
                 void* cudaStreamOpaque,
-                JuicerCuda::Failure& outError);
+                JuicerCuda::Failure& outError,
+                const FjHostPreparation* hostPreparation = nullptr);
 
             std::unique_ptr<State> _state;
         };
@@ -513,14 +518,16 @@ namespace JuicerProcess {
             const CudaFramePreparationRequest& request,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
-            JuicerCuda::Failure& outError);
+            JuicerCuda::Failure& outError,
+            const FjHostPreparation* hostPreparation = nullptr);
         PreparedCudaFrame prepare_cuda_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
             const PreparedFrameInput& request,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
-            JuicerCuda::Failure& outError);
+            JuicerCuda::Failure& outError,
+            const FjHostPreparation* hostPreparation = nullptr);
         JuicerAssets::Library& assets();
 
     private:
@@ -535,7 +542,8 @@ namespace JuicerProcess {
             const PreparedFrameInput& request,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
-            JuicerCuda::Failure& outError);
+            JuicerCuda::Failure& outError,
+            const FjHostPreparation* hostPreparation = nullptr);
 
         explicit Root(const std::filesystem::path& dataDirectory);
         ~Root();

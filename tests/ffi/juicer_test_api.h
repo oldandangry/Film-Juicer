@@ -7,6 +7,18 @@
 extern "C" {
 #endif
 
+typedef struct FjHostPreparation FjHostPreparation;
+typedef FjStatus (*FjHostPreparationConsumer)(void*, const FjHostPreparation*, FjErrorBuffer*);
+/* Test-support only: backing expires after this synchronous consumer returns.
+ * The consumer must contain all exceptions and retain no pointer or callback.
+ * Preparation callbacks run serially on the calling thread. */
+FjStatus fj_test_with_host_preparation(void*, FjHostPreparationConsumer, FjErrorBuffer*);
+FjStatus fj_test_mallett_source_override(FjPathView, FjErrorBuffer*);
+void fj_test_mallett_source_clear(void);
+uint32_t fj_test_mallett_source_consumed(void);
+FjStatus fj_test_film_reference_lookup_fault(uint32_t mode);
+uint32_t fj_test_film_reference_lookup_fault_consumed(void);
+
 /* Owner-bound complete preparation/cache facade, sharing private construction
  * and projection with production. Same synchronous and consuming contracts as
  * the sole held-state section in juicer_legacy_api.h. */

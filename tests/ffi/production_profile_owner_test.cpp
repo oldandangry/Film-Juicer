@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -31,6 +32,7 @@
 #include "Cuda/JuicerCudaResources.h"
 #include "juicer_cuda_owner.h"
 #include "RustAssetBridge.h"
+#include "PreparedState.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
 #include "spectral_allocation_probe.h"
@@ -104,7 +106,8 @@ namespace {
         Film(const FjAssets* assets, const std::string& key) {
             expect_status(fj_legacy_film_profile_acquire(assets, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
         }
-        Film(const Assets& assets, const std::string& key) : Film(assets.owner, key) {}
+        Film(const Assets& assets, const std::string& key)
+            : Film(assets.owner, key) {}
         ~Film() {
             require_release(fj_legacy_film_profile_release(owner, nullptr));
         }
@@ -116,9 +119,11 @@ namespace {
     };
     struct Print {
         FjPrintProfile* owner = nullptr;
-        Print(const Assets& assets, const std::string& key) {
-            expect_status(fj_legacy_print_profile_acquire(assets.owner, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
+        Print(const FjAssets* assets, const std::string& key) {
+            expect_status(fj_legacy_print_profile_acquire(assets, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
         }
+        Print(const Assets& assets, const std::string& key)
+            : Print(assets.owner, key) {}
         ~Print() {
             require_release(fj_legacy_print_profile_release(owner, nullptr));
         }
@@ -147,6 +152,17 @@ namespace {
         for (std::size_t i = 0; i < span.count; ++i) {
             EXPECT_EQ(std::bit_cast<std::uint32_t>(span.data[i]), expected[i].get<std::uint32_t>());
         }
+    }
+    void expect_span_bits(FjFloatSpan actual, const std::vector<float>& expected) {
+        ASSERT_EQ(actual.count, expected.size());
+        for (std::size_t i = 0; i < actual.count; ++i) {
+            EXPECT_EQ(std::bit_cast<std::uint32_t>(actual.data[i]),
+                      std::bit_cast<std::uint32_t>(expected[i]));
+        }
+    }
+    std::vector<float> copy_span(FjFloatSpan span) {
+        return span.count == 0 ? std::vector<float>{}
+                               : std::vector<float>(span.data, span.data + span.count);
     }
     std::vector<unsigned char> density_payload() {
         std::ifstream file(fixtures / "density-samples.bin", std::ios::binary);
@@ -644,6 +660,83 @@ namespace {
         return controls;
     }
 
+    bool prepared_view(
+        const ParamSnapshot& controls,
+        std::optional<PreparedState>& owner,
+        FjPreparedStateView& view,
+        std::string& diagnostic) {
+        diagnostic.clear();
+        std::array<char, 1024> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjStatus status = prepare_state(
+            JuicerProcess::root().assets().borrow_rust_assets(),
+            controls,
+            owner,
+            error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(message.data(), error.length);
+            return false;
+        }
+        status = owner->view(view, error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(message.data(), error.length);
+            return false;
+        }
+        return true;
+    }
+
+    void expect_span(FjFloatSpan actual, const std::vector<float>& expected) {
+        ASSERT_EQ(actual.count, expected.size());
+        if (!expected.empty() && actual.count == expected.size()) {
+            EXPECT_EQ(std::memcmp(actual.data, expected.data(), expected.size() * sizeof(float)), 0);
+        }
+    }
+
+    // I7 removal gate: this is the remaining native payload/state parity comparison.
+    void SF_TEMP_BRIDGE_expect_prepared_tables(
+        const FjPreparedStateView& view,
+        const FocusedRenderPayload& payload) {
+        expect_span(view.exposure_tables.lambda_nm, payload.exposureTables.lambda);
+        expect_span(view.exposure_tables.illuminant, payload.exposureTables.illum);
+        expect_span(view.scanner_tables.lambda_nm, payload.scannerTables.lambda);
+        expect_span(view.scanner_tables.illuminant, payload.scannerTables.illum);
+    }
+
+    // I7 removal gate: these builders exist only for comparisons with the old
+    // native complete-product path while its matching replacement witnesses land.
+    bool SF_TEMP_BRIDGE_build_direct_product(
+        const ParamSnapshot& controls,
+        FocusedRenderStateBuildProduct& product,
+        std::string& diagnostic) {
+        return build_direct_render_state_product(controls, product, diagnostic);
+    }
+    bool SF_TEMP_BRIDGE_build_print_product(
+        const ParamSnapshot& controls,
+        FocusedRenderStateBuildProduct& product,
+        std::string& diagnostic) {
+        return build_print_render_state_product(controls, product, diagnostic);
+    }
+
+    TEST(ProductionProfileOwner, FilmDefaultsCopiesFixedDigestAndClearsMissingResult) {
+        JuicerAssets::Library library(resources);
+        FjFilmDigest defaults{};
+        std::array<char, 1024> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        expect_status(library.film_defaults("kodak_portra_400", defaults, error), FJ_STATUS_SUCCESS);
+        Film source(library.borrow_rust_assets(), "kodak_portra_400");
+        const FjFilmProfileView view = source.view();
+        EXPECT_EQ(std::memcmp(&defaults, &view.digest, sizeof(defaults)), 0);
+
+        std::memset(&defaults, 0xa5, sizeof(defaults));
+        error.length = 0;
+        const FjStatus missing = library.film_defaults("missing-film-profile", defaults, error);
+        EXPECT_EQ(missing.category, FJ_STATUS_PREPARATION_FAILURE);
+        EXPECT_EQ(missing.api, FJ_API_NONE);
+        EXPECT_EQ(missing.native_code, 0);
+        const FjFilmDigest cleared{};
+        EXPECT_EQ(std::memcmp(&defaults, &cleared, sizeof(defaults)), 0);
+    }
+
     TEST(ProductionProfileConsumer, TypedOriginalBbReachesEveryProfileIlluminantConsumer) {
         const auto root = consumer_resources("bb-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
@@ -657,14 +750,27 @@ namespace {
             changed["info"]["viewing_illuminant"] = item.first;
             save_film(root, changed);
             auto controls = direct_controls();
-            FocusedRenderStateBuildProduct product;
+            FocusedRenderStateBuildProduct nativeComparison;
             std::string diagnostic;
-            ASSERT_TRUE(build_direct_render_state_product(controls, product, diagnostic)) << diagnostic;
-            EXPECT_EQ(product.recipe.filmRaw.referenceIlluminant, item.first);
-            EXPECT_EQ(product.recipe.scannerOutput.viewingIlluminant, item.first);
-            const auto& reference = product.recipe.profileRoute.filmProfile->info.referenceIlluminant;
-            ASSERT_TRUE(std::holds_alternative<Profiles::BlackbodyIlluminant>(reference.kind));
-            EXPECT_EQ(std::bit_cast<std::uint64_t>(std::get<Profiles::BlackbodyIlluminant>(reference.kind).temperatureKelvin), std::bit_cast<std::uint64_t>(item.second));
+            ASSERT_TRUE(SF_TEMP_BRIDGE_build_direct_product(controls, nativeComparison, diagnostic)) << diagnostic;
+            std::optional<PreparedState> prepared;
+            FjPreparedStateView preparedState{};
+            ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
+            SF_TEMP_BRIDGE_expect_prepared_tables(preparedState, nativeComparison.payload);
+            Film filmSource(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+            const FjFilmProfileView filmView = filmSource.view();
+            EXPECT_EQ(filmView.reference_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
+            EXPECT_EQ(filmView.viewing_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
+            EXPECT_EQ(
+                std::string(filmView.reference_illuminant.label.data, filmView.reference_illuminant.label.count),
+                item.first);
+            EXPECT_EQ(
+                std::string(filmView.viewing_illuminant.label.data, filmView.viewing_illuminant.label.count),
+                item.first);
+            EXPECT_EQ(
+                std::bit_cast<std::uint64_t>(filmView.reference_illuminant.temperature_kelvin),
+                std::bit_cast<std::uint64_t>(item.second));
+            EXPECT_EQ(preparedState.film_profile_asset_version, filmView.asset_token);
 #if defined(_WIN32)
             const std::string platform = "windows-clang";
 #else
@@ -689,9 +795,10 @@ namespace {
             for (const auto& word : (*row)["normalized"]) {
                 expected.push_back(std::bit_cast<float>(word.template get<std::uint32_t>()));
             }
-            EXPECT_EQ(product.payload.exposureTables.illum, expected);
-            EXPECT_EQ(product.payload.scannerTables.illum, expected);
-            EXPECT_NE(product.recipe.scannerOutput.syntheticFilmReference.hash, 0u);
+            expect_span_bits(preparedState.exposure_tables.illuminant, expected);
+            expect_span_bits(preparedState.scanner_tables.illuminant, expected);
+            EXPECT_NE(preparedState.film_reference.hash, 0u);
+            EXPECT_NE(nativeComparison.recipe.scannerOutput.syntheticFilmReference.hash, 0u);
             // The print scanner's authored viewing label also binds a typed owner.
             auto printDocument = read_json(resources / "profiles/kodak_portra_endura.json");
             printDocument["info"]["viewing_illuminant"] = item.first;
@@ -701,19 +808,39 @@ namespace {
             }
             expect_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
             controls.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
-            ASSERT_TRUE(build_print_render_state_product(controls, product, diagnostic)) << diagnostic;
-            EXPECT_EQ(product.payload.scannerTables.illum, expected);
+            FocusedRenderStateBuildProduct printNativeComparison;
+            ASSERT_TRUE(SF_TEMP_BRIDGE_build_print_product(controls, printNativeComparison, diagnostic)) << diagnostic;
+            prepared.reset();
+            ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
+            SF_TEMP_BRIDGE_expect_prepared_tables(preparedState, printNativeComparison.payload);
+            expect_span_bits(preparedState.scanner_tables.illuminant, expected);
+            Print printSource(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_endura");
+            const FjPrintProfileView printView = printSource.view();
+            EXPECT_EQ(printView.viewing_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
+            EXPECT_EQ(
+                std::string(printView.viewing_illuminant.label.data, printView.viewing_illuminant.label.count),
+                item.first);
+            EXPECT_EQ(
+                std::bit_cast<std::uint64_t>(printView.viewing_illuminant.temperature_kelvin),
+                std::bit_cast<std::uint64_t>(item.second));
+            EXPECT_EQ(preparedState.print_profile_asset_version, printView.asset_token);
         }
         for (const auto* label : {"BB0", "BB-0.0", "BB-3200", "BB1e-400"}) {
             auto changed = original;
             changed["info"]["reference_illuminant"] = label;
             save_film(root, changed);
-            const auto selected = JuicerProcess::root().assets().selected_film_profile_for_key("kodak_portra_400");
-            ASSERT_NE(selected, nullptr);
-            ASSERT_TRUE(std::holds_alternative<Profiles::BlackbodyIlluminant>(selected->info.referenceIlluminant.kind));
-            FocusedRenderStateBuildProduct product;
+            Film selected(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+            const FjFilmProfileView selectedView = selected.view();
+            EXPECT_EQ(selectedView.reference_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
+            std::optional<PreparedState> rejected;
+            FjPreparedStateView rejectedView{};
             std::string diagnostic;
-            EXPECT_FALSE(build_direct_render_state_product(direct_controls(), product, diagnostic));
+            EXPECT_FALSE(prepared_view(direct_controls(), rejected, rejectedView, diagnostic));
+            EXPECT_FALSE(rejected.has_value());
+            EXPECT_FALSE(diagnostic.empty());
+            FocusedRenderStateBuildProduct nativeComparison;
+            EXPECT_FALSE(SF_TEMP_BRIDGE_build_direct_product(
+                direct_controls(), nativeComparison, diagnostic));
             EXPECT_FALSE(diagnostic.empty());
         }
     }
@@ -730,29 +857,72 @@ namespace {
             std::ofstream file(root / "profiles/kodak_portra_endura.json");
             file << R"({"info":{"stock":"kodak_portra_endura","stage":"printing"},"data":{"wavelengths":[]}})";
         }
-        FocusedRenderStateBuildProduct baseline;
+        FocusedRenderStateBuildProduct nativeBaselineComparison;
         std::string diagnostic;
-        ASSERT_TRUE(build_direct_render_state_product(controls, baseline, diagnostic)) << diagnostic;
+        ASSERT_TRUE(SF_TEMP_BRIDGE_build_direct_product(controls, nativeBaselineComparison, diagnostic)) << diagnostic;
+        std::optional<PreparedState> prepared;
+        FjPreparedStateView preparedState{};
+        ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
+        SF_TEMP_BRIDGE_expect_prepared_tables(preparedState, nativeBaselineComparison.payload);
+        const auto baselineFilmVersion = preparedState.film_profile_asset_version;
+        const auto baselineExposureLambda = copy_span(preparedState.exposure_tables.lambda_nm);
+        const auto baselineScannerLambda = copy_span(preparedState.scanner_tables.lambda_nm);
+        const auto baselineExposureEpsC = copy_span(preparedState.exposure_tables.dyes_cmy[0]);
+        const auto baselineScannerEpsC = copy_span(preparedState.scanner_tables.dyes_cmy[0]);
+        const auto baselineSensitivity = copy_span(preparedState.film_exposure.sensitivity_rgb);
         auto changed = original;
         for (std::size_t i = 0; i < 81; ++i) {
             changed["data"]["wavelengths"][i] = 381.0 + 5.0 * static_cast<double>(i);
         }
         save_film(root, changed);
-        FocusedRenderStateBuildProduct shifted;
-        ASSERT_TRUE(build_direct_render_state_product(controls, shifted, diagnostic)) << diagnostic;
-        EXPECT_NE(shifted.recipe.profileRoute.filmProfileAssetVersionToken, baseline.recipe.profileRoute.filmProfileAssetVersionToken);
-        EXPECT_EQ(shifted.payload.exposureTables.lambda, baseline.payload.exposureTables.lambda);
-        EXPECT_EQ(shifted.payload.scannerTables.lambda, baseline.payload.scannerTables.lambda);
-        EXPECT_EQ(std::memcmp(shifted.payload.exposureTables.epsC.data(), baseline.payload.exposureTables.epsC.data(), baseline.payload.exposureTables.epsC.size() * sizeof(float)), 0);
-        EXPECT_EQ(std::memcmp(shifted.payload.scannerTables.epsC.data(), baseline.payload.scannerTables.epsC.data(), baseline.payload.scannerTables.epsC.size() * sizeof(float)), 0);
-        EXPECT_EQ(shifted.recipe.filmRaw.finalSensitivity, baseline.recipe.filmRaw.finalSensitivity);
-        EXPECT_EQ(shifted.recipe.profileRoute.filmProfile->data.wavelengths.front(), 381.0f);
+        FocusedRenderStateBuildProduct nativeShiftedComparison;
+        ASSERT_TRUE(SF_TEMP_BRIDGE_build_direct_product(controls, nativeShiftedComparison, diagnostic)) << diagnostic;
+        ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
+        SF_TEMP_BRIDGE_expect_prepared_tables(preparedState, nativeShiftedComparison.payload);
+        EXPECT_NE(preparedState.film_profile_asset_version, baselineFilmVersion);
+        expect_span_bits(preparedState.exposure_tables.lambda_nm, baselineExposureLambda);
+        expect_span_bits(preparedState.scanner_tables.lambda_nm, baselineScannerLambda);
+        expect_span_bits(preparedState.exposure_tables.dyes_cmy[0], baselineExposureEpsC);
+        expect_span_bits(preparedState.scanner_tables.dyes_cmy[0], baselineScannerEpsC);
+        expect_span_bits(preparedState.film_exposure.sensitivity_rgb, baselineSensitivity);
+        // I7 comparison only: preserve the old native producer's matching lanes.
+        EXPECT_NE(nativeShiftedComparison.recipe.profileRoute.filmProfileAssetVersionToken,
+                  nativeBaselineComparison.recipe.profileRoute.filmProfileAssetVersionToken);
+        EXPECT_EQ(nativeShiftedComparison.payload.exposureTables.lambda,
+                  nativeBaselineComparison.payload.exposureTables.lambda);
+        EXPECT_EQ(nativeShiftedComparison.payload.scannerTables.lambda,
+                  nativeBaselineComparison.payload.scannerTables.lambda);
+        EXPECT_EQ(std::memcmp(nativeShiftedComparison.payload.exposureTables.epsC.data(),
+                              nativeBaselineComparison.payload.exposureTables.epsC.data(),
+                              nativeBaselineComparison.payload.exposureTables.epsC.size() * sizeof(float)),
+                  0);
+        EXPECT_EQ(std::memcmp(nativeShiftedComparison.payload.scannerTables.epsC.data(),
+                              nativeBaselineComparison.payload.scannerTables.epsC.data(),
+                              nativeBaselineComparison.payload.scannerTables.epsC.size() * sizeof(float)),
+                  0);
+        EXPECT_EQ(nativeShiftedComparison.recipe.filmRaw.finalSensitivity,
+                  nativeBaselineComparison.recipe.filmRaw.finalSensitivity);
+        Film shiftedSource(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+        const FjFilmProfileView shiftedView = shiftedSource.view();
+        EXPECT_EQ(preparedState.film_profile_asset_version, shiftedView.asset_token);
+        EXPECT_EQ(shiftedView.wavelengths.data[0], 381.0f);
         changed["data"]["wavelengths"][0] = 1e40;
         save_film(root, changed);
-        ASSERT_TRUE(build_direct_render_state_product(controls, shifted, diagnostic)) << diagnostic;
-        EXPECT_TRUE(std::isinf(shifted.recipe.profileRoute.filmProfile->data.wavelengths[0]));
-        EXPECT_EQ(shifted.payload.exposureTables.lambda, baseline.payload.exposureTables.lambda);
-        EXPECT_EQ(std::memcmp(shifted.payload.scannerTables.epsC.data(), baseline.payload.scannerTables.epsC.data(), baseline.payload.scannerTables.epsC.size() * sizeof(float)), 0);
+        ASSERT_TRUE(SF_TEMP_BRIDGE_build_direct_product(controls, nativeShiftedComparison, diagnostic)) << diagnostic;
+        ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
+        SF_TEMP_BRIDGE_expect_prepared_tables(preparedState, nativeShiftedComparison.payload);
+        Film nonfiniteSource(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+        const FjFilmProfileView nonfiniteView = nonfiniteSource.view();
+        EXPECT_TRUE(std::isinf(nonfiniteView.wavelengths.data[0]));
+        expect_span_bits(preparedState.exposure_tables.lambda_nm, baselineExposureLambda);
+        expect_span_bits(preparedState.scanner_tables.lambda_nm, baselineScannerLambda);
+        expect_span_bits(preparedState.scanner_tables.dyes_cmy[0], baselineScannerEpsC);
+        EXPECT_EQ(nativeShiftedComparison.payload.exposureTables.lambda,
+                  nativeBaselineComparison.payload.exposureTables.lambda);
+        EXPECT_EQ(std::memcmp(nativeShiftedComparison.payload.scannerTables.epsC.data(),
+                              nativeBaselineComparison.payload.scannerTables.epsC.data(),
+                              nativeBaselineComparison.payload.scannerTables.epsC.size() * sizeof(float)),
+                  0);
     }
 
     TEST(ProductionProfileConsumer, HanatosWindowBroaderValuesReachAcceptedFormula) {
@@ -770,19 +940,36 @@ namespace {
             auto changed = original;
             changed["data"]["hanatos2025_adaptation_window_params"] = {380.0, width, 780.0, 100.0};
             save_film(root, changed);
-            const auto source = JuicerProcess::root().assets().selected_film_profile_for_key("kodak_portra_400");
-            ASSERT_NE(source, nullptr);
-            EXPECT_EQ(source->data.hanatos2025AdaptationWindowParams[1], static_cast<float>(width));
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            const bool built = build_direct_render_state_product(controls, product, diagnostic);
+            Film source(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+            const FjFilmProfileView sourceView = source.view();
+            ASSERT_EQ(sourceView.hanatos_window.count, 4u);
+            EXPECT_EQ(sourceView.hanatos_window.data[1], static_cast<float>(width));
+            FocusedRenderStateBuildProduct nativeComparison;
+            std::string nativeDiagnostic;
+            const bool nativeBuilt = SF_TEMP_BRIDGE_build_direct_product(
+                controls, nativeComparison, nativeDiagnostic);
+            std::optional<PreparedState> prepared;
+            FjPreparedStateView preparedState{};
+            std::string preparedDiagnostic;
+            const bool preparedBuilt = prepared_view(
+                controls, prepared, preparedState, preparedDiagnostic);
+            EXPECT_EQ(preparedBuilt, nativeBuilt);
             if (width == 0.0) {
-                EXPECT_FALSE(built);
-                EXPECT_NE(diagnostic.find("sensitivity"), std::string::npos) << diagnostic;
+                EXPECT_FALSE(preparedBuilt);
+                EXPECT_FALSE(prepared.has_value());
+                EXPECT_NE(preparedDiagnostic.find("sensitivity"), std::string::npos)
+                    << preparedDiagnostic;
+                EXPECT_FALSE(nativeBuilt);
+                EXPECT_NE(nativeDiagnostic.find("sensitivity"), std::string::npos)
+                    << nativeDiagnostic;
             } else {
-                ASSERT_TRUE(built) << diagnostic;
-                EXPECT_TRUE(product.recipe.filmRaw.hanatos.applyWindow);
-                EXPECT_NE(product.recipe.filmRaw.finalSensitivityHash, 0u);
+                ASSERT_TRUE(preparedBuilt) << preparedDiagnostic;
+                EXPECT_EQ(preparedState.input_policy.apply_hanatos_window, 1u);
+                EXPECT_NE(preparedState.film_exposure.sensitivity_hash, 0u);
+                ASSERT_TRUE(nativeBuilt) << nativeDiagnostic;
+                // I7 comparison only: preserve the old native resolved fields.
+                EXPECT_TRUE(nativeComparison.recipe.filmRaw.hanatos.applyWindow);
+                EXPECT_NE(nativeComparison.recipe.filmRaw.finalSensitivityHash, 0u);
             }
         }
     }
@@ -799,27 +986,54 @@ namespace {
             auto changed = original;
             changed["data"]["log_exposure"] = axis;
             save_film(root, changed);
-            const auto selected = JuicerProcess::root().assets().selected_film_profile_for_key("kodak_portra_400");
-            ASSERT_NE(selected, nullptr);
-            ASSERT_EQ(selected->data.logExposure.size(), axis.size());
-            ASSERT_EQ(selected->data.densityCurves.size(), axis.size());
+            // I7 comparison only: retain the old native cache owner's identity.
+            const auto nativeSelected = JuicerProcess::root().assets().selected_film_profile_for_key("kodak_portra_400");
+            ASSERT_NE(nativeSelected, nullptr);
+            Film source(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+            const FjFilmProfileView sourceView = source.view();
+            ASSERT_EQ(sourceView.tables.log_exposure.count, axis.size());
+            ASSERT_EQ(sourceView.tables.density_curves_cmy.count, axis.size() * 3);
             for (std::size_t i = 0; i < axis.size(); ++i) {
-                EXPECT_EQ(selected->data.logExposure[i], static_cast<float>(axis[i].get<double>()));
+                EXPECT_EQ(sourceView.tables.log_exposure.data[i], static_cast<float>(axis[i].get<double>()));
             }
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            if (build_direct_render_state_product(direct_controls(), product, diagnostic)) {
-                EXPECT_EQ(product.recipe.profileRoute.filmProfile, selected);
-                EXPECT_EQ(product.recipe.filmDevelop.normalizedDensityCurves.size(), axis.size());
+            FocusedRenderStateBuildProduct nativeComparison;
+            std::string nativeDiagnostic;
+            const bool nativeBuilt = SF_TEMP_BRIDGE_build_direct_product(
+                direct_controls(), nativeComparison, nativeDiagnostic);
+            std::optional<PreparedState> prepared;
+            FjPreparedStateView preparedState{};
+            std::string preparedDiagnostic;
+            const bool preparedBuilt = prepared_view(
+                direct_controls(), prepared, preparedState, preparedDiagnostic);
+            EXPECT_EQ(preparedBuilt, nativeBuilt);
+            if (preparedBuilt) {
+                EXPECT_EQ(std::string(preparedState.film_profile_key.data,
+                                      preparedState.film_profile_key.count),
+                          "kodak_portra_400");
+                EXPECT_EQ(preparedState.film_profile_asset_version, sourceView.asset_token);
+                EXPECT_EQ(preparedState.film_development.density_rgb.count,
+                          axis.size() * 3);
+                // I7 comparison only: retain native pointer and normalized-row checks.
+                EXPECT_EQ(nativeComparison.recipe.profileRoute.filmProfile, nativeSelected);
+                EXPECT_EQ(nativeComparison.recipe.filmDevelop.normalizedDensityCurves.size(),
+                          axis.size());
             } else {
-                EXPECT_FALSE(diagnostic.empty());
-                EXPECT_NE(diagnostic.find("field="), std::string::npos) << diagnostic;
+                EXPECT_FALSE(prepared.has_value());
+                EXPECT_FALSE(preparedDiagnostic.empty());
+                EXPECT_FALSE(nativeDiagnostic.empty());
+                EXPECT_NE(nativeDiagnostic.find("field="), std::string::npos)
+                    << nativeDiagnostic;
             }
             auto active = direct_controls();
             active.dirCouplers.active = true;
-            if (axis.size() == 1 || std::isinf(selected->data.logExposure.front())) {
-                EXPECT_FALSE(build_direct_render_state_product(active, product, diagnostic));
-                EXPECT_FALSE(diagnostic.empty());
+            if (axis.size() == 1 || std::isinf(sourceView.tables.log_exposure.data[0])) {
+                EXPECT_FALSE(SF_TEMP_BRIDGE_build_direct_product(
+                    active, nativeComparison, nativeDiagnostic));
+                EXPECT_FALSE(nativeDiagnostic.empty());
+                std::optional<PreparedState> activePrepared;
+                EXPECT_FALSE(prepared_view(active, activePrepared, preparedState, preparedDiagnostic));
+                EXPECT_FALSE(activePrepared.has_value());
+                EXPECT_FALSE(preparedDiagnostic.empty());
             }
         }
     }
@@ -831,24 +1045,31 @@ namespace {
         JuicerProcess::root().ensure_bootstrap();
         auto controls = direct_controls();
         controls.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
-        FocusedRenderStateBuildProduct product;
+        // This is a literal native descriptor/hash test: it mutates fixed
+        // profile bytes that no successfully prepared owner can represent.
+        FocusedRenderStateBuildProduct nativeComparison;
         std::string diagnostic;
-        ASSERT_TRUE(build_print_render_state_product(controls, product, diagnostic)) << diagnostic;
-        auto film = std::make_shared<Profiles::FilmProfile>(*product.recipe.profileRoute.filmProfile);
+        ASSERT_TRUE(SF_TEMP_BRIDGE_build_print_product(
+            controls, nativeComparison, diagnostic))
+            << diagnostic;
+        auto film = std::make_shared<Profiles::FilmProfile>(
+            *nativeComparison.recipe.profileRoute.filmProfile);
         film->data.wavelengths.fill(0.0f);
         const std::array<std::uint32_t, 6> special{0, 0x80000000u, 0x7fc00001u, 0xff800123u, 0x7f800000u, 0xff800000u};
         for (std::size_t i = 0; i < special.size(); ++i) {
             film->data.wavelengths[i] = std::bit_cast<float>(special[i]);
         }
-        product.recipe.profileRoute.filmProfile = film;
+        nativeComparison.recipe.profileRoute.filmProfile = film;
         JuicerCuda::PrintResourceDescriptors descriptor;
-        ASSERT_TRUE(JuicerCuda::build_print_resource_descriptors(product.recipe, descriptor, diagnostic)) << diagnostic;
+        ASSERT_TRUE(JuicerCuda::build_print_resource_descriptors(
+            nativeComparison.recipe, descriptor, diagnostic))
+            << diagnostic;
         const auto channel = Hash::hash_float_span_with_nan_mask(&film->data.channelDensity[0][0], 243);
         const auto base = Hash::hash_float_span_with_nan_mask(film->data.baseDensity.data(), 81);
         // Independent fixed byte-stream expectation for these 81 authored labels.
         constexpr std::uint64_t kAuthoredLabelsHash = 18245953401382371285ull;
         EXPECT_EQ(descriptor.filmDensityTables.densityTablesHash, Hash::hash_uint64_values({kAuthoredLabelsHash, channel.valueHash, channel.nanMaskHash, base.valueHash, base.nanMaskHash}));
-        const auto& print = product.recipe.profileRoute.printProfile->data;
+        const auto& print = nativeComparison.recipe.profileRoute.printProfile->data;
         const auto sensitivity = Hash::hash_float_span_with_nan_mask(&print.linearSensitivity[0][0], 243);
         EXPECT_EQ(descriptor.profileTables.sensitivitiesHash, Hash::hash_uint64_values({sensitivity.valueHash, sensitivity.nanMaskHash}));
         EXPECT_EQ(std::bit_cast<std::uint32_t>(film->data.wavelengths[3]), special[3]);

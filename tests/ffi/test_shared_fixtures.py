@@ -4,7 +4,7 @@ import ast
 from copy import deepcopy
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -19,9 +19,169 @@ from effects_frame_probe_contract import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
+PREPARED_STATE_CASE_IDS = (
+    "NegativeDirectHanatos", "NegativeDirectMallett", "NegativeDirectArctic",
+    "NegativePrintHanatos", "NegativePrintMallett", "NegativePrintArctic",
+    "PositiveDirectHanatos", "PositiveDirectMallett", "PositiveDirectArctic",
+    "PositivePrintHanatos", "PositivePrintMallett", "PositivePrintArctic",
+    "DirectIgnoresPrintControls",
+    "PreflashAndNormalizationModes[norm=0,compensate=0]",
+    "PreflashAndNormalizationModes[norm=0,compensate=1]",
+    "PreflashAndNormalizationModes[norm=1,compensate=0]",
+    "PreflashAndNormalizationModes[norm=1,compensate=1]",
+    "GammaAndGrainLayers", "PhysicalDefectsAndWeave", "CameraAndEnlargerOptics",
+    "DirAndCompressionOff", "SignedZeroGlare[+0]", "SignedZeroGlare[-0]",
+    "CorrectionsAndScannerControls[print]", "CorrectionsAndScannerControls[direct]",
+    "EncodingOnlyReusesMediumIdentities[encoded]", "EncodingOnlyReusesMediumIdentities[linear]",
+    "SnapshotIntegerBooleansPreserveNonzeroCasts[direct]",
+    "SnapshotIntegerBooleansPreserveNonzeroCasts[print]",
+    "DisabledFamiliesExcludeUnusedControls", "GrainDebugSuppressesPhysicalEffects",
+)
+
+
+def _is_sha256(value):
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def _is_git_revision(value):
+    return isinstance(value, str) and len(value) == 40 and all(char in "0123456789abcdef" for char in value)
+
+
+def _safe_relative_path(value):
+    if not isinstance(value, str) or not value:
+        return False
+    path = Path(value)
+    return ("\\" not in value and not path.is_absolute() and not PureWindowsPath(value).drive
+            and all(part not in ("", ".", "..") for part in value.split("/"))
+            and all(part not in ("", ".", "..") for part in path.parts))
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def _assert_prepared_projection_identity(self, payload, preset, entry):
+        self.assertEqual(set(payload), {"schema_version", "preset", "producer", "toolchain", "configuration", "inputs", "cases"})
+        self.assertIs(type(payload["schema_version"]), int)
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["preset"], preset)
+        self.assertEqual(payload["producer"], {
+            "authority": "Film-Juicer native composition",
+            "target": "JuicerPreparedStateTests",
+            "manifest_entry": preset,
+        })
+        producer_executable = PureWindowsPath(entry["producer"]["executable"]).name.removesuffix(".exe")
+        self.assertEqual(producer_executable, payload["producer"]["target"])
+        for key in ("toolchain", "configuration", "inputs"):
+            self.assertEqual(payload[key], entry[key], key)
+
+    def _assert_prepared_projection_cases(self, cases):
+        self.assertIs(type(cases), list)
+        self.assertEqual([row["case_id"] for row in cases], list(PREPARED_STATE_CASE_IDS))
+        self.assertEqual(len({row["case_id"] for row in cases}), len(PREPARED_STATE_CASE_IDS))
+        row_keys = {"case_id", "input", "status", "api", "native_code", "diagnostic", "expected", "captured_actual", "backing_relations"}
+        for row in cases:
+            self.assertEqual(set(row), row_keys)
+            self.assertIsInstance(row["input"], dict)
+            self.assertIs(type(row["status"]), int)
+            self.assertEqual(row["status"], 0)
+            self.assertIs(type(row["api"]), int)
+            self.assertEqual(row["api"], 0)
+            self.assertIs(type(row["native_code"]), int)
+            self.assertEqual(row["native_code"], 0)
+            self.assertEqual(row["diagnostic"], "")
+            self.assertIsInstance(row["expected"], dict)
+            self.assertIsInstance(row["captured_actual"], dict)
+            self.assertEqual(row["captured_actual"], row["expected"], row["case_id"])
+            self.assertIsInstance(row["backing_relations"], list)
+
+    def _assert_prepared_projection_bytes(self, payload_bytes, entry):
+        self.assertEqual(len(payload_bytes), entry["bytes"])
+        self.assertEqual(hashlib.sha256(payload_bytes).hexdigest(), entry["sha256"])
+
+    def test_prepared_state_projection_four_complete_native_contexts(self):
+        for path in ("../escape", "/escape", "C:escape", "C:/escape", "nested\\escape"):
+            self.assertFalse(_safe_relative_path(path), path)
+        directory = FIXTURES / "prepared-state-projection"
+        manifest_bytes = (directory / "manifest.json").read_bytes()
+        manifest = json.loads(manifest_bytes)
+        self.assertEqual(set(manifest), {"schema_version", "authority", "source_head", "reference_revision", "source_files", "resource_files", "case_ids", "presets"})
+        self.assertIs(type(manifest["schema_version"]), int)
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(manifest["authority"], "Film-Juicer native composition")
+        self.assertTrue(_is_git_revision(manifest["source_head"]))
+        self.assertTrue(_is_git_revision(manifest["reference_revision"]))
+        self.assertEqual(manifest["case_ids"], list(PREPARED_STATE_CASE_IDS))
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+
+        self.assertIsInstance(manifest["source_files"], dict)
+        self.assertTrue(manifest["source_files"])
+        for path, checksum in manifest["source_files"].items():
+            self.assertTrue(_safe_relative_path(path), path)
+            self.assertTrue(_is_sha256(checksum), path)
+
+        resource_root = Path(__file__).parents[2] / "Resources"
+        self.assertIsInstance(manifest["resource_files"], dict)
+        self.assertTrue(manifest["resource_files"])
+        for relative_path, checksum in manifest["resource_files"].items():
+            with self.subTest(resource=relative_path):
+                self.assertTrue(_safe_relative_path(relative_path), relative_path)
+                self.assertTrue(_is_sha256(checksum), relative_path)
+                resource = resource_root / relative_path
+                self.assertTrue(resource.is_file(), relative_path)
+                self.assertEqual(hashlib.sha256(resource.read_bytes()).hexdigest(), checksum)
+
+        producer_keys = {"executable", "sha256", "build_log", "build_log_sha256", "capture_log", "capture_log_sha256", "preparation"}
+        for preset in PRESETS:
+            with self.subTest(preset=preset):
+                entry = manifest["presets"][preset]
+                self.assertEqual(set(entry), {"file", "bytes", "sha256", "producer", "toolchain", "configuration", "inputs"})
+                self.assertEqual(entry["file"], f"{preset}.json")
+                self.assertIs(type(entry["bytes"]), int)
+                self.assertGreater(entry["bytes"], 0)
+                self.assertTrue(_is_sha256(entry["sha256"]))
+
+                producer = entry["producer"]
+                self.assertEqual(set(producer), producer_keys)
+                for path_key in ("executable", "build_log", "capture_log", "preparation"):
+                    self.assertIsInstance(producer[path_key], str)
+                    self.assertTrue(producer[path_key].strip(), path_key)
+                    self.assertTrue(PureWindowsPath(producer[path_key]).name, path_key)
+                self.assertEqual(PureWindowsPath(producer["preparation"]).name, "result.json")
+                for digest_key in ("sha256", "build_log_sha256", "capture_log_sha256"):
+                    self.assertTrue(_is_sha256(producer[digest_key]), digest_key)
+
+                self.assertEqual(set(entry["toolchain"]), {"cxx", "rust_toolchain", "pointer_bits"})
+                self.assertIsInstance(entry["toolchain"]["cxx"], str)
+                self.assertTrue(entry["toolchain"]["cxx"].strip())
+                self.assertEqual(entry["toolchain"]["rust_toolchain"], "1.98.1")
+                self.assertIs(type(entry["toolchain"]["pointer_bits"]), int)
+                self.assertEqual(entry["toolchain"]["pointer_bits"], 64)
+                build_type = "Debug" if preset.endswith("debug") else "Release"
+                self.assertIs(type(entry["configuration"].get("testing")), bool)
+                self.assertEqual(entry["configuration"], {"build_type": build_type, "testing": True})
+                self.assertEqual(entry["inputs"], {
+                    "resource_directory": f"out/build/{preset}/tests/Resources",
+                    "parameter_type": "FjPreparationParams",
+                })
+
+                payload_bytes = (directory / entry["file"]).read_bytes()
+                self._assert_prepared_projection_bytes(payload_bytes, entry)
+                payload = json.loads(payload_bytes)
+                self._assert_prepared_projection_identity(payload, preset, entry)
+                self._assert_prepared_projection_cases(payload["cases"])
+
+                if preset == PRESETS[0]:
+                    wrong_preset = dict(payload, preset=PRESETS[1])
+                    with self.assertRaises(AssertionError):
+                        self._assert_prepared_projection_identity(wrong_preset, preset, entry)
+                    wrong_hash = dict(entry, sha256="0" * 64)
+                    with self.assertRaises(AssertionError):
+                        self._assert_prepared_projection_bytes(payload_bytes, wrong_hash)
+                    with self.assertRaises(AssertionError):
+                        self._assert_prepared_projection_cases(payload["cases"][:-1])
+                    duplicate = list(payload["cases"])
+                    duplicate[-1] = dict(duplicate[-1], case_id=duplicate[-2]["case_id"])
+                    with self.assertRaises(AssertionError):
+                        self._assert_prepared_projection_cases(duplicate)
+
     def test_effects_frame_exact_native_contexts_and_complete_production_cases(self):
         directory = Path(__file__).parents[1] / "film/effects-frame-fixtures"
         manifest = json.loads((directory / "manifest.json").read_bytes())

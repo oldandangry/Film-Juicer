@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <variant>
 #include <utility>
 
 #include <cuda.h>
@@ -38,6 +39,8 @@
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
 #include "../ffi/juicer_test_api.h"
+#include "../ffi/prepared_product_fixture.h"
+#include "../ffi/prepared_frame_fixture.h"
 #include "ProfileAssets.h"
 #include "ScatterHalation.h"
 #include "spatial_optics_fixture.h"
@@ -1009,6 +1012,63 @@ namespace {
             PendingParamsState::InvalidSnapshotControls{std::move(diagnostic)};
     }
 
+    struct PreparedStateFacts {
+        std::uint32_t route = 0;
+        std::uint64_t recipeHash = 0;
+        std::uint64_t uploadCoreHash = 0;
+        std::uint64_t scannerHash = 0;
+        std::uint64_t filmExposureHash = 0;
+        std::uint64_t printHash = 0;
+        std::uint64_t scatterHalationHash = 0;
+        std::string filmProfileKey;
+        std::uint64_t scannerColorHash = 0;
+    };
+
+    PreparedStateFacts inspect_prepared_state(const PreparedState& owner) {
+        std::array<char, 2048> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        FjPreparedStateView state{};
+        const FjStatus viewed = owner.view(state, error);
+        if (viewed.category != FJ_STATUS_SUCCESS) {
+            throw std::runtime_error(std::string(
+                text.data(), std::min(error.length, text.size())));
+        }
+        const std::string filmProfileKey = state.film_profile_key.count == 0
+                                               ? std::string{}
+                                               : std::string(state.film_profile_key.data,
+                                                             state.film_profile_key.count);
+        return {
+            state.route,
+            state.recipe_hash,
+            state.upload_core_hash,
+            state.scanner_hash,
+            state.film_exposure.hash,
+            state.print_recipe_hash,
+            state.optics.scatter_halation.hash,
+            filmProfileKey,
+            state.scanner_color.hash};
+    }
+
+    bool try_prepare_product(
+        const ParamSnapshot& snapshot,
+        std::optional<PreparedState>& out,
+        std::string& diagnostic) {
+        out.reset();
+        FjAssets* assets = JuicerProcess::root().assets().borrow_rust_assets();
+        if (assets == nullptr) {
+            diagnostic = "prepared product has no process Rust assets owner";
+            return false;
+        }
+        std::array<char, 2048> bytes{};
+        FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+        const FjStatus status = prepare_state(assets, snapshot, out, error);
+        diagnostic.assign(bytes.data(), std::min(error.length, bytes.size()));
+        return status.category == FJ_STATUS_SUCCESS && out.has_value();
+    }
+
+    // SF_TEMP_BRIDGE_NATIVE_PRODUCT_OBSERVATIONS (I5/I7): these legacy
+    // builder/publication observations remain until the Rust publisher has
+    // matching held-state witnesses.
     void run_build_product_rows(Results& results) {
         ScannerOutputRecipe scannerRecipe;
         scannerRecipe.route = Spektrafilm::ScanRoute::NegativePrintScan;
@@ -1033,37 +1093,35 @@ namespace {
             scannerDiagnostic);
 
         const ParamSnapshot direct = direct_snapshot();
-        FocusedRenderStateBuildProduct directProduct;
+        std::optional<PreparedState> directState;
         std::string directDiagnostic;
-        const bool directBuilt = build_direct_render_state_product(
-            direct,
-            directProduct,
-            directDiagnostic);
+        const bool directBuilt = try_prepare_product(direct, directState, directDiagnostic);
+        const auto directFacts = directState
+                                     ? inspect_prepared_state(*directState)
+                                     : PreparedStateFacts{};
         results.record(
             "build-product/direct-complete",
             directBuilt &&
-                !Spektrafilm::scan_route_is_print(
-                    directProduct.recipe.profileRoute.scanRoute) &&
-                directProduct.recipe.hash != 0 &&
-                directProduct.payload.uploadCoreHash != 0 &&
-                directProduct.payload.scannerHash != 0,
+                directFacts.route == FJ_ROUTE_NEGATIVE_DIRECT &&
+                directFacts.recipeHash != 0 &&
+                directFacts.uploadCoreHash != 0 &&
+                directFacts.scannerHash != 0,
             directDiagnostic);
 
         ParamSnapshot print;
-        FocusedRenderStateBuildProduct printProduct;
+        std::optional<PreparedState> printState;
         std::string printDiagnostic;
-        const bool printBuilt = build_print_render_state_product(
-            print,
-            printProduct,
-            printDiagnostic);
+        const bool printBuilt = try_prepare_product(print, printState, printDiagnostic);
+        const auto printFacts = printState
+                                    ? inspect_prepared_state(*printState)
+                                    : PreparedStateFacts{};
         results.record(
             "build-product/print-complete",
             printBuilt &&
-                Spektrafilm::scan_route_is_print(
-                    printProduct.recipe.profileRoute.scanRoute) &&
-                printProduct.recipe.hash != 0 &&
-                printProduct.payload.uploadCoreHash != 0 &&
-                printProduct.payload.scannerHash != 0,
+                printFacts.route == FJ_ROUTE_NEGATIVE_PRINT &&
+                printFacts.recipeHash != 0 &&
+                printFacts.uploadCoreHash != 0 &&
+                printFacts.scannerHash != 0,
             printDiagnostic);
 
         struct GammaBuildCase {
@@ -1085,17 +1143,12 @@ namespace {
                 Spektrafilm::ProfilePolarity::Positive) {
                 gammaSnapshot.filmProfileKey = "fujifilm_provia_100f";
             }
-            FocusedRenderStateBuildProduct gammaProduct;
+            std::optional<PreparedState> gammaState;
             std::string gammaDiagnostic;
-            const bool gammaBuilt = Spektrafilm::scan_route_is_print(testCase.route)
-                                        ? build_print_render_state_product(
-                                              gammaSnapshot,
-                                              gammaProduct,
-                                              gammaDiagnostic)
-                                        : build_direct_render_state_product(
-                                              gammaSnapshot,
-                                              gammaProduct,
-                                              gammaDiagnostic);
+            const bool gammaBuilt = try_prepare_product(
+                gammaSnapshot,
+                gammaState,
+                gammaDiagnostic);
             results.record(
                 testCase.name,
                 gammaBuilt,
@@ -1105,6 +1158,23 @@ namespace {
         ParamSnapshot requested = direct;
         requested.scatterHalationControls = convert_or_throw(
             ScatterHalationRawControls{true, 1.0, 1.0, 1.0, 1.0});
+        std::optional<PreparedState> requestedState;
+        std::string requestedStateDiagnostic;
+        const bool requestedStateBuilt = try_prepare_product(
+            requested,
+            requestedState,
+            requestedStateDiagnostic);
+        const auto requestedFacts = requestedState
+                                        ? inspect_prepared_state(*requestedState)
+                                        : PreparedStateFacts{};
+        results.record(
+            "build-product/requested-halation-complete-unpublished",
+            requestedStateBuilt && requestedFacts.recipeHash != 0 &&
+                requestedFacts.scatterHalationHash != 0,
+            requestedStateDiagnostic);
+
+        // The native product is retained solely as the I5 publication
+        // comparison until InstanceState has a Rust-owned publisher.
         FocusedRenderStateBuildProduct requestedProduct;
         std::string requestedDiagnostic;
         const bool requestedBuilt = build_direct_render_state_product(
@@ -1112,7 +1182,7 @@ namespace {
             requestedProduct,
             requestedDiagnostic);
         results.record(
-            "build-product/requested-halation-complete-unpublished",
+            "SF_TEMP_BRIDGE_NATIVE_PUBLICATION/requested-halation-product",
             requestedBuilt && requestedProduct.recipe.hash != 0 &&
                 requestedProduct.recipe.spatialOptics.scatterHalation.hash != 0,
             requestedDiagnostic);
@@ -1155,16 +1225,16 @@ namespace {
 
         ParamSnapshot missingProfile = direct;
         missingProfile.filmProfileKey = "missing_s07_profile";
-        FocusedRenderStateBuildProduct missingProduct;
+        std::optional<PreparedState> missingPreparedState;
         std::string missingDiagnostic;
-        const bool missingBuilt = build_direct_render_state_product(
+        const bool missingBuilt = try_prepare_product(
             missingProfile,
-            missingProduct,
+            missingPreparedState,
             missingDiagnostic);
-        InstanceState missingState;
-        seed_valid_pending(missingState, missingProfile);
+        InstanceState missingPublicationState;
+        seed_valid_pending(missingPublicationState, missingProfile);
         const PendingRenderAdmissionResult missingAdmission =
-            admit_pending_render_state(missingState);
+            admit_pending_render_state(missingPublicationState);
         results.record(
             "profile-selection/missing-selected-asset-fails-construction",
             !missingBuilt && !missingDiagnostic.empty() &&
@@ -1380,6 +1450,9 @@ namespace {
         std::uint64_t fixedGlareSeed;
     };
 
+    // The legacy builder remains only as an I5/I7 publication comparison;
+    // complete-product identities below come from held Rust state views.
+    // SF_TEMP_BRIDGE_NATIVE_IDENTITY_COMPARISON (I5/I7)
     void run_parameter_identity_pair(
         Results& results,
         std::string_view name,
@@ -1388,45 +1461,61 @@ namespace {
         bool signedZero,
         std::optional<std::array<FreshIdentity, 2>> accepted) {
         const bool printRoute = Spektrafilm::scan_route_is_print(a.scanRoute);
-        FocusedRenderStateBuildProduct freshA;
-        FocusedRenderStateBuildProduct freshB;
+        std::optional<PreparedState> heldA;
+        std::optional<PreparedState> heldB;
         std::string diagnosticA;
         std::string diagnosticB;
-        const bool builtA = printRoute
-                                ? build_print_render_state_product(a, freshA, diagnosticA)
-                                : build_direct_render_state_product(a, freshA, diagnosticA);
-        const bool builtB = printRoute
-                                ? build_print_render_state_product(b, freshB, diagnosticB)
-                                : build_direct_render_state_product(b, freshB, diagnosticB);
+        const bool builtA = try_prepare_product(a, heldA, diagnosticA);
+        const bool builtB = try_prepare_product(b, heldB, diagnosticB);
         if (!builtA || !builtB) {
             results.record(std::string(name) + "/fresh-build", false, diagnosticA + " " + diagnosticB);
             return;
         }
+        const PreparedStateFacts freshA = inspect_prepared_state(*heldA);
+        const PreparedStateFacts freshB = inspect_prepared_state(*heldB);
         std::ostringstream identity;
-        identity << std::hex << "A recipe=" << freshA.recipe.hash
-                 << " filmRaw=" << freshA.recipe.filmRaw.hash
-                 << " printSeedInput=" << freshA.recipe.print.hash
-                 << " B recipe=" << freshB.recipe.hash
-                 << " filmRaw=" << freshB.recipe.filmRaw.hash
-                 << " printSeedInput=" << freshB.recipe.print.hash;
-        const bool freshDiffer = freshA.recipe.hash != freshB.recipe.hash;
+        identity << std::hex << "A recipe=" << freshA.recipeHash
+                 << " filmRaw=" << freshA.filmExposureHash
+                 << " printSeedInput=" << freshA.printHash
+                 << " B recipe=" << freshB.recipeHash
+                 << " filmRaw=" << freshB.filmExposureHash
+                 << " printSeedInput=" << freshB.printHash;
+        const bool freshDiffer = freshA.recipeHash != freshB.recipeHash;
         results.record(std::string(name) + "/fresh-distinct",
                        freshDiffer,
                        identity.str());
-        const auto agrees_with_accepted = [&](const RenderRecipe& recipe,
+        const auto agrees_with_accepted = [&](const PreparedStateFacts& facts,
                                               const FreshIdentity& expected) {
             const std::uint64_t fixedSeed = printRoute
-                                                ? Hash::hash_uint64_values({recipe.print.hash, 37, 5, 9})
+                                                ? Hash::hash_uint64_values({facts.printHash, 37, 5, 9})
                                                 : 0;
             return RenderAssertions::identities_match(
-                {recipe.hash, recipe.filmRaw.hash, recipe.print.hash, fixedSeed},
+                {facts.recipeHash, facts.filmExposureHash, facts.printHash, fixedSeed},
                 {expected.recipe, expected.filmRaw, expected.printSeedInput, expected.fixedGlareSeed});
         };
         if (accepted) {
             results.record(std::string(name) + "/accepted-rust-identities",
-                           agrees_with_accepted(freshA.recipe, (*accepted)[0]) &&
-                               agrees_with_accepted(freshB.recipe, (*accepted)[1]),
+                           agrees_with_accepted(freshA, (*accepted)[0]) &&
+                               agrees_with_accepted(freshB, (*accepted)[1]),
                            identity.str());
+        }
+
+        FocusedRenderStateBuildProduct nativeComparisonA;
+        FocusedRenderStateBuildProduct nativeComparisonB;
+        std::string nativeDiagnosticA;
+        std::string nativeDiagnosticB;
+        const bool nativeBuiltA = printRoute
+                                      ? build_print_render_state_product(a, nativeComparisonA, nativeDiagnosticA)
+                                      : build_direct_render_state_product(a, nativeComparisonA, nativeDiagnosticA);
+        const bool nativeBuiltB = printRoute
+                                      ? build_print_render_state_product(b, nativeComparisonB, nativeDiagnosticB)
+                                      : build_direct_render_state_product(b, nativeComparisonB, nativeDiagnosticB);
+        if (!nativeBuiltA || !nativeBuiltB) {
+            results.record(
+                std::string(name) + "/SF_TEMP_BRIDGE_NATIVE_FRESH_BUILD",
+                false,
+                nativeDiagnosticA + " " + nativeDiagnosticB);
+            return;
         }
         for (bool reverse : {false, true}) {
             InstanceState state;
@@ -1442,7 +1531,7 @@ namespace {
                                              : (destination.directState
                                                     ? &destination.directState->recipe
                                                     : nullptr);
-            const RenderRecipe& expected = reverse ? freshA.recipe : freshB.recipe;
+            const RenderRecipe& expected = reverse ? nativeComparisonA.recipe : nativeComparisonB.recipe;
             const std::uint64_t firstBuild = printRoute
                                                  ? (first.printState ? first.printState->buildCounter : 0)
                                                  : (first.directState ? first.directState->buildCounter : 0);
@@ -1466,6 +1555,9 @@ namespace {
         }
     }
 
+    // SF_TEMP_BRIDGE_NATIVE_SIGNED_IDENTITY_COMPARISON (I5/I7): preserve the
+    // native product and publication identity observations until their Rust
+    // publisher witnesses are present.
     void run_parameter_identity_rows(Results& results) {
         std::ifstream fixture(JUICER_PARAMETER_IDENTITY_PATH);
         if (!fixture) {
@@ -1624,24 +1716,27 @@ namespace {
             signCase.set(positive, 0.0);
             ParamSnapshot negative = positive;
             signCase.set(negative, -0.0);
-            FocusedRenderStateBuildProduct freshPositive;
-            FocusedRenderStateBuildProduct freshNegative;
+            std::optional<PreparedState> heldPositive;
+            std::optional<PreparedState> heldNegative;
             std::string positiveDiagnostic;
             std::string negativeDiagnostic;
-            const bool printRoute = signCase.setup == Setup::Print;
-            const bool positiveBuilt = printRoute
-                                           ? build_print_render_state_product(positive, freshPositive, positiveDiagnostic)
-                                           : build_direct_render_state_product(positive, freshPositive, positiveDiagnostic);
-            const bool negativeBuilt = printRoute
-                                           ? build_print_render_state_product(negative, freshNegative, negativeDiagnostic)
-                                           : build_direct_render_state_product(negative, freshNegative, negativeDiagnostic);
+            const bool positiveBuilt = try_prepare_product(
+                positive,
+                heldPositive,
+                positiveDiagnostic);
+            const bool negativeBuilt = try_prepare_product(
+                negative,
+                heldNegative,
+                negativeDiagnostic);
             const std::string name = std::string("identity/sign/") + signCase.name;
             if (!positiveBuilt || !negativeBuilt) {
                 positiveDiagnostic.append(" ").append(negativeDiagnostic);
                 results.record(name + "/fresh-build", false, positiveDiagnostic);
                 continue;
             }
-            const bool recipeDiffers = freshPositive.recipe.hash != freshNegative.recipe.hash;
+            const PreparedStateFacts positiveFacts = inspect_prepared_state(*heldPositive);
+            const PreparedStateFacts negativeFacts = inspect_prepared_state(*heldNegative);
+            const bool recipeDiffers = positiveFacts.recipeHash != negativeFacts.recipeHash;
             const bool keyDiffers = hash_params(positive) != hash_params(negative);
             results.record(name + "/key-follows-recipe", recipeDiffers == keyDiffers, std::string("recipeDiffers=") + (recipeDiffers ? "1" : "0") + " keyDiffers=" + (keyDiffers ? "1" : "0"));
             if (recipeDiffers) {
@@ -1725,35 +1820,11 @@ namespace {
     }
 
     struct PreparedInputs {
-        FocusedRenderStateBuildProduct product;
-        Scanner::ScannerSpectralLutDescriptor scannerDescriptor{};
+        std::optional<PreparedState> state;
+        JuicerCudaTest::PreparedFrameFixture::FrameFacts frameFacts{};
         std::optional<ScatterHalationFrameDescriptor> scatterDescriptor;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
-
-        JuicerProcess::Root::CudaFramePreparationRequest request(
-            ScatterHalationValidation::ImageExtent extent) const {
-            JuicerProcess::Root::CudaFramePreparationRequest value{};
-            value.recipe = &product.recipe;
-            value.exposureTables = &product.payload.exposureTables;
-            value.filmRawConfig = &product.payload.filmRawConfig;
-            value.filmTcLut = product.payload.filmTcLut
-                                  ? &*product.payload.filmTcLut
-                                  : nullptr;
-            value.printMainIlluminant = product.payload.printMainIlluminant
-                                            ? &*product.payload.printMainIlluminant
-                                            : nullptr;
-            value.scannerTables = &product.payload.scannerTables;
-            value.scannerColor = &product.payload.scannerColor;
-            value.scannerLutDescriptor = &scannerDescriptor;
-            value.outputBoundaryTable = product.payload.outputBoundaryTable.get();
-            value.diffusionFrameSetDescriptor =
-                diffusionFrameSet ? &*diffusionFrameSet : nullptr;
-            value.scatterHalationDescriptor =
-                scatterDescriptor ? &*scatterDescriptor : nullptr;
-            value.requestedWidth = extent.width;
-            value.requestedHeight = extent.height;
-            return value;
-        }
+        std::optional<bool> expectedScatterDescriptor;
     };
 
     bool initialize_route_inputs(
@@ -1761,8 +1832,7 @@ namespace {
         const ScatterHalationControls& scatterHalationControls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
         float pixelSizeUm,
-        int width,
-        int height,
+        ScatterHalationValidation::ImageExtent extent,
         PreparedInputs& out,
         std::string& diagnostic) {
         out = PreparedInputs{};
@@ -1775,59 +1845,19 @@ namespace {
             Spektrafilm::ProfilePolarity::Positive) {
             snapshot.filmProfileKey = "fujifilm_provia_100f";
         }
-        const bool printRoute = Spektrafilm::scan_route_is_print(route);
-        const bool productBuilt =
-            printRoute
-                ? build_print_render_state_product(
-                      snapshot,
-                      out.product,
-                      diagnostic)
-                : build_direct_render_state_product(
-                      snapshot,
-                      out.product,
-                      diagnostic);
-        if (!productBuilt) {
+        try {
+            out.state.emplace(JuicerTestSupport::prepare_product(snapshot));
+        } catch (const std::exception& error) {
+            diagnostic = error.what();
             return false;
         }
-        if (!JuicerTestSupport::prepare_halation_frame(
-                out.product.recipe.spatialOptics.scatterHalation,
-                pixelSizeUm,
-                out.scatterDescriptor,
-                diagnostic)) {
-            return false;
-        }
-        const Scanner::DirectScannerSpectralLutDescriptorInput directInput{
-            &out.product.recipe.profileRoute,
-            &out.product.recipe.densityBounds,
-            &out.product.recipe.scannerOutput};
-        const Scanner::PrintScannerSpectralLutDescriptorInput printInput{
-            &out.product.recipe.profileRoute,
-            &out.product.recipe.densityBounds,
-            &out.product.recipe.scannerOutput};
-        const bool scannerBuilt =
-            printRoute
-                ? Scanner::build_print_scanner_spectral_lut_descriptor(
-                      printInput,
-                      out.scannerDescriptor,
-                      diagnostic)
-                : Scanner::build_direct_scanner_spectral_lut_descriptor(
-                      directInput,
-                      out.scannerDescriptor,
-                      diagnostic);
-        if (!scannerBuilt) {
-            return false;
-        }
-        if (cameraDiffusion.active &&
-            !JuicerTestSupport::prepare_diffusion_frame(
-                out.product.recipe.spatialOptics,
-                route,
-                static_cast<double>(pixelSizeUm),
-                Spektrafilm::DiffusionFrameDomain{0, 0, width, height},
-                out.diffusionFrameSet,
-                diagnostic)) {
-            return false;
-        }
-        return !cameraDiffusion.active || out.diffusionFrameSet.has_value();
+        out.frameFacts.renderExtent = {0, 0, extent.width, extent.height};
+        out.frameFacts.fullFrameExtent = out.frameFacts.renderExtent;
+        out.frameFacts.pixelDefinition = out.frameFacts.renderExtent;
+        out.frameFacts.filmFormatLongEdgeMm = snapshot.cameraFilmFormatLongEdgeMm;
+        out.frameFacts.pixelSizeUm = pixelSizeUm;
+        out.frameFacts.frameRate = 24.0;
+        return true;
     }
 
     bool initialize_prepared_inputs(
@@ -1852,13 +1882,79 @@ namespace {
                 controls,
                 cameraControls,
                 10.0f,
-                width,
-                height,
+                {width, height},
                 out,
                 diagnostic)) {
             return false;
         }
-        return out.scatterDescriptor.has_value() == scatterHalation;
+        out.expectedScatterDescriptor = scatterHalation;
+        return true;
+    }
+
+    using FrameDescriptorOverride = std::variant<
+        std::monostate,
+        const ScatterHalationFrameDescriptor*,
+        const Spektrafilm::DiffusionFrameSetDescriptor*>;
+
+    struct RootFrameCall {
+        JuicerProcess::Root* root = nullptr;
+        PreparedInputs* inputs = nullptr;
+        const JuicerCuda::ResourceManager::DeviceContextKey* contextKey = nullptr;
+        JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
+        ScatterHalationValidation::ImageExtent requestedExtent{};
+        void* stream = nullptr;
+        JuicerCuda::Failure* failure = nullptr;
+        std::uint64_t expectedScatterHash = 0;
+        const nlohmann::json* expectedScatterDescriptor = nullptr;
+        FrameDescriptorOverride descriptorOverride;
+        bool validationPassed = true;
+        JuicerProcess::Root::PreparedCudaFrame frame;
+    };
+
+    bool prepare_root_frame(void* user,
+                            const JuicerCudaTest::PreparedFrameFixture::Inputs& prepared,
+                            std::string& diagnostic) {
+        auto& call = *static_cast<RootFrameCall*>(user);
+        call.inputs->scatterDescriptor = prepared.descriptors.halation;
+        call.inputs->diffusionFrameSet = prepared.descriptors.diffusion;
+        if (call.inputs->expectedScatterDescriptor &&
+            call.inputs->scatterDescriptor.has_value() !=
+                *call.inputs->expectedScatterDescriptor) {
+            diagnostic = "prepared scatter descriptor activation mismatch";
+            call.validationPassed = false;
+            return true;
+        }
+        if (call.expectedScatterHash != 0 &&
+            (!call.inputs->scatterDescriptor ||
+             call.inputs->scatterDescriptor->recipeHash != call.expectedScatterHash)) {
+            diagnostic = "captured route descriptor identity mismatch";
+            call.validationPassed = false;
+            return true;
+        }
+        if (call.expectedScatterDescriptor &&
+            !JuicerTestSupport::matches_halation_frame(
+                call.inputs->scatterDescriptor,
+                *call.expectedScatterDescriptor)) {
+            call.validationPassed = false;
+            return true;
+        }
+        auto preparation = prepared.preparation;
+        preparation.requestedWidth = call.requestedExtent.width;
+        preparation.requestedHeight = call.requestedExtent.height;
+        if (std::holds_alternative<const ScatterHalationFrameDescriptor*>(call.descriptorOverride)) {
+            preparation.scatterHalationDescriptor = std::get<const ScatterHalationFrameDescriptor*>(call.descriptorOverride);
+        } else if (std::holds_alternative<const Spektrafilm::DiffusionFrameSetDescriptor*>(call.descriptorOverride)) {
+            preparation.diffusionFrameSetDescriptor = std::get<const Spektrafilm::DiffusionFrameSetDescriptor*>(call.descriptorOverride);
+        }
+        call.frame = call.root->prepare_cuda_frame(
+            *call.contextKey,
+            call.snapshot,
+            preparation,
+            {},
+            call.stream,
+            *call.failure,
+            prepared.hostPreparation);
+        return true;
     }
 
     class CudaPreparedFixture final {
@@ -1920,18 +2016,66 @@ namespace {
         }
 
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot(
-            const PreparedInputs& inputs) {
+            const PreparedState& owner) {
+            std::array<char, 2048> text{};
+            FjErrorBuffer error{text.data(), text.size(), 0};
+            FjPreparedStateView state{};
+            const FjStatus viewed = owner.view(state, error);
+            if (viewed.category != FJ_STATUS_SUCCESS) {
+                throw std::runtime_error(std::string(
+                    text.data(), std::min(error.length, text.size())));
+            }
             JuicerCuda::ResourceManager::SubmissionSnapshot value{};
             value.instanceToken.value = _instanceToken;
             value.frameToken.value = _nextIdentity;
             value.snapshotId = _nextIdentity++;
             value.deviceContextKey = _contextKey;
             value.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-                inputs.product.payload.uploadCoreHash,
-                inputs.product.recipe.dirCouplers.hash,
-                inputs.product.payload.scannerHash,
+                state.upload_core_hash,
+                state.dir_recipe.hash,
+                state.scanner_hash,
                 0);
             return value;
+        }
+
+        JuicerProcess::Root::PreparedCudaFrame prepare_frame(
+            PreparedInputs& inputs,
+            ScatterHalationValidation::ImageExtent requestedExtent,
+            void* stream,
+            JuicerCuda::Failure& failure,
+            std::uint64_t expectedScatterHash = 0,
+            const nlohmann::json* expectedScatterDescriptor = nullptr,
+            FrameDescriptorOverride descriptorOverride = {}) {
+            if (!inputs.state) {
+                throw std::runtime_error("prepared frame has no retained state");
+            }
+            RootFrameCall call{
+                &JuicerProcess::root(),
+                &inputs,
+                &_contextKey,
+                snapshot(*inputs.state),
+                requestedExtent,
+                stream,
+                &failure,
+                expectedScatterHash,
+                expectedScatterDescriptor,
+                descriptorOverride,
+                true,
+                {}};
+            std::string diagnostic;
+            if (!JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
+                    *inputs.state,
+                    inputs.frameFacts,
+                    &call,
+                    &prepare_root_frame,
+                    diagnostic)) {
+                throw std::runtime_error(diagnostic);
+            }
+            if (!call.validationPassed) {
+                failure.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+                failure.diagnostic = diagnostic;
+            }
+            return std::move(call.frame);
         }
 
     private:
@@ -2150,14 +2294,7 @@ namespace {
                 diagnostic.diagnostic)) {
             throw std::runtime_error(diagnostic.diagnostic);
         }
-        auto zeroRequest = zeroInputs.request({kWidth, kHeight});
-        auto zeroFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(zeroInputs),
-            zeroRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto zeroFrame = fixture.prepare_frame(zeroInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const auto zeroView = zeroFrame.scatter_halation_resources();
         results.record(
             "prepared/zero-no-descriptor",
@@ -2184,14 +2321,7 @@ namespace {
                 diagnostic.diagnostic)) {
             throw std::runtime_error(diagnostic.diagnostic);
         }
-        auto dedicatedRequest = dedicatedInputs.request({kWidth, kHeight});
-        auto dedicatedFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            dedicatedRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto dedicatedFrame = fixture.prepare_frame(dedicatedInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const auto dedicatedView = dedicatedFrame.scatter_halation_resources();
         const bool dedicatedOffsets =
             dedicatedView.descriptor && dedicatedView.filterTemp &&
@@ -2218,8 +2348,9 @@ namespace {
             "prepared/dedicated-carrier",
             dedicatedFrame.active() &&
                 dedicatedView.descriptor &&
+                dedicatedInputs.scatterDescriptor &&
                 dedicatedView.descriptor->recipeHash ==
-                    dedicatedInputs.product.recipe.spatialOptics.scatterHalation.hash &&
+                    dedicatedInputs.scatterDescriptor->recipeHash &&
                 dedicatedView.carrierSource ==
                     JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes &&
                 dedicatedView.fullFrameWidth == kWidth &&
@@ -2249,14 +2380,7 @@ namespace {
                 diagnostic.diagnostic)) {
             throw std::runtime_error(diagnostic.diagnostic);
         }
-        auto cameraRequest = cameraInputs.request({kWidth, kHeight});
-        auto cameraFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(cameraInputs),
-            cameraRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto cameraFrame = fixture.prepare_frame(cameraInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const auto cameraView = cameraFrame.scatter_halation_resources();
         const auto diffusionView = cameraFrame.diffusion_resources();
         results.record(
@@ -2283,21 +2407,9 @@ namespace {
                 !cameraFrame.diffusion_resources().active,
             terminalDiagnostic.diagnostic);
 
-        auto cameraOverlapFirst = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(cameraInputs),
-            cameraRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto cameraOverlapFirst = fixture.prepare_frame(cameraInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const std::string cameraOverlapFirstDiagnostic = diagnostic.diagnostic;
-        auto cameraOverlapSecond = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(cameraInputs),
-            cameraRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto cameraOverlapSecond = fixture.prepare_frame(cameraInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const std::string cameraOverlapSecondDiagnostic = diagnostic.diagnostic;
         const auto cameraOverlapFirstView =
             cameraOverlapFirst.scatter_halation_resources();
@@ -2324,16 +2436,14 @@ namespace {
             "prepared/camera-overlap-finish-cleanup",
             cameraOverlapFinished,
             terminalDiagnostic.diagnostic);
-
-        auto absentRequest = dedicatedInputs.request({kWidth, kHeight});
-        absentRequest.scatterHalationDescriptor = nullptr;
-        auto absentFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            absentRequest,
-            {},
+        auto absentFrame = fixture.prepare_frame(
+            dedicatedInputs,
+            {kWidth, kHeight},
             fixture.stream_opaque(),
-            diagnostic);
+            diagnostic,
+            0,
+            nullptr,
+            static_cast<const ScatterHalationFrameDescriptor*>(nullptr));
         results.record(
             "prepared/nonzero-recipe-absent-descriptor",
             !absentFrame.active() &&
@@ -2341,17 +2451,14 @@ namespace {
                 contains_text(diagnostic.diagnostic, "field=descriptor") &&
                 absentFrame.scatter_halation_resources().descriptor == nullptr,
             diagnostic.diagnostic);
-
-        auto presentForZeroRequest = zeroInputs.request({kWidth, kHeight});
-        presentForZeroRequest.scatterHalationDescriptor =
-            &*dedicatedInputs.scatterDescriptor;
-        auto presentForZeroFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(zeroInputs),
-            presentForZeroRequest,
-            {},
+        auto presentForZeroFrame = fixture.prepare_frame(
+            zeroInputs,
+            {kWidth, kHeight},
             fixture.stream_opaque(),
-            diagnostic);
+            diagnostic,
+            0,
+            nullptr,
+            &*dedicatedInputs.scatterDescriptor);
         results.record(
             "prepared/zero-recipe-present-descriptor",
             !presentForZeroFrame.active() &&
@@ -2363,57 +2470,31 @@ namespace {
 
         auto mismatched = *dedicatedInputs.scatterDescriptor;
         ++mismatched.recipeHash;
-        auto mismatchRequest = dedicatedInputs.request({kWidth, kHeight});
-        mismatchRequest.scatterHalationDescriptor = &mismatched;
-        auto mismatchFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            mismatchRequest,
-            {},
+        auto mismatchFrame = fixture.prepare_frame(
+            dedicatedInputs,
+            {kWidth, kHeight},
             fixture.stream_opaque(),
-            diagnostic);
+            diagnostic,
+            0,
+            nullptr,
+            &mismatched);
         results.record(
             "prepared/hash-mismatch",
             !mismatchFrame.active() &&
                 contains_text(diagnostic.diagnostic, "field=recipe_hash") &&
                 mismatchFrame.scatter_halation_resources().descriptor == nullptr,
             diagnostic.diagnostic);
-
-        auto zeroExtentRequest = dedicatedInputs.request({0, kHeight});
-        auto zeroExtentFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            zeroExtentRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto zeroExtentFrame = fixture.prepare_frame(dedicatedInputs, {0, kHeight}, fixture.stream_opaque(), diagnostic);
         results.record(
             "prepared/zero-extent",
             !zeroExtentFrame.active() && contains_text(diagnostic.diagnostic, "field=extent"),
             diagnostic.diagnostic);
-        auto negativeExtentRequest = dedicatedInputs.request({-1, kHeight});
-        auto negativeExtentFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            negativeExtentRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto negativeExtentFrame = fixture.prepare_frame(dedicatedInputs, {-1, kHeight}, fixture.stream_opaque(), diagnostic);
         results.record(
             "prepared/negative-extent",
             !negativeExtentFrame.active() && contains_text(diagnostic.diagnostic, "field=extent"),
             diagnostic.diagnostic);
-
-        auto overflowRequest = dedicatedInputs.request(
-            {std::numeric_limits<int>::max(),
-             std::numeric_limits<int>::max()});
-        auto overflowFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            overflowRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto overflowFrame = fixture.prepare_frame(dedicatedInputs, {std::numeric_limits<int>::max(), std::numeric_limits<int>::max()}, fixture.stream_opaque(), diagnostic);
         results.record(
             "prepared/overflow",
             !overflowFrame.active() &&
@@ -2426,15 +2507,14 @@ namespace {
         auto incompatibleFrameSet = *cameraInputs.diffusionFrameSet;
         incompatibleFrameSet.camera->stage =
             Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear;
-        auto incompatibleRequest = cameraInputs.request({kWidth, kHeight});
-        incompatibleRequest.diffusionFrameSetDescriptor = &incompatibleFrameSet;
-        auto incompatibleFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(cameraInputs),
-            incompatibleRequest,
-            {},
+        auto incompatibleFrame = fixture.prepare_frame(
+            cameraInputs,
+            {kWidth, kHeight},
             fixture.stream_opaque(),
-            diagnostic);
+            diagnostic,
+            0,
+            nullptr,
+            &incompatibleFrameSet);
         results.record(
             "prepared/incompatible-carrier-admission",
             !incompatibleFrame.active() &&
@@ -2443,20 +2523,8 @@ namespace {
                 contains_text(diagnostic.diagnostic, "bytes_admitted_before_failure=0"),
             diagnostic.diagnostic);
 
-        auto overlapFirst = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            dedicatedRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
-        auto overlapSecond = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            dedicatedRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto overlapFirst = fixture.prepare_frame(dedicatedInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
+        auto overlapSecond = fixture.prepare_frame(dedicatedInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const auto overlapFirstView = overlapFirst.scatter_halation_resources();
         const auto overlapSecondView = overlapSecond.scatter_halation_resources();
         const bool overlapNonalias =
@@ -2484,13 +2552,7 @@ namespace {
             overlapFinished,
             terminalDiagnostic.diagnostic);
 
-        auto nullStreamFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            dedicatedRequest,
-            {},
-            nullptr,
-            diagnostic);
+        auto nullStreamFrame = fixture.prepare_frame(dedicatedInputs, {kWidth, kHeight}, nullptr, diagnostic);
         terminalDiagnostic = {};
         const bool nullStreamFinished =
             nullStreamFrame.active() &&
@@ -2506,24 +2568,12 @@ namespace {
             cudaStreamCreateWithFlags(&secondStream, cudaStreamNonBlocking);
         bool sequentialStreamsFinished = secondStreamStatus == cudaSuccess;
         if (sequentialStreamsFinished) {
-            auto firstStreamFrame = root.prepare_cuda_frame(
-                fixture.context_key(),
-                fixture.snapshot(dedicatedInputs),
-                dedicatedRequest,
-                {},
-                fixture.stream_opaque(),
-                diagnostic);
+            auto firstStreamFrame = fixture.prepare_frame(dedicatedInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
             sequentialStreamsFinished =
                 firstStreamFrame.active() &&
                 firstStreamFrame.finish(fixture.stream_opaque(), terminalDiagnostic);
             if (sequentialStreamsFinished) {
-                auto secondStreamFrame = root.prepare_cuda_frame(
-                    fixture.context_key(),
-                    fixture.snapshot(dedicatedInputs),
-                    dedicatedRequest,
-                    {},
-                    secondStream,
-                    diagnostic);
+                auto secondStreamFrame = fixture.prepare_frame(dedicatedInputs, {kWidth, kHeight}, secondStream, diagnostic);
                 sequentialStreamsFinished =
                     secondStreamFrame.active() &&
                     secondStreamFrame.finish(secondStream, terminalDiagnostic) &&
@@ -2538,13 +2588,7 @@ namespace {
             sequentialStreamsFinished ? "both streams finished in one exact context"
                                       : terminalDiagnostic.diagnostic);
 
-        auto abortFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            dedicatedRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto abortFrame = fixture.prepare_frame(dedicatedInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const bool abortWasActive = abortFrame.active();
         abortFrame.abort();
         terminalDiagnostic = {};
@@ -2554,15 +2598,7 @@ namespace {
                 abortFrame.scatter_halation_resources().descriptor == nullptr &&
                 fixture.synchronize(terminalDiagnostic.diagnostic),
             terminalDiagnostic.diagnostic);
-
-        auto dependentRequest = dedicatedInputs.request({kWidth, kHeight});
-        auto dependentFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            dependentRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto dependentFrame = fixture.prepare_frame(dedicatedInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const std::string namedDependentFailure =
             "NamedDependentFailure stage=post_preparation_validation";
         const bool dependentWasActive = dependentFrame.active();
@@ -2586,17 +2622,10 @@ namespace {
                     diagnostic.diagnostic)) {
                 throw std::runtime_error(diagnostic.diagnostic);
             }
-            auto pendingUploadRequest =
-                pendingUploadInputs->request({kWidth, kHeight});
+            const auto pendingUploadFacts = inspect_prepared_state(*pendingUploadInputs->state);
             const std::string expectedRetainedProfileKey =
-                pendingUploadInputs->product.recipe.profileRoute.filmProfileKey;
-            auto pendingUploadFrame = root.prepare_cuda_frame(
-                fixture.context_key(),
-                fixture.snapshot(*pendingUploadInputs),
-                pendingUploadRequest,
-                {},
-                fixture.stream_opaque(),
-                diagnostic);
+                pendingUploadFacts.filmProfileKey;
+            auto pendingUploadFrame = fixture.prepare_frame(*pendingUploadInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
             auto finalCpuBorrow =
                 pendingUploadFrame.focused_resources();
             const std::uint64_t borrowedScannerColorHash =
@@ -2650,7 +2679,7 @@ namespace {
                 "prepared/last-legal-cpu-borrow",
                 finalCpuBorrow.active && borrowedScannerColorHash != 0 &&
                     borrowedScannerColorHash ==
-                        pendingUploadInputs->product.payload.scannerColor.hash,
+                        pendingUploadFacts.scannerColorHash,
                 "focused CPU route objects are borrowed before prepared-frame finish");
             results.record(
                 "prepared/native-owner-ledger-before-finish",
@@ -2668,7 +2697,6 @@ namespace {
                 terminalDiagnostic);
             finalCpuBorrow = {};
             mutablePreparedView = {};
-            pendingUploadRequest = {};
             pendingUploadInputs.reset();
             const cudaError_t postExpiryUploadQuery =
                 outstandingUpload.query();
@@ -2805,13 +2833,7 @@ namespace {
             idleRetired,
             terminalDiagnostic.diagnostic);
 
-        auto resetFrame = root.prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(dedicatedInputs),
-            dedicatedRequest,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto resetFrame = fixture.prepare_frame(dedicatedInputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         terminalDiagnostic = {};
         const bool resetReady =
             resetFrame.active() &&
@@ -2839,7 +2861,7 @@ namespace {
         }
         auto& root = JuicerProcess::root();
         {
-            auto frame = root.prepare_cuda_frame(fixture.context_key(), fixture.snapshot(inputs), inputs.request({32, 24}), {}, fixture.stream_opaque(), diagnostic);
+            auto frame = fixture.prepare_frame(inputs, {32, 24}, fixture.stream_opaque(), diagnostic);
             if (!frame.active() || !frame.record_use(fixture.stream_opaque(), diagnostic) ||
                 !frame.finish(fixture.stream_opaque(), diagnostic) || !fixture.synchronize(diagnostic.diagnostic)) {
                 throw std::runtime_error(diagnostic.diagnostic);
@@ -2963,8 +2985,7 @@ namespace {
                 controls,
                 noDiffusion,
                 10.0f,
-                kWidth,
-                kHeight,
+                {kWidth, kHeight},
                 inputs,
                 diagnostic.diagnostic);
             const auto frozen = std::find_if(
@@ -2977,19 +2998,16 @@ namespace {
                 });
             bool passed = initialized &&
                           frozen != captured.at("products").end() &&
-                          JuicerTestSupport::matches_halation_frame(
-                              inputs.scatterDescriptor, frozen->at("descriptor")) &&
-                          inputs.product.recipe.profileRoute.scanRoute ==
-                              metadata.route;
+                          inspect_prepared_state(*inputs.state).route ==
+                              static_cast<std::uint32_t>(metadata.route);
             if (passed) {
-                auto request = inputs.request({kWidth, kHeight});
-                auto frame = JuicerProcess::root().prepare_cuda_frame(
-                    fixture.context_key(),
-                    fixture.snapshot(inputs),
-                    request,
-                    {},
+                auto frame = fixture.prepare_frame(
+                    inputs,
+                    {kWidth, kHeight},
                     fixture.stream_opaque(),
-                    diagnostic);
+                    diagnostic,
+                    frozen->at("descriptor").at("recipe_hash").get<std::uint64_t>(),
+                    &frozen->at("descriptor"));
                 const auto view = frame.scatter_halation_resources();
                 passed = frame.active() && view.descriptor &&
                          JuicerTestSupport::matches_halation_frame(
@@ -3035,8 +3053,7 @@ namespace {
                 zeroControls,
                 noDiffusion,
                 10.0f,
-                kWidth,
-                kHeight,
+                {kWidth, kHeight},
                 inputs,
                 diagnostic.diagnostic);
             if (!initialized) {
@@ -3047,18 +3064,12 @@ namespace {
                     diagnostic.diagnostic);
                 continue;
             }
-            auto request = inputs.request({kWidth, kHeight});
-            auto frame = JuicerProcess::root().prepare_cuda_frame(
-                fixture.context_key(),
-                fixture.snapshot(inputs),
-                request,
-                {},
-                fixture.stream_opaque(),
-                diagnostic);
+            auto frame = fixture.prepare_frame(
+                inputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
             const auto view = frame.scatter_halation_resources();
             const auto workspace = frame.workspace_lease();
             bool passed =
-                inputs.product.recipe.spatialOptics.scatterHalation.hash == 0 &&
+                inspect_prepared_state(*inputs.state).scatterHalationHash == 0 &&
                 !inputs.scatterDescriptor && frame.active() &&
                 !workspace.active() && !view.descriptor &&
                 !view.filterTemp && !view.weightedAccumulation &&
@@ -3097,14 +3108,8 @@ namespace {
                 diagnostic.diagnostic)) {
             throw std::runtime_error(diagnostic.diagnostic);
         }
-        auto request = inputs.request({kWidth, kHeight});
-        auto failedFrame = JuicerProcess::root().prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(inputs),
-            request,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto failedFrame = fixture.prepare_frame(
+            inputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         auto failedView = failedFrame.scatter_halation_resources();
         failedView.filterTemp = nullptr;
         const auto failedLaunch = JuicerCuda::launch_scatter_halation(
@@ -3120,13 +3125,8 @@ namespace {
                 !failedFrame.scatter_halation_resources().descriptor,
             "ordinary prepared view binding failure retires through abort");
 
-        auto enqueuedFrame = JuicerProcess::root().prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(inputs),
-            request,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto enqueuedFrame = fixture.prepare_frame(
+            inputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const auto enqueuedView = enqueuedFrame.scatter_halation_resources();
         const std::size_t carrierBytes =
             static_cast<std::size_t>(kWidth) * static_cast<std::size_t>(kHeight) * sizeof(float);
@@ -3151,13 +3151,8 @@ namespace {
             postEnqueueAbort,
             diagnostic.diagnostic);
 
-        auto transitionFrame = JuicerProcess::root().prepare_cuda_frame(
-            fixture.context_key(),
-            fixture.snapshot(inputs),
-            request,
-            {},
-            fixture.stream_opaque(),
-            diagnostic);
+        auto transitionFrame = fixture.prepare_frame(
+            inputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
         const auto transitionView = transitionFrame.scatter_halation_resources();
         auto* const carrierR = transitionView.currentCarrier.redSensitive;
         bool transitioned =
@@ -3213,11 +3208,68 @@ namespace {
 namespace ScatterHalationValidation {
 
     struct PreparedRouteInputs::Impl {
-        FocusedRenderStateBuildProduct product;
-        Scanner::ScannerSpectralLutDescriptor scannerDescriptor{};
+        std::optional<PreparedState> state;
+        JuicerCudaTest::PreparedFrameFixture::FrameFacts frameFacts{};
         std::optional<ScatterHalationFrameDescriptor> scatterDescriptor;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
+        bool requiresCameraDiffusion = false;
     };
+
+    namespace {
+        struct PreparedRouteFrameCall {
+            JuicerProcess::Root* root = nullptr;
+            PreparedRouteInputs::Impl* owner = nullptr;
+            const JuicerCuda::ResourceManager::DeviceContextKey* contextKey = nullptr;
+            std::uint64_t identity = 0;
+            ImageExtent extent{};
+            void* stream = nullptr;
+            JuicerCuda::Failure* failure = nullptr;
+            std::uint64_t expectedScatterHash = 0;
+            JuicerProcess::Root::PreparedCudaFrame frame;
+        };
+
+        bool prepare_route_frame(void* user,
+                                 const JuicerCudaTest::PreparedFrameFixture::Inputs& prepared,
+                                 std::string& diagnostic) {
+            auto& call = *static_cast<PreparedRouteFrameCall*>(user);
+            call.owner->scatterDescriptor = prepared.descriptors.halation;
+            call.owner->diffusionFrameSet = prepared.descriptors.diffusion;
+            if (call.owner->requiresCameraDiffusion &&
+                (!call.owner->diffusionFrameSet ||
+                 !call.owner->diffusionFrameSet->camera)) {
+                diagnostic = "missing camera diffusion frame set";
+                return false;
+            }
+            if (call.expectedScatterHash != 0 &&
+                (!call.owner->scatterDescriptor ||
+                 call.owner->scatterDescriptor->recipeHash != call.expectedScatterHash)) {
+                diagnostic = "captured route descriptor identity mismatch";
+                return false;
+            }
+            auto preparation = prepared.preparation;
+            preparation.requestedWidth = call.extent.width;
+            preparation.requestedHeight = call.extent.height;
+            JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
+            snapshot.instanceToken.value = 0x4741544534524f55ull;
+            snapshot.frameToken.value = call.identity;
+            snapshot.snapshotId = call.identity;
+            snapshot.deviceContextKey = *call.contextKey;
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                prepared.state.upload_core_hash,
+                prepared.state.dir_recipe.hash,
+                prepared.state.scanner_hash,
+                0);
+            call.frame = call.root->prepare_cuda_frame(
+                *call.contextKey,
+                snapshot,
+                preparation,
+                {},
+                call.stream,
+                *call.failure,
+                prepared.hostPreparation);
+            return true;
+        }
+    } // namespace
 
     PreparedRouteInputs::PreparedRouteInputs(std::unique_ptr<Impl> impl)
         : _impl(std::move(impl)) {}
@@ -3228,61 +3280,46 @@ namespace ScatterHalationValidation {
     PreparedRouteInputs& PreparedRouteInputs::operator=(
         PreparedRouteInputs&&) noexcept = default;
 
-    JuicerProcess::Root::CudaFramePreparationRequest
-    PreparedRouteInputs::request(ImageExtent extent) const {
-        JuicerProcess::Root::CudaFramePreparationRequest value{};
-        value.recipe = &_impl->product.recipe;
-        value.exposureTables = &_impl->product.payload.exposureTables;
-        value.filmRawConfig = &_impl->product.payload.filmRawConfig;
-        value.filmTcLut = _impl->product.payload.filmTcLut
-                              ? &*_impl->product.payload.filmTcLut
-                              : nullptr;
-        value.printMainIlluminant = _impl->product.payload.printMainIlluminant
-                                        ? &*_impl->product.payload.printMainIlluminant
-                                        : nullptr;
-        value.scannerTables = &_impl->product.payload.scannerTables;
-        value.scannerColor = &_impl->product.payload.scannerColor;
-        value.scannerLutDescriptor = &_impl->scannerDescriptor;
-        value.outputBoundaryTable =
-            _impl->product.payload.outputBoundaryTable.get();
-        value.diffusionFrameSetDescriptor =
-            _impl->diffusionFrameSet ? &*_impl->diffusionFrameSet : nullptr;
-        value.scatterHalationDescriptor =
-            _impl->scatterDescriptor ? &*_impl->scatterDescriptor : nullptr;
-        value.requestedWidth = extent.width;
-        value.requestedHeight = extent.height;
-        return value;
-    }
-
-    JuicerCuda::ResourceManager::SubmissionSnapshot
-    PreparedRouteInputs::submission_snapshot(
+    JuicerProcess::Root::PreparedCudaFrame PreparedRouteInputs::prepare_frame(
         const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
-        std::uint64_t identity) const {
-        JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
-        snapshot.instanceToken.value = 0x4741544534524f55ull;
-        snapshot.frameToken.value = identity;
-        snapshot.snapshotId = identity;
-        snapshot.deviceContextKey = contextKey;
-        snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-            _impl->product.payload.uploadCoreHash,
-            _impl->product.recipe.dirCouplers.hash,
-            _impl->product.payload.scannerHash,
-            0);
-        return snapshot;
+        std::uint64_t identity,
+        ImageExtent extent,
+        void* stream,
+        JuicerCuda::Failure& failure,
+        std::uint64_t expectedScatterHash) const {
+        if (!_impl || !_impl->state) {
+            throw std::runtime_error("prepared route inputs have no held state");
+        }
+        PreparedRouteFrameCall call{
+            &JuicerProcess::root(),
+            _impl.get(),
+            &contextKey,
+            identity,
+            extent,
+            stream,
+            &failure,
+            expectedScatterHash,
+            {}};
+        std::string diagnostic;
+        if (!JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
+                *_impl->state,
+                _impl->frameFacts,
+                &call,
+                &prepare_route_frame,
+                diagnostic)) {
+            throw std::runtime_error(diagnostic);
+        }
+        return std::move(call.frame);
     }
 
     const ScatterHalationFrameDescriptor*
     PreparedRouteInputs::scatter_descriptor() const noexcept {
-        return _impl->scatterDescriptor ? &*_impl->scatterDescriptor : nullptr;
+        return _impl && _impl->scatterDescriptor ? &*_impl->scatterDescriptor : nullptr;
     }
 
     const Spektrafilm::DiffusionFrameSetDescriptor*
     PreparedRouteInputs::diffusion_frame_set() const noexcept {
-        return _impl->diffusionFrameSet ? &*_impl->diffusionFrameSet : nullptr;
-    }
-
-    const RenderRecipe& PreparedRouteInputs::recipe() const noexcept {
-        return _impl->product.recipe;
+        return _impl && _impl->diffusionFrameSet ? &*_impl->diffusionFrameSet : nullptr;
     }
 
     PreparedRouteInputs build_prepared_route_inputs(
@@ -3320,58 +3357,14 @@ namespace ScatterHalationValidation {
         snapshot.filmGammaFactor = filmGammaFactor;
         snapshot.gateWeaveAmount = 0.0;
         auto impl = std::make_unique<PreparedRouteInputs::Impl>();
-        std::string diagnostic;
-        const bool printRoute = Spektrafilm::scan_route_is_print(route);
-        const bool built =
-            printRoute
-                ? build_print_render_state_product(
-                      snapshot, impl->product, diagnostic)
-                : build_direct_render_state_product(
-                      snapshot, impl->product, diagnostic);
-        if (!built) {
-            throw std::runtime_error(diagnostic);
-        }
-        if (!JuicerTestSupport::prepare_halation_frame(
-                impl->product.recipe.spatialOptics.scatterHalation,
-                pixelSizeUm,
-                impl->scatterDescriptor,
-                diagnostic)) {
-            throw std::runtime_error(diagnostic);
-        }
-        const Scanner::DirectScannerSpectralLutDescriptorInput directInput{
-            &impl->product.recipe.profileRoute,
-            &impl->product.recipe.densityBounds,
-            &impl->product.recipe.scannerOutput};
-        const Scanner::PrintScannerSpectralLutDescriptorInput printInput{
-            &impl->product.recipe.profileRoute,
-            &impl->product.recipe.densityBounds,
-            &impl->product.recipe.scannerOutput};
-        const bool scannerBuilt =
-            printRoute
-                ? Scanner::build_print_scanner_spectral_lut_descriptor(
-                      printInput, impl->scannerDescriptor, diagnostic)
-                : Scanner::build_direct_scanner_spectral_lut_descriptor(
-                      directInput, impl->scannerDescriptor, diagnostic);
-        if (!scannerBuilt) {
-            throw std::runtime_error(diagnostic);
-        }
-        if (cameraDiffusion.active &&
-            (!JuicerTestSupport::prepare_diffusion_frame(
-                 impl->product.recipe.spatialOptics,
-                 route,
-                 static_cast<double>(pixelSizeUm),
-                 Spektrafilm::DiffusionFrameDomain{
-                     0,
-                     0,
-                     extent.width,
-                     extent.height},
-                 impl->diffusionFrameSet,
-                 diagnostic) ||
-             !impl->diffusionFrameSet || !impl->diffusionFrameSet->camera)) {
-            throw std::runtime_error(
-                diagnostic.empty() ? "missing camera diffusion frame set"
-                                   : diagnostic);
-        }
+        impl->state.emplace(JuicerTestSupport::prepare_product(snapshot));
+        impl->frameFacts.renderExtent = {0, 0, extent.width, extent.height};
+        impl->frameFacts.fullFrameExtent = impl->frameFacts.renderExtent;
+        impl->frameFacts.pixelDefinition = impl->frameFacts.renderExtent;
+        impl->frameFacts.pixelSizeUm = pixelSizeUm;
+        impl->frameFacts.filmFormatLongEdgeMm = snapshot.cameraFilmFormatLongEdgeMm;
+        impl->frameFacts.frameRate = 24.0;
+        impl->requiresCameraDiffusion = cameraDiffusion.active;
         return PreparedRouteInputs(std::move(impl));
     }
 

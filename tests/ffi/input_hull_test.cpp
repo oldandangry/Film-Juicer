@@ -10,6 +10,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -27,9 +28,11 @@
 #include "SpectralData.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "PreparedState.h"
 #include "print_illuminant_fixture.h"
 #include "prepared_boundary.h"
 #include "spectral_allocation_probe.h"
+#include "spectral_source_fixture.h"
 
 #define FJ_HULL_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
 #define FJ_HULL_FIELD(type, field, offset) static_assert(offsetof(type, field) == offset);
@@ -424,7 +427,7 @@ namespace {
             require(recovered && recovered.view.hash == fixture["math"][0]["expected"]["hash"], "cold retry constructs complete hull");
         }
         HullHold retained;
-        JuicerCudaTest::PreparedStateHold recipeHold;
+        std::optional<PreparedState> recipeHold;
         ObservationHold observation;
         std::uintptr_t identity = 0;
         {
@@ -453,12 +456,11 @@ namespace {
             retained = results[0];
             identity = retained.view.entry_identity;
             const ParamSnapshot captured;
-            const auto input = JuicerCudaTest::preparation_params(captured);
-            FjPreparedState* acquired = nullptr;
-            status(fj_test_prepared_state_create(library.owner(), &input, &acquired, nullptr), FJ_STATUS_SUCCESS);
-            recipeHold.reset(acquired);
+            std::array<char, 2048> errorText{};
+            FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+            status(prepare_state(library.owner(), captured, recipeHold, error), FJ_STATUS_SUCCESS);
             FjPreparedStateView state{};
-            status(fj_test_prepared_state_view(recipeHold.get(), &state, nullptr), FJ_STATUS_SUCCESS);
+            status(recipeHold->view(state, error), FJ_STATUS_SUCCESS);
             require(state.input_hull.entry_identity == identity && state.input_hull.xy.data == retained.view.xy.data, "complete recipe and foreign cache holds share actual backing");
             for (auto& result : results)
                 result.reset();
@@ -476,9 +478,15 @@ namespace {
             status(fj_test_gamut_arm_fault(0, 1), FJ_STATUS_SUCCESS);
             status(fj_test_assets_illuminants_acquire(library.owner(), &source, nullptr), FJ_STATUS_SUCCESS);
             status(fj_test_illuminants_view(source, &sourceView, nullptr), FJ_STATUS_SUCCESS);
-            auto x = Spectral::gXBar.linear;
+            JuicerTestSupport::CmfSource cmfSource(library.owner());
+            const auto xSource = cmfSource.x();
+            const auto ySource = cmfSource.y();
+            const auto zSource = cmfSource.z();
+            require(xSource.count == 81 && ySource.count == 81 && zSource.count == 81,
+                    "held source CMF curves each contain 81 samples");
+            std::vector<float> x(xSource.data, xSource.data + xSource.count);
             x[80] += .125f;
-            const FjInputHullSource request{{x.data(), 81}, {Spectral::gYBar.linear.data(), 81}, {Spectral::gZBar.linear.data(), 81}, sourceView.d65};
+            const FjInputHullSource request{{x.data(), x.size()}, ySource, zSource, sourceView.d65};
             FjInputHull output{};
             FjErrorBuffer diagnostic{nullptr, 0, 0};
             status(fj_test_input_hull_abi_c(&request, &output, &diagnostic), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -496,7 +504,9 @@ namespace {
         }
         require(entry_live(observation, FJ_TEST_CACHE_INPUT_HULL, identity), "Assets destruction releases only its cache hold");
         FjPreparedStateView heldState{};
-        status(fj_test_prepared_state_view(recipeHold.get(), &heldState, nullptr), FJ_STATUS_SUCCESS);
+        std::array<char, 2048> errorText{};
+        FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+        status(recipeHold->view(heldState, error), FJ_STATUS_SUCCESS);
         require(heldState.input_hull.entry_identity == identity && heldState.input_hull.hash == retained.view.hash, "complete state remains readable after Assets expires");
         heldState = {};
         recipeHold.reset();

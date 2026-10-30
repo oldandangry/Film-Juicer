@@ -7,6 +7,8 @@
 
 #include "juicer_cuda_api.h"
 
+struct FjHostPreparation;
+
 namespace JuicerCuda {
 
     struct PendingContextLossRecovery;
@@ -34,7 +36,7 @@ namespace JuicerCuda {
         // Same admitted body as fj_cuda_render. Inputs expire at return; the
         // adapter retains full diagnostic/recovery detail until host delivery.
         FjRenderOutcome render(
-            const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abortCallback, PendingContextLossRecovery& recovery, std::string& diagnostic);
+            const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abortCallback, PendingContextLossRecovery& recovery, std::string& diagnostic, const FjHostPreparation* hostPreparation = nullptr);
 
     private:
         std::unique_lock<std::mutex> _lock;

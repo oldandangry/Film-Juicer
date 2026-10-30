@@ -1125,6 +1125,21 @@ class RustBoundaryTests(unittest.TestCase):
             feature_forms=(False, True),
         )
 
+    def test_cuda_render_borrows_complete_owners_and_hides_projection(self) -> None:
+        self.check_fixture_cases(
+            "film-juicer-plugin/src/lib.rs",
+            "film-juicer-plugin",
+            cases=(
+                ('cuda_render_complete', None),
+                ('cuda_render_raw_records', {'E0308': ('raw_frame', 'raw_abort')}),
+                ('cuda_render_capability_construction', {'E0451': ('FramePolicy { ..policy }',)}),
+                ('cuda_render_projection_private', {'E0603': ('crate::cuda::projection::host_data',)}),
+                ('cuda_render_state_borrow', {'E0505': ('drop(state)',)}),
+                ('cuda_render_owner_thread', {'E0277': ('std::thread::spawn(move || owner)',)}),
+            ),
+            feature_forms=(False, True),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,8 @@
 #include "Illuminants.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
+#include "Cuda/JuicerCudaExecutor.h"
+#include "Cuda/JuicerCudaFailure.h"
 #include "juicer_cuda_owner.h"
 #include "ScatterHalation.h"
 #include "SpectralData.h"
@@ -1384,16 +1386,15 @@ bool JuicerEffect::resolveGammaControlRoute(
 
 void JuicerEffect::updateGammaControlState(
     Spektrafilm::ScanRoute selectedRoute,
-    const std::string& filmProfileKey) {
+    const std::string&) {
     _pPrintGammaFactor->setEnabled(
         Spektrafilm::scan_route_is_print(selectedRoute));
     const bool dirActive = read_bool_param(_pCouplersActive);
     const double coreUm = read_double_param(_pCouplersDiffusionSizeUm);
     const double tailWeight = read_double_param(_pCouplersDiffusionTailWeight);
-    const std::shared_ptr<const Profiles::FilmProfile> profile =
-        JuicerProcess::root().assets().selected_film_profile_for_key(filmProfileKey);
-    const bool positive = profile &&
-                          profile->info.type == Spektrafilm::ProfilePolarity::Positive;
+    const bool positive =
+        Spektrafilm::scan_route_metadata(selectedRoute).capturePolarity ==
+        Spektrafilm::ProfilePolarity::Positive;
     _pCouplersLangmuirDonorKRgb->setEnabled(dirActive && !positive);
     _pCouplersLangmuirReceiverKRgb->setEnabled(dirActive && positive);
     _pCouplersDiffusionTailWeight->setEnabled(dirActive && coreUm > 0.0);
@@ -1416,32 +1417,45 @@ void JuicerEffect::applyDirGammaProfileDefaults() {
 
     const std::string filmKey =
         read_str_choice_param_or_empty(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
-    const std::shared_ptr<const Profiles::FilmProfile> profile =
-        JuicerProcess::root().assets().selected_film_profile_for_key(filmKey);
-    if (!profile) {
-        JTRACE("SPEKTRAFILM", "MissingRequiredResource field=dir_gamma_profile_defaults");
-        return;
+    FjFilmDigest digest{};
+    std::array<char, 1024> message{};
+    FjErrorBuffer error{message.data(), message.size(), 0};
+    const FjStatus status =
+        JuicerProcess::root().assets().film_defaults(filmKey, digest, error);
+    if (status.category != FJ_STATUS_SUCCESS) {
+        if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
+            JTRACE("SPEKTRAFILM", "MissingRequiredResource field=dir_gamma_profile_defaults");
+            return;
+        }
+        if (status.category == FJ_STATUS_ALLOCATION_FAILURE) {
+            throw std::bad_alloc();
+        }
+        JuicerCuda::Failure failure;
+        JuicerCuda::set_failure(
+            failure,
+            status,
+            std::string_view(message.data(), error.length));
+        throw JuicerCuda::ExecutionFailure{std::move(failure)};
     }
 
-    const Profiles::ProfileDigest& digest = profile->digest;
     const ScopedParamEventSuppression suppressEvents(*_state);
     set_double3_param(
         _pCouplersGammaSameLayerRgb,
-        digest.gammaSamelayerRgb[0],
-        digest.gammaSamelayerRgb[1],
-        digest.gammaSamelayerRgb[2]);
+        digest.gamma_samelayer_rgb[0],
+        digest.gamma_samelayer_rgb[1],
+        digest.gamma_samelayer_rgb[2]);
     set_double2_param(
         _pCouplersGammaInterlayerRToGb,
-        digest.gammaInterlayerRToGb[0],
-        digest.gammaInterlayerRToGb[1]);
+        digest.gamma_interlayer_r_to_gb[0],
+        digest.gamma_interlayer_r_to_gb[1]);
     set_double2_param(
         _pCouplersGammaInterlayerGToRb,
-        digest.gammaInterlayerGToRb[0],
-        digest.gammaInterlayerGToRb[1]);
+        digest.gamma_interlayer_g_to_rb[0],
+        digest.gamma_interlayer_g_to_rb[1]);
     set_double2_param(
         _pCouplersGammaInterlayerBToRg,
-        digest.gammaInterlayerBToRg[0],
-        digest.gammaInterlayerBToRg[1]);
+        digest.gamma_interlayer_b_to_rg[0],
+        digest.gamma_interlayer_b_to_rg[1]);
 }
 
 JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)

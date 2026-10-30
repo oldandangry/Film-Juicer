@@ -29,7 +29,8 @@
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/juicer_test_api.h"
-#include "../ffi/spatial_optics_fixture.h"
+#include "../ffi/prepared_frame_fixture.h"
+#include "../ffi/prepared_product_fixture.h"
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(const JuicerCuda::DirectPipelineRunParams*, JuicerCuda::SpatialDirBuildRequest);
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(const JuicerCuda::DirectPipelineRunParams*, float*, float*, float*, void*);
@@ -44,6 +45,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_capture_density_from_camera_fil
 
 namespace {
     using Frame = JuicerProcess::Root::PreparedCudaFrame;
+    namespace FrameFixture = JuicerCudaTest::PreparedFrameFixture;
 
     void require(bool ok, const std::string& detail) {
         if (!ok) {
@@ -69,55 +71,124 @@ namespace {
     };
 
     struct Inputs {
-        FocusedRenderStateBuildProduct product;
-        Scanner::ScannerSpectralLutDescriptor scanner;
+        PreparedState state;
         Spektrafilm::SpatialDirDescriptor dir;
+        JuicerCuda::FilmPayloadInput filmPayload{};
+        std::uint64_t uploadCoreHash = 0;
+        std::uint64_t scannerHash = 0;
+        std::uint64_t dirRecipeHash = 0;
+        float pixelSizeUm = 0.0f;
         int width;
         int height;
 
         Inputs(Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method, float pixelSize, Spektrafilm::DirFrameExtent extent, float tailWeight = 0.03f)
-            : width(extent.width), height(extent.height) {
-            ParamSnapshot controls;
-            controls.scanRoute = route;
-            controls.spectralUpsamplingMode = static_cast<int>(method);
-            controls.grainControls.active = false;
-            controls.scatterHalationControls = {};
-            if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive) {
-                controls.filmProfileKey = "fujifilm_provia_100f";
-            }
-            controls.dirCouplers.diffusionSizeUm = 20.0f;
-            controls.dirCouplers.diffusionTailUm = 200.0f;
-            controls.dirCouplers.diffusionTailWeight = tailWeight;
-            std::string error;
-            const bool print = Spektrafilm::scan_route_is_print(route);
-            require(print ? build_print_render_state_product(controls, product, error)
-                          : build_direct_render_state_product(controls, product, error),
-                    error);
-            require(print ? Scanner::build_print_scanner_spectral_lut_descriptor(
-                                {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error)
-                          : Scanner::build_direct_scanner_spectral_lut_descriptor(
-                                {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error),
-                    error);
-            require(JuicerTestSupport::prepare_dir_frame(product.recipe.dirCouplers, pixelSize, extent, extent, "dir-exposure-cache-test", dir), "DIR descriptor failed");
+            : state(JuicerTestSupport::prepare_product(controls(route, method, tailWeight))),
+              pixelSizeUm(pixelSize), width(extent.width), height(extent.height) {
+            FrameFixture::FrameFacts facts;
+            facts.renderExtent = {extent.x, extent.y, extent.width, extent.height};
+            facts.fullFrameExtent = facts.renderExtent;
+            facts.pixelDefinition = facts.renderExtent;
+            facts.pixelSizeUm = pixelSize;
+            Capture captured{};
+            std::string diagnostic;
+            require(FrameFixture::with_prepared_frame_inputs(
+                        state, facts, &captured, &capture_values, diagnostic),
+                    diagnostic);
+            dir = captured.dir;
+            filmPayload = captured.filmPayload;
+            uploadCoreHash = captured.uploadCoreHash;
+            scannerHash = captured.scannerHash;
+            dirRecipeHash = captured.dirRecipeHash;
         }
 
-        JuicerProcess::Root::CudaFramePreparationRequest request() const {
-            JuicerProcess::Root::CudaFramePreparationRequest r;
-            r.recipe = &product.recipe;
-            r.exposureTables = &product.payload.exposureTables;
-            r.filmRawConfig = &product.payload.filmRawConfig;
-            r.filmTcLut = product.payload.filmTcLut ? &*product.payload.filmTcLut : nullptr;
-            r.printMainIlluminant = product.payload.printMainIlluminant ? &*product.payload.printMainIlluminant : nullptr;
-            r.scannerTables = &product.payload.scannerTables;
-            r.scannerColor = &product.payload.scannerColor;
-            r.scannerLutDescriptor = &scanner;
-            r.outputBoundaryTable = product.payload.outputBoundaryTable.get();
-            r.spatialDirDescriptor = &dir;
-            r.requestedWidth = width;
-            r.requestedHeight = height;
-            return r;
+        static ParamSnapshot controls(Spektrafilm::ScanRoute route,
+                                      Spektrafilm::RgbToRawMethod method,
+                                      float tailWeight) {
+            ParamSnapshot result;
+            result.scanRoute = route;
+            result.spectralUpsamplingMode = static_cast<int>(method);
+            result.grainControls.active = false;
+            result.scatterHalationControls = {};
+            if (Spektrafilm::scan_route_metadata(route).capturePolarity ==
+                Spektrafilm::ProfilePolarity::Positive) {
+                result.filmProfileKey = "fujifilm_provia_100f";
+            }
+            result.dirCouplers.diffusionSizeUm = 20.0f;
+            result.dirCouplers.diffusionTailUm = 200.0f;
+            result.dirCouplers.diffusionTailWeight = tailWeight;
+            return result;
+        }
+
+        struct Capture {
+            Spektrafilm::SpatialDirDescriptor dir;
+            JuicerCuda::FilmPayloadInput filmPayload;
+            std::uint64_t uploadCoreHash = 0;
+            std::uint64_t scannerHash = 0;
+            std::uint64_t dirRecipeHash = 0;
+        };
+
+        static bool capture_values(void* user,
+                                   const FrameFixture::Inputs& prepared,
+                                   std::string&) {
+            auto& out = *static_cast<Capture*>(user);
+            out.dir = prepared.descriptors.spatialDir;
+            out.filmPayload = prepared.filmPayload;
+            out.uploadCoreHash = prepared.state.upload_core_hash;
+            out.scannerHash = prepared.state.scanner_hash;
+            out.dirRecipeHash = prepared.state.dir_recipe.hash;
+            return true;
         }
     };
+
+    struct RootFrameCall {
+        const Inputs* inputs = nullptr;
+        const JuicerCuda::ResourceManager::DeviceContextKey* key = nullptr;
+        const JuicerCuda::ResourceManager::SubmissionSnapshot* snapshot = nullptr;
+        cudaStream_t stream = nullptr;
+        JuicerCuda::Failure failure;
+        Frame frame;
+    };
+
+    bool prepare_root_frame(void* user,
+                            const FrameFixture::Inputs& prepared,
+                            std::string& diagnostic) {
+        auto& call = *static_cast<RootFrameCall*>(user);
+        JuicerProcess::Root& root = JuicerProcess::root();
+        Frame frame = root.prepare_cuda_frame(
+            *call.key, *call.snapshot, prepared.preparation, {}, call.stream, call.failure, prepared.hostPreparation);
+        if (!frame.active()) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        if (!frame.prepare_spatial_dir_resources(
+                call.inputs->dir, frame.workspace_lease(), call.stream, call.failure, prepared.hostPreparation)) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        call.frame = std::move(frame);
+        return true;
+    }
+
+    Frame prepare_frame(const Inputs& inputs,
+                        const JuicerCuda::ResourceManager::DeviceContextKey& key,
+                        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+                        cudaStream_t stream,
+                        JuicerCuda::Failure& failure) {
+        RootFrameCall call{&inputs, &key, &snapshot, stream, {}, {}};
+        std::string diagnostic;
+        const bool ready = FrameFixture::with_prepared_frame_inputs(
+            inputs.state,
+            {{0, 0, inputs.width, inputs.height},
+             {0, 0, inputs.width, inputs.height},
+             {0, 0, inputs.width, inputs.height},
+             inputs.pixelSizeUm},
+            &call,
+            &prepare_root_frame,
+            diagnostic);
+        failure = call.failure;
+        require(ready, diagnostic.empty() ? failure.diagnostic : diagnostic);
+        return std::move(call.frame);
+    }
 
     void bind_filter(JuicerCuda::SpatialDirFilterSpec& out,
                      const Spektrafilm::DirGaussianComponentPlan& plan,
@@ -281,12 +352,10 @@ namespace {
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
-            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
             JuicerCuda::Failure failure;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, failure);
-            require(frame.active(), failure.diagnostic);
-            require(frame.prepare_spatial_dir_resources(inputs.dir, frame.workspace_lease(), stream, failure), failure.diagnostic);
-            return frame;
+            return prepare_frame(inputs, key, snapshot, stream, failure);
         }
         JuicerCuda::Resources& boundary_owner() {
             Inputs inputs(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Hanatos2025, 1.0f, {0, 0, 64, 48});
@@ -310,18 +379,17 @@ namespace {
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-                inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
+                inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
             JuicerCuda::Failure error;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, error);
-            require(frame.active(), error.diagnostic);
+            auto frame = prepare_frame(inputs, key, snapshot, stream, error);
             const auto lease = frame.workspace_lease();
-            require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error.diagnostic);
             const auto scratch = frame.spatial_dir_scratch(lease);
             const auto resources = frame.spatial_dir_resources(lease, inputs.dir.hash);
             require(scratch.active && resources.active && scratch.rawCorrectionM && scratch.rawCorrectionC, "Missing three-channel DIR workspace");
             JuicerCuda::FilmPayloadPack payload;
-            const auto& recipe = inputs.product.recipe;
-            require(JuicerCuda::pack_film_payloads(recipe.filmRaw, recipe.filmDevelop, recipe.dirCouplers, recipe.densityBounds, frame.focused_resources().film, nullptr, 1.25f, payload, error.diagnostic), error.diagnostic);
+            require(JuicerCuda::pack_film_payloads(
+                        inputs.filmPayload, frame.focused_resources().film, nullptr, 1.25f, payload, error.diagnostic),
+                    error.diagnostic);
             const std::size_t count = static_cast<std::size_t>(inputs.width) * inputs.height;
             const std::size_t bytes = count * sizeof(float);
             DeviceBuffer source(4 * bytes), camera(3 * bytes), fusedCache(3 * bytes), separateCache(3 * bytes), actualDensity(3 * bytes), expectedDensity(3 * bytes), failures(sizeof(int));
@@ -477,13 +545,11 @@ namespace {
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
-            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
             JuicerCuda::Failure error;
             const auto prepareFir = [&] {
-                auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, error);
-                require(frame.active(), error.diagnostic);
-                require(frame.prepare_spatial_dir_resources(inputs.dir, frame.workspace_lease(), stream, error), error.diagnostic);
-                return frame;
+                return prepare_frame(inputs, key, snapshot, stream, error);
             };
             auto frame = prepareFir();
             const auto prepared = frame.spatial_dir_resources(frame.workspace_lease(), inputs.dir.hash);

@@ -735,6 +735,23 @@ mod tests {
 
     #[test]
     fn basis_read_failures() {
+        for shape in ["(80,3)", "(81,2)"] {
+            let header = format!("{{'descr': '<f4', 'fortran_order': False, 'shape': {shape}}}\n");
+            let mut input = Cursor::new(npy_header(header.as_bytes()));
+            assert_eq!(
+                read_mallett_basis(&mut input).unwrap_err(),
+                ReadErrorKind::InvalidNpy {
+                    expected: "NPY 1.0, little-endian f16/f32/f64, C-order (81, 3) RGB",
+                    reason: "incompatible shape",
+                }
+            );
+        }
+        let mut short = npy_header(b"{'descr': '<f4', 'fortran_order': False, 'shape': (81,3)}\n");
+        short.resize(short.len() + 240 * size_of::<f32>(), 0);
+        assert_eq!(
+            read_mallett_basis(&mut Cursor::new(short)).unwrap_err(),
+            ReadErrorKind::ShortRead(ReadPart::Payload)
+        );
         let prefix = npy_header(b"{'descr': '<f8', 'fortran_order': False, 'shape': (81,3)}\n");
         let payload_end = prefix.len() + 81 * 3 * 8;
         for (end, part) in [

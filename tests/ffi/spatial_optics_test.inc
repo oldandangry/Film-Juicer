@@ -320,11 +320,38 @@ namespace OpticsTest {
             params.cameraDiffusion = controls.cameraDiffusion;
             params.enlargerDiffusion = controls.enlargerDiffusion;
             params.scatterHalationControls = controls.scatterHalation;
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            const bool success = route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic);
-            require(success == row.at("success").get<bool>() && diagnostic == row.at("diagnostic").get<std::string>(), "genuine route product outcome and first failure");
-            require(hash_params(params) == row.at("snapshot_hash").get<std::uint64_t>() && product.recipe.hash == row.at("final_hash").get<std::uint64_t>() && project(product.recipe.spatialOptics) == row.at("recipe"), "native authored snapshot, complete optics and final route identities");
+            std::array<char, 2048> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            std::optional<PreparedState> product;
+            auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+            const FjStatus result = prepare_state(assets, params, product, error);
+            const bool built = result.category == FJ_STATUS_SUCCESS && product.has_value();
+            const std::string observedDiagnostic(diagnostic.data(), error.length);
+            FjPreparedStateView view{};
+            if (built)
+                status(product->view(view, error));
+            require(built == row.at("success").get<bool>() && observedDiagnostic == row.at("diagnostic").get<std::string>(), "genuine held-state route product outcome and first failure");
+            Json recipe;
+            if (built) {
+                recipe = project(view.optics);
+            } else {
+                require(result.category == FJ_STATUS_PREPARATION_FAILURE && result.api == FJ_API_NONE &&
+                            result.native_code == 0 && !product,
+                        "failed optics preparation returns no complete owner");
+                // SF_TEMP_BRIDGE_NATIVE_OPTICS_FAILURE_OUTPUT: the frozen
+                // default C++ output is not a failed Rust state's projection.
+                // Retain this original assertion through its I7 owner gate.
+                FocusedRenderStateBuildProduct comparison;
+                std::string comparisonDiagnostic;
+                const bool comparisonBuilt = route % 2 ? build_print_render_state_product(params, comparison, comparisonDiagnostic)
+                                                       : build_direct_render_state_product(params, comparison, comparisonDiagnostic);
+                require(!comparisonBuilt && comparisonDiagnostic == observedDiagnostic,
+                        "original native optics failure retains its exact diagnostic");
+                recipe = project(comparison.recipe.spatialOptics);
+            }
+            const Json actual{{"snapshot_hash", hash_params(params)}, {"final_hash", built ? view.recipe_hash : 0}, {"recipe", std::move(recipe)}};
+            const Json expected{{"snapshot_hash", row.at("snapshot_hash")}, {"final_hash", row.at("final_hash")}, {"recipe", row.at("recipe")}};
+            require_equal(actual, expected, "native authored snapshot, complete optics and final route identities");
         }
         for (unsigned route = 0; route < 4; ++route) {
             ParamSnapshot baseline;
@@ -361,16 +388,21 @@ namespace OpticsTest {
             auto unused = baseline;
             unused.enlargerDiffusion.family = static_cast<Spektrafilm::DiffusionFilterFamily>(255);
             unused.enlargerDiffusion.strength = invalidStrength;
-            FocusedRenderStateBuildProduct product;
             std::string diagnostic;
             const auto build = [&](const ParamSnapshot& input) {
-                return route % 2 ? build_print_render_state_product(input, product, diagnostic) : build_direct_render_state_product(input, product, diagnostic);
+                pending(input);
+                const auto result = admit_pending_render_state(state);
+                diagnostic = result.diagnostic;
+                return route % 2 ? bool(result.printState) : bool(result.directState);
             };
             const bool success = build(unused);
             if (route % 2)
                 require(!success && diagnostic == "ResourceDescriptorMismatch phase=6A component=enlarger_diffusion field=family", "print domain validates enlarger family before finite controls");
-            else
-                require(success && product.recipe.spatialOptics.hash == held.spatialOptics.hash && hash_params(unused) != hash_params(baseline), "direct ignores enlarger policy while native authored snapshot still changes");
+            else {
+                const auto direct = admit_pending_render_state(state);
+                const auto& directRecipe = direct.directState->recipe;
+                require(success && directRecipe.spatialOptics.hash == held.spatialOptics.hash && hash_params(unused) != hash_params(baseline), "direct ignores enlarger policy while native authored snapshot still changes");
+            }
             auto badInput = baseline;
             badInput.inputColorSpace = -1;
             status(fj_test_film_recipe_fault(9, 2));

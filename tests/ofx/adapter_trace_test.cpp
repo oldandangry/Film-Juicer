@@ -50,6 +50,8 @@
 #include "JuicerState.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
+#include "PreparedState.h"
+#include "ResourceAssetLibrary.h"
 #include "juicer_cuda_owner.h"
 #include "ColorTransforms.h"
 #include "ofxMemory.h"
@@ -3277,32 +3279,51 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             check_physical_capture(host, argv[4], argv[5]);
         ParamSnapshot routeSnapshot;
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        FocusedRenderStateBuildProduct routeProduct;
+        std::optional<PreparedState> routeProduct;
         std::string routeDiagnostic;
+        const auto prepareRoute = [&] {
+            std::array<char, 2048> text{};
+            FjErrorBuffer error{text.data(), text.size(), 0};
+            const FjStatus status = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(),
+                                                  routeSnapshot,
+                                                  routeProduct,
+                                                  error);
+            routeDiagnostic.assign(text.data(), std::min(error.length, text.size()));
+            require(status.api == FJ_API_NONE && status.native_code == 0 &&
+                        bool(routeProduct) == (status.category == FJ_STATUS_SUCCESS),
+                    "complete route construction returned inconsistent ownership");
+            if (!routeProduct)
+                return false;
+            FjPreparedStateView view{};
+            require(routeProduct->view(view, error).category == FJ_STATUS_SUCCESS &&
+                        view.route == static_cast<std::uint32_t>(routeSnapshot.scanRoute),
+                    "complete route construction changed selected route");
+            return true;
+        };
         require(
-            build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic),
+            prepareRoute(),
             "matching negative profile route did not build: " + routeDiagnostic);
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::PositiveDirectScan;
         routeDiagnostic.clear();
         require(
-            !build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic) &&
+            !prepareRoute() &&
                 routeDiagnostic.find("route mismatch") != std::string::npos,
             "mismatched negative profile route was not rejected");
         routeSnapshot.filmProfileKey = "fujifilm_provia_100f";
         routeDiagnostic.clear();
         require(
-            build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic),
+            prepareRoute(),
             "matching positive profile route did not build: " + routeDiagnostic);
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
         routeDiagnostic.clear();
         require(
-            !build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic) &&
+            !prepareRoute() &&
                 routeDiagnostic.find("route mismatch") != std::string::npos,
             "mismatched positive profile route was not rejected");
         RouteFaultTest::fail_on_call(1);
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::PositiveDirectScan;
         routeDiagnostic.clear();
-        require(build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic),
+        require(prepareRoute(),
                 "completed film family unexpectedly used the scalar route bridge");
         Spektrafilm::ScanRoute unusedRoute{};
         require(!Spektrafilm::resolve_scan_route(Spektrafilm::ProfilePolarity::Positive,

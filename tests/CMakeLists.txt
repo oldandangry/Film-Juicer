@@ -234,6 +234,7 @@ add_library(juicer_dir_boundary_test_objects OBJECT ../src/Cuda/JuicerCudaResour
 target_link_libraries(juicer_dir_boundary_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_dir_boundary_test_objects PRIVATE JUICER_DIR_BOUNDARY_TEST_HOOK=1)
 add_executable(JuicerFilmRecipeTests ffi/film_recipe_abi_c.c ffi/film_recipe_test.cpp ffi/spectral_allocation_probe.cpp ffi/spatial_optics_fixture.cpp dir/boundary_test_hooks.cpp
+    ffi/prepared_frame_fixture.cpp
     $<TARGET_OBJECTS:juicer_dir_boundary_test_objects>
     $<TARGET_OBJECTS:juicer_scanner_test_objects>
     $<TARGET_OBJECTS:juicer_film_recipe_test_objects>
@@ -480,6 +481,24 @@ add_test(NAME Resource.Gpu.GaussianKernel COMMAND JuicerGaussianKernelTests
     "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/${JUICER_TEST_PRESET_NAME}.json")
 set_tests_properties(Resource.Gpu.GaussianKernel PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
+# Scanner publication uses its actual serving gate, six uploads and ordered retirement.
+add_library(juicer_scanner_lut_resource_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
+target_link_libraries(juicer_scanner_lut_resource_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_scanner_lut_resource_test_objects PRIVATE
+    JUICER_SCANNER_LUT_TEST_HOOK=1 JUICER_PINNED_UPLOAD_TEST_HOOK=1)
+add_executable(JuicerScannerLutResourceTests resource/scanner_lut_test.cpp
+    $<TARGET_OBJECTS:juicer_scanner_lut_resource_test_objects>)
+target_link_libraries(JuicerScannerLutResourceTests PRIVATE juicer_core GTest::gtest CUDA::cuda_driver)
+target_compile_definitions(JuicerScannerLutResourceTests PRIVATE
+    JUICER_SCANNER_LUT_TEST_HOOK=1 JUICER_PINNED_UPLOAD_TEST_HOOK=1)
+set_target_properties(JuicerScannerLutResourceTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerScannerLutResourceTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Resource.Gpu.ScannerLut COMMAND JuicerScannerLutResourceTests
+    "${CMAKE_CURRENT_SOURCE_DIR}/scanner/lut-fixtures/${JUICER_TEST_PRESET_NAME}.json")
+set_tests_properties(Resource.Gpu.ScannerLut PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
 # Deferred retirement executes the real drain with a bounded post-extraction seam.
 add_library(juicer_deferred_destroy_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
 target_link_libraries(juicer_deferred_destroy_test_objects PRIVATE juicer_settings)
@@ -627,6 +646,8 @@ set(JUICER_PREPARED_TEST_SOURCES
     ffi/prepared_descriptors.cpp)
 add_executable(JuicerPreparedProjectionTests ${JUICER_PREPARED_TEST_SOURCES} ffi/spatial_optics_fixture.cpp)
 target_link_libraries(JuicerPreparedProjectionTests PRIVATE juicer_core GTest::gtest_main)
+target_compile_definitions(JuicerPreparedProjectionTests PRIVATE
+    FJ_PREPARED_STATE_PRESET="${JUICER_TEST_PRESET_NAME}")
 set_target_properties(JuicerPreparedProjectionTests PROPERTIES
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 if(UNIX)
@@ -637,8 +658,11 @@ set_tests_properties(Ffi.Host.PreparedProjection PROPERTIES LABELS "host" TIMEOU
 set_tests_properties(Ffi.Host.PreparedProjection PROPERTIES ENVIRONMENT "JUICER_TEST_PRESET_NAME=${JUICER_TEST_PRESET_NAME}")
 add_executable(JuicerPreparedStateTests
     ffi/prepared_state_test.cpp ffi/prepared_state_abi_c.c
+    ffi/prepared_state_native.cpp ffi/prepared_state_oracle.cpp
     ffi/prepared_descriptors.cpp ffi/spatial_optics_fixture.cpp)
 target_link_libraries(JuicerPreparedStateTests PRIVATE juicer_core GTest::gtest)
+target_compile_definitions(JuicerPreparedStateTests PRIVATE
+    FJ_PREPARED_STATE_PRESET="${JUICER_TEST_PRESET_NAME}")
 set_target_properties(JuicerPreparedStateTests PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -646,9 +670,11 @@ if(UNIX)
     set_property(TARGET JuicerPreparedStateTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 add_dependencies(JuicerPreparedStateTests juicer_test_resources)
-add_test(NAME Ffi.Host.PreparedState COMMAND JuicerPreparedStateTests "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/s4-e-slice-1" --gtest_filter=PreparedStateAbi.*)
-add_test(NAME Prepare.Host.StateProducts COMMAND JuicerPreparedStateTests "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/s4-e-slice-1" --gtest_filter=PreparedStateProducts.*)
+add_test(NAME Ffi.Host.PreparedState COMMAND JuicerPreparedStateTests "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/s4-e-integration-replacement" --gtest_filter=PreparedStateAbi.*)
+add_test(NAME Prepare.Host.StateProducts COMMAND JuicerPreparedStateTests "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/s4-e-integration-replacement" --gtest_filter=PreparedStateProducts.*)
 set_tests_properties(Ffi.Host.PreparedState Prepare.Host.StateProducts PROPERTIES LABELS "host" TIMEOUT 0)
+set_tests_properties(Ffi.Host.PreparedState Prepare.Host.StateProducts PROPERTIES
+    ENVIRONMENT "JUICER_TEST_PRESET_NAME=${JUICER_TEST_PRESET_NAME}")
 include(ffi/prepared_sanitizers.cmake)
 add_test(NAME Ffi.Host.SanitizerRunner
     COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
@@ -765,7 +791,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 add_executable(JuicerProcessorReferenceProbe ofx/processor_reference_test.cpp ofx/render_assertions.cpp)
-target_sources(JuicerProcessorReferenceProbe PRIVATE ffi/spatial_optics_fixture.cpp)
+target_sources(JuicerProcessorReferenceProbe PRIVATE ffi/spatial_optics_fixture.cpp ffi/prepared_frame_fixture.cpp)
 target_link_libraries(JuicerProcessorReferenceProbe PRIVATE
     juicer_core juicer_ofxs CUDA::cuda_driver)
 target_compile_definitions(JuicerProcessorReferenceProbe PRIVATE
@@ -790,12 +816,13 @@ add_test(NAME Ofx.Gpu.CutoverContract COMMAND JuicerProcessorReferenceProbe --cu
 set_tests_properties(Ofx.Gpu.CutoverContract PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
 add_library(juicer_render_test_objects OBJECT
-    ../native/juicer_cuda_api.cpp ../src/Cuda/JuicerCudaExecutor.cpp)
+    ../native/juicer_cuda_api.cpp ../native/juicer_cuda_call_scope.cpp ../src/Cuda/JuicerCudaExecutor.cpp)
 target_link_libraries(juicer_render_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_render_test_objects PRIVATE JUICER_CUDA_RENDER_TEST_HOOK=1)
 add_executable(JuicerPreparedBoundaryProbe
     ofx/processor_reference_test.cpp ofx/render_assertions.cpp
     ffi/spatial_optics_fixture.cpp
+    ffi/prepared_frame_fixture.cpp
     ffi/prepared_boundary.cpp
     ffi/cuda_render_test.cpp
     $<TARGET_OBJECTS:juicer_render_test_objects>
@@ -807,6 +834,7 @@ target_link_libraries(juicer_illuminant_preflash_root PRIVATE juicer_settings)
 target_compile_definitions(juicer_illuminant_preflash_root PRIVATE JUICER_ILLUMINANT_TEST_HOOK=1)
 target_sources(JuicerPreparedBoundaryProbe PRIVATE $<TARGET_OBJECTS:juicer_illuminant_preflash_root>)
 target_link_libraries(JuicerPreparedBoundaryProbe PRIVATE juicer_core juicer_ofxs CUDA::cuda_driver)
+add_dependencies(JuicerPreparedBoundaryProbe JuicerProductionPreparedRenderProbe)
 if(MSVC)
     target_compile_options(JuicerPreparedBoundaryProbe PRIVATE $<$<COMPILE_LANGUAGE:C>:/W3;/WX>)
 else()
@@ -852,6 +880,7 @@ add_library(juicer_executor_failure_test_objects OBJECT
     ../src/RustAssetBridge.cpp
     ../src/CudaRenderProjection.cpp
     ../native/juicer_cuda_api.cpp
+    ../native/juicer_cuda_call_scope.cpp
     ../src/Cuda/JuicerCudaExecutor.cpp
     ../src/Cuda/JuicerCudaResources.cpp
     ../src/ProcessRoot.cpp)
@@ -859,7 +888,7 @@ target_link_libraries(juicer_executor_failure_test_objects PRIVATE juicer_settin
 target_compile_definitions(juicer_executor_failure_test_objects PRIVATE
     JUICER_EXECUTOR_FAILURE_TEST_HOOK=1 JUICER_NOISE_TEST_HOOK=1)
 add_executable(JuicerExecutorFailureOrderProbe ofx/processor_reference_test.cpp ofx/render_assertions.cpp
-    $<TARGET_OBJECTS:juicer_executor_failure_test_objects> ffi/spatial_optics_fixture.cpp)
+    $<TARGET_OBJECTS:juicer_executor_failure_test_objects> ffi/spatial_optics_fixture.cpp ffi/prepared_frame_fixture.cpp)
 target_link_libraries(JuicerExecutorFailureOrderProbe PRIVATE
     juicer_core juicer_ofxs CUDA::cuda_driver)
 target_compile_definitions(JuicerExecutorFailureOrderProbe PRIVATE
@@ -963,7 +992,7 @@ target_include_directories(JuicerScatterHalationGpuTests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation")
 target_compile_definitions(JuicerScatterHalationGpuTests PRIVATE
     JUICER_PARAMETER_IDENTITY_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/parameter-identities-${JUICER_TEST_PRESET_NAME}.json")
-target_sources(JuicerScatterHalationGpuTests PRIVATE ffi/spatial_optics_fixture.cpp)
+target_sources(JuicerScatterHalationGpuTests PRIVATE ffi/spatial_optics_fixture.cpp ffi/prepared_frame_fixture.cpp)
 target_include_directories(JuicerScatterHalationGpuTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ffi")
 target_link_libraries(JuicerScatterHalationGpuTests PRIVATE
     juicer_core CUDA::cuda_driver)
@@ -1004,7 +1033,8 @@ set_property(TEST ScatterHalation.Gpu.CapturedCarrier
 juicer_add_scatter_gpu_test(ZeroWork zero-work 300)
 juicer_add_scatter_gpu_test(Lifecycle lifecycle 600)
 
-add_executable(JuicerGrainScratchTests grain/scratch_reuse_test.cpp ffi/spatial_optics_fixture.cpp)
+add_executable(JuicerGrainScratchTests grain/scratch_reuse_test.cpp ffi/spatial_optics_fixture.cpp
+    ffi/prepared_frame_fixture.cpp)
 target_link_libraries(JuicerGrainScratchTests PRIVATE
     juicer_core GTest::gtest CUDA::cuda_driver)
 set_target_properties(JuicerGrainScratchTests PROPERTIES
@@ -1020,6 +1050,7 @@ set_tests_properties(Grain.Gpu.ScratchReuse PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
 add_executable(JuicerDirExposureCacheTests dir/exposure_cache_test.cpp ffi/spatial_optics_fixture.cpp
+    ffi/prepared_frame_fixture.cpp
     dir/boundary_test_hooks.cpp $<TARGET_OBJECTS:juicer_dir_boundary_test_objects>)
 target_compile_definitions(JuicerDirExposureCacheTests PRIVATE
     JUICER_DIR_BOUNDARY_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/dir/boundary-fixtures/${JUICER_TEST_PRESET_NAME}.json")
@@ -1049,7 +1080,8 @@ add_test(NAME Grain.Gpu.DeltaFusion COMMAND JuicerGrainDeltaTests)
 set_tests_properties(Grain.Gpu.DeltaFusion PROPERTIES
     LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
-add_executable(JuicerScannerOutputTests scanner/output_encoding_test.cpp)
+add_executable(JuicerScannerOutputTests scanner/output_encoding_test.cpp
+    ffi/prepared_frame_fixture.cpp)
 target_include_directories(JuicerScannerOutputTests PRIVATE ffi)
 target_link_libraries(JuicerScannerOutputTests PRIVATE juicer_output_encoding_oracle
     juicer_core GTest::gtest CUDA::cuda_driver)
@@ -1127,6 +1159,7 @@ foreach(illuminant_group IN ITEMS IlluminantAbi IlluminantCopy IlluminantLibrary
 endforeach()
 
 add_executable(JuicerColorPreparationTests ffi/color_abi_c.c ffi/color_preparation_test.cpp
+    ffi/prepared_frame_fixture.cpp
     $<TARGET_OBJECTS:juicer_admission_test_state>
     $<TARGET_OBJECTS:juicer_profile_conversion_test_objects>)
 target_compile_definitions(JuicerColorPreparationTests PRIVATE
@@ -1256,7 +1289,8 @@ set_tests_properties(Exposure.Host.Mallett.Spectra PROPERTIES LABELS "host" TIME
 
 foreach(mallett_case IN ITEMS products admission)
     add_test(NAME Exposure.Host.Mallett.${mallett_case} COMMAND JuicerMallettExposureTests
-        "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/mallett-manifest.json" "${JUICER_TEST_PRESET_NAME}" ${mallett_case} "${JUICER_TEST_RESOURCE_DIR}")
+        "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/mallett-manifest.json" "${JUICER_TEST_PRESET_NAME}" ${mallett_case} "${JUICER_TEST_RESOURCE_DIR}"
+        "${JUICER_TEST_ARTIFACT_ROOT}/mallett-source/${mallett_case}")
     set_tests_properties(Exposure.Host.Mallett.${mallett_case} PROPERTIES LABELS "host" TIMEOUT 0)
 endforeach()
 

@@ -40,6 +40,17 @@ pub struct Whites {
     pub destination_xyz: [f32; 3],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckedError {
+    #[cfg(feature = "test-support")]
+    UnsupportedInput,
+}
+
+#[cfg(feature = "test-support")]
+fn check_color_fault(operation: u32) -> Result<(), CheckedError> {
+    crate::film::input::testing::color_fault(operation).map_err(|_| CheckedError::UnsupportedInput)
+}
+
 const CAT16: [f32; 9] = [
     0.401288, 0.650173, -0.051461, -0.250268, 1.204414, 0.045854, -0.002079, 0.048952, 0.953127,
 ];
@@ -104,6 +115,12 @@ pub fn adapt_cat16(xyz: [f32; 3], whites: Whites) -> [f32; 3] {
     multiply(CAT16_INVERSE, lms)
 }
 
+pub fn checked_adapt_cat16(xyz: [f32; 3], whites: Whites) -> Result<[f32; 3], CheckedError> {
+    #[cfg(feature = "test-support")]
+    check_color_fault(2)?;
+    Ok(adapt_cat16(xyz, whites))
+}
+
 pub fn cat16_matrix(whites: Whites) -> [f32; 9] {
     let mut matrix = [0.0; 9];
     for column in 0..3 {
@@ -115,6 +132,12 @@ pub fn cat16_matrix(whites: Whites) -> [f32; 9] {
         }
     }
     matrix
+}
+
+pub fn checked_cat16_matrix(whites: Whites) -> Result<[f32; 9], CheckedError> {
+    #[cfg(feature = "test-support")]
+    check_color_fault(1)?;
+    Ok(cat16_matrix(whites))
 }
 
 const CAT02: [f32; 9] = [
@@ -152,6 +175,12 @@ pub fn cat02_matrix(whites: Whites) -> [f32; 9] {
         }
     }
     matrix
+}
+
+pub fn checked_cat02_matrix(whites: Whites) -> Result<[f32; 9], CheckedError> {
+    #[cfg(feature = "test-support")]
+    check_color_fault(3)?;
+    Ok(cat02_matrix(whites))
 }
 
 #[derive(Clone, Copy)]

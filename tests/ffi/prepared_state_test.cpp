@@ -4,16 +4,24 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
+#include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <set>
 #include <span>
 #include <source_location>
 #include <string>
+#include <string_view>
+#include <stdexcept>
 #include <type_traits>
 #include <tuple>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -27,9 +35,15 @@
 #include "juicer_cuda_owner.h"
 #include "prepared_boundary.h"
 #include "prepared_descriptors.h"
+#include "prepared_state_native.h"
+#include "prepared_state_oracle.h"
 #include "juicer_test_api.h"
+#include "juicer_cuda_call_scope.h"
 
 extern "C" const std::size_t* fj_test_prepared_state_c_facts(std::size_t*);
+extern "C" const std::size_t* fj_test_prepared_call_c_facts(std::size_t*);
+extern "C" int fj_test_host_preparation_c_call();
+extern "C" const std::size_t* fj_test_prepared_call_abi_facts(std::size_t*);
 extern "C" FjStatus fj_test_prepared_state_create_c(FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
 extern "C" FjStatus fj_test_prepared_state_view_c(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*);
 extern "C" FjStatus fj_test_prepared_state_release_c(FjPreparedState*, FjErrorBuffer*);
@@ -47,11 +61,230 @@ static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_create), decltyp
 static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_view), decltype(&fj_test_prepared_state_view_c)>);
 static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_release), decltype(&fj_test_prepared_state_release_c)>);
 
+using FjCallPrecheckFn = FjStatus (*)(void*, FjErrorBuffer*);
+using FjCallAdmitFn = FjStatus (*)(void*, FjErrorBuffer*);
+using FjCallReleaseFn = void (*)(void*);
+using FjCallInspectFn = FjStatus (*)(void*, const FjFrame*, FjCudaContext*, FjErrorBuffer*);
+using FjCallPreviewFn = FjStatus (*)(void*, const FjRect*, const FjRect*, std::uint32_t, FjAutoExposure*, FjErrorBuffer*);
+using FjCallFrameDescriptorsFn = FjStatus (*)(void*, const FjFrameMathInput*, FjNativeFrameDescriptors*, FjErrorBuffer*);
+using FjCallRenderFn = FjRenderOutcome (*)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*);
+using FjCallCompleteFn = FjCallCompletionResult (*)(void*, const FjCallCompletionInput*);
+using FjHostScannerLutFn = FjStatus (*)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
+using FjHostGaussianFn = FjStatus (*)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
+using FjSubmissionSelectFn = FjStatus (*)(void*, const FjCudaContext*, const FjSubmission*, FjSubmission*, FjErrorBuffer*);
+using FjPolicyEntryFn = FjStatus (*)(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
+using FjRenderEntryFn = FjCallCompletionResult (*)(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer*);
+using FjUnavailableEntryFn = FjCallCompletionResult (*)(const FjAssets*, const FjPreparedState*, std::uint32_t, FjCudaCallAccess, const FjFrame*, FjAbortCallback, FjErrorBuffer*);
+
+static_assert(std::is_same_v<decltype(FjCudaCallAccess::precheck), FjCallPrecheckFn>);
+static_assert(std::is_same_v<decltype(FjCudaCallAccess::admit), FjCallAdmitFn>);
+static_assert(std::is_same_v<decltype(FjCudaCallAccess::release), FjCallReleaseFn>);
+static_assert(std::is_same_v<decltype(FjCudaCallAccess::inspect), FjCallInspectFn>);
+static_assert(std::is_same_v<decltype(FjCudaCallAccess::preview), FjCallPreviewFn>);
+static_assert(std::is_same_v<decltype(FjCudaCallAccess::frame_descriptors), FjCallFrameDescriptorsFn>);
+static_assert(std::is_same_v<decltype(FjCudaCallAccess::render), FjCallRenderFn>);
+static_assert(std::is_same_v<decltype(FjCudaCallAccess::complete), FjCallCompleteFn>);
+static_assert(std::is_same_v<decltype(FjHostPreparation::scanner_lut), FjHostScannerLutFn>);
+static_assert(std::is_same_v<decltype(FjHostPreparation::gaussian), FjHostGaussianFn>);
+static_assert(std::is_same_v<decltype(FjSubmissionAccess::select), FjSubmissionSelectFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_frame_policy), FjPolicyEntryFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_render), FjRenderEntryFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_prepared_unavailable), FjUnavailableEntryFn>);
+
 namespace {
     std::filesystem::path artifactRoot;
+    using Json = nlohmann::json;
+    constexpr std::array<std::string_view, 31> kProjectionCases{
+        "NegativeDirectHanatos", "NegativeDirectMallett", "NegativeDirectArctic", "NegativePrintHanatos", "NegativePrintMallett", "NegativePrintArctic", "PositiveDirectHanatos", "PositiveDirectMallett", "PositiveDirectArctic", "PositivePrintHanatos", "PositivePrintMallett", "PositivePrintArctic", "DirectIgnoresPrintControls", "PreflashAndNormalizationModes[norm=0,compensate=0]", "PreflashAndNormalizationModes[norm=0,compensate=1]", "PreflashAndNormalizationModes[norm=1,compensate=0]", "PreflashAndNormalizationModes[norm=1,compensate=1]", "GammaAndGrainLayers", "PhysicalDefectsAndWeave", "CameraAndEnlargerOptics", "DirAndCompressionOff", "SignedZeroGlare[+0]", "SignedZeroGlare[-0]", "CorrectionsAndScannerControls[print]", "CorrectionsAndScannerControls[direct]", "EncodingOnlyReusesMediumIdentities[encoded]", "EncodingOnlyReusesMediumIdentities[linear]", "SnapshotIntegerBooleansPreserveNonzeroCasts[direct]", "SnapshotIntegerBooleansPreserveNonzeroCasts[print]", "DisabledFamiliesExcludeUnusedControls", "GrainDebugSuppressesPhysicalEffects"};
+    std::optional<Json> projectionOracle;
+    Json projectionRows = Json::array();
+    std::vector<std::string> observedProjectionCases;
+    bool captureProjection = false;
+
+    void exact_keys(const Json& value, std::initializer_list<std::string_view> names) {
+        if (!value.is_object() || value.size() != names.size())
+            throw std::runtime_error("prepared-state oracle object key count");
+        for (const auto name : names)
+            if (!value.contains(std::string(name)))
+                throw std::runtime_error("prepared-state oracle missing key " + std::string(name));
+    }
+
+    void require_projection_membership(const Json& cases) {
+        if (!cases.is_array() || cases.size() != kProjectionCases.size())
+            throw std::runtime_error("prepared-state oracle requires exactly 31 rows");
+        for (std::size_t i = 0; i < kProjectionCases.size(); ++i)
+            if (cases.at(i).at("case_id") != std::string(kProjectionCases[i]))
+                throw std::runtime_error("prepared-state oracle row membership/order");
+    }
+
+    void require_projection_inputs(const Json& inputs, const std::string& preset) {
+        exact_keys(inputs, {"resource_directory", "parameter_type"});
+        if (inputs.at("resource_directory") != "out/build/" + preset + "/tests/Resources" || inputs.at("parameter_type") != "FjPreparationParams")
+            throw std::runtime_error("wrong prepared-state oracle inputs");
+    }
+
+    Json read_projection(const std::filesystem::path& path, const std::string& preset) {
+        std::ifstream source(path, std::ios::binary);
+        if (!source)
+            throw std::runtime_error("missing prepared-state oracle " + path.string());
+        std::vector<std::set<std::string>> objects;
+        const auto parsed = Json::parse(source, [&](int, Json::parse_event_t event, Json& value) {
+            if (event == Json::parse_event_t::object_start)
+                objects.emplace_back();
+            else if (event == Json::parse_event_t::key && !objects.back().insert(value.get<std::string>()).second)
+                throw std::runtime_error("duplicate prepared-state oracle object key");
+            else if (event == Json::parse_event_t::object_end)
+                objects.pop_back();
+            return true;
+        });
+        exact_keys(parsed, {"schema_version", "preset", "producer", "toolchain", "configuration", "inputs", "cases"});
+        if (parsed.at("schema_version") != 1 || parsed.at("preset") != preset ||
+            (preset != "linux-debug" && preset != "linux-release" && preset != "windows-clang-debug" && preset != "windows-clang-release"))
+            throw std::runtime_error("unsupported prepared-state oracle schema/preset");
+        const auto& producer = parsed.at("producer");
+        exact_keys(producer, {"authority", "target", "manifest_entry"});
+        if (producer.at("authority") != "Film-Juicer native composition" || producer.at("target") != "JuicerPreparedStateTests" || producer.at("manifest_entry") != preset)
+            throw std::runtime_error("wrong prepared-state oracle producer");
+        const auto& toolchain = parsed.at("toolchain");
+        exact_keys(toolchain, {"cxx", "rust_toolchain", "pointer_bits"});
+        if (toolchain.at("cxx") != __VERSION__ || toolchain.at("rust_toolchain") != "1.98.1" || toolchain.at("pointer_bits") != sizeof(void*) * 8)
+            throw std::runtime_error("wrong prepared-state oracle toolchain");
+        const auto& configuration = parsed.at("configuration");
+        exact_keys(configuration, {"build_type", "testing"});
+        if (configuration.at("build_type") != (preset.ends_with("debug") ? "Debug" : "Release") || configuration.at("testing") != true)
+            throw std::runtime_error("wrong prepared-state oracle configuration");
+        require_projection_inputs(parsed.at("inputs"), preset);
+        const auto& cases = parsed.at("cases");
+        require_projection_membership(cases);
+        for (std::size_t i = 0; i < kProjectionCases.size(); ++i) {
+            const auto& row = cases.at(i);
+            exact_keys(row, {"case_id", "input", "status", "api", "native_code", "diagnostic", "expected", "captured_actual", "backing_relations"});
+            if (row.at("case_id") != std::string(kProjectionCases[i]) || row.at("status") != FJ_STATUS_SUCCESS || row.at("api") != FJ_API_NONE || row.at("native_code") != 0 || row.at("diagnostic") != "")
+                throw std::runtime_error("prepared-state oracle row membership/status");
+            // Provenance is structurally checked; only expected supplies acceptance values.
+            PreparedStateOracle::compare(row.at("expected"), row.at("captured_actual"));
+            if (!row.at("backing_relations").is_array())
+                throw std::runtime_error("prepared-state oracle backing relation shape");
+            for (const auto& edge : row.at("backing_relations")) {
+                exact_keys(edge, {"left", "right", "equal"});
+                if (!edge.at("left").is_string() || !edge.at("right").is_string() || edge.at("equal") != true)
+                    throw std::runtime_error("prepared-state oracle backing relation");
+            }
+        }
+        return parsed;
+    }
+
+    std::string projection_case(const ParamSnapshot& params) {
+        std::string name = ::testing::UnitTest::GetInstance()->current_test_info()->name();
+        if (name == "PreflashAndNormalizationModes")
+            name += "[norm=" + std::to_string(params.normalizePrintExposure) + ",compensate=" + std::to_string(params.printExposureCompensation) + "]";
+        else if (name == "SignedZeroGlare")
+            name += std::signbit(params.glarePercent) ? "[-0]" : "[+0]";
+        else if (name == "CorrectionsAndScannerControls" || name == "SnapshotIntegerBooleansPreserveNonzeroCasts")
+            name += Spektrafilm::scan_route_is_print(params.scanRoute) ? "[print]" : "[direct]";
+        else if (name == "EncodingOnlyReusesMediumIdentities")
+            name += params.outputCctfEncoding != 0 ? "[encoded]" : "[linear]";
+        return name;
+    }
+
+    Json backing_edge(std::string left, std::string right, bool equal) {
+        return {{"left", std::move(left)}, {"right", std::move(right)}, {"equal", equal}};
+    }
+
+    const Json& oracle_row(std::string_view name) {
+        for (const auto& row : projectionOracle->at("cases"))
+            if (row.at("case_id") == std::string(name))
+                return row;
+        throw std::runtime_error("unaccounted prepared-state oracle row");
+    }
+
+    bool encoding_edge(const Json& edge) {
+        return edge.at("left").get<std::string>().starts_with("EncodingOnlyReusesMediumIdentities[");
+    }
+
+    void compare_backing(const Json& expected, const Json& actual) {
+        if (expected != actual)
+            throw std::runtime_error("prepared-state oracle live backing relationship mismatch");
+    }
+
+    void record_projection(const ParamSnapshot& params, const FjPreparedStateView& expected, const FjPreparedStateView& actual) {
+        const auto name = projection_case(params);
+        if (std::find(kProjectionCases.begin(), kProjectionCases.end(), name) == kProjectionCases.end() ||
+            std::find(observedProjectionCases.begin(), observedProjectionCases.end(), name) != observedProjectionCases.end())
+            throw std::runtime_error("unknown or duplicate prepared-state projection case " + name);
+        observedProjectionCases.push_back(name);
+        const auto expectedRecord = PreparedStateOracle::view(expected);
+        const auto actualRecord = PreparedStateOracle::view(actual);
+        PreparedStateOracle::compare(expectedRecord, actualRecord);
+        Json relations = Json::array();
+        if (expected.input_hull.xy.count != 0) {
+            relations.push_back(backing_edge("native.input_hull.entry_identity", "actual.input_hull.entry_identity", expected.input_hull.entry_identity == actual.input_hull.entry_identity));
+            relations.push_back(backing_edge("native.input_hull.xy", "actual.input_hull.xy", expected.input_hull.xy.data == actual.input_hull.xy.data));
+        }
+        if (expected.output_boundary.cmax.count != 0) {
+            relations.push_back(backing_edge("native.output_boundary.entry_identity", "actual.output_boundary.entry_identity", expected.output_boundary.entry_identity == actual.output_boundary.entry_identity));
+            relations.push_back(backing_edge("native.output_boundary.cmax", "actual.output_boundary.cmax", expected.output_boundary.cmax.data == actual.output_boundary.cmax.data));
+        }
+        for (const auto& edge : relations)
+            EXPECT_EQ(edge.at("equal"), true);
+        const auto input = PreparedStateOracle::params(preparation_params(params));
+        if (projectionOracle) {
+            const auto& row = oracle_row(name);
+            PreparedStateOracle::compare(row.at("input"), input);
+            PreparedStateOracle::compare(row.at("expected"), actualRecord);
+            Json recordedRelations = Json::array();
+            for (const auto& edge : row.at("backing_relations"))
+                if (!encoding_edge(edge))
+                    recordedRelations.push_back(edge);
+            compare_backing(recordedRelations, relations);
+        }
+        if (captureProjection)
+            projectionRows.push_back({{"case_id", name}, {"input", input}, {"status", FJ_STATUS_SUCCESS}, {"api", FJ_API_NONE}, {"native_code", 0}, {"diagnostic", ""}, {"expected", expectedRecord}, {"captured_actual", actualRecord}, {"backing_relations", std::move(relations)}});
+    }
+
+    void observe_encoding_relation(bool equal) {
+        const auto edge = backing_edge("EncodingOnlyReusesMediumIdentities[encoded].output_boundary.entry_identity", "EncodingOnlyReusesMediumIdentities[linear].output_boundary.entry_identity", equal);
+        for (const auto* const name : {"EncodingOnlyReusesMediumIdentities[encoded]", "EncodingOnlyReusesMediumIdentities[linear]"}) {
+            if (projectionOracle) {
+                Json edges = Json::array();
+                for (const auto& recorded : oracle_row(name).at("backing_relations"))
+                    if (encoding_edge(recorded))
+                        edges.push_back(recorded);
+                compare_backing(edges, Json::array({edge}));
+            }
+            if (captureProjection)
+                for (auto& row : projectionRows)
+                    if (row.at("case_id") == name)
+                        row.at("backing_relations").push_back(edge);
+        }
+    }
+
+    std::string successful_projection_filter() {
+        std::set<std::string> names;
+        for (const auto name : kProjectionCases)
+            names.insert("PreparedStateProducts." + std::string(name.substr(0, name.find('['))));
+        std::string filter;
+        for (const auto& name : names) {
+            if (!filter.empty())
+                filter += ':';
+            filter += name;
+        }
+        return filter;
+    }
+
+    Json projection_payload(const std::string& preset, const std::string& resources) {
+        return {{"schema_version", 1}, {"preset", preset}, {"producer", {{"authority", "Film-Juicer native composition"}, {"target", "JuicerPreparedStateTests"}, {"manifest_entry", preset}}}, {"toolchain", {{"cxx", __VERSION__}, {"rust_toolchain", "1.98.1"}, {"pointer_bits", sizeof(void*) * 8}}}, {"configuration", {{"build_type", preset.ends_with("debug") ? "Debug" : "Release"}, {"testing", true}}}, {"inputs", {{"resource_directory", resources}, {"parameter_type", "FjPreparationParams"}}}, {"cases", projectionRows}};
+    }
     FjAssets* assets() {
         JuicerProcess::root().ensure_bootstrap();
         return JuicerProcess::root().assets().borrow_rust_assets();
+    }
+
+    FjStatus state_view(const std::optional<PreparedState>& owner, FjPreparedStateView& out) {
+        if (!owner)
+            return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
+        FjErrorBuffer error{nullptr, 0, 0};
+        return owner->view(out, error);
     }
 
     template <class T>
@@ -232,9 +465,9 @@ namespace {
         FjStatus status{};
         auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
-        ASSERT_NE(owner, nullptr);
+        ASSERT_TRUE(owner.has_value());
         FjPreparedStateView actual{};
-        ASSERT_EQ(fj_test_prepared_state_view(owner.get(), &actual, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(state_view(owner, actual).category, FJ_STATUS_SUCCESS);
         const auto& recipe = expected.recipe;
         const auto& payload = expected.payload;
         equal_fixed_recipes(actual, recipe, payload);
@@ -523,6 +756,10 @@ namespace {
         EXPECT_EQ(wireCorrection.schema_version, correction.schemaVersion);
         EXPECT_EQ(wireCorrection.hash, correction.hash);
         equal_bits(actual.film_exposure.route_correction_scale, print ? 1.0f : correction.exposureScale);
+        PreparedStateOracle::NativeBacking backing;
+        FjPreparedStateView nativeView{};
+        ASSERT_TRUE(PreparedStateOracle::SF_TEMP_BRIDGE_native_prepared_view(expected, params, nativeView, backing, diagnostic)) << diagnostic;
+        record_projection(params, nativeView, actual);
     }
 
     void baseline(bool positive, bool print, int method) {
@@ -561,6 +798,74 @@ namespace {
         params.spectralUpsamplingMode = 1;
         params.grainControls.active = false;
         return params;
+    }
+
+    TEST(PreparedStateProducts, OracleReaderRejectsFieldShapeWidthTagAndBackingMutations) {
+        const auto params = print_params();
+        FocusedRenderStateBuildProduct product;
+        std::string diagnostic;
+        ASSERT_TRUE(build_print_render_state_product(params, product, diagnostic)) << diagnostic;
+        PreparedStateOracle::NativeBacking backing;
+        FjPreparedStateView native{};
+        ASSERT_TRUE(PreparedStateOracle::SF_TEMP_BRIDGE_native_prepared_view(product, params, native, backing, diagnostic)) << diagnostic;
+        const auto expected = PreparedStateOracle::view(native);
+        FjStatus status{};
+        auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
+        ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
+        FjPreparedStateView actual{};
+        ASSERT_EQ(state_view(owner, actual).category, FJ_STATUS_SUCCESS);
+        const auto current = PreparedStateOracle::view(actual);
+        ASSERT_NO_THROW(PreparedStateOracle::compare(expected, current));
+        auto damaged = expected;
+        damaged.at("grain").erase("amplitude");
+        EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
+        damaged = expected;
+        damaged.at("output_color")["unaccounted"] = 0;
+        EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
+        damaged = expected;
+        damaged.at("film_exposure").at("sensitivity_rgb")["shape"] = Json::array({81});
+        EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
+        damaged = expected;
+        damaged.at("print_gamma")["bits"] = "00000000";
+        EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
+        damaged = expected;
+        damaged.at("route")["value"] = 4;
+        EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
+        damaged = expected;
+        ASSERT_NE(native.output_boundary.cmax.count, 0u);
+        damaged.at("output_boundary").at("entry_identity")["relation"] = "unrelated_backing";
+        EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
+        const Json positiveZero{{"type", "f32"}, {"bits", "00000000"}};
+        const Json negativeZero{{"type", "f32"}, {"bits", "80000000"}};
+        EXPECT_THROW(PreparedStateOracle::compare(positiveZero, negativeZero), std::runtime_error);
+        const Json edge = Json::array({backing_edge("native.input_hull.xy", "actual.input_hull.xy", true)});
+        auto changedEdge = edge;
+        changedEdge.at(0)["equal"] = false;
+        EXPECT_THROW(compare_backing(changedEdge, edge), std::runtime_error);
+        // Membership literals test the reader, never provide scientific products.
+        Json membership = Json::array();
+        for (const auto name : kProjectionCases)
+            membership.push_back({{"case_id", std::string(name)}});
+        ASSERT_NO_THROW(require_projection_membership(membership));
+        auto wrongMembership = membership;
+        wrongMembership.erase(wrongMembership.begin());
+        EXPECT_THROW(require_projection_membership(wrongMembership), std::runtime_error);
+        wrongMembership = membership;
+        wrongMembership.at(1) = wrongMembership.at(0);
+        EXPECT_THROW(require_projection_membership(wrongMembership), std::runtime_error);
+        EXPECT_THROW(exact_keys(Json{{"schema_version", 1}, {"unknown", 0}}, {"schema_version"}), std::runtime_error);
+        const Json inputs{{"resource_directory", std::string("out/build/") + FJ_PREPARED_STATE_PRESET + "/tests/Resources"}, {"parameter_type", "FjPreparationParams"}};
+        ASSERT_NO_THROW(require_projection_inputs(inputs, FJ_PREPARED_STATE_PRESET));
+        auto wrongInputs = inputs;
+        wrongInputs["resource_directory"] = "out/build/foreign/tests/Resources";
+        EXPECT_THROW(require_projection_inputs(wrongInputs, FJ_PREPARED_STATE_PRESET), std::runtime_error);
+        std::filesystem::create_directories(artifactRoot);
+        const auto duplicatePath = artifactRoot / "reader-duplicate.json";
+        {
+            std::ofstream duplicate(duplicatePath, std::ios::binary);
+            duplicate << "{\"schema_version\":1,\"schema_version\":1}";
+        }
+        EXPECT_THROW((void)read_projection(duplicatePath, FJ_PREPARED_STATE_PRESET), std::runtime_error);
     }
 
     TEST(PreparedStateProducts, DirectIgnoresPrintControls) {
@@ -702,13 +1007,13 @@ namespace {
             std::string diagnostic;
             auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
             equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
-            EXPECT_EQ(owner, nullptr);
+            EXPECT_FALSE(owner.has_value());
             EXPECT_EQ(diagnostic, earlierDiagnostic);
             equal_preparation_trace(expectedTrace);
             EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 0u);
             owner = JuicerCudaTest::prepare_state(assets(), repaired, status, diagnostic);
             equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
-            EXPECT_EQ(owner, nullptr);
+            EXPECT_FALSE(owner.has_value());
             EXPECT_EQ(diagnostic, "Reference source preparation: exposure production boundary fault");
             EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 1u);
         }
@@ -775,19 +1080,19 @@ namespace {
             std::string diagnostic;
             if (!cold) {
                 auto warm = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
-                EXPECT_EQ(warm, nullptr);
+                EXPECT_FALSE(warm.has_value());
                 equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
             }
             fj_test_calibration_read_fault(1);
             auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
             equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
-            EXPECT_EQ(owner, nullptr);
+            EXPECT_FALSE(owner.has_value());
             EXPECT_EQ(diagnostic, kGammaDiagnostic);
             equal_preparation_trace({FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_SELECTED_PRINT, FJ_PREPARE_ILLUMINANTS, FJ_PREPARE_DEVELOPMENT});
             EXPECT_EQ(fj_test_calibration_reads(), 0u);
             owner = JuicerCudaTest::prepare_state(assets(), repaired, status, diagnostic);
             equal_status(status, FJ_STATUS_ALLOCATION_FAILURE);
-            EXPECT_EQ(owner, nullptr);
+            EXPECT_FALSE(owner.has_value());
             EXPECT_EQ(diagnostic, dependencyDiagnostic);
             EXPECT_EQ(fj_test_calibration_reads(), 1u);
             fj_test_calibration_read_fault(0);
@@ -828,7 +1133,7 @@ namespace {
         auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, nativeStatus.category);
         EXPECT_EQ(diagnostic, dependencyDiagnostic);
-        EXPECT_EQ(owner, nullptr);
+        EXPECT_FALSE(owner.has_value());
         equal_preparation_trace({FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_ILLUMINANTS});
         std::uint32_t pending = 99;
         equal_status(fj_test_assets_curve_fault_pending(assets(), &pending, nullptr), FJ_STATUS_SUCCESS);
@@ -836,7 +1141,7 @@ namespace {
         owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
         EXPECT_EQ(diagnostic, nativeDiagnostic);
-        EXPECT_EQ(owner, nullptr);
+        EXPECT_FALSE(owner.has_value());
         equal_status(fj_test_assets_curve_fault(assets(), FJ_CSV_D65, 1, nullptr), FJ_STATUS_SUCCESS);
         owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
@@ -890,7 +1195,7 @@ namespace {
                         ASSERT_FALSE(build_print_render_state_product(warm, native, diagnostic));
                     } else {
                         auto ignored = JuicerCudaTest::prepare_state(assets(), warm, status, diagnostic);
-                        EXPECT_EQ(ignored, nullptr);
+                        EXPECT_FALSE(ignored.has_value());
                         equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
                     }
                 }
@@ -900,7 +1205,7 @@ namespace {
                     ASSERT_FALSE(build_print_render_state_product(params, native, diagnostic));
                 } else {
                     auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
-                    EXPECT_EQ(owner, nullptr);
+                    EXPECT_FALSE(owner.has_value());
                     equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
                     equal_preparation_trace({FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_SELECTED_PRINT, FJ_PREPARE_ILLUMINANTS, FJ_PREPARE_DEVELOPMENT, FJ_PREPARE_OBSERVER, FJ_PREPARE_RECONSTRUCTION_SOURCE, FJ_PREPARE_CALIBRATION});
                 }
@@ -917,7 +1222,7 @@ namespace {
                     }
                 } else {
                     auto owner = JuicerCudaTest::prepare_state(assets(), print_params(), status, diagnostic);
-                    EXPECT_EQ(owner, nullptr);
+                    EXPECT_FALSE(owner.has_value());
                     equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
                     EXPECT_EQ(diagnostic, "Reference source preparation: exposure production boundary fault");
                 }
@@ -934,12 +1239,12 @@ namespace {
         auto encoded = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         FjPreparedStateView first{}, second{};
-        equal_status(fj_test_prepared_state_view(encoded.get(), &first, nullptr), FJ_STATUS_SUCCESS);
+        equal_status(state_view(encoded, first), FJ_STATUS_SUCCESS);
         params.outputCctfEncoding = 0;
         compare_product(params);
         auto linear = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
-        equal_status(fj_test_prepared_state_view(linear.get(), &second, nullptr), FJ_STATUS_SUCCESS);
+        equal_status(state_view(linear, second), FJ_STATUS_SUCCESS);
         EXPECT_NE(first.recipe_hash, second.recipe_hash);
         EXPECT_NE(first.scanner_color.hash, second.scanner_color.hash);
         EXPECT_EQ(first.scanner_lut.hash, second.scanner_lut.hash);
@@ -947,11 +1252,14 @@ namespace {
         EXPECT_EQ(first.scanner_hash, second.scanner_hash);
         EXPECT_EQ(first.print.hash, second.print.hash);
         EXPECT_EQ(first.output_boundary.entry_identity, second.output_boundary.entry_identity);
+        observe_encoding_relation(first.output_boundary.entry_identity == second.output_boundary.entry_identity);
     }
 
     TEST(PreparedStateProducts, SnapshotIntegerBooleansPreserveNonzeroCasts) {
         for (bool print : {false, true}) {
             auto params = print ? print_params() : ParamSnapshot{};
+            if (!print)
+                params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
             params.normalizePrintExposure = -3;
             params.printExposureCompensation = 2;
             params.inputCctfDecoding = -3;
@@ -975,7 +1283,7 @@ namespace {
         auto baseline = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         FjPreparedStateView first{}, second{};
-        equal_status(fj_test_prepared_state_view(baseline.get(), &first, nullptr), FJ_STATUS_SUCCESS);
+        equal_status(state_view(baseline, first), FJ_STATUS_SUCCESS);
         params.cameraDiffusion.strength = 0.25;
         params.enlargerDiffusion.spatialScale = 2.0;
         params.scatterHalationControls.scatterAmount = std::numeric_limits<float>::quiet_NaN();
@@ -984,7 +1292,7 @@ namespace {
         compare_product(params);
         auto changed = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
-        equal_status(fj_test_prepared_state_view(changed.get(), &second, nullptr), FJ_STATUS_SUCCESS);
+        equal_status(state_view(changed, second), FJ_STATUS_SUCCESS);
         EXPECT_EQ(first.recipe_hash, second.recipe_hash);
         EXPECT_EQ(first.optics.hash, 0u);
         EXPECT_EQ(second.optics.hash, 0u);
@@ -1004,7 +1312,7 @@ namespace {
         auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         FjPreparedStateView view{};
-        equal_status(fj_test_prepared_state_view(owner.get(), &view, nullptr), FJ_STATUS_SUCCESS);
+        equal_status(state_view(owner, view), FJ_STATUS_SUCCESS);
         EXPECT_NE(view.grain.hash, 0u);
         EXPECT_EQ(view.effects.hash, 0u);
         EXPECT_EQ(view.effects.active, 0u);
@@ -1027,20 +1335,20 @@ namespace {
         auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, FJ_STATUS_INTERNAL_FAILURE);
         EXPECT_EQ(diagnostic, "asset boundary panic");
-        EXPECT_EQ(owner, nullptr);
+        EXPECT_FALSE(owner.has_value());
         EXPECT_EQ(fj_test_prepared_live_states(), baseline);
         equal_preparation_trace({FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_SELECTED_PRINT, FJ_PREPARE_ILLUMINANTS});
         equal_status(fj_test_exposure_arm_fault(5, 1, 2), FJ_STATUS_SUCCESS);
         owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, FJ_STATUS_INTERNAL_FAILURE);
         EXPECT_EQ(diagnostic, "asset boundary panic");
-        EXPECT_EQ(owner, nullptr);
+        EXPECT_FALSE(owner.has_value());
         EXPECT_EQ(fj_test_exposure_fault_consumed(5, 2), 1u);
         EXPECT_EQ(fj_test_prepared_live_states(), baseline);
         equal_preparation_trace({FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_SELECTED_PRINT, FJ_PREPARE_ILLUMINANTS, FJ_PREPARE_DEVELOPMENT, FJ_PREPARE_OBSERVER, FJ_PREPARE_RECONSTRUCTION_SOURCE, FJ_PREPARE_CALIBRATION, FJ_PREPARE_ROUTE_PRECHECKS, FJ_PREPARE_FOUNDATION, FJ_PREPARE_FILM_PAYLOAD, FJ_PREPARE_PRINT_MAIN_ILLUMINANT, FJ_PREPARE_FILM_REFERENCE});
         owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, FJ_STATUS_SUCCESS);
-        EXPECT_NE(owner, nullptr);
+        EXPECT_TRUE(owner.has_value());
         EXPECT_TRUE(diagnostic.empty());
     }
 
@@ -1062,7 +1370,7 @@ namespace {
                 std::string diagnostic;
                 auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
                 equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
-                EXPECT_EQ(owner, nullptr);
+                EXPECT_FALSE(owner.has_value());
                 EXPECT_EQ(diagnostic, print ? "ResourceDescriptorMismatch phase=4C focused print publication payload build failed" : "ResourceDescriptorMismatch focused direct publication payload build failed");
                 EXPECT_EQ(fj_test_prepared_live_states(), baseline);
                 const auto trace = fj_test_prepared_trace();
@@ -1073,7 +1381,7 @@ namespace {
                 }
                 owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
                 equal_status(status, FJ_STATUS_SUCCESS);
-                EXPECT_NE(owner, nullptr);
+                EXPECT_TRUE(owner.has_value());
                 EXPECT_TRUE(diagnostic.empty());
             }
         }
@@ -1257,7 +1565,7 @@ namespace {
         params.gateScratchAmount = 0.3f;
         FjStatus status{};
         std::string diagnostic;
-        auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
+        auto owner = JuicerCudaTest::prepare_raw_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         ASSERT_EQ(fj_test_prepared_live_states(), baseline + 1);
         FjPreparedStateView populated{};
@@ -1288,7 +1596,7 @@ namespace {
         expect_cleared(cleared);
         rejected(fj_test_prepared_state_view(owner.get(), nullptr, nullptr));
         EXPECT_EQ(fj_test_prepared_live_states(), baseline + 1);
-        const auto wire = JuicerCudaTest::preparation_params(params);
+        const auto wire = preparation_params(params);
         FjPreparedState* candidate = owner.get(); // A borrowed sentinel, never another hold.
         rejected(fj_test_prepared_state_create(nullptr, &wire, &candidate, nullptr));
         EXPECT_EQ(candidate, nullptr);
@@ -1308,11 +1616,11 @@ namespace {
         params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
         FjStatus status{};
         std::string diagnostic;
-        auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
+        auto owner = JuicerCudaTest::prepare_raw_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         const auto before = fj_test_prepared_live_states();
         params.scannerBlackLevel = std::numeric_limits<double>::quiet_NaN();
-        const auto wire = JuicerCudaTest::preparation_params(params);
+        const auto wire = preparation_params(params);
         const std::string expected = "ResourceDescriptorMismatch phase=8 field=scanner_output";
         for (std::size_t capacity : {0u, 1u, 4u, 128u}) {
             SCOPED_TRACE(capacity);
@@ -1355,11 +1663,11 @@ namespace {
         }
         ParamSnapshot params;
         params.grainControls.active = false;
-        const auto wire = JuicerCudaTest::preparation_params(params);
+        const auto wire = preparation_params(params);
         FjPreparedState* owner = nullptr;
         ASSERT_EQ(fj_test_prepared_state_create_c(assets(), &wire, &owner, nullptr).category, FJ_STATUS_SUCCESS);
         ASSERT_NE(owner, nullptr);
-        JuicerCudaTest::PreparedStateHold hold(owner);
+        JuicerCudaTest::RawPreparedStateHold hold(owner);
         FjPreparedStateView first{}, second{};
         EXPECT_EQ(fj_test_prepared_state_view_c(owner, &first, nullptr).category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(fj_test_prepared_state_view(owner, &second, nullptr).category, FJ_STATUS_SUCCESS);
@@ -1369,6 +1677,49 @@ namespace {
         EXPECT_EQ(fj_test_prepared_state_release_c(hold.release(), nullptr).category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(fj_test_prepared_state_release_c(nullptr, nullptr).category, FJ_STATUS_SUCCESS);
     }
+
+    TEST(PreparedStateAbi, CallScopeLayoutAndRustC11Witnesses) {
+        static_assert(std::is_same_v<decltype(FjGrainCoefficients::flags), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjGrainCoefficients::debug_view), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjGrainCoefficients::sublayer_count), std::size_t>);
+        static_assert(std::is_same_v<decltype(FjGrainCoefficients::micro_structure), float[2]>);
+        static_assert(std::is_same_v<decltype(FjGrainCoefficients::particle_density_min_cmy), float[3]>);
+        static_assert(std::is_same_v<decltype(FjGrainCoefficients::uniformity_cmy), float[3]>);
+        static_assert(std::is_same_v<decltype(FjGrainCoefficients::layer_axis_block_prefix_max), float[3][16]>);
+        static_assert(std::is_same_v<decltype(FjCallCompletionInput::render_outcome_valid), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjCallCompletionInput::abort_failed), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjCallCompletionInput::recovery_scope_entered), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjCallCompletionInput::has_inspected_context), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjCallCompletionInput::force_fatal), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjCallCompletionResult::fatal), std::uint32_t>);
+        static const std::size_t cppFacts[] = {
+#define FJ_ABI_TYPE(type, size, alignment) sizeof(type), alignof(type),
+#define FJ_ABI_FIELD(type, field, offset) offsetof(type, field),
+#define FJ_ABI_VALUE(tag, value) tag,
+#include "prepared_call_abi_facts.inc"
+#undef FJ_ABI_TYPE
+#undef FJ_ABI_FIELD
+#undef FJ_ABI_VALUE
+        };
+        std::size_t cCount = 0, rustCount = 0;
+        const auto* cFacts = fj_test_prepared_call_c_facts(&cCount);
+        const auto* rustFacts = fj_test_prepared_call_abi_facts(&rustCount);
+        ASSERT_EQ(cCount, std::size(cppFacts));
+        ASSERT_EQ(rustCount, std::size(cppFacts));
+        for (std::size_t i = 0; i < cCount; ++i) {
+            SCOPED_TRACE(i);
+            EXPECT_EQ(cFacts[i], cppFacts[i]);
+            EXPECT_EQ(rustFacts[i], cppFacts[i]);
+        }
+    }
+
+    TEST(PreparedStateAbi, HostPreparationFacadeIsScopedAndC11Callable) {
+        const auto before = fj_test_gaussian_kernel_live_owners();
+        EXPECT_EQ(fj_test_host_preparation_c_call(), 1);
+        EXPECT_EQ(fj_test_gaussian_kernel_live_owners(), before);
+        EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
+    }
+
     TEST(PreparedStateAbi, InputHullFaultsBelongToActualOwnerAndRetainedWarmEntry) {
         constexpr std::array<const char*, 4> kRequirements{
             "cie1931_380_700_and_d65", "finite_locus_ray_intersections", "finite_inscribed_scale", "stable_identity"};
@@ -1444,10 +1795,10 @@ namespace {
         auto state = JuicerCudaTest::prepare_state(resourceOwner, params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         FjPreparedStateView before{};
-        ASSERT_EQ(fj_test_prepared_state_view(state.get(), &before, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(state_view(state, before).category, FJ_STATUS_SUCCESS);
         for (int repeat = 0; repeat < 100; ++repeat) {
             FjPreparedStateView warm{};
-            equal_status(fj_test_prepared_state_view(state.get(), &warm, nullptr), FJ_STATUS_SUCCESS);
+            equal_status(state_view(state, warm), FJ_STATUS_SUCCESS);
             EXPECT_EQ(warm.film_development.density_rgb.data, before.film_development.density_rgb.data);
             EXPECT_EQ(warm.exposure_tables.illuminant.data, before.exposure_tables.illuminant.data);
             EXPECT_EQ(warm.scanner_tables.dyes_cmy[2].data, before.scanner_tables.dyes_cmy[2].data);
@@ -1510,7 +1861,7 @@ namespace {
         equal_span(input.xy, xy);
         equal_span(output.cmax, cmax);
         FjPreparedStateView after{};
-        ASSERT_EQ(fj_test_prepared_state_view(state.get(), &after, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(state_view(state, after).category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(after.recipe_hash, before.recipe_hash);
         EXPECT_EQ(after.film_development.density_rgb.data, before.film_development.density_rgb.data);
         EXPECT_EQ(after.input_hull.xy.data, input.xy.data);
@@ -1526,13 +1877,65 @@ namespace {
 int main(int argc, char** argv) {
     try {
         ::testing::InitGoogleTest(&argc, argv);
-        if (argc != 3)
+        if (argc != 3 && argc != 6)
             return 2;
         artifactRoot = argv[2];
+        std::string preset;
+        bool checkProjection = false;
+        std::filesystem::path capturePath;
+        if (argc == 6) {
+            preset = argv[5];
+            const std::string mode = argv[3];
+            if (mode == "--capture-state-projection") {
+                captureProjection = true;
+                capturePath = argv[4];
+                if (std::filesystem::exists(capturePath))
+                    throw std::runtime_error("preserve the existing prepared-state capture");
+                const auto parent = std::filesystem::absolute(capturePath.parent_path()).lexically_normal();
+                if (parent != std::filesystem::absolute(artifactRoot).lexically_normal())
+                    throw std::runtime_error("prepared-state capture must use its explicit artifact directory");
+            } else if (mode == "--check-state-projection") {
+                projectionOracle = read_projection(argv[4], preset);
+                checkProjection = true;
+            } else {
+                return 2;
+            }
+            ::testing::GTEST_FLAG(filter) = successful_projection_filter();
+        } else {
+            const char* configuredPreset = std::getenv("JUICER_TEST_PRESET_NAME");
+            if (configuredPreset == nullptr)
+                throw std::runtime_error("prepared-state tests require the configured native preset");
+            preset = configuredPreset;
+            const auto fixture = std::filesystem::path(__FILE__).parent_path() / "fixtures/prepared-state-projection" / (preset + ".json");
+            projectionOracle = read_projection(fixture, preset);
+        }
+        if (preset != FJ_PREPARED_STATE_PRESET)
+            throw std::runtime_error("prepared-state preset does not match its compiled native profile");
+        const auto resourceDirectory = std::string("out/build/") + preset + "/tests/Resources";
+        const auto sourceRoot = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+        if (!std::filesystem::equivalent(sourceRoot / resourceDirectory, std::filesystem::path(argv[1])))
+            throw std::runtime_error("prepared-state resources do not match the declared native preset");
         JuicerCuda::Owner owner;
         owner.create(std::filesystem::path(argv[1]));
         JuicerProcess::root().ensure_bootstrap();
-        return RUN_ALL_TESTS();
+        const int result = RUN_ALL_TESTS();
+        if (result != 0)
+            return result;
+        if (captureProjection || checkProjection || (::testing::GTEST_FLAG(filter) == "PreparedStateProducts.*" && projectionOracle)) {
+            if (observedProjectionCases.size() != kProjectionCases.size())
+                throw std::runtime_error("prepared-state projection did not execute all 31 rows");
+            for (std::size_t i = 0; i < kProjectionCases.size(); ++i)
+                if (observedProjectionCases[i] != kProjectionCases[i])
+                    throw std::runtime_error("prepared-state projection row order mismatch");
+        }
+        if (captureProjection) {
+            std::filesystem::create_directories(artifactRoot);
+            std::ofstream output(capturePath, std::ios::binary);
+            output.exceptions(std::ios::badbit | std::ios::failbit);
+            output << projection_payload(preset, resourceDirectory).dump() << '\n';
+            output.close();
+        }
+        return 0;
     } catch (const JuicerCuda::ExecutionFailure& error) {
         std::cerr << error.failure.diagnostic << '\n';
         return 1;

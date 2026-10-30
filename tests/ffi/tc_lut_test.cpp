@@ -19,6 +19,7 @@
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "print_illuminant_fixture.h"
+#include "spectral_source_fixture.h"
 
 #define FJ_TC_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
 #define FJ_TC_FIELD(type, field, offset) static_assert(offsetof(type, field) == offset);
@@ -81,6 +82,8 @@ namespace {
         return hash;
     }
     void numerical(const Json& fixture, const std::filesystem::path& tablesPath) {
+        const JuicerTestSupport::HanatosSource hanatos(JuicerProcess::root().assets().borrow_rust_assets());
+        const JuicerTestSupport::ArcticSource arctic(JuicerProcess::root().assets().borrow_rust_assets());
         std::vector<float> procedural(std::size_t{192} * 192u * 81u);
         for (std::size_t i = 0; i < procedural.size(); ++i)
             procedural[i] = std::bit_cast<float>(0x3e000123u + static_cast<std::uint32_t>(i % 4093u) * 173u);
@@ -101,8 +104,8 @@ namespace {
                 procedural[0] = std::numeric_limits<float>::infinity();
             if (id == 22)
                 procedural[0] = std::numeric_limits<float>::quiet_NaN();
-            const auto& source = id == 7 ? Spectral::gHanSpectra.data : id == 8 ? Spectral::context().arcticSpectra.data
-                                                                                : procedural;
+            const FjFloatSpan source = id == 7 ? hanatos.view().samples : id == 8 ? arctic.view().samples
+                                                                                  : FjFloatSpan{procedural.data(), procedural.size()};
             std::array<float, 243> sensitivity{};
             std::array<float, 45> surface{};
             for (std::size_t i = 0; i < 81; ++i)
@@ -113,7 +116,7 @@ namespace {
                     surface[c * 15 + i] = word(input["surface_params"][c][i]);
             const auto spd = values<81>(input["spd"]);
             const auto white = values<3>(input["white"]);
-            const FjFilmTcLutInput request{{source.data(), source.size()}, {sensitivity.data(), sensitivity.size()}, {spd.data(), spd.size()}, {white[0], white[1], white[2]}, word(input["blur"]), input["method"].get<std::uint32_t>(), input["surface"].get<bool>() ? 1u : 0u, {surface.data(), surface.size()}, input["compression"].get<bool>() ? 1u : 0u, input["hull_available"].get<bool>() ? 1u : 0u, {center[0], center[1]}, {hull.data(), hull.size()}};
+            const FjFilmTcLutInput request{source, {sensitivity.data(), sensitivity.size()}, {spd.data(), spd.size()}, {white[0], white[1], white[2]}, word(input["blur"]), input["method"].get<std::uint32_t>(), input["surface"].get<bool>() ? 1u : 0u, {surface.data(), surface.size()}, input["compression"].get<bool>() ? 1u : 0u, input["hull_available"].get<bool>() ? 1u : 0u, {center[0], center[1]}, {hull.data(), hull.size()}};
             for (int facade = 0; facade < 2; ++facade) {
                 Owned owned;
                 Diagnostic error;

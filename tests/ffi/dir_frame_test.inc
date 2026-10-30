@@ -7,21 +7,13 @@ namespace DirFrameTest {
         return {input.at(0), input.at(1), input.at(2), input.at(3)};
     }
 
-    DirCouplersRecipe recipe(const Json& input) {
-        DirCouplersRecipe out;
-        out.active = input.at("active").get<bool>();
-        out.diffusionSizeUm = scalar(input.at("size"));
-        out.diffusionTailUm = scalar(input.at("tail"));
-        out.diffusionTailWeight = scalar(input.at("weight"));
-        out.hash = input.at("hash");
-        return out;
-    }
+    FjDirFrameInput raw_input(const Json& input);
 
     Json replacement_case(const Json& input) {
         SpatialDirDescriptor out;
         const auto label = input.at("label").get<std::string>();
-        const bool success = JuicerTestSupport::prepare_dir_frame(
-            recipe(input), scalar(input.at("pixel")), extent(input.at("render")), extent(input.at("full")), label.c_str(), out);
+        const auto wire = raw_input(input);
+        const bool success = JuicerTestSupport::prepare_dir_frame(wire, label.c_str(), out);
         return {{"input", input}, {"success", success}, {"native", JuicerTestSupport::dir_frame_fields(out)}};
     }
 
@@ -38,18 +30,17 @@ namespace DirFrameTest {
             params.dirCouplers.diffusionSizeUm = 20.0f;
             params.dirCouplers.diffusionTailUm = 200.0f;
             params.dirCouplers.diffusionTailWeight = 0.03f;
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            require(route % 2 ? build_print_render_state_product(params, product, diagnostic)
-                              : build_direct_render_state_product(params, product, diagnostic),
-                    diagnostic.c_str());
+            auto product = JuicerTestSupport::prepare_product(params);
+            FjPreparedStateView view{};
+            FjErrorBuffer error{};
+            status(product.view(view, error));
             for (const auto& spec : inputs) {
-                const auto& dir = product.recipe.dirCouplers;
+                const auto& dir = view.dir_recipe;
                 Json input{{"name", std::to_string(route) + "/" + spec.at("name").get<std::string>()},
-                           {"active", dir.active},
-                           {"size", std::bit_cast<std::uint32_t>(dir.diffusionSizeUm)},
-                           {"tail", std::bit_cast<std::uint32_t>(dir.diffusionTailUm)},
-                           {"weight", std::bit_cast<std::uint32_t>(dir.diffusionTailWeight)},
+                           {"active", dir.mode != 0},
+                           {"size", std::bit_cast<std::uint32_t>(dir.diffusion_size_um)},
+                           {"tail", std::bit_cast<std::uint32_t>(dir.diffusion_tail_um)},
+                           {"weight", std::bit_cast<std::uint32_t>(dir.diffusion_tail_weight)},
                            {"hash", dir.hash},
                            {"pixel", spec.at("pixel")},
                            {"render", spec.at("render")},
@@ -57,7 +48,7 @@ namespace DirFrameTest {
                            {"label", route % 2 ? "print" : "direct"}};
                 auto row = replacement_case(input);
                 row["route"] = route;
-                row["recipe_hash"] = product.recipe.hash;
+                row["recipe_hash"] = view.recipe_hash;
                 rows.push_back(row);
             }
         }
@@ -74,6 +65,15 @@ namespace DirFrameTest {
                 {render.x, render.y, render.width, render.height},
                 {full.x, full.y, full.width, full.height},
                 input.at("hash")};
+    }
+
+    JuicerDir::MathOutcome prepare_wire(const FjDirFrameInput& input) {
+        FjDirFrameMath math{};
+        FjDirFrameFailure failure{};
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const auto result = fj_legacy_dir_frame_prepare(&input, &math, &failure, &error);
+        return JuicerDir::MathOutcome::admit(input, result, math, failure, error, text);
     }
 
     Json math_words(const FjDirFrameMath& v) {
@@ -175,11 +175,17 @@ namespace DirFrameTest {
                     const auto outcome = JuicerDir::MathOutcome::admit(input, result, math, failure, error, text);
                     SpatialDirDescriptor composed;
                     const auto label = row.at("input").at("label").get<std::string>();
-                    require(Spektrafilm::compose_spatial_dir_descriptor(outcome, label.c_str(), composed) == success && JuicerTestSupport::dir_frame_fields(composed) == row.at("native"), "complete native composer, defaults, transient tiers and final hash");
+                    const bool composedSuccess = Spektrafilm::compose_spatial_dir_descriptor(outcome, label.c_str(), composed);
+                    const auto observed = JuicerTestSupport::dir_frame_fields(composed);
+                    require(composedSuccess == success && observed == row.at("native"),
+                            ("complete native composer, defaults, transient tiers and final hash: " +
+                             row.at("input").at("name").get<std::string>() + " success=" +
+                             std::to_string(composedSuccess) + " diff=" + Json::diff(row.at("native"), observed).dump())
+                                .c_str());
                 }
                 require(fj_test_dir_frame_c_check(&input, &expected, &rejected, success ? 0u : 3u, diagnostic.c_str()), "C11 reader checks all fields and failure trace");
                 require(replacement_case(row.at("input")) == Json{{"input", row.at("input")}, {"success", row.at("success")}, {"native", row.at("native")}}, "facade and common native composer");
-                const auto outcome = JuicerDir::prepare_math(recipe(row.at("input")), scalar(row.at("input").at("pixel")), extent(row.at("input").at("render")), extent(row.at("input").at("full")));
+                const auto outcome = prepare_wire(input);
                 SpatialDirDescriptor composed;
                 const auto label = row.at("input").at("label").get<std::string>();
                 require(Spektrafilm::compose_spatial_dir_descriptor(outcome, label.c_str(), composed) == success && JuicerTestSupport::dir_frame_fields(composed) == row.at("native"), "production bridge and sole native hash");
@@ -237,18 +243,19 @@ namespace DirFrameTest {
         }
         for (unsigned fault = 1; fault <= 6; ++fault) {
             const auto& source = fault == 6 ? rows.at(1) : rows.at(0);
-            auto literal = recipe(source.at("input"));
+            auto literal = raw_input(source.at("input"));
             float pixel = scalar(source.at("input").at("pixel"));
             if (fault == 6)
                 pixel = 0;
+            literal.pixel_size_um = pixel;
             status(fj_test_dir_frame_fault(fault));
-            const auto result = JuicerDir::prepare_math(literal, pixel, extent(source.at("input").at("render")), extent(source.at("input").at("full")));
+            const auto result = prepare_wire(literal);
             SpatialDirDescriptor out;
             require(!Spektrafilm::compose_spatial_dir_descriptor(result, "direct", out) && JuicerTestSupport::dir_frame_fields(out) == JuicerTestSupport::dir_frame_fields(SpatialDirDescriptor{}), "boundary corruption/panic never becomes executable progress");
             require(std::holds_alternative<JuicerDir::MathOutcome::BoundaryFailure>(result.result()), "closed boundary failure kind");
             const auto& failure = std::get<JuicerDir::MathOutcome::BoundaryFailure>(result.result()).failure;
             require(failure.status.category == (fault == 1 ? 8u : 3u), "panic versus corrupt projection classification");
-            const auto recovered = JuicerDir::prepare_math(recipe(rows[0].at("input")), 1.0f, {0, 0, 64, 48}, {0, 0, 64, 48});
+            const auto recovered = prepare_wire(raw_input(rows[0].at("input")));
             require(Spektrafilm::compose_spatial_dir_descriptor(recovered, "direct", out), "fault consumed once");
         }
         status(fj_test_dir_frame_fault(1));

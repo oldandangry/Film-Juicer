@@ -2,8 +2,10 @@
 set(JUICER_NATIVE_SOURCES
     src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp
     native/juicer_cuda_api.cpp
+    native/juicer_cuda_call_scope.cpp
     native/juicer_cuda_descriptors.cpp
     native/juicer_cuda_prepared.cpp
+    native/juicer_host_preparation.cpp
     src/Cuda/JuicerCudaDeviceLedger.cpp
     src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp
     src/Cuda/JuicerCudaExecutor.cpp
@@ -25,6 +27,7 @@ set(JUICER_NATIVE_SOURCES
 set(JUICER_HOST_SOURCES
     src/CudaRenderProjection.cpp
     src/JuicerState.cpp
+    src/PreparedState.cpp
     src/RustAssetBridge.cpp
     src/RustSpectralBridge.cpp
     src/RustReconstructionBridge.cpp

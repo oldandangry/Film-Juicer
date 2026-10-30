@@ -32,6 +32,7 @@ namespace ScannerCorrectionTest {
         const std::array floats{value.targetBlackLinear, value.targetWhiteLinear, value.referenceBlackY, value.referenceWhiteY, value.xyzSlope, value.xyzOffset, value.exposureScale};
         return {{"route", static_cast<unsigned>(value.route)}, {"active", value.active}, {"black", value.blackCorrection}, {"white", value.whiteCorrection}, {"words", words(floats.data(), floats.size())}, {"schema", value.schemaVersion}, {"hash", value.hash}};
     }
+    Json project(const FjScannerColorCorrection& value);
 
     template <typename Rows>
     Json row_words(const Rows& rows) {
@@ -78,6 +79,10 @@ namespace ScannerCorrectionTest {
         return out;
     }
 
+    // SF_TEMP_BRIDGE_NATIVE_SCANNER_CORRECTION: these values feed only the
+    // retained native adapter, corruption, and trace observers. The 150-row
+    // correction input/oracle path uses Inputs and the existing raw facades;
+    // remove this adapter-only literal graph with the I7 native bridge.
     struct Literal {
         RenderRecipe recipe;
         std::shared_ptr<Profiles::FilmProfile> film = std::make_shared<Profiles::FilmProfile>();
@@ -320,6 +325,8 @@ namespace ScannerCorrectionTest {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         JuicerProcess::root().ensure_bootstrap();
+        auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+        require(assets != nullptr, "scanner correction products have process Rust assets");
         Json out = Json::array();
         for (unsigned route = 0; route < 4; ++route)
             for (int mode = 0; mode < 3; ++mode)
@@ -330,6 +337,33 @@ namespace ScannerCorrectionTest {
                     params.spectralUpsamplingMode = mode;
                     params.scannerBlackCorrection = (flags & 1u) != 0;
                     params.scannerWhiteCorrection = (flags & 2u) != 0;
+                    auto stateOwner = JuicerTestSupport::prepare_product(params);
+                    FjPreparedStateView state{};
+                    std::array<char, 2048> errorText{};
+                    FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+                    status(stateOwner.view(state, error));
+                    const bool printRoute = route % 2 != 0;
+
+                    // Source-profile bytes remain owned by the live asset views;
+                    // the complete prepared state supplies resolved execution data.
+                    FjFilmProfile* filmOwner = nullptr;
+                    FjPrintProfile* printOwner = nullptr;
+                    status(fj_legacy_film_profile_acquire(assets, state.film_profile_key, &filmOwner, &error));
+                    FjFilmProfileView film{};
+                    FjPrintProfileView paper{};
+                    status(fj_legacy_film_profile_view(filmOwner, &film, &error));
+                    require(film.asset_token == state.film_profile_asset_version,
+                            "correction product film view matches held-state asset version");
+                    if (printRoute) {
+                        status(fj_legacy_print_profile_acquire(assets, state.print_profile_key, &printOwner, &error));
+                        status(fj_legacy_print_profile_view(printOwner, &paper, &error));
+                        require(paper.asset_token == state.print_profile_asset_version,
+                                "correction product print view matches held-state asset version");
+                    }
+
+                    // SF_TEMP_BRIDGE_NATIVE_SCANNER_TRACE: the old native caller
+                    // remains solely as the current log-format observer until I5
+                    // wires trace consumption to the retained Rust correction trace.
                     FocusedRenderStateBuildProduct product;
                     std::string diagnostic;
                     const bool success = route % 2 ? build_print_render_state_product(params, product, diagnostic)
@@ -355,18 +389,69 @@ namespace ScannerCorrectionTest {
                         normalizer = printInput.normalizer;
                     }
                     const auto position = trace_position();
-                    const auto observation = observe(recipe, product.payload.scannerTables, light, preflash, normalizer, route % 2 != 0);
+                    (void)observe(recipe, product.payload.scannerTables, light, preflash, normalizer, route % 2 != 0);
                     const auto context = "product:" + std::to_string(route) + ":" + std::to_string(mode) + ":" + std::to_string(flags);
                     check_trace(correction_trace_since(position), context, expectedTraces.at(context));
+
+                    const auto& tables = state.scanner_tables;
+                    require(tables.lambda_nm.count == 81 && tables.illuminant.count == 81 &&
+                                tables.weighted_xyz[1].count == 81 && tables.dyes_cmy[0].count == 81 &&
+                                tables.dyes_cmy[1].count == 81 && tables.dyes_cmy[2].count == 81,
+                            "held scanner correction table extents");
+                    Json tableInput{{"c", words(tables.dyes_cmy[0].data, tables.dyes_cmy[0].count)},
+                                    {"m", words(tables.dyes_cmy[1].data, tables.dyes_cmy[1].count)},
+                                    {"y", words(tables.dyes_cmy[2].data, tables.dyes_cmy[2].count)},
+                                    {"ay", words(tables.weighted_xyz[1].data, tables.weighted_xyz[1].count)},
+                                    {"baseline", words(tables.baseline_min.data, tables.baseline_min.count)},
+                                    {"k", tables.lambda_nm.count},
+                                    {"has_baseline", tables.has_baseline != 0},
+                                    {"inv_yn", std::bit_cast<std::uint32_t>(tables.inv_yn)}};
+                    const std::array<float, 81> emptyLight{};
+                    const auto lightWords = printRoute
+                                                ? words(state.print.main_illuminant.data, state.print.main_illuminant.count)
+                                                : words(emptyLight.data(), emptyLight.size());
+                    Json input{{"route", state.route},
+                               {"flags", unsigned(state.scanner_policy.black_correction) + 2u * unsigned(state.scanner_policy.white_correction)},
+                               {"levels", words(std::array{state.scanner_policy.black_level, state.scanner_policy.white_level}.data(), 2)},
+                               {"medium", state.scanner_bounds.medium},
+                               {"minimum", words(state.scanner_bounds.minimum_cmy, 3)},
+                               {"maximum", words(state.scanner_bounds.maximum_cmy, 3)},
+                               {"inverse", words(state.scanner_bounds.inv_span_cmy, 3)},
+                               {"tables", std::move(tableInput)},
+                               {"film_base", words(film.tables.base_density.data, film.tables.base_density.count)},
+                               {"film_axis", words(film.tables.log_exposure.data, film.tables.log_exposure.count)},
+                               {"film_dyes", words(film.tables.channel_density_cmy.data, film.tables.channel_density_cmy.count)},
+                               {"authored_curves", words(film.tables.density_curves_cmy.data, film.tables.density_curves_cmy.count)},
+                               {"baseline_density", words(state.film_reference.baseline_density_cmy, 3)},
+                               {"reference_hash", state.film_reference.hash},
+                               {"light", lightWords},
+                               {"preflash", words(state.print.preflash_raw_cmy, 3)},
+                               {"normalizer", std::bit_cast<std::uint32_t>(printRoute ? state.print.normalizer : 1.0f)},
+                               {"preflash_exposure", std::bit_cast<std::uint32_t>(printRoute ? state.print.preflash_exposure : 0.0f)},
+                               {"film_minimum", words(state.enlarger_film_bounds.minimum_cmy, 3)},
+                               {"film_maximum", words(state.enlarger_film_bounds.maximum_cmy, 3)}};
+                    if (printRoute) {
+                        input["print_base"] = words(paper.tables.base_density.data, paper.tables.base_density.count);
+                        input["print_axis"] = words(paper.tables.log_exposure.data, paper.tables.log_exposure.count);
+                        input["print_curves"] = words(paper.tables.density_curves_cmy.data, paper.tables.density_curves_cmy.count);
+                        input["sensitivity"] = words(paper.tables.linear_sensitivity_rgb.data, paper.tables.linear_sensitivity_rgb.count);
+                    }
+                    const auto capturedCorrection = [&] {
+                        const auto descriptor = project(state.scanner_correction);
+                        return Json{{"native_outcome", "returned"}, {"native_bool", true}, {"exception_kind", nullptr}, {"descriptor", descriptor}, {"diagnostic", ""}};
+                    }();
                     out.push_back({{"id", std::to_string(route) + ":" + std::to_string(mode) + ":" + std::to_string(flags)},
                                    {"mode", mode},
                                    {"print", route % 2 != 0},
-                                   {"input", inputs(recipe, product.payload.scannerTables, light, preflash, normalizer, route % 2 != 0)},
-                                   {"native", observation},
+                                   {"input", std::move(input)},
+                                   {"native", capturedCorrection},
                                    {"snapshot_hash", hash_params(params)},
-                                   {"recipe_hash", recipe.hash},
-                                   {"scanner_hash", recipe.scannerOutput.hash},
-                                   {"upload_hash", product.payload.uploadCoreHash}});
+                                   {"recipe_hash", state.recipe_hash},
+                                   {"scanner_hash", state.scanner_recipe_hash},
+                                   {"upload_hash", state.upload_core_hash}});
+                    if (printOwner)
+                        status(fj_legacy_print_profile_release(printOwner, &error));
+                    status(fj_legacy_film_profile_release(filmOwner, &error));
                 }
         return out;
     }
@@ -828,6 +913,6 @@ namespace ScannerCorrectionTest {
         }
     }
     void check_products(const std::filesystem::path& resources, const Json& captured, const Json& expectedTraces) {
-        require(products(resources, expectedTraces) == captured.at("products"), "all 48 actual correction callers retain controls, resource inputs, descriptor and enclosing identities");
+        require_equal(products(resources, expectedTraces), captured.at("products"), "all 48 actual correction callers retain controls, resource inputs, descriptor and enclosing identities");
     }
 } // namespace ScannerCorrectionTest

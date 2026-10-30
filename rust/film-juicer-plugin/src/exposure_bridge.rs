@@ -255,6 +255,18 @@ pub(crate) fn clear_fault() {
 pub(crate) fn fault_consumed(operation: u32, fault: u32) -> bool {
     film_juicer_core::film::input::testing::exposure_consumed(operation, fault)
 }
+fn fixed_boundary_failure(error: exposure::BoundaryError) -> Failure {
+    match error {
+        #[cfg(feature = "test-support")]
+        exposure::BoundaryError::Unsupported => {
+            Failure::Input("exposure production boundary fault")
+        }
+        #[cfg(feature = "test-support")]
+        exposure::BoundaryError::Preparation => {
+            Failure::InjectedPreparation("fixed exposure preparation category fault")
+        }
+    }
+}
 fn inject(operation: u32) -> Result<(), Failure> {
     #[cfg(feature = "test-support")]
     if let Some(fault) = film_juicer_core::film::input::testing::exposure_fault(operation) {
@@ -443,7 +455,8 @@ pub(crate) unsafe fn mallett_midgray_call(
                 sensitivity_rgb: rgb_tensor(input.sensitivity_rgb)?,
             };
             fault()?;
-            let value = exposure::mallett_midgray(request);
+            let value =
+                exposure::checked_mallett_midgray(request).map_err(fixed_boundary_failure)?;
             out.write(FjMallettMidgray {
                 midgray_dwg_rgb: *value.midgray_dwg_rgb(),
                 raw_midgray_bgr: *value.raw_midgray_bgr(),
@@ -470,7 +483,8 @@ pub(crate) unsafe fn tc_midgray_call(
                 return Err(Failure::Input("invalid TC normalization output"));
             }
             fault()?;
-            out.write(exposure::tc_midgray(green).into());
+            let value = exposure::checked_tc_midgray(green).map_err(fixed_boundary_failure)?;
+            out.write(value.into());
             Ok(())
         })
     }
@@ -542,7 +556,7 @@ pub(crate) unsafe extern "C" fn fj_legacy_exposure_mallett_midgray(
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
     // SAFETY: Caller retains scoped inputs and disjoint writable outputs.
-    unsafe { mallett_midgray_call(input, out, error, || inject(3)) }
+    unsafe { mallett_midgray_call(input, out, error, || Ok(())) }
 }
 // FJ_TEMP_BRIDGE: TC green normalization binding; remove S4.E.
 /// # Safety
@@ -554,7 +568,7 @@ pub(crate) unsafe extern "C" fn fj_legacy_exposure_tc_midgray(
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
     // SAFETY: Caller authorizes the complete exclusive output/error storage.
-    unsafe { tc_midgray_call(green, out, error, || inject(4)) }
+    unsafe { tc_midgray_call(green, out, error, || Ok(())) }
 }
 // FJ_TEMP_BRIDGE: shared synthetic reference source binding; remove S4.E.
 /// # Safety

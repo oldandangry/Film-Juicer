@@ -1067,6 +1067,12 @@ exercises all six upload failure positions through actual render preparation.
 The frozen `scanner/lut-fixtures/manifest.json` distinguishes native numerical
 characterization from the safety/transport contract in `checked.json`.
 Successful stored words are exact in each matching native platform/profile.
+`Resource.Gpu.ScannerLut` exercises the actual native serving owner with the
+same scoped Rust callbacks as held rendering. It checks all four route products,
+warm hits with armed faults, individual construction/upload/retirement failures,
+both owner rechecks, later gamut failure and upload backing expiry. Retirement
+checks account exactly for prefix fences that are still queued or already reaped.
+The fixture drains resources and pinned staging before destroying its CUDA context.
 The four logical native captures share `lut-fixtures/native.json`; the manifest's
 `contexts` map selects each preset's label and primitive results. Shared payload
 and context fields must be disjoint. `storage_files` hashes the physical files;

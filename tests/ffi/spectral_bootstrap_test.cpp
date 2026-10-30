@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <new>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -27,6 +28,8 @@
 #include "RustAssetBridge.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "prepared_product_fixture.h"
+#include "spectral_source_fixture.h"
 #include "spectral_test_resources.h"
 
 namespace JuicerProcess::TestSupport {
@@ -202,6 +205,9 @@ namespace {
         ASSERT_TRUE(Spectral::mallett_available());
         EXPECT_EQ(Spectral::gHanSpectra.assetHash, UINT64_C(0x81ebefd4e4cc9926));
         EXPECT_EQ(Spectral::context().arcticSpectra.assetHash, UINT64_C(0x9262ffb765e3289e));
+        // SF_TEMP_BRIDGE_NATIVE_SPECTRAL_BOOTSTRAP_COMPARISON: retain native
+        // pointer identity and conversion evidence through I7 while consumers
+        // move to the held source owners.
         const auto* hanatos = Spectral::gHanSpectra.data.data();
         const auto* arctic = Spectral::context().arcticSpectra.data.data();
         const auto* basis = Spectral::gMallettBasis.data.data();
@@ -264,10 +270,46 @@ namespace {
             EXPECT_TRUE(Spectral::arctic_available());
             EXPECT_TRUE(Spectral::mallett_available());
             EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            EXPECT_FALSE(build_direct_render_state_product(controls(1), product, diagnostic));
-            EXPECT_FALSE(diagnostic.empty());
+
+            // SF_TEMP_BRIDGE_NATIVE_CMF_FAILURE: preserve the old native
+            // bootstrap consumer failure until I7 removes that comparison.
+            FocusedRenderStateBuildProduct SF_TEMP_BRIDGE_nativeProduct;
+            std::string SF_TEMP_BRIDGE_nativeDiagnostic;
+            EXPECT_FALSE(build_direct_render_state_product(controls(1), SF_TEMP_BRIDGE_nativeProduct, SF_TEMP_BRIDGE_nativeDiagnostic));
+            EXPECT_FALSE(SF_TEMP_BRIDGE_nativeDiagnostic.empty());
+
+            std::optional<PreparedState> product;
+            std::array<char, 2048> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+            const auto result = prepare_state(assets, controls(1), product, error);
+            const bool nativeOnlyFailure = std::strcmp(failure, "axis") == 0 || std::strcmp(failure, "copy") == 0 || std::strcmp(failure, "construction") == 0;
+            if (nativeOnlyFailure) {
+                ASSERT_EQ(result.category, FJ_STATUS_SUCCESS);
+                EXPECT_EQ(result.api, FJ_API_NONE);
+                EXPECT_EQ(result.native_code, 0);
+                ASSERT_TRUE(product);
+                FjPreparedStateView view{};
+                error = {diagnostic.data(), diagnostic.size(), 0};
+                ASSERT_EQ(product->view(view, error).category, FJ_STATUS_SUCCESS);
+                JuicerTestSupport::CmfSource cmf(assets);
+                const std::array<FjFloatSpan, 3> source{{cmf.x(), cmf.y(), cmf.z()}};
+                for (std::size_t channel = 0; channel < source.size(); ++channel) {
+                    ASSERT_EQ(view.exposure_tables.observer_xyz[channel].count, 81u);
+                    EXPECT_EQ(std::memcmp(
+                                  view.exposure_tables.observer_xyz[channel].data,
+                                  source[channel].data,
+                                  81u * sizeof(float)),
+                              0);
+                }
+            } else {
+                EXPECT_EQ(result.category, FJ_STATUS_PREPARATION_FAILURE);
+                EXPECT_EQ(result.api, FJ_API_NONE);
+                EXPECT_EQ(result.native_code, 0);
+                EXPECT_FALSE(product);
+                EXPECT_GT(error.length, 0u);
+            }
+            EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
             expect_no_cuda();
         }
     }
@@ -283,9 +325,24 @@ namespace {
             JuicerProcess::root().ensure_bootstrap();
             const unsigned absent = missing == SpectralFixture::kHanatos ? 0u : (missing == SpectralFixture::kArctic ? 2u : 1u);
             for (unsigned method : {0u, 1u, 2u}) {
-                FocusedRenderStateBuildProduct product;
+                bool success = false;
                 std::string diagnostic;
-                const bool success = build_direct_render_state_product(controls(method), product, diagnostic);
+                if (method != absent) {
+                    auto state = JuicerTestSupport::prepare_product(controls(method));
+                    std::array<char, 2048> viewText{};
+                    FjErrorBuffer viewError{viewText.data(), viewText.size(), 0};
+                    FjPreparedStateView view{};
+                    const auto viewed = state.view(view, viewError);
+                    EXPECT_EQ(viewed.category, FJ_STATUS_SUCCESS);
+                    success = viewed.category == FJ_STATUS_SUCCESS;
+                } else {
+                    std::optional<PreparedState> state;
+                    std::array<char, 2048> errorText{};
+                    FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+                    const auto result = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls(method), state, error);
+                    success = result.category == FJ_STATUS_SUCCESS;
+                    diagnostic.assign(errorText.data(), error.length);
+                }
                 EXPECT_EQ(success, method != absent) << "method=" << method << ' ' << diagnostic;
                 if (method == absent) {
                     EXPECT_FALSE(diagnostic.empty());
@@ -300,6 +357,8 @@ namespace {
                 EXPECT_TRUE(Spectral::context().arcticSpectra.data.empty());
                 EXPECT_EQ(Spectral::context().arcticSpectra.assetHash, 0u);
             } else {
+                // SF_TEMP_BRIDGE_NATIVE_SPECTRAL_BOOTSTRAP_COMPARISON: retain
+                // the legacy native-empty/cold-copy comparison through I7.
                 EXPECT_FALSE(Spectral::mallett_available());
                 EXPECT_TRUE(Spectral::gMallettBasis.data.empty());
             }
@@ -328,8 +387,12 @@ namespace {
         EXPECT_FALSE(Spectral::build_film_tc_lut(recipe, Spectral::gHanSpectra, illuminant, result, diagnostic));
         EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;
         EXPECT_FALSE(result.has_value());
-        FocusedRenderStateBuildProduct product;
-        EXPECT_FALSE(build_direct_render_state_product(controls(0), product, diagnostic));
+        std::optional<PreparedState> product;
+        std::array<char, 2048> errorText{};
+        FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+        const auto preparedStatus = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls(0), product, error);
+        diagnostic.assign(errorText.data(), error.length);
+        EXPECT_NE(preparedStatus.category, FJ_STATUS_SUCCESS);
         EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;
         expect_no_cuda();
     }
@@ -356,6 +419,8 @@ namespace {
             ASSERT_TRUE(Spectral::hanatos_available());
             ASSERT_TRUE(Spectral::arctic_available());
             ASSERT_TRUE(Spectral::mallett_available());
+            // SF_TEMP_BRIDGE_NATIVE_SPECTRAL_BOOTSTRAP_COMPARISON: these words
+            // still verify legacy bootstrap conversion against authored bits.
             for (std::size_t index = 0; index < decoded.size(); ++index) {
                 EXPECT_EQ(std::bit_cast<std::uint32_t>(Spectral::gHanSpectra.data[index]), decoded[index]);
                 EXPECT_EQ(std::bit_cast<std::uint32_t>(Spectral::context().arcticSpectra.data[index]), decoded[index]);
@@ -370,7 +435,8 @@ namespace {
             std::array<std::array<float, 3>, 81> sensitivity{};
             for (auto& row : sensitivity)
                 row.fill(1.0f);
-            const FjMallettRawInput request{{1.0f, 1.0f, 1.0f}, {Spectral::gMallettBasis.data.data(), 243}, {leafIlluminant.data(), 81}, {sensitivity.front().data(), 243}};
+            JuicerTestSupport::MallettSource mallettSource(JuicerProcess::root().assets().borrow_rust_assets());
+            const FjMallettRawInput request{{1.0f, 1.0f, 1.0f}, mallettSource.samples(), {leafIlluminant.data(), 81}, {sensitivity.front().data(), 243}};
             float exposure[3]{};
             std::array<char, 512> bytes{};
             FjErrorBuffer error{bytes.data(), bytes.size(), 0};
@@ -408,17 +474,24 @@ namespace {
             JuicerProcess::root().ensure_bootstrap();
             EXPECT_TRUE(Spectral::hanatos_available());
             EXPECT_TRUE(Spectral::arctic_available());
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
             if (overflow) {
                 EXPECT_TRUE(std::isinf(Spectral::gHanSpectra.data.front()));
-                EXPECT_FALSE(build_direct_render_state_product(controls(0), product, diagnostic));
+                std::optional<PreparedState> product;
+                std::array<char, 2048> errorText{};
+                FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+                const auto result = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls(0), product, error);
+                const std::string diagnostic(errorText.data(), error.length);
+                EXPECT_NE(result.category, FJ_STATUS_SUCCESS);
                 EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;
             } else {
                 EXPECT_EQ(Spectral::context().arcticSpectra.data[0], 100.0f);
                 EXPECT_EQ(Spectral::context().arcticSpectra.data[1], -50.0f);
                 EXPECT_NE(Spectral::context().arcticSpectra.assetHash, UINT64_C(0x9262ffb765e3289e));
-                EXPECT_TRUE(build_direct_render_state_product(controls(2), product, diagnostic)) << diagnostic;
+                auto product = JuicerTestSupport::prepare_product(controls(2));
+                std::array<char, 2048> errorText{};
+                FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+                FjPreparedStateView view{};
+                EXPECT_EQ(product.view(view, error).category, FJ_STATUS_SUCCESS);
             }
         }
     }
@@ -592,6 +665,8 @@ namespace {
     }
 
     TEST(SpectralBootstrap, CopyCapacityAndSequentialOwnerOverlapRemainBounded) {
+        // SF_TEMP_BRIDGE_NATIVE_SPECTRAL_BOOTSTRAP_COMPARISON: these tests
+        // retain native allocation/capacity evidence through I7.
         reset_observations();
         for (unsigned repetition = 0; repetition < 3; ++repetition) {
             JuicerCuda::Owner owner;

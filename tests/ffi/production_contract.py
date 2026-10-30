@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -104,9 +105,11 @@ def execute(arguments):
     )
     native = build / ("juicer_core.lib" if windows else "libjuicer_core.a")
     module = build / "juicer.ofx"
+    prepared_executable = build / "tests/bin" / ("JuicerProductionPreparedRenderProbe" + suffix)
     build_hashes.update({
         str(path): digest(path)
-        for path in [native, archive, module, *([build / "juicer.pdb"] if windows else [])]
+        for path in [native, archive, module, prepared_executable,
+                     *([build / "juicer.pdb"] if windows else [])]
     })
     forbidden = re.compile(
         "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
@@ -197,7 +200,15 @@ def execute(arguments):
         b"TC production boundary fault",
         b"TC fixture-only fault",
     ]
-    consumed_paths = [root / "native/juicer_legacy_api.h", fixtures / "production-film.c.in",
+    processor_fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{arguments.preset}.dat"
+    print_updates = root / "tests/print/illuminant-fixtures/product-updates.json"
+    consumed_paths = [root / "native/juicer_legacy_api.h", root / "native/juicer_cuda_call_scope.h",
+                      root / "native/juicer_cuda_frame_values.h",
+                      root / "CMakeLists.txt", fixtures / "production-prepared-render.cpp",
+                      fixtures / "prepared_call_abi_facts.inc",
+                      root / "tests/ofx/fixtures/exposure/manifest.json", processor_fixture,
+                      root / "tests/print/illuminant-fixtures/manifest.json", print_updates,
+                      fixtures / "production-film.c.in",
                       fixtures / "production-output-color.c.in", fixtures / "grain_frame_abi_assertions.inc",
                       fixtures / "grain_probe_contract.py", Path(__file__),
                       out / "production-film-expected.h"]
@@ -661,6 +672,44 @@ def execute(arguments):
                 assert actual == expected, actual["case"]
                 gaussian_results.append(actual)
     check_build_inputs()
+    check_consumed()
+    prepared_before = digest(prepared_executable)
+    prepared_command = [str(prepared_executable), str(root / "Resources"), str(processor_fixture),
+                        arguments.preset, str(print_updates)]
+    prepared_output = run("prepared-render", prepared_command)
+    prepared_after = digest(prepared_executable)
+    assert prepared_before == prepared_after == build_hashes[str(prepared_executable)], "prepared executable changed"
+    raw_document = json.loads(prepared_output)
+    assert set(raw_document) == {"rows"}, "prepared render stdout schema"
+    raw_rows = raw_document["rows"]
+    assert [row["case_id"] for row in raw_rows] == [
+        "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"
+    ], "prepared render exact row membership"
+
+    def word_hash(words):
+        assert isinstance(words, list) and all(type(word) is int and 0 <= word <= 0xffffffff for word in words)
+        return hashlib.sha256(b"".join(struct.pack("<I", word) for word in words)).hexdigest()
+
+    prepared_rows = []
+    for raw in raw_rows:
+        row = dict(raw)
+        row["input_sha256"] = word_hash(row.pop("input_f32_words"))
+        row["output_f32_words_sha256"] = word_hash(row.pop("output_f32_words"))
+        assert all(type(row[name]) is int and row[name] == 0 for name in ("status", "api", "native_code"))
+        assert row["accepted_fixture_match"] is True and row["diagnostic"] == ""
+        prepared_rows.append(row)
+    retained_prepared = out / prepared_executable.name
+    shutil.copyfile(prepared_executable, retained_prepared)
+    assert digest(retained_prepared) == prepared_after, "retained prepared executable changed"
+    prepared_render = {
+        "executable": str(retained_prepared), "executable_sha256_before": prepared_before,
+        "executable_sha256_after": prepared_after, "command": prepared_command,
+        "fixture": str(processor_fixture), "fixture_sha256": digest(processor_fixture),
+        "stdout_sha256": digest(out / "prepared-render.stdout"),
+        "stderr_sha256": digest(out / "prepared-render.stderr"), "rows": prepared_rows,
+    }
+    check_build_inputs()
+    check_consumed()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
         cuda = Path(os.environ["CUDA_PATH_V13_2"])
@@ -736,6 +785,7 @@ def execute(arguments):
                 "scanner_post_fixture": {"manifest": str(post_manifest), "payload": str(post_payload), "context": str(post_context), "logical_preset": arguments.preset},
                 "scanner_descriptor_fixture": {"manifest": str(descriptor_manifest), "payload": str(descriptor_payload), "context": str(descriptor_context), "logical_preset": arguments.preset},
                 "prepared_state_results": prepared_state_results,
+                "prepared_render": prepared_render,
                 "reference_results": reference_results,
                 "reference_fixture": {"manifest": str(reference_manifest), "payload": str(reference_payload), "logical_preset": arguments.preset},
                 "scanner_color_fixture": {"manifest": str(color_manifest), "payload": str(color_payload), "normative": str(color_checked), "logical_preset": arguments.preset},

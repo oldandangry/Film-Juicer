@@ -1,3 +1,7 @@
+namespace PrintPreflashTest {
+    JuicerCudaTest::PreparedFrameFixture::FrameFacts frame_facts(const ParamSnapshot& p);
+}
+
 namespace PrintIlluminantTest {
     using Prepare = FjStatus (*)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*);
     thread_local unsigned nextProjection = 0;
@@ -9,7 +13,37 @@ namespace PrintIlluminantTest {
         copy_words(row.at("cmy_cc"), out.cmy_cc);
         return out;
     }
-    void metadata(const FjPrintIlluminantFailure& failure, std::uint32_t reason, std::uint32_t sample = UINT32_MAX) {
+    void metadata(const FjPrintIlluminantFailure& failure, std::uint32_t reason, std::uint32_t sample = UINT32_MAX);
+    void zero(const FjIlluminant& out);
+    struct PreparedPrintFacts {
+        std::uint64_t printHash = 0;
+        std::size_t preflashCount = 0;
+    };
+    bool inspect_prepared_print(void* opaque,
+                                const JuicerCudaTest::PreparedFrameFixture::Inputs& prepared,
+                                std::string& diagnostic) {
+        auto& facts = *static_cast<PreparedPrintFacts*>(opaque);
+        const auto* input = std::get_if<JuicerCuda::PrintResourceInput>(&prepared.preparation.print);
+        if (!input) {
+            diagnostic = "prepared print state has no complete resource input";
+            return false;
+        }
+        facts.printHash = input->descriptors.hash;
+        facts.preflashCount = input->preflashIlluminant.size();
+        return true;
+    }
+    void consume_stage10(const Json& literalCases) {
+        const auto& row = literalCases.at("cases")[0];
+        auto input = params(row);
+        float source[81]{};
+        copy_words(row.at("source"), source);
+        FjIlluminant output{};
+        FjPrintIlluminantFailure failure{};
+        status(fj_test_print_illuminant_prepare(&input, {source, std::size(source)}, &output, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+        metadata(failure, FJ_PRINT_ILLUMINANT_REASON_PANIC);
+        zero(output);
+    }
+    void metadata(const FjPrintIlluminantFailure& failure, std::uint32_t reason, std::uint32_t sample) {
         require(failure.reason == reason && failure.sample == sample, "exact print illuminant failure metadata");
     }
     void zero(const FjIlluminant& out) {
@@ -167,7 +201,7 @@ namespace PrintIlluminantTest {
         zero(out);
         status(fj_test_print_illuminant_prepare(&input, {source, 81}, &out, &failure, nullptr));
     }
-    void products(const std::filesystem::path& resources, const Json& captured) {
+    void products(const Json& captured, const std::filesystem::path& resources, const Json& literalCases) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         auto& assets = JuicerProcess::root().assets();
@@ -194,29 +228,60 @@ namespace PrintIlluminantTest {
                 p.printUiYmcCc = {2.1234567890123, 3.2345678901234, 4.3456789012345};
             if (variant == 4)
                 p.outputCctfEncoding = 0;
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            const bool success = route % 2 ? build_print_render_state_product(p, product, diagnostic) : build_direct_render_state_product(p, product, diagnostic);
-            require(success, diagnostic.c_str());
-            const auto& recipe = product.recipe;
-            Json actual = {{"route", route}, {"mode", mode}, {"variant", variant}, {"success", success}, {"diagnostic", diagnostic}, {"snapshot_hash", hash_params(p)}, {"final_hash", recipe.hash}, {"print_hash", recipe.print.hash}, {"balance_hash", recipe.print.balance.hash}, {"main_present", bool(product.payload.printMainIlluminant)}};
+            std::array<char, 2048> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            std::optional<PreparedState> product;
+            const auto result = prepare_state(assets.borrow_rust_assets(), p, product, error);
+            const bool success = result.category == FJ_STATUS_SUCCESS && product.has_value();
+            require(success, diagnostic.data());
+            FjPreparedStateView view{};
+            status(product->view(view, error));
+            const auto& print = view.print;
+            Json actual = {{"route", route}, {"mode", mode}, {"variant", variant}, {"success", success}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"snapshot_hash", hash_params(p)}, {"final_hash", view.recipe_hash}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}, {"main_present", print.main_illuminant.count == 81}};
             if (route % 2) {
-                const auto& print = recipe.print;
-                const float mainCmy[]{print.filters.mainCmyCc.c, print.filters.mainCmyCc.m, print.filters.mainCmyCc.y};
-                const float preflashCmy[]{print.filters.preflashCmyCc.c, print.filters.preflashCmyCc.m, print.filters.preflashCmyCc.y};
-                actual["main"] = words(product.payload.printMainIlluminant->data(), 81);
+                actual["main"] = words(print.main_illuminant.data, print.main_illuminant.count);
+                const auto& mainCmy = print.main_cc_cmy;
                 actual["main_cmy"] = words(mainCmy, 3);
-                actual["preflash_cmy"] = words(preflashCmy, 3);
-                actual["source_key"] = print.illuminant.key;
-                JuicerCuda::PrintResourcePreparation request{&recipe, &assets, &*product.payload.printMainIlluminant};
-                JuicerCuda::PrintResourceInput input;
-                std::array<float, 81> preflash{};
-                require(JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic), diagnostic.c_str());
-                actual["preflash"] = words(preflash.data(), preflash.size());
-                actual["raw"] = words(input.preflashRawCmy.data(), input.preflashRawCmy.size());
-                actual["descriptors"] = {input.descriptors.hash, input.descriptors.mainIlluminant.hash, input.descriptors.preflashIlluminant.hash, input.descriptors.preflashRaw.hash, input.descriptors.balance.hash};
+                if ((print.flags & FJ_PRINT_PREFLASH) != 0) {
+                    actual["preflash_cmy"] = words(print.preflash_cc_cmy, 3);
+                } else {
+                    require(p.printPreflashExposure == 0 && p.preflashMFilterCc == 0 && p.preflashYFilterCc == 0 &&
+                                std::all_of(p.printUiYmcCc.begin(), p.printUiYmcCc.end(), [](double value) {
+                                    return value == 0;
+                                }),
+                            "inactive preflash metadata retains the original zero-offset controls");
+                    const auto zero = [](float value) {
+                        return std::bit_cast<std::uint32_t>(value) == 0;
+                    };
+                    require(print.preflash_illuminant.data == nullptr && print.preflash_illuminant.count == 0 &&
+                                print.preflash_illuminant_hash == 0 && print.preflash_raw_hash == 0 &&
+                                zero(print.preflash_exposure) &&
+                                std::all_of(std::begin(print.preflash_cc_cmy), std::end(print.preflash_cc_cmy), zero) &&
+                                std::all_of(std::begin(print.preflash_raw_cmy), std::end(print.preflash_raw_cmy), zero),
+                            "inactive preflash projection is absent/zero before capture metadata mapping");
+                    actual["preflash_cmy"] = words(mainCmy, 3);
+                }
+                const auto source = view.print_source_illuminant;
+                const auto curves = assets.illuminant_filter_curves();
+                require(p.enlIll == 3 && source.count == curves->tungstenKg3.linear.size() &&
+                            std::equal(source.data, source.data + source.count, curves->tungstenKg3.linear.begin()),
+                        "completed source illuminant matches the selected TH-KG3 asset identity");
+                actual["source_key"] = "TH-KG3";
+                std::array<float, 81> preflashScratch{};
+                if (print.preflash_illuminant.count != 0) {
+                    require(print.preflash_illuminant.count == preflashScratch.size(), "active preflash has 81 samples");
+                    std::copy_n(print.preflash_illuminant.data, preflashScratch.size(), preflashScratch.data());
+                }
+                // Preserve the old fixed 81-word scratch output; disabled input
+                // is an empty span in FjPrint and the original scratch stayed +0.
+                actual["preflash"] = words(preflashScratch.data(), preflashScratch.size());
+                actual["raw"] = words(print.preflash_raw_cmy, 3);
+                actual["descriptors"] = {print.hash, print.main_illuminant_hash, print.preflash_illuminant_hash, print.preflash_raw_hash, print.balance_hash};
             }
-            require(actual == expected, "frozen actual main/preflash/direct products, consumed descriptors, balance and final hashes");
+            if (actual != expected)
+                throw std::runtime_error("print illuminant product route=" + std::to_string(route) +
+                                         " mode=" + std::to_string(mode) + " variant=" + std::to_string(variant) +
+                                         " first difference " + Json::diff(expected, actual).front().dump());
         }
 
         ParamSnapshot controls;
@@ -245,27 +310,27 @@ namespace PrintIlluminantTest {
         require(bool(recovered.printState) && recovered.printState != original.printState, "main illuminant publication recovers");
         require(admit_pending_render_state(state).printState == recovered.printState, "unchanged main illuminant publication reuses");
 
-        controls.printPreflashExposure = 0.125;
-        FocusedRenderStateBuildProduct active;
         std::string diagnostic;
-        require(build_print_render_state_product(controls, active, diagnostic), "active preflash fixture completes through production");
-        JuicerCuda::PrintResourcePreparation request{&recovered.printState->recipe, &assets, &*recovered.printState->payload.printMainIlluminant};
-        JuicerCuda::PrintResourceInput input;
-        std::array<float, 81> preflash{};
+        controls.printPreflashExposure = 0;
+        auto disabled = JuicerTestSupport::prepare_product(controls);
+        PreparedPrintFacts disabledFacts;
         status(fj_test_film_recipe_fault(10, 1));
-        require(JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic), "disabled preflash omits constructor");
-        // The disabled call must leave the fault armed for the active caller.
-        request.recipe = &active.recipe;
-        request.mainIlluminant = &*active.payload.printMainIlluminant;
-        bool threw = false;
-        try {
-            JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic);
-        } catch (const JuicerCuda::ExecutionFailure& failure) {
-            status(failure.failure.status, FJ_STATUS_INTERNAL_FAILURE);
-            threw = true;
-        }
-        require(threw, "active preflash calls the same stage-10 Rust constructor");
-        require(JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic), "active preflash recovers after panic");
+        require(JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
+                    disabled, PrintPreflashTest::frame_facts(controls), &disabledFacts, &inspect_prepared_print, diagnostic),
+                diagnostic.c_str());
+        require(disabledFacts.printHash != 0 && disabledFacts.preflashCount == 0, "disabled preflash omits constructor input");
+        // The complete disabled input must leave the raw-constructor fault armed.
+        consume_stage10(literalCases);
+        controls.printPreflashExposure = 0.125;
+        auto active = JuicerTestSupport::prepare_product(controls);
+        PreparedPrintFacts activeFacts;
+        status(fj_test_film_recipe_fault(10, 1));
+        require(JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
+                    active, PrintPreflashTest::frame_facts(controls), &activeFacts, &inspect_prepared_print, diagnostic),
+                diagnostic.c_str());
+        require(activeFacts.printHash != 0 && activeFacts.preflashCount == 81,
+                "active preflash input is supplied from the completed held state");
+        consume_stage10(literalCases);
     }
     void native(const Json& captured) {
         const auto input = params(captured.at("cases")[0]);

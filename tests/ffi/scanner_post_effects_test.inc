@@ -313,60 +313,59 @@ namespace ScannerPostTest {
         for (unsigned route = 0; route < 4; ++route) {
             const auto rowIndex = static_cast<Json::size_type>(route) * 100;
             const auto selected = static_cast<Spektrafilm::ScanRoute>(route);
-            const bool print = Spektrafilm::scan_route_is_print(selected);
             auto controls = FilmReferenceTest::controls(1, selected, 0);
             controls.dirCouplers.active = false;
             controls.grainControls.active = false;
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            require(print ? build_print_render_state_product(controls, product, diagnostic)
-                          : build_direct_render_state_product(controls, product, diagnostic),
-                    diagnostic.c_str());
             const auto source = recipe(rows.at(rowIndex).at("input"));
-            auto& output = product.recipe.scannerOutput;
-            output.route = source.route;
-            output.glareActive = source.glareActive;
-            output.glarePercent = source.glarePercent;
-            output.glareRoughness = source.glareRoughness;
-            output.glareBlurSigmaPx = source.glareBlurSigmaPx;
-            output.lensBlurSigmaPx = source.lensBlurSigmaPx;
-            output.unsharpSigmaPx = source.unsharpSigmaPx;
-            output.unsharpAmount = source.unsharpAmount;
-            const JuicerCuda::FrameRect bounds{0, 0, 16, 8};
-            const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(bounds, bounds, product.recipe.filmRaw.autoExposureMethod);
-            const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
-            const std::optional<ScatterHalationFrameDescriptor> halation;
-            const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
-            const JuicerCuda::ExecutionFrame frame{bounds, bounds, bounds, nullptr, nullptr, nullptr, 0, 0, 4, nullptr, diffusion, halation, geometry, 100.0f, 0.0, 24.0, 1, 1, meter, false, false};
-            const auto describe = [&]() {
-                return JuicerCuda::describe_execution(product.recipe, product.payload, frame);
-            };
-            const auto initial = describe();
-            require(project(initial.post) == rows.at(rowIndex).at("native").at("descriptor"), "actual route schedule complete post product");
-            output.lensBlurSigmaPx = 2.0f;
-            const auto changed = describe();
-            require(changed.post.hash != initial.post.hash && changed.scanner.hash == initial.scanner.hash, "post-only change preserves actual LUT descriptor dependency");
-            output.lensBlurSigmaPx = source.lensBlurSigmaPx;
-            require(project(describe().post) == project(initial.post), "warm route constructor preserves complete post identity");
+            controls.glarePercent = source.glarePercent;
+            controls.glareRoughness = source.glareRoughness;
+            controls.glareBlurSigmaPx = source.glareBlurSigmaPx;
+            controls.scannerLensBlurSigmaPx = source.lensBlurSigmaPx;
+            controls.scannerUnsharpMask = {source.unsharpSigmaPx, source.unsharpAmount};
+            controls.glareActive = source.glareActive;
+            auto product = JuicerTestSupport::prepare_product(controls);
+            FjPreparedStateView view{};
+            FjErrorBuffer error{};
+            status(product.view(view, error));
+            const auto initial = view.scanner_post_effects;
+            require(project(initial) == rows.at(rowIndex).at("native").at("descriptor"), "actual route schedule complete post product");
+            controls.scannerLensBlurSigmaPx = 2.0;
+            auto changedProduct = JuicerTestSupport::prepare_product(controls);
+            FjPreparedStateView changed{};
+            status(changedProduct.view(changed, error));
+            require(changed.scanner_post_effects.hash != initial.hash && changed.scanner_lut.hash == view.scanner_lut.hash, "post-only change preserves actual LUT descriptor dependency");
+            controls.scannerLensBlurSigmaPx = source.lensBlurSigmaPx;
+            auto warmProduct = JuicerTestSupport::prepare_product(controls);
+            FjPreparedStateView warm{};
+            status(warmProduct.view(warm, error));
+            require(project(warm.scanner_post_effects) == project(initial), "warm route constructor preserves complete post identity");
             status(fj_test_scanner_post_fault(2));
             status(fj_test_scanner_lut_descriptor_fault(1));
+            const auto prepare = [&](std::optional<PreparedState>& out, std::array<char, 2048>& text) {
+                FjErrorBuffer prepareError{text.data(), text.size(), 0};
+                return prepare_state(
+                    JuicerProcess::root().assets().borrow_rust_assets(),
+                    controls,
+                    out,
+                    prepareError);
+            };
             bool early = false;
-            try {
-                (void)describe();
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                early = true;
-                require(error.failure.diagnostic.find("scanner") != std::string::npos, "early LUT failure reaches route");
-            }
+            std::optional<PreparedState> failedProduct;
+            std::array<char, 2048> failureText{};
+            const FjStatus lutFailure = prepare(failedProduct, failureText);
+            early = lutFailure.category != FJ_STATUS_SUCCESS && !failedProduct;
+            require(early && std::string_view(failureText.data()).find("scanner") != std::string_view::npos, "early LUT failure reaches route");
             require(early, "earlier route LUT failure preempts post constructor");
             bool post = false;
-            try {
-                (void)describe();
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                post = true;
-                require(error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE && error.failure.diagnostic == "scanner post-effects preparation panicked", "actual post failure retains typed timing and leaves later frame stages unbuilt");
-            }
+            failureText.fill('\0');
+            const FjStatus postFailure = prepare(failedProduct, failureText);
+            post = postFailure.category == FJ_STATUS_INTERNAL_FAILURE && !failedProduct;
+            require(post && std::string_view(failureText.data()) == "asset boundary panic", "actual post failure retains typed timing and leaves later frame stages unbuilt");
             require(post, "every warm route invocation visits post constructor");
-            require(project(describe().post) == project(initial.post), "actual route recovers after one-shot failure");
+            auto recoveredProduct = JuicerTestSupport::prepare_product(controls);
+            FjPreparedStateView recovered{};
+            status(recoveredProduct.view(recovered, error));
+            require(project(recovered.scanner_post_effects) == project(initial), "actual route recovers after one-shot failure");
         }
     }
 } // namespace ScannerPostTest

@@ -233,8 +233,12 @@ pub enum PrepareError {
     },
     Bounds(density::Error),
     LutDescriptor(scanner::LutDescriptorError),
+    SpectralBoundary(spectral::BoundaryError),
+    EqualEnergy(illuminant::EqualEnergyError),
     ReferenceWhite(reconstruction::Error),
     Tc(reconstruction::TcError),
+    MallettMidgray(exposure::BoundaryError),
+    TcMidgray(exposure::BoundaryError),
     Reference(reference::Error),
     PrintDevelopment(crate::profile::PrintDensityError),
     PrintComposition(print::CompositionError),
@@ -283,8 +287,24 @@ impl fmt::Display for PrepareError {
                 f.write_str("MalformedRequiredProfileData phase=3A field=density_bounds")
             }
             Self::LutDescriptor(error) => error.fmt(f),
+            Self::SpectralBoundary(error) => error.fmt(f),
+            Self::EqualEnergy(error) => error.fmt(f),
             Self::ReferenceWhite(error) => error.fmt(f),
             Self::Tc(error) => f.write_str(error.diagnostic()),
+            Self::MallettMidgray(error) => {
+                write!(
+                    f,
+                    "Mallett mid-gray preparation: {}",
+                    exposure_boundary_diagnostic(*error)
+                )
+            }
+            Self::TcMidgray(error) => {
+                write!(
+                    f,
+                    "TC mid-gray normalization: {}",
+                    exposure_boundary_diagnostic(*error)
+                )
+            }
             Self::Reference(error) => reference_diagnostic(*error, f),
             Self::PrintDevelopment(_) => {
                 f.write_str("MalformedRequiredProfileData phase=3B field=print_development_table")
@@ -325,6 +345,15 @@ impl fmt::Display for PrepareError {
     }
 }
 impl std::error::Error for PrepareError {}
+
+fn exposure_boundary_diagnostic(error: exposure::BoundaryError) -> &'static str {
+    match error {
+        #[cfg(feature = "test-support")]
+        exposure::BoundaryError::Unsupported => "exposure production boundary fault",
+        #[cfg(feature = "test-support")]
+        exposure::BoundaryError::Preparation => "fixed exposure preparation category fault",
+    }
+}
 
 fn optics_diagnostic(error: optics::Error, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     use optics::{Component, Field};
@@ -850,9 +879,9 @@ impl Observer {
     }
 }
 
-fn named_illuminant(curves: &Illuminants, label: &str) -> Option<[f32; 81]> {
+fn named_illuminant(curves: &Illuminants, label: &str) -> Result<Option<[f32; 81]>, PrepareError> {
     let key = normalize_illuminant(label);
-    match key.as_str() {
+    Ok(match key.as_str() {
         "D65" => curves.d65().copied(),
         "D55" => curves.d55().copied(),
         "D50" => curves.d50().copied(),
@@ -860,18 +889,20 @@ fn named_illuminant(curves: &Illuminants, label: &str) -> Option<[f32; 81]> {
         "TH-KG3" | "THKG3" => curves.tungsten_kg3().copied(),
         "T" | "INCANDESCENT" => curves.tungsten().copied(),
         "K75P" | "KINOTON75P" => curves.k75p().copied(),
-        "EQUAL" | "EQUALENERGY" | "EQUAL-ENERGY" => Some(illuminant::equal_energy()),
+        "EQUAL" | "EQUALENERGY" | "EQUAL-ENERGY" => {
+            Some(illuminant::checked_equal_energy().map_err(PrepareError::EqualEnergy)?)
+        }
         _ => None,
-    }
+    })
 }
 fn profile_illuminant(
     curves: &Illuminants,
     label: &str,
     kind: IlluminantKind,
-) -> Option<[f32; 81]> {
+) -> Result<Option<[f32; 81]>, PrepareError> {
     match kind {
         IlluminantKind::Blackbody { temperature_kelvin } => {
-            Some(illuminant::blackbody(temperature_kelvin as f32))
+            Ok(Some(illuminant::blackbody(temperature_kelvin as f32)))
         }
         IlluminantKind::Named => named_illuminant(curves, label),
     }
@@ -954,13 +985,15 @@ fn acquire_foundation(
     let reference_samples = foundation_reference(&illuminants, profile);
     trace_stage!(Observer);
     let observer = Observer::acquire(assets)?;
-    let reference_white = profile_illuminant(
+    let reference_white_samples = profile_illuminant(
         &illuminants,
         profile.info().reference_illuminant(),
         profile.info().reference_illuminant_kind(),
-    )
-    .and_then(|samples| spectral::integrate_white(observer.borrow(), &samples).ok())
-    .map(|white| *white.xyz());
+    )?;
+    let reference_white = reference_white_samples
+        .map(|samples| optional_white(observer.borrow(), &samples))
+        .transpose()?
+        .flatten();
     let mut integrated_d65 = None;
     let mut reconstructed_white = None;
     let mut tc_source = None;
@@ -996,8 +1029,9 @@ fn acquire_foundation(
         2 => {
             integrated_d65 = illuminants
                 .d65()
-                .and_then(|samples| spectral::integrate_white(observer.borrow(), samples).ok())
-                .map(|white| *white.xyz());
+                .map(|samples| optional_white(observer.borrow(), samples))
+                .transpose()?
+                .flatten();
             tc_source = Some(assets.arctic()?);
         }
         _ => (),
@@ -1161,8 +1195,8 @@ fn build_tables(
     samples: &[f32; 81],
     white: &spectral::White,
     observer: &Observer,
-) -> spectral::Tables {
-    spectral::build_tables(spectral::Input {
+) -> Result<spectral::Tables, PrepareError> {
+    spectral::checked_build_tables(spectral::Input {
         dyes_cmy: profile.channel_density(),
         observer: observer.borrow(),
         illuminant: samples,
@@ -1172,6 +1206,27 @@ fn build_tables(
         }),
         illuminant_hash: white.hash(),
     })
+    .map_err(spectral_prepare_error)
+}
+
+fn spectral_prepare_error(error: spectral::CheckedError) -> PrepareError {
+    match error {
+        spectral::CheckedError::Boundary(error) => PrepareError::SpectralBoundary(error),
+        spectral::CheckedError::White(_) => {
+            unreachable!("spectral table and inverse operations have no white error")
+        }
+    }
+}
+
+fn optional_white(
+    observer: spectral::Observer<'_>,
+    illuminant: &[f32; 81],
+) -> Result<Option<[f32; 3]>, PrepareError> {
+    match spectral::checked_integrate_white(observer, illuminant) {
+        Ok(white) => Ok(Some(*white.xyz())),
+        Err(spectral::CheckedError::White(_)) => Ok(None),
+        Err(spectral::CheckedError::Boundary(error)) => Err(PrepareError::SpectralBoundary(error)),
+    }
 }
 fn complete_reconstruction(
     input: &input::Recipe,
@@ -1182,13 +1237,14 @@ fn complete_reconstruction(
 ) -> Result<FilmReconstruction, PrepareError> {
     let storage = if matches!(input.method(), input::Method::Mallett2019) {
         let basis = mallett.expect("Mallett source acquired before composition");
-        let midgray = exposure::mallett_midgray(exposure::MallettInput {
+        let midgray = exposure::checked_mallett_midgray(exposure::MallettInput {
             color: input.color().to_conversion(),
             xyz_to_linear_srgb: *input.color().xyz_to_linear_srgb(),
             basis_rgb: &basis,
             illuminant: tables.illuminant(),
             sensitivity_rgb: input.sensitivity().values_rgb(),
-        });
+        })
+        .map_err(PrepareError::MallettMidgray)?;
         ReconstructionStorage::Mallett { basis, midgray }
     } else {
         let source = tc_source.expect("TC source acquired before composition");
@@ -1222,7 +1278,8 @@ fn complete_reconstruction(
         );
         let raw_midgray_rgb =
             reconstruction::sample_tc_lut(lut.samples(), xyz).map_err(PrepareError::Tc)?;
-        let normalization = exposure::tc_midgray(raw_midgray_rgb[1]);
+        let normalization =
+            exposure::checked_tc_midgray(raw_midgray_rgb[1]).map_err(PrepareError::TcMidgray)?;
         ReconstructionStorage::Tc {
             source,
             lut,
@@ -1572,16 +1629,24 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         &acquired.illuminants,
         film.info().reference_illuminant(),
         film.info().reference_illuminant_kind(),
-    )
+    )?
     .ok_or(ControlError::FilmReferenceIlluminant)?;
-    let film_white = spectral::integrate_white(acquired.observer.borrow(), &film_illuminant)
-        .map_err(|_| ControlError::FilmReferenceIlluminant)?;
+    let film_white =
+        match spectral::checked_integrate_white(acquired.observer.borrow(), &film_illuminant) {
+            Ok(white) => white,
+            Err(spectral::CheckedError::White(_)) => {
+                return Err(ControlError::FilmReferenceIlluminant.into());
+            }
+            Err(spectral::CheckedError::Boundary(error)) => {
+                return Err(PrepareError::SpectralBoundary(error));
+            }
+        };
     let exposure_tables = build_tables(
         film.tables(),
         &film_illuminant,
         &film_white,
         &acquired.observer,
-    );
+    )?;
     if exposure_tables.hash() == 0
         || !exposure_tables.white_xyz().iter().all(|v| v.is_finite())
         || exposure_tables.white_xyz()[1] <= 0.0
@@ -1589,7 +1654,8 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         return Err(ControlError::ExposureTables.into());
     }
     let weights = exposure_tables.weighted_xyz();
-    let s_inverse = spectral::s_inverse([&weights[0], &weights[1], &weights[2]]);
+    let s_inverse = spectral::checked_s_inverse([&weights[0], &weights[1], &weights[2]])
+        .map_err(spectral_prepare_error)?;
     let reconstruction = complete_reconstruction(
         &input,
         &exposure_tables,
@@ -1603,7 +1669,7 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         .as_ref()
         .map(|print| {
             trace_stage!(PrintMainIlluminant);
-            let source = named_illuminant(&acquired.illuminants, print.illuminant_key)
+            let source = named_illuminant(&acquired.illuminants, print.illuminant_key)?
                 .ok_or(ControlError::PrintIlluminant)?;
             let main = print::Illuminant::new(print.filters.illumination_params(false), &source)
                 .map_err(PrepareError::PrintIlluminant)?;
@@ -1662,16 +1728,24 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         None => (film.tables(), film.info().viewing_illuminant_kind()),
     };
     trace_stage!(ScannerPayload);
-    let scanner_illuminant = profile_illuminant(&acquired.illuminants, &viewing, viewing_kind)
+    let scanner_illuminant = profile_illuminant(&acquired.illuminants, &viewing, viewing_kind)?
         .ok_or(ControlError::ScannerPayload(params.scan_route))?;
-    let scanner_white = spectral::integrate_white(acquired.observer.borrow(), &scanner_illuminant)
-        .map_err(|_| ControlError::ScannerPayload(params.scan_route))?;
+    let scanner_white =
+        match spectral::checked_integrate_white(acquired.observer.borrow(), &scanner_illuminant) {
+            Ok(white) => white,
+            Err(spectral::CheckedError::White(_)) => {
+                return Err(ControlError::ScannerPayload(params.scan_route).into());
+            }
+            Err(spectral::CheckedError::Boundary(error)) => {
+                return Err(PrepareError::SpectralBoundary(error));
+            }
+        };
     let scanner_tables = build_tables(
         scanner_profile,
         &scanner_illuminant,
         &scanner_white,
         &acquired.observer,
-    );
+    )?;
     let active_gamut_hash = if params.output_gamut_compression_enabled != 0 {
         gamut_hash
     } else {
@@ -1705,6 +1779,18 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         boundary,
         hash: gamut_hash,
     };
+    let print_lut = print
+        .as_ref()
+        .map(|print| {
+            lut_descriptor(
+                params,
+                film,
+                &film_bounds,
+                Some((&print.profile, &print.bounds)),
+                &viewing,
+            )
+        })
+        .transpose()?;
     let scanner_post_effects = scanner::describe_post_effects(scanner::PostEffectsParams {
         route: params.scan_route,
         glare_active: scanner_params.glare_active,
@@ -1726,13 +1812,7 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
     };
     let (route, lut, scanner_bounds_hash) = match (print, print_main, print_balance) {
         (Some(print), Some((source_illuminant, main_illuminant)), Some(balance)) => {
-            let lut = lut_descriptor(
-                params,
-                film,
-                &film_bounds,
-                Some((&print.profile, &print.bounds)),
-                &viewing,
-            )?;
+            let lut = print_lut.expect("print descriptor admitted before post effects");
             let resource_descriptors =
                 print::ResourceDescriptors::new(print::ResourceDescriptorInput {
                     film,

@@ -1016,7 +1016,105 @@ def retire_s4c1_pending(root, preset):
         return result
 
 
-PREPARATION_TARGETS = {"all", "juicer", "juicer_analysis_inputs", "JuicerFilmRecipeTests", "JuicerRouteBridgeTests", "JuicerOutputColorTests"}
+# One-time owner amendment, 29 October 2026. These completed metadata records
+# survived rollback without their producer evidence. Retirement grants no reuse.
+S4E_ABORTED_OWNERS = {
+    "linux-debug": {
+        "source": "/mnt/c/Dev/Codex",
+        "sha256": "a1036954ad52df756b2cc3705efd375c1f2fa0fb66cf52232b6a1246a72e74b2",
+        "producer": "preparation-0a7857455ead40aab0753c997db028b0/attempts/prepare-lvvjh4cx/result.json",
+    },
+    "windows-clang-debug": {
+        "source": "C:\\Dev\\Codex",
+        "sha256": "4172acd18a2f857501bd4b8222c18da420671ac35bcfabe1e5cafa569beb89fe",
+        "producer": "preparation-44f895c758934fc79b9e4c1e709c6e7d/attempts/prepare-9pbxrsbg/result.json",
+    },
+}
+
+
+def retire_s4e_aborted_owner(root, preset):
+    """Retire the two exact authorized completed records, never a lock or cache."""
+    if preset not in S4E_ABORTED_OWNERS or preset.startswith("windows") != (os.name == "nt"):
+        raise ValueError("S4E disposition requires one of the two named native Debug trees")
+    root = root.resolve()
+    expected = S4E_ABORTED_OWNERS[preset]
+    if str(root) != expected["source"]:
+        raise ValueError("S4E disposition requires the exact authorized source/build path")
+    build = root / "out/build" / preset
+    baseline, _ = preparation_paths(build, ["juicer"])
+    producer = root / "out/validation" / preset / expected["producer"]
+    with OutputLease(root, build) as lease:
+        if baseline.is_symlink() or not baseline.is_file() or digest(baseline) != expected["sha256"]:
+            raise ValueError("S4E completed owner is unknown, changed or already retired")
+        content = baseline.read_bytes()
+        proof = json.loads(content)
+        if (proof.get("protocol") != SCOPED_PROTOCOL or proof.get("targets") != ["juicer"]
+                or proof.get("source") != str(root) or proof.get("build") != str(build)
+                or Path(proof.get("producer", "")) != producer):
+            raise ValueError("S4E completed owner does not match the authorized scope")
+        if producer.exists() or producer.is_symlink():
+            raise ValueError("S4E producer evidence is present; normal owner admission applies")
+        old_campaign = producer.parents[2]
+        if (old_campaign / "running.lock").exists() or (old_campaign / "running.lock").is_symlink():
+            raise ValueError("S4E producer still has an active or unproved owner")
+        campaign = Campaign(root, preset, "s4e-owner-retirement-" + uuid.uuid4().hex, ["retire"])
+        pending_bindings = {}
+        allowed_pending = preparation_paths(build, ["juicer_analysis_inputs"])[1]
+        for pending in build.glob("*.pending.json"):
+            if preset != "linux-debug" or pending != allowed_pending or pending.is_symlink():
+                raise ValueError("another pending preparation blocks S4E disposition")
+            value = json.loads(pending.read_text(encoding="utf-8"))
+            _check_pending_preparation(campaign, root, build, ["juicer_analysis_inputs"], value)
+            pending_bindings[str(pending)] = digest(pending)
+        original = _write_recovery_file(campaign.directory / baseline.name, content)
+        record = {
+            "disposition": "retired-unqualified", "owner": str(baseline), "original": original,
+            "missing_producer": str(producer), "historical_drainage": "unavailable",
+            "pending_owners_unchanged": pending_bindings, "lease_token": lease.token,
+            "fresh_preparation_required": True,
+        }
+        result = campaign.directory / "retirement.json"
+        _write_recovery_file(result, record)
+        lease.check_admission()
+        if digest(baseline) != expected["sha256"] or digest(Path(original["file"])) != expected["sha256"]:
+            raise ValueError("S4E completed owner or retained bytes changed during disposition")
+        if any(digest(Path(path)) != checksum for path, checksum in pending_bindings.items()):
+            raise ValueError("pending preparation changed during S4E disposition")
+        baseline.unlink()
+        return result
+
+
+PREPARATION_TARGETS = {
+    "all", "juicer", "juicer_analysis_inputs", "JuicerFilmRecipeTests", "JuicerRouteBridgeTests", "JuicerOutputColorTests",
+    "JuicerPreparedStateTests", "JuicerPreparedProjectionTests", "JuicerPreparedBoundaryProbe",
+    "JuicerExecutorFailureOrderProbe", "JuicerCudaAbiTests", "JuicerProfileOwnerTests",
+    "JuicerSpectralOwnerTests", "JuicerProductionProfileOwnerTests", "JuicerColorPreparationTests",
+    "JuicerFilmInputTests", "JuicerFilmDevelopmentTests", "JuicerExposurePreparationTests",
+    "JuicerSpectralPreparationTests", "JuicerMallettExposureTests", "JuicerAssetLookupTests",
+    "JuicerGaussianKernelTests", "JuicerScannerLutResourceTests", "JuicerScannerOutputTests", "JuicerGrainScratchTests",
+    "JuicerDirExposureCacheTests", "JuicerProcessorReferenceProbe", "JuicerAdapterTraceProbe",
+    "JuicerCatalogOwnerTests", "JuicerIlluminantCalibrationTests", "JuicerSpectralBootstrapTests",
+    "JuicerInputHullTests", "JuicerOutputGamutCacheTests", "JuicerTcLutTests", "JuicerTcLutLifetimeTests",
+    "JuicerCudaTerminalTests", "JuicerPinnedUploadTests", "JuicerDeferredDestroyTests",
+    "JuicerCudaOwnerTests", "JuicerCudaFailureTests", "JuicerCudaInspectTests",
+    "JuicerCudaInspectGpuTests", "JuicerCudaOwnerUnloadTests", "JuicerScatterHalationGpuTests",
+}
+
+# This production-linked probe is an OFF-only dependency of the existing
+# logical product targets.  Keep it out of PREPARATION_TARGETS so callers
+# cannot request it as an ordinary ON preparation target.
+PRODUCTION_PREPARED_RENDER_TARGET = "JuicerProductionPreparedRenderProbe"
+
+
+def production_prepared_render_inputs(root, preset):
+    return [
+        "CMakeLists.txt",
+        "tests/ffi/production-prepared-render.cpp",
+        "tests/ofx/fixtures/exposure/manifest.json",
+        f"tests/ofx/fixtures/exposure/processor-{preset}.dat",
+        "tests/print/illuminant-fixtures/manifest.json",
+        "tests/print/illuminant-fixtures/product-updates.json",
+    ]
 
 
 def prepare_targets(root, preset, targets, testing="ON"):
@@ -1029,6 +1127,9 @@ def prepare_targets(root, preset, targets, testing="ON"):
         raise ValueError("preparation requires a native preset and explicit maintained build targets")
     if testing == "OFF" and (not preset.endswith("release") or set(targets) - {"all", "juicer"}):
         raise ValueError("testing OFF preparation requires Release product targets")
+    logical_targets = sorted(set(targets))
+    effective_targets = (sorted(set(logical_targets) | {PRODUCTION_PREPARED_RENDER_TARGET})
+                         if testing == "OFF" else logical_targets)
     root = root.resolve()
     build = root / "out/build" / preset
     cache = build / "CMakeCache.txt"
@@ -1037,16 +1138,18 @@ def prepare_targets(root, preset, targets, testing="ON"):
         if not home or str(Path(home[1].strip())) != str(root):
             raise ValueError("use the configured source path spelling for preparation")
     with OutputLease(root, build):
-        own_pending = preparation_paths(build, targets)[1]
+        own_pending = preparation_paths(build, effective_targets)[1]
         if any(path != own_pending for path in build.glob("*.pending.json")):
             raise ValueError("another pending preparation must be resolved by its existing owner first")
         campaign = Campaign(root, preset, "preparation-" + uuid.uuid4().hex, ["prepare"])
         from qualification import checkpoint_inputs
-        inputs = (checkpoint_inputs(root, build, "prepare") if targets == ["all"] and testing == "ON"
+        inputs = (checkpoint_inputs(root, build, "prepare") if logical_targets == ["all"] and testing == "ON"
                   else ["scripts/verify.py", "scripts/build_evidence.py"])
+        if testing == "OFF":
+            inputs = sorted(set(inputs) | set(production_prepared_render_inputs(root, preset)))
         _, prepared = prepare_build(campaign, "prepare", source=root, build=build,
                                     inputs=[name for name in inputs if not name.startswith("out/build/")], timeout=None,
-                                    configure_args=["-DBUILD_TESTING=" + testing], targets=targets,
+                                    configure_args=["-DBUILD_TESTING=" + testing], targets=effective_targets,
                                     checkpoint=True, reconfigure=True)
         check_scoped_preparation(campaign, build, prepared)
         return prepared

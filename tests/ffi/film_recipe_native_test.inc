@@ -218,19 +218,19 @@ namespace {
             controls.inputCompressionEnabled = 0;
             controls.outputGamutCompressionEnabled = 0;
             controls.grainControls.active = false;
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
             const bool print = Spektrafilm::scan_route_is_print(controls.scanRoute);
-            require(print ? build_print_render_state_product(controls, product, diagnostic) : build_direct_render_state_product(controls, product, diagnostic), diagnostic.c_str());
-            const auto& recipe = product.recipe;
-            const auto& dir = recipe.dirCouplers;
-            require(hash_params(controls) == row.at("snapshot_hash") && recipe.hash == row.at("final_hash"), "64 frozen snapshot/final product identities");
-            require(recipe.filmDevelop.hash == row.at("development_hash") && recipe.filmRaw.hash == row.at("input_hash"), "accepted development/input identities");
-            require(dir.hash == row.at("dir").at("hash") && dir.compensatedDensityCurveAxesHash == row.at("dir").at("axes_hash"), "actual DIR family identities");
+            auto product = JuicerTestSupport::prepare_product(controls);
+            FjPreparedStateView view{};
+            FjErrorBuffer error{};
+            status(product.view(view, error));
+            const auto& dir = view.dir_recipe;
+            require(hash_params(controls) == row.at("snapshot_hash") && view.recipe_hash == row.at("final_hash"), "64 frozen snapshot/final product identities");
+            require(view.film_development.hash == row.at("development_hash") && view.film_exposure.hash == row.at("input_hash"), "accepted development/input identities");
+            require(dir.hash == row.at("dir").at("hash") && dir.compensated_axes_hash == row.at("dir").at("axes_hash"), "actual DIR family identities");
             for (std::size_t i = 0; i < 3; ++i)
-                require(words(dir.compensatedDensityCurveAxesRgb[i].data(), dir.compensatedDensityCurveAxesRgb[i].size()) == row.at("dir").at("axes")[i], "all actual adopted axes");
-            const auto& bounds = print ? recipe.enlargerFilmBounds : recipe.densityBounds;
-            require(bounds.hash == row.at("bounds").at("hash") && words(bounds.dataMinCmy.data(), 3) == row.at("bounds").at("minimum") && words(bounds.invSpanCmy.data(), 3) == row.at("bounds").at("inverse"), "actual scanner/enlarger bounds");
+                require(words(dir.compensated_axes_rgb[i].data, dir.compensated_axes_rgb[i].count) == row.at("dir").at("axes")[i], "all actual adopted axes");
+            const auto& bounds = print ? view.enlarger_film_bounds : view.scanner_bounds;
+            require(bounds.hash == row.at("bounds").at("hash") && words(bounds.minimum_cmy, 3) == row.at("bounds").at("minimum") && words(bounds.inv_span_cmy, 3) == row.at("bounds").at("inverse"), "actual scanner/enlarger bounds");
             require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "no foreign temporary hold in published native products");
         }
         for (unsigned route = 0; route < 4; ++route) {

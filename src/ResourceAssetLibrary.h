@@ -52,6 +52,10 @@ namespace JuicerAssets {
         Spectral::MallettBasis copy_mallett_basis();
         Spectral::CMFTriplets copy_cmf_triplets();
         const Spektrafilm::ProfileCatalog& spektrafilm_profile_catalog();
+        FjStatus film_defaults(
+            const std::string& key,
+            FjFilmDigest& out,
+            FjErrorBuffer& error);
         std::shared_ptr<const Profiles::FilmProfile>
         selected_film_profile_for_key(const std::string& key);
         SelectedProfileResult selected_profiles_for_route(

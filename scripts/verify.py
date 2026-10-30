@@ -22,6 +22,7 @@ from build_evidence import (
     prepare_build,
     prepare_targets,
     retire_s4c1_pending,
+    retire_s4e_aborted_owner,
     run_ctest,
 )
 from execution import Campaign, OutputLease, UnresolvedScope, digest, write_json
@@ -406,6 +407,8 @@ def main():
     preparation.add_argument("--testing", choices=("ON", "OFF"), default="ON")
     retirement = modes.add_parser("retire-s4c1-pending", help="one-time disposition of the two owner-authorized Linux legacy markers")
     retirement.add_argument("--preset", required=True, choices=("linux-debug", "linux-release"))
+    s4e_retirement = modes.add_parser("retire-s4e-aborted-owner", help="one-time unqualified disposition of the two owner-authorized S4E Debug records")
+    s4e_retirement.add_argument("--preset", required=True, choices=("linux-debug", "windows-clang-debug"))
     dev = modes.add_parser("development")
     dev.add_argument("--preset", required=True)
     choice = dev.add_mutually_exclusive_group(required=True)
@@ -428,6 +431,9 @@ def main():
     args = parser.parse_args()
     if args.mode == "retire-s4c1-pending":
         print("Legacy retirement only; fresh preparation still required:", retire_s4c1_pending(ROOT, args.preset))
+        return 0
+    if args.mode == "retire-s4e-aborted-owner":
+        print("S4E retirement only; fresh preparation still required:", retire_s4e_aborted_owner(ROOT, args.preset))
         return 0
     if args.mode == "collect-qualification":
         from qualification import collect_qualification

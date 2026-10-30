@@ -159,9 +159,16 @@ static LIVE_LENSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 thread_local! { static FAULT: std::cell::Cell<Option<(u32,u32,u32)>> = const { std::cell::Cell::new(None) }; }
 #[cfg(feature = "test-support")]
 pub(crate) fn arm_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
-    FAULT.set(None);
+    clear_fault();
     if !(1..=7).contains(&operation) || call_index == 0 || !(1..=4).contains(&fault) {
         return status(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    if operation == 3 {
+        return if illuminant::testing::arm_equal_energy(call_index, fault) {
+            status(FJ_STATUS_SUCCESS)
+        } else {
+            status(FJ_STATUS_UNSUPPORTED_INPUT)
+        };
     }
     FAULT.set(Some((operation, call_index, fault)));
     status(FJ_STATUS_SUCCESS)
@@ -169,6 +176,7 @@ pub(crate) fn arm_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus
 #[cfg(feature = "test-support")]
 pub(crate) fn clear_fault() {
     FAULT.set(None);
+    illuminant::testing::clear_equal_energy_fault();
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn live_lenses() -> usize {
@@ -204,6 +212,15 @@ fn inject(operation: u32) -> Result<(), Failure> {
     #[cfg(not(feature = "test-support"))]
     let _ = operation;
     Ok(())
+}
+
+fn checked_equal_energy() -> Result<[f32; 81], Failure> {
+    illuminant::checked_equal_energy().map_err(|error| match error {
+        illuminant::EqualEnergyError::Unsupported => {
+            Failure::Input("illuminant injected unsupported input")
+        }
+        illuminant::EqualEnergyError::Illuminant(error) => Failure::Illuminant(error),
+    })
 }
 
 // FJ_TEMP_BRIDGE: illuminant value/source preparation; remove S4.E.
@@ -269,9 +286,8 @@ pub(crate) unsafe extern "C" fn fj_legacy_illuminant_equal_energy(
             if !valid {
                 return Err(Failure::Input("invalid illuminant output"));
             }
-            inject(3)?;
             out.write(FjIlluminant {
-                samples: illuminant::equal_energy(),
+                samples: checked_equal_energy()?,
             });
             Ok(())
         })

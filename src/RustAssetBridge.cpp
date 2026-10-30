@@ -654,6 +654,45 @@ namespace JuicerAssets {
         return film_source(key)->profile();
     }
 
+    FjStatus AssetBridge::film_defaults(
+        const std::string& key,
+        FjFilmDigest& out,
+        FjErrorBuffer& error) {
+        out = FjFilmDigest{};
+
+        FjFilmProfile* owner = nullptr;
+        FjStatus status = fj_legacy_film_profile_acquire(
+            _assets,
+            {key.empty() ? nullptr : key.data(), key.size()},
+            &owner,
+            &error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            if (owner) {
+                FjErrorBuffer ignored{nullptr, 0, 0};
+                (void)fj_legacy_film_profile_release(owner, &ignored);
+            }
+            return status;
+        }
+        if (!owner) {
+            return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
+        }
+
+        FjFilmProfileView view{};
+        status = fj_legacy_film_profile_view(owner, &view, &error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            FjErrorBuffer ignored{nullptr, 0, 0};
+            (void)fj_legacy_film_profile_release(owner, &ignored);
+            return status;
+        }
+
+        const FjFilmDigest defaults = view.digest;
+        status = fj_legacy_film_profile_release(owner, &error);
+        if (status.category == FJ_STATUS_SUCCESS) {
+            out = defaults;
+        }
+        return status;
+    }
+
     std::shared_ptr<const FilmSource> AssetBridge::film_source(const std::string& key) {
         if (!_slots) {
             fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "film catalog unavailable");

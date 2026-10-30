@@ -12,6 +12,8 @@
 #include <gtest/gtest.h>
 
 #include "prepared_descriptors.h"
+#include "JuicerState.h"
+#include "PreparedState.h"
 #include "RenderRecipe.h"
 #include "Scanner.h"
 #include "juicer_test_api.h"
@@ -20,6 +22,43 @@
 
 namespace {
     FjPreparedHostData make_fixed_input();
+
+    TEST(PreparedProjection, SnapshotAdapterPreservesIntegerFlagsWidthsAndKeyBorrows) {
+        ASSERT_STREQ(std::getenv("JUICER_TEST_PRESET_NAME"), FJ_PREPARED_STATE_PRESET);
+        ParamSnapshot snapshot;
+        snapshot.normalizePrintExposure = -3;
+        snapshot.printExposureCompensation = 2;
+        snapshot.inputCctfDecoding = -3;
+        snapshot.inputCompressionEnabled = 2;
+        snapshot.hanatos2025AdaptationWindow = -3;
+        snapshot.hanatos2025AdaptationSurface = 2;
+        snapshot.cameraAutoExposureEnabled = -3;
+        snapshot.scannerBlackCorrection = 2;
+        snapshot.scannerWhiteCorrection = -3;
+        snapshot.outputCctfEncoding = 2;
+        snapshot.outputGamutCompressionEnabled = -3;
+        snapshot.cameraDiffusion.strength = 0x1.0000000000001p+0;
+        snapshot.printGammaFactor = -0.0;
+        const auto wire = preparation_params(snapshot);
+        EXPECT_EQ(wire.normalize_print_exposure, -3);
+        EXPECT_EQ(wire.print_exposure_compensation, 2);
+        EXPECT_EQ(wire.input_cctf_decoding, -3);
+        EXPECT_EQ(wire.input_compression_enabled, 2);
+        EXPECT_EQ(wire.hanatos2025_adaptation_window, -3);
+        EXPECT_EQ(wire.hanatos2025_adaptation_surface, 2);
+        EXPECT_EQ(wire.camera_auto_exposure_enabled, -3);
+        EXPECT_EQ(wire.scanner_black_correction, 2);
+        EXPECT_EQ(wire.scanner_white_correction, -3);
+        EXPECT_EQ(wire.output_cctf_encoding, 2);
+        EXPECT_EQ(wire.output_gamut_compression_enabled, -3);
+        static_assert(sizeof(wire.camera_diffusion.strength) == sizeof(double));
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(wire.camera_diffusion.strength), std::bit_cast<std::uint64_t>(0x1.0000000000001p+0));
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(wire.print_gamma_factor), std::bit_cast<std::uint64_t>(-0.0));
+        EXPECT_EQ(wire.film_profile_key.data, snapshot.filmProfileKey.data());
+        EXPECT_EQ(wire.film_profile_key.count, snapshot.filmProfileKey.size());
+        EXPECT_EQ(wire.print_profile_key.data, snapshot.printProfileKey.data());
+        EXPECT_EQ(wire.print_profile_key.count, snapshot.printProfileKey.size());
+    }
 
     TEST(PreparedProjection, GrainFramesKeepCapturedMathHashAndRecipeMetadata) {
         const auto directory = std::filesystem::path(__FILE__).parent_path().parent_path() / "grain/frame-fixtures";

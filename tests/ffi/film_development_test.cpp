@@ -20,6 +20,7 @@
 #include "RenderRecipe.h"
 #include "RustAssetBridge.h"
 #include "juicer_test_api.h"
+#include "prepared_product_fixture.h"
 #include "print_illuminant_fixture.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
@@ -262,13 +263,14 @@ namespace {
             controls.filmGammaFactor = std::bit_cast<float>(row.at("development").at("gamma")[0].get<std::uint32_t>());
             controls.grainControls.active = row.at("grain_policy") != 0;
             controls.grainControls.sublayersActive = row.at("grain_policy") != 1;
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            const bool print = Spektrafilm::scan_route_is_print(controls.scanRoute);
-            require(print ? build_print_render_state_product(controls, product, diagnostic) : build_direct_render_state_product(controls, product, diagnostic), diagnostic.c_str());
-            require(hash_params(controls) == row.at("snapshot_hash") && product.recipe.hash == row.at("final_hash"), "independent complete snapshot/final identity");
-            require(product.recipe.profileRoute.filmProfileAssetVersionToken == row.at("profile_token") && product.recipe.filmDevelop.hash == row.at("development").at("hash"), "profile/development identities survive actual consumers");
-            require(product.recipe.scannerOutput.hash == row.at("scanner_hash") && product.recipe.scannerOutput.syntheticFilmReference.hash == row.at("reference_hash"), "scanner/reference completion precedes success");
+            auto product = JuicerTestSupport::prepare_product(controls);
+            std::array<char, 2048> errorText{};
+            FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+            FjPreparedStateView view{};
+            status(product.view(view, error));
+            require(hash_params(controls) == row.at("snapshot_hash") && view.recipe_hash == row.at("final_hash"), "independent complete snapshot/final identity");
+            require(view.film_profile_asset_version == row.at("profile_token") && view.film_development.hash == row.at("development").at("hash"), "profile/development identities survive actual consumers");
+            require(view.scanner_recipe_hash == row.at("scanner_hash") && view.film_reference.hash == row.at("reference_hash"), "scanner/reference completion precedes success");
             ++count;
         }
         require(count == 480, "complete actual-consumer matrix");

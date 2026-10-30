@@ -18,10 +18,37 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SelectionTests(unittest.TestCase):
+    def test_s4e_retirement_dispatches_no_preparation_or_qualification(self):
+        import verify
+        for preset in ("linux-debug", "windows-clang-debug"):
+            with self.subTest(preset=preset), patch.object(sys, "argv", ["verify.py", "retire-s4e-aborted-owner", "--preset", preset]), \
+                    patch.object(verify, "retire_s4e_aborted_owner", return_value="receipt") as retire, \
+                    patch.object(verify, "prepare_targets", side_effect=AssertionError("retirement built outputs")), \
+                    patch("qualification.qualify", side_effect=AssertionError("retirement qualified outputs")):
+                self.assertEqual(verify.main(), 0)
+                retire.assert_called_once_with(verify.ROOT, preset)
+
     def test_target_preparation_cli_dispatches_no_qualification(self):
         import verify
+        import build_evidence
+        expected = {
+            "all", "juicer", "juicer_analysis_inputs", "JuicerFilmRecipeTests", "JuicerRouteBridgeTests", "JuicerOutputColorTests",
+            "JuicerPreparedStateTests", "JuicerPreparedProjectionTests", "JuicerPreparedBoundaryProbe",
+            "JuicerExecutorFailureOrderProbe", "JuicerCudaAbiTests", "JuicerProfileOwnerTests",
+            "JuicerSpectralOwnerTests", "JuicerProductionProfileOwnerTests", "JuicerColorPreparationTests",
+            "JuicerFilmInputTests", "JuicerFilmDevelopmentTests", "JuicerExposurePreparationTests",
+            "JuicerSpectralPreparationTests", "JuicerMallettExposureTests", "JuicerAssetLookupTests",
+            "JuicerGaussianKernelTests", "JuicerScannerLutResourceTests", "JuicerScannerOutputTests", "JuicerGrainScratchTests",
+            "JuicerDirExposureCacheTests", "JuicerProcessorReferenceProbe", "JuicerAdapterTraceProbe",
+            "JuicerCatalogOwnerTests", "JuicerIlluminantCalibrationTests", "JuicerSpectralBootstrapTests",
+            "JuicerInputHullTests", "JuicerOutputGamutCacheTests", "JuicerTcLutTests", "JuicerTcLutLifetimeTests",
+            "JuicerCudaTerminalTests", "JuicerPinnedUploadTests", "JuicerDeferredDestroyTests",
+            "JuicerCudaOwnerTests", "JuicerCudaFailureTests", "JuicerCudaInspectTests",
+            "JuicerCudaInspectGpuTests", "JuicerCudaOwnerUnloadTests", "JuicerScatterHalationGpuTests",
+        }
+        self.assertEqual(build_evidence.PREPARATION_TARGETS, expected)
         for preset in ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"):
-            for target in ("JuicerFilmRecipeTests", "juicer_analysis_inputs"):
+            for target in sorted(expected):
                 with self.subTest(preset=preset, target=target), patch.object(sys, "argv", ["verify.py", "prepare", "--preset", preset,
                         "--targets", target]), patch.object(verify, "prepare_targets", return_value="receipt") as prepare, \
                         patch("qualification.qualify", side_effect=AssertionError("runtime qualification dispatched")):
@@ -36,9 +63,14 @@ class SelectionTests(unittest.TestCase):
         requests = [(foreign + "-debug", ["juicer"], "ON"), ("unknown", ["juicer"], "ON"),
                     (native + "-debug", [], "ON"), (native + "-debug", ["test"], "ON"),
                     (native + "-debug", ["clean"], "ON"), (native + "-debug", ["--help"], "ON"),
+                    (native + "-debug", ["JuicerUnknownTests"], "ON"),
+                    (native + "-debug", ["juicer_spectral_fixture_objects"], "ON"),
+                    (native + "-debug", ["JuicerProductionPreparedRenderProbe"], "ON"),
                     (native + "-debug", ["all", "juicer"], "ON"), (native + "-debug", ["juicer"], "OFF"),
                     (native + "-release", ["JuicerFilmRecipeTests"], "OFF"),
                     (native + "-release", ["juicer_analysis_inputs"], "OFF"), (native + "-release", ["juicer"], "invalid")]
+        requests.extend((native + "-release", [target], "OFF")
+                        for target in sorted(build_evidence.PREPARATION_TARGETS - {"all", "juicer"}))
         for preset, targets, testing in requests:
             with self.subTest(preset=preset, targets=targets, testing=testing), \
                     patch.object(build_evidence, "OutputLease", side_effect=AssertionError("invalid request took ownership")), \

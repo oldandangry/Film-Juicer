@@ -130,6 +130,15 @@ if(UNIX)
     set_property(TARGET juicer APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/cmake/juicer.exports")
 endif()
 
+add_executable(JuicerProductionPreparedRenderProbe EXCLUDE_FROM_ALL
+    tests/ffi/production-prepared-render.cpp src/main.cpp)
+target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE juicer_core juicer_ofxs CUDA::cuda_driver)
+set_target_properties(JuicerProductionPreparedRenderProbe PROPERTIES
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
+if(UNIX)
+    set_property(TARGET JuicerProductionPreparedRenderProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
 include(CTest)
 if(BUILD_TESTING)

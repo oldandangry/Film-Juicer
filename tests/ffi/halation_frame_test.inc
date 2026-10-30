@@ -1,4 +1,6 @@
 namespace HalationFrameTest {
+    FjHalationFrameInput raw(const Json& input);
+    Json project(const FjScatterHalation& v);
     ScatterHalationOpticsRecipe recipe(const Json& input) {
         ScatterHalationOpticsRecipe out;
         out.scatterActive = input.at("scatter_active");
@@ -43,29 +45,33 @@ namespace HalationFrameTest {
                 params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
                 params.printProfileKey = "kodak_portra_endura";
                 params.scatterHalationControls = {active, 1, 1, 1, 1};
-                FocusedRenderStateBuildProduct product;
-                std::string diagnostic;
-                require(route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic), diagnostic.c_str());
-                const auto& h = product.recipe.spatialOptics.scatterHalation;
+                auto product = JuicerTestSupport::prepare_product(params);
+                FjPreparedStateView view{};
+                FjErrorBuffer viewError{};
+                status(product.view(view, viewError));
+                const auto& h = view.optics.scatter_halation;
                 for (std::size_t pixel = 0; pixel < (active ? pixelBits.size() : 1); ++pixel) {
                     const auto bits = pixelBits[pixel].get<std::uint32_t>();
-                    const float pixelSize = std::bit_cast<float>(bits);
-                    const std::array<float, 3> scalars{h.scatterAmount, h.scatterSpatialScale, h.halationSpatialScale};
+                    const std::array<float, 3> scalars{h.scatter_amount, h.scatter_spatial_scale, h.halation_spatial_scale};
                     Json input{{"name", "route/" + std::to_string(route) + "/" + (active ? "active/" + std::to_string(pixel) : "inactive")},
                                {"authority", "completed-route-product"},
                                {"route", route},
-                               {"scatter_active", h.scatterActive},
-                               {"back_reflection_active", h.backReflectionActive},
+                               {"scatter_active", h.scatter_active != 0},
+                               {"back_reflection_active", h.back_reflection_active != 0},
                                {"scalars", words(scalars.data(), 3)},
-                               {"first_sigma_um", words(h.halationFirstSigmaUm.data(), 3)},
-                               {"total_strength", words(h.totalStrength.data(), 3)},
+                               {"first_sigma_um", words(h.first_sigma_um, 3)},
+                               {"total_strength", words(h.total_strength, 3)},
                                {"recipe_hash", h.hash},
                                {"pixel_size_um", bits}};
-                    std::optional<ScatterHalationFrameDescriptor> descriptor;
-                    JuicerCuda::Failure failure;
-                    const bool success = JuicerHalation::prepare_frame(h, pixelSize, descriptor, failure);
-                    diagnostic = failure.diagnostic;
-                    rows.push_back({{"input", input}, {"success", success}, {"present", descriptor.has_value()}, {"diagnostic", diagnostic}, {"descriptor", descriptor ? project(*descriptor) : Json(nullptr)}});
+                    const auto wire = raw(input);
+                    FjScatterHalation descriptor{};
+                    FjHalationFrameFailure failure{};
+                    std::array<char, 256> diagnostic{};
+                    FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+                    const auto result = fj_test_scatter_halation_frame_prepare(&wire, &descriptor, &failure, &error);
+                    const bool success = result.category == FJ_STATUS_SUCCESS;
+                    const bool present = success && wire.recipe.hash != 0;
+                    rows.push_back({{"input", input}, {"success", success}, {"present", present}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"descriptor", present ? project(descriptor) : Json(nullptr)}});
                 }
             }
         }
@@ -75,16 +81,18 @@ namespace HalationFrameTest {
 
 namespace HalationFrameTest {
     FjHalationFrameInput raw(const Json& input) {
-        const auto native = recipe(input);
         FjHalationFrameInput out{};
-        out.recipe.scatter_active = native.scatterActive ? 1u : 0u;
-        out.recipe.back_reflection_active = native.backReflectionActive ? 1u : 0u;
-        out.recipe.scatter_amount = native.scatterAmount;
-        out.recipe.scatter_spatial_scale = native.scatterSpatialScale;
-        out.recipe.halation_spatial_scale = native.halationSpatialScale;
-        std::copy(native.halationFirstSigmaUm.begin(), native.halationFirstSigmaUm.end(), out.recipe.first_sigma_um);
-        std::copy(native.totalStrength.begin(), native.totalStrength.end(), out.recipe.total_strength);
-        out.recipe.hash = native.hash;
+        out.recipe.scatter_active = input.at("scatter_active").get<bool>() ? 1u : 0u;
+        out.recipe.back_reflection_active = input.at("back_reflection_active").get<bool>() ? 1u : 0u;
+        const auto scalars = PrintPreflashTest::array<3>(input.at("scalars"));
+        const auto firstSigma = PrintPreflashTest::array<3>(input.at("first_sigma_um"));
+        const auto strength = PrintPreflashTest::array<3>(input.at("total_strength"));
+        out.recipe.scatter_amount = scalars[0];
+        out.recipe.scatter_spatial_scale = scalars[1];
+        out.recipe.halation_spatial_scale = scalars[2];
+        std::copy(firstSigma.begin(), firstSigma.end(), out.recipe.first_sigma_um);
+        std::copy(strength.begin(), strength.end(), out.recipe.total_strength);
+        out.recipe.hash = input.at("recipe_hash");
         out.pixel_size_um = std::bit_cast<float>(input.at("pixel_size_um").get<std::uint32_t>());
         return out;
     }

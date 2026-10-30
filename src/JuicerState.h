@@ -15,6 +15,7 @@
 #include "FocusedRenderPayload.h"
 #include "GamutCompression.h"
 #include "ProfileCatalog.h"
+#include "RenderControls.h"
 #include "RenderRecipe.h"
 #include "ScanRoute.h"
 #include "Scanner.h"
