@@ -7,6 +7,10 @@
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <optional>
+#include <new>
+#include <string>
+#include <string_view>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
@@ -113,6 +117,7 @@ namespace {
             const auto acquire = facade ? fj_test_film_development_acquire : fj_legacy_film_development_acquire;
             const auto view = facade ? fj_test_film_development_view : fj_legacy_film_development_view;
             const auto release = facade ? fj_test_film_development_release : fj_legacy_film_development_release;
+            bool viewFaultWitnessed = false;
             for (const auto& row : fixture.at("cases")) {
                 const auto key = row.at("key").get<std::string>();
                 FjFilmProfile* profile = nullptr;
@@ -125,6 +130,24 @@ namespace {
                 FjFilmDevelopmentView result{};
                 status(view(owner, &result, nullptr));
                 compare(result, row, fixture.at("profiles").at(key));
+                if (!viewFaultWitnessed) {
+                    viewFaultWitnessed = true;
+                    status(fj_test_film_development_fault(1, 1));
+                    FjFilmDevelopmentView failedView{};
+                    failedView.route = 99;
+                    failedView.hash = 99;
+                    std::array<char, 128> viewMessage{};
+                    FjErrorBuffer viewError{viewMessage.data(), viewMessage.size(), 0};
+                    status(view(owner, &failedView, &viewError), FJ_STATUS_INTERNAL_FAILURE);
+                    clear(failedView);
+                    require(std::string_view(viewMessage.data(), viewError.length) == "asset boundary panic",
+                            "native operation-1 panic category and diagnostic");
+                    require(fj_test_film_development_live_owners() == 1,
+                            "failed native view leaves its owner live for retry");
+                    FjFilmDevelopmentView retriedView{};
+                    status(view(owner, &retriedView, nullptr));
+                    compare(retriedView, row, fixture.at("profiles").at(key));
+                }
                 status(release(owner, nullptr));
                 require(fj_test_film_development_live_owners() == 0, "consume-once owner release");
             }
@@ -274,6 +297,8 @@ namespace {
             ++count;
         }
         require(count == 480, "complete actual-consumer matrix");
+        std::size_t failureRows = 0;
+        std::size_t nativeViewRows = 0;
         for (unsigned route = 0; route < 4; ++route) {
             for (bool layers : {false, true}) {
                 ParamSnapshot controls;
@@ -291,68 +316,182 @@ namespace {
                     state.pending.value = PendingParamsState::Valid{snapshot, hash_params(snapshot)};
                 };
                 pending(controls);
-                const auto admitted = admit_pending_render_state(state);
-                require(route % 2 ? bool(admitted.printState) : bool(admitted.directState), "failure baseline complete admission");
-                const auto counter = state.buildCounterNext.load();
-                const auto identity = state.lastHash.load();
-                const auto& oldRecipe = route % 2 ? admitted.printState->recipe : admitted.directState->recipe;
-                const auto oldHash = oldRecipe.hash;
-                auto changed = controls;
-                changed.filmGammaFactor = 1.1f;
-                for (const auto fault : {std::array<unsigned, 2>{0, 1}, {0, 2}, {0, 3}, {0, 4}, {1, 1}, {2, 1}}) {
-                    pending(changed);
-                    const auto previousDirect = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
-                    const auto previousPrint = JuicerAtomic::load_shared_ptr(&state.activePrintState);
-                    status(fj_test_film_development_fault(fault[0], fault[1]));
-                    bool failed = false;
-                    try {
-                        const auto rejected = admit_pending_render_state(state);
-                        failed = rejected.status == PendingRenderAdmissionStatus::RebuildFailed && !rejected.directState && !rejected.printState;
-                    } catch (const std::bad_alloc&) {
-                        failed = fault[0] == 0 && fault[1] == 2;
+                auto publication = admit_pending_render_state(state);
+                require(route % 2 ? bool(publication.printState) : bool(publication.directState), "failure baseline complete admission");
+                require(fj_test_prepared_live_states() == 1 && fj_test_development_curve_count(0) == 1,
+                        "one complete state owns the baseline normalized curves");
+                std::uint64_t counter = state.buildCounterNext.load();
+                std::uint64_t identity = state.lastHash.load();
+                FjPreparedStateView oldView = JuicerTestSupport::published_view(publication);
+                Json oldCurveWords = words(oldView.film_development.density_rgb.data,
+                                           oldView.film_development.density_rgb.count);
+                const auto layer_words = [](const FjPreparedStateView& view) {
+                    Json result = Json::array();
+                    for (const auto& layer : view.film_development.density_layers) {
+                        Json channels = Json::array();
+                        for (const auto span : layer)
+                            channels.push_back(words(span.data, span.count));
+                        result.push_back(std::move(channels));
                     }
-                    require(failed && fj_test_film_development_live_owners() == 0, "development failure clears admission and consumes result");
-                    // Returned construction failures clear the selected publication;
-                    // already admitted snapshots remain alive through that clear.
-                    const bool returnedFailure = fault[0] == 0 && (fault[1] == 3 || fault[1] == 4);
+                    return result;
+                };
+                Json oldLayerWords = layer_words(oldView);
+                unsigned attempt = 0;
+                for (const unsigned fault : {1u, 2u, 3u, 4u}) {
+                    if (fault == 4 && !layers)
+                        continue;
+                    auto changed = controls;
+                    changed.filmGammaFactor = 1.1f + 0.1f * static_cast<float>(attempt++);
+                    const std::uint64_t changedHash = hash_params(changed);
+                    pending(changed);
+                    auto previousDirect = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
+                    auto previousPrint = JuicerAtomic::load_shared_ptr(&state.activePrintState);
+                    const std::string_view expectedDiagnostic = fault == 1
+                                                                    ? "film development normalized table reservation failed"
+                                                                : fault == 4
+                                                                    ? "MalformedRequiredProfileData phase=9A field=visual_grain"
+                                                                    : "MalformedRequiredProfileData phase=3A field=data.density_curves hash";
+                    status(fj_test_development_construction_fault(fault));
+                    std::optional<PreparedState> failedOwner;
+                    std::array<char, 4096> constructionText{};
+                    FjErrorBuffer constructionError{constructionText.data(), constructionText.size(), 0};
+                    status(prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), changed, failedOwner, constructionError),
+                           fault == 1 ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_PREPARATION_FAILURE);
+                    require(!failedOwner && std::string_view(constructionText.data(), constructionError.length) == expectedDiagnostic,
+                            "complete constructor reports the real leaf category/diagnostic and returns no partial owner");
+                    const auto allocationsBefore = fj_test_development_curve_count(1);
+                    const auto dropsBefore = fj_test_development_curve_count(2);
+                    status(fj_test_development_construction_fault(fault));
+                    bool allocationThrown = false;
+                    PendingRenderAdmissionResult rejected;
+                    try {
+                        rejected = admit_pending_render_state(state);
+                    } catch (const std::bad_alloc&) {
+                        allocationThrown = true;
+                    }
+                    if (fault == 1) {
+                        require(allocationThrown, "core development reservation maps to bad_alloc at actual admission");
+                    } else {
+                        require(!allocationThrown && rejected.status == PendingRenderAdmissionStatus::RebuildFailed &&
+                                    !rejected.directState && !rejected.printState && rejected.diagnostic == expectedDiagnostic,
+                                "core development identity/layer failure keeps its preparation diagnostic");
+                    }
+                    const std::size_t temporaryAllocations = fault == 1 ? 0 : 1;
+                    require(fj_test_development_curve_count(0) == 1 &&
+                                fj_test_development_curve_count(1) == allocationsBefore + temporaryAllocations &&
+                                fj_test_development_curve_count(2) == dropsBefore + temporaryAllocations,
+                            "failed reservation allocates nothing; later failures reclaim the actual temporary normalized curves");
+                    ++failureRows;
+                    const bool retainPublication = fault == 1;
+                    auto expectedDirect = route % 2 == 0 && !retainPublication
+                                              ? std::shared_ptr<const DirectRenderState>{}
+                                              : previousDirect;
+                    auto expectedPrint = route % 2 != 0 && !retainPublication
+                                             ? std::shared_ptr<const PrintRenderState>{}
+                                             : previousPrint;
                     require(state.buildCounterNext.load() == counter && state.lastHash.load() == identity &&
-                                JuicerAtomic::load_shared_ptr(&state.activeDirectState) == (returnedFailure ? nullptr : previousDirect) &&
-                                JuicerAtomic::load_shared_ptr(&state.activePrintState) == (returnedFailure ? nullptr : previousPrint) && oldRecipe.hash == oldHash,
-                            "development failure must not publish an intermediate identity or revoke an admitted hold");
+                                state.lastHash.load() != changedHash &&
+                                JuicerAtomic::load_shared_ptr(&state.activeDirectState) == expectedDirect &&
+                                JuicerAtomic::load_shared_ptr(&state.activePrintState) == expectedPrint,
+                            "development failure preserves counters/hash and applies its route-slot policy");
+                    const auto heldAfterFailure = JuicerTestSupport::published_view(publication);
+                    require(heldAfterFailure.recipe_hash == oldView.recipe_hash &&
+                                heldAfterFailure.film_development.hash == oldView.film_development.hash &&
+                                heldAfterFailure.film_development.density_curves_hash == oldView.film_development.density_curves_hash &&
+                                heldAfterFailure.film_development.density_layers_hash == oldView.film_development.density_layers_hash &&
+                                words(heldAfterFailure.film_development.density_rgb.data,
+                                      heldAfterFailure.film_development.density_rgb.count) == oldCurveWords &&
+                                layer_words(heldAfterFailure) == oldLayerWords,
+                            "failed construction leaves the admitted state and borrowed curves readable");
+                    require(fj_test_prepared_live_states() == 1 && fj_test_film_development_live_owners() == 0,
+                            "failed complete construction publishes no opaque state and creates no legacy foreign owner");
+
+                    const auto recovered = admit_pending_render_state(state);
+                    require(route % 2 ? bool(recovered.printState) : bool(recovered.directState),
+                            "development one-shot failure retry publishes the selected route");
+                    const auto recoveredView = JuicerTestSupport::published_view(recovered);
+                    require(recoveredView.recipe_hash != oldView.recipe_hash &&
+                                recoveredView.film_development.hash != oldView.film_development.hash &&
+                                recoveredView.film_development.density_curves_hash == oldView.film_development.density_curves_hash &&
+                                recoveredView.film_development.density_layers_hash == oldView.film_development.density_layers_hash &&
+                                words(recoveredView.film_development.density_rgb.data,
+                                      recoveredView.film_development.density_rgb.count) == oldCurveWords &&
+                                layer_words(recoveredView) == oldLayerWords &&
+                                state.buildCounterNext.load() == counter + 1 && state.lastHash.load() == changedHash,
+                            "retry publishes once with exact curve/layer content and updated identity");
+                    require(fj_test_development_curve_count(0) == 2 &&
+                                fj_test_development_curve_count(1) == allocationsBefore + temporaryAllocations + 1 &&
+                                fj_test_development_curve_count(2) == dropsBefore + temporaryAllocations,
+                            "retry holds both old and new actual normalized allocations without reclaiming the admitted one");
+                    require(fj_test_prepared_live_states() == 2,
+                            "recovery publication coexists with the prior admitted state");
+                    publication = recovered;
+                    oldView = recoveredView;
+                    oldCurveWords = words(oldView.film_development.density_rgb.data,
+                                          oldView.film_development.density_rgb.count);
+                    oldLayerWords = layer_words(oldView);
+                    counter = state.buildCounterNext.load();
+                    identity = state.lastHash.load();
+                    expectedDirect.reset();
+                    expectedPrint.reset();
+                    previousDirect.reset();
+                    previousPrint.reset();
+                    require(fj_test_prepared_live_states() == 1 && fj_test_development_curve_count(0) == 1 &&
+                                fj_test_development_curve_count(2) == dropsBefore + temporaryAllocations + 1,
+                            "replacing the test hold releases only the prior complete state and its actual normalized curves");
                 }
-                if (layers) {
-                    status(fj_test_film_development_fault(0, 5));
-                    const auto rejected = admit_pending_render_state(state);
-                    require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed &&
-                                rejected.diagnostic.find("visual_grain") != std::string::npos &&
-                                state.buildCounterNext.load() == counter,
-                            "required zero layer identity remains a grain-owner failure");
-                }
-                const auto recovered = admit_pending_render_state(state);
-                require(route % 2 ? bool(recovered.printState) : bool(recovered.directState), "development failure recovery admission");
-                const auto& recipe = route % 2 ? recovered.printState->recipe : recovered.directState->recipe;
-                require(recipe.hash != oldHash && recipe.filmDevelop.hash != oldRecipe.filmDevelop.hash &&
-                            recipe.filmDevelop.normalizedDensityCurvesHash == oldRecipe.filmDevelop.normalizedDensityCurvesHash &&
-                            recipe.filmDevelop.densityCurvesLayersHash == oldRecipe.filmDevelop.densityCurvesLayersHash &&
-                            state.buildCounterNext.load() == counter + 1,
-                        "gamma recovery publishes once after final completion and preserves curve/layer identities");
+                // SF_TEMP_BRIDGE_NATIVE_DEVELOPMENT_FAULT keeps the legacy
+                // facade warm-reuse comparison separate from the checked
+                // Development::new failures above until its I7 retirement.
                 status(fj_test_film_development_fault(0, 1));
                 const auto warm = admit_pending_render_state(state);
-                require(warm.directState == recovered.directState && warm.printState == recovered.printState,
+                require(warm.directState == publication.directState && warm.printState == publication.printState,
                         "identical current snapshot reuses the complete state");
                 JuicerAssets::AssetBridge bridge(root);
                 require(bridge.load_catalog().valid, "warm probe catalog");
                 const auto selected = bridge.film_source(controls.filmProfileKey);
                 bool stillArmed = false;
+                std::string failureDiagnostic;
                 try {
                     (void)selected->prepare_development(controls.scanRoute, 1, layers);
                 } catch (const JuicerCuda::ExecutionFailure& failure) {
                     stillArmed = failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
+                    failureDiagnostic = failure.failure.diagnostic;
                 }
-                require(stillArmed, "warm state must not consume the foreign preparation fault");
+                require(stillArmed && failureDiagnostic == "asset boundary panic" &&
+                            fj_test_film_development_live_owners() == 0,
+                        "warm state leaves the native acquire fault armed and the named native source consumes it cleanly");
+
+                status(fj_test_film_development_fault(1, 1));
+                const auto warmView = admit_pending_render_state(state);
+                require(warmView.directState == publication.directState && warmView.printState == publication.printState,
+                        "warm prepared-state admission does not visit the legacy development view");
+                bool viewFaultArmed = false;
+                failureDiagnostic.clear();
+                try {
+                    (void)selected->prepare_development(controls.scanRoute, 1, layers);
+                } catch (const JuicerCuda::ExecutionFailure& failure) {
+                    viewFaultArmed = failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
+                    failureDiagnostic = failure.failure.diagnostic;
+                }
+                require(viewFaultArmed && failureDiagnostic == "asset boundary panic" &&
+                            fj_test_film_development_live_owners() == 0,
+                        "warm complete state leaves operation-1 fault armed and raw view failure releases its owner");
+                ++nativeViewRows;
+                {
+                    const auto nativeRecovered = selected->prepare_development(controls.scanRoute, 1, layers);
+                    require(nativeRecovered.recipe.hash != 0 &&
+                                nativeRecovered.recipe.normalizedDensityCurvesHash == oldView.film_development.density_curves_hash &&
+                                nativeRecovered.recipe.densityCurvesLayersHash == oldView.film_development.density_layers_hash &&
+                                fj_test_film_development_live_owners() == 1 && fj_test_development_curve_count(0) == 2,
+                            "native view-panic recovery retains its complete development beside the actual publication");
+                }
+                require(fj_test_film_development_live_owners() == 0 && fj_test_development_curve_count(0) == 1,
+                        "dropping recovered native hold releases only its owner and normalized curves");
             }
         }
-        std::puts("PASS four-route development admission failures, bounded reservation, zero identities, panic, retained states and recovery");
+        require(failureRows == 28 && nativeViewRows == 8, "complete restored development fault and native view membership");
+        std::puts("PASS 28 actual development fault/retry rows and 8 separate native view-panic cleanup/recovery rows");
         std::puts("PASS 480 independent complete direct/print recipe and reference/scanner/final identities");
     }
 } // namespace

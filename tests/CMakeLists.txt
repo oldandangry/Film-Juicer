@@ -196,8 +196,10 @@ add_library(juicer_film_input_test_objects OBJECT ../src/RustFilmInputBridge.cpp
 target_link_libraries(juicer_film_input_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_film_input_test_objects PRIVATE JUICER_FILM_INPUT_TEST_HOOK=1)
 add_executable(JuicerFilmInputTests ffi/film_input_abi_c.c ffi/film_input_test.cpp
-    $<TARGET_OBJECTS:juicer_film_input_test_objects>)
+    $<TARGET_OBJECTS:juicer_film_input_test_objects>
+    $<TARGET_OBJECTS:juicer_admission_test_state>)
 target_link_libraries(JuicerFilmInputTests PRIVATE juicer_core)
+target_compile_definitions(JuicerFilmInputTests PRIVATE JUICER_ADMISSION_TEST_HOOK=1)
 set_target_properties(JuicerFilmInputTests PROPERTIES
     LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -238,9 +240,11 @@ add_executable(JuicerFilmRecipeTests ffi/film_recipe_abi_c.c ffi/film_recipe_tes
     $<TARGET_OBJECTS:juicer_dir_boundary_test_objects>
     $<TARGET_OBJECTS:juicer_scanner_test_objects>
     $<TARGET_OBJECTS:juicer_film_recipe_test_objects>
-    $<TARGET_OBJECTS:juicer_film_recipe_state_test_objects>)
+    $<TARGET_OBJECTS:juicer_film_recipe_state_test_objects>
+    $<TARGET_OBJECTS:juicer_admission_test_state>)
 target_link_libraries(JuicerFilmRecipeTests PRIVATE juicer_core)
-target_compile_definitions(JuicerFilmRecipeTests PRIVATE JUICER_SCANNER_TEST_HOOK=1)
+target_compile_definitions(JuicerFilmRecipeTests PRIVATE
+    JUICER_SCANNER_TEST_HOOK=1 JUICER_ADMISSION_TEST_HOOK=1)
 set_target_properties(JuicerFilmRecipeTests PROPERTIES
     LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -903,7 +907,11 @@ if(UNIX)
         PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 add_test(NAME Ofx.Gpu.NoiseSourceLifetime COMMAND JuicerExecutorFailureOrderProbe --noise-lifetime)
-set_tests_properties(Ofx.Gpu.NoiseSourceLifetime PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+set_tests_properties(Ofx.Gpu.NoiseSourceLifetime PROPERTIES
+    LABELS "gpu"
+    TIMEOUT 0
+    RESOURCE_LOCK juicer_gpu
+    ENVIRONMENT "JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/noise-source-lifetime")
 add_test(NAME Ofx.Gpu.WorkspaceTransitions COMMAND JuicerExecutorFailureOrderProbe --workspace-transitions)
 set_tests_properties(Ofx.Gpu.WorkspaceTransitions PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 add_test(NAME Ofx.Gpu.GrainFrame COMMAND JuicerExecutorFailureOrderProbe --grain-frame
@@ -972,7 +980,8 @@ add_executable(JuicerScatterHalationGpuTests
 add_test(NAME Ofx.Gpu.StreamContract
     COMMAND JuicerAdapterTraceProbe --stream-contract "${JUICER_TEST_BINARY_DIR}/$<TARGET_FILE_NAME:juicer>"
         --trace-output "${JUICER_TEST_ARTIFACT_ROOT}/ofx/stream-contract.log")
-set_tests_properties(Ofx.Gpu.StreamContract PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+set_tests_properties(Ofx.Gpu.StreamContract PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu
+    ENVIRONMENT "JUICER_DIAGNOSTICS=3;JUICER_DIAGNOSTICS_PATH=${JUICER_TEST_ARTIFACT_ROOT}/ofx/stream-contract-diagnostic.log")
 
 add_library(juicer_admission_test_state OBJECT ../src/JuicerState.cpp)
 target_link_libraries(juicer_admission_test_state PRIVATE juicer_settings juicer_ofx_headers)

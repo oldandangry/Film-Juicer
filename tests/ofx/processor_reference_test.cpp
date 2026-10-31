@@ -10,9 +10,13 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
+#include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -139,6 +143,11 @@ namespace JuicerAssets::NoiseTest {
         }
     }
 } // namespace JuicerAssets::NoiseTest
+
+namespace SF_TEMP_BRIDGE {
+    // Old C++ NoiseSource observers remain only for the I7 comparison rows.
+    namespace NativeNoiseTest = JuicerAssets::NoiseTest;
+} // namespace SF_TEMP_BRIDGE
 
 namespace JuicerCuda::ExecutorTest {
     thread_local std::optional<WorkspaceHandoff> workspaceHandoff;
@@ -445,8 +454,8 @@ namespace JuicerCuda::ExecutorTest {
         }
     }
     void observe_recovery_end() noexcept {
-        if (JuicerAssets::NoiseTest::observation) {
-            JuicerAssets::NoiseTest::observation->recoveryFinished = true;
+        if (SF_TEMP_BRIDGE::NativeNoiseTest::observation) {
+            SF_TEMP_BRIDGE::NativeNoiseTest::observation->recoveryFinished = true;
         }
         if (observation) {
             observation->record(Event::RecoveryEnded);
@@ -867,7 +876,13 @@ namespace {
         DisjointRows
     };
 
-    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream) {
+    enum class PublishedRequestAvailability : std::uint8_t {
+        Complete,
+        MissingState,
+        MissingInstance
+    };
+
+    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability availability = PublishedRequestAvailability::Complete) {
         const int width = test.width;
         const int height = test.height;
         const int pitch = width * test.components + 5;
@@ -969,39 +984,6 @@ namespace {
                     state.pending.value = PendingParamsState::Valid{parameters, hash_params(parameters)};
                 }
                 PendingRenderAdmissionResult admitted = admit_pending_render_state(state);
-#if defined(JUICER_NOISE_TEST_HOOK)
-                if (JuicerAssets::NoiseTest::observation) {
-                    const auto earlier = JuicerAssets::NoiseTest::observation->earlier;
-                    const auto change = [&](auto& published) {
-                        if (!published || earlier == JuicerAssets::NoiseTest::EarlierFailure::None || earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
-                            return;
-                        }
-                        FocusedRenderStateBuildProduct product;
-                        std::string diagnostic;
-                        const bool print = Spektrafilm::scan_route_is_print(parameters.scanRoute);
-                        if (!(print ? build_print_render_state_product(parameters, product, diagnostic) : build_direct_render_state_product(parameters, product, diagnostic))) {
-                            throw std::runtime_error("failure fixture preparation: " + diagnostic);
-                        }
-                        auto copy = std::make_shared<std::remove_const_t<typename std::remove_reference_t<decltype(published)>::element_type>>();
-                        copy->recipe = std::move(product.recipe);
-                        copy->payload = std::move(product.payload);
-                        copy->buildCounter = published->buildCounter;
-                        if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Preflight) {
-                            copy->recipe.spatialOptics.cameraLensBlur.sigmaUm = 1;
-                            copy->recipe.spatialOptics.cameraLensBlur.hash = 1;
-                        }
-                        if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Focused) {
-                            copy->recipe.filmRaw.rgbToRawMethod = Spektrafilm::RgbToRawMethod::Mallett2019;
-                        }
-                        if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Print) {
-                            copy->recipe.print.develop.densityCurves.clear();
-                        }
-                        published = std::move(copy);
-                    };
-                    change(admitted.directState);
-                    change(admitted.printState);
-                }
-#endif
                 const bool print = Spektrafilm::scan_route_is_print(test.route);
                 if (admitted.status != (print ? PendingRenderAdmissionStatus::AdmittedPrint
                                               : PendingRenderAdmissionStatus::AdmittedDirect)) {
@@ -1009,6 +991,13 @@ namespace {
                 }
                 if ((print && !admitted.printState) || (!print && !admitted.directState)) {
                     throw std::runtime_error("admitted fixture state unavailable");
+                }
+                const PreparedState& prepared = print ? admitted.printState->prepared : admitted.directState->prepared;
+                FjPreparedStateView stateView{};
+                std::array<char, 2048> stateText{};
+                FjErrorBuffer stateError{stateText.data(), stateText.size(), 0};
+                if (prepared.view(stateView, stateError).category != FJ_STATUS_SUCCESS) {
+                    throw std::runtime_error(std::string(test.name) + ": published prepared state view failed");
                 }
                 JuicerProcessor processor(effect);
                 OFX::RenderArguments args{};
@@ -1023,8 +1012,13 @@ namespace {
                 const OfxRectI fullBounds = test.fullWidth > 0 && test.fullHeight > 0
                                                 ? OfxRectI{0, 0, test.fullWidth, test.fullHeight}
                                                 : bounds;
-                const int physicalWidth = test.fullWidth > 0 ? test.fullWidth : width;
-                const float pixelSizeUm = 35'000.0f / static_cast<float>(physicalWidth);
+                const FjExtent fullExtent{fullBounds.x1, fullBounds.y1, fullBounds.x2 - fullBounds.x1, fullBounds.y2 - fullBounds.y1};
+                FjPreparedFramePolicy framePolicy{};
+                stateError.length = 0;
+                if (prepared.frame_policy(fullExtent, framePolicy, stateError).category != FJ_STATUS_SUCCESS) {
+                    throw std::runtime_error(std::string(test.name) + ": published frame policy failed");
+                }
+                const float pixelSizeUm = framePolicy.geometry.pixel_size_um;
                 const Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{
                     {fullBounds.x1, fullBounds.y1, fullBounds.x2 - fullBounds.x1, fullBounds.y2 - fullBounds.y1},
                     static_cast<double>(fullBounds.x1),
@@ -1034,32 +1028,42 @@ namespace {
                     test.scaleX,
                     test.scaleY,
                     1.0};
+                std::optional<FocusedRenderStateBuildProduct> nativeComparison;
+                const FocusedRenderStateBuildProduct* native = nullptr;
+                if (path != ExecutionPath::Processor) {
+                    nativeComparison.emplace();
+                    std::string diagnostic;
+                    const bool built = print
+                                           ? build_print_render_state_product(parameters, *nativeComparison, diagnostic)
+                                           : build_direct_render_state_product(parameters, *nativeComparison, diagnostic);
+                    if (!built) {
+                        throw std::runtime_error(std::string(test.name) + ": SF_TEMP_BRIDGE native comparison state: " + diagnostic);
+                    }
+                    native = &*nativeComparison;
+                }
                 std::optional<ScatterHalationFrameDescriptor> halation;
                 std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
-                const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
-                std::string descriptorDiagnostic;
-                if (test.combined && (!JuicerTestSupport::prepare_halation_frame(
-                                          recipe.spatialOptics.scatterHalation, pixelSizeUm, halation, descriptorDiagnostic) ||
-                                      !halation)) {
-                    throw std::runtime_error("halation descriptor: " + descriptorDiagnostic);
-                }
-                if (parameters.cameraDiffusion.active || parameters.enlargerDiffusion.active) {
-                    if (!JuicerTestSupport::prepare_diffusion_frame(
-                            recipe.spatialOptics, test.route, pixelSizeUm, Spektrafilm::DiffusionFrameDomain{test.originX, test.originY, width, height}, diffusion, descriptorDiagnostic) ||
-                        !diffusion) {
-                        throw std::runtime_error("diffusion descriptor: " + descriptorDiagnostic);
+                if (native) {
+                    std::string descriptorDiagnostic;
+                    if (test.combined && (!JuicerTestSupport::prepare_halation_frame(
+                                              native->recipe.spatialOptics.scatterHalation, pixelSizeUm, halation, descriptorDiagnostic) ||
+                                          !halation)) {
+                        throw std::runtime_error("halation descriptor: " + descriptorDiagnostic);
+                    }
+                    if (parameters.cameraDiffusion.active || parameters.enlargerDiffusion.active) {
+                        if (!JuicerTestSupport::prepare_diffusion_frame(
+                                native->recipe.spatialOptics, test.route, pixelSizeUm, Spektrafilm::DiffusionFrameDomain{test.originX, test.originY, width, height}, diffusion, descriptorDiagnostic) ||
+                            !diffusion) {
+                            throw std::runtime_error("diffusion descriptor: " + descriptorDiagnostic);
+                        }
                     }
                 }
                 if (print) {
                     JuicerProcessor::PrintFrameRequest request;
                     request.state = admitted.printState;
-#if defined(JUICER_NOISE_TEST_HOOK)
-                    if (JuicerAssets::NoiseTest::observation && JuicerAssets::NoiseTest::observation->earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
+                    if (availability == PublishedRequestAvailability::MissingState)
                         request.state.reset();
-                    }
-#endif
-                    request.diffusionFrameSet = diffusion;
-                    request.scatterHalation = halation;
+                    request.framePolicy = framePolicy;
                     request.renderWindow = renderWindow;
                     request.fullFrameExtent = fullBounds;
                     request.sessionSeed = 0x20260923;
@@ -1067,19 +1071,14 @@ namespace {
                     request.clipToken = 0x5312;
                     request.frameTime = test.time;
                     request.frameRate = 24.0;
-                    request.pixelSizeUm = pixelSizeUm;
                     request.effectsGeometry = effectsGeometry;
                     processor.setPrintFrameRequest(request);
                 } else {
                     JuicerProcessor::DirectFrameRequest request;
                     request.state = admitted.directState;
-#if defined(JUICER_NOISE_TEST_HOOK)
-                    if (JuicerAssets::NoiseTest::observation && JuicerAssets::NoiseTest::observation->earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
+                    if (availability == PublishedRequestAvailability::MissingState)
                         request.state.reset();
-                    }
-#endif
-                    request.diffusionFrameSet = diffusion;
-                    request.scatterHalation = halation;
+                    request.framePolicy = framePolicy;
                     request.renderWindow = renderWindow;
                     request.fullFrameExtent = fullBounds;
                     request.sessionSeed = 0x20260923;
@@ -1087,14 +1086,13 @@ namespace {
                     request.clipToken = 0x5312;
                     request.frameTime = test.time;
                     request.frameRate = 24.0;
-                    request.pixelSizeUm = pixelSizeUm;
                     request.effectsGeometry = effectsGeometry;
                     processor.setDirectFrameRequest(request);
                 }
-                processor.setInstanceState(&state);
+                processor.setInstanceState(availability == PublishedRequestAvailability::MissingInstance ? nullptr : &state);
                 JuicerProcess::Root::FramePreparationToken preparation;
 #if defined(JUICER_NOISE_TEST_HOOK)
-                const bool testingClosedAdmission = JuicerAssets::NoiseTest::observation && JuicerAssets::NoiseTest::observation->closeBeforeAdmission;
+                const bool testingClosedAdmission = SF_TEMP_BRIDGE::NativeNoiseTest::observation && SF_TEMP_BRIDGE::NativeNoiseTest::observation->closeBeforeAdmission;
 #else
                 constexpr bool testingClosedAdmission = false;
 #endif
@@ -1106,7 +1104,8 @@ namespace {
                 }
 #if defined(JUICER_PREPARED_BOUNDARY_TEST) || defined(JUICER_NOISE_TEST_HOOK)
                 if (path != ExecutionPath::Processor) {
-                    const auto& payload = print ? admitted.printState->payload : admitted.directState->payload;
+                    const auto& recipe = native->recipe;
+                    const auto& payload = native->payload;
                     const JuicerCuda::FrameRect nativeBounds{bounds.x1, bounds.y1, bounds.x2, bounds.y2};
                     const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(nativeBounds, nativeBounds, recipe.filmRaw.autoExposureMethod);
                     const JuicerCuda::ExecutionFrame frame{nativeBounds, nativeBounds, nativeBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), imageInput.rowBytes, imageInput.rowBytes, test.components, device.stream, diffusion, halation, effectsGeometry, pixelSizeUm, test.time, 24.0, 0x20260923, 0x5312, meter, false, false};
@@ -1447,6 +1446,7 @@ namespace {
     struct RawFrameJson {
         const nlohmann::json* input = nullptr;
         unsigned facadeCalls = 0;
+        FjDirFrameFailure dirFailure{};
     };
 
     FjStatus build_literal_dir_math(void* user, FjFrameMathInput& math, FjErrorBuffer* error) noexcept {
@@ -1464,10 +1464,9 @@ namespace {
                                       extent(value.at("render")),
                                       extent(value.at("full")),
                                       value.at("hash").get<std::uint64_t>()};
-            FjDirFrameFailure failure{};
             math.dir = {};
             ++context.facadeCalls;
-            return fj_test_dir_frame_prepare(&raw, &math.dir, &failure, error);
+            return fj_test_dir_frame_prepare(&raw, &math.dir, &context.dirFailure, error);
         } catch (...) {
             return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
         }
@@ -1556,6 +1555,7 @@ namespace {
         FjStatus status{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
         unsigned rawFacadeCalls = 0;
         std::string diagnostic;
+        std::optional<FjDirFrameFailure> dirFailure;
         std::optional<Spektrafilm::SpatialDirDescriptor> dir;
         std::optional<Spektrafilm::VisualGrainFrameDescriptor> grain;
         std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effects;
@@ -1589,6 +1589,8 @@ namespace {
         RawFrameJson raw{&value};
         result.status = build(&raw, math, &error);
         result.rawFacadeCalls = raw.facadeCalls;
+        if (kind == FrameObservationKind::Dir)
+            result.dirFailure = raw.dirFailure;
         if (result.status.category != FJ_STATUS_SUCCESS) {
             result.diagnostic.assign(text.data(), std::min(error.length, text.size()));
             return result;
@@ -1624,6 +1626,27 @@ namespace {
             result.effects = descriptor;
         }
         return result;
+    }
+
+    FrameConstructionResult capture_prepared_frame_descriptor(
+        const PreparedState& state,
+        FrameObservationKind kind,
+        const JuicerCudaTest::PreparedFrameFixture::FrameFacts& facts) {
+        FrameConstructionResult result{kind};
+        std::string diagnostic;
+        if (!JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
+                state, facts, &result, &capture_held_frame_construction, diagnostic))
+            throw std::runtime_error("same-facts prepared descriptor construction: " + diagnostic);
+        return result;
+    }
+
+    float prepared_frame_pixel_size_um(const PreparedState& state, FjExtent fullFrame) {
+        FjPreparedFramePolicy policy{};
+        std::array<char, 1024> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        if (state.frame_policy(fullFrame, policy, error).category != FJ_STATUS_SUCCESS)
+            throw std::runtime_error("state-derived frame policy: " + std::string(text.data(), error.length));
+        return policy.geometry.pixel_size_um;
     }
 
     struct AbortAfterNativeDescriptor {
@@ -1670,7 +1693,10 @@ namespace {
         const auto& payload = product.payload;
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
         snapshot.instanceToken = instanceToken;
-        snapshot.frameToken.value = static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(frame.timeFrames)));
+        const double tokenFrameTime = std::isfinite(frame.timeFrames) && frame.timeFrames >= -0x1p63 && frame.timeFrames < 0x1p63
+                                          ? frame.timeFrames
+                                          : 0.0;
+        snapshot.frameToken.value = static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(tokenFrameTime)));
         snapshot.snapshotId = snapshotId;
         snapshot.deviceContextKey = contextKey;
         snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
@@ -1714,12 +1740,17 @@ namespace {
 
     struct PreparedRenderCompletion {
         unsigned calls = 0;
+        bool observationRead = false;
+        FjPreparedNoiseObservation noise{};
     };
 
     FjCallCompletionResult prepared_render_complete(void* user, const FjCallCompletionInput* input) noexcept {
         auto* const completion = static_cast<PreparedRenderCompletion*>(user);
-        if (completion)
+        if (completion) {
             ++completion->calls;
+            completion->observationRead =
+                fj_test_prepared_noise_observation(&completion->noise).category == FJ_STATUS_SUCCESS;
+        }
         return input ? FjCallCompletionResult{input->outcome, 0}
                      : FjCallCompletionResult{{{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, 0}, 1};
     }
@@ -1750,6 +1781,15 @@ namespace {
             return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
         *out = *requested;
         out->submission_id = selection->expected.submission_id;
+        const auto normalized = JuicerCuda::ResourceManager::make_key_digests(
+            selection->expected.upload_core_hash,
+            selection->expected.dir_hash,
+            selection->expected.scanner_hash,
+            selection->expected.auto_exposure_hash);
+        out->upload_core_hash = normalized.uploadCoreHash;
+        out->dir_hash = normalized.dirHash;
+        out->scanner_hash = normalized.scannerHash;
+        out->auto_exposure_hash = normalized.autoExposureHash;
         return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
     }
 
@@ -1761,7 +1801,10 @@ namespace {
         FjAbortCallback abort,
         FrameDescriptorObservation* descriptorObservation,
         bool* recoveryPending,
-        std::string& diagnostic) {
+        std::string& diagnostic,
+        FjAssets* assetOwner = nullptr,
+        PreparedRenderCompletion* completionObservation = nullptr,
+        bool missingInstance = false) {
         diagnostic.clear();
         std::array<char, 2048> text{};
         FjErrorBuffer error{text.data(), text.size(), 0};
@@ -1814,27 +1857,54 @@ namespace {
             diagnostic = "prepared frame render admission unavailable";
             return {{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, 0}, 1};
         }
+        FjAssets* const renderAssets = assetOwner ? assetOwner : JuicerProcess::root().assets().borrow_rust_assets();
         {
             ScopedFrameDescriptorObservation overrideScope(descriptorObservation);
-            result = state.render(JuicerProcess::root().assets().borrow_rust_assets(),
-                                  access,
-                                  frame,
-                                  policy,
-                                  latch,
-                                  abort,
-                                  error);
+            result = missingInstance
+                         ? state.reject_missing_instance(renderAssets, access, frame, abort, error)
+                         : state.render(renderAssets, access, frame, policy, latch, abort, error);
         }
         if (completion.calls != 1 || selection.calls > 1 || !selection.matched) {
-            diagnostic = activeScope.diagnostic().empty()
-                             ? "prepared frame render completion or submission selection count changed"
-                             : activeScope.diagnostic();
+            diagnostic = activeScope.diagnostic();
+            if (diagnostic.empty() && error.length != 0)
+                diagnostic.assign(text.data(), error.length);
+            diagnostic = "prepared frame completion=" + std::to_string(completion.calls) +
+                         " submission=" + std::to_string(selection.calls) +
+                         " matched=" + std::to_string(selection.matched) +
+                         " status=" + std::to_string(result.outcome.status.category) +
+                         " detail=" + diagnostic;
             return {{{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, 0}, 1};
         }
         if (recoveryPending)
             *recoveryPending = activeScope.recovery().pending;
+        if (completionObservation)
+            *completionObservation = completion;
         diagnostic = activeScope.diagnostic();
         if (diagnostic.empty() && error.length != 0)
             diagnostic.assign(text.data(), error.length);
+        return result;
+    }
+
+    FjCallCompletionResult render_missing_prepared_state(
+        FjAssets* assets,
+        const FjFrame& frame,
+        FjAbortCallback abort,
+        PreparedRenderCompletion& completion,
+        std::string& diagnostic) {
+        diagnostic.clear();
+        std::array<char, 2048> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        JuicerCuda::CallScope activeScope(JuicerCuda::borrowed_owner(), std::nullopt, &prepared_render_complete, &completion);
+        const auto admission = JuicerProcess::root().begin_frame_preparation();
+        if (!admission.active()) {
+            diagnostic = "prepared missing-state render admission unavailable";
+            return {{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, 0}, 1};
+        }
+        const auto result = reject_missing_render_state(assets, activeScope.access(), frame, abort, error);
+        diagnostic = activeScope.diagnostic();
+        if (diagnostic.empty() && error.length != 0) {
+            diagnostic.assign(text.data(), error.length);
+        }
         return result;
     }
 
@@ -2316,7 +2386,7 @@ namespace {
         require_cuda(cudaGetDevice(&deviceId), "effects caller device");
         if (cuCtxGetCurrent(&context) != CUDA_SUCCESS || !context)
             throw std::runtime_error("effects caller exact context");
-        unsigned runs = 0, pixels = 0, constructions = 0, failures = 0;
+        unsigned runs = 0, pixels = 0, constructions = 0, failures = 0, actualCompanions = 0;
         for (unsigned route = 0; route < 4; ++route) {
             const auto run = [&](const Json& row, EffectsCallerPath path, bool fullFallback = false) {
                 const bool genuine = row.contains("spec");
@@ -2324,6 +2394,7 @@ namespace {
                     throw std::runtime_error("literal effects construction cannot execute pixels");
                 const auto& v = row.at("input");
                 const auto render = extent(v.at("render_extent")), full = extent(v.at("pixel_definition"));
+                const auto fullFrame = extent(v.at("full_frame_extent"));
                 ParamSnapshot params;
                 params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
                 params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
@@ -2347,22 +2418,127 @@ namespace {
                 if (state.view(stateView, stateError).category != FJ_STATUS_SUCCESS)
                     throw std::runtime_error(std::string(stateErrorText.data(), stateError.length));
                 const auto bounds = rect(full);
-                const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(
+                auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(
                     bounds, bounds, static_cast<Spektrafilm::AutoExposureMethod>(stateView.input_policy.meter));
                 const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
                 const std::optional<ScatterHalationFrameDescriptor> halation;
                 Spektrafilm::FilmJuicerEffectsRecipe ignored;
-                const auto geometry = JuicerTestSupport::effects_frame_input(v, ignored).geometry;
+                auto geometry = JuicerTestSupport::effects_frame_input(v, ignored).geometry;
                 const auto rowBytes = static_cast<std::ptrdiff_t>(static_cast<std::size_t>(full.width) * 4 * sizeof(float));
-                const JuicerCuda::ExecutionFrame frame{
+                JuicerCuda::ExecutionFrame frame{
                     bounds, rect(render), fullFallback ? JuicerCuda::FrameRect{} : bounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), rowBytes, rowBytes, path == EffectsCallerPath::BeforeBuilder ? 2 : 4, device.stream, diffusion, halation, geometry, scalar(v.at("pixel_size_um")), wide(v.at("frame_time")), wide(v.at("frame_rate")), v.at("session_seed").get<std::uint64_t>(), v.at("clip_token").get<std::uintptr_t>(), meter, false, false};
+                const JuicerCuda::ExecutionFrame fixedFrame = frame;
+                const bool actualHeld = genuine && path != EffectsCallerPath::BeforeBuilder && !fullFallback;
+                actualCompanions += actualHeld ? 1u : 0u;
+                Json actualInput = v;
+                double actualFrameTime = wide(v.at("frame_time"));
+                double actualFrameRate = wide(v.at("frame_rate"));
+                if (!std::isfinite(actualFrameTime))
+                    actualFrameTime = 37.0;
+                if (!std::isfinite(actualFrameRate))
+                    actualFrameRate = 24.0;
+                if (actualHeld) {
+                    actualInput["frame_time"] = std::bit_cast<std::uint64_t>(actualFrameTime);
+                    actualInput["frame_rate"] = std::bit_cast<std::uint64_t>(actualFrameRate);
+                    frame.timeFrames = actualFrameTime;
+                    frame.frameRate = actualFrameRate;
+                }
+                auto actualFull = fullFrame;
+                auto actualPixelDefinition = full;
+                auto actualRender = render;
+                auto actualGeometry = geometry;
+                std::optional<FrameConstructionResult> actualExpected;
+                if (actualHeld) {
+                    const FjExtent policyExtent{fullFrame.x, fullFrame.y, fullFrame.width, fullFrame.height};
+                    const float pixelSizeUm = prepared_frame_pixel_size_um(state, policyExtent);
+                    actualFull = fullFrame;
+                    actualPixelDefinition = fullFrame;
+                    actualRender = fullFrame;
+                    actualInput["render_extent"] = Json::array({actualRender.x, actualRender.y, actualRender.width, actualRender.height});
+                    actualInput["full_frame_extent"] = Json::array({actualFull.x, actualFull.y, actualFull.width, actualFull.height});
+                    actualInput["pixel_definition"] = Json::array({actualPixelDefinition.x, actualPixelDefinition.y, actualPixelDefinition.width, actualPixelDefinition.height});
+                    actualInput["pixel_size_um"] = std::bit_cast<std::uint32_t>(pixelSizeUm);
+                    actualInput["film_format_long_edge_mm"] = std::bit_cast<std::uint32_t>(stateView.input_policy.film_format_long_edge_mm);
+                    actualInput["canonical_x"] = std::bit_cast<std::uint64_t>(static_cast<double>(actualFull.x));
+                    actualInput["canonical_y"] = std::bit_cast<std::uint64_t>(static_cast<double>(actualFull.y));
+                    actualInput["canonical_width"] = std::bit_cast<std::uint64_t>(static_cast<double>(actualFull.width));
+                    actualInput["canonical_height"] = std::bit_cast<std::uint64_t>(static_cast<double>(actualFull.height));
+                    actualInput["scale_x"] = std::bit_cast<std::uint64_t>(1.0);
+                    actualInput["scale_y"] = std::bit_cast<std::uint64_t>(1.0);
+                    actualInput["pixel_aspect_ratio"] = std::bit_cast<std::uint64_t>(1.0);
+                    actualGeometry = JuicerTestSupport::effects_frame_input(actualInput, ignored).geometry;
+                    geometry = actualGeometry;
+                    meter = JuicerCuda::make_auto_exposure_preview_descriptor(
+                        rect(actualFull), rect(actualFull), static_cast<Spektrafilm::AutoExposureMethod>(stateView.input_policy.meter));
+                    frame.sourceBounds = rect(actualFull);
+                    frame.renderWindow = rect(actualRender);
+                    frame.fullFrameExtent = rect(actualFull);
+                    frame.sourceRowBytes = frame.destinationRowBytes = static_cast<std::ptrdiff_t>(static_cast<std::size_t>(actualFull.width) * 4 * sizeof(float));
+                    frame.pixelSizeUm = pixelSizeUm;
+                    JuicerCudaTest::PreparedFrameFixture::FrameFacts actualFacts;
+                    actualFacts.renderExtent = {actualRender.x, actualRender.y, actualRender.width, actualRender.height};
+                    actualFacts.fullFrameExtent = {actualFull.x, actualFull.y, actualFull.width, actualFull.height};
+                    actualFacts.pixelDefinition = {actualPixelDefinition.x, actualPixelDefinition.y, actualPixelDefinition.width, actualPixelDefinition.height};
+                    actualFacts.pixelSizeUm = pixelSizeUm;
+                    actualFacts.filmFormatLongEdgeMm = stateView.input_policy.film_format_long_edge_mm;
+                    actualFacts.canonicalX = actualGeometry.canonicalX;
+                    actualFacts.canonicalY = actualGeometry.canonicalY;
+                    actualFacts.canonicalWidth = actualGeometry.canonicalWidth;
+                    actualFacts.canonicalHeight = actualGeometry.canonicalHeight;
+                    actualFacts.scaleX = actualGeometry.scaleX;
+                    actualFacts.scaleY = actualGeometry.scaleY;
+                    actualFacts.pixelAspectRatio = actualGeometry.pixelAspectRatio;
+                    actualFacts.frameTime = actualFrameTime;
+                    actualFacts.frameRate = actualFrameRate;
+                    actualFacts.sessionSeed = v.at("session_seed");
+                    actualFacts.clipToken = v.at("clip_token");
+                    if (v.at("active").get<bool>())
+                        actualExpected.emplace(capture_prepared_frame_descriptor(state, FrameObservationKind::Effects, actualFacts));
+                    // SF_TEMP_BRIDGE: retain authored fixed-fact raw words/status/hash through I7.
+                    const bool fixedSuccess = row.at("success").get<bool>();
+                    if (fixedSuccess && v.at("active").get<bool>()) {
+                        const auto fixedRender = extent(v.at("render_extent"));
+                        JuicerCudaTest::PreparedFrameFixture::FrameFacts fixedFacts;
+                        fixedFacts.renderExtent = {fixedRender.x, fixedRender.y, fixedRender.width, fixedRender.height};
+                        fixedFacts.fullFrameExtent = {fullFrame.x, fullFrame.y, fullFrame.width, fullFrame.height};
+                        fixedFacts.pixelDefinition = {full.x, full.y, full.width, full.height};
+                        fixedFacts.pixelSizeUm = scalar(v.at("pixel_size_um"));
+                        fixedFacts.filmFormatLongEdgeMm = scalar(v.at("film_format_long_edge_mm"));
+                        const auto fixedGeometry = JuicerTestSupport::effects_frame_input(v, ignored).geometry;
+                        fixedFacts.canonicalX = fixedGeometry.canonicalX;
+                        fixedFacts.canonicalY = fixedGeometry.canonicalY;
+                        fixedFacts.canonicalWidth = fixedGeometry.canonicalWidth;
+                        fixedFacts.canonicalHeight = fixedGeometry.canonicalHeight;
+                        fixedFacts.scaleX = fixedGeometry.scaleX;
+                        fixedFacts.scaleY = fixedGeometry.scaleY;
+                        fixedFacts.pixelAspectRatio = fixedGeometry.pixelAspectRatio;
+                        fixedFacts.frameTime = wide(v.at("frame_time"));
+                        fixedFacts.frameRate = wide(v.at("frame_rate"));
+                        fixedFacts.sessionSeed = v.at("session_seed");
+                        fixedFacts.clipToken = v.at("clip_token");
+                        const auto fixed = capture_prepared_frame_descriptor(state, FrameObservationKind::Effects, fixedFacts);
+                        if (fixed.status.category != FJ_STATUS_SUCCESS || !fixed.effects ||
+                            JuicerTestSupport::effects_frame_fields(*fixed.effects) != row.at("native"))
+                            throw std::runtime_error(v.at("id").get<std::string>() + ": SF_TEMP_BRIDGE fixed effects native composer witness changed");
+                    } else if (!fixedSuccess) {
+                        const auto fixed = prepare_literal_frame_construction(
+                            FrameObservationKind::Effects, v, static_cast<Spektrafilm::ScanRoute>(route), scalar(v.at("pixel_size_um")), &build_literal_effects_math);
+                        if (fixed.rawFacadeCalls != 1 || fixed.status.category != FJ_STATUS_PREPARATION_FAILURE ||
+                            fixed.diagnostic != row.at("diagnostic").get<std::string>())
+                            throw std::runtime_error(v.at("id").get<std::string>() + ": SF_TEMP_BRIDGE fixed effects raw failure witness changed");
+                    }
+                    if (!fixedSuccess)
+                        ++failures;
+                }
                 ++runs;
                 unsigned abortCalls = 0;
                 require_cuda(cudaMemcpy(device.destination, canary.data(), kBytes, cudaMemcpyHostToDevice), "effects caller canary");
                 JuicerCuda::ExecutorTest::reset_effects_frame_observation();
                 JuicerCuda::ExecutorTest::FailureObservation events;
                 JuicerCuda::ExecutorTest::ResourceFailures resources;
-                const bool success = !v.at("active").get<bool>() || row.at("success").get<bool>();
+                bool success = !v.at("active").get<bool>() || row.at("success").get<bool>();
+                if (actualHeld)
+                    success = !v.at("active").get<bool>() || (actualExpected && actualExpected->status.category == FJ_STATUS_SUCCESS);
                 const bool early = path == EffectsCallerPath::BeforeBuilder || !success;
                 const bool observeNoResourceWork = early ||
                                                    (path == EffectsCallerPath::StopBeforePreparation && success);
@@ -2377,7 +2553,7 @@ namespace {
                 FrameDescriptorObservation frameMath{};
                 JuicerCuda::ExecutorTest::EffectsFrameObservation observed{};
                 LegacyCombinedResult legacy{};
-                if (genuine) {
+                if (actualHeld) {
                     AbortAfterNativeDescriptor stagedAbort{};
                     const FjAbortCallback actualAbort{&abort_after_native_descriptor, &stagedAbort};
                     const FjAbortCallback selectedAbort = path == EffectsCallerPath::Pixels ||
@@ -2392,12 +2568,13 @@ namespace {
                 } else {
                     const auto raw = prepare_literal_frame_construction(
                         FrameObservationKind::Effects, v, static_cast<Spektrafilm::ScanRoute>(route), scalar(v.at("pixel_size_um")), &build_literal_effects_math);
-                    if (raw.rawFacadeCalls != 1 || raw.status.category != (success ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE) ||
-                        (success && (!raw.effects || JuicerTestSupport::effects_frame_fields(*raw.effects) != row.at("native"))) ||
-                        (!success && raw.diagnostic != row.at("diagnostic").get<std::string>()))
+                    const bool rawSuccess = row.at("success").get<bool>();
+                    if (raw.rawFacadeCalls != 1 || raw.status.category != (rawSuccess ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE) ||
+                        (rawSuccess && (!raw.effects || JuicerTestSupport::effects_frame_fields(*raw.effects) != row.at("native"))) ||
+                        (!rawSuccess && raw.diagnostic != row.at("diagnostic").get<std::string>()))
                         throw std::runtime_error(v.at("id").get<std::string>() + ": raw effects facade/native composer witness changed");
                     legacy = sf_temp_bridge_native_combined_call(
-                        FrameObservationKind::Effects, params, frame, JuicerCuda::ResourceManager::InstanceToken{static_cast<std::uint64_t>(0x645700 + route)}, runs, {deviceId, context}, [&](FocusedRenderStateBuildProduct& product) {
+                        FrameObservationKind::Effects, params, fixedFrame, JuicerCuda::ResourceManager::InstanceToken{static_cast<std::uint64_t>(0x645700 + route)}, runs, {deviceId, context}, [&](FocusedRenderStateBuildProduct& product) {
                             JuicerTestSupport::effects_frame_input(v, product.recipe.filmJuicerEffects);
                             product.recipe.filmRaw.filmFormatLongEdgeMm = scalar(v.at("film_format_long_edge_mm"));
                         });
@@ -2412,28 +2589,40 @@ namespace {
                 const bool descriptorVisited = path != EffectsCallerPath::BeforeBuilder &&
                                                (!genuine || path == EffectsCallerPath::Pixels || !success ||
                                                 (path == EffectsCallerPath::StopBeforePreparation && success));
-                if (genuine && (frameMath.callbackCalls != (descriptorVisited ? 1u : 0u) ||
-                                frameMath.providerCalls != (descriptorVisited ? 1u : 0u)))
-                    throw std::runtime_error(name + ": actual prepared-state callback/provider visit count changed");
+                if (actualHeld && (frameMath.callbackCalls != (descriptorVisited ? 1u : 0u) ||
+                                   frameMath.providerCalls != (descriptorVisited ? 1u : 0u))) {
+                    std::string message = name;
+                    message += ": actual prepared-state callback/provider visit count changed callback=";
+                    message += std::to_string(frameMath.callbackCalls);
+                    message += " provider=";
+                    message += std::to_string(frameMath.providerCalls);
+                    message += " expected=";
+                    message += std::to_string(descriptorVisited ? 1u : 0u);
+                    message += " status=";
+                    message += std::to_string(result.category);
+                    message += " diagnostic=";
+                    message += failureText;
+                    throw std::runtime_error(message);
+                }
                 const auto geometryFields = [&](const Spektrafilm::FilmJuicerEffectsGeometry& g) -> Json {
                     return {fields(g.pixelDefinition), std::bit_cast<std::uint64_t>(g.canonicalX), std::bit_cast<std::uint64_t>(g.canonicalY), std::bit_cast<std::uint64_t>(g.canonicalWidth), std::bit_cast<std::uint64_t>(g.canonicalHeight), std::bit_cast<std::uint64_t>(g.scaleX), std::bit_cast<std::uint64_t>(g.scaleY), std::bit_cast<std::uint64_t>(g.pixelAspectRatio)};
                 };
-                if (genuine && path == EffectsCallerPath::StopBeforePreparation && success) {
+                if (actualHeld && path == EffectsCallerPath::StopBeforePreparation && success && v.at("active").get<bool>()) {
                     JuicerCudaTest::PreparedFrameFixture::FrameFacts witnessFacts;
-                    witnessFacts.renderExtent = {render.x, render.y, render.width, render.height};
-                    witnessFacts.fullFrameExtent = {full.x, full.y, full.width, full.height};
+                    witnessFacts.renderExtent = {actualRender.x, actualRender.y, actualRender.width, actualRender.height};
+                    witnessFacts.fullFrameExtent = {actualFull.x, actualFull.y, actualFull.width, actualFull.height};
                     witnessFacts.pixelDefinition = witnessFacts.fullFrameExtent;
-                    witnessFacts.pixelSizeUm = scalar(v.at("pixel_size_um"));
+                    witnessFacts.pixelSizeUm = frame.pixelSizeUm;
                     witnessFacts.filmFormatLongEdgeMm = stateView.input_policy.film_format_long_edge_mm;
-                    witnessFacts.canonicalX = geometry.canonicalX;
-                    witnessFacts.canonicalY = geometry.canonicalY;
-                    witnessFacts.canonicalWidth = geometry.canonicalWidth;
-                    witnessFacts.canonicalHeight = geometry.canonicalHeight;
-                    witnessFacts.scaleX = geometry.scaleX;
-                    witnessFacts.scaleY = geometry.scaleY;
-                    witnessFacts.pixelAspectRatio = geometry.pixelAspectRatio;
-                    witnessFacts.frameTime = wide(v.at("frame_time"));
-                    witnessFacts.frameRate = wide(v.at("frame_rate"));
+                    witnessFacts.canonicalX = actualGeometry.canonicalX;
+                    witnessFacts.canonicalY = actualGeometry.canonicalY;
+                    witnessFacts.canonicalWidth = actualGeometry.canonicalWidth;
+                    witnessFacts.canonicalHeight = actualGeometry.canonicalHeight;
+                    witnessFacts.scaleX = actualGeometry.scaleX;
+                    witnessFacts.scaleY = actualGeometry.scaleY;
+                    witnessFacts.pixelAspectRatio = actualGeometry.pixelAspectRatio;
+                    witnessFacts.frameTime = actualFrameTime;
+                    witnessFacts.frameRate = actualFrameRate;
                     witnessFacts.sessionSeed = v.at("session_seed");
                     witnessFacts.clipToken = v.at("clip_token");
                     FrameConstructionResult witness{FrameObservationKind::Effects};
@@ -2445,22 +2634,36 @@ namespace {
                         message += witnessDiagnostic;
                         throw std::runtime_error(message);
                     }
-                    if (witness.status.category != FJ_STATUS_SUCCESS || !witness.effects ||
-                        JuicerTestSupport::effects_frame_fields(*witness.effects) != row.at("native"))
+                    if (witness.status.category != FJ_STATUS_SUCCESS || !witness.effects || !actualExpected->effects ||
+                        JuicerTestSupport::effects_frame_fields(*witness.effects) != JuicerTestSupport::effects_frame_fields(*actualExpected->effects))
                         throw std::runtime_error(name + ": held effects construction witness fields/hash changed");
                 }
                 if (observed.count != (descriptorVisited ? 1u : 0u))
                     throw std::runtime_error(name + ": effects helper invocation count");
                 if (descriptorVisited) {
-                    if (observed.route != params.scanRoute || fields(observed.renderExtent) != v.at("render_extent") || fields(observed.fullFrameExtent) != fields(full) || geometryFields(observed.geometry) != geometryFields(geometry) || std::bit_cast<std::uint32_t>(observed.filmFormatLongEdgeMm) != v.at("film_format_long_edge_mm") || std::bit_cast<std::uint32_t>(observed.pixelSizeUm) != v.at("pixel_size_um") || std::bit_cast<std::uint64_t>(observed.frameTime) != v.at("frame_time") || std::bit_cast<std::uint64_t>(observed.frameRate) != v.at("frame_rate") || observed.sessionSeed != v.at("session_seed") || observed.clipToken != v.at("clip_token") || observed.success != success)
+                    const auto& facts = actualHeld ? actualInput : v;
+                    const Json expected = actualHeld && actualExpected && actualExpected->effects
+                                              ? JuicerTestSupport::effects_frame_fields(*actualExpected->effects)
+                                              : row.at("native");
+                    const std::uint32_t heldFormatBits = std::bit_cast<std::uint32_t>(stateView.input_policy.film_format_long_edge_mm);
+                    const bool formatMatches = actualHeld
+                                                   ? observed.filmFormatLongEdgeMm == 0.0f && facts.at("film_format_long_edge_mm") == heldFormatBits
+                                                   : std::bit_cast<std::uint32_t>(observed.filmFormatLongEdgeMm) == facts.at("film_format_long_edge_mm");
+                    if (observed.route != params.scanRoute || fields(observed.renderExtent) != facts.at("render_extent") ||
+                        fields(observed.fullFrameExtent) != fields(actualHeld ? actualFull : full) ||
+                        geometryFields(observed.geometry) != geometryFields(actualHeld ? actualGeometry : geometry) || !formatMatches ||
+                        std::bit_cast<std::uint32_t>(observed.pixelSizeUm) != facts.at("pixel_size_um") ||
+                        std::bit_cast<std::uint64_t>(observed.frameTime) != facts.at("frame_time") ||
+                        std::bit_cast<std::uint64_t>(observed.frameRate) != facts.at("frame_rate") ||
+                        observed.sessionSeed != facts.at("session_seed") || observed.clipToken != facts.at("clip_token") || observed.success != success)
                         throw std::runtime_error(name + ": current callback effects facts");
-                    const bool present = success && v.at("active").get<bool>();
-                    if (observed.descriptor.has_value() != present || (present && JuicerTestSupport::effects_frame_fields(*observed.descriptor) != row.at("native")))
+                    const bool present = success && v.at("active").get<bool>() && (actualHeld ? actualExpected && actualExpected->effects.has_value() : true);
+                    if (observed.descriptor.has_value() != present || (present && JuicerTestSupport::effects_frame_fields(*observed.descriptor) != expected))
                         throw std::runtime_error(name + ": complete effects policies/geometry/identity or failed/inactive omission");
                 }
                 const auto expectedStatus = early ? FJ_STATUS_PREPARATION_FAILURE : path == EffectsCallerPath::Pixels ? FJ_STATUS_SUCCESS
                                                                                                                       : FJ_STATUS_CANCELLED;
-                const unsigned expectedAbortCalls = genuine && path == EffectsCallerPath::StopBeforePreparation && success
+                const unsigned expectedAbortCalls = actualHeld && path == EffectsCallerPath::StopBeforePreparation && success
                                                         ? 3u
                                                     : !early && path != EffectsCallerPath::Pixels ? 1u
                                                                                                   : 0u;
@@ -2469,10 +2672,12 @@ namespace {
                 if (early) {
                     const auto expectedText = path == EffectsCallerPath::BeforeBuilder
                                                   ? route % 2 ? "UnsupportedPrintComponentCountForPhase4C" : "UnsupportedDirectComponentCountForPhase3C"
-                                                  : row.at("diagnostic").get<std::string>();
+                                              : actualHeld ? actualExpected->diagnostic
+                                                           : row.at("diagnostic").get<std::string>();
                     if (failureText != expectedText || events.count != 0 || !events.armed || resources.lutAttempts != 0 || resources.stbnAttempts != 0 || resources.wangAttempts != 0 || resources.injections != 0)
                         throw std::runtime_error(name + ": failed effects reached preparation/upload/launch");
-                    ++failures;
+                    if (!actualHeld)
+                        ++failures;
                 } else if (path == EffectsCallerPath::StopBeforePreparation &&
                            (events.count != 0 || resources.lutAttempts != 0 || resources.stbnAttempts != 0 ||
                             resources.wangAttempts != 0 || resources.injections != 0)) {
@@ -2484,7 +2689,7 @@ namespace {
                 if (path == EffectsCallerPath::Pixels) {
                     if (!genuine || early || actual == canary)
                         throw std::runtime_error("genuine effects pixel execution missing");
-                    const auto count = static_cast<std::size_t>(full.width) * static_cast<std::size_t>(full.height) * 4;
+                    const auto count = static_cast<std::size_t>(actualHeld ? actualFull.width : full.width) * static_cast<std::size_t>(actualHeld ? actualFull.height : full.height) * 4;
                     for (std::size_t i = 0; i < count; ++i) {
                         if (i % 4 == 3 ? std::bit_cast<std::uint32_t>(actual[i]) != std::bit_cast<std::uint32_t>(0.18f) : !std::isfinite(actual[i]) || actual[i] < 0.0f || actual[i] > 1.0f)
                             throw std::runtime_error("effects genuine pixel/alpha contract");
@@ -2493,7 +2698,7 @@ namespace {
                 } else {
                     if (actual != canary)
                         throw std::runtime_error("effects construction-only execution wrote pixels");
-                    if (!early)
+                    if (!early && (!actualHeld || row.at("success").get<bool>()))
                         ++constructions;
                 }
                 std::cout << "effects caller route=" << route << " name=" << name << " pixels=" << (path == EffectsCallerPath::Pixels) << " fallback=" << fullFallback << " builder_calls=" << observed.count << " success=" << success << " passed\n";
@@ -2532,7 +2737,9 @@ namespace {
         }
         if (runs != 164 || pixels != 32 || constructions != 112 || failures != 20)
             throw std::runtime_error("effects caller exact pixel/failure/stop membership");
-        std::cout << "effects caller runs=" << runs << " genuine pixels=" << pixels << " construction-only=" << constructions << " failures=" << failures << " passed\n";
+        if (actualCompanions != 72)
+            throw std::runtime_error("effects actual full-frame companion membership");
+        std::cout << "effects caller runs=" << runs << " genuine pixels=" << pixels << " construction-only=" << constructions << " failures=" << failures << " actual_full_frame_companions=" << actualCompanions << " passed\n";
     }
 
     enum class GrainCallerPath : std::uint8_t {
@@ -2575,7 +2782,7 @@ namespace {
         require_cuda(cudaGetDevice(&deviceId), "grain caller device");
         if (cuCtxGetCurrent(&context) != CUDA_SUCCESS || !context)
             throw std::runtime_error("grain caller exact context");
-        unsigned runs = 0, pixels = 0, constructions = 0, failures = 0;
+        unsigned runs = 0, pixels = 0, constructions = 0, failures = 0, actualCompanions = 0;
         const auto& base = captured.at("cases")[0].at("input");
         for (unsigned route = 0; route < 4; ++route) {
             const auto run = [&](const Json& row, GrainCallerPath path, bool fullFallback = false) {
@@ -2612,15 +2819,59 @@ namespace {
                 const std::optional<ScatterHalationFrameDescriptor> halation;
                 const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
                 const auto rowBytes = static_cast<std::ptrdiff_t>(static_cast<std::size_t>(full.width) * 4 * sizeof(float));
-                const JuicerCuda::ExecutionFrame frame{
+                JuicerCuda::ExecutionFrame frame{
                     bounds, rect(render), fullFallback ? JuicerCuda::FrameRect{} : bounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), rowBytes, rowBytes, path == GrainCallerPath::BeforeBuilder ? 2 : 4, device.stream, diffusion, halation, geometry, scalar(v.at("pixel_size_um")), wide(v.at("frame_time")), wide(v.at("frame_rate")), v.at("session_seed").get<std::uint64_t>(), v.at("clip_token").get<std::uintptr_t>(), meter, false, false};
+                const JuicerCuda::ExecutionFrame fixedFrame = frame;
+                const bool actualHeld = genuine && path != GrainCallerPath::BeforeBuilder && !fullFallback;
+                actualCompanions += actualHeld ? 1u : 0u;
+                Json actualInput = v;
+                std::optional<FrameConstructionResult> actualExpected;
+                if (actualHeld) {
+                    const FjExtent policyExtent{full.x, full.y, full.width, full.height};
+                    const float pixelSizeUm = prepared_frame_pixel_size_um(state, policyExtent);
+                    actualInput["render_extent"] = Json::array({full.x, full.y, full.width, full.height});
+                    actualInput["full_frame_extent"] = actualInput["render_extent"];
+                    actualInput["pixel_size_um"] = std::bit_cast<std::uint32_t>(pixelSizeUm);
+                    frame.renderWindow = bounds;
+                    frame.fullFrameExtent = bounds;
+                    frame.pixelSizeUm = pixelSizeUm;
+                    JuicerCudaTest::PreparedFrameFixture::FrameFacts actualFacts;
+                    actualFacts.renderExtent = {full.x, full.y, full.width, full.height};
+                    actualFacts.fullFrameExtent = actualFacts.renderExtent;
+                    actualFacts.pixelDefinition = actualFacts.fullFrameExtent;
+                    actualFacts.pixelSizeUm = pixelSizeUm;
+                    actualFacts.frameTime = wide(v.at("frame_time"));
+                    actualFacts.frameRate = wide(v.at("frame_rate"));
+                    actualFacts.sessionSeed = v.at("session_seed");
+                    actualFacts.clipToken = v.at("clip_token");
+                    if (params.grainControls.active)
+                        actualExpected.emplace(capture_prepared_frame_descriptor(state, FrameObservationKind::Grain, actualFacts));
+                    // SF_TEMP_BRIDGE: retain the authored fixed-fact native row through I7.
+                    if (params.grainControls.active) {
+                        JuicerCudaTest::PreparedFrameFixture::FrameFacts fixedFacts;
+                        fixedFacts.renderExtent = {render.x, render.y, render.width, render.height};
+                        fixedFacts.fullFrameExtent = {full.x, full.y, full.width, full.height};
+                        fixedFacts.pixelDefinition = fixedFacts.fullFrameExtent;
+                        fixedFacts.pixelSizeUm = scalar(v.at("pixel_size_um"));
+                        fixedFacts.frameTime = wide(v.at("frame_time"));
+                        fixedFacts.frameRate = wide(v.at("frame_rate"));
+                        fixedFacts.sessionSeed = v.at("session_seed");
+                        fixedFacts.clipToken = v.at("clip_token");
+                        const auto fixed = capture_prepared_frame_descriptor(state, FrameObservationKind::Grain, fixedFacts);
+                        if (fixed.status.category != FJ_STATUS_SUCCESS || !fixed.grain ||
+                            JuicerTestSupport::grain_frame_fields(*fixed.grain) != row.at("native"))
+                            throw std::runtime_error(v.at("name").get<std::string>() + ": SF_TEMP_BRIDGE fixed grain facade/native composer witness changed");
+                    }
+                }
                 ++runs;
                 unsigned abortCalls = 0;
                 require_cuda(cudaMemcpy(device.destination, canary.data(), kBytes, cudaMemcpyHostToDevice), "grain caller canary");
                 JuicerCuda::ExecutorTest::reset_grain_frame_observation();
                 JuicerCuda::ExecutorTest::FailureObservation events;
                 JuicerCuda::ExecutorTest::ResourceFailures resources;
-                const bool success = row.at("success");
+                bool success = row.at("success");
+                if (actualHeld)
+                    success = !params.grainControls.active || actualExpected->status.category == FJ_STATUS_SUCCESS;
                 const bool early = path == GrainCallerPath::BeforeBuilder || !success;
                 const bool observeNoResourceWork = early ||
                                                    (path == GrainCallerPath::StopBeforePreparation && success);
@@ -2634,7 +2885,7 @@ namespace {
                 bool recoveryPending = false;
                 FrameDescriptorObservation frameMath{};
                 JuicerCuda::ExecutorTest::GrainFrameObservation observed{};
-                if (genuine) {
+                if (actualHeld) {
                     AbortAfterNativeDescriptor stagedAbort{};
                     const FjAbortCallback actualAbort{&abort_after_native_descriptor, &stagedAbort};
                     const FjAbortCallback selectedAbort = path == GrainCallerPath::Pixels ||
@@ -2647,16 +2898,36 @@ namespace {
                     abortCalls = selectedAbort.query == &abort_after_native_descriptor ? stagedAbort.calls : 0;
                     observed = JuicerCuda::ExecutorTest::grain_frame_observation();
                 } else {
-                    const auto raw = prepare_literal_frame_construction(
-                        FrameObservationKind::Grain, v, static_cast<Spektrafilm::ScanRoute>(route), scalar(v.at("pixel_size_um")), &build_literal_grain_math);
-                    if (raw.rawFacadeCalls != 1 || raw.status.category != (success ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE) ||
-                        (success && (!raw.grain || JuicerTestSupport::grain_frame_fields(*raw.grain) != row.at("native"))) ||
-                        (!success && raw.diagnostic != row.at("diagnostic").get<std::string>()))
-                        throw std::runtime_error(v.at("name").get<std::string>() + ": raw grain facade/native composer witness changed");
-                    const auto legacy = sf_temp_bridge_native_combined_call(
-                        FrameObservationKind::Grain, params, frame, JuicerCuda::ResourceManager::InstanceToken{static_cast<std::uint64_t>(0x645600 + route)}, runs, {deviceId, context}, [&](FocusedRenderStateBuildProduct& product) {
-                            JuicerTestSupport::grain_frame_input(v, product.recipe.visualGrain, product.recipe.filmDevelop);
-                        });
+                    LegacyCombinedResult legacy{};
+                    if (genuine) {
+                        // SF_TEMP_BRIDGE: retain fixed authored facts with the genuine product recipe.
+                        JuicerCudaTest::PreparedFrameFixture::FrameFacts fixedFacts;
+                        fixedFacts.renderExtent = {render.x, render.y, render.width, render.height};
+                        fixedFacts.fullFrameExtent = {full.x, full.y, full.width, full.height};
+                        fixedFacts.pixelDefinition = fixedFacts.fullFrameExtent;
+                        fixedFacts.pixelSizeUm = scalar(v.at("pixel_size_um"));
+                        fixedFacts.frameTime = wide(v.at("frame_time"));
+                        fixedFacts.frameRate = wide(v.at("frame_rate"));
+                        fixedFacts.sessionSeed = v.at("session_seed");
+                        fixedFacts.clipToken = v.at("clip_token");
+                        const auto fixed = capture_prepared_frame_descriptor(state, FrameObservationKind::Grain, fixedFacts);
+                        if (fixed.status.category != FJ_STATUS_SUCCESS || !fixed.grain ||
+                            JuicerTestSupport::grain_frame_fields(*fixed.grain) != row.at("native"))
+                            throw std::runtime_error("SF_TEMP_BRIDGE fixed grain product descriptor changed");
+                        legacy = sf_temp_bridge_native_combined_call(
+                            FrameObservationKind::Grain, params, fixedFrame, JuicerCuda::ResourceManager::InstanceToken{static_cast<std::uint64_t>(0x645600 + route)}, runs, {deviceId, context}, [](FocusedRenderStateBuildProduct&) {});
+                    } else {
+                        const auto raw = prepare_literal_frame_construction(
+                            FrameObservationKind::Grain, v, static_cast<Spektrafilm::ScanRoute>(route), scalar(v.at("pixel_size_um")), &build_literal_grain_math);
+                        if (raw.rawFacadeCalls != 1 || raw.status.category != (success ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE) ||
+                            (success && (!raw.grain || JuicerTestSupport::grain_frame_fields(*raw.grain) != row.at("native"))) ||
+                            (!success && raw.diagnostic != row.at("diagnostic").get<std::string>()))
+                            throw std::runtime_error(v.at("name").get<std::string>() + ": raw grain facade/native composer witness changed");
+                        legacy = sf_temp_bridge_native_combined_call(
+                            FrameObservationKind::Grain, params, fixedFrame, JuicerCuda::ResourceManager::InstanceToken{static_cast<std::uint64_t>(0x645600 + route)}, runs, {deviceId, context}, [&](FocusedRenderStateBuildProduct& product) {
+                                JuicerTestSupport::grain_frame_input(v, product.recipe.visualGrain, product.recipe.filmDevelop);
+                            });
+                    }
                     result = legacy.status;
                     failureText = legacy.diagnostic;
                     abortCalls = legacy.abortCalls;
@@ -2668,32 +2939,48 @@ namespace {
                 const bool descriptorVisited = path != GrainCallerPath::BeforeBuilder &&
                                                (!genuine || path == GrainCallerPath::Pixels || !success ||
                                                 (path == GrainCallerPath::StopBeforePreparation && success));
-                if (genuine && (frameMath.callbackCalls != (descriptorVisited ? 1u : 0u) ||
-                                frameMath.providerCalls != (descriptorVisited ? 1u : 0u)))
-                    throw std::runtime_error(name + ": actual prepared-state callback/provider visit count changed");
+                if (actualHeld && (frameMath.callbackCalls != (descriptorVisited ? 1u : 0u) ||
+                                   frameMath.providerCalls != (descriptorVisited ? 1u : 0u))) {
+                    std::string message = name;
+                    message += ": actual prepared-state callback/provider visit count changed callback=";
+                    message += std::to_string(frameMath.callbackCalls);
+                    message += " provider=";
+                    message += std::to_string(frameMath.providerCalls);
+                    message += " expected=";
+                    message += std::to_string(descriptorVisited ? 1u : 0u);
+                    message += " status=";
+                    message += std::to_string(result.category);
+                    message += " diagnostic=";
+                    message += failureText;
+                    throw std::runtime_error(message);
+                }
                 const auto verifyGrainWitness = [&](const JuicerCuda::ExecutorTest::GrainFrameObservation& witness) {
+                    const auto& facts = actualHeld ? actualInput : v;
+                    const Json expected = actualHeld && actualExpected && actualExpected->grain
+                                              ? JuicerTestSupport::grain_frame_fields(*actualExpected->grain)
+                                              : row.at("native");
                     if (witness.count != 1 || witness.route != params.scanRoute ||
-                        fields(witness.renderExtent) != v.at("render_extent") ||
-                        fields(witness.fullFrameExtent) != v.at("full_frame_extent") ||
-                        std::bit_cast<std::uint32_t>(witness.pixelSizeUm) != v.at("pixel_size_um") ||
-                        std::bit_cast<std::uint64_t>(witness.frameTime) != v.at("frame_time") ||
-                        std::bit_cast<std::uint64_t>(witness.frameRate) != v.at("frame_rate") ||
-                        witness.sessionSeed != v.at("session_seed") || witness.clipToken != v.at("clip_token") ||
+                        fields(witness.renderExtent) != facts.at("render_extent") ||
+                        fields(witness.fullFrameExtent) != facts.at("full_frame_extent") ||
+                        std::bit_cast<std::uint32_t>(witness.pixelSizeUm) != facts.at("pixel_size_um") ||
+                        std::bit_cast<std::uint64_t>(witness.frameTime) != facts.at("frame_time") ||
+                        std::bit_cast<std::uint64_t>(witness.frameRate) != facts.at("frame_rate") ||
+                        witness.sessionSeed != facts.at("session_seed") || witness.clipToken != facts.at("clip_token") ||
                         witness.success != success)
                         throw std::runtime_error(name + ": current callback grain facts");
-                    const bool present = success && row.at("native").at("active").get<bool>();
+                    const bool present = success && (actualHeld ? actualExpected && actualExpected->grain.has_value() : row.at("native").at("active").get<bool>());
                     if (witness.descriptor.has_value() != present ||
-                        (present && JuicerTestSupport::grain_frame_fields(*witness.descriptor) != row.at("native")))
+                        (present && JuicerTestSupport::grain_frame_fields(*witness.descriptor) != expected))
                         throw std::runtime_error(name + ": complete successful grain fields/hash or absent failed/inactive descriptor");
                 };
-                if (genuine && path == GrainCallerPath::StopBeforePreparation && success) {
+                if (actualHeld && path == GrainCallerPath::StopBeforePreparation && success) {
                     JuicerCuda::ExecutorTest::reset_grain_frame_observation();
                     if (genuine) {
                         JuicerCudaTest::PreparedFrameFixture::FrameFacts witnessFacts;
-                        witnessFacts.renderExtent = {render.x, render.y, render.width, render.height};
+                        witnessFacts.renderExtent = {full.x, full.y, full.width, full.height};
                         witnessFacts.fullFrameExtent = {full.x, full.y, full.width, full.height};
                         witnessFacts.pixelDefinition = witnessFacts.fullFrameExtent;
-                        witnessFacts.pixelSizeUm = scalar(v.at("pixel_size_um"));
+                        witnessFacts.pixelSizeUm = frame.pixelSizeUm;
                         witnessFacts.frameTime = wide(v.at("frame_time"));
                         witnessFacts.frameRate = wide(v.at("frame_rate"));
                         witnessFacts.sessionSeed = v.at("session_seed");
@@ -2708,7 +2995,7 @@ namespace {
                             throw std::runtime_error(message);
                         }
                         if (witness.status.category != FJ_STATUS_SUCCESS || !witness.grain ||
-                            JuicerTestSupport::grain_frame_fields(*witness.grain) != row.at("native"))
+                            JuicerTestSupport::grain_frame_fields(*witness.grain) != JuicerTestSupport::grain_frame_fields(*actualExpected->grain))
                             throw std::runtime_error(name + ": held grain construction witness fields/hash changed");
                     }
                 }
@@ -2718,7 +3005,7 @@ namespace {
                     verifyGrainWitness(observed);
                 const auto expectedStatus = early ? FJ_STATUS_PREPARATION_FAILURE : path == GrainCallerPath::Pixels ? FJ_STATUS_SUCCESS
                                                                                                                     : FJ_STATUS_CANCELLED;
-                const unsigned expectedAbortCalls = genuine && path == GrainCallerPath::StopBeforePreparation && success
+                const unsigned expectedAbortCalls = actualHeld && path == GrainCallerPath::StopBeforePreparation && success
                                                         ? 3u
                                                     : !early && path != GrainCallerPath::Pixels ? 1u
                                                                                                 : 0u;
@@ -2791,7 +3078,9 @@ namespace {
         }
         if (runs != 122 || pixels != 16 || constructions != 92 || failures != 14)
             throw std::runtime_error("grain caller exact pixel/failure/stop membership");
-        std::cout << "grain caller runs=" << runs << " genuine pixels=" << pixels << " construction-only=" << constructions << " failures=" << failures << " passed\n";
+        if (actualCompanions != 44)
+            throw std::runtime_error("grain actual full-frame companion membership");
+        std::cout << "grain caller runs=" << runs << " genuine pixels=" << pixels << " construction-only=" << constructions << " failures=" << failures << " actual_full_frame_companions=" << actualCompanions << " passed\n";
     }
 
     void run_dir_frame_cases(const std::filesystem::path& manifestPath, const std::string& preset) {
@@ -2827,7 +3116,7 @@ namespace {
         if (cuCtxGetCurrent(&context) != CUDA_SUCCESS || !context) {
             throw std::runtime_error("DIR caller context unavailable");
         }
-        unsigned runs = 0;
+        unsigned runs = 0, actualCompanions = 0;
         for (unsigned route = 0; route < 4; ++route) {
             ParamSnapshot params;
             params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
@@ -2849,24 +3138,83 @@ namespace {
                     throw std::runtime_error(name + ": genuine recipe identity changed");
                 }
                 const auto render = extent(input.at("render")), full = extent(input.at("full"));
+                auto expected = row.at("native");
+                if (!expected.at("label").is_null())
+                    expected["label"] = route % 2 ? "print" : "direct";
                 const auto sourceDomain = full.width > 0 && full.height > 0 ? full : Spektrafilm::DirFrameExtent{0, 0, 64, 48};
                 const auto sourceBounds = rect(sourceDomain);
                 const auto effectiveFull = fullFallback || full.width <= 0 || full.height <= 0 ? sourceDomain : full;
                 const auto fullBounds = fullFallback ? JuicerCuda::FrameRect{} : rect(full);
-                const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(
+                auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(
                     sourceBounds, sourceBounds, static_cast<Spektrafilm::AutoExposureMethod>(stateView.input_policy.meter));
                 const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
                 const std::optional<ScatterHalationFrameDescriptor> halation;
                 const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
                 const auto rowBytes = static_cast<std::ptrdiff_t>(static_cast<std::size_t>(sourceDomain.width) * 4 * sizeof(float));
-                const JuicerCuda::ExecutionFrame frame{sourceBounds, rect(render), fullBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), rowBytes, rowBytes, beforeBuilder ? 2 : 4, device.stream, diffusion, halation, geometry, scalar(input.at("pixel")), 37.0, 24.0, 0x20260923, 0x5312, meter, false, false};
+                JuicerCuda::ExecutionFrame frame{sourceBounds, rect(render), fullBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), rowBytes, rowBytes, beforeBuilder ? 2 : 4, device.stream, diffusion, halation, geometry, scalar(input.at("pixel")), 37.0, 24.0, 0x20260923, 0x5312, meter, false, false};
+                const JuicerCuda::ExecutionFrame fixedFrame = frame;
+                const bool actualHeld = genuine && !beforeBuilder && !fullFallback;
+                actualCompanions += actualHeld ? 1u : 0u;
+                Json actualInput = input;
+                auto actualFull = effectiveFull;
+                auto actualRender = render;
+                std::optional<FrameConstructionResult> actualExpected;
+                if (actualHeld) {
+                    const FjExtent policyExtent{effectiveFull.x, effectiveFull.y, effectiveFull.width, effectiveFull.height};
+                    const float pixelSizeUm = prepared_frame_pixel_size_um(state, policyExtent);
+                    actualRender = effectiveFull;
+                    actualInput["render"] = Json::array({actualRender.x, actualRender.y, actualRender.width, actualRender.height});
+                    actualInput["full"] = Json::array({actualFull.x, actualFull.y, actualFull.width, actualFull.height});
+                    actualInput["pixel"] = std::bit_cast<std::uint32_t>(pixelSizeUm);
+                    JuicerCudaTest::PreparedFrameFixture::FrameFacts actualFacts;
+                    actualFacts.renderExtent = {actualRender.x, actualRender.y, actualRender.width, actualRender.height};
+                    actualFacts.fullFrameExtent = actualFacts.renderExtent;
+                    actualFacts.pixelDefinition = actualFacts.fullFrameExtent;
+                    actualFacts.pixelSizeUm = pixelSizeUm;
+                    actualFacts.frameTime = 37.0;
+                    actualFacts.frameRate = 24.0;
+                    actualFacts.sessionSeed = 0x20260923;
+                    actualFacts.clipToken = 0x5312;
+                    actualExpected.emplace(capture_prepared_frame_descriptor(state, FrameObservationKind::Dir, actualFacts));
+                    frame.renderWindow = rect(actualRender);
+                    frame.fullFrameExtent = rect(actualFull);
+                    frame.pixelSizeUm = pixelSizeUm;
+                    meter = JuicerCuda::make_auto_exposure_preview_descriptor(
+                        rect(actualFull), rect(actualFull), static_cast<Spektrafilm::AutoExposureMethod>(stateView.input_policy.meter));
+                    // SF_TEMP_BRIDGE: retain the authored fixed-fact raw constructor row through I7.
+                    if (row.at("success").get<bool>()) {
+                        JuicerCudaTest::PreparedFrameFixture::FrameFacts fixedFacts;
+                        fixedFacts.renderExtent = {render.x, render.y, render.width, render.height};
+                        fixedFacts.fullFrameExtent = {effectiveFull.x, effectiveFull.y, effectiveFull.width, effectiveFull.height};
+                        fixedFacts.pixelDefinition = fixedFacts.fullFrameExtent;
+                        fixedFacts.pixelSizeUm = scalar(input.at("pixel"));
+                        fixedFacts.frameTime = 37.0;
+                        fixedFacts.frameRate = 24.0;
+                        fixedFacts.sessionSeed = 0x20260923;
+                        fixedFacts.clipToken = 0x5312;
+                        const auto fixed = capture_prepared_frame_descriptor(state, FrameObservationKind::Dir, fixedFacts);
+                        if (fixed.status.category != FJ_STATUS_SUCCESS || !fixed.dir ||
+                            JuicerTestSupport::dir_frame_fields(*fixed.dir) != expected)
+                            throw std::runtime_error(name + ": SF_TEMP_BRIDGE fixed DIR native composer witness changed");
+                    } else {
+                        const auto fixed = prepare_literal_frame_construction(
+                            FrameObservationKind::Dir, input, static_cast<Spektrafilm::ScanRoute>(route), scalar(input.at("pixel")), &build_literal_dir_math);
+                        if (fixed.rawFacadeCalls != 1 || fixed.status.category != FJ_STATUS_PREPARATION_FAILURE ||
+                            !fixed.dirFailure || fixed.dirFailure->reason != FJ_DIR_FRAME_PREPARATION ||
+                            fixed.dirFailure->component != input.at("expected_component").get<std::uint32_t>() ||
+                            fixed.dirFailure->field != input.at("expected_field").get<std::uint32_t>())
+                            throw std::runtime_error(name + ": SF_TEMP_BRIDGE fixed DIR raw failure witness changed");
+                    }
+                }
                 ++runs;
                 unsigned abortCalls = 0;
                 require_cuda(cudaMemcpy(device.destination, canary.data(), kBytes, cudaMemcpyHostToDevice), "DIR caller canary");
                 JuicerCuda::ExecutorTest::reset_dir_frame_observation();
                 JuicerCuda::ExecutorTest::FailureObservation failureEvents;
                 JuicerCuda::ExecutorTest::ResourceFailures resources;
-                const bool success = row.at("success");
+                bool success = row.at("success");
+                if (actualHeld)
+                    success = actualExpected->status.category == FJ_STATUS_SUCCESS;
                 const bool earlyFailure = beforeBuilder || !success;
                 const bool observeNoResourceWork = earlyFailure || (!executePixels && !beforeBuilder && success);
                 if (observeNoResourceWork) {
@@ -2878,11 +3226,8 @@ namespace {
                 std::string failureText;
                 bool recoveryPending = false;
                 FrameDescriptorObservation frameMath{};
-                auto expected = row.at("native");
-                if (!expected.at("label").is_null())
-                    expected["label"] = route % 2 ? "print" : "direct";
                 JuicerCuda::ExecutorTest::DirFrameObservation observed{};
-                if (genuine) {
+                if (actualHeld) {
                     AbortAfterNativeDescriptor stagedAbort{};
                     const FjAbortCallback actualAbort{&abort_after_native_descriptor, &stagedAbort};
                     const FjAbortCallback selectedAbort = executePixels || (!success && !beforeBuilder)
@@ -2898,10 +3243,12 @@ namespace {
                         FrameObservationKind::Dir, input, static_cast<Spektrafilm::ScanRoute>(route), scalar(input.at("pixel")), &build_literal_dir_math);
                     if (raw.rawFacadeCalls != 1 || raw.status.category != (success ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE) ||
                         (success && (!raw.dir || JuicerTestSupport::dir_frame_fields(*raw.dir) != expected)) ||
-                        (!success && raw.diagnostic != row.at("diagnostic").get<std::string>()))
+                        (!success && (!raw.dirFailure || raw.dirFailure->reason != FJ_DIR_FRAME_PREPARATION ||
+                                      raw.dirFailure->component != input.at("expected_component").get<std::uint32_t>() ||
+                                      raw.dirFailure->field != input.at("expected_field").get<std::uint32_t>())))
                         throw std::runtime_error(name + ": raw DIR facade/native composer witness changed");
                     const auto legacy = sf_temp_bridge_native_combined_call(
-                        FrameObservationKind::Dir, params, frame, JuicerCuda::ResourceManager::InstanceToken{static_cast<std::uint64_t>(0x641300 + route)}, runs, {deviceId, context}, [&](FocusedRenderStateBuildProduct& product) {
+                        FrameObservationKind::Dir, params, fixedFrame, JuicerCuda::ResourceManager::InstanceToken{static_cast<std::uint64_t>(0x641300 + route)}, runs, {deviceId, context}, [&](FocusedRenderStateBuildProduct& product) {
                             auto& dir = product.recipe.dirCouplers;
                             dir.active = input.at("active");
                             dir.diffusionSizeUm = scalar(input.at("size"));
@@ -2918,25 +3265,40 @@ namespace {
                 JuicerCuda::ExecutorTest::resourceFailures = nullptr;
                 const bool descriptorVisited = !beforeBuilder &&
                                                (!genuine || executePixels || !success || (!executePixels && success));
-                if (genuine && (frameMath.callbackCalls != (descriptorVisited ? 1u : 0u) ||
-                                frameMath.providerCalls != (descriptorVisited ? 1u : 0u)))
-                    throw std::runtime_error(name + ": actual prepared-state callback/provider visit count changed");
+                if (actualHeld && (frameMath.callbackCalls != (descriptorVisited ? 1u : 0u) ||
+                                   frameMath.providerCalls != (descriptorVisited ? 1u : 0u))) {
+                    std::string message = name;
+                    message += ": actual prepared-state callback/provider visit count changed callback=";
+                    message += std::to_string(frameMath.callbackCalls);
+                    message += " provider=";
+                    message += std::to_string(frameMath.providerCalls);
+                    message += " expected=";
+                    message += std::to_string(descriptorVisited ? 1u : 0u);
+                    message += " status=";
+                    message += std::to_string(status.category);
+                    message += " diagnostic=";
+                    message += failureText;
+                    throw std::runtime_error(message);
+                }
                 const auto verifyDirWitness = [&](const JuicerCuda::ExecutorTest::DirFrameObservation& witness,
                                                   bool expectedSuccess) {
+                    const Json expectedFields = actualHeld && actualExpected->dir
+                                                    ? JuicerTestSupport::dir_frame_fields(*actualExpected->dir)
+                                                    : expected;
                     if (witness.count != 1 || witness.route != params.scanRoute ||
-                        witness.pixelSizeBits != input.at("pixel") ||
-                        fields(witness.renderExtent) != input.at("render") ||
-                        fields(witness.fullFrameExtent) != fields(effectiveFull) ||
+                        witness.pixelSizeBits != actualInput.at("pixel") ||
+                        fields(witness.renderExtent) != actualInput.at("render") ||
+                        fields(witness.fullFrameExtent) != fields(actualFull) ||
                         witness.success != expectedSuccess ||
-                        JuicerTestSupport::dir_frame_fields(witness.descriptor) != expected)
+                        JuicerTestSupport::dir_frame_fields(witness.descriptor) != expectedFields)
                         throw std::runtime_error(name + ": actual builder facts, fields or final hash changed");
                 };
-                if (genuine && !beforeBuilder && !executePixels && success) {
+                if (actualHeld && !executePixels && success) {
                     JuicerCudaTest::PreparedFrameFixture::FrameFacts witnessFacts;
-                    witnessFacts.renderExtent = {render.x, render.y, render.width, render.height};
-                    witnessFacts.fullFrameExtent = {effectiveFull.x, effectiveFull.y, effectiveFull.width, effectiveFull.height};
+                    witnessFacts.renderExtent = {actualRender.x, actualRender.y, actualRender.width, actualRender.height};
+                    witnessFacts.fullFrameExtent = {actualFull.x, actualFull.y, actualFull.width, actualFull.height};
                     witnessFacts.pixelDefinition = witnessFacts.fullFrameExtent;
-                    witnessFacts.pixelSizeUm = scalar(input.at("pixel"));
+                    witnessFacts.pixelSizeUm = frame.pixelSizeUm;
                     witnessFacts.frameTime = 37.0;
                     witnessFacts.frameRate = 24.0;
                     witnessFacts.sessionSeed = 0x20260923;
@@ -2950,8 +3312,8 @@ namespace {
                         message += witnessDiagnostic;
                         throw std::runtime_error(message);
                     }
-                    if (witness.status.category != FJ_STATUS_SUCCESS || !witness.dir ||
-                        JuicerTestSupport::dir_frame_fields(*witness.dir) != expected)
+                    if (witness.status.category != FJ_STATUS_SUCCESS || !witness.dir || !actualExpected->dir ||
+                        JuicerTestSupport::dir_frame_fields(*witness.dir) != JuicerTestSupport::dir_frame_fields(*actualExpected->dir))
                         throw std::runtime_error(name + ": held DIR construction witness fields/hash changed");
                 }
                 if (observed.count != (descriptorVisited ? 1u : 0u)) {
@@ -2962,7 +3324,7 @@ namespace {
                 const auto expectedStatus = earlyFailure ? FJ_STATUS_PREPARATION_FAILURE : executePixels ? FJ_STATUS_SUCCESS
                                                                                                          : FJ_STATUS_CANCELLED;
                 if (status.category != expectedStatus || status.api != FJ_API_NONE || status.native_code != 0 || recoveryPending ||
-                    abortCalls != (!earlyFailure && !executePixels ? (genuine && success ? 3u : 1u) : 0u)) {
+                    abortCalls != (!earlyFailure && !executePixels ? (actualHeld && success ? 3u : 1u) : 0u)) {
                     std::string message = name;
                     message += ": caller did not stop at the expected stage: ";
                     message += failureText;
@@ -3017,6 +3379,9 @@ namespace {
         if (runs != 100) {
             throw std::runtime_error("DIR caller exact membership changed");
         }
+        if (actualCompanions != 24)
+            throw std::runtime_error("DIR actual full-frame companion membership");
+        std::cout << "DIR caller fixed_membership_runs=" << runs << " actual_full_frame_companions=" << actualCompanions << " passed\n";
     }
 
     void check_failure_order(const Case& test,
@@ -3092,6 +3457,9 @@ namespace {
         }
     }
 
+    FjPreparedNoiseObservation prepared_noise_observation();
+    bool noise_ordered_through_completion(const FjPreparedNoiseObservation& observation);
+
     void check_resource_failure(const Case& test,
                                 const ParamSnapshot& parameters,
                                 InstanceState& state,
@@ -3100,9 +3468,8 @@ namespace {
                                 const char* stage,
                                 bool preparationFailure = false) {
         using JuicerCuda::ExecutorTest::Event;
-        JuicerAssets::NoiseTest::Observation noise;
         if (parameters.grainControls.active) {
-            JuicerAssets::NoiseTest::observation = &noise;
+            fj_test_prepared_noise_observation_reset();
         }
         JuicerCuda::ExecutorTest::FailureObservation observation;
         observation.armed = false;
@@ -3124,9 +3491,13 @@ namespace {
         }
         JuicerCuda::ExecutorTest::observation = nullptr;
         JuicerCuda::ExecutorTest::resourceFailures = nullptr;
-        JuicerAssets::NoiseTest::observation = nullptr;
-        if (parameters.grainControls.active && (noise.operations != std::array<unsigned, 3>{1, 1, 1} || noise.gateViolation || !noise.releaseAfterRecovery)) {
-            throw std::runtime_error("noise source did not survive native upload failure and recovery");
+        if (parameters.grainControls.active) {
+            const auto noise = prepared_noise_observation();
+            if (noise.acquisition_attempts != 1 || noise.successful_results != 1 ||
+                noise.held_at_complete != 1 || noise.drops_after_complete != 1 ||
+                noise.native_render_calls != 1 || !noise_ordered_through_completion(noise)) {
+                throw std::runtime_error("actual Rust noise source did not survive native upload failure and recovery");
+            }
         }
         const bool contextLoss = expectedFailure.status.category == FJ_STATUS_CONTEXT_LOSS;
         std::array expectedEvents{Event::Injected, Event::Classified, Event::FrameAborted, Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped};
@@ -3199,15 +3570,458 @@ namespace {
         }
     }
 
-    void run_noise_lifetime_cases() {
+    struct ScratchNoiseResources {
+        std::filesystem::path root;
+        std::filesystem::path stbn;
+        bool verified = false;
+
+        ScratchNoiseResources() {
+            const char* const artifactDirectory = std::getenv("JUICER_TEST_ARTIFACT_DIR");
+            if (!artifactDirectory || artifactDirectory[0] == '\0') {
+                throw std::runtime_error("Ofx.Gpu.NoiseSourceLifetime requires JUICER_TEST_ARTIFACT_DIR");
+            }
+            const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+            const std::filesystem::path artifactRoot(artifactDirectory);
+            std::filesystem::create_directories(artifactRoot);
+            root = artifactRoot / ("scratch-noise-call-" + std::to_string(stamp));
+            if (std::filesystem::exists(root)) {
+                throw std::runtime_error("noise scratch directory collision under test artifacts");
+            }
+            std::filesystem::copy(
+                JuicerProcess::data_directory(),
+                root,
+                std::filesystem::copy_options::recursive |
+                    std::filesystem::copy_options::overwrite_existing);
+            stbn = root / "Noise/stbn_scalar_512x512x256_u8.bin";
+        }
+
+        ~ScratchNoiseResources() noexcept {
+            if (!verified || std::uncaught_exceptions() != 0) {
+                return;
+            }
+            try {
+                std::error_code error;
+                std::filesystem::remove_all(root, error);
+            } catch (...) {
+                std::fputs("verified noise scratch cleanup threw\n", stderr);
+            }
+        }
+
+        void mark_verified() noexcept {
+            verified = true;
+        }
+    };
+
+    class ScratchRustAssets final {
+    public:
+        explicit ScratchRustAssets(const std::filesystem::path& root) {
+            const JuicerAssets::NativePathArgument path(root);
+            const FjStatus status = fj_legacy_assets_create(path.view(), &owner_, nullptr);
+            if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0 || !owner_) {
+                throw std::runtime_error("scratch Rust Assets create failed");
+            }
+        }
+
+        ~ScratchRustAssets() {
+            if (owner_) {
+                const FjStatus status = fj_legacy_assets_destroy(std::exchange(owner_, nullptr), nullptr);
+                if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
+                    std::abort();
+                }
+            }
+        }
+
+        FjAssets* get() const noexcept {
+            return owner_;
+        }
+
+    private:
+        FjAssets* owner_ = nullptr;
+    };
+
+    FjPreparedNoiseObservation prepared_noise_observation() {
+        FjPreparedNoiseObservation observation{};
+        const FjStatus status = fj_test_prepared_noise_observation(&observation);
+        if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
+            throw std::runtime_error("prepared noise observation query failed");
+        }
+        return observation;
+    }
+
+    bool noise_ordered_through_completion(const FjPreparedNoiseObservation& observation) {
+        return observation.acquisition_attempts == 1 &&
+               observation.precheck_order != 0 &&
+               observation.acquisition_order > observation.precheck_order &&
+               observation.admission_order > observation.acquisition_order &&
+               observation.inspection_order > observation.admission_order &&
+               observation.release_order > observation.inspection_order &&
+               observation.complete_order > observation.release_order &&
+               observation.native_render_calls <= 1 &&
+               (observation.native_render_calls == 0
+                    ? observation.native_render_order == 0
+                    : observation.native_render_order > observation.inspection_order &&
+                          observation.native_render_order < observation.release_order) &&
+               observation.drops_after_complete == 1 &&
+               observation.drop_order > observation.complete_order;
+    }
+
+    void run_published_noise_call_cases() {
+        const std::array cases{Case{"noise-published-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                               Case{"noise-published-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
+        auto& rootAssets = JuicerProcess::root().assets();
+        for (const Case& test : cases) {
+            InstanceState state;
+            auto active = parameters_for(test);
+            active.grainControls.active = true;
+            for (bool cold : {true, false}) {
+                if (cold) {
+                    rootAssets.release_cached_payloads();
+                }
+                fj_test_prepared_noise_observation_reset();
+                const auto pixels = render_case(test, active, state);
+                const auto observation = prepared_noise_observation();
+                if (pixels.empty() || observation.acquisition_attempts != 1 ||
+                    observation.successful_results != 1 || observation.held_at_complete != 1 ||
+                    observation.complete_calls != 1 || observation.drops_after_complete != 1 ||
+                    observation.native_render_calls != 1 || observation.arc_references_at_complete < 2 ||
+                    !noise_ordered_through_completion(observation)) {
+                    throw std::runtime_error("published direct/print Rust noise source was not held through completion");
+                }
+            }
+        }
+        std::puts("PASS published direct/print state borrows: actual Rust noise acquisition, completion hold, post-completion drop and native render");
+    }
+
+    void run_processor_unavailable_request_cases() {
+        const std::array cases{Case{"noise-missing-state-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                               Case{"noise-missing-state-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
+        for (const Case& test : cases) {
+            auto active = parameters_for(test);
+            active.grainControls.active = true;
+            InstanceState state;
+            const bool latchValidBefore = state.submissionSnapshotLatchValid;
+            const auto run = [&](PublishedRequestAvailability availability, unsigned cancelAt, bool expectFatal) {
+                fj_test_prepared_noise_observation_reset();
+                AbortObservation abort{};
+                abort.cancelAt = cancelAt;
+                s_abortObservation = cancelAt ? &abort : nullptr;
+                bool fatal = false;
+                std::vector<float> pixels;
+                try {
+                    pixels = render_case(test, active, state, false, ExecutionPath::Processor, DestinationLayout::Matching, 1, JuicerCudaTest::StateLifetimeCase::SuppliedStream, availability);
+                } catch (const OFX::Exception::Suite& error) {
+                    fatal = error.status() == kOfxStatErrFatal;
+                } catch (...) {
+                    s_abortObservation = nullptr;
+                    throw;
+                }
+                s_abortObservation = nullptr;
+                const auto observation = prepared_noise_observation();
+                if (fatal != expectFatal || (cancelAt && (abort.calls != cancelAt || !pixels.empty())) ||
+                    state.submissionSnapshotLatchValid != latchValidBefore ||
+                    observation.complete_calls != 1 || observation.native_render_calls != 0) {
+                    throw std::runtime_error(std::string(test.name) + ": unavailable processor request admitted a latch, rendered, or skipped completion");
+                }
+                if (availability == PublishedRequestAvailability::MissingState) {
+                    if (observation.acquisition_attempts != 0 || observation.held_at_complete != 0 ||
+                        observation.drops_after_complete != 0 || observation.arc_references_at_complete != 0 ||
+                        observation.inspection_order <= observation.admission_order ||
+                        observation.release_order <= observation.inspection_order ||
+                        observation.complete_order <= observation.release_order) {
+                        throw std::runtime_error(std::string(test.name) + ": missing-state processor request acquired noise or skipped inspect/release/completion");
+                    }
+                } else if (observation.acquisition_attempts != 1 || observation.successful_results != 1 ||
+                           observation.held_at_complete != 1 || observation.drops_after_complete != 1 ||
+                           observation.arc_references_at_complete < 2 ||
+                           !noise_ordered_through_completion(observation)) {
+                    throw std::runtime_error(std::string(test.name) + ": missing-instance processor request did not hold active noise through completion");
+                }
+            };
+
+            run(PublishedRequestAvailability::MissingState, 1, false);
+            run(PublishedRequestAvailability::MissingState, 0, true);
+            run(PublishedRequestAvailability::MissingInstance, 1, false);
+            run(PublishedRequestAvailability::MissingInstance, 0, true);
+        }
+        std::puts("PASS actual JuicerProcessor missing-state and missing-instance requests: inspect/abort precedence, source hold, no latch and no render");
+    }
+
+    void run_scratch_noise_failure_recovery_cases() {
+        const std::array cases{Case{"noise-held-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                               Case{"noise-held-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
+        for (const Case& test : cases) {
+            ScratchNoiseResources scratch;
+            ScratchRustAssets assets(scratch.root);
+            auto parameters = parameters_for(test);
+            parameters.grainControls.active = true;
+            std::optional<PreparedState> prepared;
+            std::array<char, 2048> prepareText{};
+            FjErrorBuffer prepareError{prepareText.data(), prepareText.size(), 0};
+            const FjStatus preparedStatus = prepare_state(assets.get(), parameters, prepared, prepareError);
+            if (preparedStatus.category != FJ_STATUS_SUCCESS || !prepared) {
+                throw std::runtime_error(std::string(test.name) + ": complete Rust prepared state creation failed");
+            }
+
+            DeviceFrame device;
+            const std::size_t elements = static_cast<std::size_t>(test.width) * static_cast<std::size_t>(test.height) * static_cast<std::size_t>(test.components);
+            std::vector<float> host(elements, 0.25f);
+            require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "noise held stream");
+            require_cuda(cudaMalloc(&device.source, elements * sizeof(float)), "noise held source allocation");
+            require_cuda(cudaMalloc(&device.destination, elements * sizeof(float)), "noise held destination allocation");
+            require_cuda(cudaMemcpy(device.source, host.data(), elements * sizeof(float), cudaMemcpyHostToDevice), "noise held source upload");
+            require_cuda(cudaMemset(device.destination, 0, elements * sizeof(float)), "noise held destination clear");
+            const FjRect bounds{test.originX, test.originY, test.originX + test.width, test.originY + test.height};
+            FjFrame frame{};
+            frame.source = {reinterpret_cast<std::uintptr_t>(device.source), bounds, static_cast<std::ptrdiff_t>(test.width) * test.components * static_cast<std::ptrdiff_t>(sizeof(float)), static_cast<std::uint32_t>(test.components), FJ_DEPTH_FLOAT32};
+            frame.destination = {reinterpret_cast<std::uintptr_t>(device.destination), bounds, frame.source.row_bytes, static_cast<std::uint32_t>(test.components), FJ_DEPTH_FLOAT32};
+            frame.render_window = bounds;
+            frame.full_frame_extent = bounds;
+            frame.stream = reinterpret_cast<std::uintptr_t>(device.stream);
+            frame.flags = FJ_FRAME_STREAM_PRESENT;
+            frame.pixel_size_um = 35'000.0f / static_cast<float>(test.width);
+            frame.time_frames = test.time;
+            frame.frame_rate = 24.0;
+            frame.session_seed = 0x20260923;
+            frame.clip_token = 0x5312;
+            frame.effects_geometry = {{bounds.x1, bounds.y1, test.width, test.height},
+                                      static_cast<double>(bounds.x1),
+                                      static_cast<double>(bounds.y1),
+                                      static_cast<double>(test.width),
+                                      static_cast<double>(test.height),
+                                      test.scaleX,
+                                      test.scaleY,
+                                      1.0};
+
+            std::filesystem::remove(scratch.stbn);
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion failedCompletion{};
+            std::string diagnostic;
+            const auto failed = render_held_prepared_state(
+                *prepared, frame, 0x641207 + static_cast<int>(test.route), 1, {}, nullptr, nullptr, diagnostic, assets.get(), &failedCompletion);
+            const auto failedObservation = prepared_noise_observation();
+            if (failed.outcome.status.category != FJ_STATUS_PREPARATION_FAILURE ||
+                diagnostic.find("stbn_scalar_512x512x256_u8.bin") == std::string::npos ||
+                !failedCompletion.observationRead || failedCompletion.noise.held_at_complete != 1 ||
+                failedCompletion.noise.preparation_failures != 1 ||
+                failedCompletion.noise.drops_after_complete != 0 ||
+                failedCompletion.noise.arc_references_at_complete < 2 ||
+                failedObservation.preparation_failures != 1 || failedObservation.native_render_calls != 0 ||
+                !noise_ordered_through_completion(failedObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": actual missing-noise error was not deferred, held, and dropped after completion");
+            }
+
+            AbortAfterNativeDescriptor firstAbort{0, 1};
+            const FjAbortCallback cancel{&abort_after_native_descriptor, &firstAbort};
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion cancelledCompletion{};
+            diagnostic.clear();
+            const auto cancelled = render_held_prepared_state(
+                *prepared, frame, 0x641207 + static_cast<int>(test.route), 2, cancel, nullptr, nullptr, diagnostic, assets.get(), &cancelledCompletion);
+            const auto cancelledObservation = prepared_noise_observation();
+            if (cancelled.outcome.status.category != FJ_STATUS_CANCELLED ||
+                !cancelledCompletion.observationRead || cancelledCompletion.noise.held_at_complete != 1 ||
+                cancelledCompletion.noise.preparation_failures != 1 ||
+                cancelledObservation.native_render_calls != 0 ||
+                !noise_ordered_through_completion(cancelledObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": first abort did not retain then drop the deferred source error");
+            }
+
+            FjFrame inspectionFrame = frame;
+            --inspectionFrame.destination.bounds.x2;
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion inspectionCompletion{};
+            diagnostic.clear();
+            const auto inspection = render_held_prepared_state(
+                *prepared, inspectionFrame, 0x641207 + static_cast<int>(test.route), 3, {}, nullptr, nullptr, diagnostic, assets.get(), &inspectionCompletion);
+            const auto inspectionObservation = prepared_noise_observation();
+            if (inspection.outcome.status.category == FJ_STATUS_SUCCESS ||
+                diagnostic.find("stbn_scalar_512x512x256_u8.bin") != std::string::npos ||
+                !inspectionCompletion.observationRead || inspectionCompletion.noise.held_at_complete != 1 ||
+                inspectionCompletion.noise.preparation_failures != 1 ||
+                inspectionObservation.native_render_calls != 0 ||
+                !noise_ordered_through_completion(inspectionObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": inspection did not precede deferred source delivery");
+            }
+
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion missingInstanceCompletion{};
+            diagnostic.clear();
+            const auto missingInstance = render_held_prepared_state(
+                *prepared, frame, 0x641207 + static_cast<int>(test.route), 4, {}, nullptr, nullptr, diagnostic, assets.get(), &missingInstanceCompletion, true);
+            const auto missingInstanceObservation = prepared_noise_observation();
+            if (missingInstance.outcome.status.category != FJ_STATUS_PREPARATION_FAILURE ||
+                diagnostic.find("instance state missing") == std::string::npos ||
+                !missingInstanceCompletion.observationRead || missingInstanceCompletion.noise.held_at_complete != 1 ||
+                missingInstanceCompletion.noise.preparation_failures != 1 ||
+                missingInstanceObservation.native_render_calls != 0 ||
+                !noise_ordered_through_completion(missingInstanceObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": missing-instance rejection lost precedence over the held source error");
+            }
+
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion missingStateCompletion{};
+            diagnostic.clear();
+            const auto missingState = render_missing_prepared_state(
+                assets.get(), frame, {}, missingStateCompletion, diagnostic);
+            const auto missingStateObservation = prepared_noise_observation();
+            if (missingState.outcome.status.category != FJ_STATUS_PREPARATION_FAILURE ||
+                diagnostic.find("render state unavailable") == std::string::npos ||
+                missingStateObservation.acquisition_attempts != 0 ||
+                missingStateObservation.held_at_complete != 0 ||
+                missingStateObservation.complete_calls != 1 ||
+                missingStateObservation.native_render_calls != 0 ||
+                !missingStateCompletion.observationRead) {
+                throw std::runtime_error(std::string(test.name) + ": missing-state path acquired noise or skipped completion");
+            }
+
+            std::filesystem::copy_file(
+                JuicerProcess::data_directory() / "Noise/stbn_scalar_512x512x256_u8.bin",
+                scratch.stbn,
+                std::filesystem::copy_options::overwrite_existing);
+            if (fj_legacy_assets_release_cached_payloads(assets.get(), nullptr).category != FJ_STATUS_SUCCESS) {
+                throw std::runtime_error("scratch noise cache release failed before recovery");
+            }
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion recoveredCompletion{};
+            diagnostic.clear();
+            const auto recovered = render_held_prepared_state(
+                *prepared, frame, 0x641207 + static_cast<int>(test.route), 5, {}, nullptr, nullptr, diagnostic, assets.get(), &recoveredCompletion);
+            const auto recoveredObservation = prepared_noise_observation();
+            if (recovered.outcome.status.category != FJ_STATUS_SUCCESS ||
+                !recoveredCompletion.observationRead || recoveredCompletion.noise.held_at_complete != 1 ||
+                recoveredCompletion.noise.successful_results != 1 || recoveredObservation.native_render_calls != 1 ||
+                recoveredObservation.drops_after_complete != 1 || recoveredObservation.arc_references_at_complete < 2 ||
+                !noise_ordered_through_completion(recoveredObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": actual noise source did not recover on the held state");
+            }
+            require_cuda(cudaStreamSynchronize(device.stream), "noise held recovery drain");
+
+            // The decoder capacity fault is injected at its real reservation
+            // boundary. Its failed result is retained by this call only; the
+            // next request on the same Assets owner must retry without cache
+            // clearing.
+            const FjStatus clearedCache = fj_legacy_assets_release_cached_payloads(assets.get(), nullptr);
+            if (clearedCache.category != FJ_STATUS_SUCCESS ||
+                fj_test_noise_reservation_failure(1).category != FJ_STATUS_SUCCESS ||
+                fj_test_noise_reservation_consumed() != 0) {
+                throw std::runtime_error(std::string(test.name) + ": could not arm cold decoder reservation failure");
+            }
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion allocationCompletion{};
+            diagnostic.clear();
+            const auto allocationFailure = render_held_prepared_state(
+                *prepared, frame, 0x641207 + static_cast<int>(test.route), 6, {}, nullptr, nullptr, diagnostic, assets.get(), &allocationCompletion);
+            const auto allocationObservation = prepared_noise_observation();
+            if (allocationFailure.outcome.status.category != FJ_STATUS_ALLOCATION_FAILURE ||
+                diagnostic.empty() || fj_test_noise_reservation_consumed() != 1 ||
+                !allocationCompletion.observationRead || allocationCompletion.noise.held_at_complete != 1 ||
+                allocationCompletion.noise.allocation_failures != 1 ||
+                allocationCompletion.noise.preparation_failures != 0 ||
+                allocationCompletion.noise.internal_failures != 0 ||
+                allocationCompletion.noise.drops_after_complete != 0 ||
+                allocationCompletion.noise.arc_references_at_complete != 1 ||
+                allocationObservation.allocation_failures != 1 || allocationObservation.native_render_calls != 0 ||
+                allocationObservation.drops_after_complete != 1 || !noise_ordered_through_completion(allocationObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": actual decoder capacity failure was not typed, call-held, and dropped after completion");
+            }
+
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion allocationRecoveryCompletion{};
+            diagnostic.clear();
+            const auto allocationRecovery = render_held_prepared_state(
+                *prepared, frame, 0x641207 + static_cast<int>(test.route), 7, {}, nullptr, nullptr, diagnostic, assets.get(), &allocationRecoveryCompletion);
+            const auto allocationRecoveryObservation = prepared_noise_observation();
+            if (allocationRecovery.outcome.status.category != FJ_STATUS_SUCCESS ||
+                !allocationRecoveryCompletion.observationRead || allocationRecoveryCompletion.noise.held_at_complete != 1 ||
+                allocationRecoveryCompletion.noise.successful_results != 1 || allocationRecoveryObservation.native_render_calls != 1 ||
+                allocationRecoveryObservation.drops_after_complete != 1 || allocationRecoveryObservation.arc_references_at_complete < 2 ||
+                !noise_ordered_through_completion(allocationRecoveryObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": same-Assets noise request did not retry after the consumed capacity failure");
+            }
+            require_cuda(cudaStreamSynchronize(device.stream), "noise capacity recovery drain");
+
+            // A separately poisoned scratch cache produces the actual sticky
+            // Assets error. Recreating only Assets (not the prepared state)
+            // proves the complete state has no source/cache dependency.
+            ScratchRustAssets poisonedAssets(scratch.root);
+            std::array<char, 256> poisonText{};
+            FjErrorBuffer poisonError{poisonText.data(), poisonText.size(), 0};
+            const FjStatus poisoned = fj_test_assets_poison_noise(poisonedAssets.get(), &poisonError);
+            if (poisoned.category != FJ_STATUS_SUCCESS || poisoned.api != FJ_API_NONE || poisoned.native_code != 0) {
+                throw std::runtime_error(std::string(test.name) + ": could not poison isolated noise cache");
+            }
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion internalCompletion{};
+            diagnostic.clear();
+            const auto internalFailure = render_held_prepared_state(
+                *prepared, frame, 0x641207 + static_cast<int>(test.route), 8, {}, nullptr, nullptr, diagnostic, poisonedAssets.get(), &internalCompletion);
+            const auto internalObservation = prepared_noise_observation();
+            if (internalFailure.outcome.status.category != FJ_STATUS_INTERNAL_FAILURE ||
+                diagnostic.find("noise cache poisoned") == std::string::npos ||
+                !internalCompletion.observationRead || internalCompletion.noise.held_at_complete != 1 ||
+                internalCompletion.noise.internal_failures != 1 || internalCompletion.noise.preparation_failures != 0 ||
+                internalCompletion.noise.allocation_failures != 0 || internalCompletion.noise.arc_references_at_complete != 0 ||
+                internalCompletion.noise.drops_after_complete != 0 || internalObservation.internal_failures != 1 ||
+                internalObservation.native_render_calls != 0 || internalObservation.drops_after_complete != 1 ||
+                !noise_ordered_through_completion(internalObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": poisoned noise cache error was not deferred and retained through completion");
+            }
+
+            ScratchRustAssets freshAssets(scratch.root);
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion internalRecoveryCompletion{};
+            diagnostic.clear();
+            const auto internalRecovery = render_held_prepared_state(
+                *prepared, frame, 0x641207 + static_cast<int>(test.route), 9, {}, nullptr, nullptr, diagnostic, freshAssets.get(), &internalRecoveryCompletion);
+            const auto internalRecoveryObservation = prepared_noise_observation();
+            if (internalRecovery.outcome.status.category != FJ_STATUS_SUCCESS ||
+                !internalRecoveryCompletion.observationRead || internalRecoveryCompletion.noise.held_at_complete != 1 ||
+                internalRecoveryCompletion.noise.successful_results != 1 || internalRecoveryObservation.native_render_calls != 1 ||
+                internalRecoveryObservation.drops_after_complete != 1 || internalRecoveryObservation.arc_references_at_complete < 2 ||
+                !noise_ordered_through_completion(internalRecoveryObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": fresh Assets did not recover the same held prepared state after cache poisoning");
+            }
+            require_cuda(cudaStreamSynchronize(device.stream), "noise poisoned-cache recovery drain");
+
+            // Shorten a borrowed view after the real owner acquisition. The
+            // Rust owner remains held through completion; the real native
+            // callback rejects this literal malformed span before CUDA prepare.
+            if (fj_test_prepared_noise_short_view(1).category != FJ_STATUS_SUCCESS ||
+                fj_test_prepared_noise_short_view_consumed() != 0) {
+                throw std::runtime_error(std::string(test.name) + ": could not arm call-local short noise view");
+            }
+            fj_test_prepared_noise_observation_reset();
+            PreparedRenderCompletion malformedCompletion{};
+            diagnostic.clear();
+            const auto malformedView = render_held_prepared_state(
+                *prepared, frame, 0x641207 + static_cast<int>(test.route), 10, {}, nullptr, nullptr, diagnostic, freshAssets.get(), &malformedCompletion);
+            const auto malformedObservation = prepared_noise_observation();
+            if (malformedView.outcome.status.category != FJ_STATUS_UNSUPPORTED_INPUT ||
+                diagnostic.find("MalformedPreparedHostData field=noise.stbn") == std::string::npos ||
+                fj_test_prepared_noise_short_view_consumed() != 1 ||
+                !malformedCompletion.observationRead || malformedCompletion.noise.held_at_complete != 1 ||
+                malformedCompletion.noise.successful_results != 1 || malformedCompletion.noise.arc_references_at_complete < 2 ||
+                malformedCompletion.noise.drops_after_complete != 0 || malformedObservation.native_render_calls != 1 ||
+                malformedObservation.drops_after_complete != 1 || !noise_ordered_through_completion(malformedObservation)) {
+                throw std::runtime_error(std::string(test.name) + ": malformed borrowed noise view did not reach and fail the raw callback while held");
+            }
+            scratch.mark_verified();
+        }
+        std::puts("PASS complete Rust held state with typed missing/capacity/internal source failures, malformed borrowed view, recovery, and post-completion owner drops");
+    }
+
+    // Source-only SF_TEMP_BRIDGE rows are retained for owner-directed review
+    // before I7 deletes the native comparison bridge; they are not current
+    // runtime evidence for the prepared Rust publisher.
+    [[maybe_unused]] void run_SF_TEMP_BRIDGE_native_noise_lifetime_cases() {
         const std::array cases{Case{"noise-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                Case{"noise-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
-        using JuicerAssets::NoiseTest::EarlierFailure;
-        using JuicerAssets::NoiseTest::Observation;
+        using SF_TEMP_BRIDGE::NativeNoiseTest::EarlierFailure;
+        using SF_TEMP_BRIDGE::NativeNoiseTest::Observation;
         for (const Case& test : {cases[0], cases[1]}) {
             InstanceState state;
             const auto run = [&](Observation& observed, const ParamSnapshot& parameters, bool fatalExpected, unsigned cancelAt = 0, DestinationLayout layout = DestinationLayout::Matching, ExecutionPath path = ExecutionPath::Processor) {
-                JuicerAssets::NoiseTest::observation = &observed;
+                SF_TEMP_BRIDGE::NativeNoiseTest::observation = &observed;
                 AbortObservation abort;
                 abort.cancelAt = cancelAt;
                 s_abortObservation = cancelAt ? &abort : nullptr;
@@ -3230,11 +4044,11 @@ namespace {
                     observed.result = failure.failure.status;
                     failureDiagnostic = failure.failure.diagnostic;
                 } catch (...) {
-                    JuicerAssets::NoiseTest::observation = nullptr;
+                    SF_TEMP_BRIDGE::NativeNoiseTest::observation = nullptr;
                     s_abortObservation = nullptr;
                     throw;
                 }
-                JuicerAssets::NoiseTest::observation = nullptr;
+                SF_TEMP_BRIDGE::NativeNoiseTest::observation = nullptr;
                 s_abortObservation = nullptr;
                 if (fatal != fatalExpected || observed.gateViolation ||
                     (observed.noiseStep && !observed.noiseStepGated) || fj_test_live_noise_owners() != 0) {
@@ -3328,17 +4142,17 @@ namespace {
             {
                 JuicerCuda::NativeCall existing(JuicerCuda::borrowed_owner());
                 Observation reentry;
-                JuicerAssets::NoiseTest::observation = &reentry;
+                SF_TEMP_BRIDGE::NativeNoiseTest::observation = &reentry;
                 bool rejected = false;
                 try {
                     (void)render_case(test, active, state);
                 } catch (const JuicerCuda::ExecutionFailure& failure) {
                     rejected = failure.failure.status.category == FJ_STATUS_UNSUPPORTED_INPUT;
                 } catch (...) {
-                    JuicerAssets::NoiseTest::observation = nullptr;
+                    SF_TEMP_BRIDGE::NativeNoiseTest::observation = nullptr;
                     throw;
                 }
-                JuicerAssets::NoiseTest::observation = nullptr;
+                SF_TEMP_BRIDGE::NativeNoiseTest::observation = nullptr;
                 if (!rejected || reentry.operations != std::array<unsigned, 3>{}) {
                     throw std::runtime_error("native reentry reached Rust noise source");
                 }
@@ -3353,39 +4167,39 @@ namespace {
             active.grainControls.active = true;
             Observation closed;
             closed.closeBeforeAdmission = true;
-            JuicerAssets::NoiseTest::observation = &closed;
+            SF_TEMP_BRIDGE::NativeNoiseTest::observation = &closed;
             bool rejected = false;
             try {
                 (void)render_case(cases[1], active, state);
             } catch (const JuicerCuda::ExecutionFailure& failure) {
                 rejected = failure.failure.status.category == FJ_STATUS_PREPARATION_FAILURE;
             } catch (...) {
-                JuicerAssets::NoiseTest::observation = nullptr;
+                SF_TEMP_BRIDGE::NativeNoiseTest::observation = nullptr;
                 throw;
             }
-            JuicerAssets::NoiseTest::observation = nullptr;
+            SF_TEMP_BRIDGE::NativeNoiseTest::observation = nullptr;
             if (!rejected || closed.operations != std::array<unsigned, 3>{1, 1, 1} || closed.noiseStep || closed.gateViolation || fj_test_live_noise_owners() != 0) {
                 throw std::runtime_error("final native admission/source destruction changed");
             }
             Observation sourceError;
             sourceError.sourceFailure = FJ_STATUS_INTERNAL_FAILURE;
             sourceError.closeBeforeAdmission = true;
-            JuicerAssets::NoiseTest::observation = &sourceError;
+            SF_TEMP_BRIDGE::NativeNoiseTest::observation = &sourceError;
             rejected = false;
             try {
                 (void)render_case(cases[1], active, state);
             } catch (const JuicerCuda::ExecutionFailure& failure) {
                 rejected = failure.failure.status.category == FJ_STATUS_PREPARATION_FAILURE;
             } catch (...) {
-                JuicerAssets::NoiseTest::observation = nullptr;
+                SF_TEMP_BRIDGE::NativeNoiseTest::observation = nullptr;
                 throw;
             }
-            JuicerAssets::NoiseTest::observation = nullptr;
+            SF_TEMP_BRIDGE::NativeNoiseTest::observation = nullptr;
             if (!rejected || sourceError.noiseStep || sourceError.exceptionDrops != 1 || sourceError.gateViolation) {
                 throw std::runtime_error("closed native admission/held source exception ordering changed");
             }
         }
-        std::puts("PASS production direct/print noise: calling-thread acquire/view/release outside gate, continuous projection gate, deferred typed failures, earlier failure precedence, missing/disabled, cancellation and reentry");
+        std::puts("PASS SF_TEMP_BRIDGE native noise comparison: C++ source acquire/view/release, deferred failures, precedence, cancellation and reentry");
     }
 
     void run_grain_upload_failure_cases() {
@@ -3535,7 +4349,9 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (argc == 2 && std::string(argv[1]) == "--noise-lifetime") {
-            run_noise_lifetime_cases();
+            run_published_noise_call_cases();
+            run_processor_unavailable_request_cases();
+            run_scratch_noise_failure_recovery_cases();
             if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("noise lifetime owner cleanup failed");
             }

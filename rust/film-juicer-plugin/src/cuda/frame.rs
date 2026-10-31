@@ -129,11 +129,15 @@ fn grain_math(
     render: Domain,
     full: Domain,
 ) -> Result<crate::grain_frame_bridge::FjGrainFrameMath, edge::Failure> {
+    let source = state.grain();
+    if !source.active() {
+        // Match the caller's inactive optional-descriptor omission.
+        return Ok(crate::grain_frame_bridge::empty_math());
+    }
     #[cfg(feature = "test-support")]
     let fault = crate::grain_frame_bridge::faults::take();
     #[cfg(not(feature = "test-support"))]
     let fault = 0;
-    let source = state.grain();
     let development = state.development();
     let curves = development.density_curves_layers();
     let input = grain::frame::Input {
@@ -210,11 +214,15 @@ fn effects_math(
     frame: &sys::FjFrame,
     render: Domain,
 ) -> Result<crate::effects_frame_bridge::FjEffectsFrameMath, edge::Failure> {
+    let recipe = state.effects();
+    if !recipe.active() {
+        // Preserve the native caller's inactive omission: no frame math runs.
+        return Ok(crate::effects_frame_bridge::empty_math());
+    }
     #[cfg(feature = "test-support")]
     let fault = crate::effects_frame_bridge::faults::take();
     #[cfg(not(feature = "test-support"))]
     let fault = 0;
-    let recipe = state.effects();
     let geometry = frame.effects_geometry;
     let input = effects::frame::Input {
         active: recipe.active(),

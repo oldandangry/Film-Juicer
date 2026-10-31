@@ -32,7 +32,6 @@
 #include "spectral_source_fixture.h"
 
 extern "C" int fj_test_exposure_abi_c(const FjReferenceWhiteInput*, FjReferenceWhite*, const FjSensitivityInput*, FjSensitivity*, FjSensitivityFailure*, FjErrorBuffer*);
-void fj_test_spectral_products(const nlohmann::json&, const std::filesystem::path&, const std::filesystem::path&, bool, void (*)(const nlohmann::json&));
 
 void fj_test_exposure_admission(const std::filesystem::path&);
 
@@ -385,7 +384,7 @@ int main(int argc, char** argv) {
             boundary(fixture);
         else if (group == "products") {
             require(argc == 5, "exposure products require resource and scratch");
-            fj_test_spectral_products(fixture, argv[3], argv[4], false, nullptr);
+            fj_test_spectral_products(fixture, {.resources = argv[3], .scratch = argv[4]}, false, nullptr);
         } else
             throw std::runtime_error("unknown exposure group");
         std::puts("PASS exposure construction/ABI/failure contract");

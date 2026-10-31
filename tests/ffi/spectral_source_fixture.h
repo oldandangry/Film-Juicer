@@ -7,10 +7,17 @@
 #include <string>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
 #include "RustAssetBridge.h"
 #include "juicer_legacy_api.h"
 
 namespace JuicerTestSupport {
+    struct SpectralFixturePaths {
+        std::filesystem::path resources;
+        std::filesystem::path scratch;
+    };
+
     inline void require_spectral_source_status(FjStatus status, const char* operation) {
         if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
             throw std::runtime_error(std::string("spectral source ") + operation + " failed");
@@ -243,3 +250,8 @@ namespace JuicerTestSupport {
         }
     };
 } // namespace JuicerTestSupport
+
+void fj_test_spectral_products(const nlohmann::json& fixture,
+                               const JuicerTestSupport::SpectralFixturePaths& paths,
+                               bool faults,
+                               void (*nativeAllocationCheck)(const nlohmann::json&));

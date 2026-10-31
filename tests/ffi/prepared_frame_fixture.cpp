@@ -281,9 +281,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             std::copy_n(source.xyz_to_rgb, 9, out.xyzToRgb);
             std::copy_n(source.illuminant_xyz, 3, out.illuminantXYZ);
             out.preparedEncoding = source.encoding;
-            out.outputGamutRecipeHash = (source.flags & FJ_COLOR_GAMUT_COMPRESSION)
-                                            ? source.active_gamut_recipe_hash
-                                            : 0;
+            out.outputGamutRecipeHash = source.active_gamut_recipe_hash;
             out.hash = source.hash;
         }
 
@@ -330,7 +328,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
             out.scannerLutDescriptor.baseDensityHash = view.scanner_lut.base_density_hash;
             out.scannerLutDescriptor.scanIlluminantHash = view.scanner_lut.viewing_illuminant_hash;
             out.scannerLutDescriptor.observerHash = view.scanner_lut.observer_hash;
-            out.scannerTables = {span(scanner.dyes_cmy[2]), span(scanner.dyes_cmy[1]), span(scanner.dyes_cmy[0]), span(scanner.weighted_xyz[0]), span(scanner.weighted_xyz[1]), span(scanner.weighted_xyz[2]), span(scanner.baseline_min), 81, scanner.inv_yn, scanner.has_baseline != 0};
+            out.scannerTables = {span(scanner.dyes_cmy[0]), span(scanner.dyes_cmy[1]), span(scanner.dyes_cmy[2]), span(scanner.weighted_xyz[0]), span(scanner.weighted_xyz[1]), span(scanner.weighted_xyz[2]), span(scanner.baseline_min), 81, scanner.inv_yn, scanner.has_baseline != 0};
             out.exposureSampleCount = 81;
             out.exposureIlluminant = span(exposure.mallett_illuminant);
             out.filmTcLut = span(exposure.tc_lut_rgba);

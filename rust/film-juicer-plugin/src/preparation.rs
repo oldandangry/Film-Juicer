@@ -531,8 +531,43 @@ pub(crate) unsafe fn state_release(
     owner: *mut FjPreparedState,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
+    #[cfg(feature = "test-support")]
+    if !owner.is_null() && aligned(owner) {
+        let observer = *PREPARED_STATE_RELEASE_OBSERVER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(observer) = observer {
+            // SAFETY: The release contract transfers this live, exclusively held
+            // owner. The callback receives a borrowed pointer and must return
+            // before the state is dropped; no pointer is retained here.
+            let samples = unsafe {
+                (*owner)
+                    .render_state()
+                    .reconstruction()
+                    .tc_lut()
+                    .map_or(std::ptr::null(), |lut| lut.samples().as_ptr())
+            };
+            // SAFETY: Invoke outside the observer mutex. The registered test
+            // callback stays callable until cleared, synchronizes its own work,
+            // and returns before the sample storage is dropped.
+            unsafe { observer(samples) };
+        }
+    }
     // SAFETY: The common release consumes the caller-authorized matching Box.
     unsafe { release(owner, error) }
+}
+
+#[cfg(feature = "test-support")]
+static PREPARED_STATE_RELEASE_OBSERVER: std::sync::Mutex<Option<unsafe extern "C" fn(*const f32)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(feature = "test-support")]
+pub(crate) fn set_prepared_state_release_observer(
+    observer: Option<unsafe extern "C" fn(*const f32)>,
+) {
+    *PREPARED_STATE_RELEASE_OBSERVER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = observer;
 }
 
 fn route_tag(route: ScanRoute) -> u32 {
@@ -2329,21 +2364,35 @@ pub(crate) fn failure_category(error: &recipe::PrepareError) -> u32 {
             | film_juicer_core::film::Error::RouteMismatch,
         ) => FJ_STATUS_UNSUPPORTED_INPUT,
         E::Development(film_juicer_core::film::Error::Allocation)
-        | E::ReferenceWhite(film_juicer_core::reconstruction::Error::AllocationFailure)
+        | E::ReferenceWhite(
+            film_juicer_core::reconstruction::CheckedReferenceWhiteError::Reconstruction(
+                film_juicer_core::reconstruction::Error::AllocationFailure,
+            ),
+        )
         | E::Dir {
             error:
                 film_juicer_core::film::dir::Error::Allocation
                 | film_juicer_core::film::dir::Error::Size,
             ..
         }
-        | E::Tc(film_juicer_core::reconstruction::TcError::AllocationFailure)
+        | E::Tc(film_juicer_core::reconstruction::CheckedTcError::Tc(
+            film_juicer_core::reconstruction::TcError::AllocationFailure,
+        ))
         | E::PrintDevelopment(film_juicer_core::profile::PrintDensityError::Capacity) => {
             FJ_STATUS_ALLOCATION_FAILURE
         }
         E::EqualEnergy(film_juicer_core::illuminant::EqualEnergyError::Unsupported) => {
             FJ_STATUS_UNSUPPORTED_INPUT
         }
-        E::EqualEnergy(film_juicer_core::illuminant::EqualEnergyError::Illuminant(error)) => {
+        E::Blackbody(film_juicer_core::illuminant::BlackbodyError::Unsupported)
+        | E::ReferenceWhite(
+            film_juicer_core::reconstruction::CheckedReferenceWhiteError::BoundaryUnsupported,
+        )
+        | E::Tc(film_juicer_core::reconstruction::CheckedTcError::BoundaryUnsupported) => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
+        E::EqualEnergy(film_juicer_core::illuminant::EqualEnergyError::Illuminant(error))
+        | E::Blackbody(film_juicer_core::illuminant::BlackbodyError::Illuminant(error)) => {
             match error.kind {
                 film_juicer_core::illuminant::ErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
                 film_juicer_core::illuminant::ErrorKind::Preparation => {

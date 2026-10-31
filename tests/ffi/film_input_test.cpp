@@ -4,9 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <new>
 #include <optional>
 #include <mutex>
@@ -84,45 +86,146 @@ static_assert(std::is_same_v<decltype(FjFilmInputFailure::reason), uint32_t>);
 static_assert(std::is_same_v<decltype(FjFilmInputFailure::sensitivity), FjSensitivityFailure>);
 
 namespace JuicerAssets::InputTest {
-    thread_local bool releaseCaches = false;
-    thread_local unsigned failureMode = 0;
-    thread_local const Profiles::FilmProfile* selectedProfile = nullptr;
-    thread_local std::weak_ptr<const Gamut::InputHullHold> selectedHull;
-    thread_local InstanceState* supersedeState = nullptr;
-    thread_local ParamSnapshot newer;
-    void before_prepare(const FilmSource& source, const Spektrafilm::FilmFoundationBuildInput& input) {
-        if (releaseCaches) {
-            releaseCaches = false;
-            selectedProfile = source.profile().get();
-            selectedHull = input.inputCompressionHull;
-            if (JuicerProcess::root().assets().release_cached_payloads().category != FJ_STATUS_SUCCESS) {
-                throw std::runtime_error("cache detach while selected input source/hull remain held");
-            }
-        }
-    }
-    void after_prepare(FjStatus& status, FjFilmInputFailure& failure) {
-        if (failureMode == 1) {
-            failureMode = 0;
-            status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-            failure = {FJ_FILM_INPUT_ORIGIN_RESOURCE, FJ_FILM_INPUT_RESOURCE_PROJECTION_WHITE, {0, 0}};
-            if (supersedeState) {
-                std::lock_guard<std::mutex> lock(supersedeState->pending.m);
-                supersedeState->pending.value = PendingParamsState::Valid{newer, hash_params(newer)};
-                supersedeState = nullptr;
-            }
-        }
-    }
+    // SF_TEMP_BRIDGE_NATIVE_FILM_INPUT_FACADE remains a raw characterization
+    // surface; complete-state admission faults use the checked Rust producer.
+    void before_prepare(const FilmSource&, const Spektrafilm::FilmFoundationBuildInput&) {}
+    void after_prepare(FjStatus&, FjFilmInputFailure&) {}
     bool translate_failure(FjStatus, const FjFilmInputFailure&, const FjFilmInputParams&, std::string_view, std::string&);
 } // namespace JuicerAssets::InputTest
 
 namespace {
     using Json = nlohmann::json;
+    void require(bool condition, const char* message);
+    void status(FjStatus value, std::uint32_t category = FJ_STATUS_SUCCESS);
+    struct PreparedInputLifetimeWitness {
+        FjAssets* assets = nullptr;
+        InstanceState* state = nullptr;
+        std::string filmKey;
+        std::uint64_t counterBefore = 0;
+        std::uint64_t hashBefore = 0;
+        unsigned calls = 0;
+        bool stateUnpublished = false;
+        std::uintptr_t selectedLogExposureAddress = 0;
+        std::uint64_t selectedProfileToken = 0;
+        std::vector<std::uint32_t> selectedLogExposureWords;
+        std::uintptr_t selectedHullAddress = 0;
+        std::uint64_t selectedHullHash = 0;
+        std::vector<std::uint32_t> selectedHullWords;
+        std::uint64_t reloadedProfileToken = 0;
+        std::uintptr_t reloadedLogExposureAddress = 0;
+        std::vector<std::uint32_t> reloadedLogExposureWords;
+        std::uintptr_t reloadedHullAddress = 0;
+        std::uint64_t reloadedHullHash = 0;
+        std::vector<std::uint32_t> reloadedHullWords;
+        std::exception_ptr failure;
+    };
+    thread_local PreparedInputLifetimeWitness* preparedInputLifetimeWitness = nullptr;
+
+    std::vector<std::uint32_t> span_words(FjFloatSpan span) {
+        if (!span.data || span.count == 0)
+            throw std::runtime_error("prepared input lifetime observer received an empty span");
+        std::vector<std::uint32_t> result;
+        result.reserve(span.count);
+        for (std::size_t i = 0; i < span.count; ++i)
+            result.push_back(std::bit_cast<std::uint32_t>(span.data[i]));
+        return result;
+    }
+
+    void observe_prepared_input_lifetime(
+        FjFloatSpan selectedProfileLogExposure,
+        std::uint64_t selectedProfileAssetToken,
+        FjFloatSpan selectedHullXy,
+        std::uint64_t selectedHullHash) {
+        auto* witness = preparedInputLifetimeWitness;
+        if (!witness)
+            return;
+        if (++witness->calls != 1)
+            return;
+        try {
+            witness->selectedLogExposureAddress = reinterpret_cast<std::uintptr_t>(selectedProfileLogExposure.data);
+            witness->selectedProfileToken = selectedProfileAssetToken;
+            witness->selectedLogExposureWords = span_words(selectedProfileLogExposure);
+            witness->selectedHullAddress = reinterpret_cast<std::uintptr_t>(selectedHullXy.data);
+            witness->selectedHullHash = selectedHullHash;
+            witness->selectedHullWords = span_words(selectedHullXy);
+            witness->stateUnpublished =
+                !JuicerAtomic::load_shared_ptr(&witness->state->activeDirectState) &&
+                !JuicerAtomic::load_shared_ptr(&witness->state->activePrintState) &&
+                witness->state->buildCounterNext.load(std::memory_order_acquire) == witness->counterBefore &&
+                witness->state->lastHash.load(std::memory_order_acquire) == witness->hashBefore;
+
+            const FjStatus released = JuicerProcess::root().assets().release_cached_payloads();
+            status(released);
+
+            FjFilmProfile* acquiredProfile = nullptr;
+            const FjStringView key{witness->filmKey.data(), witness->filmKey.size()};
+            const auto releaseProfile = [](FjFilmProfile* profile) {
+                if (profile)
+                    (void)fj_legacy_film_profile_release(profile, nullptr);
+            };
+            std::unique_ptr<FjFilmProfile, decltype(releaseProfile)> profile(acquiredProfile, releaseProfile);
+            const FjStatus profileStatus = fj_legacy_film_profile_acquire(witness->assets, key, &acquiredProfile, nullptr);
+            profile.reset(acquiredProfile);
+            status(profileStatus);
+            FjFilmProfileView profileView{};
+            status(fj_legacy_film_profile_view(profile.get(), &profileView, nullptr));
+            witness->reloadedProfileToken = profileView.asset_token;
+            witness->reloadedLogExposureAddress = reinterpret_cast<std::uintptr_t>(profileView.tables.log_exposure.data);
+            witness->reloadedLogExposureWords = span_words(profileView.tables.log_exposure);
+            status(fj_legacy_film_profile_release(profile.release(), nullptr));
+
+            FjInputHullOwner* acquiredHull = nullptr;
+            const auto releaseHull = [](FjInputHullOwner* owner) {
+                if (owner)
+                    (void)fj_legacy_input_hull_release(owner, nullptr);
+            };
+            std::unique_ptr<FjInputHullOwner, decltype(releaseHull)> hull(acquiredHull, releaseHull);
+            const FjStatus hullStatus = fj_legacy_assets_input_hull_acquire(witness->assets, &acquiredHull, nullptr);
+            hull.reset(acquiredHull);
+            status(hullStatus);
+            FjInputHullView hullView{};
+            status(fj_legacy_input_hull_view(hull.get(), &hullView, nullptr));
+            witness->reloadedHullAddress = reinterpret_cast<std::uintptr_t>(hullView.xy.data);
+            witness->reloadedHullHash = hullView.hash;
+            witness->reloadedHullWords = span_words(hullView.xy);
+            status(fj_legacy_input_hull_release(hull.release(), nullptr));
+        } catch (...) {
+            witness->failure = std::current_exception();
+        }
+    }
+
+    class PreparedInputLifetimeObserverScope final {
+    public:
+        explicit PreparedInputLifetimeObserverScope(PreparedInputLifetimeWitness& witness) {
+            preparedInputLifetimeWitness = &witness;
+            fj_test_prepared_input_observer(observe_prepared_input_lifetime);
+        }
+        ~PreparedInputLifetimeObserverScope() {
+            fj_test_prepared_input_observer(nullptr);
+            preparedInputLifetimeWitness = nullptr;
+        }
+        PreparedInputLifetimeObserverScope(const PreparedInputLifetimeObserverScope&) = delete;
+        PreparedInputLifetimeObserverScope& operator=(const PreparedInputLifetimeObserverScope&) = delete;
+    };
+
+    struct InputSupersession {
+        ParamSnapshot newer;
+        bool fired = false;
+    };
+    void supersede_input_snapshot(InstanceState& state, void* context) {
+        auto& selection = *static_cast<InputSupersession*>(context);
+        if (selection.fired)
+            return;
+        std::lock_guard<std::mutex> lock(state.pending.m);
+        state.pending.value = PendingParamsState::Valid{selection.newer, hash_params(selection.newer)};
+        selection.fired = true;
+    }
     void require(bool condition, const char* message) {
         if (!condition) {
             throw std::runtime_error(message);
         }
     }
-    void status(FjStatus value, std::uint32_t category = FJ_STATUS_SUCCESS) {
+    void status(FjStatus value, std::uint32_t category) {
         require(value.category == category && value.api == FJ_API_NONE && value.native_code == 0, "closed input status");
     }
     Json words(const float* values, std::size_t count) {
@@ -342,25 +445,58 @@ namespace {
                 std::lock_guard<std::mutex> lock(state.pending.m);
                 state.pending.value = PendingParamsState::Valid{snapshot, hash_params(snapshot)};
             };
-            JuicerAssets::InputTest::releaseCaches = true;
             pending(controls);
-            const auto old = admit_pending_render_state(state);
-            require(route % 2 ? bool(old.printState) : bool(old.directState), "source/hull release during synchronous preparation still completes");
-            const auto& heldRecipe = route % 2 ? old.printState->recipe : old.directState->recipe;
-            require(heldRecipe.profileRoute.filmProfile.get() == JuicerAssets::InputTest::selectedProfile &&
-                        heldRecipe.filmRaw.inputCompressionHull == JuicerAssets::InputTest::selectedHull.lock(),
-                    "same captured source/profile and hull hold survive cache detachment and success binding");
-            const auto heldHash = heldRecipe.hash;
+            PreparedInputLifetimeWitness lifetime;
+            lifetime.assets = JuicerProcess::root().assets().borrow_rust_assets();
+            lifetime.state = &state;
+            lifetime.filmKey = controls.filmProfileKey;
+            lifetime.counterBefore = state.buildCounterNext.load(std::memory_order_acquire);
+            lifetime.hashBefore = state.lastHash.load(std::memory_order_acquire);
+            require(lifetime.assets != nullptr, "actual preparation has process Rust assets owner");
+            const auto old = [&] {
+                PreparedInputLifetimeObserverScope observer(lifetime);
+                return admit_pending_render_state(state);
+            }();
+            require(route % 2 ? bool(old.printState) : bool(old.directState), "profile-source release during synchronous preparation still completes");
+            require(lifetime.calls == 1, "actual complete-state preparation reached its profile/hull lifetime midpoint once");
+            if (lifetime.failure)
+                std::rethrow_exception(lifetime.failure);
+            require(lifetime.stateUnpublished && state.buildCounterNext.load(std::memory_order_acquire) == lifetime.counterBefore + 1,
+                    "profile and hull were observed before route publication and counter advancement");
+            require(lifetime.selectedProfileToken != 0 && lifetime.reloadedProfileToken == lifetime.selectedProfileToken &&
+                        lifetime.selectedLogExposureAddress != 0 && lifetime.reloadedLogExposureAddress != lifetime.selectedLogExposureAddress &&
+                        lifetime.reloadedLogExposureWords == lifetime.selectedLogExposureWords,
+                    "same-root profile source reload has equal identity/values and distinct backing while prepared profile remains held");
+            require(lifetime.selectedHullHash != 0 && lifetime.reloadedHullHash == lifetime.selectedHullHash &&
+                        lifetime.selectedHullAddress != 0 && lifetime.reloadedHullAddress == lifetime.selectedHullAddress &&
+                        lifetime.reloadedHullWords == lifetime.selectedHullWords,
+                    "hull cache remains fixed and returns the same actual backing/value during preparation");
+            auto heldView = JuicerTestSupport::published_view(old);
+            require(heldView.film_profile_asset_version == lifetime.selectedProfileToken &&
+                        reinterpret_cast<std::uintptr_t>(heldView.film_development.log_exposure.data) == lifetime.selectedLogExposureAddress &&
+                        heldView.film_development.log_exposure.count == lifetime.selectedLogExposureWords.size() &&
+                        span_words(heldView.film_development.log_exposure) == lifetime.selectedLogExposureWords &&
+                        heldView.input_policy.input_hull_hash == lifetime.selectedHullHash && heldView.input_hull.hash == lifetime.selectedHullHash &&
+                        reinterpret_cast<std::uintptr_t>(heldView.input_hull.xy.data) == lifetime.selectedHullAddress &&
+                        heldView.input_hull.xy.count == lifetime.selectedHullWords.size() && span_words(heldView.input_hull.xy) == lifetime.selectedHullWords,
+                    "published state retains the exact selected profile axis and hull backing/words");
+            require(JuicerProcess::root().assets().release_cached_payloads().category == FJ_STATUS_SUCCESS,
+                    "release the reloaded profile source cache after complete preparation; hull cache remains fixed");
+            require(JuicerTestSupport::published_view(old).recipe_hash == heldView.recipe_hash &&
+                        heldView.film_exposure.sensitivity_rgb.count == std::size_t{81} * 3u,
+                    "published state remains readable after profile source cache detachment");
+            const auto heldHash = heldView.recipe_hash;
             const auto counter = state.buildCounterNext.load();
             const auto identity = state.lastHash.load();
             auto changed = controls;
             changed.cameraExposureCompensationEv = 0.25;
             pending(changed);
-            JuicerAssets::InputTest::failureMode = 1;
+            status(fj_test_exposure_arm_fault(2, 1, 4));
             const auto rejected = admit_pending_render_state(state);
+            require(fj_test_exposure_fault_consumed(2, 4) == 1, "shared checked sensitivity producer consumed the returned preparation failure");
             require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && !rejected.directState && !rejected.printState, "returned input failure prevents old-state admission");
             require(!JuicerAtomic::load_shared_ptr(&state.activeDirectState) && !JuicerAtomic::load_shared_ptr(&state.activePrintState) &&
-                        state.lastHash.load() == identity && state.buildCounterNext.load() == counter && heldRecipe.hash == heldHash,
+                        state.lastHash.load() == identity && state.buildCounterNext.load() == counter && heldView.recipe_hash == heldHash,
                     "ordinary input failure clears selected slot without publishing or revoking admitted holds");
             pending(controls);
             const auto recovered = admit_pending_render_state(state);
@@ -368,20 +504,31 @@ namespace {
             const auto direct = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
             const auto print = JuicerAtomic::load_shared_ptr(&state.activePrintState);
             pending(changed);
-            status(fj_test_color_arm_fault(5, 1, 1));
+            status(fj_test_exposure_arm_fault(2, 1, 1));
+            const auto unsupported = admit_pending_render_state(state);
+            require(fj_test_exposure_fault_consumed(2, 1) == 1 &&
+                        unsupported.status == PendingRenderAdmissionStatus::RebuildFailed && !unsupported.directState && !unsupported.printState &&
+                        JuicerAtomic::load_shared_ptr(&state.activeDirectState) == direct && JuicerAtomic::load_shared_ptr(&state.activePrintState) == print,
+                    "unsupported input failure retains publication but cannot admit it for changed controls");
+            pending(changed);
+            status(fj_test_exposure_arm_fault(2, 1, 2));
             const auto thrown = admit_pending_render_state(state);
+            require(fj_test_exposure_fault_consumed(2, 2) == 1, "shared checked sensitivity producer contained the panic");
             require(thrown.status == PendingRenderAdmissionStatus::RebuildFailed && !thrown.directState && !thrown.printState &&
                         JuicerAtomic::load_shared_ptr(&state.activeDirectState) == direct && JuicerAtomic::load_shared_ptr(&state.activePrintState) == print,
                     "thrown input failure retains publication but cannot admit it for changed controls");
             auto newer = changed;
             newer.cameraExposureCompensationEv = 0.5;
-            JuicerAssets::InputTest::supersedeState = &state;
-            JuicerAssets::InputTest::newer = newer;
-            JuicerAssets::InputTest::failureMode = 1;
+            InputSupersession supersession{newer};
+            set_pending_capture_test_hook(supersede_input_snapshot, &supersession);
+            status(fj_test_exposure_arm_fault(2, 1, 4));
             const auto superseded = admit_pending_render_state(state);
+            set_pending_capture_test_hook(nullptr, nullptr);
+            require(fj_test_exposure_fault_consumed(2, 4) == 1, "superseded sensitivity producer preparation failure was consumed");
             require(route % 2 ? bool(superseded.printState) : bool(superseded.directState), "superseded input failure recovers to a complete newer state");
-            const auto& current = route % 2 ? superseded.printState->recipe : superseded.directState->recipe;
-            require(current.filmRaw.manualExposureCompensationEv == 0.5f && heldRecipe.hash == heldHash, "superseded failed input preparation retries only newer controls and retains old immutable holds");
+            const auto currentView = JuicerTestSupport::published_view(superseded);
+            require(supersession.fired && currentView.film_exposure.manual_exposure_ev == 0.5f && heldView.recipe_hash == heldHash,
+                    "superseded failed input preparation retries only newer controls and retains old immutable holds");
             for (unsigned selector = 0; selector < 3; ++selector) {
                 auto invalid = controls;
                 if (selector == 0) {

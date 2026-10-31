@@ -88,7 +88,8 @@ namespace JuicerCuda::RenderTest {
         Standard,
         Unknown,
         Typed,
-        Preflash
+        Preflash,
+        ScannerCorrection
     };
     thread_local Injection injection = Injection::None;
     thread_local FjStatus injectedStatus{};
@@ -96,9 +97,9 @@ namespace JuicerCuda::RenderTest {
     thread_local int completionOverride = 0;
     thread_local unsigned completionCalls = 0;
     thread_local int lastCompletion = 0;
-    thread_local const JuicerProcess::Root::CudaFramePreparationRequest* preflashRequest = nullptr;
-    thread_local JuicerCuda::ResourceManager::DeviceContextKey preflashKey{};
-    thread_local JuicerCuda::ResourceManager::SubmissionSnapshot preflashSubmission{};
+    thread_local const JuicerProcess::Root::CudaFramePreparationRequest* framePreparationRequest = nullptr;
+    thread_local JuicerCuda::ResourceManager::DeviceContextKey framePreparationKey{};
+    thread_local JuicerCuda::ResourceManager::SubmissionSnapshot framePreparationSubmission{};
     int completion_status(int actual) noexcept {
         ++completionCalls;
         lastCompletion = actual;
@@ -234,11 +235,51 @@ namespace JuicerCuda::RenderTest {
                 throw 17;
             case Injection::Preflash: {
                 JuicerCuda::Failure failure;
-                auto frame = JuicerProcess::root().prepare_cuda_frame(preflashKey, preflashSubmission, *preflashRequest, {}, nullptr, failure);
+                auto frame = JuicerProcess::root().prepare_cuda_frame(framePreparationKey, framePreparationSubmission, *framePreparationRequest, {}, nullptr, failure);
                 if (!frame.active()) {
                     throw std::runtime_error("native preparation failed before the EQUAL fault boundary");
                 }
                 throw std::runtime_error("EQUAL preflash fault did not escape native preparation");
+            }
+            case Injection::ScannerCorrection: {
+                JuicerCuda::Failure failure;
+                auto frame = JuicerProcess::root().prepare_cuda_frame(framePreparationKey, framePreparationSubmission, *framePreparationRequest, {}, nullptr, failure);
+                if (!frame.active()) {
+                    throw JuicerCuda::ExecutionFailure{failure};
+                }
+
+                Scanner::ScannerColorCorrectionDescriptor correction{};
+                std::string diagnostic;
+                bool valid = false;
+                if (Spektrafilm::scan_route_is_print(framePreparationRequest->recipe->profileRoute.scanRoute)) {
+                    const auto print = frame.print_resources();
+                    if (!print.active || !print.mainIlluminantHost) {
+                        frame.abort();
+                        throw std::runtime_error("native scanner comparison has no prepared print correction source");
+                    }
+                    const Scanner::PrintCorrectionDerivationInput input{
+                        framePreparationRequest->recipe,
+                        framePreparationRequest->scannerTables,
+                        print.mainIlluminantHost,
+                        print.spectralSampleCount,
+                        print.preflashRawCmy,
+                        print.normalizer};
+                    valid = Scanner::build_print_scanner_color_correction_descriptor(input, correction, diagnostic);
+                } else {
+                    valid = Scanner::build_direct_scanner_color_correction_descriptor(
+                        *framePreparationRequest->recipe,
+                        *framePreparationRequest->scannerTables,
+                        correction,
+                        diagnostic);
+                }
+                if (!valid) {
+                    frame.abort();
+                    throw JuicerCuda::ExecutionFailure{{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, diagnostic}};
+                }
+                if (!frame.finish(nullptr, failure)) {
+                    throw JuicerCuda::ExecutionFailure{failure};
+                }
+                return;
             }
             case Injection::Typed:
                 throw ExecutionFailure{{injectedStatus, "render injection 100% diagnostic"}, injectedDeferredDirError};
@@ -540,6 +581,155 @@ namespace JuicerCudaTest {
             }
         }
         std::cout << "frame bindings route=" << prepared.route << " grain=" << (prepared.grain.hash != 0) << " passed\n";
+    }
+
+    void check_SF_TEMP_BRIDGE_native_scanner_white_zero(
+        FjCuda* cuda,
+        const FjCudaContext& context,
+        const FjFrame& frame,
+        const FjSubmission& submission,
+        const FjPreparedHostData& prepared) {
+        struct RouteCase {
+            Spektrafilm::ScanRoute route;
+            const char* filmKey;
+        };
+        struct Levels {
+            double black;
+            double white;
+        };
+        constexpr std::array routes{
+            RouteCase{Spektrafilm::ScanRoute::NegativePrintScan, "kodak_portra_400"},
+            RouteCase{Spektrafilm::ScanRoute::PositiveDirectScan, "fujifilm_provia_100f"},
+            RouteCase{Spektrafilm::ScanRoute::PositivePrintScan, "fujifilm_provia_100f"}};
+
+        const auto bytes = [&] {
+            require(frame.destination.address != 0 && frame.destination.row_bytes > 0 &&
+                        frame.destination.bounds.y2 > frame.destination.bounds.y1,
+                    "native scanner comparison has a readable destination");
+            require(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame.stream)) == cudaSuccess,
+                    "drain native scanner comparison frame before observing pixels");
+            const std::size_t count = static_cast<std::size_t>(frame.destination.row_bytes) *
+                                      static_cast<std::size_t>(frame.destination.bounds.y2 - frame.destination.bounds.y1);
+            std::vector<unsigned char> result(count);
+            require(cudaMemcpy(result.data(), reinterpret_cast<const void*>(frame.destination.address), count, cudaMemcpyDeviceToHost) == cudaSuccess,
+                    "read native scanner comparison destination");
+            return result;
+        };
+        auto failureFrame = frame;
+        failureFrame.flags &= ~FJ_FRAME_STREAM_PRESENT;
+        failureFrame.stream = 0;
+
+        for (const RouteCase& routeCase : routes) {
+            const bool print = Spektrafilm::scan_route_is_print(routeCase.route);
+            auto build_product = [&](Levels levels, FocusedRenderStateBuildProduct& product, std::string& diagnostic) {
+                ParamSnapshot controls;
+                controls.filmProfileKey = routeCase.filmKey;
+                controls.printProfileKey = "kodak_portra_endura";
+                controls.scanRoute = routeCase.route;
+                controls.spectralUpsamplingMode = 1;
+                controls.enlIll = 7;
+                controls.scannerBlackCorrection = 1;
+                controls.scannerWhiteCorrection = 1;
+                controls.scannerBlackLevel = levels.black;
+                controls.scannerWhiteLevel = levels.white;
+                controls.grainControls.active = false;
+                controls.dirCouplers.active = false;
+                return print ? build_print_render_state_product(controls, product, diagnostic)
+                             : build_direct_render_state_product(controls, product, diagnostic);
+            };
+            auto run_native = [&](FocusedRenderStateBuildProduct& product, JuicerCuda::RenderTest::Injection injection) {
+                Scanner::ScannerSpectralLutDescriptor scannerLut{};
+                std::string diagnostic;
+                const bool lutBuilt = print
+                                          ? Scanner::build_print_scanner_spectral_lut_descriptor(
+                                                {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput},
+                                                scannerLut,
+                                                diagnostic)
+                                          : Scanner::build_direct_scanner_spectral_lut_descriptor(
+                                                {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput},
+                                                scannerLut,
+                                                diagnostic);
+                require(lutBuilt, diagnostic.c_str());
+
+                JuicerProcess::Root::CudaFramePreparationRequest request;
+                request.recipe = &product.recipe;
+                request.exposureTables = &product.payload.exposureTables;
+                request.filmRawConfig = &product.payload.filmRawConfig;
+                request.filmTcLut = product.payload.filmTcLut ? &*product.payload.filmTcLut : nullptr;
+                request.printMainIlluminant = product.payload.printMainIlluminant ? &*product.payload.printMainIlluminant : nullptr;
+                request.scannerTables = &product.payload.scannerTables;
+                request.scannerColor = &product.payload.scannerColor;
+                request.scannerLutDescriptor = &scannerLut;
+                request.outputBoundaryTable = product.payload.outputBoundaryTable.get();
+                request.requestedWidth = frame.render_window.x2 - frame.render_window.x1;
+                request.requestedHeight = frame.render_window.y2 - frame.render_window.y1;
+
+                auto& key = JuicerCuda::RenderTest::framePreparationKey;
+                key = {context.device_id, reinterpret_cast<void*>(context.context)};
+                auto& token = JuicerCuda::RenderTest::framePreparationSubmission;
+                token.instanceToken.value = 0x5343414e0000ULL + static_cast<std::uint32_t>(routeCase.route);
+                static std::uint64_t nextFrameToken = 940;
+                token.frameToken.value = nextFrameToken++;
+                token.snapshotId = token.frameToken.value;
+                token.deviceContextKey = key;
+                token.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                    product.payload.uploadCoreHash,
+                    product.recipe.dirCouplers.hash,
+                    product.payload.scannerHash,
+                    0);
+                JuicerCuda::RenderTest::framePreparationRequest = &request;
+                JuicerCuda::RenderTest::completionCalls = 0;
+                JuicerCuda::RenderTest::completionOverride = 0;
+                JuicerCuda::RenderTest::injection = injection;
+                JuicerAssets::IlluminantTest::aborts = 0;
+                std::array<char, 512> errorText{};
+                FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+                const auto result = render_raw_prepared(cuda, failureFrame, submission, prepared, {}, &error);
+                JuicerCuda::RenderTest::injection = JuicerCuda::RenderTest::Injection::None;
+                JuicerCuda::RenderTest::framePreparationRequest = nullptr;
+                return std::pair{result, std::string(errorText.data(), error.length)};
+            };
+
+            FocusedRenderStateBuildProduct failedProduct;
+            std::string diagnostic;
+            const bool failedProductBuilt = build_product({0.0, 0.0}, failedProduct, diagnostic);
+            require(failedProductBuilt, diagnostic.c_str());
+            require(failedProduct.recipe.scannerOutput.blackCorrection &&
+                        failedProduct.recipe.scannerOutput.whiteCorrection &&
+                        failedProduct.recipe.scannerOutput.blackLevel == 0.0f &&
+                        failedProduct.recipe.scannerOutput.whiteLevel == 0.0f,
+                    "native scanner comparison retains correction flags 3 and encoded levels zero");
+            const auto beforeFailure = bytes();
+            const auto [failed, failureDiagnostic] = run_native(failedProduct, JuicerCuda::RenderTest::Injection::ScannerCorrection);
+            const std::string expectedDiagnostic = print
+                                                       ? "MalformedRequiredProfileData phase=8B print corrected midgray"
+                                                       : "MalformedRequiredProfileData phase=8B direct corrected midgray";
+            require_status(failed, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "native scanner white-zero correction failure");
+            require(failureDiagnostic == expectedDiagnostic, "native scanner white-zero diagnostic preserves the corrected-midgray rejection");
+            require(JuicerCuda::RenderTest::completionCalls == 1 && JuicerCuda::RenderTest::lastCompletion == cudaSuccess,
+                    "native scanner correction failure completes the absent stream exactly once");
+            require(JuicerAssets::IlluminantTest::aborts == 1, "native scanner correction failure aborts its prepared Root frame");
+            require(cudaStreamQuery(nullptr) == cudaSuccess, "native scanner correction failure drains absent-stream work");
+            require(bytes() == beforeFailure, "native scanner correction failure does not render pixels");
+
+            FocusedRenderStateBuildProduct recoveredProduct;
+            const bool recoveredProductBuilt = build_product({0.01234567890123, 0.98765432109876}, recoveredProduct, diagnostic);
+            require(recoveredProductBuilt, diagnostic.c_str());
+            require(recoveredProduct.recipe.scannerOutput.blackCorrection &&
+                        recoveredProduct.recipe.scannerOutput.whiteCorrection &&
+                        recoveredProduct.recipe.scannerOutput.blackLevel == static_cast<float>(0.01234567890123) &&
+                        recoveredProduct.recipe.scannerOutput.whiteLevel == static_cast<float>(0.98765432109876),
+                    "native scanner recovery retains the original valid encoded levels");
+            const auto beforeRecovery = bytes();
+            const auto [recovered, recoveryDiagnostic] = run_native(recoveredProduct, JuicerCuda::RenderTest::Injection::ScannerCorrection);
+            require_status(recovered, {FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "native scanner correction recovery");
+            require(recoveryDiagnostic.empty(), "native scanner correction recovery has no failure diagnostic");
+            require(JuicerCuda::RenderTest::completionCalls == 1 && JuicerCuda::RenderTest::lastCompletion == cudaSuccess,
+                    "native scanner correction recovery completes the absent stream exactly once");
+            require(JuicerAssets::IlluminantTest::aborts == 0, "successful native scanner correction does not abort its Root frame");
+            require(bytes() == beforeRecovery, "valid native scanner correction recovery preserves output identity");
+        }
+        std::cout << "PASS SF_TEMP_BRIDGE_NATIVE_SCANNER_WHITE_ZERO: 3 native Root/correction failures before pixels and valid correction/render recoveries\n";
     }
 
     FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error) {
@@ -976,13 +1166,13 @@ namespace JuicerCudaTest {
             request.outputBoundaryTable = product.payload.outputBoundaryTable.get();
             request.requestedWidth = 16;
             request.requestedHeight = 16;
-            JuicerCuda::RenderTest::preflashRequest = &request;
-            JuicerCuda::RenderTest::preflashKey = {context.device_id, reinterpret_cast<void*>(context.context)};
-            auto& token = JuicerCuda::RenderTest::preflashSubmission;
+            JuicerCuda::RenderTest::framePreparationRequest = &request;
+            JuicerCuda::RenderTest::framePreparationKey = {context.device_id, reinterpret_cast<void*>(context.context)};
+            auto& token = JuicerCuda::RenderTest::framePreparationSubmission;
             token.instanceToken.value = 0x494c4c554d;
             token.frameToken.value = 900;
             token.snapshotId = 900;
-            token.deviceContextKey = JuicerCuda::RenderTest::preflashKey;
+            token.deviceContextKey = JuicerCuda::RenderTest::framePreparationKey;
             token.keyDigests = JuicerCuda::ResourceManager::make_key_digests(product.payload.uploadCoreHash, product.recipe.dirCouplers.hash, product.payload.scannerHash, 0);
             auto failureFrame = frame;
             failureFrame.flags &= ~FJ_FRAME_STREAM_PRESENT;
@@ -1014,12 +1204,15 @@ namespace JuicerCudaTest {
                     FjIlluminant equal{};
                     require(fj_legacy_illuminant_equal_energy(&equal, &errorBuffer).category == FJ_STATUS_SUCCESS, "intended native preflash raw export consumed fault");
                 }
-            JuicerCuda::RenderTest::preflashRequest = nullptr;
+            JuicerCuda::RenderTest::framePreparationRequest = nullptr;
             JuicerCuda::Failure failure;
-            auto recovered = JuicerProcess::root().prepare_cuda_frame(JuicerCuda::RenderTest::preflashKey, token, request, {}, nullptr, failure);
+            auto recovered = JuicerProcess::root().prepare_cuda_frame(JuicerCuda::RenderTest::framePreparationKey, token, request, {}, nullptr, failure);
             require(recovered.active(), "native preflash resources reusable after abort");
             require(recovered.finish(nullptr, failure), "recovered preflash finish");
             require_status(render(), success, "ordinary render reuses resources after native preflash abort");
+        }
+        if (prepared.route == static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan)) {
+            check_SF_TEMP_BRIDGE_native_scanner_white_zero(cuda, context, frame, submission, prepared);
         }
         std::atomic<bool> started{false};
         std::atomic<bool> acquired{false};

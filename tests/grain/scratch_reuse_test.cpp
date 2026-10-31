@@ -463,7 +463,7 @@ namespace {
             inputs.state, facts, &call, &prepare_then_arm_release_fault, diagnostic);
         EXPECT_FALSE(releaseFailed);
         EXPECT_TRUE(call.frame.active());
-        EXPECT_NE(diagnostic.find("noise release fixture panic"), std::string::npos);
+        EXPECT_NE(diagnostic.find("asset boundary panic"), std::string::npos);
         EXPECT_EQ(fj_test_live_noise_owners(), baseline);
         if (call.frame.active())
             finish(call.frame);

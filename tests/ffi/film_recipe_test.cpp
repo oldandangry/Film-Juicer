@@ -677,7 +677,7 @@ int main(int argc, char** argv) try {
     require(argc == 3 || (argc == 4 && std::string_view(argv[3]) == "products"), "resource root and capture required");
     const auto captured = read(argv[2]);
     if (argc == 4)
-        products(argv[1], captured, argv[2]);
+        products(argv[1], captured);
     else {
         layouts();
         values(argv[1], captured);

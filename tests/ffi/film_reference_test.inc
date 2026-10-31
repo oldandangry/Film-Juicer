@@ -1,8 +1,24 @@
 namespace FilmReferenceTest {
     thread_local unsigned nextProjection = 0;
     thread_local bool observeHold = false;
-    thread_local InstanceState* supersedingState = nullptr;
-    thread_local const ParamSnapshot* supersedingParams = nullptr;
+
+    struct PendingCaptureSupersession {
+        const ParamSnapshot* latest = nullptr;
+        bool fired = false;
+    };
+
+    void supersede_at_pending_capture(InstanceState& state, void* opaque) {
+        auto& supersession = *static_cast<PendingCaptureSupersession*>(opaque);
+        require(supersession.latest != nullptr && !supersession.fired,
+                "pending-capture supersession is armed once with a complete snapshot");
+        std::lock_guard<std::mutex> lock(state.pending.m);
+        state.pending.value = PendingParamsState::Valid{
+            *supersession.latest,
+            hash_params(*supersession.latest)};
+        supersession.fired = true;
+        set_pending_capture_test_hook(nullptr, nullptr);
+    }
+
     Json project(const FjFilmReference& reference);
     Json project(const SyntheticFilmReferenceRecipe& reference) {
         return {{"baseline_raw_rgb", words(reference.baselineRawRgb.data(), 3)},
@@ -449,14 +465,14 @@ namespace FilmReferenceTest {
                     std::lock_guard<std::mutex> lock(state.pending.m);
                     state.pending.value = PendingParamsState::Valid{value, hash_params(value)};
                 };
-                const auto recipe = [&](const PendingRenderAdmissionResult& value) -> const RenderRecipe& {
+                const auto publication_view = [&](const PendingRenderAdmissionResult& value) {
                     require(route % 2 ? bool(value.printState) : bool(value.directState), "complete reference publication");
-                    return route % 2 ? value.printState->recipe : value.directState->recipe;
+                    return JuicerTestSupport::published_view(value);
                 };
                 pending(params);
                 auto current = admit_pending_render_state(state);
                 const auto original = current;
-                const auto originalReference = project(recipe(original).scannerOutput.syntheticFilmReference);
+                const auto originalReference = project(publication_view(original).film_reference);
                 const auto operations = method == 1 ? std::vector<unsigned>{5, 6} : std::vector<unsigned>{2};
                 for (unsigned operation : operations) {
                     for (unsigned index : {1u, 2u}) {
@@ -487,9 +503,9 @@ namespace FilmReferenceTest {
                             const bool selectedPresent = route % 2 ? bool(JuicerAtomic::load_shared_ptr(&state.activePrintState)) : bool(JuicerAtomic::load_shared_ptr(&state.activeDirectState));
                             require(selectedPresent == (fault != 4), "ordinary false clears the selected slot; exceptions preserve the prior publication");
                             current = admit_pending_render_state(state);
-                            recipe(current);
+                            publication_view(current);
                             require(state.buildCounterNext.load() == counter + 1 && fj_test_film_development_live_owners() == 0, "one-shot reference recovery publishes once and releases the hold");
-                            require(project(recipe(original).scannerOutput.syntheticFilmReference) == originalReference, "admitted immutable reference remains readable through failures and recovery");
+                            require(project(publication_view(original).film_reference) == originalReference, "admitted immutable reference remains readable through failures and recovery");
                         }
                     }
                 }
@@ -497,12 +513,18 @@ namespace FilmReferenceTest {
                 pending(params);
                 auto latest = params;
                 latest.cameraExposureCompensationEv += .125;
-                supersedingState = &state;
-                supersedingParams = &latest;
                 const auto counter = state.buildCounterNext.load();
+                const auto retained = current;
+                const auto retainedReference = project(publication_view(retained).film_reference);
+                PendingCaptureSupersession supersession{&latest, false};
+                set_pending_capture_test_hook(supersede_at_pending_capture, &supersession);
                 status(fj_test_exposure_arm_fault(5, 2, 4));
                 current = admit_pending_render_state(state);
-                require(!supersedingState && !supersedingParams && hash_params(current.snapshot) == hash_params(latest) && state.lastHash.load() == hash_params(latest) && state.buildCounterNext.load() == counter + 1, "superseded reference failure recovers to the latest complete snapshot");
+                set_pending_capture_test_hook(nullptr, nullptr);
+                require(supersession.fired && hash_params(current.snapshot) == hash_params(latest) && state.lastHash.load() == hash_params(latest) && state.buildCounterNext.load() == counter + 1, "superseded reference failure recovers to the latest complete snapshot");
+                publication_view(current);
+                require(project(publication_view(retained).film_reference) == retainedReference,
+                        "superseded admitted reference remains readable through failed construction and latest recovery");
                 require(fj_test_exposure_fault_consumed(5, 4) == 1 && fj_test_film_development_live_owners() == 0, "supersession releases its moved hold and consumes only the failed visit");
             }
         }
@@ -513,12 +535,6 @@ namespace JuicerAssets::RecipeTest {
     void film_reference(FjStatus& status, FjFilmReferenceFailure& failure, FjFilmReference&, FjErrorBuffer& error) {
         if (FilmReferenceTest::observeHold)
             require(fj_test_film_development_live_owners() == 1, "one original Development hold survives to synchronous reference completion");
-        if (FilmReferenceTest::supersedingState) {
-            auto* state = std::exchange(FilmReferenceTest::supersedingState, nullptr);
-            const auto* params = std::exchange(FilmReferenceTest::supersedingParams, nullptr);
-            std::lock_guard<std::mutex> lock(state->pending.m);
-            state->pending.value = PendingParamsState::Valid{*params, hash_params(*params)};
-        }
         switch (std::exchange(FilmReferenceTest::nextProjection, 0u)) {
             case 1:
                 status.api = 1;

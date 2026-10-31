@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "JuicerState.h"
+#include "PreparedState.h"
 #include "RustFrameBridge.h"
 #include "ColorTransforms.h"
 #include "DiffusionHostBehavior.h"
@@ -1724,6 +1725,7 @@ JuicerEffect::~JuicerEffect() {
 namespace JuicerFrame::FrameGeometryTest {
     void diffusion_frame(double, Spektrafilm::ScanRoute, Spektrafilm::DiffusionFrameDomain, bool, const std::optional<Spektrafilm::DiffusionFrameSetDescriptor>&);
     void halation_frame(float, bool, const std::optional<ScatterHalationFrameDescriptor>&);
+    void prepared_policy(const FjPreparedFramePolicy&, std::uint32_t);
     void full_domain(const Spektrafilm::DiffusionFrameDomain&);
     void scalar_pixel(float);
     void effects_domain(const Spektrafilm::FilmJuicerEffectsGeometry&);
@@ -1826,59 +1828,49 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
     const std::shared_ptr<const DirectRenderState> directState = admission.directState;
     const std::shared_ptr<const PrintRenderState> printState = admission.printState;
-    const RenderRecipe& focusedRecipe = printRoute ? printState->recipe : directState->recipe;
-    JuicerFrame::Geometry geometry{};
-    JuicerFrame::Failure geometryFailure;
-    if (!JuicerFrame::prepare_geometry({fullDomain.originX, fullDomain.originY, fullDomain.width, fullDomain.height}, focusedRecipe.filmRaw.filmFormatLongEdgeMm, geometry, geometryFailure)) {
-        JTRACE("CUDA", geometryFailure.delivery.diagnostic);
+    const PreparedState& prepared = printRoute ? printState->prepared : directState->prepared;
+    std::array<char, 2048> stateText{};
+    FjErrorBuffer stateError{stateText.data(), stateText.size(), 0};
+    FjPreparedStateView stateView{};
+    const FjStatus viewStatus = prepared.view(stateView, stateError);
+    if (viewStatus.category != FJ_STATUS_SUCCESS) {
+        JTRACE("CUDA", std::string(stateText.data(), stateError.length));
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    const float pixelSizeUm = geometry.pixelSizeUm;
+    if (stateView.route > static_cast<std::uint32_t>(Spektrafilm::ScanRoute::PositivePrintScan) ||
+        Spektrafilm::scan_route_is_print(static_cast<Spektrafilm::ScanRoute>(stateView.route)) != printRoute) {
+        JTRACE("CUDA", "FATAL: prepared route does not match its direct/print publication");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    const FjExtent fullExtent{
+        fullDomain.originX,
+        fullDomain.originY,
+        fullDomain.width,
+        fullDomain.height};
+    FjPreparedFramePolicy framePolicy{};
+    stateError.length = 0;
+    const FjStatus policyStatus = prepared.frame_policy(fullExtent, framePolicy, stateError);
+    if (policyStatus.category != FJ_STATUS_SUCCESS) {
+        JTRACE("CUDA", std::string(stateText.data(), stateError.length));
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
 #if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
-    JuicerFrame::FrameGeometryTest::scalar_pixel(pixelSizeUm);
+    JuicerFrame::FrameGeometryTest::prepared_policy(framePolicy, stateView.route);
+#endif
+#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
+    JuicerFrame::FrameGeometryTest::scalar_pixel(framePolicy.geometry.pixel_size_um);
 #endif
     if (traceVerbose) {
         std::string msg = printRoute ? "render print state build=" : "render direct state build=";
         msg += std::to_string(printRoute ? printState->buildCounter : directState->buildCounter);
         msg += " recipe_hash=";
-        msg += std::to_string(focusedRecipe.hash);
+        msg += std::to_string(framePolicy.recipe_hash);
         JTRACE_VERBOSE("RENDER", msg);
     }
 
-    std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
-    std::string diffusionDiagnostic;
-    const bool diffusionSuccess = Spektrafilm::build_diffusion_frame_set_descriptor(
-        focusedRecipe.spatialOptics,
-        focusedRecipe.profileRoute.scanRoute,
-        static_cast<double>(pixelSizeUm),
-        fullDomain,
-        diffusionFrameSet,
-        diffusionDiagnostic);
-#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
-    JuicerFrame::FrameGeometryTest::diffusion_frame(static_cast<double>(pixelSizeUm), focusedRecipe.profileRoute.scanRoute, fullDomain, diffusionSuccess, diffusionFrameSet);
-#endif
-    if (!diffusionSuccess) {
-        JTRACE("SPEKTRAFILM", diffusionDiagnostic);
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
-    std::optional<ScatterHalationFrameDescriptor> scatterHalationDescriptor;
-    std::string scatterHalationDiagnostic;
-    const bool scatterHalationSuccess = Spektrafilm::build_scatter_halation_frame_descriptor(
-        focusedRecipe.spatialOptics.scatterHalation,
-        pixelSizeUm,
-        scatterHalationDescriptor,
-        scatterHalationDiagnostic);
-#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
-    JuicerFrame::FrameGeometryTest::halation_frame(pixelSizeUm, scatterHalationSuccess, scatterHalationDescriptor);
-#endif
-    if (!scatterHalationSuccess) {
-        JTRACE("SPEKTRAFILM", scatterHalationDiagnostic);
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
     Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
-    if (focusedRecipe.filmJuicerEffects.active) {
+    if (stateView.effects.active != 0) {
         const auto definition = srcImg->getRegionOfDefinition();
         const auto canonical = _src->getRegionOfDefinition(args.time);
         const auto scale = srcImg->getRenderScale();
@@ -1908,8 +1900,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (printRoute) {
         JuicerProcessor::PrintFrameRequest frameRequest{};
         frameRequest.state = printState;
-        frameRequest.diffusionFrameSet = diffusionFrameSet;
-        frameRequest.scatterHalation = scatterHalationDescriptor;
+        frameRequest.framePolicy = framePolicy;
         frameRequest.renderWindow = roi;
         frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;
@@ -1918,13 +1909,11 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.clipToken = renderClipToken;
         frameRequest.frameTime = args.time;
         frameRequest.frameRate = getFrameRate();
-        frameRequest.pixelSizeUm = pixelSizeUm;
         proc.setPrintFrameRequest(frameRequest);
     } else {
         JuicerProcessor::DirectFrameRequest frameRequest{};
         frameRequest.state = directState;
-        frameRequest.diffusionFrameSet = diffusionFrameSet;
-        frameRequest.scatterHalation = scatterHalationDescriptor;
+        frameRequest.framePolicy = framePolicy;
         frameRequest.renderWindow = roi;
         frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;
@@ -1933,7 +1922,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.clipToken = renderClipToken;
         frameRequest.frameTime = args.time;
         frameRequest.frameRate = getFrameRate();
-        frameRequest.pixelSizeUm = pixelSizeUm;
         proc.setDirectFrameRequest(frameRequest);
     }
     proc.setGPURenderArgs(args);

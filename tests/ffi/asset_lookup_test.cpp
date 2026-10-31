@@ -18,6 +18,7 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ProfileAssets.h"
+#include "prepared_product_fixture.h"
 
 namespace AssetLookupTest {
     std::optional<float> sample_reference_density(float query, const std::vector<float>& axis, const std::vector<std::array<float, 3>>& curves, std::size_t channel) {
@@ -133,26 +134,9 @@ namespace {
         friend bool operator==(const PublishedReference&, const PublishedReference&) = default;
     };
 
-    PublishedReference published_reference(const Spektrafilm::RenderRecipe& recipe) {
-        return {
-            recipe.scannerOutput.syntheticFilmReference.hash,
-            recipe.scannerOutput.hash,
-            recipe.hash,
-            {std::array{
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.baselineRawRgb[0]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.baselineRawRgb[1]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.baselineRawRgb[2]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.compensatedRawRgb[0]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.compensatedRawRgb[1]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.compensatedRawRgb[2]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.baselineDensityCmy[0]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.baselineDensityCmy[1]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.baselineDensityCmy[2]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.compensatedDensityCmy[0]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.compensatedDensityCmy[1]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.compensatedDensityCmy[2]),
-                 std::bit_cast<std::uint32_t>(recipe.scannerOutput.syntheticFilmReference.baselineMeterScale)},
-             recipe.scannerOutput.syntheticFilmReference.hash}};
+    PublishedReference published_reference(const PendingRenderAdmissionResult& publication) {
+        const auto state = JuicerTestSupport::published_view(publication);
+        return {state.film_reference.hash, state.scanner_recipe_hash, state.recipe_hash, reference_value(state.film_reference)};
     }
 
     ParamSnapshot lookup_controls() {
@@ -414,7 +398,6 @@ namespace {
         const auto early_failure = admit_pending_render_state(early);
         EXPECT_EQ(early_failure.status, PendingRenderAdmissionStatus::RebuildFailed);
         EXPECT_EQ(fj_test_film_reference_lookup_fault_consumed(), 0u);
-        EXPECT_EQ(fj_test_film_reference_lookup_fault_consumed(), 0u);
         ASSERT_NO_THROW(set_lookup_fault(0));
 
         InstanceState state;
@@ -422,7 +405,7 @@ namespace {
         const auto initial = admit_pending_render_state(state);
         ASSERT_TRUE(admitted(initial));
         const auto old_state = initial.directState;
-        const PublishedReference old_value = published_reference(old_state->recipe);
+        const PublishedReference old_value = published_reference(initial);
         ASSERT_NE(old_value.reference_hash, 0u);
         ASSERT_NE(old_value.scanner_recipe_hash, 0u);
         ASSERT_NE(old_value.recipe_hash, 0u);
@@ -439,14 +422,13 @@ namespace {
         EXPECT_EQ(unsupported_mode.native_code, 0);
         const auto rejected = admit_pending_render_state(state);
         EXPECT_EQ(fj_test_film_reference_lookup_fault_consumed(), 1u);
-        EXPECT_EQ(fj_test_film_reference_lookup_fault_consumed(), 0u);
         EXPECT_EQ(rejected.status, PendingRenderAdmissionStatus::RebuildFailed);
         EXPECT_FALSE(rejected.directState);
         EXPECT_EQ(rejected.diagnostic, "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup");
         EXPECT_FALSE(JuicerAtomic::load_shared_ptr(&state.activeDirectState));
         EXPECT_EQ(state.lastHash.load(), previous_hash);
         EXPECT_EQ(state.buildCounterNext.load(), previous_counter);
-        EXPECT_EQ(published_reference(old_state->recipe), old_value);
+        EXPECT_EQ(published_reference(initial), old_value);
 
         set_pending(state, changed);
         const auto retry = admit_pending_render_state(state);
@@ -459,7 +441,7 @@ namespace {
         EXPECT_EQ(reused.directState, retry.directState);
         EXPECT_EQ(state.buildCounterNext.load(), previous_counter + 1);
         ASSERT_EQ(JuicerProcess::root().assets().release_cached_payloads().category, FJ_STATUS_SUCCESS);
-        EXPECT_EQ(published_reference(old_state->recipe), old_value);
+        EXPECT_EQ(published_reference(initial), old_value);
         EXPECT_EQ(processOwner.close().category, FJ_STATUS_SUCCESS);
     }
 

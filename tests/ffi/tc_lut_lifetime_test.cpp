@@ -1,4 +1,5 @@
 #include <atomic>
+#include <array>
 #include <bit>
 #include <new>
 #include <chrono>
@@ -15,6 +16,7 @@
 #include "ColorTransforms.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "prepared_product_fixture.h"
 #include "spectral_allocation_probe.h"
 
 namespace {
@@ -25,11 +27,11 @@ namespace {
     struct Witness {
         InstanceState* state = nullptr;
         const float* wanted = nullptr;
-        std::atomic<bool> requested{false}, done{false}, outside{false};
+        std::atomic<bool> requested{false}, done{false}, publicationOutside{false}, rebuildOutside{false};
         std::atomic<unsigned> count{0};
     };
     Witness* witness = nullptr; // Non-owning test observation, never an old-state hold.
-    void release_observer(const float* samples) noexcept {
+    extern "C" void release_observer(const float* samples) noexcept {
         if (witness && samples == witness->wanted) {
             witness->count.fetch_add(1);
             witness->requested.store(true, std::memory_order_release);
@@ -39,15 +41,20 @@ namespace {
         }
     }
     const float* current_pointer(InstanceState& state, bool print) {
-        // SF_TEMP_BRIDGE_NATIVE_PUBLICATION_TC_LUT_OBSERVER: I5 will replace
-        // these payload reads with PreparedState::view and FjFilmExposure spans.
-        // This temporary lookup ends before replacement. Only the slot retains it.
+        FjPreparedStateView view{};
+        std::array<char, 2048> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
         if (print) {
-            const auto value = JuicerAtomic::load_shared_ptr(&state.activePrintState);
-            return value->payload.filmTcLut->samples().data();
+            const auto publication = JuicerAtomic::load_shared_ptr(&state.activePrintState);
+            require(bool(publication), "print publication slot has state");
+            require(publication->prepared.view(view, error).category == FJ_STATUS_SUCCESS, "published prepared-state view");
+        } else {
+            const auto publication = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
+            require(bool(publication), "direct publication slot has state");
+            require(publication->prepared.view(view, error).category == FJ_STATUS_SUCCESS, "published prepared-state view");
         }
-        const auto value = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
-        return value->payload.filmTcLut->samples().data();
+        require(view.film_exposure.tc_lut_rgba.count == std::size_t{192} * 192u * 4u, "published TC LUT span extent");
+        return view.film_exposure.tc_lut_rgba.data;
     }
     ParamSnapshot snapshot(bool positive, bool print) {
         ParamSnapshot p;
@@ -70,10 +77,11 @@ namespace {
         observation.state = &state;
         observation.wanted = current_pointer(state, fromPrint);
         const auto oldCounter = state.buildCounterNext.load();
-        std::array<std::size_t, 2> countsBefore{};
-        require(fj_test_tc_lut_allocation_counts(countsBefore.data()).category == FJ_STATUS_SUCCESS, "Rust allocation counters before publication");
+        const std::size_t preparedLiveBefore = fj_test_prepared_live_states();
+        std::array<std::size_t, 2> facadeCountsBefore{};
+        const FjStatus facadeCountsBeforeStatus = fj_test_tc_lut_allocation_counts(facadeCountsBefore.data());
         witness = &observation;
-        Spectral::TcLutTest::set_release_observer(release_observer);
+        fj_test_prepared_state_release_observer(release_observer);
         std::thread inspect([&] {
             while (!observation.requested.load(std::memory_order_acquire))
                 observation.requested.wait(false);
@@ -92,7 +100,8 @@ namespace {
                     break;
                 std::this_thread::yield();
             } while (std::chrono::steady_clock::now() < deadline);
-            observation.outside.store(publicationFree && rebuildFree);
+            observation.publicationOutside.store(publicationFree);
+            observation.rebuildOutside.store(rebuildFree);
             observation.done.store(true, std::memory_order_release);
             observation.done.notify_one();
         });
@@ -109,11 +118,38 @@ namespace {
             observation.requested.notify_one();
         }
         inspect.join();
-        Spectral::TcLutTest::set_release_observer(nullptr);
+        fj_test_prepared_state_release_observer(nullptr);
         witness = nullptr;
-        std::array<std::size_t, 2> countsAfter{};
-        require(fj_test_tc_lut_allocation_counts(countsAfter.data()).category == FJ_STATUS_SUCCESS && countsAfter[1] == countsBefore[1] + 1, "Rust deallocation reached exactly once");
-        require(observation.count == 1 && observation.outside, "exactly-once no-reader release outside both lock scopes");
+        std::array<std::size_t, 2> facadeCountsAfter{};
+        const FjStatus facadeCountsAfterStatus = fj_test_tc_lut_allocation_counts(facadeCountsAfter.data());
+        const std::size_t preparedLiveAfter = fj_test_prepared_live_states();
+        std::fprintf(stderr,
+                     "TC publication positive=%d from_print=%d action=%d result=%d old_tc=%p release_pointer_matches=%u publication_lock_free=%d rebuild_lock_free=%d prepared_live=%zu->%zu facade_status=%u/%u facade_transfers=%zu->%zu facade_releases=%zu->%zu\n",
+                     positive,
+                     fromPrint,
+                     action,
+                     result,
+                     static_cast<const void*>(observation.wanted),
+                     observation.count.load(),
+                     observation.publicationOutside.load(),
+                     observation.rebuildOutside.load(),
+                     preparedLiveBefore,
+                     preparedLiveAfter,
+                     facadeCountsBeforeStatus.category,
+                     facadeCountsAfterStatus.category,
+                     facadeCountsBefore[0],
+                     facadeCountsAfter[0],
+                     facadeCountsBefore[1],
+                     facadeCountsAfter[1]);
+        require(facadeCountsBeforeStatus.category == FJ_STATUS_SUCCESS &&
+                    facadeCountsAfterStatus.category == FJ_STATUS_SUCCESS,
+                "SF_TEMP_BRIDGE facade counters remain queryable during publication observation");
+        require(preparedLiveBefore != 0 &&
+                    preparedLiveAfter == preparedLiveBefore - static_cast<std::size_t>(action == 2),
+                "published PreparedState owner count follows replacement or selected-slot failure");
+        require(observation.count.load() == 1 && observation.publicationOutside.load() &&
+                    observation.rebuildOutside.load(),
+                "exactly-once old TC pointer release outside both publication and rebuild locks");
         require(result == (action != 2), "publication result preserved");
         if (action == 2) {
             require(fj_test_tc_lut_fault_consumed(1, 4) == 1, "ordinary failure consumed before cleanup");
@@ -129,14 +165,21 @@ namespace {
         auto p = snapshot(false, false);
         require(rebuild(state, p), "retained initial");
         auto held = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
-        const float* address = held->payload.filmTcLut->samples().data();
+        FjPreparedStateView view{};
+        std::array<char, 2048> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        require(held->prepared.view(view, error).category == FJ_STATUS_SUCCESS, "retained prepared-state view");
+        const FjFloatSpan samples = view.film_exposure.tc_lut_rgba;
+        const float* address = samples.data;
+        require(samples.count == std::size_t{192} * 192u * 4u, "retained complete TC LUT span");
         p.cameraExposureCompensationEv += .5;
         require(rebuild(state, p), "retained replacement");
-        require(held->payload.filmTcLut->samples().data() == address, "retained original allocation");
+        FjPreparedStateView retained{};
+        require(held->prepared.view(retained, error).category == FJ_STATUS_SUCCESS && retained.film_exposure.tc_lut_rgba.data == address, "retained original allocation");
         require(JuicerProcess::root().assets().release_cached_payloads().category == FJ_STATUS_SUCCESS, "cache release");
         std::array<float, 3> rgb{};
-        std::string diagnostic;
-        require(Spectral::sample_film_tc_lut(*held->payload.filmTcLut, {1, 0, 0}, rgb, diagnostic), "retained sampling after replacement/cache release");
+        const std::array<float, 3> xyz{1, 0, 0};
+        require(fj_legacy_reconstruction_sample_tc_lut(retained.film_exposure.tc_lut_rgba, xyz.data(), rgb.data(), &error).category == FJ_STATUS_SUCCESS, "retained sampling after replacement/cache release");
         std::thread finalRelease([hold = std::move(held)]() mutable {
             hold.reset();
         });
@@ -173,7 +216,14 @@ namespace {
         auto* same = &*moved;
         *moved = std::move(*same);
         require(moveReleases == 0 && moved->samples().data() == moveWanted, "safe self move");
+        std::array<std::size_t, 2> facadeCountsBeforeReplacement{};
+        require(fj_test_tc_lut_allocation_counts(facadeCountsBeforeReplacement.data()).category == FJ_STATUS_SUCCESS,
+                "SF_TEMP_BRIDGE facade release counter before move replacement");
         *moved = std::move(*second);
+        std::array<std::size_t, 2> facadeCountsAfterReplacement{};
+        require(fj_test_tc_lut_allocation_counts(facadeCountsAfterReplacement.data()).category == FJ_STATUS_SUCCESS &&
+                    facadeCountsAfterReplacement[1] == facadeCountsBeforeReplacement[1] + 1,
+                "SF_TEMP_BRIDGE direct reconstruction facade release counter advances once for move-replaced owner");
         require(moveReleases == 1 && second->samples().empty() && moved->samples().data() == secondAddress, "move assignment releases previous allocation once");
         moveWanted = secondAddress;
         moveReleases = 0;

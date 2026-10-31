@@ -445,19 +445,32 @@ namespace PrintBalanceTest {
         pending(p);
         const auto original = admit_pending_render_state(state);
         require(bool(original.printState), "balance actual publication baseline");
-        const auto originalBalance = project(original.printState->recipe.print.balance);
+        const auto originalView = JuicerTestSupport::published_view(original);
+        const auto originalBalance = project(originalView.print_balance);
         const auto counter = state.buildCounterNext.load();
         status(fj_test_film_recipe_fault(12, 1));
         const auto reused = admit_pending_render_state(state);
         require(reused.printState == original.printState && state.buildCounterNext.load() == counter, "identical current snapshot reuses complete publication without balance construction");
         p.cameraExposureCompensationEv = .25;
         pending(p);
-        const auto failed = admit_pending_render_state(state);
-        require(failed.status == PendingRenderAdmissionStatus::RebuildFailed && !failed.printState && !failed.directState, "real balance panic blocks new admission");
-        require(JuicerAtomic::load_shared_ptr(&state.activePrintState) == original.printState && state.buildCounterNext.load() == counter, "balance failure neither publishes nor advances counter");
-        const auto recovered = admit_pending_render_state(state);
-        require(recovered.printState && recovered.printState != original.printState && state.buildCounterNext.load() == counter + 1, "one-shot balance failure recovers to a complete new publication");
-        require(project(original.printState->recipe.print.balance) == originalBalance, "already admitted immutable state survives failed and successful replacement");
+        const auto published = admit_pending_render_state(state);
+        require(published.status == PendingRenderAdmissionStatus::AdmittedPrint && published.printState &&
+                    published.printState != original.printState &&
+                    JuicerAtomic::load_shared_ptr(&state.activePrintState) == published.printState &&
+                    state.lastHash.load() == hash_params(p) && state.buildCounterNext.load() == counter + 1,
+                "complete Rust balance construction publishes without visiting the raw facade fault");
+        require(project(JuicerTestSupport::published_view(original).print_balance) == originalBalance,
+                "already admitted immutable balance remains readable through complete replacement");
+        FjPreparedStateView publishedView = JuicerTestSupport::published_view(published);
+        FjPrintBalance publishedOutput{};
+        FjPrintBalanceFailure publishedFailure{};
+        const FjPrintBalanceInput publishedRaw = balance_input(publishedView);
+        status(fj_test_print_balance_prepare(&publishedRaw, &publishedOutput, &publishedFailure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+        metadata(publishedFailure, FJ_PRINT_BALANCE_REASON_PANIC);
+        zero(publishedOutput);
+        status(fj_test_print_balance_prepare(&publishedRaw, &publishedOutput, &publishedFailure, nullptr));
+        require(project(publishedOutput) == project(publishedView.print_balance),
+                "one-shot raw balance facade fault and retry match the actual published held balance");
         auto activeControls = PrintPreflashTest::controls();
         auto active = PrintPreflashTest::build(activeControls);
         status(fj_test_film_recipe_fault(12, 1));
@@ -503,8 +516,9 @@ namespace PrintBalanceTest {
                 "unconsumed raw balance fault is one-shot and retry matches the held complete owner");
 
         // SF_TEMP_BRIDGE_NATIVE_BALANCE_FAULT_CONSUMER: retain the original
-        // native constructor's typed exception assertion through I7. The
-        // completed Rust constructor does not call this fixture facade.
+        // native constructor's typed exception/retry comparison through I7.
+        // Actual complete-state construction and resource assembly above do
+        // not visit this legacy facade.
         status(fj_test_film_recipe_fault(12, 1));
         bool threw = false;
         FocusedRenderStateBuildProduct comparison;
@@ -513,7 +527,7 @@ namespace PrintBalanceTest {
         } catch (const JuicerCuda::ExecutionFailure&) {
             threw = true;
         }
-        require(threw, "direct construction and resource assembly leave the balance fault unconsumed");
+        require(threw, "SF_TEMP_BRIDGE native constructor consumes its legacy balance fault");
         require(build_print_render_state_product(activeControls, comparison, diagnostic), diagnostic.c_str());
     }
     void products(const std::filesystem::path& resources, const Json& captured) {

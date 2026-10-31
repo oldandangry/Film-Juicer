@@ -12,6 +12,9 @@
 #include "RenderRecipe.h"
 #include "RustEffectsFrameBridge.h"
 #include "Cuda/JuicerCudaFailure.h"
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+#include "Cuda/JuicerCudaExecutor.h"
+#endif
 
 namespace {
 
@@ -425,21 +428,74 @@ namespace JuicerCuda {
                 return scope_error(this, error, FJ_STATUS_PREPARATION_FAILURE, kDescriptorMismatch);
             }
             SpatialDirDescriptor dir{};
-            if (!Spektrafilm::compose_spatial_dir_descriptor(input->dir, _pixelSizeUm, route_label(*_route), dir)) {
+            const bool dirComposed = Spektrafilm::compose_spatial_dir_descriptor(input->dir, _pixelSizeUm, route_label(*_route), dir);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            JuicerCuda::ExecutorTest::observe_dir_frame(
+                static_cast<Spektrafilm::ScanRoute>(*_route),
+                _pixelSizeUm,
+                {expectedRender.x, expectedRender.y, expectedRender.width, expectedRender.height},
+                {expectedFull.x, expectedFull.y, expectedFull.width, expectedFull.height},
+                dirComposed,
+                dir);
+#endif
+            if (!dirComposed) {
                 return scope_error(this, error, FJ_STATUS_PREPARATION_FAILURE, "ResourceDescriptorMismatch phase=dir_descriptor field=rust_result");
             }
             Spektrafilm::VisualGrainFrameDescriptor grain{};
             const auto polarity = route_polarity(*_route);
             std::string diagnostic;
-            if (!Spektrafilm::compose_visual_grain_frame_descriptor(
-                    input->grain_coefficients, polarity, input->grain, grain, diagnostic)) {
+            const bool grainComposed = Spektrafilm::compose_visual_grain_frame_descriptor(
+                input->grain_coefficients, polarity, input->grain, grain, diagnostic);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            JuicerCuda::ExecutorTest::observe_grain_frame({static_cast<Spektrafilm::ScanRoute>(*_route),
+                                                           0,
+                                                           {expectedRender.x, expectedRender.y, expectedRender.width, expectedRender.height},
+                                                           {expectedFull.x, expectedFull.y, expectedFull.width, expectedFull.height},
+                                                           frame.pixel_size_um,
+                                                           frame.time_frames,
+                                                           frame.frame_rate,
+                                                           frame.session_seed,
+                                                           frame.clip_token,
+                                                           grainComposed,
+                                                           grainComposed && input->grain.present != 0 ? std::optional<Spektrafilm::VisualGrainFrameDescriptor>(grain) : std::nullopt});
+#endif
+            if (!grainComposed) {
                 return scope_error(this, error, FJ_STATUS_PREPARATION_FAILURE, diagnostic.empty() ? kDescriptorMismatch : std::string_view(diagnostic));
             }
             if (grain.active && (grain.sessionSeed != frame.session_seed || grain.clipToken != frame.clip_token)) {
                 return scope_error(this, error, FJ_STATUS_PREPARATION_FAILURE, kDescriptorMismatch);
             }
             Spektrafilm::FilmJuicerEffectsFrameDescriptor effects{};
-            if (!JuicerEffects::compose_frame_descriptor(input->effects, input->film_dust, input->film_scratch, input->gate_dust, input->gate_scratch, effects, diagnostic)) {
+            const bool effectsComposed = JuicerEffects::compose_frame_descriptor(
+                input->effects, input->film_dust, input->film_scratch, input->gate_dust, input->gate_scratch, effects, diagnostic);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
+            effectsGeometry.pixelDefinition = {frame.effects_geometry.pixel_definition.x,
+                                               frame.effects_geometry.pixel_definition.y,
+                                               frame.effects_geometry.pixel_definition.width,
+                                               frame.effects_geometry.pixel_definition.height};
+            effectsGeometry.canonicalX = frame.effects_geometry.canonical_x;
+            effectsGeometry.canonicalY = frame.effects_geometry.canonical_y;
+            effectsGeometry.canonicalWidth = frame.effects_geometry.canonical_width;
+            effectsGeometry.canonicalHeight = frame.effects_geometry.canonical_height;
+            effectsGeometry.scaleX = frame.effects_geometry.scale_x;
+            effectsGeometry.scaleY = frame.effects_geometry.scale_y;
+            effectsGeometry.pixelAspectRatio = frame.effects_geometry.pixel_aspect_ratio;
+            JuicerCuda::ExecutorTest::observe_effects_frame({static_cast<Spektrafilm::ScanRoute>(*_route),
+                                                             0,
+                                                             {expectedRender.x, expectedRender.y, expectedRender.width, expectedRender.height},
+                                                             {expectedFull.x, expectedFull.y, expectedFull.width, expectedFull.height},
+                                                             effectsGeometry,
+                                                             0.0f, // The callback frame facts do not carry film-format policy.
+                                                             frame.pixel_size_um,
+                                                             frame.time_frames,
+                                                             frame.frame_rate,
+                                                             frame.session_seed,
+                                                             frame.clip_token,
+                                                             effectsComposed,
+                                                             effectsComposed && input->effects.present != 0 ? std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>(effects) : std::nullopt});
+#endif
+            if (!effectsComposed) {
                 return scope_error(this, error, FJ_STATUS_PREPARATION_FAILURE, diagnostic.empty() ? kDescriptorMismatch : std::string_view(diagnostic));
             }
             if (effects.hash != 0 &&

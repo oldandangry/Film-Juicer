@@ -268,6 +268,17 @@ fn fixed_boundary_failure(error: exposure::BoundaryError) -> Failure {
     }
 }
 fn inject(operation: u32) -> Result<(), Failure> {
+    if operation == 1 {
+        return reconstruction::check_reference_white_boundary().map_err(|error| match error {
+            reconstruction::CheckedReferenceWhiteError::BoundaryUnsupported => {
+                Failure::Input("exposure production boundary fault")
+            }
+            reconstruction::CheckedReferenceWhiteError::Preparation(error)
+            | reconstruction::CheckedReferenceWhiteError::Reconstruction(error) => {
+                Failure::Reconstruction(error)
+            }
+        });
+    }
     #[cfg(feature = "test-support")]
     if let Some(fault) = film_juicer_core::film::input::testing::exposure_fault(operation) {
         return match fault {

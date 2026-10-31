@@ -868,10 +868,23 @@ class RustBoundaryTests(unittest.TestCase):
         fixtures = "\n".join((ROOT / "tests/ffi" / name).read_text() for name in ("film_recipe_test.cpp", "dir_frame_test.inc"))
         for token in ("capture-dir-frames", "native_case(", "native_products(", "DirFrameTest::capture("):
             self.assertNotIn(token, fixtures)
-        for name in ("dir/exposure_cache_test.cpp", "grain/scratch_reuse_test.cpp", "ffi/gaussian_kernel_test.inc"):
+        for name in ("dir/exposure_cache_test.cpp", "grain/scratch_reuse_test.cpp"):
             fixture = (ROOT / "tests" / name).read_text()
             self.assertNotIn("Spektrafilm::build_spatial_dir_descriptor(", fixture)
-            self.assertIn("JuicerTestSupport::prepare_dir_frame(", fixture)
+            self.assertIn("FrameFixture::with_prepared_frame_inputs(", fixture)
+            self.assertIn("prepared.descriptors.spatialDir", fixture)
+        prepared_frame_fixture = (ROOT / "tests/ffi/prepared_frame_fixture.cpp").read_text()
+        self.assertIn("fj_test_dir_frame_prepare(", prepared_frame_fixture)
+        self.assertIn("Spektrafilm::compose_spatial_dir_descriptor(", prepared_frame_fixture)
+
+        gaussian_fixture = (ROOT / "tests/ffi/gaussian_kernel_test.inc").read_text()
+        self.assertNotIn("Spektrafilm::build_spatial_dir_descriptor(", gaussian_fixture)
+        self.assertIn("fj_test_dir_frame_prepare(", gaussian_fixture)
+        self.assertIn("DirFrameTest::raw_input(", gaussian_fixture)
+        self.assertIn("FJ_DIR_OPERATOR_FIR_REFLECT", gaussian_fixture)
+        self.assertIn("component.radius", gaussian_fixture)
+        self.assertIn("component.sigma_px", gaussian_fixture)
+        self.assertIn("require(rows.size() == 188", gaussian_fixture)
         self.assertIn("fj_test_dir_frame_prepare(", (ROOT / "tests/ffi/spatial_optics_fixture.cpp").read_text())
         self.assertIn("SF_TEMP_BRIDGE_DIR_FRAME", (ROOT / "src/RustDirBridge.h").read_text())
 

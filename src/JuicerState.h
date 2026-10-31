@@ -15,6 +15,7 @@
 #include "FocusedRenderPayload.h"
 #include "GamutCompression.h"
 #include "ProfileCatalog.h"
+#include "PreparedState.h"
 #include "RenderControls.h"
 #include "RenderRecipe.h"
 #include "ScanRoute.h"
@@ -60,14 +61,14 @@ struct FocusedRenderStateBuildProduct {
 };
 
 struct DirectRenderState {
-    Spektrafilm::RenderRecipe recipe;
-    FocusedRenderPayload payload;
+    explicit DirectRenderState(PreparedState&& state);
+    PreparedState prepared;
     std::uint64_t buildCounter = 0;
 };
 
 struct PrintRenderState {
-    Spektrafilm::RenderRecipe recipe;
-    FocusedRenderPayload payload;
+    explicit PrintRenderState(PreparedState&& state);
+    PreparedState prepared;
     std::uint64_t buildCounter = 0;
 };
 

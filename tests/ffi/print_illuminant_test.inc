@@ -53,6 +53,54 @@ namespace PrintIlluminantTest {
     void seed(FjIlluminant& out) {
         std::fill_n(out.samples, 81, -13.0f);
     }
+    void run_SF_TEMP_BRIDGE_native_main_illuminant_panic_retry(const Json& literalCases) {
+        const auto& row = literalCases.at("cases")[0];
+        const auto input = params(row);
+        DichroicFilterRecipe filters;
+        std::copy_n(input.edges_nm, 4, filters.customEdgesNm.begin());
+        std::copy_n(input.transitions_nm, 4, filters.customTransitionsNm.begin());
+        const CmyCcTriplet cmy{input.cmy_cc[0], input.cmy_cc[1], input.cmy_cc[2]};
+        std::array<float, 81> source{};
+        for (std::size_t index = 0; index < source.size(); ++index)
+            source[index] = std::bit_cast<float>(row.at("source")[index].get<std::uint32_t>());
+        std::array<float, 81> out{};
+        out.fill(-13.0f);
+        std::string diagnostic;
+        status(fj_test_film_recipe_fault(10, 1));
+        bool panicked = false;
+        try {
+            (void)JuicerAssets::prepare_print_illuminant(filters, source, cmy, out, diagnostic);
+        } catch (const JuicerCuda::ExecutionFailure& error) {
+            panicked = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
+        }
+        require(panicked && std::all_of(out.begin(), out.end(), [](float value) {
+                    return std::bit_cast<std::uint32_t>(value) == 0;
+                }),
+                "SF_TEMP_BRIDGE native main illuminant panic clears output");
+        require(JuicerAssets::prepare_print_illuminant(filters, source, cmy, out, diagnostic) &&
+                    diagnostic.empty() && words(out.data(), out.size()) == row.at("samples"),
+                "SF_TEMP_BRIDGE native main illuminant retry matches retained literal result");
+    }
+
+    void raw_main_illuminant_followup(const FjPreparedStateView& held) {
+        const auto source = held.print_source_illuminant;
+        const auto& expected = held.print.main_illuminant;
+        require(source.count == 81 && expected.count == 81, "held print state supplies complete main illuminant inputs and output");
+        DichroicFilterRecipe filters;
+        FjPrintIlluminantParams input{};
+        std::copy(filters.customEdgesNm.begin(), filters.customEdgesNm.end(), input.edges_nm);
+        std::copy(filters.customTransitionsNm.begin(), filters.customTransitionsNm.end(), input.transitions_nm);
+        std::copy_n(held.print.main_cc_cmy, 3, input.cmy_cc);
+        FjIlluminant out{};
+        seed(out);
+        FjPrintIlluminantFailure failure{99, 98};
+        status(fj_test_print_illuminant_prepare(&input, source, &out, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+        metadata(failure, FJ_PRINT_ILLUMINANT_REASON_PANIC);
+        zero(out);
+        status(fj_test_print_illuminant_prepare(&input, source, &out, &failure, nullptr));
+        metadata(failure, FJ_PRINT_ILLUMINANT_REASON_NONE);
+        require(words(out.samples, 81) == words(expected.data, expected.count), "raw main illuminant retry matches the actual held Rust publication");
+    }
     void values(const Json& captured) {
         require(captured.at("cases").size() == 127, "exact adopted print illuminant literal membership");
         for (Prepare prepare : {fj_legacy_print_illuminant_prepare, fj_test_print_illuminant_prepare})
@@ -207,6 +255,7 @@ namespace PrintIlluminantTest {
         auto& assets = JuicerProcess::root().assets();
         JuicerProcess::root().ensure_bootstrap();
         require(captured.at("products").size() == 72, "exact genuine print illuminant product membership");
+        run_SF_TEMP_BRIDGE_native_main_illuminant_panic_retry(literalCases);
         for (const auto& expected : captured.at("products")) {
             const unsigned route = expected.at("route");
             const int mode = expected.at("mode");
@@ -298,17 +347,29 @@ namespace PrintIlluminantTest {
         };
         pending(controls);
         const auto original = admit_pending_render_state(state);
-        require(bool(original.printState), "print illuminant publication baseline");
+        require(original.status == PendingRenderAdmissionStatus::AdmittedPrint && bool(original.printState), "print illuminant publication baseline");
+        const auto originalView = JuicerTestSupport::published_view(original);
+        require(originalView.print.main_illuminant.count == 81, "baseline publishes all main illuminant samples");
+        const auto originalHash = originalView.recipe_hash;
+        const auto originalMain = words(originalView.print.main_illuminant.data, originalView.print.main_illuminant.count);
         const auto counter = state.buildCounterNext.load();
         controls.printUiYmcCc[0] = 2.5;
         pending(controls);
         status(fj_test_film_recipe_fault(10, 1));
-        const auto rejected = admit_pending_render_state(state);
-        require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && !rejected.printState && !rejected.directState, "main illuminant panic blocks new admission");
-        require(state.buildCounterNext.load() == counter && JuicerAtomic::load_shared_ptr(&state.activePrintState) == original.printState, "failed illuminant build preserves admitted publication");
-        const auto recovered = admit_pending_render_state(state);
-        require(bool(recovered.printState) && recovered.printState != original.printState, "main illuminant publication recovers");
-        require(admit_pending_render_state(state).printState == recovered.printState, "unchanged main illuminant publication reuses");
+        const auto admitted = admit_pending_render_state(state);
+        require(admitted.status == PendingRenderAdmissionStatus::AdmittedPrint && bool(admitted.printState) &&
+                    admitted.printState != original.printState,
+                "actual main illuminant publication skips the legacy facade-only panic");
+        require(state.buildCounterNext.load() == counter + 1 &&
+                    JuicerAtomic::load_shared_ptr(&state.activePrintState) == admitted.printState &&
+                    originalView.recipe_hash == originalHash &&
+                    words(originalView.print.main_illuminant.data, originalView.print.main_illuminant.count) == originalMain,
+                "complete main illuminant publication advances once and preserves prior held values");
+        const auto held = JuicerTestSupport::published_view(admitted);
+        raw_main_illuminant_followup(held);
+        const auto repeated = admit_pending_render_state(state);
+        require(repeated.printState == admitted.printState && state.buildCounterNext.load() == counter + 1,
+                "unchanged main illuminant publication reuses after raw facade panic/retry");
 
         std::string diagnostic;
         controls.printPreflashExposure = 0;

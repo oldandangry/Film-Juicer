@@ -43,17 +43,16 @@ namespace JuicerCudaTest {
         const FjPreparedHostData& prepared,
         FjAbortCallback abort = {},
         FjErrorBuffer* error = nullptr) {
-        using namespace PreparedRawRenderFixture;
         FjErrorBuffer emptyError{nullptr, 0, 0};
         FjErrorBuffer* const effectiveError = error ? error : &emptyError;
         const FjRenderOutcome unsupported{{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0};
-        JuicerCuda::CallScope scope(owner, prepared.route, &complete_without_application_recovery, nullptr);
+        JuicerCuda::CallScope scope(owner, prepared.route, &PreparedRawRenderFixture::complete_without_application_recovery, nullptr);
         FjCudaCallAccess access = scope.access();
         bool admitted = false;
         bool released = false;
         FjCudaContext context{};
         bool inspected = false;
-        Consumer consumer{&access, &prepared, &frame, &context, &submission, abort};
+        PreparedRawRenderFixture::Consumer consumer{&access, &prepared, &frame, &context, &submission, abort};
         FjRenderOutcome outcome = unsupported;
 
         const auto finish = [&](bool renderOutcomeValid) {
@@ -91,7 +90,7 @@ namespace JuicerCudaTest {
         }
         inspected = true;
 
-        const FjStatus hostStatus = fj_test_with_host_preparation(&consumer, &render_with_borrowed_preparation, effectiveError);
+        const FjStatus hostStatus = fj_test_with_host_preparation(&consumer, &PreparedRawRenderFixture::render_with_borrowed_preparation, effectiveError);
         outcome = consumer.invoked ? consumer.outcome : FjRenderOutcome{hostStatus, 0};
         return finish(consumer.invoked);
     }

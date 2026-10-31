@@ -170,6 +170,13 @@ pub(crate) fn arm_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus
             status(FJ_STATUS_UNSUPPORTED_INPUT)
         };
     }
+    if operation == 2 {
+        return if illuminant::testing::arm_blackbody(call_index, fault) {
+            status(FJ_STATUS_SUCCESS)
+        } else {
+            status(FJ_STATUS_UNSUPPORTED_INPUT)
+        };
+    }
     FAULT.set(Some((operation, call_index, fault)));
     status(FJ_STATUS_SUCCESS)
 }
@@ -177,6 +184,7 @@ pub(crate) fn arm_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus
 pub(crate) fn clear_fault() {
     FAULT.set(None);
     illuminant::testing::clear_equal_energy_fault();
+    illuminant::testing::clear_blackbody_fault();
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn live_lenses() -> usize {
@@ -223,6 +231,15 @@ fn checked_equal_energy() -> Result<[f32; 81], Failure> {
     })
 }
 
+fn checked_blackbody(temperature: f32) -> Result<[f32; 81], Failure> {
+    illuminant::checked_blackbody(temperature).map_err(|error| match error {
+        illuminant::BlackbodyError::Unsupported => {
+            Failure::Input("illuminant injected unsupported input")
+        }
+        illuminant::BlackbodyError::Illuminant(error) => Failure::Illuminant(error),
+    })
+}
+
 // FJ_TEMP_BRIDGE: illuminant value/source preparation; remove S4.E.
 /// # Safety
 /// Rows and required outputs/error obey the header's synchronous disjoint-storage contract.
@@ -264,9 +281,8 @@ pub(crate) unsafe extern "C" fn fj_legacy_illuminant_blackbody(
             if !valid {
                 return Err(Failure::Input("invalid illuminant output"));
             }
-            inject(2)?;
             out.write(FjIlluminant {
-                samples: illuminant::blackbody(temperature),
+                samples: checked_blackbody(temperature)?,
             });
             Ok(())
         })

@@ -2040,7 +2040,9 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         state_path = build / "verification-checkpoint.json"
         campaign = Campaign(self.root, preset, "off-preparation", ["prepare"])
         qualification.prepare_build(campaign, "prepare", source=self.root, build=build,
-            inputs=list(files), timeout=60, targets=["all"], configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
+            inputs=list(files), timeout=60,
+            targets=["all", "JuicerProductionPreparedRenderProbe"],
+            configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
         state = {}
         with OutputLease(self.root, build):
             with self.assertRaises(subprocess.CalledProcessError):
@@ -2610,7 +2612,9 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 campaign = Campaign(self.root, preset, "cold", ["prepare"])
                 if preset.endswith("release"):
                     record_phase(f"prepare.{preset}.cold", qualification.prepare_build, campaign, "prepare", source=self.root, build=build,
-                        inputs=list(files), timeout=60, targets=["all"], configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
+                        inputs=list(files), timeout=60,
+                        targets=["all", "JuicerProductionPreparedRenderProbe"],
+                        configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
                     paths.append(checkpoint(preset, "off", ["production"]))
                 else:
                     record_phase(f"configure.{preset}.cold", self.configure_fixture, preset, True, "fixture-on", timeout=60)

@@ -11,6 +11,8 @@ use crate::preparation::{
 };
 use crate::preparation::FjIlluminantCacheHooks;
 use crate::preparation::{FjInputHullCacheHooks, FjCacheObservationOwner};
+#[cfg(feature = "test-support")]
+use crate::cuda::NoiseCallObservation;
 
 macro_rules! preparation_export {
     ($name:ident($($arg:ident: $ty:ty),*) => $operation:ident($($value:ident),*)) => {
@@ -36,6 +38,59 @@ preparation_export!(fj_test_output_boundary_release(owner: *mut FjOutputBoundary
 preparation_export!(fj_test_prepared_state_create(assets: *mut FjAssets, params: *const FjPreparationParams, out: *mut *mut FjPreparedState, error: *mut FjErrorBuffer) => state_create(assets, params, out, error));
 preparation_export!(fj_test_prepared_state_view(owner: *const FjPreparedState, out: *mut FjPreparedStateView, error: *mut FjErrorBuffer) => state_view(owner, out, error));
 preparation_export!(fj_test_prepared_state_release(owner: *mut FjPreparedState, error: *mut FjErrorBuffer) => state_release(owner, error));
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_prepared_state_release_observer(
+    observer: Option<unsafe extern "C" fn(*const f32)>,
+) {
+    preparation::set_prepared_state_release_observer(observer);
+}
+
+type InputPreparationObserver = unsafe extern "C" fn(FjFloatSpan, u64, FjFloatSpan, u64);
+thread_local! {
+    static INPUT_PREPARATION_OBSERVER: std::cell::Cell<Option<InputPreparationObserver>> = const { std::cell::Cell::new(None) };
+}
+fn observe_prepared_input(
+    profile: &film_juicer_core::profile::FilmProfile,
+    hull: Option<&film_juicer_core::assets::InputHull>,
+) {
+    let Some(observer) = INPUT_PREPARATION_OBSERVER.take() else {
+        return;
+    };
+    let axis = profile.tables().interpolation_log_exposure();
+    let xy = hull.map(|hull| hull.hull().xy().as_flattened());
+    let axis = FjFloatSpan {
+        data: axis.as_ptr(),
+        count: axis.len(),
+    };
+    let points = FjFloatSpan {
+        data: xy.map_or(std::ptr::null(), |xy| xy.as_ptr()),
+        count: xy.map_or(0, |xy| xy.len()),
+    };
+    // SAFETY: The registered test callback borrows these live local selections
+    // synchronously, contains all foreign exceptions and retains no borrowed data.
+    unsafe {
+        observer(
+            axis,
+            profile.asset_token(),
+            points,
+            hull.map_or(0, |hull| hull.hull().hash()),
+        );
+    }
+}
+
+/// # Safety
+/// A non-null callback must contain foreign exceptions and use the borrowed
+/// spans only during its invocation. It fires once on this arming thread after
+/// actual profile/hull selection, outside cache locks and before completion.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_prepared_input_observer(observer: Option<InputPreparationObserver>) {
+    INPUT_PREPARATION_OBSERVER.set(observer);
+    film_juicer_core::recipe::testing::set_input_observer(if observer.is_some() {
+        Some(observe_prepared_input)
+    } else {
+        None
+    });
+}
 preparation_export!(fj_test_assets_calibration_source(destination: *const FjAssets, source: *const FjAssets, error: *mut FjErrorBuffer) => calibration_source(destination, source, error));
 preparation_export!(fj_test_assets_input_hull_fault(owner: *const FjAssets, fault: u32, error: *mut FjErrorBuffer) => hull_operation_fault(owner, fault, error));
 preparation_export!(fj_test_assets_input_hull_fault_pending(owner: *const FjAssets, out: *mut u32, error: *mut FjErrorBuffer) => hull_operation_pending(owner, out, error));
@@ -75,7 +130,6 @@ unsafe extern "C" fn fj_test_prepared_state_abi_facts(count: *mut usize) -> *con
     unsafe { count.write(facts.len()) };
     facts.as_ptr()
 }
-
 thread_local! { static ILLUMINANT_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[unsafe(no_mangle)]
 extern "C" fn fj_test_illuminant_arm_fault(
@@ -260,6 +314,28 @@ unsafe extern "C" fn fj_test_film_development_retain(
 ) -> FjStatus {
     // SAFETY: The facade invokes the same internal owner operation, not an export.
     unsafe { crate::film_bridge::retain(owner, out, error) }
+}
+
+/// Arm the checked Film::Development::new primitive used by complete-state builds.
+/// Fault 1 rejects normalized-table reservation; 2/3 zero curve/final identity;
+/// 4 zeroes the layer identity consumed by the required-layer grain constructor.
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_development_construction_fault(fault: u32) -> FjStatus {
+    if !(1..=4).contains(&fault) {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    film_juicer_core::film::test_support::reject_next(fault);
+    status(FJ_STATUS_SUCCESS)
+}
+
+/// Observe actual normalized-curve lifetimes: 0 live, 1 successful reservations,
+/// 2 drops. Unknown metric tags return zero; these counts never drive policy.
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_development_curve_count(metric: u32) -> usize {
+    film_juicer_core::film::test_support::curve_counts()
+        .get(metric as usize)
+        .copied()
+        .unwrap_or(0)
 }
 
 const FJ_PROFILE_USE_STILL: u32 = 0;
@@ -661,6 +737,77 @@ const _: unsafe extern "C" fn(*mut usize) -> *const usize = fj_test_profile_abi_
 
 use crate::asset_bridge::{self, FjNoise};
 use crate::cuda::sys::FjStaticNoise;
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_noise_reservation_failure(active: u32) -> FjStatus {
+    use film_juicer_core::data_io::noise::testing;
+    match active {
+        0 => testing::clear_reservation_failure(),
+        1 => testing::arm_reservation_failure(),
+        _ => return status(FJ_STATUS_UNSUPPORTED_INPUT),
+    }
+    status(FJ_STATUS_SUCCESS)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_noise_reservation_consumed() -> u32 {
+    u32::from(film_juicer_core::data_io::noise::testing::reservation_failure_consumed())
+}
+
+/// # Safety
+/// `owner` is a live isolated scratch Assets owner with no concurrent users.
+/// Optional diagnostics obey the usual exclusive disjoint-storage contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_assets_poison_noise(
+    owner: *const FjAssets,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The caller retains the scratch owner and exclusive diagnostics.
+    unsafe {
+        asset_illuminant::run(error, || {
+            if preparation::assets(owner)?.poison_noise_cache_for_test() {
+                Ok(())
+            } else {
+                Err(asset_bridge::Failure::Input("noise cache was not poisoned"))
+            }
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_prepared_noise_short_view(active: u32) -> FjStatus {
+    if active > 1 {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    crate::cuda::set_short_noise_view(active != 0);
+    status(FJ_STATUS_SUCCESS)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_prepared_noise_short_view_consumed() -> u32 {
+    u32::from(crate::cuda::short_noise_view_consumed())
+}
+
+/// Reset calling-thread observations of the real prepared-render CallGuard.
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_prepared_noise_observation_reset() {
+    crate::cuda::reset_noise_call_observation();
+}
+
+/// # Safety
+/// `out` authorizes one aligned, exclusively writable observation record.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_prepared_noise_observation(
+    out: *mut NoiseCallObservation,
+) -> FjStatus {
+    if out.is_null() || !(out as usize).is_multiple_of(std::mem::align_of::<NoiseCallObservation>())
+    {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    // SAFETY: The caller supplies one aligned, exclusively writable record.
+    unsafe { out.write(crate::cuda::noise_call_observation()) };
+    status(FJ_STATUS_SUCCESS)
+}
 
 /// # Safety
 /// Root is nonempty initialized UTF-8 without NUL, live through return. Output
@@ -1901,6 +2048,20 @@ const _: unsafe extern "C" fn(
     *mut crate::optics_bridge::FjSpatialOpticsFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_spatial_optics_prepare;
+
+/// Arm the existing probability guard in the actual `RenderState` effects producer.
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_prepared_effects_probability_fault() -> FjStatus {
+    film_juicer_core::effects::test_support::substitute_next_probability(0.25);
+    status(FJ_STATUS_SUCCESS)
+}
+
+/// Arm the existing resolved-hash guard in the actual `RenderState` optics producer.
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_prepared_optics_resolved_hash_fault() -> FjStatus {
+    film_juicer_core::optics::test_support::zero_next_resolved_hash();
+    status(FJ_STATUS_SUCCESS)
+}
 
 /// # Safety
 /// Same initialized, aligned, live and disjoint records/source as the checked operation.

@@ -1018,8 +1018,10 @@ namespace {
         std::uint64_t uploadCoreHash = 0;
         std::uint64_t scannerHash = 0;
         std::uint64_t filmExposureHash = 0;
+        float manualExposureCompensationEv = 0.0f;
         std::uint64_t printHash = 0;
         std::uint64_t scatterHalationHash = 0;
+        std::uint64_t dirRecipeHash = 0;
         std::string filmProfileKey;
         std::uint64_t scannerColorHash = 0;
     };
@@ -1043,8 +1045,10 @@ namespace {
             state.upload_core_hash,
             state.scanner_hash,
             state.film_exposure.hash,
+            state.film_exposure.manual_exposure_ev,
             state.print_recipe_hash,
             state.optics.scatter_halation.hash,
+            state.dir_recipe.hash,
             filmProfileKey,
             state.scanner_color.hash};
     }
@@ -1173,8 +1177,7 @@ namespace {
                 requestedFacts.scatterHalationHash != 0,
             requestedStateDiagnostic);
 
-        // The native product is retained solely as the I5 publication
-        // comparison until InstanceState has a Rust-owned publisher.
+        // Keep the native standalone product comparison isolated until I7.
         FocusedRenderStateBuildProduct requestedProduct;
         std::string requestedDiagnostic;
         const bool requestedBuilt = build_direct_render_state_product(
@@ -1202,8 +1205,8 @@ namespace {
                 float_bits(defaultControls.halationSpatialScale) == float_bits(1.0f) &&
                 admitted.status == PendingRenderAdmissionStatus::AdmittedDirect &&
                 admitted.directState && !admitted.printState &&
-                admitted.directState->recipe.spatialOptics.scatterHalation.hash ==
-                    requestedProduct.recipe.spatialOptics.scatterHalation.hash,
+                inspect_prepared_state(admitted.directState->prepared).recipeHash != 0 &&
+                inspect_prepared_state(admitted.directState->prepared).scatterHalationHash != 0,
             admitted.diagnostic);
 
         // Keep an independent equal-valued object so this remains an identity oracle.
@@ -1372,7 +1375,7 @@ namespace {
             "pending/rebuild-failure-does-not-admit-previous-state",
             validBeforeFailure.status == PendingRenderAdmissionStatus::AdmittedDirect &&
                 validBeforeFailure.directState &&
-                validBeforeFailure.directState->recipe.hash != 0 &&
+                inspect_prepared_state(validBeforeFailure.directState->prepared).recipeHash != 0 &&
                 failedCurrent.status == PendingRenderAdmissionStatus::RebuildFailed &&
                 !failedCurrent.directState && !failedCurrent.printState,
             failedCurrent.diagnostic);
@@ -1524,13 +1527,14 @@ namespace {
             seed_valid_pending(state, reverse ? a : b);
             const PendingRenderAdmissionResult destination =
                 admit_pending_render_state(state);
-            const RenderRecipe* actual = printRoute
-                                             ? (destination.printState
-                                                    ? &destination.printState->recipe
-                                                    : nullptr)
-                                             : (destination.directState
-                                                    ? &destination.directState->recipe
-                                                    : nullptr);
+            const PreparedState* actual = printRoute
+                                              ? (destination.printState
+                                                     ? &destination.printState->prepared
+                                                     : nullptr)
+                                              : (destination.directState
+                                                     ? &destination.directState->prepared
+                                                     : nullptr);
+            const PreparedStateFacts actualFacts = actual ? inspect_prepared_state(*actual) : PreparedStateFacts{};
             const RenderRecipe& expected = reverse ? nativeComparisonA.recipe : nativeComparisonB.recipe;
             const std::uint64_t firstBuild = printRoute
                                                  ? (first.printState ? first.printState->buildCounter : 0)
@@ -1545,11 +1549,11 @@ namespace {
             results.record(
                 std::string(name) + (reverse ? "/B-to-A" : "/A-to-B"),
                 freshDiffer && firstBuild != 0 && destinationBuild > firstBuild &&
-                    actual && actual->hash == expected.hash &&
-                    actual->filmRaw.hash == expected.filmRaw.hash &&
-                    actual->print.hash == expected.print.hash &&
+                    actual && actualFacts.recipeHash == expected.hash &&
+                    actualFacts.filmExposureHash == expected.filmRaw.hash &&
+                    actualFacts.printHash == expected.print.hash &&
                     (!signedZero ||
-                     float_bits(actual->filmRaw.manualExposureCompensationEv) ==
+                     float_bits(actualFacts.manualExposureCompensationEv) ==
                          float_bits(expected.filmRaw.manualExposureCompensationEv)),
                 destination.diagnostic);
         }
@@ -1824,6 +1828,7 @@ namespace {
         JuicerCudaTest::PreparedFrameFixture::FrameFacts frameFacts{};
         std::optional<ScatterHalationFrameDescriptor> scatterDescriptor;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
+        std::optional<Spektrafilm::SpatialDirDescriptor> spatialDirDescriptor;
         std::optional<bool> expectedScatterDescriptor;
     };
 
@@ -1834,13 +1839,24 @@ namespace {
         float pixelSizeUm,
         ScatterHalationValidation::ImageExtent extent,
         PreparedInputs& out,
-        std::string& diagnostic) {
+        std::string& diagnostic,
+        bool dirCouplersActive = true,
+        bool disableScannerPostEffects = false) {
         out = PreparedInputs{};
         ParamSnapshot snapshot;
         snapshot.scanRoute = route;
         snapshot.scatterHalationControls = scatterHalationControls;
         snapshot.cameraDiffusion = cameraDiffusion;
         snapshot.gateWeaveAmount = 0.0;
+        snapshot.dirCouplers.active = dirCouplersActive;
+        if (disableScannerPostEffects) {
+            snapshot.glareActive = false;
+            snapshot.glarePercent = 0.0;
+            snapshot.glareRoughness = 0.0;
+            snapshot.glareBlurSigmaPx = 0.0;
+            snapshot.scannerLensBlurSigmaPx = 0.0;
+            snapshot.scannerUnsharpMask = {0.0, 0.0};
+        }
         if (Spektrafilm::scan_route_metadata(route).capturePolarity ==
             Spektrafilm::ProfilePolarity::Positive) {
             snapshot.filmProfileKey = "fujifilm_provia_100f";
@@ -1887,7 +1903,8 @@ namespace {
                 diagnostic)) {
             return false;
         }
-        out.expectedScatterDescriptor = scatterHalation;
+        out.expectedScatterDescriptor =
+            inspect_prepared_state(*out.state).scatterHalationHash != 0;
         return true;
     }
 
@@ -1917,6 +1934,7 @@ namespace {
         auto& call = *static_cast<RootFrameCall*>(user);
         call.inputs->scatterDescriptor = prepared.descriptors.halation;
         call.inputs->diffusionFrameSet = prepared.descriptors.diffusion;
+        call.inputs->spatialDirDescriptor = prepared.descriptors.spatialDir;
         if (call.inputs->expectedScatterDescriptor &&
             call.inputs->scatterDescriptor.has_value() !=
                 *call.inputs->expectedScatterDescriptor) {
@@ -2668,19 +2686,35 @@ namespace {
                 JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
                     root,
                     fixture.context_key());
+            const std::string uploadSetupDiagnostic = diagnostic.diagnostic;
+            auto cuda_status_text = [](cudaError_t status) {
+                const char* const description = cudaGetErrorString(status);
+                return std::to_string(static_cast<int>(status)) + ":" +
+                       (description ? description : "unknown");
+            };
             results.record(
                 "prepared/pending-upload-queried",
                 pendingUploadFrame.active() && scanErrorFinalized &&
                     initialUploadQuery == cudaErrorNotReady &&
                     !outstandingUpload.self_released() &&
                     !outstandingUpload.release_failed(),
-                "a pinned upload into Root-owned prepared carrier storage is incomplete at the queried event");
+                "frame_active=" + std::to_string(pendingUploadFrame.active()) +
+                    " scan_error_prepared=" + std::to_string(scanErrorPrepared) +
+                    " upload_enqueued=" + std::to_string(uploadEnqueued) +
+                    " scan_error_finalized=" + std::to_string(scanErrorFinalized) +
+                    " completion_query=" + cuda_status_text(initialUploadQuery) +
+                    " self_released=" + std::to_string(outstandingUpload.self_released()) +
+                    " release_failed=" + std::to_string(outstandingUpload.release_failed()) +
+                    " setup_diagnostic=" + uploadSetupDiagnostic);
             results.record(
                 "prepared/last-legal-cpu-borrow",
                 finalCpuBorrow.active && borrowedScannerColorHash != 0 &&
                     borrowedScannerColorHash ==
                         pendingUploadFacts.scannerColorHash,
-                "focused CPU route objects are borrowed before prepared-frame finish");
+                "focused_active=" + std::to_string(finalCpuBorrow.active) +
+                    " scanner_color_hash=" + std::to_string(borrowedScannerColorHash) +
+                    " expected_scanner_color_hash=" +
+                    std::to_string(pendingUploadFacts.scannerColorHash));
             results.record(
                 "prepared/native-owner-ledger-before-finish",
                 beforePendingFinish.contextEntryPresent &&
@@ -2705,6 +2739,31 @@ namespace {
                     root,
                     fixture.context_key(),
                     pendingCarrierAddress);
+            std::ostringstream pendingFinishDetails;
+            pendingFinishDetails
+                << "finish=" << pendingFinished
+                << " frame_active=" << pendingUploadFrame.active()
+                << " completion_query=" << cuda_status_text(postExpiryUploadQuery)
+                << " self_released=" << outstandingUpload.self_released()
+                << " context_present=" << afterPendingFinish.contextEntryPresent
+                << " owner_present=" << afterPendingFinish.frameOwnerPresent
+                << " owner_use_count=" << afterPendingFinish.frameOwnerUseCount
+                << " native_allocations=" << afterPendingFinish.nativeAllocationCount
+                << " frame_use_events=" << afterPendingFinish.pendingFrameUseEventCount
+                << " readbacks=" << afterPendingFinish.pendingScanErrorReadbackCount
+                << " readback_owned=" << afterPendingFinish.pendingScanErrorReadbackOwned
+                << " readback_profile=" << afterPendingFinish.pendingScanErrorProfileKey
+                << " readback_epoch=" << afterPendingFinish.pendingScanErrorContextEpoch
+                << " context_epoch=" << afterPendingFinish.contextEpoch
+                << " readback_event_query="
+                << cuda_status_text(afterPendingFinish.pendingScanErrorEventQuery)
+                << " readback_value_ready=" << afterPendingFinish.pendingScanErrorValueReady
+                << " retire_queue=" << afterPendingFinish.retireQueueCount
+                << " retire_bytes=" << afterPendingFinish.retireBytes
+                << " retire_address_present=" << afterPendingFinish.expectedRetireAddressPresent
+                << " ledger_bytes=" << afterPendingFinish.ledger.chargedBytes
+                << " ledger_records=" << afterPendingFinish.contextLedgerRecordCount
+                << " finish_diagnostic=" << terminalDiagnostic.diagnostic;
             results.record(
                 "prepared/finish-retains-native-owner-until-event",
                 pendingFinished && !pendingUploadFrame.active() &&
@@ -2728,7 +2787,7 @@ namespace {
                     afterPendingFinish.contextLedgerRecordCount != 0 &&
                     postExpiryUploadQuery == cudaErrorNotReady &&
                     !outstandingUpload.self_released(),
-                terminalDiagnostic.diagnostic);
+                pendingFinishDetails.str());
             results.record(
                 "prepared/caller-storage-expired-with-owned-readback",
                 !pendingUploadInputs.has_value() &&
@@ -2738,7 +2797,15 @@ namespace {
                         expectedRetainedProfileKey &&
                     afterPendingFinish.pendingScanErrorContextEpoch != 0 &&
                     !outstandingUpload.self_released(),
-                "caller preparation storage expired while Root-owned readback identity and completion remained pending");
+                "inputs_expired=" + std::to_string(!pendingUploadInputs.has_value()) +
+                    " completion_query=" + cuda_status_text(postExpiryUploadQuery) +
+                    " self_released=" + std::to_string(outstandingUpload.self_released()) +
+                    " readback_owned=" +
+                    std::to_string(afterPendingFinish.pendingScanErrorReadbackOwned) +
+                    " readback_profile=" + afterPendingFinish.pendingScanErrorProfileKey +
+                    " expected_profile=" + expectedRetainedProfileKey +
+                    " readback_epoch=" +
+                    std::to_string(afterPendingFinish.pendingScanErrorContextEpoch));
 
             outstandingUpload.release();
             const bool uploadCompleted =
@@ -2762,7 +2829,10 @@ namespace {
                 "prepared/pending-upload-eventual-completion",
                 uploadCompleted && !outstandingUpload.self_released() &&
                     !outstandingUpload.release_failed(),
-                "queried upload completed within the finite timeout after release");
+                "upload_completed=" + std::to_string(uploadCompleted) +
+                    " completion_query=" + cuda_status_text(outstandingUpload.query()) +
+                    " self_released=" + std::to_string(outstandingUpload.self_released()) +
+                    " release_failed=" + std::to_string(outstandingUpload.release_failed()));
             results.record(
                 "prepared/owned-readback-eventual-completion",
                 uploadCompleted &&
@@ -2777,7 +2847,25 @@ namespace {
                     completedReadback.ledger.chargedBytes != 0 &&
                     completedReadback.contextLedgerRecordCount != 0 &&
                     !outstandingUpload.self_released(),
-                "production-owned scan-error staging completed with its retained value and identity within the finite timeout");
+                "upload_completed=" + std::to_string(uploadCompleted) +
+                    " readback_owned=" +
+                    std::to_string(completedReadback.pendingScanErrorReadbackOwned) +
+                    " readback_event_query=" +
+                    cuda_status_text(completedReadback.pendingScanErrorEventQuery) +
+                    " value_ready=" +
+                    std::to_string(completedReadback.pendingScanErrorValueReady) +
+                    " value=" + std::to_string(completedReadback.pendingScanErrorValue) +
+                    " profile=" + completedReadback.pendingScanErrorProfileKey +
+                    " expected_profile=" + expectedRetainedProfileKey +
+                    " readback_epoch=" +
+                    std::to_string(completedReadback.pendingScanErrorContextEpoch) +
+                    " context_epoch=" + std::to_string(completedReadback.contextEpoch) +
+                    " ledger_bytes=" +
+                    std::to_string(completedReadback.ledger.chargedBytes) +
+                    " ledger_records=" +
+                    std::to_string(completedReadback.contextLedgerRecordCount) +
+                    " self_released=" +
+                    std::to_string(outstandingUpload.self_released()));
         }
 
         terminalDiagnostic = {};
@@ -2794,6 +2882,17 @@ namespace {
             JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
                 root,
                 fixture.context_key());
+        std::ostringstream drainFailureDetails;
+        drainFailureDetails
+            << "fault_armed=" << failureInjected
+            << " retire_failed=" << controlledDrainFailed
+            << " diagnostic=" << terminalDiagnostic.diagnostic
+            << " context_present=" << afterControlledFailure.contextEntryPresent
+            << " owner_present=" << afterControlledFailure.frameOwnerPresent
+            << " native_allocations=" << afterControlledFailure.nativeAllocationCount
+            << " readbacks=" << afterControlledFailure.pendingScanErrorReadbackCount
+            << " ledger_bytes=" << afterControlledFailure.ledger.chargedBytes
+            << " ledger_records=" << afterControlledFailure.contextLedgerRecordCount;
         results.record(
             "prepared/controlled-drain-failure-retains-ownership",
             controlledDrainFailed &&
@@ -2806,7 +2905,7 @@ namespace {
                 afterControlledFailure.pendingScanErrorReadbackCount != 0 &&
                 afterControlledFailure.ledger.chargedBytes != 0 &&
                 afterControlledFailure.contextLedgerRecordCount != 0,
-            terminalDiagnostic.diagnostic);
+            drainFailureDetails.str());
 
         JuicerProcess::TestSupport::clear_context_drain_failure();
         terminalDiagnostic = {};
@@ -3043,49 +3142,112 @@ namespace {
         const ScatterHalationControls zeroControls = convert_or_throw(
             ScatterHalationRawControls{true, 0.0, 1.0, 0.0, 1.0});
         const Spektrafilm::DiffusionFilterAuthoredControls noDiffusion{};
-        for (const Spektrafilm::ScanRoute route :
-             {Spektrafilm::ScanRoute::NegativeDirectScan,
-              Spektrafilm::ScanRoute::NegativePrintScan}) {
+        const std::array routes{
+            Spektrafilm::ScanRoute::NegativeDirectScan,
+            Spektrafilm::ScanRoute::NegativePrintScan};
+        struct ZeroWorkVariant {
+            const char* name;
+            bool dirCouplersActive;
+        };
+        auto run_zero_work_case = [&](Spektrafilm::ScanRoute route,
+                                      const ZeroWorkVariant& variant) {
             PreparedInputs inputs;
             diagnostic = {};
-            const bool initialized = initialize_route_inputs(
-                route,
-                zeroControls,
-                noDiffusion,
-                10.0f,
-                {kWidth, kHeight},
-                inputs,
-                diagnostic.diagnostic);
-            if (!initialized) {
+            if (!initialize_route_inputs(
+                    route,
+                    zeroControls,
+                    noDiffusion,
+                    10.0f,
+                    {kWidth, kHeight},
+                    inputs,
+                    diagnostic.diagnostic,
+                    variant.dirCouplersActive,
+                    true)) {
                 results.record(
-                    std::string("zero-work/") +
+                    std::string("zero-work/") + variant.name + "/" +
                         Spektrafilm::scan_route_key(route),
                     false,
                     diagnostic.diagnostic);
-                continue;
+                return;
             }
+            inputs.expectedScatterDescriptor =
+                inspect_prepared_state(*inputs.state).scatterHalationHash != 0;
             auto frame = fixture.prepare_frame(
                 inputs, {kWidth, kHeight}, fixture.stream_opaque(), diagnostic);
             const auto view = frame.scatter_halation_resources();
             const auto workspace = frame.workspace_lease();
-            bool passed =
-                inspect_prepared_state(*inputs.state).scatterHalationHash == 0 &&
-                !inputs.scatterDescriptor && frame.active() &&
-                !workspace.active() && !view.descriptor &&
-                !view.filterTemp && !view.weightedAccumulation &&
-                !view.currentCarrier.redSensitive &&
-                !view.currentCarrier.greenSensitive &&
-                !view.currentCarrier.blueSensitive;
+            const auto stateFacts = inspect_prepared_state(*inputs.state);
+            const bool frameWasActive = frame.active();
+            const bool workspaceWasActive = workspace.active();
+            const bool spatialDirDescriptorPresent =
+                inputs.spatialDirDescriptor.has_value();
+            const std::uint64_t spatialDirDescriptorHash =
+                spatialDirDescriptorPresent ? inputs.spatialDirDescriptor->hash : 0;
+            // Root derives the workspace request from this descriptor; this fixture does not execute DIR.
+            const bool workspaceRequestAttributedToSpatialDir =
+                workspaceWasActive && stateFacts.dirRecipeHash != 0 &&
+                spatialDirDescriptorHash != 0 &&
+                inputs.spatialDirDescriptor->dirRecipeHash == stateFacts.dirRecipeHash;
+            const bool scatterDescriptorPresent = view.descriptor != nullptr;
+            const bool filterTempPresent = view.filterTemp != nullptr;
+            const bool weightedAccumulationPresent = view.weightedAccumulation != nullptr;
+            const bool carrierRedPresent = view.currentCarrier.redSensitive != nullptr;
+            const bool carrierGreenPresent = view.currentCarrier.greenSensitive != nullptr;
+            const bool carrierBluePresent = view.currentCarrier.blueSensitive != nullptr;
+            const bool noHalationResources =
+                stateFacts.scatterHalationHash == 0 &&
+                !inputs.scatterDescriptor && frameWasActive &&
+                !scatterDescriptorPresent && !filterTempPresent &&
+                !weightedAccumulationPresent && !carrierRedPresent &&
+                !carrierGreenPresent && !carrierBluePresent;
+            const bool workspaceMatchesVariant = variant.dirCouplersActive
+                                                     ? stateFacts.dirRecipeHash != 0 &&
+                                                           inputs.spatialDirDescriptor &&
+                                                           inputs.spatialDirDescriptor->hash != 0 &&
+                                                           workspaceWasActive &&
+                                                           workspaceRequestAttributedToSpatialDir
+                                                     : stateFacts.dirRecipeHash == 0 &&
+                                                           (!inputs.spatialDirDescriptor ||
+                                                            inputs.spatialDirDescriptor->hash == 0) &&
+                                                           !workspaceWasActive;
             JuicerCuda::Failure finishDiagnostic;
-            passed = frame.finish(
-                         fixture.stream_opaque(),
-                         finishDiagnostic) &&
-                     passed;
+            const bool finished = frame.finish(
+                fixture.stream_opaque(), finishDiagnostic);
             results.record(
-                std::string("zero-work/") +
+                std::string("zero-work/") + variant.name + "/" +
                     Spektrafilm::scan_route_key(route),
-                passed,
-                finishDiagnostic.diagnostic.empty() ? diagnostic.diagnostic : finishDiagnostic.diagnostic);
+                noHalationResources && workspaceMatchesVariant && finished,
+                "halation_hash=" + std::to_string(stateFacts.scatterHalationHash) +
+                    " descriptor_input=" +
+                    std::to_string(inputs.scatterDescriptor.has_value()) +
+                    " frame_active_before_finish=" + std::to_string(frameWasActive) +
+                    " frame_active_after_finish=" + std::to_string(frame.active()) +
+                    " scatter_descriptor=" + std::to_string(scatterDescriptorPresent) +
+                    " filter_temp=" + std::to_string(filterTempPresent) +
+                    " weighted_accumulation=" +
+                    std::to_string(weightedAccumulationPresent) +
+                    " carrier_red=" + std::to_string(carrierRedPresent) +
+                    " carrier_green=" + std::to_string(carrierGreenPresent) +
+                    " carrier_blue=" + std::to_string(carrierBluePresent) +
+                    " dir_hash=" + std::to_string(stateFacts.dirRecipeHash) +
+                    " spatial_dir_descriptor=" +
+                    std::to_string(spatialDirDescriptorPresent) +
+                    " spatial_dir_descriptor_hash=" +
+                    std::to_string(spatialDirDescriptorHash) +
+                    " workspace_active=" + std::to_string(workspaceWasActive) +
+                    " workspace_request_attributed_to_spatial_dir=" +
+                    std::to_string(workspaceRequestAttributedToSpatialDir) +
+                    " finished=" + std::to_string(finished) +
+                    " finish_diagnostic=" + finishDiagnostic.diagnostic);
+        };
+        const ZeroWorkVariant activeDir{"active-dir", true};
+        const ZeroWorkVariant allOtherWorkOff{"all-other-work-off", false};
+        for (const Spektrafilm::ScanRoute route :
+             routes) {
+            run_zero_work_case(route, activeDir);
+        }
+        for (const Spektrafilm::ScanRoute route : routes) {
+            run_zero_work_case(route, allOtherWorkOff);
         }
     }
 

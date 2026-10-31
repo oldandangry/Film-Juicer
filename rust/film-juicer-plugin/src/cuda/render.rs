@@ -11,11 +11,207 @@ use film_juicer_core::{
 
 use crate::asset_noise::NoiseOwner;
 
+#[cfg(feature = "test-support")]
+thread_local! {
+    static SHORT_NOISE_VIEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SHORT_NOISE_VIEW_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn set_short_noise_view(active: bool) {
+    SHORT_NOISE_VIEW.set(active);
+    SHORT_NOISE_VIEW_CONSUMED.set(false);
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn short_noise_view_consumed() -> bool {
+    SHORT_NOISE_VIEW_CONSUMED.get()
+}
+
+#[cfg(feature = "test-support")]
+fn shorten_noise_view(
+    mut view: crate::asset_noise::NoiseView<'_>,
+) -> crate::asset_noise::NoiseView<'_> {
+    if SHORT_NOISE_VIEW.replace(false) {
+        SHORT_NOISE_VIEW_CONSUMED.set(true);
+        // Corrupt only the call-local literal boundary input. The immutable
+        // validated source and its retained owner are unchanged.
+        view.stbn = &view.stbn[..view.stbn.len() - 1];
+    }
+    view
+}
+
 use super::{
     Abort, Frame, FramePolicy, OwnerBorrow, RenderError, RenderOutcome, SubmissionLatch,
     edge::{self, Failure},
     sys,
 };
+
+#[cfg(feature = "test-support")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct NoiseCallObservation {
+    pub sequence: u32,
+    pub precheck_order: u32,
+    pub acquisition_order: u32,
+    pub admission_order: u32,
+    pub inspection_order: u32,
+    pub release_order: u32,
+    pub complete_order: u32,
+    pub drop_order: u32,
+    pub native_render_order: u32,
+    pub acquisition_attempts: u32,
+    pub successful_results: u32,
+    pub preparation_failures: u32,
+    pub allocation_failures: u32,
+    pub internal_failures: u32,
+    pub held_at_complete: u32,
+    pub complete_calls: u32,
+    pub drops_after_complete: u32,
+    pub native_render_calls: u32,
+    pub arc_references_at_complete: usize,
+}
+
+#[cfg(feature = "test-support")]
+thread_local! {
+    static NOISE_CALL_OBSERVATION: std::cell::Cell<NoiseCallObservation> = const {
+        std::cell::Cell::new(NoiseCallObservation {
+            sequence: 0,
+            precheck_order: 0,
+            acquisition_order: 0,
+            admission_order: 0,
+            inspection_order: 0,
+            release_order: 0,
+            complete_order: 0,
+            drop_order: 0,
+            native_render_order: 0,
+            acquisition_attempts: 0,
+            successful_results: 0,
+            preparation_failures: 0,
+            allocation_failures: 0,
+            internal_failures: 0,
+            held_at_complete: 0,
+            complete_calls: 0,
+            drops_after_complete: 0,
+            native_render_calls: 0,
+            arc_references_at_complete: 0,
+        })
+    };
+}
+
+#[cfg(feature = "test-support")]
+fn observe_stage(stage: fn(&mut NoiseCallObservation, u32)) {
+    NOISE_CALL_OBSERVATION.with(|cell| {
+        let mut observation = cell.get();
+        observation.sequence += 1;
+        let order = observation.sequence;
+        stage(&mut observation, order);
+        cell.set(observation);
+    });
+}
+
+#[cfg(feature = "test-support")]
+fn order_precheck(observation: &mut NoiseCallObservation, order: u32) {
+    observation.precheck_order = order;
+}
+
+#[cfg(feature = "test-support")]
+fn order_admission(observation: &mut NoiseCallObservation, order: u32) {
+    observation.admission_order = order;
+}
+
+#[cfg(feature = "test-support")]
+fn order_inspection(observation: &mut NoiseCallObservation, order: u32) {
+    observation.inspection_order = order;
+}
+
+#[cfg(feature = "test-support")]
+fn order_release(observation: &mut NoiseCallObservation, order: u32) {
+    observation.release_order = order;
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn reset_noise_call_observation() {
+    NOISE_CALL_OBSERVATION.with(|cell| cell.set(NoiseCallObservation::default()));
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn noise_call_observation() -> NoiseCallObservation {
+    NOISE_CALL_OBSERVATION.with(std::cell::Cell::get)
+}
+
+#[cfg(feature = "test-support")]
+fn observe_complete(noise: Option<&Result<NoiseOwner, AssetError>>) {
+    NOISE_CALL_OBSERVATION.with(|cell| {
+        let mut observation = cell.get();
+        observation.complete_calls += 1;
+        if let Some(noise) = noise {
+            observation.held_at_complete += 1;
+            observation.arc_references_at_complete = match noise {
+                Ok(owner) => owner.arc_references(),
+                Err(AssetError::Noise(error)) => std::sync::Arc::strong_count(error),
+                Err(_) => 0,
+            };
+        }
+        observation.sequence += 1;
+        observation.complete_order = observation.sequence;
+        cell.set(observation);
+    });
+}
+
+#[cfg(feature = "test-support")]
+fn observe_native_render() {
+    NOISE_CALL_OBSERVATION.with(|cell| {
+        let mut observation = cell.get();
+        observation.native_render_calls += 1;
+        observation.sequence += 1;
+        observation.native_render_order = observation.sequence;
+        cell.set(observation);
+    });
+}
+
+#[cfg(feature = "test-support")]
+fn observe_noise_drop(dropped: bool) {
+    if dropped {
+        NOISE_CALL_OBSERVATION.with(|cell| {
+            let mut observation = cell.get();
+            observation.drops_after_complete += 1;
+            observation.sequence += 1;
+            observation.drop_order = observation.sequence;
+            cell.set(observation);
+        });
+    }
+}
+
+#[cfg(feature = "test-support")]
+fn observe_noise_attempt() {
+    NOISE_CALL_OBSERVATION.with(|cell| {
+        let mut observation = cell.get();
+        observation.acquisition_attempts += 1;
+        observation.sequence += 1;
+        observation.acquisition_order = observation.sequence;
+        cell.set(observation);
+    });
+}
+
+#[cfg(feature = "test-support")]
+fn observe_noise_result(result: &Result<NoiseOwner, AssetError>) {
+    NOISE_CALL_OBSERVATION.with(|cell| {
+        let mut observation = cell.get();
+        match result {
+            Ok(_) => observation.successful_results += 1,
+            Err(AssetError::Noise(error)) => {
+                match crate::asset_bridge::noise_category(error.kind()) {
+                    sys::FJ_STATUS_PREPARATION_FAILURE => observation.preparation_failures += 1,
+                    sys::FJ_STATUS_ALLOCATION_FAILURE => observation.allocation_failures += 1,
+                    _ => observation.internal_failures += 1,
+                }
+            }
+            Err(_) => observation.internal_failures += 1,
+        }
+        cell.set(observation);
+    });
+}
 
 struct CallGuard<'owner, 'call> {
     owner: &'owner mut OwnerBorrow<'call>,
@@ -52,8 +248,12 @@ impl<'owner, 'call> CallGuard<'owner, 'call> {
         if self.admitted {
             self.admitted = false;
             self.owner.release();
+            #[cfg(feature = "test-support")]
+            observe_stage(order_release);
         }
         self.completed = true;
+        #[cfg(feature = "test-support")]
+        observe_complete(self.noise.as_ref());
         self.owner.complete(&edge::FjCallCompletionInput {
             outcome,
             diagnostic: sys::FjStringView {
@@ -88,7 +288,12 @@ impl<'owner, 'call> CallGuard<'owner, 'call> {
         let completion = self.complete(outcome, &diagnostic);
         // The no-throw native continuation has completed delivery and recovery.
         // A cached source/error may still retain its allocation after this clone.
-        drop(self.noise.take());
+        let dropped_noise = self.noise.take();
+        #[cfg(feature = "test-support")]
+        let had_noise = dropped_noise.is_some();
+        drop(dropped_noise);
+        #[cfg(feature = "test-support")]
+        observe_noise_drop(had_noise);
         if completion.outcome.status.category == sys::FJ_STATUS_SUCCESS
             || completion.outcome.status.category == sys::FJ_STATUS_CANCELLED
         {
@@ -127,11 +332,23 @@ impl<'owner, 'call> CallGuard<'owner, 'call> {
         };
         if state.is_some_and(|state| state.grain().active()) {
             self.owner.precheck()?;
-            self.noise = Some(assets.noise().map(NoiseOwner::new));
+            #[cfg(feature = "test-support")]
+            observe_stage(order_precheck);
+            #[cfg(feature = "test-support")]
+            observe_noise_attempt();
+            let noise = assets.noise().map(NoiseOwner::new);
+            #[cfg(feature = "test-support")]
+            observe_noise_result(&noise);
+            self.noise = Some(noise);
         }
         self.owner.admit()?;
         self.admitted = true;
-        self.inspected = Some(self.owner.inspect(frame)?);
+        #[cfg(feature = "test-support")]
+        observe_stage(order_admission);
+        let inspected = self.owner.inspect(frame);
+        #[cfg(feature = "test-support")]
+        observe_stage(order_inspection);
+        self.inspected = Some(inspected?);
         Ok(preview)
     }
 }
@@ -148,7 +365,12 @@ impl Drop for CallGuard<'_, '_> {
                 "prepared render unwound",
             );
         }
-        // Fields drop after release and completion, including an unwind fallback.
+        let dropped_noise = self.noise.take();
+        #[cfg(feature = "test-support")]
+        let had_noise = dropped_noise.is_some();
+        drop(dropped_noise);
+        #[cfg(feature = "test-support")]
+        observe_noise_drop(had_noise);
     }
 }
 
@@ -296,6 +518,8 @@ pub(crate) fn render(
             Some(Err(error)) => return Err(noise_failure(error)),
             None => None,
         };
+        #[cfg(feature = "test-support")]
+        let noise = noise.map(shorten_noise_view);
         let prepared = super::projection::host_data(
             state,
             &policy.raw().optics,
@@ -305,6 +529,8 @@ pub(crate) fn render(
         )
         .map_err(|diagnostic| Failure::new(sys::FJ_STATUS_PREPARATION_FAILURE, diagnostic))?;
         let host_preparation = super::host_preparation::Call::new();
+        #[cfg(feature = "test-support")]
+        observe_native_render();
         Ok(guard.owner.execute(
             &context,
             frame,

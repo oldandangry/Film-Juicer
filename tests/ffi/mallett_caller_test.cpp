@@ -117,7 +117,8 @@ namespace {
         return out.status == (print ? PendingRenderAdmissionStatus::AdmittedPrint : PendingRenderAdmissionStatus::AdmittedDirect) && (print ? bool(out.printState) : bool(out.directState));
     }
     std::uint64_t recipe_hash(const PendingRenderAdmissionResult& out, bool print) {
-        return print ? out.printState->recipe.hash : out.directState->recipe.hash;
+        require(admitted(out, print), "published recipe has matching route hold");
+        return JuicerTestSupport::published_view(out).recipe_hash;
     }
     struct FaultScope {
         ~FaultScope() {
@@ -321,6 +322,7 @@ namespace {
                     auto old = admit_pending_render_state(state);
                     require(admitted(old, print), "initial admission");
                     const auto oldRecipe = recipe_hash(old, print), hash = state.lastHash.load(), counter = state.buildCounterNext.load();
+                    const auto retained = complete_result(JuicerTestSupport::published_view(old), 1);
                     arm_source(source.path);
                     pending(state, changed);
                     require(fj_test_exposure_arm_fault(3, 1, 1).category == FJ_STATUS_SUCCESS, "mid-gray fault armed");
@@ -330,7 +332,7 @@ namespace {
                     require(fj_test_exposure_fault_consumed(3, 1) == 0, "missing source skips Rust binding");
                     require(state.lastHash.load() == hash && state.buildCounterNext.load() == counter, "ordinary failure keeps hash/counter");
                     require(print ? !JuicerAtomic::load_shared_ptr(&state.activePrintState) : !JuicerAtomic::load_shared_ptr(&state.activeDirectState), "ordinary failure clears selected slot");
-                    require(recipe_hash(old, print) == oldRecipe, "already admitted hold survives");
+                    require(recipe_hash(old, print) == oldRecipe && complete_result(JuicerTestSupport::published_view(old), 1) == retained, "already admitted complete hold survives");
                     {
                         std::lock_guard<std::mutex> lock(state.pending.m);
                         const auto* current = std::get_if<PendingParamsState::Valid>(&state.pending.value);
@@ -345,7 +347,7 @@ namespace {
                     const auto reused = admit_pending_render_state(state);
                     require(reused.directState == recovered.directState && reused.printState == recovered.printState && state.buildCounterNext.load() == counter + 1, "same-input owner reuse");
                     require(JuicerProcess::root().assets().release_cached_payloads().category == FJ_STATUS_SUCCESS, "release source/profile cache");
-                    require(recipe_hash(old, print) == oldRecipe && recipe_hash(recovered, print) == recipe_hash(reused, print), "admitted holds survive cache release");
+                    require(recipe_hash(old, print) == oldRecipe && complete_result(JuicerTestSupport::published_view(old), 1) == retained && recipe_hash(recovered, print) == recipe_hash(reused, print), "admitted complete holds survive cache release");
                 }
                 for (std::uint32_t operation : {3u, 5u, 6u})
                     for (std::uint32_t fault : {1u, 2u, 4u}) {
@@ -368,20 +370,27 @@ namespace {
                         fj_test_exposure_clear_fault();
                         require(admitted(admit_pending_render_state(state), print), "typed-fault recovery");
                     }
-                for (int mode = 0; mode < 3; ++mode) {
-                    FaultScope cleanup;
-                    InstanceState state;
-                    pending(state, p);
-                    require(admitted(admit_pending_render_state(state), print), "supersession initial");
-                    Supersession selection{p, mode, false};
-                    pending(state, changed);
-                    set_pending_capture_test_hook(supersede, &selection);
-                    require(fj_test_exposure_arm_fault(3, 1, 1).category == FJ_STATUS_SUCCESS, "supersession fault arm");
-                    const auto next = admit_pending_render_state(state);
-                    require(selection.fired && fj_test_exposure_fault_consumed(3, 1) == 1, "obsolete attempt fault consumed before cleanup");
-                    require(mode == 0 ? admitted(next, print) : next.status == (mode == 1 ? PendingRenderAdmissionStatus::InvalidSnapshotControls : PendingRenderAdmissionStatus::NeedsSnapshotAcquisition), "supersession resolves current snapshot");
-                    set_pending_capture_test_hook(nullptr, nullptr);
-                }
+                for (bool sourceFailure : {false, true})
+                    for (int mode = 0; mode < 3; ++mode) {
+                        FaultScope cleanup;
+                        InstanceState state;
+                        pending(state, p);
+                        const auto held = admit_pending_render_state(state);
+                        require(admitted(held, print), "supersession initial");
+                        const auto retained = complete_result(JuicerTestSupport::published_view(held), 1);
+                        Supersession selection{p, mode, false};
+                        pending(state, changed);
+                        set_pending_capture_test_hook(supersede, &selection);
+                        if (sourceFailure)
+                            arm_source(sourceCases[0].path);
+                        else
+                            require(fj_test_exposure_arm_fault(3, 1, 1).category == FJ_STATUS_SUCCESS, "supersession fault arm");
+                        const auto next = admit_pending_render_state(state);
+                        require(selection.fired && (sourceFailure ? fj_test_mallett_source_consumed() == 1 : fj_test_exposure_fault_consumed(3, 1) == 1), "obsolete attempt fault consumed before cleanup");
+                        require(complete_result(JuicerTestSupport::published_view(held), 1) == retained, "supersession preserves admitted complete values");
+                        require(mode == 0 ? admitted(next, print) : next.status == (mode == 1 ? PendingRenderAdmissionStatus::InvalidSnapshotControls : PendingRenderAdmissionStatus::NeedsSnapshotAcquisition), "supersession resolves current snapshot");
+                        set_pending_capture_test_hook(nullptr, nullptr);
+                    }
                 for (int earlier = 0; earlier < 3; ++earlier) {
                     FaultScope cleanup;
                     const auto& source = sourceCases[0];

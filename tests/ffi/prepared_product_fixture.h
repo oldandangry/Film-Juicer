@@ -15,6 +15,19 @@
 
 namespace JuicerTestSupport {
 
+    inline FjPreparedStateView published_view(const PendingRenderAdmissionResult& publication) {
+        const PreparedState* state = publication.printState ? &publication.printState->prepared : publication.directState ? &publication.directState->prepared
+                                                                                                                          : nullptr;
+        if (!state)
+            throw std::runtime_error("publication has no prepared state");
+        std::array<char, 2048> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        FjPreparedStateView view{};
+        if (state->view(view, error).category != FJ_STATUS_SUCCESS)
+            throw std::runtime_error(std::string(diagnostic.data(), std::min(error.length, diagnostic.size())));
+        return view;
+    }
+
     inline PreparedState prepare_product(const ParamSnapshot& snapshot) {
         auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
         if (assets == nullptr)

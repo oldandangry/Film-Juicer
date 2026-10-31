@@ -371,15 +371,15 @@ namespace OpticsTest {
             pending(baseline);
             const auto admitted = admit_pending_render_state(state);
             require(route % 2 ? bool(admitted.printState) : bool(admitted.directState), "complete optics publication on both polarities/routes");
-            const auto& held = route % 2 ? admitted.printState->recipe : admitted.directState->recipe;
-            const auto hash = held.hash;
+            const auto held = JuicerTestSupport::published_view(admitted);
+            const auto hash = held.recipe_hash;
             const auto counter = state.buildCounterNext.load();
             auto invalid = baseline;
             invalid.cameraDiffusion.active = false;
             invalid.cameraDiffusion.strength = invalidStrength;
             pending(invalid);
             const auto rejected = admit_pending_render_state(state);
-            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && !rejected.directState && !rejected.printState && rejected.diagnostic == "ResourceDescriptorMismatch phase=6A component=camera_diffusion field=strength" && held.hash == hash && state.buildCounterNext.load() == counter, "disabled invalid camera blocks admission without partial publication or revoking held state");
+            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && !rejected.directState && !rejected.printState && rejected.diagnostic == "ResourceDescriptorMismatch phase=6A component=camera_diffusion field=strength" && held.recipe_hash == hash && state.buildCounterNext.load() == counter, "disabled invalid camera blocks admission without partial publication or revoking held state");
             pending(baseline);
             const auto recovered = admit_pending_render_state(state);
             require(route % 2 ? bool(recovered.printState) : bool(recovered.directState), "optics failure recovery");
@@ -400,19 +400,32 @@ namespace OpticsTest {
                 require(!success && diagnostic == "ResourceDescriptorMismatch phase=6A component=enlarger_diffusion field=family", "print domain validates enlarger family before finite controls");
             else {
                 const auto direct = admit_pending_render_state(state);
-                const auto& directRecipe = direct.directState->recipe;
-                require(success && directRecipe.spatialOptics.hash == held.spatialOptics.hash && hash_params(unused) != hash_params(baseline), "direct ignores enlarger policy while native authored snapshot still changes");
+                const auto directView = JuicerTestSupport::published_view(direct);
+                require(success && directView.optics.hash == held.optics.hash && hash_params(unused) != hash_params(baseline), "direct ignores enlarger policy while native authored snapshot still changes");
             }
             auto badInput = baseline;
             badInput.inputColorSpace = -1;
-            status(fj_test_film_recipe_fault(9, 2));
-            require(!build(badInput) && diagnostic == "UnsupportedMode phase=3B field=input_color_space", "input failure precedes optics and leaves its call-bounded fault unconsumed");
+            status(fj_test_prepared_optics_resolved_hash_fault());
+            const std::string bareInputDiagnostic = "UnsupportedMode phase=3B field=input_color_space";
+            require(!build(badInput) &&
+                        diagnostic == "RenderStateConstructionFailure category=UnsupportedInput route=" +
+                                          std::to_string(route) + " film=" + baseline.filmProfileKey +
+                                          " print=" + baseline.printProfileKey + " operation=" + bareInputDiagnostic,
+                    "actual admission preserves the unsupported-input category envelope and leaves optics fault pending");
+            std::array<char, 2048> rawDiagnosticText{};
+            FjErrorBuffer rawError{rawDiagnosticText.data(), rawDiagnosticText.size(), 0};
+            std::optional<PreparedState> rawProduct;
+            const auto rawStatus = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), badInput, rawProduct, rawError);
+            const std::string observedRawDiagnostic(rawDiagnosticText.data(), rawError.length);
+            require(rawStatus.category == FJ_STATUS_UNSUPPORTED_INPUT && rawStatus.api == FJ_API_NONE &&
+                        rawStatus.native_code == 0 && !rawProduct && observedRawDiagnostic == bareInputDiagnostic,
+                    "direct constructor retains the bare unsupported-input status and diagnostic without an owner");
             auto badGrain = baseline;
             badGrain.grainControls.active = true;
             badGrain.grainControls.particleAreaUm2 = 0;
             require(!build(badGrain) && diagnostic == "ResourceDescriptorMismatch phase=6A component=camera_diffusion field=resolved_hash", "actual optics guard precedes later grain construction");
             require(!build(badGrain) && diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain", "consumed optics fault permits the later grain failure");
-            require(held.hash == hash && fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "failures preserve publications and drain temporary construction holds");
+            require(held.recipe_hash == hash && fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "failures preserve publications and drain temporary construction holds");
         }
         std::puts("PASS 32 genuine optics products and four-route publication, ordering, recovery and identity contracts");
     }

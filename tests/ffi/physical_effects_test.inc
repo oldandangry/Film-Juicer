@@ -578,15 +578,15 @@ namespace {
             pending(params);
             const auto admitted = admit_pending_render_state(state);
             require(route % 2 ? bool(admitted.printState) : bool(admitted.directState), "effects publication baseline");
-            const auto& held = route % 2 ? admitted.printState->recipe : admitted.directState->recipe;
-            const auto hash = held.hash;
+            const auto held = JuicerTestSupport::published_view(admitted);
+            const auto hash = held.recipe_hash;
             const auto counter = state.buildCounterNext.load();
             auto changed = params;
             changed.gateWeaveAmount = 0.2;
             pending(changed);
-            status(fj_test_film_recipe_fault(8, 4));
+            status(fj_test_prepared_effects_probability_fault());
             const auto rejected = admit_pending_render_state(state);
-            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && rejected.diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy" && !rejected.directState && !rejected.printState && state.buildCounterNext.load() == counter && held.hash == hash, "effects guard failure publishes no partial route and preserves admitted holds");
+            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && rejected.diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy" && !rejected.directState && !rejected.printState && state.buildCounterNext.load() == counter && held.recipe_hash == hash, "effects guard failure publishes no partial route and preserves admitted holds");
             pending(params);
             const auto recovered = admit_pending_render_state(state);
             require(route % 2 ? bool(recovered.printState) : bool(recovered.directState), "effects publication recovers after consumed fault");
@@ -597,7 +597,7 @@ namespace {
             invalidGrain.grainControls.debugView = 3;
             invalidGrain.grainControls.particleAreaUm2 = 0;
             pending(invalidGrain);
-            status(fj_test_film_recipe_fault(8, 4));
+            status(fj_test_prepared_effects_probability_fault());
             const auto preceding = admit_pending_render_state(state);
             require(preceding.status == PendingRenderAdmissionStatus::RebuildFailed && preceding.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain", "required grain failure precedes effects suppression or injected guard");
             auto badDir = params;
@@ -606,7 +606,6 @@ namespace {
             pending(badDir);
             const auto blockedDir = admit_pending_render_state(state);
             require(blockedDir.status == PendingRenderAdmissionStatus::RebuildFailed && blockedDir.diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy" && !blockedDir.directState && !blockedDir.printState, "unconsumed effects guard precedes competing DIR failure");
-            status(fj_test_film_recipe_fault(8, 0));
             require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "effects failures drain temporary development/DIR holds");
         }
         std::puts("PASS 92 genuine physical effects products across four routes");

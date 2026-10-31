@@ -586,14 +586,14 @@ namespace {
             pending(params);
             const auto admitted = admit_pending_render_state(state);
             require(route % 2 ? bool(admitted.printState) : bool(admitted.directState), "grain publication baseline");
-            const auto& held = route % 2 ? admitted.printState->recipe : admitted.directState->recipe;
-            const auto hash = held.hash;
+            const auto held = JuicerTestSupport::published_view(admitted);
+            const auto hash = held.recipe_hash;
             const auto counter = state.buildCounterNext.load();
             auto changed = params;
             changed.grainControls.particleAreaUm2 = 0;
             pending(changed);
             const auto rejected = admit_pending_render_state(state);
-            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && rejected.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain" && !rejected.directState && !rejected.printState && state.buildCounterNext.load() == counter && held.hash == hash, "ordinary grain failure never publishes partial state or revokes admitted holds");
+            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && rejected.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain" && !rejected.directState && !rejected.printState && state.buildCounterNext.load() == counter && held.recipe_hash == hash, "ordinary grain failure never publishes partial state or revokes admitted holds");
             pending(params);
             const auto recovered = admit_pending_render_state(state);
             require(route % 2 ? bool(recovered.printState) : bool(recovered.directState), "grain recovery");

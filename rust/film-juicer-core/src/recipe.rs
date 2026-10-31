@@ -20,6 +20,11 @@ const OUTPUT_KNEE: [f32; 3] = [0.95, 1.0, 1.6];
 pub mod testing {
     use std::cell::Cell;
 
+    use crate::assets::InputHull;
+    use crate::profile::FilmProfile;
+
+    type InputObserver = fn(&FilmProfile, Option<&InputHull>);
+
     #[derive(Clone, Copy)]
     #[repr(u32)]
     pub enum Stage {
@@ -51,6 +56,7 @@ pub mod testing {
     thread_local! {
         static TRACE: Cell<Trace> = const { Cell::new(Trace { stages: [0; 24], count: 0 }) };
         static ZERO_IDENTITY: Cell<Option<ZeroIdentity>> = const { Cell::new(None) };
+        static INPUT_OBSERVER: Cell<Option<InputObserver>> = const { Cell::new(None) };
     }
     #[derive(Clone, Copy, Eq, PartialEq)]
     pub enum ZeroIdentity {
@@ -59,6 +65,14 @@ pub mod testing {
     }
     pub fn arm_zero_identity(target: Option<ZeroIdentity>) {
         ZERO_IDENTITY.set(target);
+    }
+    pub fn set_input_observer(observer: Option<InputObserver>) {
+        INPUT_OBSERVER.set(observer);
+    }
+    pub(super) fn observe_input(profile: &FilmProfile, hull: Option<&InputHull>) {
+        if let Some(observer) = INPUT_OBSERVER.take() {
+            observer(profile, hull);
+        }
     }
     pub(super) fn identity(target: ZeroIdentity, value: u64) -> u64 {
         if ZERO_IDENTITY.get() == Some(target) {
@@ -235,8 +249,9 @@ pub enum PrepareError {
     LutDescriptor(scanner::LutDescriptorError),
     SpectralBoundary(spectral::BoundaryError),
     EqualEnergy(illuminant::EqualEnergyError),
-    ReferenceWhite(reconstruction::Error),
-    Tc(reconstruction::TcError),
+    Blackbody(illuminant::BlackbodyError),
+    ReferenceWhite(reconstruction::CheckedReferenceWhiteError),
+    Tc(reconstruction::CheckedTcError),
     MallettMidgray(exposure::BoundaryError),
     TcMidgray(exposure::BoundaryError),
     Reference(reference::Error),
@@ -289,8 +304,9 @@ impl fmt::Display for PrepareError {
             Self::LutDescriptor(error) => error.fmt(f),
             Self::SpectralBoundary(error) => error.fmt(f),
             Self::EqualEnergy(error) => error.fmt(f),
+            Self::Blackbody(error) => error.fmt(f),
             Self::ReferenceWhite(error) => error.fmt(f),
-            Self::Tc(error) => f.write_str(error.diagnostic()),
+            Self::Tc(error) => error.fmt(f),
             Self::MallettMidgray(error) => {
                 write!(
                     f,
@@ -901,9 +917,10 @@ fn profile_illuminant(
     kind: IlluminantKind,
 ) -> Result<Option<[f32; 81]>, PrepareError> {
     match kind {
-        IlluminantKind::Blackbody { temperature_kelvin } => {
-            Ok(Some(illuminant::blackbody(temperature_kelvin as f32)))
-        }
+        IlluminantKind::Blackbody { temperature_kelvin } => Ok(Some(
+            illuminant::checked_blackbody(temperature_kelvin as f32)
+                .map_err(PrepareError::Blackbody)?,
+        )),
         IlluminantKind::Named => named_illuminant(curves, label),
     }
 }
@@ -1005,7 +1022,7 @@ fn acquire_foundation(
             if params.hanatos2025_adaptation_window != 0
                 && let Some(white) = reference_white
             {
-                let prepared = reconstruction::reference_white(
+                let prepared = reconstruction::checked_reference_white(
                     source
                         .samples()
                         .try_into()
@@ -1017,10 +1034,15 @@ fn acquire_foundation(
                 );
                 reconstructed_white = match prepared {
                     Ok(white) => Some(white),
-                    Err(error @ reconstruction::Error::AllocationFailure) => {
-                        return Err(PrepareError::ReferenceWhite(error));
+                    Err(reconstruction::CheckedReferenceWhiteError::Reconstruction(
+                        error @ reconstruction::Error::AllocationFailure,
+                    )) => {
+                        return Err(PrepareError::ReferenceWhite(
+                            reconstruction::CheckedReferenceWhiteError::Reconstruction(error),
+                        ));
                     }
-                    Err(_) => None,
+                    Err(reconstruction::CheckedReferenceWhiteError::Reconstruction(_)) => None,
+                    Err(error) => return Err(PrepareError::ReferenceWhite(error)),
                 };
             }
             tc_source = Some(source);
@@ -1248,7 +1270,7 @@ fn complete_reconstruction(
         ReconstructionStorage::Mallett { basis, midgray }
     } else {
         let source = tc_source.expect("TC source acquired before composition");
-        let lut = reconstruction::build_tc_lut(reconstruction::Input {
+        let lut = reconstruction::build_tc_lut_checked(reconstruction::Input {
             spectra: source
                 .samples()
                 .try_into()
@@ -1277,7 +1299,7 @@ fn complete_reconstruction(
             *input.color().xyz_adapt(),
         );
         let raw_midgray_rgb =
-            reconstruction::sample_tc_lut(lut.samples(), xyz).map_err(PrepareError::Tc)?;
+            reconstruction::sample_tc_lut_checked(lut.samples(), xyz).map_err(PrepareError::Tc)?;
         let normalization =
             exposure::checked_tc_midgray(raw_midgray_rgb[1]).map_err(PrepareError::TcMidgray)?;
         ReconstructionStorage::Tc {
@@ -1485,6 +1507,8 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         None
     };
     let acquired = acquire_foundation(assets, params, film)?;
+    #[cfg(feature = "test-support")]
+    testing::observe_input(acquired.development.profile(), acquired.hull.as_deref());
     let film = acquired.development.profile();
     let calibration = selected_print
         .as_ref()
