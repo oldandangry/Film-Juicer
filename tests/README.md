@@ -139,6 +139,23 @@ also generates the diffusion reference header needed by its compiler consumer. I
 owns cumulative PR Debug quality and matching Release Rust quality. The original
 required check names aggregate all four child results and accept only success.
 
+Linux product and production-probe links retain static cuFFT. Test executables
+that exercise the native execution owner share the selected cuFFT runtime instead
+of embedding its kernel database in every binary. Narrow host and CUDA-operator
+tests retain only their actual library dependencies; ordinary and instrumented
+native objects still use their separate existing owners. CMake supplies the test
+runtime search path. Generic compile settings do not select CUDA libraries.
+
+`Ffi.Host.BuildArtifacts` checks the actual configured outputs. On Linux it
+verifies static product/probe symbols, shared test dependencies and resolved
+cuFFT provider identity, loading and version, plus the absence of cuFFT from
+narrow consumers. Both native platforms check that staged resources exactly
+match the product's runtime resource list and original bytes. The default Linux
+manifest covers two static links, 38 shared-runtime tests and 12 narrow binaries;
+optional sanitizer executables add their own shared-runtime consumers. Test
+resource staging excludes unconsumed artwork, generators and legacy payloads;
+original source resources and historical fixture provenance remain unchanged.
+
 Run each necessary platform/profile/package/feature combination once per stable
 relevant source, tool and configuration context. During editing, use the smallest
 owning checks; a stable leaf alone does not trigger the whole-product matrix.

@@ -37,15 +37,19 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements.txt
 
-      - name: Install GCC 13, Ninja, CUDA Toolkit 13.2, and LLVM object tools
+      - name: Install GCC 13, Ninja, CUDA 13.2 compiler and libraries, and LLVM object tools
         shell: bash
         run: |
           set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
           wget -qO "$RUNNER_TEMP/cuda-keyring.deb" \
             https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
           sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2 libcurand-dev-13-2
+          sudo apt-get install -y --no-install-recommends gcc-13 g++-13 ninja-build \
+            cuda-compiler-13-2 cuda-cudart-dev-13-2 cuda-cccl-13-2 \
+            cuda-driver-dev-13-2 libcufft-dev-13-2 libcurand-dev-13-2
           wget -qO "$RUNNER_TEMP/llvm-22.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
           gpg --dearmor --yes --output "$RUNNER_TEMP/llvm-22.gpg" "$RUNNER_TEMP/llvm-22.asc"
           sudo install -m 0644 "$RUNNER_TEMP/llvm-22.gpg" /usr/share/keyrings/llvm-22.gpg
@@ -85,8 +89,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
           cmake --preset linux-debug -DBUILD_TESTING=ON
           cmake --build --preset linux-debug
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
 
       - name: List and run Debug product, boundary, and corpus tests
         shell: bash
@@ -97,6 +105,19 @@ jobs:
           ctest --preset linux-debug -L "product|boundary|corpus" -LE gpu \
             --no-tests=error --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/host-junit.xml"
+
+      - name: Report Debug storage usage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
+          for directory in "$CUDAToolkit_ROOT" out/build/linux-debug; do
+            if [[ -d "$directory" ]]; then
+              du -sh "$directory"
+            fi
+          done
 
       - name: Select failed Debug control evidence
         if: always()
@@ -148,15 +169,19 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements.txt
 
-      - name: Install GCC 13, Ninja, CUDA Toolkit 13.2, and LLVM object tools
+      - name: Install GCC 13, Ninja, CUDA 13.2 compiler and libraries, and LLVM object tools
         shell: bash
         run: |
           set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
           wget -qO "$RUNNER_TEMP/cuda-keyring.deb" \
             https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
           sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2 libcurand-dev-13-2
+          sudo apt-get install -y --no-install-recommends gcc-13 g++-13 ninja-build \
+            cuda-compiler-13-2 cuda-cudart-dev-13-2 cuda-cccl-13-2 \
+            cuda-driver-dev-13-2 libcufft-dev-13-2 libcurand-dev-13-2
           wget -qO "$RUNNER_TEMP/llvm-22.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
           gpg --dearmor --yes --output "$RUNNER_TEMP/llvm-22.gpg" "$RUNNER_TEMP/llvm-22.asc"
           sudo install -m 0644 "$RUNNER_TEMP/llvm-22.gpg" /usr/share/keyrings/llvm-22.gpg
@@ -196,8 +221,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
           cmake --preset linux-release -DBUILD_TESTING=ON
           cmake --build --preset linux-release
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
 
       - name: List and run Release product and boundary tests
         shell: bash
@@ -208,6 +237,19 @@ jobs:
           ctest --preset linux-release -L "product|boundary" -LE gpu \
             --no-tests=error --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/out/validation/linux-release/host-junit.xml"
+
+      - name: Report Release storage usage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
+          for directory in "$CUDAToolkit_ROOT" out/build/linux-release; do
+            if [[ -d "$directory" ]]; then
+              du -sh "$directory"
+            fi
+          done
 
       - name: Select failed Release control evidence
         if: always()
@@ -263,15 +305,19 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements.txt
 
-      - name: Install GCC 13, Ninja, CUDA Toolkit 13.2, and LLVM 22
+      - name: Install GCC 13, Ninja, CUDA 13.2 compiler and libraries, and LLVM 22
         shell: bash
         run: |
           set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
           wget -qO "$RUNNER_TEMP/cuda-keyring.deb" \
             https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
           sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2 libcurand-dev-13-2
+          sudo apt-get install -y --no-install-recommends gcc-13 g++-13 ninja-build \
+            cuda-compiler-13-2 cuda-cudart-dev-13-2 cuda-cccl-13-2 \
+            cuda-driver-dev-13-2 libcufft-dev-13-2 libcurand-dev-13-2
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 22
@@ -305,17 +351,45 @@ jobs:
         shell: bash
         run: cmake --preset linux-debug -DBUILD_TESTING=ON
 
+      - name: Report storage before Debug analysis build
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
+
       - name: Build Debug analysis inputs
         shell: bash
         run: cmake --build --preset linux-debug --target juicer_analysis_inputs
+
+      - name: Report storage after Debug analysis build
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
 
       - name: Configure Release Rust inputs
         shell: bash
         run: cmake --preset linux-release -DBUILD_TESTING=ON
 
+      - name: Report storage before Release Rust build
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
+
       - name: Build Release Rust archive
         shell: bash
         run: cmake --build --preset linux-release --target juicer_rust_build
+
+      - name: Report storage after Release Rust build
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
 
       - name: Run cumulative Debug native, CUDA, and Rust quality
         shell: bash
@@ -335,6 +409,19 @@ jobs:
         run: |
           set -euo pipefail
           python -u scripts/check-quality.py --files Cargo.toml --preset linux-release
+
+      - name: Report analysis storage usage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          df -i / "$GITHUB_WORKSPACE"
+          for directory in "$CUDAToolkit_ROOT" out/build/linux-debug out/build/linux-release; do
+            if [[ -d "$directory" ]]; then
+              du -sh "$directory"
+            fi
+          done
 
       - name: Select failed analysis control evidence
         if: always()

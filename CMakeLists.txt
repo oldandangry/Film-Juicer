@@ -63,7 +63,8 @@ include(cmake/JuicerRust.cmake)
 add_library(juicer_settings INTERFACE)
 target_include_directories(juicer_settings INTERFACE
     "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/native")
-target_link_libraries(juicer_settings INTERFACE juicer_dependencies)
+target_include_directories(juicer_settings SYSTEM INTERFACE
+    "${PROJECT_SOURCE_DIR}/third_party" ${CUDAToolkit_INCLUDE_DIRS})
 target_compile_definitions(juicer_settings INTERFACE
     JUICER_DIAGNOSTICS_COMPILED=$<IF:$<CONFIG:Debug>,1,0>)
 if(WIN32)
@@ -117,7 +118,7 @@ target_link_libraries(juicer_core PUBLIC juicer_settings juicer_ofx_headers film
 set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 
 add_library(juicer MODULE src/main.cpp)
-target_link_libraries(juicer PRIVATE juicer_core juicer_ofxs)
+target_link_libraries(juicer PRIVATE juicer_core juicer_ofxs juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
@@ -132,16 +133,18 @@ endif()
 
 add_executable(JuicerProductionPreparedRenderProbe EXCLUDE_FROM_ALL
     tests/ffi/production-prepared-render.cpp src/main.cpp)
-target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE juicer_core juicer_ofxs CUDA::cuda_driver)
+target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE
+    juicer_core juicer_ofxs juicer_dependencies CUDA::cuda_driver)
 set_target_properties(JuicerProductionPreparedRenderProbe PROPERTIES
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
 if(UNIX)
     set_property(TARGET JuicerProductionPreparedRenderProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 
+include(cmake/JuicerBundle.cmake)
+
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
 include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
-include(cmake/JuicerBundle.cmake)
