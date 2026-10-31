@@ -227,6 +227,7 @@ namespace JuicerAssets {
                                                                 const std::string& illuminant,
                                                                 const std::string& filmStock);
         Spektrafilm::ProfileCatalog load_catalog();
+        FjStatus film_defaults(const std::string& key, FjFilmDigest& out, FjErrorBuffer& error);
         std::shared_ptr<const Profiles::FilmProfile> film(const std::string& key);
         std::shared_ptr<const FilmSource> film_source(const std::string& key);
         std::shared_ptr<const PrintProfileSource> print(const std::string& key);

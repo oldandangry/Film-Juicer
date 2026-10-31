@@ -26,9 +26,9 @@
 #include "print_illuminant_fixture.h"
 #include "exposure_fixture.h"
 #include "juicer_cuda_owner.h"
+#include "spectral_source_fixture.h"
 
 extern "C" int fj_test_spectral_preparation_abi_c(void);
-void fj_test_spectral_products(const nlohmann::json&, const std::filesystem::path&, const std::filesystem::path&, bool, void (*)(const nlohmann::json&));
 void fj_test_spectral_native_allocation(const nlohmann::json&);
 namespace {
     using Json = nlohmann::json;
@@ -323,7 +323,7 @@ int main(int argc, char** argv) {
         else if (group == "edge" && argc == 5)
             edge(fixture, argv[3]);
         else if ((group == "products" || group == "admission") && argc == 5)
-            fj_test_spectral_products(fixture, argv[3], argv[4], group == "admission", fj_test_spectral_native_allocation);
+            fj_test_spectral_products(fixture, {.resources = argv[3], .scratch = argv[4]}, group == "admission", fj_test_spectral_native_allocation);
         else
             throw std::runtime_error("unknown spectral group");
         std::puts("PASS spectral frozen native values/contract");

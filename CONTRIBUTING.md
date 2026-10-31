@@ -263,8 +263,30 @@ python -B scripts/verify.py prepare --preset linux-release --targets JuicerFilmR
 ```
 
 Run through the qualified native environment at the configured source path.
-Maintained targets are `juicer`, `JuicerFilmRecipeTests`, `JuicerRouteBridgeTests`,
-`JuicerOutputColorTests`, and explicitly requested `all` by itself. Use `all` alone
+Maintained targets are `juicer`, `juicer_analysis_inputs`, the closed test target
+set below, and explicitly requested `all` by itself:
+
+- Prepared/render: `JuicerPreparedStateTests`, `JuicerPreparedProjectionTests`,
+  `JuicerPreparedBoundaryProbe`, `JuicerExecutorFailureOrderProbe`,
+  `JuicerProcessorReferenceProbe`, `JuicerAdapterTraceProbe`.
+- Isolated/archive: `JuicerCudaAbiTests`, `JuicerProfileOwnerTests`,
+  `JuicerSpectralOwnerTests`, `JuicerRouteBridgeTests`.
+- Product/literal: `JuicerFilmRecipeTests`, `JuicerOutputColorTests`,
+  `JuicerProductionProfileOwnerTests`, `JuicerColorPreparationTests`,
+  `JuicerFilmInputTests`, `JuicerFilmDevelopmentTests`,
+  `JuicerExposurePreparationTests`, `JuicerSpectralPreparationTests`,
+  `JuicerMallettExposureTests`, `JuicerAssetLookupTests`.
+- Resources: `JuicerGaussianKernelTests`, `JuicerScannerLutResourceTests`, `JuicerScannerOutputTests`,
+  `JuicerGrainScratchTests`, `JuicerDirExposureCacheTests`, `JuicerPinnedUploadTests`.
+- Assets/retention: `JuicerCatalogOwnerTests`, `JuicerIlluminantCalibrationTests`,
+  `JuicerSpectralBootstrapTests`, `JuicerInputHullTests`,
+  `JuicerOutputGamutCacheTests`, `JuicerTcLutTests`, `JuicerTcLutLifetimeTests`.
+- CUDA lifetime: `JuicerCudaTerminalTests`, `JuicerDeferredDestroyTests`,
+  `JuicerCudaOwnerTests`, `JuicerCudaFailureTests`, `JuicerCudaInspectTests`,
+  `JuicerCudaInspectGpuTests`, `JuicerCudaOwnerUnloadTests`,
+  `JuicerScatterHalationGpuTests`.
+
+This is an exact name set, not a prefix rule or object-library selector. Use `all` alone
 only for a stated affected dependency or checkpoint reason; unsupported selectors
 never widen to it automatically. Testing defaults to ON;
 OFF requires a Release preset and `juicer` or `all`. Each invocation reconfigures
@@ -278,6 +300,15 @@ cannot substitute for an admitted evidence receipt. Other pending target scopes
 must first be resolved by their preparation owner; normal same-scope interruption
 recovery still requires sealed drainage proof.
 
+Testing-OFF preparation expands the validated `juicer` or `all` request with
+`JuicerProductionPreparedRenderProbe`, using the effective sorted target set
+for its ownership, command and artifact closure. The excluded root target links
+the ordinary production archive and exercises direct/print cold and warm renders.
+It is not an additional logical ON selector. Production qualification executes
+and retains the already-prepared binary, outputs and accepted fixture identities;
+it does not build that target. Both Release OFF closures must complete before
+their matching testing-ON restoration at the S4E integration checkpoint.
+
 The one-time `retire-s4c1-pending --preset linux-debug|linux-release` command
 implements the owner's 21 October 2026 amendment for exactly two retained legacy
 markers. It requires the exact source/build paths, marker bytes, pinned retained
@@ -289,6 +320,15 @@ is a separate command. It does not change historical results or authorize other
 legacy recovery; changed, unknown, undrained or active records and blocked or
 hard-death leases remain rejected. Remove this exceptional entry after the two
 dispositions have been reviewed and retained; it is not a force switch.
+
+The one-time `retire-s4e-aborted-owner --preset linux-debug|windows-clang-debug`
+command applies the owner's 29 October amendment to two exact completed-owner
+metadata records left without producer receipts after rollback. It requires the
+named native tree, pinned record bytes, absent producer and healthy normal lease;
+the current Linux pending preparation must retain its sealed normal recovery proof.
+It preserves the original record as `retired-unqualified` and changes no artifact,
+cache, lock or pending marker. Historical drainage remains unavailable. Fresh
+preparation and qualification are separate; this is no general recovery command.
 
 Normal Rust edits use Cargo incrementally. A content edit with restored/stale
 timestamps uses supported Cargo cleaning only for affected packages, reverse

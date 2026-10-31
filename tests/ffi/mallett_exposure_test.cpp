@@ -23,6 +23,7 @@
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
 #include "print_illuminant_fixture.h"
+#include "spectral_source_fixture.h"
 
 #define FJ_MALLETT_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
 #define FJ_MALLETT_FIELD(type, field, offset) static_assert(offsetof(type, field) == offset);
@@ -33,7 +34,7 @@ extern "C" int fj_test_mallett_exposure_abi_c(const FjMallettMidgrayInput*, FjMa
 
 extern "C" int fj_test_spectrum_abi_c(const FjHanatosSpectrumInput*, FjSpectrumFixture*, const FjTablesSpectrumInput*, FjSpectrumFixture*, const FjMallettRawInput*, float*, FjErrorBuffer*);
 
-void fj_test_mallett_callers(const std::filesystem::path&, const nlohmann::json&, const std::filesystem::path&, bool);
+void fj_test_mallett_callers(const std::filesystem::path&, const nlohmann::json&, const std::filesystem::path&, bool, const std::filesystem::path&);
 
 namespace {
     using Json = nlohmann::json;
@@ -233,8 +234,8 @@ namespace {
         exact<81>(actual.spectrum, expected.at("spectrum"));
     }
     void spectra(const Json& fixture, const std::filesystem::path& resources) {
-        JuicerAssets::AssetBridge assets(resources);
-        const auto source = assets.copy_hanatos_lut();
+        const JuicerTestSupport::SpectralSourceAssets assets(resources);
+        const JuicerTestSupport::HanatosSource source(assets.get());
         Diagnostic error;
         const auto ax = decode<81>(fixture.at("helper_tables").at("ax")), ay = decode<81>(fixture.at("helper_tables").at("ay")), az = decode<81>(fixture.at("helper_tables").at("az"));
         const auto sInverse = decode<9>(fixture.at("helper_s_inv"));
@@ -252,7 +253,7 @@ namespace {
         bool checkFaults = true;
         for (const auto& row : fixture.at("helpers")) {
             const auto rgb = decode<3>(row.at("rgb")), white = decode<3>(row.at("reference_white"));
-            const FjHanatosSpectrumInput hanatos{{rgb[0], rgb[1], rgb[2]}, {white[0], white[1], white[2]}, {source.data.data(), source.data.size()}};
+            const FjHanatosSpectrumInput hanatos{{rgb[0], rgb[1], rgb[2]}, {white[0], white[1], white[2]}, source.view().samples};
             FjTablesSpectrumInput tables{{rgb[0], rgb[1], rgb[2]}, {white[0], white[1], white[2]}, {}, {ax.data(), 81}, {ay.data(), 81}, {az.data(), 81}};
             std::copy(sInverse.begin(), sInverse.end(), tables.s_inverse);
             FjSpectrumFixture hanatosOut{}, tablesOut{};
@@ -435,16 +436,16 @@ namespace {
 } // namespace
 int main(int argc, char** argv) {
     try {
-        require(argc == 4 || argc == 5 || argc == 7, "manifest preset numerical|boundary|products|admission|spectra [resources fixtures]");
+        require(argc == 4 || argc == 5 || argc == 6 || argc == 7, "manifest preset numerical|boundary|products|admission|spectra [resources artifacts fixtures]");
         const std::filesystem::path manifestPath(argv[1]);
         std::ifstream stream(manifestPath);
         const auto manifest = Json::parse(stream);
         std::ifstream values(manifestPath.parent_path() / manifest.at("presets").at(argv[2]).at("numerical").get<std::string>());
         const auto fixture = Json::parse(values);
-        if ((std::string(argv[3]) == "products" || std::string(argv[3]) == "admission") && argc == 5) {
+        if ((std::string(argv[3]) == "products" || std::string(argv[3]) == "admission") && argc == 6) {
             std::ifstream productFile(manifestPath.parent_path() / manifest.at("presets").at(argv[2]).at("products").get<std::string>());
             const auto products = PrintIlluminantFixtures::apply(manifestPath.parent_path() / manifest.at("presets").at(argv[2]).at("products").get<std::string>(), Json::parse(productFile));
-            fj_test_mallett_callers(argv[4], products, manifestPath.parent_path() / "mallett-failure-contract.json", std::string(argv[3]) == "admission");
+            fj_test_mallett_callers(argv[4], products, manifestPath.parent_path() / "mallett-failure-contract.json", std::string(argv[3]) == "admission", argv[5]);
         } else if (std::string(argv[3]) == "numerical")
             numerical(fixture);
         else if (std::string(argv[3]) == "spectra" && argc == 7) {

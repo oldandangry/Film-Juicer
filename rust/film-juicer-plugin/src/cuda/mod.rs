@@ -8,6 +8,33 @@
 )]
 pub(super) mod sys;
 
+#[allow(
+    unsafe_code,
+    reason = "the held-render edge admits foreign storage and dispatches synchronous scoped callbacks"
+)]
+pub(crate) mod edge;
+
+mod frame;
+mod frame_policy;
+#[allow(
+    unsafe_code,
+    reason = "call-local scanner and Gaussian candidates back the synchronous native preparation callbacks"
+)]
+mod host_preparation;
+mod projection;
+mod render;
+
+pub(crate) use edge::{
+    Abort, Frame, FramePolicy, OwnerBorrow, RenderError, RenderOutcome, SubmissionLatch,
+};
+pub(crate) use render::render;
+
+#[cfg(feature = "test-support")]
+pub(crate) use render::{
+    NoiseCallObservation, noise_call_observation, reset_noise_call_observation,
+    set_short_noise_view, short_noise_view_consumed,
+};
+
 #[cfg(any(test, feature = "test-support"))]
 #[allow(
     unsafe_code,

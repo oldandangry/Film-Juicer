@@ -271,7 +271,8 @@ namespace JuicerCuda {
         ResourceManager::SubmissionSnapshot& snapshot,
         PendingContextLossRecovery& recovery,
         FjAbortCallback abortCallback,
-        std::string& diagnostic) {
+        std::string& diagnostic,
+        const FjHostPreparation* hostPreparation) {
         diagnostic.clear();
         PreparedDescriptors descriptors;
         if (!decode_prepared_descriptors(source, descriptors, diagnostic) || !validate_spans(source, diagnostic) ||
@@ -370,7 +371,7 @@ namespace JuicerCuda {
             printExposure.printExposure = source.print.exposure;
             printExposure.preflashExposure = source.print.preflash_exposure;
         }
-        execute_prepared({preparation, descriptors, film, exposure.route_correction_scale, printExposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot}, recovery, abortCallback);
+        execute_prepared({preparation, descriptors, film, exposure.route_correction_scale, printExposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot, hostPreparation}, recovery, abortCallback);
         return true;
     }
 

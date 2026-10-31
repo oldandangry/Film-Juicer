@@ -61,12 +61,18 @@ impl Color {
         if output.hash() == 0 {
             return Err(ColorError::Output);
         }
-        #[cfg(feature = "test-support")]
-        crate::film::input::testing::color_fault(3).map_err(|_| ColorError::Cat02Boundary)?;
-        let cat02 = color::cat02_matrix(color::Whites {
+        let cat02 = match color::checked_cat02_matrix(color::Whites {
             source_xyz: input.illuminant_xyz,
             destination_xyz: *output.white_xyz(),
-        });
+        }) {
+            Ok(matrix) => matrix,
+            #[cfg(feature = "test-support")]
+            Err(color::CheckedError::UnsupportedInput) => {
+                return Err(ColorError::Cat02Boundary);
+            }
+            #[cfg(not(feature = "test-support"))]
+            Err(error) => match error {},
+        };
         let encoding = hash::u64s(&[
             u64::from(input.output_space),
             u64::from(input.apply_cctf),

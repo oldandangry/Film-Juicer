@@ -19,6 +19,48 @@ namespace ScannerDescriptorTest {
         const auto& base = print ? route.printProfile->data.baseDensity : route.filmProfile->data.baseDensity;
         return {{"mode", print ? 1 : 0}, {"route", static_cast<unsigned>(route.scanRoute)}, {"capture_polarity", static_cast<unsigned>(route.capturePolarity)}, {"bounds_medium", static_cast<unsigned>(bounds.medium)}, {"bounds_source", static_cast<unsigned>(bounds.source)}, {"output_medium", static_cast<unsigned>(output.medium)}, {"profile_present", missing != 4}, {"missing", missing}, {"density_bounds_hash", bounds.hash}, {"print_profile_token", route.printProfileAssetVersionToken}, {"print_profile_key", bytes(route.printProfileKey)}, {"channel_density_cmy", words(&channel[0][0], 243)}, {"base_density", words(base.data(), 81)}, {"viewing_illuminant", bytes(output.viewingIlluminant)}, {"profile_viewing_illuminant", bytes(print ? route.printProfile->info.viewingIlluminant.value : route.filmProfile->info.viewingIlluminant.value)}, {"observer_identity", bytes(observer)}, {"resolution", output.lutResolution}};
     }
+    Json prepared_input(const FjPreparedStateView& prepared, std::string_view observer) {
+        auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+        require(assets != nullptr, "prepared scanner descriptor has process Rust assets");
+        FjFilmProfile* filmOwner = nullptr;
+        FjPrintProfile* printOwner = nullptr;
+        const bool printing = prepared.route % 2 != 0;
+        status(fj_legacy_film_profile_acquire(assets, prepared.film_profile_key, &filmOwner, nullptr));
+        if (printing)
+            status(fj_legacy_print_profile_acquire(assets, prepared.print_profile_key, &printOwner, nullptr));
+        FjFilmProfileView film{};
+        FjPrintProfileView print{};
+        const auto filmStatus = fj_legacy_film_profile_view(filmOwner, &film, nullptr);
+        status(filmStatus);
+        if (printing)
+            status(fj_legacy_print_profile_view(printOwner, &print, nullptr));
+        require(film.asset_token == prepared.film_profile_asset_version &&
+                    (printing ? print.asset_token == prepared.print_profile_asset_version : prepared.print_profile_asset_version == 0),
+                "scanner descriptor source profiles match selected held-state asset versions");
+        const auto& tables = printing ? print.tables : film.tables;
+        const auto& viewing = printing ? print.viewing_illuminant.label : film.viewing_illuminant.label;
+        Json value{{"mode", printing ? 1 : 0},
+                   {"route", prepared.route},
+                   {"capture_polarity", prepared.polarity},
+                   {"bounds_medium", prepared.scanner_bounds.medium},
+                   {"bounds_source", prepared.scanner_bounds.source},
+                   {"output_medium", prepared.scanner_bounds.medium},
+                   {"profile_present", true},
+                   {"missing", 0},
+                   {"density_bounds_hash", prepared.scanner_bounds.hash},
+                   {"print_profile_token", prepared.print_profile_asset_version},
+                   {"print_profile_key", prepared.print_profile_key.count == 0 ? Json::array() : bytes(std::string(prepared.print_profile_key.data, prepared.print_profile_key.count))},
+                   {"channel_density_cmy", words(tables.channel_density_cmy.data, tables.channel_density_cmy.count)},
+                   {"base_density", words(tables.base_density.data, tables.base_density.count)},
+                   {"viewing_illuminant", bytes(std::string(viewing.data, viewing.count))},
+                   {"profile_viewing_illuminant", bytes(std::string(viewing.data, viewing.count))},
+                   {"observer_identity", bytes(std::string(observer))},
+                   {"resolution", prepared.scanner_lut.resolution}};
+        status(fj_legacy_film_profile_release(filmOwner, nullptr));
+        if (printOwner)
+            status(fj_legacy_print_profile_release(printOwner, nullptr));
+        return value;
+    }
     Json native(const Json& in) {
         auto film = std::make_shared<Profiles::FilmProfile>();
         auto print = std::make_shared<Profiles::PrintProfile>();
@@ -163,12 +205,15 @@ namespace ScannerDescriptorTest {
         Json rows = Json::array();
         for (unsigned r = 0; r < 4; ++r) {
             auto params = FilmReferenceTest::controls(1, static_cast<Spektrafilm::ScanRoute>(r), 0);
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            require(r % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic), diagnostic.c_str());
-            const auto& recipe = product.recipe;
-            const auto value = input(recipe.profileRoute, recipe.densityBounds, recipe.scannerOutput, "CIE1931_2deg", r % 2);
-            rows.push_back({{"route", r}, {"input", value}, {"native", native(value)}, {"snapshot_hash", hash_params(params)}, {"final_hash", recipe.hash}, {"scanner_hash", recipe.scannerOutput.hash}, {"upload_hash", product.payload.uploadCoreHash}});
+            std::array<char, 2048> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            std::optional<PreparedState> product;
+            const auto result = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), params, product, error);
+            require(result.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
+            FjPreparedStateView view{};
+            status(product->view(view, error));
+            const auto value = prepared_input(view, "CIE1931_2deg");
+            rows.push_back({{"route", r}, {"input", value}, {"native", native(value)}, {"snapshot_hash", hash_params(params)}, {"final_hash", view.recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"upload_hash", view.upload_core_hash}});
         }
         return rows;
     }
@@ -507,8 +552,88 @@ namespace ScannerDescriptorTest {
         JuicerCuda::Owner owner;
         owner.create(resources);
         JuicerProcess::root().ensure_bootstrap();
+        struct ClearReferenceFault {
+            ~ClearReferenceFault() {
+                fj_test_exposure_clear_fault();
+            }
+        } clearReferenceFault;
         for (unsigned r : {0u, 2u}) {
             auto controls = FilmReferenceTest::controls(1, static_cast<Spektrafilm::ScanRoute>(r), 0);
+
+            // The accepted construction path is the held Rust state. Arm an
+            // actual early scanner descriptor fault and the later reference
+            // source fault together: the first create must consume only the
+            // descriptor operation, and the next must reach the reference.
+            status(fj_test_exposure_arm_fault(5, 1, 1));
+            status(fj_test_scanner_lut_descriptor_fault(1));
+            std::array<char, 2048> message{};
+            FjErrorBuffer error{message.data(), message.size(), 0};
+            std::optional<PreparedState> prepared;
+            auto* const assets = JuicerProcess::root().assets().borrow_rust_assets();
+            auto preparedStatus = prepare_state(assets, controls, prepared, error);
+            require(preparedStatus.category == FJ_STATUS_PREPARATION_FAILURE && !prepared,
+                    "actual Rust owner rejects the early scanner descriptor fault");
+            require(std::string(message.data(), error.length) ==
+                        "ResourceDescriptorMismatch phase=3A scanner descriptor hash invalid",
+                    "actual Rust owner preserves the early descriptor diagnostic");
+            require(fj_test_exposure_fault_consumed(5, 1) == 0,
+                    "early scanner descriptor failure leaves later reference fault pending");
+            require(fj_test_film_development_live_owners() == 0,
+                    "failed Rust construction leaves no legacy development owner");
+
+            error.length = 0;
+            message[0] = 0;
+            preparedStatus = prepare_state(assets, controls, prepared, error);
+            require(preparedStatus.category == FJ_STATUS_UNSUPPORTED_INPUT && !prepared,
+                    "one-shot descriptor recovery reaches the later reference source fault");
+            require(std::string(message.data(), error.length) ==
+                        "Reference source preparation: exposure production boundary fault",
+                    "later reference source retains its exact diagnostic");
+            require(fj_test_exposure_fault_consumed(5, 1) == 1 &&
+                        fj_test_film_development_live_owners() == 0,
+                    "later source fault is consumed once without a leaked legacy owner");
+
+            error.length = 0;
+            message[0] = 0;
+            preparedStatus = prepare_state(assets, controls, prepared, error);
+            require(preparedStatus.category == FJ_STATUS_SUCCESS && prepared,
+                    "actual Rust state construction recovers after both one-shot faults");
+            FjPreparedStateView actual{};
+            status(prepared->view(actual, error));
+            const auto expected = native(prepared_input(actual, "CIE1931_2deg_380_780_5nm"));
+            require(expected.at("success").get<bool>() &&
+                        project(actual.scanner_lut) == expected.at("descriptor"),
+                    "actual held-state scanner descriptor matches the independent native composer");
+
+            const auto retainedDescriptor = project(actual.scanner_lut);
+            const auto originalBoundsHash = actual.scanner_bounds.hash;
+            auto changedControls = controls;
+            changedControls.filmProfileKey = r == 0 ? "kodak_portra_800" : "fujifilm_velvia_100";
+            std::optional<PreparedState> changed;
+            error.length = 0;
+            message[0] = 0;
+            preparedStatus = prepare_state(assets, changedControls, changed, error);
+            require(preparedStatus.category == FJ_STATUS_SUCCESS && changed,
+                    "actual Rust owner accepts the selected replacement profile");
+            FjPreparedStateView changedView{};
+            status(changed->view(changedView, error));
+            require(originalBoundsHash != changedView.scanner_bounds.hash &&
+                        actual.scanner_lut.density_bounds_hash !=
+                            changedView.scanner_lut.density_bounds_hash &&
+                        actual.scanner_lut.hash != changedView.scanner_lut.hash,
+                    "actual held-state profile change propagates its bound dependency through the scanner descriptor");
+            FjPreparedStateView retained{};
+            status(prepared->view(retained, error));
+            require(project(retained.scanner_lut) == retainedDescriptor,
+                    "held original Rust state keeps its descriptor readable after a distinct profile owner is constructed");
+            changed.reset();
+            prepared.reset();
+
+            // SF_TEMP_BRIDGE_NATIVE_PREPARED_WIRE: retain the pre-cutover
+            // native constructor/projection hook assertion until its I7/G2
+            // deletion gate. The Rust owner witness above is the accepted
+            // complete-state path; this block only preserves the old ordering
+            // comparison while that bridge remains in the target.
             FocusedRenderStateBuildProduct product;
             std::string diagnostic;
             FilmReferenceTest::observeHold = true;
@@ -523,12 +648,12 @@ namespace ScannerDescriptorTest {
             FilmReferenceTest::observeHold = false;
             const auto before = product.recipe.densityBounds.hash;
             controls.filmProfileKey = r == 0 ? "kodak_portra_800" : "fujifilm_velvia_100";
-            FocusedRenderStateBuildProduct changed;
-            require(build_direct_render_state_product(controls, changed, diagnostic), diagnostic.c_str());
-            require(before != changed.recipe.densityBounds.hash, "actual selected profile changes bound dependency");
+            FocusedRenderStateBuildProduct comparisonChanged;
+            require(build_direct_render_state_product(controls, comparisonChanged, diagnostic), diagnostic.c_str());
+            require(before != comparisonChanged.recipe.densityBounds.hash, "actual selected profile changes bound dependency");
             Scanner::ScannerSpectralLutDescriptor first, second;
             const auto& a = product.recipe;
-            const auto& b = changed.recipe;
+            const auto& b = comparisonChanged.recipe;
             require(Scanner::build_direct_scanner_spectral_lut_descriptor({&a.profileRoute, &a.densityBounds, &a.scannerOutput}, first, diagnostic) && Scanner::build_direct_scanner_spectral_lut_descriptor({&b.profileRoute, &b.densityBounds, &b.scannerOutput}, second, diagnostic), "actual dependency descriptors");
             require(first.densityBoundsHash != second.densityBoundsHash && first.hash != second.hash, "actual caller propagates upstream bound identity");
         }

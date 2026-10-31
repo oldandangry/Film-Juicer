@@ -14,10 +14,10 @@ add_library(juicer_prepared_sanitizer_objects OBJECT
 target_link_libraries(juicer_prepared_sanitizer_objects PRIVATE juicer_settings)
 add_executable(JuicerPreparedSanitizerTests ${JUICER_PREPARED_TEST_SOURCES}
     $<TARGET_OBJECTS:juicer_prepared_sanitizer_objects>)
-target_link_libraries(JuicerPreparedSanitizerTests PRIVATE juicer_core GTest::gtest_main)
+target_link_libraries(JuicerPreparedSanitizerTests PRIVATE juicer_test_core GTest::gtest_main)
 add_executable(JuicerPreparedSanitizerControl ffi/fixtures/sanitizer/control.cpp
     $<TARGET_OBJECTS:juicer_prepared_sanitizer_objects>)
-target_link_libraries(JuicerPreparedSanitizerControl PRIVATE juicer_core)
+target_link_libraries(JuicerPreparedSanitizerControl PRIVATE juicer_test_core)
 foreach(target IN ITEMS juicer_prepared_sanitizer_objects JuicerPreparedSanitizerTests JuicerPreparedSanitizerControl)
     target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=undefined)
     if(WIN32)
@@ -34,7 +34,6 @@ foreach(target IN ITEMS JuicerPreparedSanitizerTests JuicerPreparedSanitizerCont
         RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
     if(UNIX)
         target_link_options(${target} PRIVATE "$<HOST_LINK:-fsanitize=address>" "$<HOST_LINK:-fsanitize=undefined>")
-        set_property(TARGET ${target} PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
     endif()
 endforeach()
 

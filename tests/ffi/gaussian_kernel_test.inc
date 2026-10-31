@@ -29,46 +29,43 @@ namespace GaussianTest {
             p.dirCouplers.diffusionSizeUm = 20.0f;
             p.dirCouplers.diffusionTailUm = 200.0f;
             p.dirCouplers.diffusionTailWeight = 0.03f;
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            require(route % 2 ? build_print_render_state_product(p, product, diagnostic)
-                              : build_direct_render_state_product(p, product, diagnostic),
-                    diagnostic.c_str());
+            auto product = JuicerTestSupport::prepare_product(p);
+            FjPreparedStateView view{};
+            FjErrorBuffer viewError{};
+            status(product.view(view, viewError));
             const auto prefix = std::to_string(route) + "/";
-            Scanner::ScannerPostEffectsDescriptor post;
-            require(Scanner::build_scanner_post_effects_descriptor(product.recipe.scannerOutput, post, diagnostic), diagnostic.c_str());
-            rows.push_back(kernel_case(prefix + "scanner-lens", post.lensBlurRadius, post.lensBlurSigmaPx));
-            rows.push_back(kernel_case(prefix + "scanner-unsharp", post.unsharpRadius, post.unsharpSigmaPx));
-            rows.push_back(kernel_case(prefix + "scanner-glare", post.glareBlurRadius, post.glareBlurSigmaPx));
+            const auto& post = view.scanner_post_effects;
+            rows.push_back(kernel_case(prefix + "scanner-lens", post.lens_blur_radius, post.lens_blur_sigma_px));
+            rows.push_back(kernel_case(prefix + "scanner-unsharp", post.unsharp_radius, post.unsharp_sigma_px));
+            rows.push_back(kernel_case(prefix + "scanner-glare", post.glare_blur_radius, post.glare_blur_sigma_px));
             for (float pixelSize : cohort.at("products").at("pixel_size_um").get<std::vector<float>>()) {
                 const auto scale = prefix + std::to_string(pixelSize) + "/";
-                Spektrafilm::VisualGrainFrameDescriptorInput input;
-                input.recipe = &product.recipe.visualGrain;
-                input.filmDevelop = &product.recipe.filmDevelop;
-                input.capturePolarity = product.recipe.profileRoute.capturePolarity;
-                input.renderExtent = input.fullFrameExtent = {0, 0, 64, 48};
-                input.pixelSizeUm = pixelSize;
-                input.frameTime = 12.0;
-                input.frameRate = 24.0;
-                input.sessionSeed = 17;
-                input.clipToken = 23;
-                Spektrafilm::VisualGrainFrameDescriptor grain;
-                require(JuicerTestSupport::prepare_grain_frame(input, grain, diagnostic), diagnostic.c_str());
+                Json grainFrame{{"render_extent", {0, 0, 64, 48}}, {"full_frame_extent", {0, 0, 64, 48}}, {"pixel_size_um", std::bit_cast<std::uint32_t>(pixelSize)}, {"frame_time", std::bit_cast<std::uint64_t>(12.0)}, {"frame_rate", std::bit_cast<std::uint64_t>(24.0)}, {"session_seed", 17}, {"clip_token", 23}};
+                const auto rawGrain = GrainFrameTest::product_input(view, grainFrame);
+                FjGrainFrameMath grain{};
+                FjGrainFrameFailure grainFailure{};
+                std::array<char, 256> grainText{};
+                FjErrorBuffer grainError{grainText.data(), grainText.size(), 0};
+                status(fj_test_grain_frame_prepare(&rawGrain, &grain, &grainFailure, &grainError));
                 for (std::size_t c = 0; c < 3; ++c) {
                     const auto& correlation = grain.correlation[c];
-                    rows.push_back(kernel_case(scale + "grain-correlation/" + std::to_string(c), correlation.radius, correlation.sigmaPx));
+                    rows.push_back(kernel_case(scale + "grain-correlation/" + std::to_string(c), correlation.radius, correlation.sigma_px));
                     for (std::size_t layer = 0; layer < 3; ++layer) {
-                        const auto& cloud = grain.dyeCloud[layer][c];
-                        rows.push_back(kernel_case(scale + "grain-cloud/" + std::to_string(layer) + "/" + std::to_string(c), cloud.radius, cloud.sigmaPx));
+                        const auto& cloud = grain.dye_cloud[layer][c];
+                        rows.push_back(kernel_case(scale + "grain-cloud/" + std::to_string(layer) + "/" + std::to_string(c), cloud.radius, cloud.sigma_px));
                     }
                 }
-                Spektrafilm::SpatialDirDescriptor dir;
-                const Spektrafilm::DirFrameExtent extent{0, 0, 64, 48};
-                require(JuicerTestSupport::prepare_dir_frame(product.recipe.dirCouplers, pixelSize, extent, extent, "gaussian-products", dir), "Gaussian capture DIR descriptor");
-                for (int c = 0; c < dir.filterPlan.componentCount; ++c) {
-                    const auto& component = dir.filterPlan.components[static_cast<std::size_t>(c)];
-                    if (component.referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect)
-                        rows.push_back(kernel_case(scale + "fir-dir/" + std::to_string(c), component.radius, component.sigmaPixels));
+                Json dirInput{{"active", view.dir_recipe.mode != 0}, {"size", std::bit_cast<std::uint32_t>(view.dir_recipe.diffusion_size_um)}, {"tail", std::bit_cast<std::uint32_t>(view.dir_recipe.diffusion_tail_um)}, {"weight", std::bit_cast<std::uint32_t>(view.dir_recipe.diffusion_tail_weight)}, {"pixel", std::bit_cast<std::uint32_t>(pixelSize)}, {"render", {0, 0, 64, 48}}, {"full", {0, 0, 64, 48}}, {"hash", view.dir_recipe.hash}};
+                const auto rawDir = DirFrameTest::raw_input(dirInput);
+                FjDirFrameMath dir{};
+                FjDirFrameFailure dirFailure{};
+                std::array<char, 256> dirText{};
+                FjErrorBuffer dirError{dirText.data(), dirText.size(), 0};
+                status(fj_test_dir_frame_prepare(&rawDir, &dir, &dirFailure, &dirError));
+                for (std::size_t c = 0; c < dir.component_count; ++c) {
+                    const auto& component = dir.components[c];
+                    if (component.reference_operator == FJ_DIR_OPERATOR_FIR_REFLECT)
+                        rows.push_back(kernel_case(scale + "fir-dir/" + std::to_string(c), component.radius, component.sigma_px));
                 }
             }
         }
@@ -119,7 +116,50 @@ namespace GaussianTest {
         }
         require(fj_test_gaussian_kernel_live_owners() == 0, "Gaussian values release every owner");
     }
+    void callback_failure_diagnostics() {
+        struct Reply {
+            std::string_view diagnostic;
+            bool success = false;
+            std::array<float, 7> weights{};
+        } reply;
+        const FjHostPreparation preparation{
+            &reply,
+            [](void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*) -> FjStatus {
+                return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
+            },
+            [](void* user, const FjGaussianKernelInput* input, FjGaussianKernelView* view, FjGaussianKernelFailure* failure, FjErrorBuffer* error) -> FjStatus {
+                const auto& reply = *static_cast<Reply*>(user);
+                *view = reply.success ? FjGaussianKernelView{input->radius, input->sigma_px, {reply.weights.data(), reply.weights.size()}} : FjGaussianKernelView{};
+                failure->reason = reply.success ? FJ_GAUSSIAN_KERNEL_NONE : FJ_GAUSSIAN_KERNEL_ALLOCATION;
+                std::copy(reply.diagnostic.begin(), reply.diagnostic.end(), error->data);
+                error->length = reply.diagnostic.size();
+                error->data[error->length] = '\0';
+                return {reply.success ? FJ_STATUS_SUCCESS : FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0};
+            }};
+        const FjGaussianKernelInput input{3, 1.0f};
+        for (const char* diagnostic : {"Gaussian kernel allocation failed", "Gaussian kernel candidate storage allocation failed", "Gaussian coefficient storage is unavailable", ""}) {
+            reply.diagnostic = diagnostic;
+            FjGaussianKernelView view{};
+            JuicerCuda::Failure failure;
+            require(!JuicerCuda::prepare_gaussian_kernel(preparation, input, view, failure), "typed Gaussian allocation callback rejects preparation");
+            status(failure.status, FJ_STATUS_ALLOCATION_FAILURE);
+            require(failure.diagnostic == diagnostic, "Gaussian allocation category is independent of forwarded diagnostic wording");
+            require(view.radius == 0 && std::bit_cast<std::uint32_t>(view.sigma_px) == 0 && !view.weights.data && !view.weights.count, "Gaussian callback failure leaves no published view");
+        }
+        reply.success = true;
+        reply.diagnostic = "unexpected success diagnostic";
+        FjGaussianKernelView view{};
+        JuicerCuda::Failure failure;
+        require(!JuicerCuda::prepare_gaussian_kernel(preparation, input, view, failure), "successful Gaussian transport still requires an empty diagnostic");
+        status(failure.status, FJ_STATUS_PREPARATION_FAILURE);
+        require(failure.diagnostic == "Gaussian kernel projection invalid", "nonempty Gaussian success retains transport rejection");
+        reply.diagnostic = "";
+        require(JuicerCuda::prepare_gaussian_kernel(preparation, input, view, failure), "empty Gaussian success diagnostic is admitted");
+        require(failure.diagnostic.empty(), "successful Gaussian transport clears the previous rejection diagnostic");
+        require(view.weights.data == reply.weights.data() && view.weights.count == reply.weights.size(), "Gaussian transport preserves the literal borrowed span");
+    }
     void boundary() {
+        callback_failure_diagnostics();
         const FjGaussianKernelInput input{3, 1.0f};
         FjGaussianKernelFailure failure{99};
         FjGaussianKernelOwner* owner = nullptr;

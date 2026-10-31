@@ -1,9 +1,78 @@
 namespace PrintBalanceTest {
+    void metadata(const FjPrintBalanceFailure& failure, std::uint32_t reason, std::uint32_t channel = UINT32_MAX);
+    void zero(const FjPrintBalance& out);
+    FjPrintBalanceInput balance_input(const FjPreparedStateView& view) {
+        return {view.print.film_base_density,
+                view.print.film_density_cmy,
+                view.print.sensitivity_cmy,
+                view.print.main_illuminant,
+                {view.film_reference.baseline_density_cmy[0], view.film_reference.baseline_density_cmy[1], view.film_reference.baseline_density_cmy[2]},
+                {view.film_reference.compensated_density_cmy[0], view.film_reference.compensated_density_cmy[1], view.film_reference.compensated_density_cmy[2]},
+                view.film_reference.hash,
+                view.print_normalization_mode};
+    }
+    struct CacheCall {
+        JuicerCuda::Resources* resources = nullptr;
+        JuicerCuda::Failure* failure = nullptr;
+        bool consumeFault = false;
+        std::uint64_t contentHash = 0;
+    };
+    bool prepare_cache_input(void* opaque,
+                             const JuicerCudaTest::PreparedFrameFixture::Inputs& prepared,
+                             std::string& diagnostic) {
+        auto& call = *static_cast<CacheCall*>(opaque);
+        const auto* input = std::get_if<JuicerCuda::PrintResourceInput>(&prepared.preparation.print);
+        if (!input) {
+            diagnostic = "prepared print state has no complete balance resource input";
+            return false;
+        }
+        if (!JuicerCuda::prepare_print_resources(*call.resources, *input, nullptr, *call.failure)) {
+            diagnostic = call.failure->diagnostic;
+            return false;
+        }
+        PrintPreflashTest::cuda_ok(cudaDeviceSynchronize());
+        call.contentHash = prepared.state.print_balance.hash;
+        require(call.resources->printBalanceFactorMidgray == input->factorMidgray &&
+                    call.resources->printBalanceFactorMidgrayComp == input->factorMidgrayComp &&
+                    call.resources->printBalanceNormalizer == input->normalizer,
+                "cache binds all completed balance scalars exactly");
+        if (call.consumeFault) {
+            const auto& view = prepared.state;
+            const auto raw = balance_input(view);
+            FjPrintBalance output{};
+            FjPrintBalanceFailure failure{};
+            status(fj_test_print_balance_prepare(&raw, &output, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+            metadata(failure, FJ_PRINT_BALANCE_REASON_PANIC);
+            zero(output);
+        }
+        return true;
+    }
+    void prepare_cache(PreparedState& state,
+                       const ParamSnapshot& controls,
+                       JuicerCuda::Resources& resources,
+                       JuicerCuda::Failure& failure,
+                       std::uint64_t& contentHash,
+                       bool consumeFault = true) {
+        CacheCall call{&resources, &failure, consumeFault};
+        std::string diagnostic;
+        require(JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
+                    state, PrintPreflashTest::frame_facts(controls), &call, &prepare_cache_input, diagnostic),
+                diagnostic.c_str());
+        contentHash = call.contentHash;
+    }
+
     Json project(const PrintBalanceRecipe& balance) {
         return {{"baseline_raw_rgb", words(balance.baselinePrintRawRgb.data(), 3)},
                 {"compensated_raw_rgb", words(balance.compensatedPrintRawRgb.data(), 3)},
                 {"scalars", words(std::array{balance.factorMidgray, balance.factorMidgrayComp, balance.normalizer}.data(), 3)},
                 {"filtered_main_illuminant_hash", balance.filteredMainIlluminantHash},
+                {"hash", balance.hash}};
+    }
+    Json project(const FjPrintBalance& balance) {
+        return {{"baseline_raw_rgb", words(balance.baseline_raw_rgb, 3)},
+                {"compensated_raw_rgb", words(balance.compensated_raw_rgb, 3)},
+                {"scalars", words(std::array{balance.factor_midgray, balance.factor_midgray_comp, balance.normalizer}.data(), 3)},
+                {"filtered_main_illuminant_hash", balance.filtered_main_illuminant_hash},
                 {"hash", balance.hash}};
     }
 
@@ -83,28 +152,26 @@ namespace PrintBalanceTest {
                         p.printExposureCompensation = 0;
                     if (variant == 9)
                         p.enlIll = 1;
-                    FocusedRenderStateBuildProduct product;
-                    std::string diagnostic;
-                    const bool success = route % 2 ? build_print_render_state_product(p, product, diagnostic)
-                                                   : build_direct_render_state_product(p, product, diagnostic);
-                    require(success, diagnostic.c_str());
-                    const auto& recipe = product.recipe;
-                    Json result{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", hash_params(p)}, {"balance", project(recipe.print.balance)}, {"reference_hash", recipe.scannerOutput.syntheticFilmReference.hash}, {"print_hash", recipe.print.hash}, {"scanner_hash", recipe.scannerOutput.hash}, {"final_hash", recipe.hash}, {"upload_hash", product.payload.uploadCoreHash}};
+                    std::array<char, 2048> diagnostic{};
+                    FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+                    std::optional<PreparedState> product;
+                    const auto resultStatus = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), p, product, error);
+                    require(resultStatus.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
+                    FjPreparedStateView view{};
+                    status(product->view(view, error));
+                    const auto& print = view.print;
+                    auto balance = project(view.print_balance);
+                    const auto factors = JuicerTestSupport::captured_print_factors(view);
+                    balance["scalars"] = words(factors.data(), factors.size());
+                    Json result{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", hash_params(p)}, {"balance", std::move(balance)}, {"reference_hash", view.film_reference.hash}, {"print_hash", view.print_recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"final_hash", view.recipe_hash}, {"upload_hash", view.upload_core_hash}};
                     if (route % 2) {
-                        Json dye = Json::array(), sensitivity = Json::array();
-                        for (std::size_t sample = 0; sample < 81; ++sample)
-                            for (std::size_t c = 0; c < 3; ++c) {
-                                dye.push_back(std::bit_cast<std::uint32_t>(recipe.profileRoute.filmProfile->data.channelDensity[sample][c]));
-                                sensitivity.push_back(std::bit_cast<std::uint32_t>(recipe.profileRoute.printProfile->data.linearSensitivity[sample][c]));
-                            }
-                        const auto& reference = recipe.scannerOutput.syntheticFilmReference;
-                        result["film_base_density"] = words(recipe.profileRoute.filmProfile->data.baseDensity.data(), 81);
-                        result["film_channel_density_cmy"] = dye;
-                        result["print_sensitivity_rgb"] = sensitivity;
-                        result["filtered_main_illuminant"] = words(product.payload.printMainIlluminant->data(), 81);
-                        result["baseline_density_cmy"] = words(reference.baselineDensityCmy.data(), 3);
-                        result["compensated_density_cmy"] = words(reference.compensatedDensityCmy.data(), 3);
-                        result["normalization_mode"] = static_cast<std::uint8_t>(recipe.print.exposure.normalizationMode);
+                        result["film_base_density"] = words(print.film_base_density.data, print.film_base_density.count);
+                        result["film_channel_density_cmy"] = words(print.film_density_cmy.data, print.film_density_cmy.count);
+                        result["print_sensitivity_rgb"] = words(print.sensitivity_cmy.data, print.sensitivity_cmy.count);
+                        result["filtered_main_illuminant"] = words(print.main_illuminant.data, print.main_illuminant.count);
+                        result["baseline_density_cmy"] = words(view.film_reference.baseline_density_cmy, 3);
+                        result["compensated_density_cmy"] = words(view.film_reference.compensated_density_cmy, 3);
+                        result["normalization_mode"] = view.print_normalization_mode;
                     }
                     products.push_back(result);
                 }
@@ -162,13 +229,6 @@ namespace PrintBalanceTest {
             return out;
         }
     };
-    Json project(const FjPrintBalance& balance) {
-        return {{"baseline_raw_rgb", words(balance.baseline_raw_rgb, 3)},
-                {"compensated_raw_rgb", words(balance.compensated_raw_rgb, 3)},
-                {"scalars", words(std::array{balance.factor_midgray, balance.factor_midgray_comp, balance.normalizer}.data(), 3)},
-                {"filtered_main_illuminant_hash", balance.filtered_main_illuminant_hash},
-                {"hash", balance.hash}};
-    }
     void seed(FjPrintBalance& out) {
         std::fill_n(out.baseline_raw_rgb, 3, -13.0f);
         std::fill_n(out.compensated_raw_rgb, 3, -13.0f);
@@ -179,7 +239,7 @@ namespace PrintBalanceTest {
         const FjPrintBalance empty{};
         require(project(out) == project(empty), "all nine floats and both hashes clear independently to +0/0");
     }
-    void metadata(const FjPrintBalanceFailure& failure, std::uint32_t reason, std::uint32_t channel = UINT32_MAX) {
+    void metadata(const FjPrintBalanceFailure& failure, std::uint32_t reason, std::uint32_t channel) {
         require(failure.reason == reason && failure.channel == channel, "closed balance reason and first-channel metadata");
     }
     void values(const Json& captured, const std::filesystem::path& manifestPath) {
@@ -370,7 +430,11 @@ namespace PrintBalanceTest {
                 p.normalizePrintExposure = normalize;
                 p.printExposureCompensation = compensate;
                 const auto product = PrintPreflashTest::build(p);
-                require(static_cast<unsigned>(product.recipe.print.exposure.normalizationMode) == static_cast<unsigned>(2 * normalize + compensate), "all four literal snapshot modes retain native boolean policy");
+                std::array<char, 2048> text{};
+                FjErrorBuffer error{text.data(), text.size(), 0};
+                FjPreparedStateView view{};
+                status(product.view(view, error));
+                require(view.print_normalization_mode == static_cast<unsigned>(2 * normalize + compensate), "all four literal snapshot modes retain native boolean policy");
             }
         p = PrintPreflashTest::controls();
         InstanceState state;
@@ -381,41 +445,96 @@ namespace PrintBalanceTest {
         pending(p);
         const auto original = admit_pending_render_state(state);
         require(bool(original.printState), "balance actual publication baseline");
-        const auto originalBalance = project(original.printState->recipe.print.balance);
+        const auto originalView = JuicerTestSupport::published_view(original);
+        const auto originalBalance = project(originalView.print_balance);
         const auto counter = state.buildCounterNext.load();
         status(fj_test_film_recipe_fault(12, 1));
         const auto reused = admit_pending_render_state(state);
         require(reused.printState == original.printState && state.buildCounterNext.load() == counter, "identical current snapshot reuses complete publication without balance construction");
         p.cameraExposureCompensationEv = .25;
         pending(p);
-        const auto failed = admit_pending_render_state(state);
-        require(failed.status == PendingRenderAdmissionStatus::RebuildFailed && !failed.printState && !failed.directState, "real balance panic blocks new admission");
-        require(JuicerAtomic::load_shared_ptr(&state.activePrintState) == original.printState && state.buildCounterNext.load() == counter, "balance failure neither publishes nor advances counter");
-        const auto recovered = admit_pending_render_state(state);
-        require(recovered.printState && recovered.printState != original.printState && state.buildCounterNext.load() == counter + 1, "one-shot balance failure recovers to a complete new publication");
-        require(project(original.printState->recipe.print.balance) == originalBalance, "already admitted immutable state survives failed and successful replacement");
+        const auto published = admit_pending_render_state(state);
+        require(published.status == PendingRenderAdmissionStatus::AdmittedPrint && published.printState &&
+                    published.printState != original.printState &&
+                    JuicerAtomic::load_shared_ptr(&state.activePrintState) == published.printState &&
+                    state.lastHash.load() == hash_params(p) && state.buildCounterNext.load() == counter + 1,
+                "complete Rust balance construction publishes without visiting the raw facade fault");
+        require(project(JuicerTestSupport::published_view(original).print_balance) == originalBalance,
+                "already admitted immutable balance remains readable through complete replacement");
+        FjPreparedStateView publishedView = JuicerTestSupport::published_view(published);
+        FjPrintBalance publishedOutput{};
+        FjPrintBalanceFailure publishedFailure{};
+        const FjPrintBalanceInput publishedRaw = balance_input(publishedView);
+        status(fj_test_print_balance_prepare(&publishedRaw, &publishedOutput, &publishedFailure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+        metadata(publishedFailure, FJ_PRINT_BALANCE_REASON_PANIC);
+        zero(publishedOutput);
+        status(fj_test_print_balance_prepare(&publishedRaw, &publishedOutput, &publishedFailure, nullptr));
+        require(project(publishedOutput) == project(publishedView.print_balance),
+                "one-shot raw balance facade fault and retry match the actual published held balance");
+        auto activeControls = PrintPreflashTest::controls();
+        auto active = PrintPreflashTest::build(activeControls);
         status(fj_test_film_recipe_fault(12, 1));
         p.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        FocusedRenderStateBuildProduct direct;
+        auto direct = PrintPreflashTest::build(p);
+        std::array<char, 2048> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        FjPreparedStateView directView{};
+        status(direct.view(directView, error));
+        require(directView.print.hash == 0 && directView.print_balance.hash == 0, "direct route omits balance and its input");
+        struct BoundFacts {
+            float normalizer = 0;
+            std::uint64_t hash = 0;
+        } bound;
+        const auto inspect_input = [](void* opaque, const JuicerCudaTest::PreparedFrameFixture::Inputs& prepared, std::string& diagnostic) {
+            auto& facts = *static_cast<BoundFacts*>(opaque);
+            const auto* input = std::get_if<JuicerCuda::PrintResourceInput>(&prepared.preparation.print);
+            if (!input) {
+                diagnostic = "prepared print state has no complete balance resource input";
+                return false;
+            }
+            facts.normalizer = input->normalizer;
+            facts.hash = input->descriptors.balance.hash;
+            return true;
+        };
         std::string diagnostic;
-        require(build_direct_render_state_product(p, direct, diagnostic) && !direct.payload.printMainIlluminant && direct.recipe.print.balance.hash == 0, "direct route omits balance and its input");
-        const auto& product = *recovered.printState;
-        JuicerCuda::PrintResourcePreparation request{&product.recipe, &JuicerProcess::root().assets(), &*product.payload.printMainIlluminant};
-        JuicerCuda::PrintResourceInput bound;
-        std::array<float, 81> preflash{};
-        require(JuicerCuda::build_print_resource_input(request, bound, preflash, diagnostic), diagnostic.c_str());
-        require(bound.normalizer == product.recipe.print.balance.normalizer && bound.descriptors.balance.printBalanceRecipeHash == product.recipe.print.balance.hash, "resource assembly binds completed balance and its owning descriptor");
+        status(fj_test_film_recipe_fault(12, 1));
+        require(JuicerCudaTest::PreparedFrameFixture::with_prepared_frame_inputs(
+                    active, PrintPreflashTest::frame_facts(activeControls), &bound, inspect_input, diagnostic),
+                diagnostic.c_str());
+        FjPreparedStateView activeView{};
+        status(active.view(activeView, error));
+        require(bound.normalizer == activeView.print_balance.normalizer && bound.hash == activeView.print.balance_hash,
+                "resource assembly binds completed balance and its owning descriptor");
+        const auto raw = balance_input(activeView);
+        FjPrintBalance output{};
+        FjPrintBalanceFailure failure{};
+        status(fj_test_print_balance_prepare(&raw, &output, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+        metadata(failure, FJ_PRINT_BALANCE_REASON_PANIC);
+        zero(output);
+        status(fj_test_print_balance_prepare(&raw, &output, &failure, nullptr));
+        require(project(output) == project(activeView.print_balance),
+                "unconsumed raw balance fault is one-shot and retry matches the held complete owner");
+
+        // SF_TEMP_BRIDGE_NATIVE_BALANCE_FAULT_CONSUMER: retain the original
+        // native constructor's typed exception/retry comparison through I7.
+        // Actual complete-state construction and resource assembly above do
+        // not visit this legacy facade.
+        status(fj_test_film_recipe_fault(12, 1));
         bool threw = false;
+        FocusedRenderStateBuildProduct comparison;
         try {
-            PrintPreflashTest::build(PrintPreflashTest::controls());
+            require(build_print_render_state_product(activeControls, comparison, diagnostic), diagnostic.c_str());
         } catch (const JuicerCuda::ExecutionFailure&) {
             threw = true;
         }
-        require(threw, "direct construction and resource assembly leave the balance fault unconsumed");
-        PrintPreflashTest::build(PrintPreflashTest::controls());
+        require(threw, "SF_TEMP_BRIDGE native constructor consumes its legacy balance fault");
+        require(build_print_render_state_product(activeControls, comparison, diagnostic), diagnostic.c_str());
     }
     void products(const std::filesystem::path& resources, const Json& captured) {
-        require(product_observations(resources) == captured.at("products"), "all 120 frozen actual caller words and reference/print/scanner/final/upload identities");
+        const auto actual = product_observations(resources);
+        const auto& expected = captured.at("products");
+        if (actual != expected)
+            throw std::runtime_error("print balance product first difference " + Json::diff(expected, actual).front().dump());
         caller(resources);
     }
 } // namespace PrintBalanceTest
@@ -526,28 +645,18 @@ namespace PrintBalanceTest {
         JuicerCuda::Failure failure;
         {
             JuicerCuda::Resources cached(key, 1, ledger);
-            const auto prepare = [&](const FocusedRenderStateBuildProduct& product) {
-                const JuicerCuda::PrintResourcePreparation request{&product.recipe, &JuicerProcess::root().assets(), &*product.payload.printMainIlluminant};
+            const auto prepare = [&](PreparedState& product, const ParamSnapshot& snapshot, bool consume = true) {
+                std::uint64_t contentHash = 0;
                 status(fj_test_film_recipe_fault(12, 1));
-                require(JuicerCuda::prepare_print_resources(cached, request, nullptr, failure), failure.diagnostic.c_str());
-                PrintPreflashTest::cuda_ok(cudaDeviceSynchronize());
-                bool consumed = false;
-                PrintBalanceRecipe out;
-                try {
-                    JuicerAssets::prepare_print_balance(product.recipe.profileRoute.filmProfile->data, product.recipe.profileRoute.printProfile->data, *product.payload.printMainIlluminant, product.recipe.scannerOutput.syntheticFilmReference, product.recipe.print.exposure.normalizationMode, out, diagnostic);
-                } catch (const JuicerCuda::ExecutionFailure& error) {
-                    status(error.failure.status, FJ_STATUS_INTERNAL_FAILURE);
-                    consumed = true;
-                }
-                require(consumed, "resource cache hit/miss binds balance without calling its producer");
-                require(cached.printBalanceFactorMidgray == product.recipe.print.balance.factorMidgray && cached.printBalanceFactorMidgrayComp == product.recipe.print.balance.factorMidgrayComp && cached.printBalanceNormalizer == product.recipe.print.balance.normalizer, "cache binds all completed balance scalars exactly");
+                prepare_cache(product, snapshot, cached, failure, contentHash, consume);
+                return contentHash;
             };
-            prepare(original);
+            const auto originalContentHash = prepare(original, controls);
             const auto balanceHash = cached.printBalanceDescriptorHash;
             const auto mainHash = cached.printMainIlluminantDescriptorHash;
             auto* const main = cached.printIllumFiltered;
             const auto charged = ledger->snapshot().chargedBytes;
-            prepare(original);
+            prepare(original, controls);
             require(cached.printBalanceDescriptorHash == balanceHash && cached.printIllumFiltered == main && ledger->snapshot().chargedBytes == charged, "identical state preserves balance key, residency and allocation accounting");
             for (unsigned variant = 0; variant < 7; ++variant) {
                 auto p = controls;
@@ -566,13 +675,13 @@ namespace PrintBalanceTest {
                 if (variant == 6)
                     p.printProfileKey = "fujifilm_crystal_archive_typeii";
                 auto changed = PrintPreflashTest::build(p);
-                prepare(changed);
+                prepare(changed, p);
                 require((cached.printBalanceDescriptorHash == balanceHash) == (variant < 2), "balance descriptor preserves unrelated/preflash reuse and invalidates reference/gamma/main inputs");
                 if (variant < 5)
                     require((cached.printMainIlluminantDescriptorHash == mainHash) == (variant < 4), "main descriptor identity remains distinct from balance content identity");
                 if (variant < 4)
                     require(cached.printIllumFiltered == main, "balance-only changes preserve main light residency");
-                prepare(original);
+                prepare(original, controls);
                 require(cached.printBalanceDescriptorHash == balanceHash, "restoring a recipe restores its exact balance descriptor");
             }
             std::array<std::uint64_t, 4> contentHashes{}, descriptorHashes{};
@@ -581,23 +690,22 @@ namespace PrintBalanceTest {
                 p.normalizePrintExposure = (mode & 2u) != 0;
                 p.printExposureCompensation = (mode & 1u) != 0;
                 auto changed = PrintPreflashTest::build(p);
-                prepare(changed);
-                contentHashes[mode] = changed.recipe.print.balance.hash;
+                contentHashes[mode] = prepare(changed, p);
                 descriptorHashes[mode] = cached.printBalanceDescriptorHash;
             }
             require(contentHashes[0] == contentHashes[1] && contentHashes[2] == contentHashes[3], "equal reference factors preserve coincident balance content identities without a mode lane");
             require(descriptorHashes[0] != descriptorHashes[1] && descriptorHashes[2] != descriptorHashes[3], "descriptor mode dependencies remain distinct even when content identities coincide");
-            prepare(original);
+            prepare(original, controls);
             for (bool film : {false, true}) {
-                auto changed = PrintPreflashTest::build(controls);
-                if (film)
-                    ++changed.recipe.profileRoute.filmProfileAssetVersionToken;
-                else
-                    ++changed.recipe.profileRoute.printProfileAssetVersionToken;
-                prepare(changed);
+                auto changedControls = controls;
+                changedControls.filmProfileKey = film ? "kodak_ektar_100" : controls.filmProfileKey;
+                changedControls.printProfileKey = film ? controls.printProfileKey : "fujifilm_crystal_archive_typeii";
+                auto changed = PrintPreflashTest::build(changedControls);
+                prepare(changed, changedControls);
                 require(cached.printBalanceDescriptorHash != balanceHash, "both source tokens contribute to balance descriptor identity");
-                prepare(original);
+                prepare(original, controls);
             }
+            require(originalContentHash != 0, "complete held state supplies balance content identity");
             require(JuicerCuda::drain_for_context_retire(cached, failure), failure.diagnostic.c_str());
         }
         require(ledger->snapshot().chargedBytes == 0, "balance cache fixture releases device ownership/accounting");

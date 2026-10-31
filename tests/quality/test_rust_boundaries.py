@@ -868,10 +868,23 @@ class RustBoundaryTests(unittest.TestCase):
         fixtures = "\n".join((ROOT / "tests/ffi" / name).read_text() for name in ("film_recipe_test.cpp", "dir_frame_test.inc"))
         for token in ("capture-dir-frames", "native_case(", "native_products(", "DirFrameTest::capture("):
             self.assertNotIn(token, fixtures)
-        for name in ("dir/exposure_cache_test.cpp", "grain/scratch_reuse_test.cpp", "ffi/gaussian_kernel_test.inc"):
+        for name in ("dir/exposure_cache_test.cpp", "grain/scratch_reuse_test.cpp"):
             fixture = (ROOT / "tests" / name).read_text()
             self.assertNotIn("Spektrafilm::build_spatial_dir_descriptor(", fixture)
-            self.assertIn("JuicerTestSupport::prepare_dir_frame(", fixture)
+            self.assertIn("FrameFixture::with_prepared_frame_inputs(", fixture)
+            self.assertIn("prepared.descriptors.spatialDir", fixture)
+        prepared_frame_fixture = (ROOT / "tests/ffi/prepared_frame_fixture.cpp").read_text()
+        self.assertIn("fj_test_dir_frame_prepare(", prepared_frame_fixture)
+        self.assertIn("Spektrafilm::compose_spatial_dir_descriptor(", prepared_frame_fixture)
+
+        gaussian_fixture = (ROOT / "tests/ffi/gaussian_kernel_test.inc").read_text()
+        self.assertNotIn("Spektrafilm::build_spatial_dir_descriptor(", gaussian_fixture)
+        self.assertIn("fj_test_dir_frame_prepare(", gaussian_fixture)
+        self.assertIn("DirFrameTest::raw_input(", gaussian_fixture)
+        self.assertIn("FJ_DIR_OPERATOR_FIR_REFLECT", gaussian_fixture)
+        self.assertIn("component.radius", gaussian_fixture)
+        self.assertIn("component.sigma_px", gaussian_fixture)
+        self.assertIn("require(rows.size() == 188", gaussian_fixture)
         self.assertIn("fj_test_dir_frame_prepare(", (ROOT / "tests/ffi/spatial_optics_fixture.cpp").read_text())
         self.assertIn("SF_TEMP_BRIDGE_DIR_FRAME", (ROOT / "src/RustDirBridge.h").read_text())
 
@@ -1121,6 +1134,21 @@ class RustBoundaryTests(unittest.TestCase):
                 ('prepared_state_default', {'E0599': ('RenderState::default()',)}),
                 ('prepared_state_mutation', {'E0594': ('state.s_inverse()[0]',)}),
                 ('prepared_state_borrow', {'E0515': ('state.s_inverse()',), 'E0505': ('drop(state)',)}),
+            ),
+            feature_forms=(False, True),
+        )
+
+    def test_cuda_render_borrows_complete_owners_and_hides_projection(self) -> None:
+        self.check_fixture_cases(
+            "film-juicer-plugin/src/lib.rs",
+            "film-juicer-plugin",
+            cases=(
+                ('cuda_render_complete', None),
+                ('cuda_render_raw_records', {'E0308': ('raw_frame', 'raw_abort')}),
+                ('cuda_render_capability_construction', {'E0451': ('FramePolicy { ..policy }',)}),
+                ('cuda_render_projection_private', {'E0603': ('crate::cuda::projection::host_data',)}),
+                ('cuda_render_state_borrow', {'E0505': ('drop(state)',)}),
+                ('cuda_render_owner_thread', {'E0277': ('std::thread::spawn(move || owner)',)}),
             ),
             feature_forms=(False, True),
         )

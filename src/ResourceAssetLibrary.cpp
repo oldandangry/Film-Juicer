@@ -66,6 +66,13 @@ namespace JuicerAssets {
         return _spektrafilmProfileCatalog;
     }
 
+    FjStatus Library::film_defaults(
+        const std::string& key,
+        FjFilmDigest& out,
+        FjErrorBuffer& error) {
+        return _bridge.film_defaults(key, out, error);
+    }
+
     std::shared_ptr<const Profiles::FilmProfile>
     Library::selected_film_profile_for_key(const std::string& key) {
         ensure_catalogs();

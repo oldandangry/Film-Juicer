@@ -29,6 +29,11 @@ use crate::cuda::sys::FJ_PATH_UNIX_BYTES;
 #[cfg(target_os = "windows")]
 use crate::cuda::sys::FJ_PATH_WINDOWS_WIDE;
 
+#[cfg(all(feature = "test-support", target_os = "linux"))]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(all(feature = "test-support", target_os = "windows"))]
+use std::os::windows::ffi::OsStrExt;
+
 const FJ_PROFILE_ROLE_FILM: u32 = 0;
 const FJ_PROFILE_ROLE_PRINT: u32 = 1;
 
@@ -518,6 +523,59 @@ unsafe fn path(view: FjPathView) -> Result<std::path::PathBuf, Failure> {
         PathError::Empty => Failure::Input("empty resource root"),
         PathError::ContainsNul => Failure::Input("resource root contains NUL"),
     })
+}
+
+/// # Safety
+/// The initialized platform-native path view and diagnostic storage are caller-authorized.
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_mallett_source_override(
+    view: FjPathView,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: `path` checks the platform encoding, extent, alignment and NUL rules.
+    unsafe {
+        crate::asset_illuminant::run(error, || {
+            let path = path(view)?;
+            let result = {
+                #[cfg(target_os = "linux")]
+                {
+                    film_juicer_core::assets::arm_mallett_source_override(
+                        path.as_os_str().as_bytes(),
+                    )
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    film_juicer_core::assets::arm_mallett_source_override(
+                        path.as_os_str().encode_wide(),
+                    )
+                }
+            };
+            result.map_err(|error| match error {
+                film_juicer_core::assets::MallettSourceOverrideError::InvalidPath => {
+                    Failure::Input("invalid Mallett source override path")
+                }
+                film_juicer_core::assets::MallettSourceOverrideError::AlreadyArmed => {
+                    Failure::Input("Mallett source override already armed")
+                }
+                film_juicer_core::assets::MallettSourceOverrideError::Allocation(error) => {
+                    Failure::Capacity(error)
+                }
+            })
+        })
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_mallett_source_clear() {
+    film_juicer_core::assets::clear_mallett_source_override();
+}
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_mallett_source_consumed() -> u32 {
+    u32::from(film_juicer_core::assets::mallett_source_override_consumed())
 }
 
 // FJ_TEMP_BRIDGE: asset conversion; remove S4.E.

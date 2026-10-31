@@ -3,6 +3,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <iostream>
 #include <optional>
 #include <set>
@@ -24,6 +25,8 @@
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/juicer_test_api.h"
+#include "../ffi/prepared_frame_fixture.h"
+#include "../ffi/prepared_product_fixture.h"
 #include "../ffi/spatial_optics_fixture.h"
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
@@ -74,6 +77,7 @@ namespace JuicerProcess::TestSupport {
 
 namespace {
     using Frame = JuicerProcess::Root::PreparedCudaFrame;
+    namespace FrameFixture = JuicerCudaTest::PreparedFrameFixture;
 
     void require(bool ok, const std::string& detail) {
         if (!ok) {
@@ -86,6 +90,7 @@ namespace {
     }
 
     struct GrainVariant {
+        bool active = true;
         bool layers = true;
         bool shared = true;
         int debug = 0;
@@ -95,96 +100,222 @@ namespace {
         float filmGamma = 1.0f;
     };
 
+    struct CurvePointers {
+        std::array<JuicerCuda::DeviceCurveView, 3> normalized{};
+        std::array<JuicerCuda::DeviceCurveView, 3> layerBase{};
+        std::array<std::array<const float*, 3>, 3> layers{};
+        std::uint64_t normalizedHash = 0;
+        std::uint64_t layersHash = 0;
+        bool layersActive = false;
+    };
+
     struct Inputs {
-        FocusedRenderStateBuildProduct product;
-        Scanner::ScannerSpectralLutDescriptor scanner;
-        Spektrafilm::SpatialDirDescriptor dir;
-        Spektrafilm::VisualGrainFrameDescriptor grain;
-        std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
+        PreparedState state;
+        ParamSnapshot controls;
+        Spektrafilm::VisualGrainFrameDescriptor grain{};
+        JuicerCuda::VisualGrainPayloadInput grainPayload{};
+        Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
+        std::uint64_t uploadCoreHash = 0;
+        std::uint64_t scannerHash = 0;
+        std::uint64_t dirRecipeHash = 0;
+        std::uint64_t recipeHash = 0;
+        std::uint64_t filmDevelopmentHash = 0;
+        std::uint64_t normalizedDensityCurvesHash = 0;
+        std::uint64_t densityCurvesLayersHash = 0;
         int width;
         int height;
-        const float pixelSizeUm;
+        FrameFixture::FrameFacts facts{};
 
         Inputs(int w, int h, Spektrafilm::ScanRoute route, const GrainVariant& variant = {})
-            : width(w), height(h), pixelSizeUm(variant.pixelSize) {
-            ParamSnapshot controls;
-            controls.scanRoute = route;
-            controls.filmGammaFactor = variant.filmGamma;
-            if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive) {
-                controls.filmProfileKey = "fujifilm_provia_100f";
-            }
-            controls.scatterHalationControls = {};
-            controls.cameraDiffusion.active = variant.cameraDiffusion;
-            controls.gateWeaveAmount = 0.0;
-            controls.grainControls.active = true;
-            controls.grainControls.sublayersActive = variant.layers;
-            controls.grainControls.chromaSharedWeight = variant.shared ? 1.0f : 0.0f;
-            controls.grainControls.chromaIndependentWeight = variant.shared ? 0.0f : 1.0f;
-            controls.grainControls.debugView = variant.debug;
-            controls.dirCouplers.diffusionSizeUm = 20.0f;
-            controls.dirCouplers.diffusionTailUm = 200.0f;
-            controls.dirCouplers.diffusionTailWeight = 0.03f;
-            std::string error;
-            const bool print = Spektrafilm::scan_route_is_print(route);
-            require(print ? build_print_render_state_product(controls, product, error)
-                          : build_direct_render_state_product(controls, product, error),
-                    error);
-            if (print) {
-                require(Scanner::build_print_scanner_spectral_lut_descriptor(
-                            {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error),
-                        error);
-            } else {
-                require(Scanner::build_direct_scanner_spectral_lut_descriptor(
-                            {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error),
-                        error);
-            }
-            if (variant.cameraDiffusion) {
-                require(JuicerTestSupport::prepare_diffusion_frame(
-                            product.recipe.spatialOptics, route, variant.pixelSize, {0, 0, w, h}, diffusion, error),
-                        error);
-            }
-            const Spektrafilm::DirFrameExtent extent{0, 0, w, h};
-            require(JuicerTestSupport::prepare_dir_frame(
-                        product.recipe.dirCouplers, variant.pixelSize, extent, extent, "grain-scratch-test", dir),
-                    "DIR descriptor failed");
-            build_grain_frame(variant.time);
+            : state(JuicerTestSupport::prepare_product(make_controls(route, variant))),
+              controls(make_controls(route, variant)), width(w), height(h) {
+            facts.renderExtent = {0, 0, w, h};
+            facts.fullFrameExtent = facts.renderExtent;
+            facts.pixelDefinition = facts.renderExtent;
+            facts.pixelSizeUm = variant.pixelSize;
+            facts.filmFormatLongEdgeMm = controls.cameraFilmFormatLongEdgeMm;
+            facts.frameTime = variant.time;
+            facts.frameRate = 24.0;
+            facts.sessionSeed = 17;
+            facts.clipToken = 23;
+            capture_frame_inputs();
+        }
+
+        static ParamSnapshot make_controls(Spektrafilm::ScanRoute route, const GrainVariant& variant) {
+            ParamSnapshot result;
+            result.scanRoute = route;
+            result.filmGammaFactor = variant.filmGamma;
+            if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive)
+                result.filmProfileKey = "fujifilm_provia_100f";
+            result.scatterHalationControls = {};
+            result.cameraDiffusion.active = variant.cameraDiffusion;
+            result.gateWeaveAmount = 0.0;
+            result.grainControls.active = variant.active;
+            result.grainControls.sublayersActive = variant.layers;
+            result.grainControls.chromaSharedWeight = variant.shared ? 1.0f : 0.0f;
+            result.grainControls.chromaIndependentWeight = variant.shared ? 0.0f : 1.0f;
+            result.grainControls.debugView = variant.debug;
+            result.dirCouplers.diffusionSizeUm = 20.0f;
+            result.dirCouplers.diffusionTailUm = 200.0f;
+            result.dirCouplers.diffusionTailWeight = 0.03f;
+            return result;
+        }
+
+        struct Capture {
+            Inputs* inputs = nullptr;
+        };
+
+        static bool capture_values(void* user, const FrameFixture::Inputs& prepared, std::string&) {
+            auto& inputs = *static_cast<Capture*>(user)->inputs;
+            inputs.grain = prepared.descriptors.grain.value_or(Spektrafilm::VisualGrainFrameDescriptor{});
+            inputs.grainPayload = prepared.grainPayload;
+            inputs.polarity = prepared.descriptors.capturePolarity;
+            inputs.uploadCoreHash = prepared.state.upload_core_hash;
+            inputs.scannerHash = prepared.state.scanner_hash;
+            inputs.dirRecipeHash = prepared.state.dir_recipe.hash;
+            inputs.recipeHash = prepared.state.recipe_hash;
+            inputs.filmDevelopmentHash = prepared.state.film_development.hash;
+            inputs.normalizedDensityCurvesHash = prepared.state.film_development.density_curves_hash;
+            inputs.densityCurvesLayersHash = prepared.state.film_development.density_layers_hash;
+            return true;
+        }
+
+        void capture_frame_inputs() {
+            Capture capture{this};
+            std::string diagnostic;
+            require(FrameFixture::with_prepared_frame_inputs(
+                        state, facts, &capture, &capture_values, diagnostic),
+                    diagnostic);
         }
 
         void build_grain_frame(double time) {
-            std::string error;
-            Spektrafilm::VisualGrainFrameDescriptorInput input;
-            input.recipe = &product.recipe.visualGrain;
-            input.filmDevelop = &product.recipe.filmDevelop;
-            input.capturePolarity = product.recipe.profileRoute.capturePolarity;
-            input.renderExtent = {0, 0, width, height};
-            input.fullFrameExtent = input.renderExtent;
-            input.pixelSizeUm = pixelSizeUm;
-            input.frameTime = time;
-            input.frameRate = 24.0;
-            input.sessionSeed = 17;
-            input.clipToken = 23;
-            require(JuicerTestSupport::prepare_grain_frame(input, grain, error), error);
-        }
-
-        JuicerProcess::Root::CudaFramePreparationRequest request(bool withDir = true) const {
-            JuicerProcess::Root::CudaFramePreparationRequest r;
-            r.recipe = &product.recipe;
-            r.exposureTables = &product.payload.exposureTables;
-            r.filmRawConfig = &product.payload.filmRawConfig;
-            r.filmTcLut = product.payload.filmTcLut ? &*product.payload.filmTcLut : nullptr;
-            r.printMainIlluminant = product.payload.printMainIlluminant ? &*product.payload.printMainIlluminant : nullptr;
-            r.scannerTables = &product.payload.scannerTables;
-            r.scannerColor = &product.payload.scannerColor;
-            r.scannerLutDescriptor = &scanner;
-            r.outputBoundaryTable = product.payload.outputBoundaryTable.get();
-            r.spatialDirDescriptor = withDir ? &dir : nullptr;
-            r.visualGrainDescriptor = grain;
-            r.diffusionFrameSetDescriptor = diffusion ? &*diffusion : nullptr;
-            r.requestedWidth = width;
-            r.requestedHeight = height;
-            return r;
+            facts.frameTime = time;
+            capture_frame_inputs();
         }
     };
+
+    struct FrameCall {
+        const bool withDir;
+        const JuicerCuda::ResourceManager::DeviceContextKey& key;
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;
+        cudaStream_t stream;
+        JuicerCuda::Failure failure;
+        Frame frame;
+        CurvePointers* curves = nullptr;
+        const CurvePointers* expectedCurves = nullptr;
+    };
+
+    void audit_curve_storage(const FrameFixture::Inputs& prepared,
+                             Frame& frame,
+                             CurvePointers* output,
+                             const CurvePointers* expected) {
+        if (!output && !expected)
+            return;
+        const auto& development = prepared.state.film_development;
+        const auto film = frame.focused_resources().film;
+        const auto layers = frame.visual_grain_resources().densityLayers;
+        const std::size_t count = development.log_exposure.count;
+        require(count == static_cast<std::size_t>(film.normalizedDensR.n), "film curve sample count matches held state");
+        const std::array<JuicerCuda::DeviceCurveView, 3> normalized{{film.normalizedDensR, film.normalizedDensG, film.normalizedDensB}};
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            require(normalized[channel].n == static_cast<int>(count), "normalized curve extent");
+            std::vector<float> axis(count), density(count);
+            require_cuda(cudaMemcpy(axis.data(), normalized[channel].x, count * sizeof(float), cudaMemcpyDeviceToHost));
+            require_cuda(cudaMemcpy(density.data(), normalized[channel].y, count * sizeof(float), cudaMemcpyDeviceToHost));
+            for (std::size_t row = 0; row < count; ++row) {
+                require(std::bit_cast<std::uint32_t>(axis[row]) == std::bit_cast<std::uint32_t>(development.log_exposure.data[row]), "device exposure axis matches held state");
+                require(std::bit_cast<std::uint32_t>(density[row]) == std::bit_cast<std::uint32_t>(development.density_rgb.data[row * 3 + channel]), "device normalized density matches held state");
+            }
+            if (prepared.state.grain.sublayers_active != 0) {
+                for (std::size_t layer = 0; layer < 3; ++layer) {
+                    const auto* actual = layers.curves[layer][channel];
+                    require(actual != nullptr, "active layer curve present");
+                    std::vector<float> values(count);
+                    require_cuda(cudaMemcpy(values.data(), actual, count * sizeof(float), cudaMemcpyDeviceToHost));
+                    for (std::size_t row = 0; row < count; ++row) {
+                        const auto& source = development.density_layers[layer][channel];
+                        require(std::bit_cast<std::uint32_t>(values[row]) == std::bit_cast<std::uint32_t>(source.data[row]), "device layer density matches held state");
+                    }
+                }
+            }
+        }
+        if (output) {
+            output->normalized = normalized;
+            std::copy(std::begin(layers.baseCurvesCmy), std::end(layers.baseCurvesCmy), output->layerBase.begin());
+            for (std::size_t layer = 0; layer < 3; ++layer)
+                for (std::size_t channel = 0; channel < 3; ++channel)
+                    output->layers[layer][channel] = layers.curves[layer][channel];
+            output->normalizedHash = development.density_curves_hash;
+            output->layersHash = layers.hash;
+            output->layersActive = layers.active;
+        }
+        if (expected) {
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                require(expected->normalized[channel].x == normalized[channel].x && expected->normalized[channel].y == normalized[channel].y, "exact normalized curve storage reused");
+                if (expected->layersActive) {
+                    require(expected->layerBase[channel].x == layers.baseCurvesCmy[channel].x && expected->layerBase[channel].y == layers.baseCurvesCmy[channel].y, "exact layer base storage reused");
+                    for (std::size_t layer = 0; layer < 3; ++layer)
+                        require(expected->layers[layer][channel] == layers.curves[layer][channel], "exact layer curve storage reused");
+                }
+            }
+            require(expected->layersActive == layers.active && expected->layersHash == layers.hash, "layer storage identity retained");
+        }
+    }
+
+    bool prepare_root_frame(void* user, const FrameFixture::Inputs& prepared, std::string& diagnostic) {
+        auto& call = *static_cast<FrameCall*>(user);
+        auto preparation = prepared.preparation;
+        if (!call.withDir)
+            preparation.spatialDirDescriptor = nullptr;
+        Frame frame = JuicerProcess::root().prepare_cuda_frame(
+            call.key, call.snapshot, preparation, {}, call.stream, call.failure, prepared.hostPreparation);
+        if (!frame.active()) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        const auto lease = frame.workspace_lease();
+        if (call.withDir && !frame.prepare_spatial_dir_resources(
+                                prepared.descriptors.spatialDir, lease, call.stream, call.failure, prepared.hostPreparation)) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        if (!frame.stage_optical_workspace(lease, call.stream, call.failure)) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        if (call.curves || call.expectedCurves)
+            require_cuda(cudaStreamSynchronize(call.stream));
+        audit_curve_storage(prepared, frame, call.curves, call.expectedCurves);
+        call.frame = std::move(frame);
+        return true;
+    }
+
+    struct ConsumerThrowSentinel final : std::exception {
+        const char* what() const noexcept override {
+            return "prepared-frame consumer sentinel";
+        }
+    };
+
+    struct NoiseFaultReset {
+        NoiseFaultReset() {
+            fj_test_noise_fault(0);
+        }
+        ~NoiseFaultReset() {
+            fj_test_noise_fault(0);
+        }
+    };
+
+    bool throw_after_release_fault(void*, const FrameFixture::Inputs&, std::string&) {
+        fj_test_noise_fault(3);
+        throw ConsumerThrowSentinel{};
+    }
+
+    bool prepare_then_arm_release_fault(void* user,
+                                        const FrameFixture::Inputs& prepared,
+                                        std::string& diagnostic) {
+        fj_test_noise_fault(3);
+        return prepare_root_frame(user, prepared, diagnostic);
+    }
 
     class GrainScratch : public testing::Test {
     protected:
@@ -208,24 +339,24 @@ namespace {
             require_cuda(destroyStatus);
         }
 
-        Frame prepare(const Inputs& inputs, bool withDir = true, std::uint64_t instanceToken = 0x475241494eull) {
+        Frame prepare(const Inputs& inputs,
+                      bool withDir = true,
+                      std::uint64_t instanceToken = 0x475241494eull,
+                      CurvePointers* curves = nullptr,
+                      const CurvePointers* expectedCurves = nullptr) {
             JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
             snapshot.instanceToken.value = instanceToken;
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-                inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
-            JuicerCuda::Failure error;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(
-                key, snapshot, inputs.request(withDir), {}, stream, error);
-            require(frame.active(), error.diagnostic);
-            const auto lease = frame.workspace_lease();
-            if (withDir) {
-                require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error.diagnostic);
-            }
-            require(frame.stage_optical_workspace(lease, stream, error), error.diagnostic);
-            return frame;
+                inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
+            FrameCall call{withDir, key, snapshot, stream, {}, {}, curves, expectedCurves};
+            std::string diagnostic;
+            const bool ready = FrameFixture::with_prepared_frame_inputs(
+                inputs.state, inputs.facts, &call, &prepare_root_frame, diagnostic);
+            require(ready, diagnostic.empty() ? call.failure.diagnostic : diagnostic);
+            return std::move(call.frame);
         }
 
         void finish(Frame& frame) {
@@ -241,7 +372,7 @@ namespace {
             JuicerCuda::GrainPayload payload;
             JuicerCuda::GrainKernelPayload kernels;
             std::string error;
-            require(JuicerCuda::pack_visual_grain_payload(inputs.product.recipe.visualGrain,
+            require(JuicerCuda::pack_visual_grain_payload(inputs.grainPayload,
                                                           frame.visual_grain_resources(),
                                                           payload,
                                                           kernels,
@@ -299,6 +430,55 @@ namespace {
         cudaStream_t stream = nullptr;
         bool contextRetired = false;
     };
+
+    TEST_F(GrainScratch, PreparedFrameNoiseReleaseFailurePreservesConsumerAndRootOutcomes) {
+        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
+        const std::size_t baseline = fj_test_live_noise_owners();
+        NoiseFaultReset resetFault;
+        FrameFixture::FrameFacts facts = inputs.facts;
+
+        bool sentinelRethrown = false;
+        std::string diagnostic;
+        try {
+            (void)FrameFixture::with_prepared_frame_inputs(
+                inputs.state, facts, nullptr, &throw_after_release_fault, diagnostic);
+        } catch (const ConsumerThrowSentinel&) {
+            sentinelRethrown = true;
+        } catch (...) {
+            FAIL() << "prepared-frame cleanup replaced the consumer exception";
+        }
+        EXPECT_TRUE(sentinelRethrown);
+        EXPECT_EQ(fj_test_live_noise_owners(), baseline);
+
+        JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+        snapshot.instanceToken.value = 0x475241494eull;
+        snapshot.frameToken.value = nextIdentity;
+        snapshot.snapshotId = nextIdentity++;
+        snapshot.deviceContextKey = key;
+        snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+            inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
+        FrameCall call{true, key, snapshot, stream, {}, {}};
+        diagnostic.clear();
+        const bool releaseFailed = FrameFixture::with_prepared_frame_inputs(
+            inputs.state, facts, &call, &prepare_then_arm_release_fault, diagnostic);
+        EXPECT_FALSE(releaseFailed);
+        EXPECT_TRUE(call.frame.active());
+        EXPECT_NE(diagnostic.find("asset boundary panic"), std::string::npos);
+        EXPECT_EQ(fj_test_live_noise_owners(), baseline);
+        if (call.frame.active())
+            finish(call.frame);
+
+        fj_test_noise_fault(0);
+        FrameCall retry{true, key, snapshot, stream, {}, {}};
+        diagnostic.clear();
+        EXPECT_TRUE(FrameFixture::with_prepared_frame_inputs(
+            inputs.state, facts, &retry, &prepare_root_frame, diagnostic))
+            << diagnostic;
+        EXPECT_TRUE(retry.frame.active());
+        if (retry.frame.active())
+            finish(retry.frame);
+        EXPECT_EQ(fj_test_live_noise_owners(), baseline);
+    }
 
     TEST(GrainUpload, RetainsCapacityFailureAfterRelock) {
         require_cuda(cudaSetDevice(0));
@@ -393,65 +573,21 @@ namespace {
                 Inputs before(64, 48, route, variant);
                 variant.filmGamma = 1.1f;
                 Inputs changed(64, 48, route, variant);
-                const auto& a = before.product.recipe.filmDevelop;
-                const auto& b = changed.product.recipe.filmDevelop;
-                EXPECT_NE(a.hash, b.hash);
-                EXPECT_NE(before.product.recipe.hash, changed.product.recipe.hash);
-                EXPECT_EQ(a.normalizedDensityCurvesHash, b.normalizedDensityCurvesHash);
-                EXPECT_EQ(a.densityCurvesLayersHash, b.densityCurvesLayersHash);
-                auto first = prepare(before, false);
+                EXPECT_NE(before.filmDevelopmentHash, changed.filmDevelopmentHash);
+                EXPECT_NE(before.recipeHash, changed.recipeHash);
+                EXPECT_EQ(before.normalizedDensityCurvesHash, changed.normalizedDensityCurvesHash);
+                EXPECT_EQ(before.densityCurvesLayersHash, changed.densityCurvesLayersHash);
+                CurvePointers firstCurves;
+                auto first = prepare(before, false, 0x475241494eull, &firstCurves);
                 require_cuda(cudaStreamSynchronize(stream));
-                const auto film = first.focused_resources().film;
-                const auto layerView = first.visual_grain_resources().densityLayers;
-                const auto capture = [](const float* data, std::size_t count) {
-                    std::vector<std::uint32_t> bits(count);
-                    require_cuda(cudaMemcpy(bits.data(), data, count * sizeof(float), cudaMemcpyDeviceToHost));
-                    return bits;
-                };
-                const std::array<JuicerCuda::DeviceCurveView, 3> curves{{film.normalizedDensR, film.normalizedDensG, film.normalizedDensB}};
-                std::array<std::vector<std::uint32_t>, 3> axisBits;
-                std::array<std::vector<std::uint32_t>, 3> curveBits;
-                std::array<std::array<std::vector<std::uint32_t>, 3>, 3> layerBits;
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    ASSERT_EQ(curves[channel].n, static_cast<int>(a.logExposure.size()));
-                    axisBits[channel] = capture(curves[channel].x, a.logExposure.size());
-                    curveBits[channel] = capture(curves[channel].y, a.logExposure.size());
-                    for (std::size_t row = 0; row < a.logExposure.size(); ++row) {
-                        EXPECT_EQ(axisBits[channel][row], std::bit_cast<std::uint32_t>(a.logExposure[row]));
-                        EXPECT_EQ(curveBits[channel][row], std::bit_cast<std::uint32_t>(a.normalizedDensityCurves[row][channel]));
-                    }
-                    if (layers) {
-                        for (std::size_t layer = 0; layer < 3; ++layer) {
-                            layerBits[layer][channel] = capture(layerView.curves[layer][channel], a.logExposure.size());
-                            for (std::size_t row = 0; row < a.logExposure.size(); ++row) {
-                                EXPECT_EQ(layerBits[layer][channel][row], std::bit_cast<std::uint32_t>(a.densityCurvesLayers[layer][channel][row]));
-                            }
-                        }
-                    }
-                }
+                ASSERT_EQ(firstCurves.layersActive, layers);
                 finish(first);
-                auto second = prepare(changed, false);
+                CurvePointers changedCurves;
+                auto second = prepare(changed, false, 0x475241494eull, &changedCurves, &firstCurves);
                 require_cuda(cudaStreamSynchronize(stream));
-                const auto next = second.focused_resources().film;
-                const auto nextLayers = second.visual_grain_resources().densityLayers;
-                const std::array<JuicerCuda::DeviceCurveView, 3> nextCurves{{next.normalizedDensR, next.normalizedDensG, next.normalizedDensB}};
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    EXPECT_EQ(curves[channel].x, nextCurves[channel].x);
-                    EXPECT_EQ(curves[channel].y, nextCurves[channel].y);
-                    EXPECT_EQ(axisBits[channel], capture(nextCurves[channel].x, a.logExposure.size()));
-                    EXPECT_EQ(curveBits[channel], capture(nextCurves[channel].y, a.logExposure.size()));
-                    if (layers) {
-                        EXPECT_EQ(layerView.baseCurvesCmy[channel].x, nextLayers.baseCurvesCmy[channel].x);
-                        EXPECT_EQ(layerView.baseCurvesCmy[channel].y, nextLayers.baseCurvesCmy[channel].y);
-                        for (std::size_t layer = 0; layer < 3; ++layer) {
-                            EXPECT_EQ(layerView.curves[layer][channel], nextLayers.curves[layer][channel]);
-                            EXPECT_EQ(layerBits[layer][channel], capture(nextLayers.curves[layer][channel], a.logExposure.size()));
-                        }
-                    }
-                }
-                EXPECT_EQ(layerView.active, layers);
-                EXPECT_EQ(nextLayers.active, layers);
-                EXPECT_EQ(layerView.hash, nextLayers.hash);
+                EXPECT_EQ(changedCurves.layersActive, layers);
+                EXPECT_EQ(firstCurves.normalizedHash, changedCurves.normalizedHash);
+                EXPECT_EQ(firstCurves.layersHash, changedCurves.layersHash);
                 finish(second);
             }
         }
@@ -486,7 +622,7 @@ namespace {
                                 retained->build_grain_frame(time);
                             }
                             const auto& inputs = *retained;
-                            ASSERT_EQ(inputs.product.recipe.visualGrain.debugView, debug);
+                            ASSERT_EQ(inputs.grainPayload.coefficients.debug_view, static_cast<std::uint32_t>(debug));
                             ASSERT_EQ(inputs.grain.frame0, 12);
                             ASSERT_EQ(std::bit_cast<std::uint32_t>(inputs.grain.frameAlpha),
                                       std::bit_cast<std::uint32_t>(static_cast<float>(time - 12.0)));
@@ -512,7 +648,7 @@ namespace {
                 auto lease = frame.workspace_lease();
                 const auto before = frame.visual_grain_workspace(lease);
                 const auto dir = frame.spatial_dir_scratch(lease);
-                const bool negative = inputs.product.recipe.profileRoute.capturePolarity == Spektrafilm::ProfilePolarity::Negative;
+                const bool negative = inputs.polarity == Spektrafilm::ProfilePolarity::Negative;
                 const auto optics = frame.scanner_workspace(lease);
                 EXPECT_EQ(before.deltaAccum, negative ? dir.rawCorrectionY : optics.aux);
                 JuicerCuda::Failure error;
@@ -581,21 +717,20 @@ namespace {
         Inputs inputs(128, 96, Spektrafilm::ScanRoute::NegativePrintScan);
         auto first = prepare(inputs);
         finish(first);
-        auto request = inputs.request();
-        request.visualGrainDescriptor.reset();
-        auto recipe = inputs.product.recipe;
-        recipe.visualGrain = {};
-        request.recipe = &recipe;
+        Inputs disabled(128, 96, Spektrafilm::ScanRoute::NegativePrintScan, GrainVariant{.active = false});
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
         snapshot.instanceToken.value = 0x475241494eull;
         snapshot.frameToken.value = nextIdentity;
         snapshot.snapshotId = nextIdentity++;
         snapshot.deviceContextKey = key;
         snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-            inputs.product.payload.uploadCoreHash, recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
-        JuicerCuda::Failure error;
-        auto off = JuicerProcess::root().prepare_cuda_frame(key, snapshot, request, {}, stream, error);
-        require(off.active(), error.diagnostic);
+            disabled.uploadCoreHash, disabled.dirRecipeHash, disabled.scannerHash, 0);
+        FrameCall call{true, key, snapshot, stream, {}, {}};
+        std::string diagnostic;
+        const bool ready = FrameFixture::with_prepared_frame_inputs(
+            disabled.state, disabled.facts, &call, &prepare_root_frame, diagnostic);
+        require(ready, diagnostic.empty() ? call.failure.diagnostic : diagnostic);
+        auto off = std::move(call.frame);
         EXPECT_FALSE(off.visual_grain_workspace(off.workspace_lease()).active);
         finish(off);
         auto on = prepare(inputs);
@@ -813,7 +948,7 @@ namespace {
         JuicerCuda::GrainPayload payload;
         JuicerCuda::GrainKernelPayload kernels;
         std::string error;
-        require(JuicerCuda::pack_visual_grain_payload(inputs.product.recipe.visualGrain,
+        require(JuicerCuda::pack_visual_grain_payload(inputs.grainPayload,
                                                       frame.visual_grain_resources(),
                                                       payload,
                                                       kernels,

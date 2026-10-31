@@ -7,6 +7,7 @@
 #include "RenderRecipe.h"
 
 struct FjGrainFrameMath;
+struct FjGrainCoefficients;
 
 namespace Spektrafilm {
 
@@ -87,9 +88,17 @@ namespace Spektrafilm {
     };
 
     VisualGrainScratchShape visual_grain_scratch_shape(const VisualGrainRecipe& recipe) noexcept;
+    VisualGrainScratchShape visual_grain_scratch_shape(const FjGrainCoefficients& coefficients) noexcept;
 
     bool compose_visual_grain_frame_descriptor(
         const VisualGrainFrameDescriptorInput& input,
+        const FjGrainFrameMath& math,
+        VisualGrainFrameDescriptor& out,
+        std::string& diagnostic);
+
+    bool compose_visual_grain_frame_descriptor(
+        const FjGrainCoefficients& coefficients,
+        ProfilePolarity capturePolarity,
         const FjGrainFrameMath& math,
         VisualGrainFrameDescriptor& out,
         std::string& diagnostic);

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -321,6 +322,206 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     if document.get("build_testing") != "OFF" or not re.search(r"^BUILD_TESTING:BOOL=OFF$", cache.read_text(), re.M):
         raise ValueError("production retained configuration is not testing-OFF")
 
+    prepared_render = document.get("prepared_render")
+    render_keys = {
+        "executable", "executable_sha256_before", "executable_sha256_after",
+        "command", "fixture", "fixture_sha256", "stdout_sha256",
+        "stderr_sha256", "rows",
+    }
+    if not isinstance(prepared_render, dict) or set(prepared_render) != render_keys:
+        raise ValueError("production prepared-render schema is incomplete or contains unknown fields")
+    preset = document["preset"]
+    target = "JuicerProductionPreparedRenderProbe"
+    executable_name = target + suffix
+    original_executable = build / "tests/bin" / executable_name
+    retained_executable = manifest.parent / executable_name
+    fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{preset}.dat"
+    source = root / "tests/ffi/production-prepared-render.cpp"
+    overlay = root / "tests/print/illuminant-fixtures/product-updates.json"
+    command = prepared_render["command"]
+    matching_command = (isinstance(command, list) and len(command) == 5
+                        and resolve(command[0]) == original_executable
+                        and resolve(command[1]) == root / "Resources"
+                        and resolve(command[2]) == fixture and command[3] == preset
+                        and resolve(command[4]) == overlay)
+    if (resolve(prepared_render["executable"]) != retained_executable
+            or not matching_command
+            or resolve(prepared_render["fixture"]) != fixture
+            or len({prepared_render["executable_sha256_before"],
+                    prepared_render["executable_sha256_after"]}) != 1):
+        raise ValueError("production prepared-render execution identities disagree")
+    target_key = str(resolve(str(original_executable)))
+    if target_key not in declared or declared[target_key] != prepared_render["executable_sha256_before"]:
+        raise ValueError("production prepared-render build artifact identity is missing or changed")
+    admit(prepared_render["executable"], prepared_render["executable_sha256_after"])
+
+    consumed = document.get("consumed_inputs", {})
+    reference_consumed = {str(resolve(name)): checksum for name, checksum in consumed.items()}
+    fixture_manifest = root / "tests/ofx/fixtures/exposure/manifest.json"
+    for path in (root / "CMakeLists.txt", source, fixture_manifest, fixture,
+                 root / "tests/print/illuminant-fixtures/manifest.json", overlay):
+        checksum = inputs.get(path.relative_to(root).as_posix())
+        if (checksum is None or digest(path) != checksum
+                or reference_consumed.get(str(path.resolve())) != checksum):
+            raise ValueError("production prepared-render consumed input identity changed")
+    fixture_spec = json.loads(fixture_manifest.read_text())
+    if (fixture_spec.get("files", {}).get(fixture.name) != prepared_render["fixture_sha256"]
+            or digest(fixture) != prepared_render["fixture_sha256"]):
+        raise ValueError("production prepared-render fixture identity changed")
+    overlay_spec = json.loads(overlay.read_text(encoding="utf-8"))
+    fixture_values = {}
+    tokens = fixture.read_text(encoding="utf-8").split()
+    position = 0
+    while position < len(tokens):
+        name = tokens[position]
+        try:
+            count = int(tokens[position + 1])
+        except (IndexError, ValueError) as error:
+            raise ValueError("production prepared-render fixture is malformed") from error
+        position += 2
+        if count < 0 or position + count > len(tokens):
+            raise ValueError("production prepared-render fixture is truncated")
+        try:
+            values = [struct.unpack("<I", struct.pack("<f", float(value)))[0]
+                      for value in tokens[position:position + count]]
+        except (ValueError, OverflowError, struct.error) as error:
+            raise ValueError("production prepared-render fixture contains an invalid sample") from error
+        position += count
+        if name in {"negative-direct", "negative-print"}:
+            if name in fixture_values:
+                raise ValueError("production prepared-render fixture has duplicate route rows")
+            fixture_values[name] = values
+    if set(fixture_values) != {"negative-direct", "negative-print"}:
+        raise ValueError("production prepared-render fixture route membership is incomplete")
+    for route, values in fixture_values.items():
+        key = f"ofx/fixtures/exposure/{fixture.name}.{route}"
+        patches = overlay_spec.get("fixtures", {}).get(key, [])
+        if not isinstance(patches, list):
+            raise ValueError("production prepared-render fixture overlay is malformed")
+        for patch in patches:
+            if (not isinstance(patch, dict) or set(patch) != {"op", "path", "value"}
+                    or patch["op"] not in {"test", "replace"}
+                    or not isinstance(patch["path"], str)
+                    or not re.fullmatch(r"/(0|[1-9][0-9]*)", patch["path"])
+                    or type(patch["value"]) is not int or not 0 <= patch["value"] <= 0xffffffff):
+                raise ValueError("production prepared-render fixture overlay operation is malformed")
+            sample = int(patch["path"][1:])
+            if sample >= len(values):
+                raise ValueError("production prepared-render fixture overlay index is out of range")
+            if patch["op"] == "test":
+                if values[sample] != patch["value"]:
+                    raise ValueError("production prepared-render fixture overlay test failed")
+            else:
+                values[sample] = patch["value"]
+
+    stdout = manifest.parent / "prepared-render.stdout"
+    stderr = manifest.parent / "prepared-render.stderr"
+    for path, checksum in ((stdout, prepared_render["stdout_sha256"]),
+                           (stderr, prepared_render["stderr_sha256"])):
+        if not path.is_file() or digest(path) != checksum:
+            raise ValueError("production prepared-render retained output missing or changed")
+        admit(str(path), checksum)
+
+    row_fields = {
+        "case_id", "route", "pass", "input_sha256", "recipe_hash", "status", "api",
+        "native_code", "diagnostic", "input_shape", "output_shape",
+        "output_f32_words_sha256", "accepted_fixture_match", "submitted",
+        "readback_complete", "state_released_after_submit", "views_released_after_submit",
+        "stream_completed", "context_preserved", "context_restored",
+    }
+    raw_fields = (row_fields - {"input_sha256", "output_f32_words_sha256"}) | {
+        "input_f32_words", "output_f32_words",
+    }
+    expected_ids = ("negative-direct/cold", "negative-direct/warm",
+                    "negative-print/cold", "negative-print/warm")
+    expected_rows = prepared_render["rows"]
+    try:
+        raw_document = json.loads(stdout.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
+        raise ValueError("production prepared-render stdout is not its declared JSON result") from error
+    raw_rows = raw_document.get("rows") if isinstance(raw_document, dict) and set(raw_document) == {"rows"} else None
+    if (not isinstance(expected_rows, list) or len(expected_rows) != 4
+            or tuple(row.get("case_id") for row in expected_rows if isinstance(row, dict)) != expected_ids
+            or not isinstance(raw_rows, list) or len(raw_rows) != 4):
+        raise ValueError("production prepared-render row membership is incomplete or duplicated")
+
+    def word_digest(words):
+        if (not isinstance(words, list) or any(type(word) is not int or not 0 <= word <= 0xffffffff
+                                               for word in words)):
+            raise ValueError("production prepared-render word array is malformed")
+        return hashlib.sha256(b"".join(struct.pack("<I", word) for word in words)).hexdigest()
+
+    def f32(value):
+        return struct.unpack("<f", struct.pack("<f", value))[0]
+
+    for index, (case_id, final, raw) in enumerate(zip(expected_ids, expected_rows, raw_rows, strict=True)):
+        if (not isinstance(final, dict) or set(final) != row_fields
+                or not isinstance(raw, dict) or set(raw) != raw_fields
+                or final["case_id"] != case_id or raw["case_id"] != case_id):
+            raise ValueError("production prepared-render row schema or order changed")
+        route = "negative-direct" if index < 2 else "negative-print"
+        components = 3 if route == "negative-direct" else 4
+        shape = [5, 7, components]
+        input_hash = word_digest(raw.get("input_f32_words"))
+        output_hash = word_digest(raw.get("output_f32_words"))
+        shapes = (final["input_shape"], final["output_shape"], raw["input_shape"], raw["output_shape"])
+        if (final["route"] != route or raw["route"] != route
+                or any(not isinstance(value, list) for value in shapes)
+                or any(type(value) is not int for shape_values in shapes for value in shape_values)
+                or final["input_shape"] != shape or final["output_shape"] != shape
+                or raw["input_shape"] != shape or raw["output_shape"] != shape
+                or len(raw["input_f32_words"]) != 5 * 7 * components
+                or len(raw["output_f32_words"]) != 5 * 7 * components):
+            raise ValueError("production prepared-render input/output shape changed")
+        if (final["input_sha256"] != input_hash
+                or final["output_f32_words_sha256"] != output_hash):
+            raise ValueError("production prepared-render row word hashes disagree with stdout")
+        raw_final = {key: value for key, value in raw.items()
+                     if key not in {"input_f32_words", "output_f32_words"}}
+        if final != {**raw_final, "input_sha256": input_hash,
+                     "output_f32_words_sha256": output_hash}:
+            raise ValueError("production prepared-render manifest rows disagree with stdout")
+        if (final["pass"] != ("cold" if index in (0, 2) else "warm")
+                or type(final["status"]) is not int or final["status"] != 0
+                or type(final["api"]) is not int or final["api"] != 0
+                or type(final["native_code"]) is not int or final["native_code"] != 0
+                or final["accepted_fixture_match"] is not True
+                or any(final[name] is not True for name in (
+                    "submitted", "readback_complete", "state_released_after_submit",
+                    "views_released_after_submit", "stream_completed", "context_preserved",
+                    "context_restored"))
+                or type(final["recipe_hash"]) is not int or not 0 <= final["recipe_hash"] < 2**64
+                or not isinstance(final["diagnostic"], str)):
+            raise ValueError("production prepared-render row did not prove successful completion")
+        expected_words = fixture_values[route]
+        actual_words = raw["output_f32_words"]
+        if len(expected_words) != len(actual_words):
+            raise ValueError("production prepared-render fixture output shape changed")
+        for actual_word, expected_word in zip(actual_words, expected_words, strict=True):
+            actual_value = struct.unpack("<f", struct.pack("<I", actual_word))[0]
+            expected_value = struct.unpack("<f", struct.pack("<I", expected_word))[0]
+            difference = abs(f32(actual_value - expected_value))
+            allowed = f32(f32(2e-4) + f32(f32(3e-4) * abs(expected_value)))
+            if not difference <= allowed:
+                raise ValueError("production prepared-render output does not match the selected fixture")
+    if (expected_rows[0]["output_f32_words_sha256"] != expected_rows[1]["output_f32_words_sha256"]
+            or expected_rows[2]["output_f32_words_sha256"] != expected_rows[3]["output_f32_words_sha256"]):
+        raise ValueError("production prepared-render warm output differs from its cold route")
+
+    command_record = document["commands"]
+    if resolve(command_record["file"]) != manifest.parent / "commands.json":
+        raise ValueError("production retained command record is not the declared run")
+    admit(command_record["file"], command_record["sha256"])
+    commands = json.loads(resolve(command_record["file"]).read_text())
+    names = [row["name"] for row in commands]
+    if len(names) != len(set(names)) or names.count("prepared-render") != 1:
+        raise ValueError("production retained command membership is incomplete or duplicated")
+    prepared_command = next(row for row in commands if row["name"] == "prepared-render")
+    if (prepared_command["command"] != prepared_render["command"]
+            or prepared_command["stdout_sha256"] != prepared_render["stdout_sha256"]
+            or prepared_command["stderr_sha256"] != prepared_render["stderr_sha256"]):
+        raise ValueError("production prepared-render command execution identity changed")
+
     for row in probes:
         name = row["name"]
         executable = resolve(row["executable"])
@@ -616,13 +817,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         raise ValueError("production retained expectation header membership is incomplete")
     for name, checksum in headers.items():
         admit(name, checksum)
-    command_record = document["commands"]
-    if resolve(command_record["file"]) != manifest.parent / "commands.json":
-        raise ValueError("production retained command record is not the declared run")
-    admit(command_record["file"], command_record["sha256"])
-    commands = json.loads(resolve(command_record["file"]).read_text())
-    names = [row["name"] for row in commands]
-    if len(names) != len(set(names)) or not {name + role for name in expected_names for role in ("-compile", "-values")} <= set(names):
+    if len(names) != len(set(names)) or not ({name + role for name in expected_names for role in ("-compile", "-values")} | {"prepared-render"}) <= set(names):
         raise ValueError("production retained command membership is incomplete or duplicated")
     outputs = {}
     for row in commands:
@@ -771,6 +966,11 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
         paths.update(root / name for name in (
             "tests/ffi/production_contract.py",
             "tests/ffi/production-film.c.in",
+            "tests/ffi/production-prepared-render.cpp",
+            "tests/ofx/fixtures/exposure/manifest.json",
+            f"tests/ofx/fixtures/exposure/processor-{build.name}.dat",
+            "tests/print/illuminant-fixtures/manifest.json",
+            "tests/print/illuminant-fixtures/product-updates.json",
             "tests/ffi/film_recipe_abi_c.c",
             "tests/ffi/grain_frame_abi_assertions.inc",
             "tests/ffi/grain_probe_contract.py",
@@ -1175,8 +1375,15 @@ def _qualify_owned(root, build, args):
             if not re.search(r"^BUILD_TESTING:BOOL=OFF$", cache, re.M):
                 raise ValueError("production isolation requires a separately prepared testing-OFF Release tree")
             from build_dependencies import NinjaGraph
-            artifacts = sorted(p for n in NinjaGraph(build, ["juicer"], environment).outputs
-                               if (p := Path(n)).is_file() and p.suffix.lower() in {".a", ".lib", ".ofx", ".pdb"})
+            graph = NinjaGraph(build, ["juicer", "JuicerProductionPreparedRenderProbe"], environment)
+            executable = build / "tests/bin" / (
+                "JuicerProductionPreparedRenderProbe.exe" if os.name == "nt"
+                else "JuicerProductionPreparedRenderProbe")
+            if str(executable.resolve()) not in graph.outputs or not executable.is_file():
+                raise ValueError("prepared-render production executable is missing from the target graph")
+            artifacts = sorted({p for n in graph.outputs
+                                if (p := Path(n)).is_file() and p.suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}}
+                               | {executable})
             # TARGET_PDB is not a Ninja output. Its removal changes membership;
             # the harness then fails under the existing pending stage owner.
             pdb = build / "juicer.pdb"

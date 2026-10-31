@@ -141,6 +141,11 @@ pub(crate) struct FjPreparedState {
     // The foreign Box owns only this small header; projections never self-point.
     state: Vec<recipe::RenderState>,
 }
+impl FjPreparedState {
+    pub(crate) fn render_state(&self) -> &recipe::RenderState {
+        &self.state[0]
+    }
+}
 #[cfg(feature = "test-support")]
 static LIVE_STATES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(feature = "test-support")]
@@ -526,8 +531,43 @@ pub(crate) unsafe fn state_release(
     owner: *mut FjPreparedState,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
+    #[cfg(feature = "test-support")]
+    if !owner.is_null() && aligned(owner) {
+        let observer = *PREPARED_STATE_RELEASE_OBSERVER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(observer) = observer {
+            // SAFETY: The release contract transfers this live, exclusively held
+            // owner. The callback receives a borrowed pointer and must return
+            // before the state is dropped; no pointer is retained here.
+            let samples = unsafe {
+                (*owner)
+                    .render_state()
+                    .reconstruction()
+                    .tc_lut()
+                    .map_or(std::ptr::null(), |lut| lut.samples().as_ptr())
+            };
+            // SAFETY: Invoke outside the observer mutex. The registered test
+            // callback stays callable until cleared, synchronizes its own work,
+            // and returns before the sample storage is dropped.
+            unsafe { observer(samples) };
+        }
+    }
     // SAFETY: The common release consumes the caller-authorized matching Box.
     unsafe { release(owner, error) }
+}
+
+#[cfg(feature = "test-support")]
+static PREPARED_STATE_RELEASE_OBSERVER: std::sync::Mutex<Option<unsafe extern "C" fn(*const f32)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(feature = "test-support")]
+pub(crate) fn set_prepared_state_release_observer(
+    observer: Option<unsafe extern "C" fn(*const f32)>,
+) {
+    *PREPARED_STATE_RELEASE_OBSERVER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = observer;
 }
 
 fn route_tag(route: ScanRoute) -> u32 {
@@ -1214,7 +1254,7 @@ unsafe fn run<T>(
 /// # Safety
 /// A matching live Assets allocation remains borrowed for the caller's scope;
 /// the caller excludes destruction. Alignment does not establish pointer validity.
-unsafe fn assets<'a>(pointer: *const FjAssets) -> Result<&'a Assets, Failure> {
+pub(crate) unsafe fn assets<'a>(pointer: *const FjAssets) -> Result<&'a Assets, Failure> {
     let pointer = pointer.cast::<Assets>();
     if !aligned(pointer) {
         return Err(Failure::Input("invalid preparation Assets owner"));
@@ -2324,17 +2364,61 @@ pub(crate) fn failure_category(error: &recipe::PrepareError) -> u32 {
             | film_juicer_core::film::Error::RouteMismatch,
         ) => FJ_STATUS_UNSUPPORTED_INPUT,
         E::Development(film_juicer_core::film::Error::Allocation)
-        | E::ReferenceWhite(film_juicer_core::reconstruction::Error::AllocationFailure)
+        | E::ReferenceWhite(
+            film_juicer_core::reconstruction::CheckedReferenceWhiteError::Reconstruction(
+                film_juicer_core::reconstruction::Error::AllocationFailure,
+            ),
+        )
         | E::Dir {
             error:
                 film_juicer_core::film::dir::Error::Allocation
                 | film_juicer_core::film::dir::Error::Size,
             ..
         }
-        | E::Tc(film_juicer_core::reconstruction::TcError::AllocationFailure)
+        | E::Tc(film_juicer_core::reconstruction::CheckedTcError::Tc(
+            film_juicer_core::reconstruction::TcError::AllocationFailure,
+        ))
         | E::PrintDevelopment(film_juicer_core::profile::PrintDensityError::Capacity) => {
             FJ_STATUS_ALLOCATION_FAILURE
         }
+        E::EqualEnergy(film_juicer_core::illuminant::EqualEnergyError::Unsupported) => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
+        E::Blackbody(film_juicer_core::illuminant::BlackbodyError::Unsupported)
+        | E::ReferenceWhite(
+            film_juicer_core::reconstruction::CheckedReferenceWhiteError::BoundaryUnsupported,
+        )
+        | E::Tc(film_juicer_core::reconstruction::CheckedTcError::BoundaryUnsupported) => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
+        E::EqualEnergy(film_juicer_core::illuminant::EqualEnergyError::Illuminant(error))
+        | E::Blackbody(film_juicer_core::illuminant::BlackbodyError::Illuminant(error)) => {
+            match error.kind {
+                film_juicer_core::illuminant::ErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
+                film_juicer_core::illuminant::ErrorKind::Preparation => {
+                    FJ_STATUS_PREPARATION_FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "test-support")]
+        E::MallettMidgray(film_juicer_core::exposure::BoundaryError::Unsupported)
+        | E::TcMidgray(film_juicer_core::exposure::BoundaryError::Unsupported) => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
+        #[cfg(feature = "test-support")]
+        E::MallettMidgray(film_juicer_core::exposure::BoundaryError::Preparation)
+        | E::TcMidgray(film_juicer_core::exposure::BoundaryError::Preparation) => {
+            FJ_STATUS_PREPARATION_FAILURE
+        }
+        E::SpectralBoundary(error) => match error.kind {
+            film_juicer_core::spectral::BoundaryKind::Unsupported => FJ_STATUS_UNSUPPORTED_INPUT,
+            film_juicer_core::spectral::BoundaryKind::AllocationCategory => {
+                FJ_STATUS_ALLOCATION_FAILURE
+            }
+            film_juicer_core::spectral::BoundaryKind::PreparationCategory => {
+                FJ_STATUS_PREPARATION_FAILURE
+            }
+        },
         E::Input(film_juicer_core::film::input::Error::Panic(_)) => FJ_STATUS_INTERNAL_FAILURE,
         #[cfg(feature = "test-support")]
         E::Input(film_juicer_core::film::input::Error::Boundary(_, category)) => *category,

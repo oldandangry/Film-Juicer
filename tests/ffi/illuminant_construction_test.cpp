@@ -8,6 +8,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -29,6 +30,7 @@
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
 #include "print_illuminant_fixture.h"
+#include "prepared_product_fixture.h"
 template <typename T>
 concept RvalueCsvView = requires(T&& value) { std::move(value).view(); };
 static_assert(!std::is_default_constructible_v<JuicerAssets::CsvRows> && !std::is_copy_constructible_v<JuicerAssets::CsvRows> && std::is_move_constructible_v<JuicerAssets::CsvRows> && !RvalueCsvView<JuicerAssets::CsvRows>);
@@ -65,27 +67,37 @@ namespace IlluminantConstruction {
         out.inputCompressionEnabled = 0;
         return out;
     }
-    Json color_result(const Scanner::ColorRuntime& color) {
-        return {{"cat02", bits(color.cat02)}, {"xyz_to_rgb", bits(color.xyzToRgb)}, {"illuminant_xyz", bits(color.illuminantXYZ)}, {"encoding", {static_cast<int>(color.encoding.colorSpace), color.encoding.applyCctfEncoding, color.encoding.inputIsOutputSpace}}, {"gamut_recipe_hash", color.outputGamutRecipeHash}, {"hash", color.hash}};
+    Json color_result(const FjScannerColor& color) {
+        return {{"cat02", bits(color.cat02)}, {"xyz_to_rgb", bits(color.xyz_to_rgb)}, {"illuminant_xyz", bits(color.illuminant_xyz)}, {"encoding", {static_cast<int>(color.output_space), bool(color.flags & FJ_COLOR_ENCODE_CCTF), bool(color.flags & FJ_COLOR_INPUT_IS_OUTPUT_SPACE)}}, {"gamut_recipe_hash", color.active_gamut_recipe_hash}, {"hash", color.hash}};
     }
-    Json tables_result(const Spectral::SpectralTables& tables) {
-        return {{"lambda", bits(tables.lambda)}, {"K", tables.K}, {"delta_lambda", bits(std::array{tables.deltaLambda})}, {"inv_yn", bits(std::array{tables.invYn})}, {"white_xyz", bits(tables.whiteXYZ)}, {"ref_illum_white_xyz", bits(tables.refIllumWhiteXYZ)}, {"ax", bits(tables.Ax)}, {"ay", bits(tables.Ay)}, {"az", bits(tables.Az)}, {"xbar", bits(tables.Xbar)}, {"ybar", bits(tables.Ybar)}, {"zbar", bits(tables.Zbar)}, {"illum", bits(tables.illum)}, {"eps_c", bits(tables.epsC)}, {"eps_m", bits(tables.epsM)}, {"eps_y", bits(tables.epsY)}, {"base_density_min", bits(tables.baseDensityMin)}, {"base_density_mid", bits(tables.baseDensityMid)}, {"has_baseline", tables.hasBaseline}, {"baseline_mix", bits(std::array{tables.densityBaselineMixReference})}, {"illuminant_hash", tables.illuminantHash}, {"tables_hash", tables.tablesHash}};
+    Json span_bits(FjFloatSpan span) {
+        Json out = Json::array();
+        for (std::size_t i = 0; i < span.count; ++i)
+            out.push_back(std::bit_cast<std::uint32_t>(span.data[i]));
+        return out;
     }
-    Json scanner_descriptor(const FocusedRenderStateBuildProduct& product) {
-        Scanner::ScannerSpectralLutDescriptor out;
-        std::string diagnostic;
-        const auto& recipe = product.recipe;
-        const bool ok = Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ? Scanner::build_print_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, out, diagnostic) : Scanner::build_direct_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, out, diagnostic);
-        require(ok, diagnostic);
-        return {{"route", static_cast<int>(out.route)}, {"medium", static_cast<int>(out.medium)}, {"polarity", static_cast<int>(out.polarity)}, {"density_bounds_hash", out.densityBoundsHash}, {"channel_density_hash", out.channelDensityHash}, {"base_density_hash", out.baseDensityHash}, {"illuminant_hash", out.scanIlluminantHash}, {"observer_hash", out.observerHash}, {"resolution", out.lutResolution}, {"hash", out.hash}};
+    Json tables_result(const FjPreparedSpectralView& tables) {
+        require(tables.lambda_nm.count == 81 && tables.illuminant.count == 81, "prepared spectral axis and illuminant extents");
+        for (unsigned i = 0; i < 3; ++i)
+            require(tables.observer_xyz[i].count == 81 && tables.weighted_xyz[i].count == 81 && tables.dyes_cmy[i].count == 81, "prepared spectral lane extents");
+        return {{"lambda", span_bits(tables.lambda_nm)}, {"K", 81}, {"delta_lambda", bits(std::array{5.0f})}, {"inv_yn", bits(std::array{tables.inv_yn})}, {"white_xyz", bits(tables.white_xyz)}, {"ref_illum_white_xyz", bits(tables.white_xyz)}, {"ax", span_bits(tables.weighted_xyz[0])}, {"ay", span_bits(tables.weighted_xyz[1])}, {"az", span_bits(tables.weighted_xyz[2])}, {"xbar", span_bits(tables.observer_xyz[0])}, {"ybar", span_bits(tables.observer_xyz[1])}, {"zbar", span_bits(tables.observer_xyz[2])}, {"illum", span_bits(tables.illuminant)}, {"eps_c", span_bits(tables.dyes_cmy[0])}, {"eps_m", span_bits(tables.dyes_cmy[1])}, {"eps_y", span_bits(tables.dyes_cmy[2])}, {"base_density_min", span_bits(tables.baseline_min)}, {"base_density_mid", span_bits(tables.baseline_mid)}, {"has_baseline", bool(tables.has_baseline)}, {"baseline_mix", bits(std::array{0.0f})}, {"illuminant_hash", tables.illuminant_hash}, {"tables_hash", tables.hash}};
     }
-    Json complete_result(const FocusedRenderStateBuildProduct& product) {
-        const auto& recipe = product.recipe;
-        const auto& raw = recipe.filmRaw;
-        const auto& reference = recipe.scannerOutput.syntheticFilmReference;
-        const auto& balance = recipe.print.balance;
-        const auto& config = product.payload.filmRawConfig;
-        return {{"input_rgb_to_xyz", bits(raw.inputRgbToXyz)}, {"input_adapt", bits(raw.inputXyzAdapt)}, {"xyz_to_linear_srgb", bits(raw.xyzToLinearSrgb)}, {"source_white", bits(raw.inputNominalWhiteXYZ)}, {"projection_white", bits(raw.projectionWhiteXYZ)}, {"config_rgb_to_xyz", bits(config.inputRGBToXYZ.m)}, {"config_adapt", bits(config.inputXYZAdapt.m)}, {"raw_midgray", bits(config.rawMidgray)}, {"midgray_dwg", bits(config.midgrayDWG)}, {"midgray_scale_green", bits(std::array{config.midgrayScale, config.rawMidgrayGreen})}, {"config_whites", {bits(config.inputWhiteXYZ), bits(config.workingWhiteXYZ), bits(config.refIllumWhiteXYZ)}}, {"config_flags", {static_cast<int>(config.inputColorSpace), config.applyCctfDecoding, static_cast<int>(config.spectralUpsamplingMode), config.applyInputChromaticAdapt, config.hasRefIllumWhite, config.valid}}, {"spd_s_inv", bits(product.payload.spdSInv)}, {"baseline_raw", bits(reference.baselineRawRgb)}, {"compensated_raw", bits(reference.compensatedRawRgb)}, {"baseline_density", bits(reference.baselineDensityCmy)}, {"compensated_density", bits(reference.compensatedDensityCmy)}, {"print_baseline_raw", bits(balance.baselinePrintRawRgb)}, {"print_compensated_raw", bits(balance.compensatedPrintRawRgb)}, {"print_factors", bits(std::array{balance.factorMidgray, balance.factorMidgrayComp, balance.normalizer})}, {"hashes", {raw.hash, raw.tcLutHash, reference.hash, balance.hash, recipe.print.hash, recipe.scannerOutput.hash, recipe.scannerOutput.outputGamut.hash, recipe.hash, product.payload.uploadCoreHash, product.payload.scannerHash}}, {"scanner_color", color_result(product.payload.scannerColor)}, {"scanner_tables", tables_result(product.payload.scannerTables)}, {"scanner_descriptor", scanner_descriptor(product)}, {"gamut_entry", bits(recipe.scannerOutput.outputGamut.transform.nativeRgbToD65Xyz)}, {"gamut_exit", bits(recipe.scannerOutput.outputGamut.transform.d65XyzToNativeRgb)}};
+    Json scanner_descriptor(const FjScannerLutDescriptor& out) {
+        return {{"route", static_cast<int>(out.route)}, {"medium", static_cast<int>(out.medium)}, {"polarity", static_cast<int>(out.capture_polarity)}, {"density_bounds_hash", out.density_bounds_hash}, {"channel_density_hash", out.channel_density_hash}, {"base_density_hash", out.base_density_hash}, {"illuminant_hash", out.viewing_illuminant_hash}, {"observer_hash", out.observer_hash}, {"resolution", out.resolution}, {"hash", out.hash}};
+    }
+    Json complete_result(const FjPreparedStateView& state, const ParamSnapshot& controls) {
+        const auto& raw = state.film_exposure;
+        const auto& policy = state.input_policy;
+        const auto& reference = state.film_reference;
+        const auto& balance = state.print_balance;
+        const auto& output = state.output_color;
+        const bool decode = (raw.flags & FJ_FILM_DECODE_CCTF) != 0;
+        const bool adapt = (raw.flags & FJ_FILM_ADAPT_INPUT) != 0;
+        Json sensitivity = Json::array();
+        require(raw.sensitivity_rgb.count == std::size_t{81} * 3, "prepared sensitivity shape");
+        for (std::size_t row = 0; row < 81; ++row)
+            sensitivity.push_back(span_bits({raw.sensitivity_rgb.data + row * 3, 3}));
+        return {{"input_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"input_adapt", bits(raw.input_xyz_adapt)}, {"xyz_to_linear_srgb", bits(raw.xyz_to_linear_srgb)}, {"source_white", bits(policy.nominal_white_xyz)}, {"projection_white", bits(policy.projection_white_xyz)}, {"config_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"config_adapt", bits(raw.input_xyz_adapt)}, {"raw_midgray", bits(state.raw_midgray)}, {"midgray_dwg", bits(state.midgray_dwg_rgb)}, {"midgray_scale_green", bits(std::array{state.midgray_scale, state.raw_green})}, {"config_whites", {bits(policy.nominal_white_xyz), bits(policy.projection_white_xyz), bits(policy.projection_white_xyz)}}, {"config_flags", {static_cast<int>(raw.input_color_space), decode, static_cast<int>(controls.spectralUpsamplingMode == 1), adapt, true, true}}, {"spd_s_inv", bits(state.s_inverse)}, {"baseline_raw", bits(reference.baseline_raw_rgb)}, {"compensated_raw", bits(reference.compensated_raw_rgb)}, {"baseline_density", bits(reference.baseline_density_cmy)}, {"compensated_density", bits(reference.compensated_density_cmy)}, {"print_baseline_raw", bits(balance.baseline_raw_rgb)}, {"print_compensated_raw", bits(balance.compensated_raw_rgb)}, {"print_factors", bits(JuicerTestSupport::captured_print_factors(state))}, {"hashes", {raw.hash, raw.tc_lut_hash, reference.hash, balance.hash, state.print_recipe_hash, state.scanner_recipe_hash, output.gamut_recipe_hash, state.recipe_hash, state.upload_core_hash, state.scanner_hash}}, {"scanner_color", color_result(state.scanner_color)}, {"scanner_tables", tables_result(state.scanner_tables)}, {"scanner_descriptor", scanner_descriptor(state.scanner_lut)}, {"gamut_entry", bits(output.native_rgb_to_d65_xyz)}, {"gamut_exit", bits(output.d65_xyz_to_native_rgb)}, {"final_sensitivity_hash", raw.sensitivity_hash}, {"final_sensitivity", sensitivity}};
     }
 } // namespace IlluminantConstruction
 
@@ -533,59 +545,60 @@ namespace IlluminantConstruction {
                 file << print;
             }
             status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            const bool built = route ? build_print_render_state_product(controls, product, diagnostic) : build_direct_render_state_product(controls, product, diagnostic);
-            ASSERT_EQ(built, row["built"].get<bool>()) << diagnostic;
+            std::optional<PreparedState> product;
+            std::array<char, 2048> productText{};
+            FjErrorBuffer productError{productText.data(), productText.size(), 0};
+            const auto productStatus = prepare_state(assets.borrow_rust_assets(), controls, product, productError);
+            const bool built = productStatus.category == FJ_STATUS_SUCCESS;
+            ASSERT_EQ(built, row["built"].get<bool>()) << std::string(productText.data(), productError.length);
             FjStatus preparedStatus{};
             std::string preparedDiagnostic;
             auto preparedState = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), controls, preparedStatus, preparedDiagnostic);
             ASSERT_EQ(bool(preparedState), built) << preparedDiagnostic;
             if (!built) {
-                EXPECT_FALSE(diagnostic.empty());
+                EXPECT_FALSE(std::string(productText.data(), productError.length).empty());
                 EXPECT_NE(preparedStatus.category, FJ_STATUS_SUCCESS);
                 EXPECT_FALSE(preparedDiagnostic.empty());
                 continue;
             }
             status(preparedStatus, FJ_STATUS_SUCCESS);
+            FjPreparedStateView productView{};
+            status(product->view(productView, productError), FJ_STATUS_SUCCESS);
             FjPreparedStateView prepared{};
-            status(fj_test_prepared_state_view(preparedState.get(), &prepared, nullptr), FJ_STATUS_SUCCESS);
-            EXPECT_EQ(prepared.recipe_hash, product.recipe.hash);
-            EXPECT_EQ(prepared.film_reference.hash, product.recipe.scannerOutput.syntheticFilmReference.hash);
-            ASSERT_EQ(prepared.exposure_tables.illuminant.count, product.payload.exposureTables.illum.size());
-            EXPECT_EQ(std::memcmp(prepared.exposure_tables.illuminant.data, product.payload.exposureTables.illum.data(), prepared.exposure_tables.illuminant.count * sizeof(float)), 0);
-            ASSERT_EQ(prepared.scanner_tables.illuminant.count, product.payload.scannerTables.illum.size());
-            EXPECT_EQ(std::memcmp(prepared.scanner_tables.illuminant.data, product.payload.scannerTables.illum.data(), prepared.scanner_tables.illuminant.count * sizeof(float)), 0);
-            if (product.payload.filmTcLut) {
-                ASSERT_EQ(prepared.film_exposure.tc_lut_rgba.count, product.payload.filmTcLut->samples().size());
-                EXPECT_EQ(std::memcmp(prepared.film_exposure.tc_lut_rgba.data, product.payload.filmTcLut->samples().data(), prepared.film_exposure.tc_lut_rgba.count * sizeof(float)), 0);
-            }
-            if (product.recipe.filmRaw.inputCompressionHull) {
-                EXPECT_EQ(prepared.input_hull.hash, product.recipe.filmRaw.inputCompressionHull->hash);
-            }
-            auto result = complete_result(product);
-            result["exposure_tables"] = tables_result(product.payload.exposureTables);
-            result["final_sensitivity_hash"] = product.recipe.filmRaw.finalSensitivityHash;
-            for (const auto& rgb : product.recipe.filmRaw.finalSensitivity)
-                result["final_sensitivity"].push_back(bits(rgb));
+            productError.length = 0;
+            productText[0] = 0;
+            status(preparedState->view(prepared, productError), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(prepared.recipe_hash, productView.recipe_hash);
+            EXPECT_EQ(prepared.film_reference.hash, productView.film_reference.hash);
+            ASSERT_EQ(prepared.exposure_tables.illuminant.count, productView.exposure_tables.illuminant.count);
+            EXPECT_EQ(std::memcmp(prepared.exposure_tables.illuminant.data, productView.exposure_tables.illuminant.data, prepared.exposure_tables.illuminant.count * sizeof(float)), 0);
+            ASSERT_EQ(prepared.scanner_tables.illuminant.count, productView.scanner_tables.illuminant.count);
+            EXPECT_EQ(std::memcmp(prepared.scanner_tables.illuminant.data, productView.scanner_tables.illuminant.data, prepared.scanner_tables.illuminant.count * sizeof(float)), 0);
+            ASSERT_EQ(prepared.film_exposure.tc_lut_rgba.count, productView.film_exposure.tc_lut_rgba.count);
+            EXPECT_EQ(std::memcmp(prepared.film_exposure.tc_lut_rgba.data, productView.film_exposure.tc_lut_rgba.data, prepared.film_exposure.tc_lut_rgba.count * sizeof(float)), 0);
+            EXPECT_EQ(prepared.input_hull.hash, productView.input_hull.hash);
+            auto result = complete_result(productView, controls);
+            result["exposure_tables"] = tables_result(productView.exposure_tables);
             if (route) {
-                ASSERT_TRUE(product.payload.printMainIlluminant);
-                result["main_light"] = bits(*product.payload.printMainIlluminant);
-                JuicerCuda::PrintResourcePreparation request{&product.recipe, &assets, &*product.payload.printMainIlluminant};
-                JuicerCuda::PrintResourceInput input;
-                std::array<float, 81> preflash{};
-                ASSERT_TRUE(JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic)) << diagnostic;
-                result["preflash_light"] = bits(preflash);
-                result["preflash_raw"] = bits(input.preflashRawCmy);
-                result["print_descriptors"] = {input.descriptors.hash, input.descriptors.mainIlluminant.hash, input.descriptors.preflashIlluminant.hash, input.descriptors.preflashRaw.hash, input.descriptors.balance.hash};
-                EXPECT_EQ(prepared.print.hash, input.descriptors.hash);
-                EXPECT_EQ(prepared.print_balance.hash, product.recipe.print.balance.hash);
-                ASSERT_EQ(prepared.print.main_illuminant.count, product.payload.printMainIlluminant->size());
-                EXPECT_EQ(std::memcmp(prepared.print.main_illuminant.data, product.payload.printMainIlluminant->data(), prepared.print.main_illuminant.count * sizeof(float)), 0);
-                ASSERT_EQ(prepared.print.preflash_illuminant.count, preflash.size());
-                EXPECT_EQ(std::memcmp(prepared.print.preflash_illuminant.data, preflash.data(), preflash.size() * sizeof(float)), 0);
+                ASSERT_EQ(productView.print.main_illuminant.count, 81u);
+                ASSERT_EQ(productView.print.preflash_illuminant.count, 81u);
+                result["main_light"] = span_bits(productView.print.main_illuminant);
+                FjPrintPreflashInput input{productView.print.film_base_density, productView.print.preflash_illuminant, productView.print.sensitivity_cmy};
+                FjPrintPreflashRaw preflash{};
+                FjPrintPreflashFailure failure{};
+                ASSERT_EQ(fj_test_print_preflash_prepare(&input, &preflash, &failure, nullptr).category, FJ_STATUS_SUCCESS);
+                result["preflash_light"] = span_bits(productView.print.preflash_illuminant);
+                result["preflash_raw"] = bits(preflash.cmy);
+                result["print_descriptors"] = {productView.print.hash, productView.print.main_illuminant_hash, productView.print.preflash_illuminant_hash, productView.print.preflash_raw_hash, productView.print.balance_hash};
+                EXPECT_EQ(prepared.print.hash, productView.print.hash);
+                EXPECT_EQ(prepared.print_balance.hash, productView.print_balance.hash);
+                ASSERT_EQ(prepared.print.main_illuminant.count, productView.print.main_illuminant.count);
+                EXPECT_EQ(std::memcmp(prepared.print.main_illuminant.data, productView.print.main_illuminant.data, prepared.print.main_illuminant.count * sizeof(float)), 0);
+                ASSERT_EQ(prepared.print.preflash_illuminant.count, productView.print.preflash_illuminant.count);
+                EXPECT_EQ(std::memcmp(prepared.print.preflash_illuminant.data, productView.print.preflash_illuminant.data, prepared.print.preflash_illuminant.count * sizeof(float)), 0);
             }
-            EXPECT_EQ(result, row["expected"]);
+            const bool matches = result == row["expected"];
+            EXPECT_TRUE(matches) << "first complete-product difference: " << (matches ? std::string{} : Json::diff(row["expected"], result).front().dump());
         }
     }
 
@@ -622,12 +635,13 @@ namespace IlluminantConstruction {
                 else
                     status(fj_test_assets_illuminant_operation_fault(assets.borrow_rust_assets(), operation, fault, nullptr), FJ_STATUS_SUCCESS);
                 if (fault == 3) {
+                    bool allocationFailed = false;
                     try {
                         (void)admit_pending_render_state(cold);
-                        FAIL() << "cold allocation admitted";
-                    } catch (const JuicerCuda::ExecutionFailure& error) {
-                        status(error.failure.status, FJ_STATUS_ALLOCATION_FAILURE);
+                    } catch (const std::bad_alloc&) {
+                        allocationFailed = true;
                     }
+                    ASSERT_TRUE(allocationFailed) << "cold allocation admitted";
                 } else {
                     EXPECT_EQ(admit_pending_render_state(cold).status, PendingRenderAdmissionStatus::RebuildFailed);
                 }
@@ -656,12 +670,13 @@ namespace IlluminantConstruction {
                 else
                     status(fj_test_assets_illuminant_operation_fault(assets.borrow_rust_assets(), operation, fault, nullptr), FJ_STATUS_SUCCESS);
                 if (fault == 3) {
+                    bool allocationFailed = false;
                     try {
                         (void)admit_pending_render_state(state);
-                        FAIL() << "allocation failure admitted";
-                    } catch (const JuicerCuda::ExecutionFailure& error) {
-                        status(error.failure.status, FJ_STATUS_ALLOCATION_FAILURE);
+                    } catch (const std::bad_alloc&) {
+                        allocationFailed = true;
                     }
+                    ASSERT_TRUE(allocationFailed) << "allocation failure admitted";
                 } else {
                     const auto failure = admit_pending_render_state(state);
                     EXPECT_EQ(failure.status, PendingRenderAdmissionStatus::RebuildFailed);
@@ -691,9 +706,122 @@ namespace IlluminantConstruction {
         pending(published, controls);
         const auto admitted = admit_pending_render_state(published);
         ASSERT_TRUE(admitted.printState);
-        const auto& product = *admitted.printState;
+        const auto publishedView = JuicerTestSupport::published_view(admitted);
+        // SF_TEMP_BRIDGE_NATIVE_PUBLICATION_RENDER_OBSERVER: the legacy native
+        // projection/render failure observation remains until its I7 deletion.
+        FocusedRenderStateBuildProduct product;
+        std::string productDiagnostic;
+        ASSERT_TRUE(build_print_render_state_product(controls, product, productDiagnostic)) << productDiagnostic;
         const auto retainedHash = product.recipe.hash;
         const auto retainedCounter = published.buildCounterNext.load();
+        auto heldRustState = JuicerTestSupport::prepare_product(controls);
+        FjPreparedStateView heldRustView{};
+        std::array<char, 2048> heldRustText{};
+        FjErrorBuffer heldRustError{heldRustText.data(), heldRustText.size(), 0};
+        status(heldRustState.view(heldRustView, heldRustError), FJ_STATUS_SUCCESS);
+        const auto heldRustHash = heldRustView.recipe_hash;
+        const std::array<std::uint32_t, 4> faultCategories{
+            FJ_STATUS_UNSUPPORTED_INPUT,
+            FJ_STATUS_INTERNAL_FAILURE,
+            FJ_STATUS_ALLOCATION_FAILURE,
+            FJ_STATUS_PREPARATION_FAILURE};
+        const std::array<std::string, 4> faultDiagnostics{
+            "illuminant injected unsupported input",
+            "asset boundary panic",
+            "illuminant scratch capacity",
+            "illuminant CSV axis mismatch"};
+        for (std::uint32_t fault : {1u, 2u, 3u, 4u}) {
+            nativeSubmissions = 0;
+            status(fj_test_illuminant_arm_fault(3, 1, fault), FJ_STATUS_SUCCESS);
+            std::optional<PreparedState> failed;
+            std::array<char, 2048> failureText{};
+            FjErrorBuffer failureError{failureText.data(), failureText.size(), 0};
+            const auto failure = prepare_state(assets.borrow_rust_assets(), controls, failed, failureError);
+            const auto faultIndex = static_cast<std::size_t>(fault - 1);
+            status(failure, faultCategories[faultIndex]);
+            EXPECT_FALSE(failed);
+            EXPECT_EQ(std::string(failureText.data(), failureError.length), faultDiagnostics[faultIndex]);
+            EXPECT_EQ(nativeSubmissions, 0u);
+            // This independent factory call preserves the raw category and
+            // diagnostic contract, separate from the active publisher witness below.
+            FjPreparedStateView stillHeld{};
+            status(heldRustState.view(stillHeld, heldRustError), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(stillHeld.recipe_hash, heldRustHash);
+
+            Diagnostic retryLeaf;
+            FjIlluminant equalEnergy{};
+            status(fj_legacy_illuminant_equal_energy(&equalEnergy, &retryLeaf.error), FJ_STATUS_SUCCESS);
+            std::optional<PreparedState> retried;
+            FjErrorBuffer retryError{nullptr, 0, 0};
+            status(prepare_state(assets.borrow_rust_assets(), controls, retried, retryError), FJ_STATUS_SUCCESS);
+            ASSERT_TRUE(retried);
+            FjPreparedStateView retriedView{};
+            status(retried->view(retriedView, retryError), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(retriedView.recipe_hash, heldRustHash);
+        }
+
+        // Actual complete-state publication for EQUAL faults is independent
+        // from both the raw factory diagnostics above and the native bridge below.
+        InstanceState equalPublisher;
+        auto retainedControls = controls;
+        pending(equalPublisher, retainedControls);
+        auto retainedPublication = admit_pending_render_state(equalPublisher);
+        ASSERT_TRUE(retainedPublication.printState);
+        ASSERT_EQ(JuicerAtomic::load_shared_ptr(&equalPublisher.activePrintState), retainedPublication.printState);
+        const auto retainedCounterStart = equalPublisher.buildCounterNext.load();
+        for (std::uint32_t fault : {1u, 2u, 3u, 4u}) {
+            auto changed = retainedControls;
+            changed.cameraExposureCompensationEv += static_cast<double>(fault) * 0.01;
+            pending(equalPublisher, changed);
+            const auto previousPrint = retainedPublication.printState;
+            const auto previousDirect = JuicerAtomic::load_shared_ptr(&equalPublisher.activeDirectState);
+            const auto previousHash = equalPublisher.lastHash.load();
+            const auto previousCounter = equalPublisher.buildCounterNext.load();
+            const auto previousValues = complete_result(JuicerTestSupport::published_view(retainedPublication), retainedControls);
+            nativeSubmissions = 0;
+            status(fj_test_illuminant_arm_fault(3, 1, fault), FJ_STATUS_SUCCESS);
+
+            bool failed = false;
+            PendingRenderAdmissionResult failure;
+            if (fault == 3) {
+                try {
+                    (void)admit_pending_render_state(equalPublisher);
+                    FAIL() << "actual publisher allocation fault admitted";
+                } catch (const std::bad_alloc&) {
+                    failed = true;
+                }
+            } else {
+                failure = admit_pending_render_state(equalPublisher);
+                failed = failure.status == PendingRenderAdmissionStatus::RebuildFailed;
+            }
+            ASSERT_TRUE(failed) << "actual equal-energy publisher fault=" << fault;
+            EXPECT_EQ(nativeSubmissions, 0u);
+            EXPECT_EQ(equalPublisher.lastHash.load(), previousHash);
+            EXPECT_EQ(equalPublisher.buildCounterNext.load(), previousCounter);
+            EXPECT_EQ(JuicerAtomic::load_shared_ptr(&equalPublisher.activeDirectState), previousDirect);
+            if (fault == 4) {
+                EXPECT_EQ(JuicerAtomic::load_shared_ptr(&equalPublisher.activePrintState), nullptr);
+                EXPECT_FALSE(failure.printState);
+            } else {
+                EXPECT_EQ(JuicerAtomic::load_shared_ptr(&equalPublisher.activePrintState), previousPrint);
+            }
+            EXPECT_EQ(complete_result(JuicerTestSupport::published_view(retainedPublication), retainedControls), previousValues);
+
+            retainedPublication = admit_pending_render_state(equalPublisher);
+            ASSERT_TRUE(retainedPublication.printState) << "equal-energy retry fault=" << fault;
+            EXPECT_NE(retainedPublication.printState, previousPrint);
+            EXPECT_EQ(equalPublisher.lastHash.load(), hash_params(changed));
+            EXPECT_EQ(equalPublisher.buildCounterNext.load(), previousCounter + 1);
+            const auto retryValues = complete_result(JuicerTestSupport::published_view(retainedPublication), changed);
+            EXPECT_NE(retryValues, previousValues);
+            const auto warm = admit_pending_render_state(equalPublisher);
+            EXPECT_EQ(warm.printState, retainedPublication.printState);
+            EXPECT_EQ(equalPublisher.buildCounterNext.load(), previousCounter + 1);
+            EXPECT_EQ(nativeSubmissions, 0u);
+            retainedControls = changed;
+        }
+        EXPECT_EQ(equalPublisher.buildCounterNext.load(), retainedCounterStart + 4);
+
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
         std::optional<ScatterHalationFrameDescriptor> halation;
         Spektrafilm::FilmJuicerEffectsGeometry geometry{};
@@ -717,6 +845,7 @@ namespace IlluminantConstruction {
             }
             EXPECT_EQ(nativeSubmissions, 0u);
             EXPECT_EQ(product.recipe.hash, retainedHash);
+            EXPECT_EQ(JuicerTestSupport::published_view(admitted).recipe_hash, publishedView.recipe_hash);
             EXPECT_EQ(JuicerAtomic::load_shared_ptr(&published.activePrintState), admitted.printState);
             EXPECT_EQ(published.buildCounterNext.load(), retainedCounter);
             status(fj_legacy_illuminant_equal_energy(&value, &d.error), FJ_STATUS_SUCCESS);

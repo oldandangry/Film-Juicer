@@ -24,6 +24,8 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "RenderRecipe.h"
 
+struct FjHostPreparation;
+
 namespace Spectral {
     struct FilmTcLut;
     struct FilmRawConfig;
@@ -583,6 +585,7 @@ namespace JuicerCuda {
         const Scanner::ColorRuntime* scannerColor = nullptr;
         const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
         const Gamut::OutputBoundaryHold* outputBoundaryTable = nullptr;
+        const FjHostPreparation* hostPreparation = nullptr;
     };
 
     // Descriptor-driven film and selected scan-route preparation. This is called only behind
@@ -597,7 +600,8 @@ namespace JuicerCuda {
         Resources& resources,
         const FocusedRouteResourceInput& input,
         void* cudaStreamOpaque,
-        Failure& outError);
+        Failure& outError,
+        const FjHostPreparation* hostPreparation = nullptr);
 
     bool build_print_resource_descriptors(
         const RenderRecipe& recipe,
@@ -638,7 +642,8 @@ namespace JuicerCuda {
         Resources::DeviceGaussianKernel& kernel,
         int radius,
         float sigma,
-        Failure& outError);
+        Failure& outError,
+        const FjHostPreparation* hostPreparation = nullptr);
     bool clear_spatial_dir_kernel_binding(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
@@ -661,7 +666,8 @@ namespace JuicerCuda {
         Resources::DeviceGaussianKernel& kernel,
         float sigma,
         int radius,
-        Failure& outError);
+        Failure& outError,
+        const FjHostPreparation* hostPreparation = nullptr);
 
     // Reaps deferred retire entries that are ready and returns reclaimed bytes.
     bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, Failure& outError);
@@ -769,6 +775,15 @@ namespace JuicerCuda {
         int deviceId,
         void* contextOpaque,
         PinnedUploadPurgeDisposition disposition) noexcept;
+
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+    namespace ScannerLutTest {
+        void after_prepare(Resources&) noexcept;
+        void after_upload(Resources&) noexcept;
+        bool before_upload(Resources&, const char* label, Failure&) noexcept;
+        std::int32_t retire_fence_error(Resources&, const char* label) noexcept;
+    } // namespace ScannerLutTest
+#endif
 
 #if defined(JUICER_GAUSSIAN_TEST_HOOK)
     namespace GaussianKernelTest {

@@ -27,6 +27,7 @@
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "JuicerState.h"
+#include "PreparedState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
 #include "Logging.h"
@@ -41,10 +42,14 @@
 #include "RustEffectsFrameBridge.h"
 #include "RustDirBoundaryBridge.h"
 #include "juicer_cuda_owner.h"
+#include "juicer_cuda_call_scope.h"
+#include "juicer_host_preparation.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
 #include "exposure_fixture.h"
 #include "spatial_optics_fixture.h"
+#include "prepared_product_fixture.h"
+#include "prepared_frame_fixture.h"
 #include "../dir/boundary_test_hooks.h"
 
 #include "film_recipe_abi_cpp.inc"
@@ -65,6 +70,10 @@ namespace {
     void require(bool condition, const char* message) {
         if (!condition)
             throw std::runtime_error(message);
+    }
+    void require_equal(const Json& actual, const Json& expected, const char* message) {
+        if (actual != expected)
+            throw std::runtime_error(std::string(message) + ": first difference " + Json::diff(expected, actual).front().dump());
     }
     void status(FjStatus value, std::uint32_t category = FJ_STATUS_SUCCESS) {
         require(value.category == category && value.api == FJ_API_NONE && value.native_code == 0, "closed film recipe status");
@@ -307,7 +316,6 @@ namespace {
 #include "film_reference_test.inc"
 #include "scanner_lut_descriptor_test.inc"
 #include "scanner_post_effects_test.inc"
-#include "gaussian_kernel_test.inc"
 #include "frame_geometry_test.inc"
 #include "halation_frame_test.inc"
 #include "diffusion_frame_test.inc"
@@ -315,6 +323,7 @@ namespace {
 #include "dir_boundary_test.inc"
 #include "grain_frame_test.inc"
 #include "effects_frame_test.inc"
+#include "gaussian_kernel_test.inc"
 int main(int argc, char** argv) try {
     if (argc == 5 && (std::string_view(argv[3]) == "effects-frame" || std::string_view(argv[3]) == "effects-frame-products")) {
         const auto manifest = read(argv[2]);
@@ -322,7 +331,7 @@ int main(int argc, char** argv) try {
         const auto captured = load_shared_fixture(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
         require(captured.at("preset") == argv[4], "effects independent native context");
         if (std::string_view(argv[3]) == "effects-frame-products")
-            require(EffectsFrameTest::product_rows(argv[1], read(directory / "inputs.json")) == captured.at("products"), "complete genuine effects frame products");
+            require_equal(EffectsFrameTest::product_rows(argv[1], read(directory / "inputs.json")), captured.at("products"), "complete genuine effects frame products");
         else {
             EffectsFrameTest::values(captured, read(directory / "checked.json"));
             EffectsFrameTest::raw_and_faults(captured);
@@ -391,7 +400,7 @@ int main(int argc, char** argv) try {
         if (std::string_view(argv[3]) == "diffusion-frame")
             DiffusionFrameTest::boundary(captured, read(directory / "checked.json"));
         else
-            require(DiffusionFrameTest::products(argv[1], read(directory / "inputs.json").at("products")) == captured.at("products"), "complete diffusion route products match unchanged native captures");
+            require_equal(DiffusionFrameTest::products(argv[1], read(directory / "inputs.json").at("products")), captured.at("products"), "complete diffusion route products match unchanged native captures");
         std::fprintf(stderr, "DiffusionFrame stage=complete\n");
         std::fflush(stderr);
         return 0;
@@ -459,7 +468,7 @@ int main(int argc, char** argv) try {
         const bool products = std::string_view(argv[3]) == "scanner-descriptor-products";
         ScannerDescriptorTest::values(captured.at(products ? "products" : "cases"));
         if (products)
-            require(ScannerDescriptorTest::products(argv[1]) == captured.at("products"), "complete actual descriptor products and enclosing identities");
+            require_equal(ScannerDescriptorTest::products(argv[1]), captured.at("products"), "complete actual descriptor products and enclosing identities");
         else {
             ScannerDescriptorTest::boundary(captured.at("cases"));
             ScannerDescriptorTest::adapters(captured.at("cases"));
@@ -589,7 +598,9 @@ int main(int argc, char** argv) try {
         const auto manifest = read(argv[2]);
         const auto selected = manifest.at("presets").at(argv[4]);
         const auto directory = std::filesystem::path(argv[2]).parent_path();
-        PrintIlluminantTest::products(argv[1], read(directory / selected.at("products").get<std::string>()));
+        PrintIlluminantTest::products(read(directory / selected.at("products").get<std::string>()),
+                                      argv[1],
+                                      read(directory / selected.at("literal").get<std::string>()));
         std::puts("PASS 72 genuine print illuminant products, direct omission and downstream identities");
         return 0;
     }
@@ -666,7 +677,7 @@ int main(int argc, char** argv) try {
     require(argc == 3 || (argc == 4 && std::string_view(argv[3]) == "products"), "resource root and capture required");
     const auto captured = read(argv[2]);
     if (argc == 4)
-        products(argv[1], captured, argv[2]);
+        products(argv[1], captured);
     else {
         layouts();
         values(argv[1], captured);

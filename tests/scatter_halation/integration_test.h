@@ -8,6 +8,7 @@
 #include "DiffusionHostBehavior.h"
 #include "ProcessRoot.h"
 #include "ScatterHalation.h"
+#include "../ffi/prepared_frame_fixture.h"
 
 namespace ScatterHalationValidation {
 
@@ -27,17 +28,17 @@ namespace ScatterHalationValidation {
         PreparedRouteInputs(const PreparedRouteInputs&) = delete;
         PreparedRouteInputs& operator=(const PreparedRouteInputs&) = delete;
 
-        [[nodiscard]] JuicerProcess::Root::CudaFramePreparationRequest request(
-            ImageExtent extent) const;
-        [[nodiscard]] JuicerCuda::ResourceManager::SubmissionSnapshot
-        submission_snapshot(
+        [[nodiscard]] JuicerProcess::Root::PreparedCudaFrame prepare_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
-            std::uint64_t identity) const;
+            std::uint64_t identity,
+            ImageExtent extent,
+            void* stream,
+            JuicerCuda::Failure& failure,
+            std::uint64_t expectedScatterHash = 0) const;
         [[nodiscard]] const ScatterHalationFrameDescriptor*
         scatter_descriptor() const noexcept;
         [[nodiscard]] const Spektrafilm::DiffusionFrameSetDescriptor*
         diffusion_frame_set() const noexcept;
-        [[nodiscard]] const RenderRecipe& recipe() const noexcept;
 
     private:
         std::unique_ptr<Impl> _impl;

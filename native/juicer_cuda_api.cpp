@@ -443,7 +443,7 @@ FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const
 }
 
 FjRenderOutcome JuicerCuda::NativeCall::render(
-    const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abortCallback, PendingContextLossRecovery& recovery, std::string& diagnostic) {
+    const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abortCallback, PendingContextLossRecovery& recovery, std::string& diagnostic, const FjHostPreparation* hostPreparation) {
     diagnostic.clear();
     const auto result = [&](FjStatus selected, std::string_view message) -> FjRenderOutcome {
         diagnostic.assign(message);
@@ -537,7 +537,7 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
 #if defined(JUICER_CUDA_RENDER_TEST_HOOK)
             JuicerCuda::RenderTest::before_execute();
 #endif
-            if (!JuicerCuda::execute_prepared_host_data(*prepared, execution, snapshot, recovery, abortCallback, diagnostic)) {
+            if (!JuicerCuda::execute_prepared_host_data(*prepared, execution, snapshot, recovery, abortCallback, diagnostic, hostPreparation)) {
                 return {{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0};
             }
 #if defined(JUICER_CUDA_RENDER_TEST_HOOK)

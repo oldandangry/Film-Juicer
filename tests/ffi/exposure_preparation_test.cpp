@@ -29,9 +29,9 @@
 
 #include "exposure_fixture.h"
 #include "print_illuminant_fixture.h"
+#include "spectral_source_fixture.h"
 
 extern "C" int fj_test_exposure_abi_c(const FjReferenceWhiteInput*, FjReferenceWhite*, const FjSensitivityInput*, FjSensitivity*, FjSensitivityFailure*, FjErrorBuffer*);
-void fj_test_spectral_products(const nlohmann::json&, const std::filesystem::path&, const std::filesystem::path&, bool, void (*)(const nlohmann::json&));
 
 void fj_test_exposure_admission(const std::filesystem::path&);
 
@@ -136,23 +136,42 @@ namespace {
         }
     }
     void reference(const Json& fixture, const std::filesystem::path& resources) {
-        JuicerAssets::AssetBridge assets(resources);
-        auto real = assets.copy_hanatos_lut();
+        const JuicerTestSupport::SpectralSourceAssets assets(resources);
+        const JuicerTestSupport::HanatosSource real(assets.get());
+        JuicerAssets::AssetBridge nativeBridge(resources);
+        auto nativeHanatos = nativeBridge.copy_hanatos_lut();
         Spectral::ReconstructionLut spectra;
         spectra.size = 192;
         spectra.data.resize(std::size_t{192} * 192u * 81u);
         for (std::size_t i = 0; i < spectra.data.size(); ++i)
             spectra.data[i] = std::bit_cast<float>(0x3e000123u + static_cast<std::uint32_t>(i % 4093u) * 173u);
         for (const auto& row : fixture.at("reference")) {
-            auto& source = row.at("source") == "accepted_hanatos" ? real : spectra;
+            const bool acceptedHanatos = row.at("source") == "accepted_hanatos";
             const bool altered = row.contains("source_index");
             const auto index = altered ? row.at("source_index").get<std::size_t>() : 0u;
-            const float saved = source.data[index];
-            if (altered)
-                source.data[index] = std::bit_cast<float>(row.at("source_value").get<std::uint32_t>());
+            std::vector<float> alteredAccepted;
+            FjFloatSpan source{};
+            if (acceptedHanatos) {
+                source = real.view().samples;
+                if (altered) {
+                    alteredAccepted.assign(source.data, source.data + source.count);
+                    source = {alteredAccepted.data(), alteredAccepted.size()};
+                }
+            } else {
+                source = {spectra.data.data(), spectra.data.size()};
+            }
+            const float saved = altered ? source.data[index] : 0.0f;
+            if (altered) {
+                if (acceptedHanatos) {
+                    alteredAccepted[index] = std::bit_cast<float>(row.at("source_value").get<std::uint32_t>());
+                } else {
+                    spectra.data[index] = std::bit_cast<float>(row.at("source_value").get<std::uint32_t>());
+                    source = {spectra.data.data(), spectra.data.size()};
+                }
+            }
             const auto white = decode<3>(row.at("white"));
             const float blur = std::bit_cast<float>(row.at("blur").get<std::uint32_t>());
-            const FjReferenceWhiteInput input{{source.data.data(), source.data.size()}, {white[0], white[1], white[2]}, blur};
+            const FjReferenceWhiteInput input{source, {white[0], white[1], white[2]}, blur};
             for (bool facade : {false, true}) {
                 FjReferenceWhite result{};
                 Diagnostic error;
@@ -168,11 +187,22 @@ namespace {
             }
             std::array<float, 81> result{};
             std::string diagnostic;
-            require(JuicerExposure::reference_white(source, blur, white, result, diagnostic) == row.at("built").get<bool>(), "native reference binding disposition");
+            if (acceptedHanatos) {
+                // SF_TEMP_BRIDGE_NATIVE_HANATOS_SOURCE: old native conversion comparison retained through I7.
+                const float nativeSaved = altered ? nativeHanatos.data[index] : 0.0f;
+                if (altered)
+                    nativeHanatos.data[index] = std::bit_cast<float>(row.at("source_value").get<std::uint32_t>());
+                require(JuicerExposure::reference_white(nativeHanatos, blur, white, result, diagnostic) == row.at("built").get<bool>(), "native reference binding disposition");
+                if (altered)
+                    nativeHanatos.data[index] = nativeSaved;
+            } else {
+                require(JuicerExposure::reference_white(spectra, blur, white, result, diagnostic) == row.at("built").get<bool>(), "native reference binding disposition");
+            }
             if (row.at("built").get<bool>())
                 for (std::size_t i = 0; i < 81; ++i)
                     exact(result[i], row.at("expected")[i].get<std::uint32_t>());
-            source.data[index] = saved;
+            if (altered && !acceptedHanatos)
+                spectra.data[index] = saved;
         }
     }
     void boundary(const Json& fixture) {
@@ -354,7 +384,7 @@ int main(int argc, char** argv) {
             boundary(fixture);
         else if (group == "products") {
             require(argc == 5, "exposure products require resource and scratch");
-            fj_test_spectral_products(fixture, argv[3], argv[4], false, nullptr);
+            fj_test_spectral_products(fixture, {.resources = argv[3], .scratch = argv[4]}, false, nullptr);
         } else
             throw std::runtime_error("unknown exposure group");
         std::puts("PASS exposure construction/ABI/failure contract");

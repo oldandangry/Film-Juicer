@@ -14,6 +14,7 @@
 #include "juicer_cuda_descriptors.h"
 
 struct FocusedRenderPayload;
+struct FjHostPreparation;
 
 namespace JuicerCuda {
 
@@ -73,6 +74,7 @@ namespace JuicerCuda {
         bool cameraAutoEnabled = false;
         const ExecutionFrame& frame;
         ResourceManager::SubmissionSnapshot& snapshot;
+        const FjHostPreparation* hostPreparation = nullptr;
     };
 
     // Internal exception mapped by the caller after prepared-frame unwinding.

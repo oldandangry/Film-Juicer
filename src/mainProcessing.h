@@ -3,12 +3,12 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
 
 #include "ofxsImageEffect.h"
 #include "ofxsProcessing.h"
 
 #include "RenderRecipe.h"
+#include "juicer_cuda_frame_values.h"
 
 struct InstanceState;
 struct DirectRenderState;
@@ -26,8 +26,7 @@ public:
 
     struct DirectFrameRequest {
         std::shared_ptr<const DirectRenderState> state;
-        std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
-        std::optional<ScatterHalationFrameDescriptor> scatterHalation;
+        FjPreparedFramePolicy framePolicy{};
         OfxRectI renderWindow{0, 0, 0, 0};
         Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
         OfxRectI fullFrameExtent{0, 0, 0, 0};
@@ -36,13 +35,11 @@ public:
         std::uintptr_t clipToken = 0;
         double frameTime = 0.0;
         double frameRate = 0.0;
-        float pixelSizeUm = 0.0f;
     };
 
     struct PrintFrameRequest {
         std::shared_ptr<const PrintRenderState> state;
-        std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
-        std::optional<ScatterHalationFrameDescriptor> scatterHalation;
+        FjPreparedFramePolicy framePolicy{};
         OfxRectI renderWindow{0, 0, 0, 0};
         Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
         OfxRectI fullFrameExtent{0, 0, 0, 0};
@@ -51,7 +48,6 @@ public:
         std::uintptr_t clipToken = 0;
         double frameTime = 0.0;
         double frameRate = 0.0;
-        float pixelSizeUm = 0.0f;
     };
 
     void setSrcDst(const SourceDestinationImages& images);
@@ -75,7 +71,5 @@ private:
     double _frameRate = 0.0;
     Spektrafilm::FilmJuicerEffectsGeometry _effectsGeometry{};
     OfxRectI _fullFrameExtent{0, 0, 0, 0};
-    std::optional<Spektrafilm::DiffusionFrameSetDescriptor> _diffusionFrameSetDescriptor;
-    std::optional<ScatterHalationFrameDescriptor> _scatterHalationDescriptor;
-    float _pixelSizeUm = 0.0f;
+    FjPreparedFramePolicy _framePolicy{};
 };

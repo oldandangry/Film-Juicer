@@ -94,9 +94,51 @@ namespace ScannerLutTest {
             }
         require(fj_test_scanner_lut_live_owners() == 0, "value cohort drops every host owner");
     }
+    void callback_failure_diagnostics(const Literal& literal) {
+        struct Reply {
+            FjScannerLutFailure failure{FJ_SCANNER_LUT_REASON_ALLOCATION, UINT32_MAX, UINT64_MAX, 11};
+            std::string_view diagnostic;
+        } reply;
+        const FjHostPreparation preparation{
+            &reply,
+            [](void* user, const FjScannerLutInput*, FjScannerLutView* view, FjScannerLutFailure* failure, FjErrorBuffer* error) -> FjStatus {
+                const auto& reply = *static_cast<Reply*>(user);
+                *view = {};
+                *failure = reply.failure;
+                std::copy(reply.diagnostic.begin(), reply.diagnostic.end(), error->data);
+                error->length = reply.diagnostic.size();
+                error->data[error->length] = '\0';
+                return {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0};
+            },
+            [](void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*) -> FjStatus {
+                return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
+            }};
+        for (const char* diagnostic : {"scanner LUT candidate storage allocation failed", "scanner LUT candidate storage is unavailable", ""}) {
+            reply.diagnostic = diagnostic;
+            FjScannerLutView view{};
+            JuicerCuda::Failure failure;
+            require(!JuicerCuda::prepare_scanner_lut(preparation, literal.medium, literal.resolution, view, failure), "typed scanner allocation callback rejects preparation");
+            status(failure.status, FJ_STATUS_ALLOCATION_FAILURE);
+            require(failure.diagnostic == diagnostic, "scanner allocation category is independent of forwarded diagnostic wording");
+            require(view.resolution == 0 && !view.log2_xyz.data && !view.log2_xyz.count, "scanner callback failure leaves no published view");
+        }
+        reply.failure.reason = FJ_SCANNER_LUT_REASON_SIZE;
+        reply.diagnostic = "scanner LUT candidate storage allocation failed";
+        FjScannerLutView view{};
+        JuicerCuda::Failure failure;
+        bool rejected = false;
+        try {
+            (void)JuicerCuda::prepare_scanner_lut(preparation, literal.medium, literal.resolution, view, failure);
+        } catch (const JuicerCuda::ExecutionFailure& error) {
+            status(error.failure.status, FJ_STATUS_INTERNAL_FAILURE);
+            rejected = true;
+        }
+        require(rejected, "scanner buffer 11 remains invalid for a SIZE failure despite the diagnostic");
+    }
     void boundary(const Json& captured) {
         const auto& row = captured.at("cases")[0];
         Literal literal(row.at("input"));
+        callback_failure_diagnostics(literal);
         const auto original = wire(literal);
         struct Rejection {
             unsigned category = FJ_STATUS_SUCCESS;
@@ -256,33 +298,37 @@ namespace ScannerLutTest {
             params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
             params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
             params.scannerLutResolution = 17;
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
+            std::array<char, 2048> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            std::optional<PreparedState> product;
+            const auto prepared = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), params, product, error);
             const bool print = route % 2 != 0;
-            require(print ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic), diagnostic.c_str());
-            Scanner::ScannerSpectralLutDescriptor descriptor;
-            const auto& recipe = product.recipe;
-            require(print ? Scanner::build_print_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, descriptor, diagnostic)
-                          : Scanner::build_direct_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, descriptor, diagnostic),
-                    diagnostic.c_str());
+            require(prepared.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
+            FjPreparedStateView view{};
+            status(product->view(view, error));
+            const auto& descriptor = view.scanner_lut;
             Scanner::MediumView medium;
             medium.medium = print ? Scanner::ScannerMedium::Print : Scanner::ScannerMedium::Negative;
-            medium.tables = Scanner::spectral_tables_view(product.payload.scannerTables);
+            const auto& tables = view.scanner_tables;
+            const auto as_span = [](FjFloatSpan values) {
+                return std::span<const float>(values.data, values.count);
+            };
+            medium.tables = {as_span(tables.dyes_cmy[0]), as_span(tables.dyes_cmy[1]), as_span(tables.dyes_cmy[2]), as_span(tables.weighted_xyz[0]), as_span(tables.weighted_xyz[1]), as_span(tables.weighted_xyz[2]), as_span(tables.baseline_min), 81, tables.inv_yn, tables.has_baseline != 0};
             for (std::size_t channel = 0; channel < 3; ++channel) {
-                medium.range.min_cmy[channel] = print ? recipe.densityBounds.dataMinCmy[channel] : -recipe.densityBounds.dataMinCmy[channel];
-                medium.range.inv_max_cmy[channel] = recipe.densityBounds.invSpanCmy[channel];
+                medium.range.min_cmy[channel] = print ? view.scanner_bounds.minimum_cmy[channel] : -view.scanner_bounds.minimum_cmy[channel];
+                medium.range.inv_max_cmy[channel] = view.scanner_bounds.inv_span_cmy[channel];
             }
             const auto& expected = captured.at("products")[route];
             require(expected.at("route").get<unsigned>() == route && expected.at("descriptor_hash").get<std::uint64_t>() == descriptor.hash, "actual scanner product descriptor identity");
-            require(input(medium, descriptor.lutResolution) == expected.at("input"), "every actual selected scanner table and bound word");
+            require(input(medium, descriptor.resolution) == expected.at("input"), "every actual selected scanner table and bound word");
             JuicerCuda::Failure failure;
-            auto owner = JuicerScanner::Lut::acquire(medium, descriptor.lutResolution, failure);
+            auto owner = JuicerScanner::Lut::acquire(medium, descriptor.resolution, failure);
             require(owner.has_value(), failure.diagnostic.c_str());
             const auto span = [](std::span<const float> values) -> FjFloatSpan {
                 return {values.data(), values.size()};
             };
-            const FjScannerLutView view{descriptor.lutResolution, span(owner->log2_xyz()), span(owner->slope_c()), span(owner->slope_m()), span(owner->slope_y()), span(owner->cell_min()), span(owner->cell_max())};
-            compare(project(view), expected.at("native"));
+            const FjScannerLutView lutView{descriptor.resolution, span(owner->log2_xyz()), span(owner->slope_c()), span(owner->slope_m()), span(owner->slope_y()), span(owner->cell_min()), span(owner->cell_max())};
+            compare(project(lutView), expected.at("native"));
         }
     }
     void native_failures(const Json& captured) {

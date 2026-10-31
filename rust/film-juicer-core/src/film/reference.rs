@@ -178,14 +178,23 @@ fn reconstruct(
             let matrices = color::input_matrices(color::InputSpace::SrgbRec709);
             visit(exposure, Operation::LinearSrgb)?;
             let xyz = color::linear_srgb_to_xyz([source; 3]);
-            visit(exposure, Operation::Cat16)?;
-            let projected = color::adapt_cat16(
+            let projected = color::checked_adapt_cat16(
                 xyz,
                 color::Whites {
                     source_xyz: matrices.d65_white_xyz,
                     destination_xyz: *projection_white_xyz,
                 },
-            );
+            )
+            .map_err(|error| -> Error {
+                match error {
+                    #[cfg(feature = "test-support")]
+                    color::CheckedError::UnsupportedInput => Error::Dependency {
+                        exposure,
+                        operation: Operation::Cat16,
+                        category: Category::Unsupported,
+                    },
+                }
+            })?;
             visit(exposure, Operation::TcSample)?;
             reconstruction::sample_tc_lut(samples, projected)
                 .map_err(|_| failure(Some(Operation::TcSample)))?
@@ -230,8 +239,12 @@ impl Reference {
             let compensated_log =
                 (compensated_raw_rgb[channel] * meter_scale + 1.0e-10_f32).log10();
             let gamma = development.gamma_rgb()[channel];
+            let baseline_query = baseline_log * gamma;
+            #[cfg(feature = "test-support")]
+            let baseline_query =
+                testing::density_lookup_query(baseline_query, Exposure::Baseline, channel);
             let baseline_density = sample_density(
-                baseline_log * gamma,
+                baseline_query,
                 development.log_exposure(),
                 development.authored_curves_cmy(),
                 channel,
@@ -292,6 +305,46 @@ impl Reference {
 
 #[cfg(feature = "test-support")]
 pub mod testing {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DENSITY_LOOKUP_FAULT: Cell<(bool, bool)> = const { Cell::new((false, false)) };
+    }
+
+    /// Arm or clear the next actual baseline/channel-zero lookup query substitution.
+    pub fn arm_density_lookup_fault(armed: bool) {
+        DENSITY_LOOKUP_FAULT.set((armed, false));
+    }
+
+    /// Replace only the actual baseline/channel-zero query when armed.
+    pub(super) fn density_lookup_query(
+        query: f32,
+        exposure: super::Exposure,
+        channel: usize,
+    ) -> f32 {
+        if exposure != super::Exposure::Baseline || channel != 0 {
+            return query;
+        }
+        DENSITY_LOOKUP_FAULT.with(|fault| {
+            let (armed, _) = fault.get();
+            if armed {
+                fault.set((false, true));
+                f32::NAN
+            } else {
+                query
+            }
+        })
+    }
+
+    /// Take and reset the observation that the real target lookup consumed the fault.
+    pub fn take_density_lookup_fault_consumed() -> bool {
+        DENSITY_LOOKUP_FAULT.with(|fault| {
+            let (armed, consumed) = fault.get();
+            fault.set((armed, false));
+            consumed
+        })
+    }
+
     /// Uses the production lookup with caller-supplied test-ingress shape.
     pub fn sample_density(
         query: f32,

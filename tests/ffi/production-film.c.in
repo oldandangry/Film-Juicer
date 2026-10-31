@@ -6,9 +6,63 @@
 #include <string.h>
 #include <wchar.h>
 #include "juicer_legacy_api.h"
+#include "juicer_cuda_call_scope.h"
 #include "grain_frame_abi_assertions.inc"
 #include "effects_frame_abi_assertions.inc"
 #include "production-film-expected.h"
+
+#define FJ_ABI_TYPE(type, size, alignment) \
+    _Static_assert(sizeof(type) == size, "size: " #type); \
+    _Static_assert(_Alignof(type) == alignment, "alignment: " #type);
+#define FJ_ABI_FIELD(type, field, offset) \
+    _Static_assert(offsetof(type, field) == offset, "offset: " #type "." #field);
+#define FJ_ABI_VALUE(tag, value) _Static_assert(tag == value, "value: " #tag);
+#include "prepared_call_abi_facts.inc"
+#undef FJ_ABI_TYPE
+#undef FJ_ABI_FIELD
+#undef FJ_ABI_VALUE
+
+_Static_assert(_Generic(((FjGrainCoefficients*)0)->flags, uint32_t: 1, default: 0), "grain flags width");
+_Static_assert(_Generic(((FjGrainCoefficients*)0)->debug_view, uint32_t: 1, default: 0), "grain debug width");
+_Static_assert(_Generic(((FjGrainCoefficients*)0)->sublayer_count, size_t: 1, default: 0), "grain layer count width");
+_Static_assert(_Generic(&((FjGrainCoefficients*)0)->micro_structure, float (*)[2]: 1, default: 0), "grain micro shape");
+_Static_assert(_Generic(&((FjGrainCoefficients*)0)->particle_density_min_cmy, float (*)[3]: 1, default: 0), "grain density shape");
+_Static_assert(_Generic(&((FjGrainCoefficients*)0)->uniformity_cmy, float (*)[3]: 1, default: 0), "grain uniformity shape");
+_Static_assert(_Generic(&((FjGrainCoefficients*)0)->layer_axis_block_prefix_max, float (*)[3][16]: 1, default: 0), "grain axis shape");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->render_outcome_valid, uint32_t: 1, default: 0), "completion validity width");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->abort_failed, uint32_t: 1, default: 0), "completion abort width");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->recovery_scope_entered, uint32_t: 1, default: 0), "completion recovery width");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->has_inspected_context, uint32_t: 1, default: 0), "completion context flag width");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->force_fatal, uint32_t: 1, default: 0), "completion fatal width");
+_Static_assert(_Generic(((FjCallCompletionResult*)0)->fatal, uint32_t: 1, default: 0), "completion result width");
+
+typedef FjStatus (*FjCallPrecheckFn)(void*, FjErrorBuffer*);
+typedef void (*FjCallReleaseFn)(void*);
+typedef FjStatus (*FjCallInspectFn)(void*, const FjFrame*, FjCudaContext*, FjErrorBuffer*);
+typedef FjStatus (*FjCallPreviewFn)(void*, const FjRect*, const FjRect*, uint32_t, FjAutoExposure*, FjErrorBuffer*);
+typedef FjStatus (*FjCallDescriptorsFn)(void*, const FjFrameMathInput*, FjNativeFrameDescriptors*, FjErrorBuffer*);
+typedef FjRenderOutcome (*FjCallRenderFn)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*);
+typedef FjCallCompletionResult (*FjCallCompleteFn)(void*, const FjCallCompletionInput*);
+typedef FjStatus (*FjHostScannerFn)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
+typedef FjStatus (*FjHostGaussianFn)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
+typedef FjStatus (*FjSelectFn)(void*, const FjCudaContext*, const FjSubmission*, FjSubmission*, FjErrorBuffer*);
+typedef FjStatus (*FjPolicyFn)(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
+typedef FjCallCompletionResult (*FjHeldRenderFn)(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer*);
+typedef FjCallCompletionResult (*FjUnavailableFn)(const FjAssets*, const FjPreparedState*, uint32_t, FjCudaCallAccess, const FjFrame*, FjAbortCallback, FjErrorBuffer*);
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->precheck, FjCallPrecheckFn: 1, default: 0), "precheck signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->admit, FjCallPrecheckFn: 1, default: 0), "admit signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->release, FjCallReleaseFn: 1, default: 0), "release signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->inspect, FjCallInspectFn: 1, default: 0), "inspect signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->preview, FjCallPreviewFn: 1, default: 0), "preview signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->frame_descriptors, FjCallDescriptorsFn: 1, default: 0), "descriptors signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->render, FjCallRenderFn: 1, default: 0), "render signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->complete, FjCallCompleteFn: 1, default: 0), "complete signature");
+_Static_assert(_Generic(((FjHostPreparation*)0)->scanner_lut, FjHostScannerFn: 1, default: 0), "scanner callback signature");
+_Static_assert(_Generic(((FjHostPreparation*)0)->gaussian, FjHostGaussianFn: 1, default: 0), "Gaussian callback signature");
+_Static_assert(_Generic(((FjSubmissionAccess*)0)->select, FjSelectFn: 1, default: 0), "submission callback signature");
+_Static_assert(_Generic(&fj_legacy_prepared_state_frame_policy, FjPolicyFn: 1, default: 0), "frame policy signature");
+_Static_assert(_Generic(&fj_legacy_prepared_state_render, FjHeldRenderFn: 1, default: 0), "held render signature");
+_Static_assert(_Generic(&fj_legacy_prepared_unavailable, FjUnavailableFn: 1, default: 0), "unavailable signature");
 
 /* Fixed reflected-boundary layouts, types, extents, tags and real signatures. */
 _Static_assert(sizeof(FjDirBoundaryInput) == 120 && _Alignof(FjDirBoundaryInput) == 8, "FjDirBoundaryInput layout");

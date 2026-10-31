@@ -209,7 +209,7 @@ pub(crate) struct FjPhysicalEffectsRecipe {
     pub(crate) hash: u64,
 }
 
-fn project_dust(policy: &effects::Dust) -> FjDust {
+pub(crate) fn project_dust(policy: &effects::Dust) -> FjDust {
     FjDust {
         cell_width_mm: policy.cell_width_mm(),
         cell_height_mm: policy.cell_height_mm(),
@@ -256,7 +256,7 @@ fn project_dust(policy: &effects::Dust) -> FjDust {
     }
 }
 
-fn project_scratch(policy: &effects::Scratch) -> FjScratch {
+pub(crate) fn project_scratch(policy: &effects::Scratch) -> FjScratch {
     FjScratch {
         cell_width_mm: policy.cell_width_mm(),
         cell_height_mm: policy.cell_height_mm(),
@@ -384,6 +384,29 @@ fn status(category: u32) -> FjStatus {
         native_code: 0,
     }
 }
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_film_reference_lookup_fault(mode: u32) -> FjStatus {
+    match mode {
+        0 => {
+            reference::testing::arm_density_lookup_fault(false);
+            status(FJ_STATUS_SUCCESS)
+        }
+        1 => {
+            reference::testing::arm_density_lookup_fault(true);
+            status(FJ_STATUS_SUCCESS)
+        }
+        _ => status(FJ_STATUS_UNSUPPORTED_INPUT),
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_film_reference_lookup_fault_consumed() -> u32 {
+    u32::from(reference::testing::take_density_lookup_fault_consumed())
+}
+
 // SF_TEMP_BRIDGE_FILM_REFERENCE: fixed borrowed preparation; remove S4.E.
 #[repr(C)]
 pub(crate) struct FjFilmReferenceInput {

@@ -913,6 +913,87 @@ namespace Spektrafilm {
         descriptor.planeRoles = dir_build_plane_roles_for_descriptor(descriptor);
     }
 
+    namespace {
+        bool empty_dir_frame_math(const FjDirFrameMath& math) {
+            const auto zeroFloat = [](float value) {
+                return std::bit_cast<std::uint32_t>(value) == 0;
+            };
+            const auto zeroDouble = [](double value) {
+                return std::bit_cast<std::uint64_t>(value) == 0;
+            };
+            const auto zeroExtent = [](const FjExtent& value) {
+                return value.x == 0 && value.y == 0 && value.width == 0 && value.height == 0;
+            };
+            if (math.present != 0 || math.component_count != 0 || math.recipe_hash != 0 ||
+                !zeroExtent(math.render_extent) || !zeroExtent(math.full_frame_extent) ||
+                !zeroExtent(math.filter_domain_extent)) {
+                return false;
+            }
+            for (const FjDirGaussian& component : math.components) {
+                if (!zeroFloat(component.sigma_px) || !zeroFloat(component.weight) || component.radius != 0 ||
+                    component.reference_operator != 0 || !zeroDouble(component.feedforward) ||
+                    !std::all_of(std::begin(component.feedback), std::end(component.feedback), zeroDouble) ||
+                    !zeroDouble(component.normalization_denominator) ||
+                    !zeroDouble(component.feedforward_numerator) ||
+                    !std::all_of(std::begin(component.feedback_numerators), std::end(component.feedback_numerators), zeroDouble) ||
+                    !zeroDouble(component.boundary_truncation_accuracy) ||
+                    !zeroDouble(component.boundary_certification_tolerance) ||
+                    component.boundary_derivation_version != 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool bind_spatial_dir_math(
+            const FjDirFrameMath& math,
+            const char* traceRouteLabel,
+            SpatialDirDescriptor& out) {
+            if (math.present != 1 ||
+                math.component_count > out.filterPlan.components.size() || !traceRouteLabel) {
+                return false;
+            }
+            out = SpatialDirDescriptor{};
+            const auto extent = [](const FjExtent& v) {
+                return DirFrameExtent{v.x, v.y, v.width, v.height};
+            };
+            out.support = DirDescriptorSupport::Supported;
+            out.dirRecipeHash = math.recipe_hash;
+            out.renderExtent = extent(math.render_extent);
+            out.fullFrameExtent = extent(math.full_frame_extent);
+            out.filterDomainExtent = extent(math.filter_domain_extent);
+            out.traceRouteLabel = traceRouteLabel;
+            out.filterPlan.componentCount = static_cast<int>(math.component_count);
+            for (std::size_t i = 0; i < out.filterPlan.components.size(); ++i) {
+                const auto& source = math.components[i];
+                auto& target = out.filterPlan.components[i];
+                target.sigmaPixels = source.sigma_px;
+                target.weight = source.weight;
+                target.radius = source.radius;
+                target.referenceOperator = static_cast<DirReferenceOperator>(source.reference_operator);
+                target.iir.feedforward = source.feedforward;
+                std::copy(std::begin(source.feedback), std::end(source.feedback), target.iir.feedback.begin());
+                target.iir.normalizationDenominator = source.normalization_denominator;
+                target.iir.feedforwardNumerator = source.feedforward_numerator;
+                std::copy(std::begin(source.feedback_numerators), std::end(source.feedback_numerators), target.iir.feedbackNumerators.begin());
+                target.boundaryTruncationAccuracy = source.boundary_truncation_accuracy;
+                target.boundaryCertificationTolerance = source.boundary_certification_tolerance;
+                target.boundaryDerivationVersion = source.boundary_derivation_version;
+                if (i < math.component_count) {
+                    target.targetScratchTier = dir_target_scratch_tier_for_operator(target.referenceOperator);
+                    if (target.weight > 0.0f) {
+                        if (target.targetScratchTier == DirScratchTier::Tier1IChannels) {
+                            out.targetScratchTier = DirScratchTier::Tier1IChannels;
+                        } else if (out.targetScratchTier == DirScratchTier::Tier0) {
+                            out.targetScratchTier = DirScratchTier::Tier1F;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+    } // namespace
+
     bool compose_spatial_dir_descriptor(
         const JuicerDir::MathOutcome& outcome, const char* traceRouteLabel, SpatialDirDescriptor& out) {
         out = SpatialDirDescriptor{};
@@ -926,44 +1007,8 @@ namespace Spektrafilm {
             return false;
         }
         const auto& math = active ? active->math : rejected->failure.trace;
-        if (math.present == 0) {
+        if (!bind_spatial_dir_math(math, traceRouteLabel, out)) {
             return false;
-        }
-        const auto extent = [](const FjExtent& v) {
-            return DirFrameExtent{v.x, v.y, v.width, v.height};
-        };
-        out.support = DirDescriptorSupport::Supported;
-        out.dirRecipeHash = math.recipe_hash;
-        out.renderExtent = extent(math.render_extent);
-        out.fullFrameExtent = extent(math.full_frame_extent);
-        out.filterDomainExtent = extent(math.filter_domain_extent);
-        out.traceRouteLabel = traceRouteLabel;
-        out.filterPlan.componentCount = static_cast<int>(math.component_count);
-        for (std::size_t i = 0; i < out.filterPlan.components.size(); ++i) {
-            const auto& source = math.components[i];
-            auto& target = out.filterPlan.components[i];
-            target.sigmaPixels = source.sigma_px;
-            target.weight = source.weight;
-            target.radius = source.radius;
-            target.referenceOperator = static_cast<DirReferenceOperator>(source.reference_operator);
-            target.iir.feedforward = source.feedforward;
-            std::copy(std::begin(source.feedback), std::end(source.feedback), target.iir.feedback.begin());
-            target.iir.normalizationDenominator = source.normalization_denominator;
-            target.iir.feedforwardNumerator = source.feedforward_numerator;
-            std::copy(std::begin(source.feedback_numerators), std::end(source.feedback_numerators), target.iir.feedbackNumerators.begin());
-            target.boundaryTruncationAccuracy = source.boundary_truncation_accuracy;
-            target.boundaryCertificationTolerance = source.boundary_certification_tolerance;
-            target.boundaryDerivationVersion = source.boundary_derivation_version;
-            if (i < math.component_count) {
-                target.targetScratchTier = dir_target_scratch_tier_for_operator(target.referenceOperator);
-                if (target.weight > 0.0f) {
-                    if (target.targetScratchTier == DirScratchTier::Tier1IChannels) {
-                        out.targetScratchTier = DirScratchTier::Tier1IChannels;
-                    } else if (out.targetScratchTier == DirScratchTier::Tier0) {
-                        out.targetScratchTier = DirScratchTier::Tier1F;
-                    }
-                }
-            }
         }
         if (rejected) {
             if (rejected->failure.field == FJ_DIR_FRAME_FIELD_PARTIAL_RENDER_WINDOW) {
@@ -975,6 +1020,16 @@ namespace Spektrafilm {
             return false;
         }
         return finish_spatial_dir_descriptor(outcome.input().pixel_size_um, out);
+    }
+
+    bool compose_spatial_dir_descriptor(
+        const FjDirFrameMath& math, float pixelSizeUm, const char* traceRouteLabel, SpatialDirDescriptor& out) {
+        out = SpatialDirDescriptor{};
+        if (math.present == 0) {
+            return empty_dir_frame_math(math);
+        }
+        return math.component_count != 0 && bind_spatial_dir_math(math, traceRouteLabel, out) &&
+               finish_spatial_dir_descriptor(pixelSizeUm, out);
     }
 
     bool build_spatial_dir_descriptor(

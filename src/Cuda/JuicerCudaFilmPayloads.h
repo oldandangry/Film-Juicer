@@ -7,8 +7,15 @@
 #include "Cuda/JuicerCudaPayloads.h"
 #include "FilmEffectsFrameDescriptors.h"
 #include "RenderRecipe.h"
+#include "juicer_cuda_frame_values.h"
 
 namespace JuicerCuda {
+
+    struct VisualGrainPayloadInput {
+        FjGrainCoefficients coefficients{};
+        std::uint64_t recipeHash = 0;
+        std::uint64_t densityLayersHash = 0;
+    };
 
     struct FilmPreparedView {
         DeviceCurveView finalSensB{};
@@ -129,6 +136,13 @@ namespace JuicerCuda {
         const Spektrafilm::VisualGrainFrameDescriptor* descriptor = nullptr;
         bool active = false;
     };
+
+    bool pack_visual_grain_payload(
+        const VisualGrainPayloadInput& input,
+        const PreparedVisualGrainView& prepared,
+        GrainPayload& outGrain,
+        GrainKernelPayload& outKernels,
+        std::string& diagnostic);
 
     bool pack_visual_grain_payload(
         const Spektrafilm::VisualGrainRecipe& recipe,

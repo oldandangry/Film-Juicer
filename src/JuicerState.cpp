@@ -1209,34 +1209,56 @@ bool build_print_render_state_product(
 }
 
 namespace {
-    bool publish_direct_recipe_if_selected(
+    void throw_state_construction_failure(FjStatus status, const std::string& diagnostic) {
+        if (status.category == FJ_STATUS_ALLOCATION_FAILURE) {
+            throw std::bad_alloc();
+        }
+        throw JuicerCuda::ExecutionFailure{{status, diagnostic}, false};
+    }
+
+    bool prepare_published_state(
         const ParamSnapshot& params,
-        FocusedRenderStateBuildProduct& outProduct,
+        std::optional<PreparedState>& out,
         std::string& outDiagnostic) {
-        FocusedRenderStateBuildProduct product;
-        outDiagnostic.clear();
-        if (!build_direct_render_state_product(params, product, outDiagnostic)) {
+        std::array<char, 4096> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        const FjStatus status = prepare_state(
+            JuicerProcess::root().assets().borrow_rust_assets(), params, out, error);
+        outDiagnostic.assign(diagnostic.data(), std::min(error.length, diagnostic.size()));
+        if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
             JTRACE("SPEKTRAFILM", outDiagnostic);
             return false;
         }
-        outProduct = std::move(product);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            throw_state_construction_failure(status, outDiagnostic);
+        }
         return true;
     }
 
-    bool publish_print_recipe_if_selected(
-        const ParamSnapshot& params,
-        FocusedRenderStateBuildProduct& outProduct,
-        std::string& outDiagnostic) {
-        FocusedRenderStateBuildProduct product;
-        outDiagnostic.clear();
-        if (!build_print_render_state_product(params, product, outDiagnostic)) {
-            JTRACE("SPEKTRAFILM", outDiagnostic);
-            return false;
+    void require_published_route(const PreparedState& state, bool print) {
+        FjPreparedStateView view{};
+        std::array<char, 4096> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        const FjStatus status = state.view(view, error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            throw_state_construction_failure(
+                status, std::string(diagnostic.data(), std::min(error.length, diagnostic.size())));
         }
-        outProduct = std::move(product);
-        return true;
+        if (((view.route & 1u) != 0) != print) {
+            throw_state_construction_failure(
+                {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0},
+                "ResourceDescriptorMismatch component=published_state field=scan_route");
+        }
     }
 } // namespace
+
+DirectRenderState::DirectRenderState(PreparedState&& state) : prepared(std::move(state)) {
+    require_published_route(prepared, false);
+}
+
+PrintRenderState::PrintRenderState(PreparedState&& state) : prepared(std::move(state)) {
+    require_published_route(prepared, true);
+}
 
 bool set_gamma_snapshot_values(
     double authoredFilmGammaFactor,
@@ -1370,9 +1392,9 @@ namespace {
                 return true;
             }
         }
-        FocusedRenderStateBuildProduct product;
+        std::optional<PreparedState> prepared;
         std::string diagnostic;
-        if (!publish_direct_recipe_if_selected(P, product, diagnostic)) {
+        if (!prepare_published_state(P, prepared, diagnostic)) {
             if (outDiagnostic) {
                 *outDiagnostic = diagnostic;
             }
@@ -1384,9 +1406,7 @@ namespace {
             return false;
         }
 
-        auto next = std::make_shared<DirectRenderState>();
-        next->recipe = std::move(product.recipe);
-        next->payload = std::move(product.payload);
+        auto next = std::make_shared<DirectRenderState>(std::move(*prepared));
 
         next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
         {
@@ -1430,9 +1450,9 @@ namespace {
                 return true;
             }
         }
-        FocusedRenderStateBuildProduct product;
+        std::optional<PreparedState> prepared;
         std::string diagnostic;
-        if (!publish_print_recipe_if_selected(P, product, diagnostic)) {
+        if (!prepare_published_state(P, prepared, diagnostic)) {
             if (outDiagnostic) {
                 *outDiagnostic = diagnostic;
             }
@@ -1444,9 +1464,7 @@ namespace {
             return false;
         }
 
-        auto next = std::make_shared<PrintRenderState>();
-        next->recipe = std::move(product.recipe);
-        next->payload = std::move(product.payload);
+        auto next = std::make_shared<PrintRenderState>(std::move(*prepared));
 
         next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
         {

@@ -1,6 +1,7 @@
 """Checkpoint ownership, cross-caller reuse and exact CTest membership controls."""
 from __future__ import annotations
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -1195,6 +1196,32 @@ class CheckpointTests(unittest.TestCase):
 
     def production_fixture(self):
         """Native tiny probes exercise retained proof, not product mathematics."""
+        prepared_source = self.root / "tests/ffi/production-prepared-render.cpp"
+        prepared_source.parent.mkdir(parents=True, exist_ok=True)
+        prepared_source.write_text("int main() { return 0; }\n", encoding="utf-8")
+        exposure = self.root / "tests/ofx/fixtures/exposure"
+        exposure.mkdir(parents=True, exist_ok=True)
+        prepared_fixtures = {}
+        for preset in qualification.PRESETS:
+            fixture = exposure / f"processor-{preset}.dat"
+            fixture.write_text("negative-direct 105 " + " ".join(["0"] * 105) + "\n"
+                               "negative-print 140 " + " ".join(["0"] * 140) + "\n",
+                               encoding="utf-8")
+            prepared_fixtures[fixture.name] = digest(fixture)
+        write_json(exposure / "manifest.json", {"files": prepared_fixtures})
+        illuminant = self.root / "tests/print/illuminant-fixtures"
+        illuminant.mkdir(parents=True, exist_ok=True)
+        write_json(illuminant / "manifest.json", {"schema": 1})
+        write_json(illuminant / "product-updates.json", {"schema": 1, "fixtures": {}})
+        # The Windows PDB-only control supplies a synthetic graph. Give it the
+        # exact output path too; real mini-project runs overwrite this with the
+        # CMake-linked target during their explicit target preparation.
+        render_executable = self.build / "tests/bin" / (
+            "JuicerProductionPreparedRenderProbe.exe" if os.name == "nt"
+            else "JuicerProductionPreparedRenderProbe")
+        if not render_executable.exists():
+            render_executable.parent.mkdir(parents=True, exist_ok=True)
+            render_executable.write_bytes(b"miniature prepared-render executable")
         for name in ("grain_frame_abi_assertions.inc", "grain_probe_contract.py", "effects_frame_abi_assertions.inc", "effects_frame_probe_contract.py"):
             target = self.root / "tests/ffi" / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1320,14 +1347,15 @@ class CheckpointTests(unittest.TestCase):
                                   "shape": [1, 2, 3, 4, 1, 2], "weights": [i], "terminal": [0] * 17 + [i],
                                   "diagnostic": "", "diagnostic_length": 0, "owner": True} for i in range(171)]})
         return r'''
-import json, sys, subprocess, hashlib, shutil
+import json, sys, subprocess, hashlib, shutil, struct
 preset=sys.argv[sys.argv.index("--preset")+1]
 out=out.resolve()
 def checksum(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 build=(Path('out/build')/preset).resolve()
 build_sources=[build/name for name in ('CMakeCache.txt','build.ninja','compile_commands.json','cargo-features.txt',
-                                     'libjuicer.a','juicer.lib','juicer.ofx','juicer.pdb') if (build/name).is_file()]
+                                     'libjuicer.a','juicer.lib','juicer.ofx','juicer.pdb',
+                                     'tests/bin/JuicerProductionPreparedRenderProbe.exe' if sys.platform=='win32' else 'tests/bin/JuicerProductionPreparedRenderProbe') if (build/name).is_file()]
 assert 'BUILD_TESTING:BOOL=OFF' in (build/'CMakeCache.txt').read_text().splitlines()
 build_inputs={}
 for source in build_sources:
@@ -1352,6 +1380,13 @@ consumed={str(header):checksum(header)}
 for name in ('grain_frame_abi_assertions.inc', 'grain_probe_contract.py', 'effects_frame_abi_assertions.inc', 'effects_frame_probe_contract.py'):
     helper=(Path('tests/ffi')/name).resolve()
     consumed[str(helper)]=checksum(helper)
+prepared_source=Path('tests/ffi/production-prepared-render.cpp').resolve()
+prepared_fixture_manifest=Path('tests/ofx/fixtures/exposure/manifest.json').resolve()
+prepared_fixture=prepared_fixture_manifest.parent/f'processor-{preset}.dat'
+prepared_illuminant_manifest=Path('tests/print/illuminant-fixtures/manifest.json').resolve()
+prepared_overlay=Path('tests/print/illuminant-fixtures/product-updates.json').resolve()
+consumed.update({str(path):checksum(path) for path in (Path('CMakeLists.txt').resolve(),prepared_source,
+                    prepared_fixture_manifest,prepared_fixture,prepared_illuminant_manifest,prepared_overlay)})
 reference_manifest=(Path('tests/film/reference-fixtures')/'manifest.json').resolve()
 reference_spec=json.loads(reference_manifest.read_text())
 reference_payload=reference_manifest.parent/reference_spec['presets'][preset]
@@ -1468,12 +1503,49 @@ for name in ['film','accepted-output-color']:
     probes.append({'name':name,'executable':str(executable),'linked_sha256':linked,
                    'before_run_sha256':before,'after_run_sha256':after,
                    'source':str(source),'source_sha256':source_hash})
+render_target='JuicerProductionPreparedRenderProbe'+('.exe' if sys.platform=='win32' else '')
+render_original=build/'tests/bin'/render_target
+render_retained=out/render_target
+shutil.copy2(render_original,render_retained)
+render_sha=checksum(render_original)
+def render_word_hash(words):
+    return hashlib.sha256(b''.join(struct.pack('<I',word) for word in words)).hexdigest()
+render_raw_rows=[]
+render_rows=[]
+for route,components in [('negative-direct',3),('negative-print',4)]:
+    words=[0]*(5*7*components)
+    for phase in ('cold','warm'):
+        raw={'case_id':route+'/'+phase,'route':route,'pass':phase,'recipe_hash':1,
+             'status':0,'api':0,'native_code':0,'diagnostic':'',
+             'input_shape':[5,7,components],'output_shape':[5,7,components],
+             'accepted_fixture_match':True,'submitted':True,'readback_complete':True,
+             'state_released_after_submit':True,'views_released_after_submit':True,
+             'stream_completed':True,'context_preserved':True,'context_restored':True,
+             'input_f32_words':[0]*(5*7*components),'output_f32_words':words}
+        render_raw_rows.append(raw)
+        render_rows.append({key:value for key,value in raw.items()
+                            if key not in {'input_f32_words','output_f32_words'}}|
+                           {'input_sha256':render_word_hash(raw['input_f32_words']),
+                            'output_f32_words_sha256':render_word_hash(words)})
+render_stdout=out/'prepared-render.stdout'
+render_stderr=out/'prepared-render.stderr'
+render_stdout.write_text(json.dumps({'rows':render_raw_rows}))
+render_stderr.write_bytes(b'')
+prepared_render={'executable':str(render_retained),'executable_sha256_before':render_sha,
+    'executable_sha256_after':checksum(render_original),
+    'command':[str(render_original),str(Path('Resources').resolve()),str(prepared_fixture),preset,str(prepared_overlay)],
+    'fixture':str(prepared_fixture),'fixture_sha256':checksum(prepared_fixture),
+    'stdout_sha256':checksum(render_stdout),'stderr_sha256':checksum(render_stderr),'rows':render_rows}
+commands.append({'name':'prepared-render','command':prepared_render['command'],'returncode':0,
+                 'stdout_sha256':prepared_render['stdout_sha256'],
+                 'stderr_sha256':prepared_render['stderr_sha256']})
 for name,value in consumed.items():assert checksum(Path(name))==value
 for name,row in build_inputs.items():assert checksum(Path(name))==checksum(Path(row['file']))==row['sha256']
 record=out/'commands.json'
 record.write_text(json.dumps(commands))
 (out/'production.json').write_text(json.dumps({'scope':'native miniature retained-payload protocol only',
-    'preset':preset,'build_testing':'OFF','build_inputs':build_inputs,'probes':probes,'consumed_inputs':consumed,
+    'preset':preset,'build_testing':'OFF','build_inputs':build_inputs,'probes':probes,
+    'prepared_render':prepared_render,'consumed_inputs':consumed,
     'reference_fixture':{'manifest':str(reference_manifest),'payload':str(reference_payload),'logical_preset':preset},
     'scanner_descriptor_fixture':{'manifest':str(descriptor_manifest),'payload':str(descriptor_payload),'context':str(descriptor_context),'logical_preset':preset},
     'scanner_descriptor_results':descriptor_results,
@@ -1514,7 +1586,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         manifest = qualification.production_manifest_identity(receipt, root=self.root)[0]
         paths = [receipt, self.root / command["output"], Path(command["process_tree"]["receipt"]), manifest]
         paths += [self.root / name for name in stage["identity"]["inputs"]
-                  if Path(name).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}]
+                  if Path(name).suffix.lower() in {".a", ".lib", ".ofx", ".pdb", ".exe"}]
+        prepared = json.loads(manifest.read_text())["prepared_render"]
+        paths.extend((Path(prepared["executable"]), manifest.parent / "prepared-render.stdout",
+                      manifest.parent / "prepared-render.stderr"))
         return {str(path): digest(path) for path in paths}
 
     def test_retained_grain_helpers_resolve_foreign_paths(self):
@@ -1532,6 +1607,76 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             checksum = digest(source)
             inputs[source.relative_to(self.root).as_posix()] = checksum
             copies[str(source)] = {"file": str(retained), "sha256": checksum}
+        render_name = "JuicerProductionPreparedRenderProbe" + (".exe" if os.name == "nt" else "")
+        render_source = self.root / "tests/ffi/production-prepared-render.cpp"
+        render_fixture = self.root / "tests/ofx/fixtures/exposure" / f"processor-{preset}.dat"
+        render_fixture_manifest = self.root / "tests/ofx/fixtures/exposure/manifest.json"
+        render_overlay = self.root / "tests/print/illuminant-fixtures/product-updates.json"
+        render_illuminant_manifest = self.root / "tests/print/illuminant-fixtures/manifest.json"
+        for path, content in ((render_source, b"prepared source"), (render_fixture, b"fixture"),
+                              (render_overlay, b"{}\n"), (render_illuminant_manifest, b"{}\n"),
+                              (self.root / "CMakeLists.txt", b"cmake")):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        render_fixture.write_text(
+            "negative-direct 105 " + " ".join(["0"] * 105) + "\n"
+            "negative-print 140 " + " ".join(["0"] * 140) + "\n",
+            encoding="utf-8")
+        fixture_sha = digest(render_fixture)
+        write_json(render_fixture_manifest, {"files": {render_fixture.name: fixture_sha}})
+        render_executable = build / "tests/bin" / render_name
+        retained_render_build_executable = out / "build/tests/bin" / render_name
+        retained_render_executable = out / render_name
+        render_executable.parent.mkdir(parents=True)
+        retained_render_build_executable.parent.mkdir(parents=True, exist_ok=True)
+        render_executable.write_bytes(b"prepared executable")
+        retained_render_build_executable.write_bytes(render_executable.read_bytes())
+        retained_render_executable.write_bytes(render_executable.read_bytes())
+        render_sha = digest(render_executable)
+        inputs[str(render_executable.relative_to(self.root).as_posix())] = render_sha
+        copies[str(render_executable)] = {"file": str(retained_render_build_executable), "sha256": render_sha}
+        render_consumed = [self.root / "CMakeLists.txt", render_source, render_fixture_manifest,
+                           render_fixture, render_illuminant_manifest, render_overlay]
+        for path in render_consumed:
+            inputs[path.relative_to(self.root).as_posix()] = digest(path)
+        def bits_hash(words):
+            return hashlib.sha256(b"".join(word.to_bytes(4, "little") for word in words)).hexdigest()
+        raw_rows, final_rows = [], []
+        for case_id, route, phase, components in (
+                ("negative-direct/cold", "negative-direct", "cold", 3),
+                ("negative-direct/warm", "negative-direct", "warm", 3),
+                ("negative-print/cold", "negative-print", "cold", 4),
+                ("negative-print/warm", "negative-print", "warm", 4)):
+            words = [0] * (5 * 7 * components)
+            raw = {"case_id": case_id, "route": route, "pass": phase, "recipe_hash": 1,
+                   "status": 0, "api": 0, "native_code": 0, "diagnostic": "",
+                   "input_shape": [5, 7, components], "output_shape": [5, 7, components],
+                   "accepted_fixture_match": True, "submitted": True, "readback_complete": True,
+                   "state_released_after_submit": True, "views_released_after_submit": True,
+                   "stream_completed": True, "context_preserved": True, "context_restored": True,
+                   "input_f32_words": words, "output_f32_words": words}
+            raw_rows.append(raw)
+            final_rows.append({**{key: value for key, value in raw.items()
+                                 if key not in {"input_f32_words", "output_f32_words"}},
+                               "input_sha256": bits_hash(words),
+                               "output_f32_words_sha256": bits_hash(words)})
+        render_stdout = out / "prepared-render.stdout"
+        render_stderr = out / "prepared-render.stderr"
+        write_json(render_stdout, {"rows": raw_rows})
+        render_stderr.write_bytes(b"")
+        prepared_render = {"executable": str(retained_render_executable),
+                           "executable_sha256_before": render_sha,
+                           "executable_sha256_after": render_sha,
+                           "command": [str(render_executable), str(self.root / "Resources"),
+                                       str(render_fixture), preset, str(render_overlay)],
+                           "fixture": str(render_fixture), "fixture_sha256": fixture_sha,
+                           "stdout_sha256": digest(render_stdout), "stderr_sha256": digest(render_stderr),
+                           "rows": final_rows}
+        command_rows = [{"name": "prepared-render", "command": prepared_render["command"],
+                         "returncode": 0, "stdout_sha256": prepared_render["stdout_sha256"],
+                         "stderr_sha256": prepared_render["stderr_sha256"]}]
+        commands_file = out / "commands.json"
+        write_json(commands_file, command_rows)
         for name in ("film", "accepted-output-color"):
             source, executable = out / (name + ".c"), out / (name + (".exe" if os.name == "nt" else ""))
             source.write_text("/* retained source identity */\n")
@@ -1558,12 +1703,65 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                     return self.root / name[len(prefix):].replace(separator, "/")
                 return Path(name)
             document = {"preset": preset, "build_testing": "OFF", "build_inputs": copies,
-                        "probes": probes, "consumed_inputs": {foreign(p): digest(p) for p in helpers}}
+                        "probes": probes, "prepared_render": prepared_render,
+                        "consumed_inputs": {foreign(p): digest(p) for p in [*helpers, *render_consumed]},
+                        "commands": {"file": str(commands_file), "sha256": digest(commands_file)},
+                        "command_outputs": {str(render_stdout): digest(render_stdout),
+                                            str(render_stderr): digest(render_stderr)}}
             write_json(manifest, document)
             # This intentionally incomplete tiny record must reach the next gate;
             # it does not claim real archive execution or full payload admission.
             with self.assertRaisesRegex(ValueError, "film-reference fixture membership"):
                 qualification.production_payloads(manifest, digest(manifest), root=self.root, inputs=inputs, resolve=resolve)
+            for path in (render_source, render_fixture):
+                original = path.read_bytes()
+                try:
+                    path.write_bytes(original + b"changed")
+                    with self.assertRaisesRegex(ValueError, "prepared-render consumed input identity changed"):
+                        qualification.production_payloads(manifest, digest(manifest), root=self.root,
+                                                          inputs=inputs, resolve=resolve)
+                finally:
+                    path.write_bytes(original)
+            for path, message in ((retained_render_executable, "production execution payload missing or changed"),
+                                  (render_stdout, "prepared-render retained output missing or changed"),
+                                  (render_stderr, "prepared-render retained output missing or changed")):
+                original = path.read_bytes()
+                try:
+                    path.write_bytes(original + b"changed")
+                    with self.assertRaisesRegex(ValueError, message):
+                        qualification.production_payloads(manifest, digest(manifest), root=self.root,
+                                                          inputs=inputs, resolve=resolve)
+                finally:
+                    path.write_bytes(original)
+            for mutation in ("unknown", "missing", "reordered", "missing-command", "changed-command"):
+                damaged = json.loads(json.dumps(document))
+                if mutation == "unknown":
+                    damaged["prepared_render"]["rows"][0]["unexpected"] = 1
+                elif mutation == "missing":
+                    del damaged["prepared_render"]["rows"][0]["api"]
+                elif mutation == "reordered":
+                    damaged["prepared_render"]["rows"].reverse()
+                elif mutation == "missing-command":
+                    write_json(commands_file, [])
+                    damaged["commands"]["sha256"] = digest(commands_file)
+                else:
+                    changed_commands = json.loads(json.dumps(command_rows))
+                    changed_commands[0]["command"][1] += "-changed"
+                    write_json(commands_file, changed_commands)
+                    damaged["commands"]["sha256"] = digest(commands_file)
+                write_json(manifest, damaged)
+                message = ("prepared-render row schema or order changed" if mutation in {"unknown", "missing"}
+                           else "prepared-render row membership" if mutation == "reordered"
+                           else "production retained command membership is incomplete or duplicated"
+                           if mutation == "missing-command"
+                           else "production prepared-render command execution identity changed")
+                try:
+                    with self.assertRaisesRegex(ValueError, message):
+                        qualification.production_payloads(manifest, digest(manifest), root=self.root,
+                                                          inputs=inputs, resolve=resolve)
+                finally:
+                    write_json(commands_file, command_rows)
+            write_json(manifest, document)
             for helper in helpers:
                 for mode in ("missing", "hash", "content"):
                     with self.subTest(prefix=prefix, helper=helper.name, mode=mode):
@@ -1587,8 +1785,11 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         document = json.loads(manifest.read_text())
         artifact = next(Path(row["file"]) for name, row in document["build_inputs"].items()
                         if Path(name).suffix.lower() in {".a", ".lib", ".ofx"})
+        prepared = document["prepared_render"]
         return [Path(row[key]) for row in document["probes"] for key in ("executable", "source")] + [
-            manifest.parent / "production-film-expected.h", manifest.parent / "film-values.stdout", artifact]
+            Path(prepared["executable"]), manifest.parent / "prepared-render.stdout",
+            manifest.parent / "prepared-render.stderr", manifest.parent / "production-film-expected.h",
+            manifest.parent / "film-values.stdout", artifact]
 
     def assert_production_reuse_controls(self, path, checkpoint, calls):
         record = json.loads(path.read_text())
@@ -1608,17 +1809,25 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         outcomes.append({"operation": "reuse", "case": "retry-reason", "status": "passed", "commands": 0})
         for target in self.production_mutations(stage):
             data, stamp = target.read_bytes(), target.stat()
+            message = ("prepared-render retained output missing or changed"
+                       if target.name in {"prepared-render.stdout", "prepared-render.stderr"}
+                       else "production execution payload missing or changed")
             for mutation in ("replace", "remove"):
                 with self.subTest(operation="reuse", file=target.name, mutation=mutation):
                     try:
                         target.write_bytes(b"changed after execution") if mutation == "replace" else target.unlink()
-                        with self.assertRaisesRegex(ValueError, "production execution payload missing or changed"):
-                            checkpoint("retained-" + target.name.replace(".", "-") + "-" + mutation)
+                        with self.assertRaisesRegex(ValueError, message):
+                            checkpoint("retained-" + target.name.replace(".", "-").lower() + "-" + mutation)
                         self.assertEqual(json.loads(owner.read_text())["production"]["status"], "failed")
                         self.assertEqual(len(calls), before, "rejected reuse executed probes")
-                        self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+                        untouched = {name: checksum for name, checksum in protected.items() if Path(name) != target}
+                        self.assertEqual(untouched, {name: digest(Path(name)) for name in untouched})
+                        if mutation == "remove":
+                            self.assertFalse(target.exists(), "rejected reuse repaired a missing payload")
+                        else:
+                            self.assertEqual(target.read_bytes(), b"changed after execution")
                         outcomes.append({"operation": "reuse", "case": target.name, "mutation": mutation,
-                                         "rejected": "production execution payload missing or changed"})
+                                         "rejected": message})
                     finally:
                         target.write_bytes(data)
                         os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
@@ -1683,15 +1892,23 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         outcomes = [{"operation": "collection", "case": "unchanged", "status": "passed"}]
         for target in self.production_mutations(stage):
             data, stamp = target.read_bytes(), target.stat()
+            message = ("prepared-render retained output missing or changed"
+                       if target.name in {"prepared-render.stdout", "prepared-render.stderr"}
+                       else "production execution payload missing or changed")
             for mutation in ("replace", "remove"):
                 with self.subTest(operation="collection", file=target.name, mutation=mutation):
                     try:
                         target.write_bytes(b"changed after execution") if mutation == "replace" else target.unlink()
-                        with self.assertRaisesRegex(ValueError, "production execution payload missing or changed"):
+                        with self.assertRaisesRegex(ValueError, message):
                             qualification.collect_qualification(self.root, paths)
-                        self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+                        untouched = {name: checksum for name, checksum in protected.items() if Path(name) != target}
+                        self.assertEqual(untouched, {name: digest(Path(name)) for name in untouched})
+                        if mutation == "remove":
+                            self.assertFalse(target.exists(), "collection repaired a missing payload")
+                        else:
+                            self.assertEqual(target.read_bytes(), b"changed after execution")
                         outcomes.append({"operation": "collection", "case": target.name, "mutation": mutation,
-                                         "rejected": "production execution payload missing or changed"})
+                                         "rejected": message})
                     finally:
                         target.write_bytes(data)
                         os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
@@ -1757,9 +1974,17 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             for preset in ("linux-release", "windows-clang-release"):
                 build = self.root / "out/build" / preset
                 campaign = Campaign(self.root, preset, "retained-off-prepare", ["prepare"])
-                qualification.prepare_build(campaign, "prepare", source=self.root, build=build,
-                    inputs=list(files), timeout=60, targets=["all"],
+                _, prepared = qualification.prepare_build(campaign, "prepare", source=self.root, build=build,
+                    inputs=sorted(set(files) | {
+                        "CMakeLists.txt", "tests/ffi/production-prepared-render.cpp",
+                        "tests/ofx/fixtures/exposure/manifest.json",
+                        f"tests/ofx/fixtures/exposure/processor-{preset}.dat",
+                        "tests/print/illuminant-fixtures/manifest.json",
+                        "tests/print/illuminant-fixtures/product-updates.json"}), timeout=60,
+                    targets=["all", "JuicerProductionPreparedRenderProbe"],
                     configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
+                self.assertEqual(json.loads(prepared.read_text())["scoped_preparation"]["targets"],
+                                 sorted(["all", "JuicerProductionPreparedRenderProbe"]))
                 path = checkpoint(preset, "retained-off")
                 paths.append(path)
                 if preset == ("windows-clang-release" if os.name == "nt" else "linux-release"):
@@ -1815,7 +2040,9 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         state_path = build / "verification-checkpoint.json"
         campaign = Campaign(self.root, preset, "off-preparation", ["prepare"])
         qualification.prepare_build(campaign, "prepare", source=self.root, build=build,
-            inputs=list(files), timeout=60, targets=["all"], configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
+            inputs=list(files), timeout=60,
+            targets=["all", "JuicerProductionPreparedRenderProbe"],
+            configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
         state = {}
         with OutputLease(self.root, build):
             with self.assertRaises(subprocess.CalledProcessError):
@@ -2248,11 +2475,15 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 'configure_file(binding.h.in generated/binding.h COPYONLY)\n'
                 'add_library(juicer STATIC src/native.cpp src/abi.c)\n'
                 'target_include_directories(juicer PUBLIC "${CMAKE_BINARY_DIR}/generated")\n'
+                'add_executable(JuicerProductionPreparedRenderProbe EXCLUDE_FROM_ALL tests/ffi/production-prepared-render.cpp)\n'
+                'target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE juicer)\n'
+                'set_target_properties(JuicerProductionPreparedRenderProbe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")\n'
                 'add_executable(behavior src/main.cpp)\ntarget_link_libraries(behavior PRIVATE juicer)\n'
                 'if(BUILD_TESTING)\nforeach(group product boundary tooling corpus)\n'
                 'add_test(NAME mini.${group} COMMAND behavior 10)\n'
                 'set_tests_properties(mini.${group} PROPERTIES LABELS "host;${group}")\nendforeach()\nendif()\n',
             "binding.h.in": "#define BINDING 4\n",
+            "tests/ffi/production-prepared-render.cpp": "int main() { return 0; }\n",
             "src/abi.h": 'typedef struct Witness { int first; int second; } Witness;\n',
             "src/abi.c": '#include <stddef.h>\n#include "abi.h"\n'
                 '_Static_assert(sizeof(Witness)==8,"C11 ABI");\n'
@@ -2381,7 +2612,9 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 campaign = Campaign(self.root, preset, "cold", ["prepare"])
                 if preset.endswith("release"):
                     record_phase(f"prepare.{preset}.cold", qualification.prepare_build, campaign, "prepare", source=self.root, build=build,
-                        inputs=list(files), timeout=60, targets=["all"], configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
+                        inputs=list(files), timeout=60,
+                        targets=["all", "JuicerProductionPreparedRenderProbe"],
+                        configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
                     paths.append(checkpoint(preset, "off", ["production"]))
                 else:
                     record_phase(f"configure.{preset}.cold", self.configure_fixture, preset, True, "fixture-on", timeout=60)
@@ -2801,6 +3034,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def test_production_inputs_do_not_require_test_registration(self):
         self.native_project()
+        self.production_fixture()
         helpers = ("tests/ffi/grain_frame_abi_assertions.inc", "tests/ffi/grain_probe_contract.py", "tests/ffi/effects_frame_abi_assertions.inc", "tests/ffi/effects_frame_probe_contract.py")
         for name in helpers:
             target = self.root / name
@@ -2811,6 +3045,12 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertIn("CMakeLists.txt", inputs)
         self.assertIn((self.build / "CMakeCache.txt").relative_to(self.root).as_posix(), inputs)
         for name in helpers:
+            self.assertIn(name, inputs)
+        for name in ("tests/ffi/production-prepared-render.cpp",
+                     "tests/ofx/fixtures/exposure/manifest.json",
+                     f"tests/ofx/fixtures/exposure/processor-{self.preset}.dat",
+                     "tests/print/illuminant-fixtures/manifest.json",
+                     "tests/print/illuminant-fixtures/product-updates.json"):
             self.assertIn(name, inputs)
 
     @unittest.skipUnless(os.name == "nt", "Windows production PDB")
@@ -2835,10 +3075,12 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             "count.write_text(str(int(count.read_text())+1) if count.exists() else '1')\n"
             "assert (root/'out/build'/a.preset/'juicer.pdb').is_file()\n"
             + self.production_fixture())
+        render_executable = self.build / "tests/bin/JuicerProductionPreparedRenderProbe.exe"
         args = SimpleNamespace(reason="production PDB identity regression", selection=["production"],
                                preset=self.preset, runtime="host", campaign="first", repeat_reason="", base=None, prepare=True)
         count = self.root / "out/production-count.txt"
-        with patch("build_dependencies.NinjaGraph", return_value=SimpleNamespace(outputs={str(module)})), \
+        with patch("build_dependencies.NinjaGraph", return_value=SimpleNamespace(
+                outputs={str(module.resolve()), str(render_executable.resolve())})), \
                 patch.object(qualification, "checkpoint_tools", return_value=[self.python]):
             first = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["production"]
             self.assertEqual(first["identity"]["inputs"][pdb.relative_to(self.root).as_posix()], digest(pdb))

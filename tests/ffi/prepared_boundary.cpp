@@ -1,5 +1,7 @@
 #include "prepared_boundary.h"
+#include "prepared_raw_render_fixture.h"
 #include "juicer_test_api.h"
+#include "juicer_cuda_call_scope.h"
 
 #include <algorithm>
 #include <array>
@@ -139,6 +141,82 @@ namespace {
 
 namespace JuicerCudaTest {
 
+    namespace {
+        bool render_held_state(FjAssets* assets, const PreparedState& owner, const FjPreparedStateView& state, const FjFrame& frame, const FjSubmission& expected, std::uint64_t expectedRecipeHash, FjErrorBuffer& error, std::string& diagnostic) {
+            const auto frameFloor = std::floor(frame.time_frames);
+            if (state.recipe_hash != expectedRecipeHash || state.upload_core_hash != expected.upload_core_hash ||
+                state.dir_recipe.hash != expected.dir_hash || state.scanner_hash != expected.scanner_hash || expected.instance_token == 0 ||
+                !std::isfinite(frameFloor) || frameFloor < -0x1p63 || frameFloor >= 0x1p63 ||
+                expected.frame_token != static_cast<std::uint64_t>(static_cast<std::int64_t>(frameFloor))) {
+                diagnostic = "held-state render identity does not match its frame submission";
+                return false;
+            }
+            error.length = 0;
+            if (error.capacity != 0 && error.data != nullptr)
+                error.data[0] = '\0';
+            const FjExtent full{frame.full_frame_extent.x1, frame.full_frame_extent.y1, frame.full_frame_extent.x2 - frame.full_frame_extent.x1, frame.full_frame_extent.y2 - frame.full_frame_extent.y1};
+            FjPreparedFramePolicy policy{};
+            const auto policyStatus = owner.frame_policy(full, policy, error);
+            if (policyStatus.category != FJ_STATUS_SUCCESS) {
+                diagnostic.assign(error.data, error.length);
+                return false;
+            }
+            struct Completion {
+                unsigned calls = 0;
+                bool ordered = false;
+            } completion;
+            JuicerCuda::CallScope scope(JuicerCuda::borrowed_owner(), state.route, [](void* user, const FjCallCompletionInput* input) noexcept -> FjCallCompletionResult {
+                auto& observed = *static_cast<Completion*>(user);
+                ++observed.calls;
+                try {
+                    // The real provider must release its admission before completion.
+                    JuicerCuda::check_native_call_admission(JuicerCuda::borrowed_owner());
+                    observed.ordered = input->render_outcome_valid == 1 &&
+                                       input->has_inspected_context == 1 && input->recovery_scope_entered == 1 &&
+                                       input->force_fatal == 0 && input->abort_failed == 0;
+                } catch (...) {
+                    observed.ordered = false;
+                }
+                return {input->outcome, observed.ordered && input->outcome.status.category == FJ_STATUS_SUCCESS ? 0u : 1u};
+            },
+                                        &completion);
+            struct Selection {
+                unsigned calls = 0;
+                FjSubmission expected{};
+                bool matched = true;
+            } selection;
+            selection.expected = expected;
+            const FjSubmissionAccess latch{expected.instance_token,
+                                           expected.frame_token,
+                                           &selection,
+                                           [](void* user, const FjCudaContext*, const FjSubmission* requested, FjSubmission* out, FjErrorBuffer*) -> FjStatus {
+                                               auto& selected = *static_cast<Selection*>(user);
+                                               ++selected.calls;
+                                               selected.matched = requested &&
+                                                                  requested->instance_token == selected.expected.instance_token &&
+                                                                  requested->frame_token == selected.expected.frame_token &&
+                                                                  requested->upload_core_hash == selected.expected.upload_core_hash &&
+                                                                  requested->dir_hash == selected.expected.dir_hash &&
+                                                                  requested->scanner_hash == selected.expected.scanner_hash &&
+                                                                  requested->auto_exposure_hash == selected.expected.auto_exposure_hash;
+                                               if (!selected.matched)
+                                                   return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
+                                               *out = *requested;
+                                               out->submission_id = selected.expected.submission_id;
+                                               return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+                                           }};
+            const auto result = owner.render(assets, scope.access(), frame, policy, latch, {}, error);
+            if (result.outcome.status.category != FJ_STATUS_SUCCESS || result.fatal != 0 ||
+                completion.calls != 1 || !completion.ordered || selection.calls != 1 || !selection.matched || scope.recovery().pending) {
+                diagnostic = scope.diagnostic().empty() ? std::string(error.data, error.length) : scope.diagnostic();
+                if (diagnostic.empty())
+                    diagnostic = "held rendering completion/selection order failed";
+                return false;
+            }
+            return true;
+        }
+    } // namespace
+
     bool execute_prepared_state(FjAssets* assets, const ParamSnapshot& params, const FjFrame& frame, std::uint64_t instanceToken, bool contract, bool lifetime, std::string& diagnostic, StateLifetimeCase lifetimeCase) {
         FjStatus status{};
         auto owner = prepare_state(assets, params, status, diagnostic);
@@ -147,7 +225,7 @@ namespace JuicerCudaTest {
         std::array<char, 2048> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
         FjPreparedStateView state{};
-        if (fj_test_prepared_state_view(owner.get(), &state, &error).category != FJ_STATUS_SUCCESS) {
+        if (owner->view(state, error).category != FJ_STATUS_SUCCESS) {
             diagnostic.assign(message.data(), error.length);
             return false;
         }
@@ -217,24 +295,48 @@ namespace JuicerCudaTest {
         check_frame_bindings(JuicerCuda::borrowed_owner(), context, frame, submission, prepared);
         const bool success = (contract || (lifetime && lifetimeCase == StateLifetimeCase::SuppliedStream))
                                  ? check_render_contract(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &error).category == FJ_STATUS_SUCCESS
-                                 : fj_test_execute_prepared_c(JuicerCuda::borrowed_owner(), &prepared, &frame, &context, &submission, &error) != 0;
+                                 : render_raw_prepared(JuicerCuda::borrowed_owner(), frame, submission, prepared, {}, &error).status.category == FJ_STATUS_SUCCESS;
         if (!success) {
             diagnostic.assign(message.data(), error.length);
             return false;
         }
         if (lifetime)
             check_prepared_state_lifetime(owner, assets, JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &error, lifetimeCase);
+        else if (!render_held_state(assets, *owner, state, frame, submission, state.recipe_hash, error, diagnostic))
+            return false;
         return true;
     }
 
     bool execute_boundary(
+        const PreparedState& owner,
         const RenderRecipe& recipe,
         const FocusedRenderPayload& payload,
         const JuicerCuda::ExecutionFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const JuicerCuda::PreparedDescriptors& descriptors,
         std::string& diagnostic) {
+        // SF_TEMP_BRIDGE_NATIVE_PREPARED_WIRE: keep this independent C++ wire
+        // comparison only through I7; the accepted render below uses owner.
         diagnostic.clear();
+        std::array<char, 2048> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjPreparedStateView actual{};
+        if (owner.view(actual, error).category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(message.data(), error.length);
+            return false;
+        }
+        const auto route = static_cast<std::uint32_t>(recipe.profileRoute.scanRoute);
+        if (actual.route != route || actual.recipe_hash != recipe.hash ||
+            actual.profile_route_hash != recipe.profileRoute.hash ||
+            actual.upload_core_hash != payload.uploadCoreHash || actual.scanner_hash != payload.scannerHash ||
+            actual.dir_recipe.hash != recipe.dirCouplers.hash || descriptors.route != recipe.profileRoute.scanRoute ||
+            snapshot.instanceToken.value == 0 || snapshot.snapshotId == 0 ||
+            snapshot.keyDigests.uploadCoreHash != actual.upload_core_hash ||
+            snapshot.keyDigests.dirHash != actual.dir_recipe.hash ||
+            snapshot.keyDigests.scannerHash != actual.scanner_hash) {
+            diagnostic = "held-state boundary identity differs from native comparison inputs";
+            return false;
+        }
         const auto sourceBaseline = fj_test_noise_acquisition_count();
         JuicerCuda::PreparedDescriptors preparedDescriptors = descriptors;
         JuicerCuda::FocusedRouteResourceInput focused;
@@ -336,19 +438,35 @@ namespace JuicerCudaTest {
              geometry.pixelAspectRatio}};
         const FjCudaContext context{snapshot.deviceContextKey.deviceId, reinterpret_cast<std::uintptr_t>(snapshot.deviceContextKey.contextOpaque)};
         const FjSubmission submission{snapshot.instanceToken.value, snapshot.frameToken.value, snapshot.snapshotId, snapshot.keyDigests.uploadCoreHash, snapshot.keyDigests.dirHash, snapshot.keyDigests.scannerHash, snapshot.keyDigests.autoExposureHash};
-        std::array<char, 2048> message{};
-        FjErrorBuffer error{message.data(), message.size(), 0};
         const auto sourceAcquisitions = fj_test_noise_acquisition_count();
         check_frame_bindings(JuicerCuda::borrowed_owner(), context, projectedFrame, submission, prepared, &recipe);
-        const int result = fj_test_execute_prepared_c(JuicerCuda::borrowed_owner(), &prepared, &projectedFrame, &context, &submission, &error);
+        const FjRenderOutcome result = render_raw_prepared(JuicerCuda::borrowed_owner(), projectedFrame, submission, prepared, {}, &error);
         if (fj_test_noise_acquisition_count() != sourceAcquisitions) {
             diagnostic = "supplied noise performed a fallback acquisition";
             return false;
         }
-        if (result == 0) {
+        if (result.status.category != FJ_STATUS_SUCCESS) {
             diagnostic.assign(message.data(), error.length);
+            return false;
         }
-        return result != 0;
+        if (snapshot.keyDigests.autoExposureHash != meter.hash) {
+            diagnostic = "held-state boundary identity differs from native comparison inputs";
+            return false;
+        }
+        const FjSubmission expected{snapshot.instanceToken.value,
+                                    snapshot.frameToken.value,
+                                    snapshot.snapshotId,
+                                    snapshot.keyDigests.uploadCoreHash,
+                                    snapshot.keyDigests.dirHash,
+                                    snapshot.keyDigests.scannerHash,
+                                    snapshot.keyDigests.autoExposureHash};
+        if (!render_held_state(JuicerProcess::root().assets().borrow_rust_assets(), owner, actual, projectedFrame, expected, recipe.hash, error, diagnostic))
+            return false;
+        if (fj_test_noise_acquisition_count() != sourceAcquisitions) {
+            diagnostic = "held-state render performed a native noise fallback acquisition";
+            return false;
+        }
+        return true;
     }
 
 } // namespace JuicerCudaTest

@@ -1,4 +1,6 @@
 namespace DiffusionFrameTest {
+    FjDiffusionFrameInput raw_frame(const Json& input);
+    Json project(const FjDiffusionFrameSet& v);
     double scalar(const Json& input) {
         return std::bit_cast<double>(input.get<std::uint64_t>());
     }
@@ -109,6 +111,10 @@ namespace DiffusionFrameTest {
         return {{"family", static_cast<unsigned>(r.family)}, {"weights", bits(r.groupWeightsCoreHaloBloom)}, {"centers", bits(r.groupCenterLambdaUm)}, {"warmth", std::bit_cast<std::uint64_t>(r.effectiveWarmth)}, {"scale", std::bit_cast<std::uint64_t>(r.spatialScale)}, {"scatter", std::bit_cast<std::uint64_t>(r.scatterFraction)}, {"active", r.active}, {"resolved_hash", r.hash}, {"domain", static_cast<unsigned>(component.domain)}, {"hash", component.hash}};
     }
 
+    Json resolved_input(const FjDiffusionRecipe& r) {
+        return {{"family", r.family}, {"weights", bits(std::array<double, 3>{r.group_weights[0], r.group_weights[1], r.group_weights[2]})}, {"centers", bits(std::array<double, 3>{r.group_lambda_um[0], r.group_lambda_um[1], r.group_lambda_um[2]})}, {"warmth", std::bit_cast<std::uint64_t>(r.warmth)}, {"scale", std::bit_cast<std::uint64_t>(r.spatial_scale)}, {"scatter", std::bit_cast<std::uint64_t>(r.scatter_fraction)}, {"active", r.active != 0}, {"resolved_hash", r.resolved_hash}, {"domain", r.domain}, {"hash", r.hash}};
+    }
+
     Json products(const std::filesystem::path& resources, const Json& specs) {
         const auto started = std::chrono::steady_clock::now();
         auto progress = [&](const char* stage, const std::string& name) {
@@ -131,13 +137,33 @@ namespace DiffusionFrameTest {
             params.cameraDiffusion.active = spec.at("camera");
             params.enlargerDiffusion.active = spec.at("enlarger");
             params.cameraDiffusion.family = params.enlargerDiffusion.family = static_cast<Spektrafilm::DiffusionFilterFamily>(spec.at("family").get<unsigned>());
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            require(route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic), diagnostic.c_str());
-            const auto& optics = product.recipe.spatialOptics;
-            Json input{{"name", spec.at("name")}, {"route", route}, {"extent", spec.at("extent")}, {"pixel", std::bit_cast<std::uint64_t>(static_cast<double>(std::bit_cast<float>(spec.at("pixel_bits").get<std::uint32_t>())))}, {"camera", resolved_input(optics.cameraDiffusion)}, {"enlarger", resolved_input(optics.enlargerDiffusion)}};
+            auto product = JuicerTestSupport::prepare_product(params);
+            FjPreparedStateView view{};
+            FjErrorBuffer viewError{};
+            status(product.view(view, viewError));
+            Json input{{"name", spec.at("name")}, {"route", route}, {"extent", spec.at("extent")}, {"pixel", std::bit_cast<std::uint64_t>(static_cast<double>(std::bit_cast<float>(spec.at("pixel_bits").get<std::uint32_t>())))}, {"camera", resolved_input(view.optics.camera_diffusion)}, {"enlarger", resolved_input(view.optics.enlarger_diffusion)}};
             progress("frame", name);
-            auto row = frame_product(input);
+            const auto wire = raw_frame(input);
+            FjDiffusionFrameSet native{};
+            FjDiffusionFailure failure{};
+            std::array<char, 256> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            const auto result = fj_test_diffusion_frame_prepare(&wire, &native, &failure, &error);
+            Json frame = project(native);
+            const auto cleared = project(FjDiffusionFrameSet{});
+            if (result.category != FJ_STATUS_SUCCESS || native.flags == 0) {
+                require_equal(frame, cleared, "absent diffusion frame clears the complete raw record");
+                frame = nullptr;
+            } else {
+                frame.erase("flags");
+                for (const auto& [name, flag] : {std::pair{"camera", 1u}, std::pair{"enlarger", 2u}}) {
+                    if ((native.flags & flag) == 0) {
+                        require_equal(frame.at(name), cleared.at(name), "absent diffusion stage clears its raw record");
+                        frame[name] = nullptr;
+                    }
+                }
+            }
+            auto row = Json{{"input", input}, {"success", result.category == FJ_STATUS_SUCCESS}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"frame", std::move(frame)}};
             row["spec"] = spec;
             row["samples"] = Json::array();
             for (const auto* stage : {"camera", "enlarger"}) {
@@ -149,7 +175,18 @@ namespace DiffusionFrameTest {
                 sample["width"] = spec.at("extent")[2];
                 sample["height"] = spec.at("extent")[3];
                 progress(stage, name);
-                row["samples"].push_back(sample_product(sample));
+                auto sampleRow = sample_product(sample);
+                if (!row.at("frame").is_null()) {
+                    const auto rawStage = row.at("frame").at(stage);
+                    require(sampleRow.at("success").get<bool>() &&
+                                sampleRow.at("sample").at("hash") == rawStage.at("sample_hash"),
+                            "actual diffusion sample binds the raw frame stage identity");
+                    row["frame"][stage] = {{"stage", input.at(stage).at("domain")},
+                                           {"scatter", rawStage.at("scatter")},
+                                           {"sample", sampleRow.at("sample")},
+                                           {"hash", rawStage.at("hash")}};
+                }
+                row["samples"].push_back(std::move(sampleRow));
             }
             rows.push_back(row);
             progress("case-complete", name);

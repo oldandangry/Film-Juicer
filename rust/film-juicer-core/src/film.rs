@@ -32,6 +32,8 @@ pub struct Development {
     normalized_curves_hash: u64,
     layers_hash: u64,
     hash: u64,
+    #[cfg(any(test, feature = "test-support"))]
+    _curve_observation: test_support::CurveObservation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +131,8 @@ impl Development {
         normalized_curves_cmy
             .try_reserve_exact(capacity)
             .map_err(|_| Error::Allocation)?;
+        #[cfg(any(test, feature = "test-support"))]
+        let curve_observation = test_support::CurveObservation::new();
         normalized_curves_cmy.extend_from_slice(authored);
         let (minimum_cmy, maximum_cmy) = normalize_curves(&mut normalized_curves_cmy);
         let normalized_curves_hash = curve_hash(normalized_curves_cmy.as_flattened());
@@ -185,6 +189,8 @@ impl Development {
             normalized_curves_hash,
             layers_hash,
             hash: identity,
+            #[cfg(any(test, feature = "test-support"))]
+            _curve_observation: curve_observation,
         })
     }
 
@@ -234,6 +240,35 @@ impl Development {
 pub mod test_support {
     //! Bounded reservation and rare zero-identity rejection witnesses, absent in production.
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static LIVE_CURVES: AtomicUsize = AtomicUsize::new(0);
+    static ALLOCATED_CURVES: AtomicUsize = AtomicUsize::new(0);
+    static DROPPED_CURVES: AtomicUsize = AtomicUsize::new(0);
+
+    // Field order drops this observation after a completed Development's curve
+    // vector; failed local construction drops both before its caller can sample.
+    pub(super) struct CurveObservation;
+    impl CurveObservation {
+        pub(super) fn new() -> Self {
+            LIVE_CURVES.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_CURVES.fetch_add(1, Ordering::Relaxed);
+            Self
+        }
+    }
+    impl Drop for CurveObservation {
+        fn drop(&mut self) {
+            LIVE_CURVES.fetch_sub(1, Ordering::Relaxed);
+            DROPPED_CURVES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn curve_counts() -> [usize; 3] {
+        [
+            LIVE_CURVES.load(Ordering::Relaxed),
+            ALLOCATED_CURVES.load(Ordering::Relaxed),
+            DROPPED_CURVES.load(Ordering::Relaxed),
+        ]
+    }
     thread_local! { static FAULT: Cell<u32> = const { Cell::new(0) }; }
     pub fn reject_next(fault: u32) {
         FAULT.set(fault);

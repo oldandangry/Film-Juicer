@@ -15,6 +15,7 @@
 #include <new>
 #include <mutex>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <span>
 #include <thread>
@@ -38,6 +39,7 @@
 #include "juicer_test_api.h"
 #include "spectral_allocation_probe.h"
 #include "prepared_boundary.h"
+#include "prepared_product_fixture.h"
 
 static_assert(sizeof(FjNeutralCalibrationResult) == 20 && alignof(FjNeutralCalibrationResult) == 4);
 static_assert(offsetof(FjNeutralCalibrationResult, outcome) == 0 && offsetof(FjNeutralCalibrationResult, field) == 4 && offsetof(FjNeutralCalibrationResult, cmy_cc) == 8);
@@ -771,24 +773,27 @@ namespace {
         const auto path = root / "filters/neutral_print_filters.json";
         write(path, R"({"print-stock":{"TH-KG3":{"film-stock":[11,22,33],"unused":false}},"kodak_portra_endura":{"TH-KG3":{"kodak_portra_400":[101,202,303]}},"bad-unused":[]})");
         const auto params = controls(true);
-        FocusedRenderStateBuildProduct product;
-        std::string diagnostic;
-        ASSERT_TRUE(build_print_render_state_product(params, product, diagnostic)) << diagnostic;
+        auto product = JuicerTestSupport::prepare_product(params);
+        std::array<char, 2048> productText{};
+        FjErrorBuffer productError{productText.data(), productText.size(), 0};
+        FjPreparedStateView productView{};
+        ASSERT_EQ(product.view(productView, productError).category, FJ_STATUS_SUCCESS);
         const auto selectedProfiles = assets.selected_profiles_for_route({params.filmProfileKey, params.printProfileKey, params.scanRoute});
         ASSERT_TRUE(selectedProfiles.valid);
         EXPECT_NE(selectedProfiles.filmSource->profile()->info.stock, params.filmProfileKey);
         EXPECT_NE(selectedProfiles.printSource->profile()->info.stock, params.printProfileKey);
-        const auto& cc = product.recipe.print.filters.mainCmyCc;
-        EXPECT_EQ(cc.c, 11);
-        EXPECT_EQ(cc.m, 22);
-        EXPECT_EQ(cc.y, 33);
+        EXPECT_EQ(productView.print_filter_main_cmy_cc[0], 11);
+        EXPECT_EQ(productView.print_filter_main_cmy_cc[1], 22);
+        EXPECT_EQ(productView.print_filter_main_cmy_cc[2], 33);
         FjStatus preparedStatus{};
+        std::string diagnostic;
         auto preparedState = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), params, preparedStatus, diagnostic);
         expect_status(preparedStatus, FJ_STATUS_SUCCESS);
         ASSERT_TRUE(preparedState) << diagnostic;
         FjPreparedStateView prepared{};
-        expect_status(fj_test_prepared_state_view(preparedState.get(), &prepared, nullptr), FJ_STATUS_SUCCESS);
-        EXPECT_EQ(prepared.recipe_hash, product.recipe.hash);
+        productError = {productText.data(), productText.size(), 0};
+        expect_status(preparedState->view(prepared, productError), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(prepared.recipe_hash, productView.recipe_hash);
         EXPECT_EQ(prepared.print_filter_main_cmy_cc[0], 11);
         EXPECT_EQ(prepared.print_filter_main_cmy_cc[1], 22);
         EXPECT_EQ(prepared.print_filter_main_cmy_cc[2], 33);
@@ -805,24 +810,30 @@ namespace {
         calibrationBarrier = nullptr;
         EXPECT_EQ(selected.status, JuicerAssets::NeutralPrintCalibrationStatus::Found);
         EXPECT_EQ(selected.cmyCc, (std::array<float, 3>{11, 22, 33}));
+        std::optional<PreparedState> candidate;
         for (const std::string& bytes : {std::string("{}"), std::string(R"({"print-stock":{"TH-KG3":{"film-stock":[1e100,2,3]}}})"), std::string(R"({"print-stock":[]})"), std::string("[]"), std::string(R"({"print-stock":{"TH-KG3":[]}})"), std::string(R"({"print-stock":{"TH-KG3":{"film-stock":[1,2]}}})")}) {
             write(path, bytes);
             expect_status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
-            const bool built = build_print_render_state_product(params, product, diagnostic);
+            productError = {productText.data(), productText.size(), 0};
+            const auto result = prepare_state(assets.borrow_rust_assets(), params, candidate, productError);
+            const bool built = result.category == FJ_STATUS_SUCCESS;
             if (bytes == "{}") {
-                ASSERT_TRUE(built) << diagnostic;
-                EXPECT_EQ(product.recipe.print.filters.mainCmyCc.c, 0);
-                EXPECT_EQ(product.recipe.print.filters.mainCmyCc.m, 65);
-                EXPECT_EQ(product.recipe.print.filters.mainCmyCc.y, 55);
+                ASSERT_TRUE(built) << std::string(productText.data(), productError.length);
+                FjPreparedStateView candidateView{};
+                ASSERT_EQ(candidate->view(candidateView, productError).category, FJ_STATUS_SUCCESS);
+                EXPECT_EQ(candidateView.print_filter_main_cmy_cc[0], 0);
+                EXPECT_EQ(candidateView.print_filter_main_cmy_cc[1], 65);
+                EXPECT_EQ(candidateView.print_filter_main_cmy_cc[2], 55);
             } else {
                 EXPECT_FALSE(built);
-                EXPECT_FALSE(diagnostic.empty());
+                EXPECT_GT(productError.length, 0u);
             }
-            auto candidate = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), params, preparedStatus, diagnostic);
+            auto cCandidate = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), params, preparedStatus, diagnostic);
             expect_status(preparedStatus, built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
-            EXPECT_EQ(bool(candidate), built);
-            if (candidate) {
-                expect_status(fj_test_prepared_state_view(candidate.get(), &prepared, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(bool(cCandidate), built);
+            if (cCandidate) {
+                productError = {productText.data(), productText.size(), 0};
+                expect_status(cCandidate->view(prepared, productError), FJ_STATUS_SUCCESS);
                 EXPECT_EQ(prepared.print_filter_main_cmy_cc[0], 0);
                 EXPECT_EQ(prepared.print_filter_main_cmy_cc[1], 65);
                 EXPECT_EQ(prepared.print_filter_main_cmy_cc[2], 55);
@@ -831,16 +842,21 @@ namespace {
         fs::remove(path);
         fs::create_directory(path);
         expect_status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
-        EXPECT_FALSE(build_print_render_state_product(params, product, diagnostic));
-        EXPECT_EQ(diagnostic, "MalformedNeutralPrintCalibration phase=4A field=resource_read");
+        productError = {productText.data(), productText.size(), 0};
+        auto malformed = prepare_state(assets.borrow_rust_assets(), params, candidate, productError);
+        EXPECT_NE(malformed.category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(std::string(productText.data(), productError.length), "MalformedNeutralPrintCalibration phase=4A field=resource_read");
         fs::remove(path);
         expect_status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
-        ASSERT_TRUE(build_print_render_state_product(params, product, diagnostic)) << diagnostic;
-        EXPECT_EQ(product.recipe.print.filters.mainCmyCc.m, 65);
+        auto recovered = JuicerTestSupport::prepare_product(params);
+        productError = {productText.data(), productText.size(), 0};
+        ASSERT_EQ(recovered.view(productView, productError).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(productView.print_filter_main_cmy_cc[1], 65);
         auto missingFile = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), params, preparedStatus, diagnostic);
         expect_status(preparedStatus, FJ_STATUS_SUCCESS);
         ASSERT_TRUE(missingFile) << diagnostic;
-        expect_status(fj_test_prepared_state_view(missingFile.get(), &prepared, nullptr), FJ_STATUS_SUCCESS);
+        productError = {productText.data(), productText.size(), 0};
+        expect_status(missingFile->view(prepared, productError), FJ_STATUS_SUCCESS);
         EXPECT_EQ(prepared.print_filter_main_cmy_cc[1], 65);
     }
 
@@ -854,11 +870,19 @@ namespace {
         owner.create(root);
         JuicerProcess::root().ensure_bootstrap();
         auto& assets = JuicerProcess::root().assets();
-        FocusedRenderStateBuildProduct product;
-        std::string diagnostic;
         auto authored = controls(true);
         authored.printPreflashExposure = 0.1;
-        ASSERT_TRUE(build_print_render_state_product(authored, product, diagnostic)) << diagnostic;
+        // SF_TEMP_BRIDGE_NATIVE_ILLUMINANT_REFERENCE: retain the original
+        // native source-copy witness through I7; this build owns the hook call.
+        FocusedRenderStateBuildProduct SF_TEMP_BRIDGE_nativeProduct;
+        std::string SF_TEMP_BRIDGE_nativeDiagnostic;
+        ASSERT_TRUE(build_print_render_state_product(authored, SF_TEMP_BRIDGE_nativeProduct, SF_TEMP_BRIDGE_nativeDiagnostic))
+            << SF_TEMP_BRIDGE_nativeDiagnostic;
+        auto product = JuicerTestSupport::prepare_product(authored);
+        std::array<char, 2048> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        FjPreparedStateView productView{};
+        ASSERT_EQ(product.view(productView, error).category, FJ_STATUS_SUCCESS);
         const auto curves = assets.illuminant_filter_curves();
         FjIlluminantsOwner* selected = nullptr;
         expect_status(fj_test_assets_illuminants_acquire(assets.borrow_rust_assets(), &selected, nullptr), FJ_STATUS_SUCCESS);
@@ -872,44 +896,118 @@ namespace {
         EXPECT_EQ(curves->d65.linear.data(), shared.d65.data);
         EXPECT_EQ(curves->tungstenKg3Lens.linear.data(), shared.tungsten_kg3_lens.data);
         EXPECT_TRUE(std::equal(foundationReference.begin(), foundationReference.end(), curves->tungstenKg3Lens.linear.begin()));
-        EXPECT_TRUE(std::equal(product.payload.exposureTables.illum.begin(), product.payload.exposureTables.illum.end(), curves->tungstenKg3.linear.begin(), curves->tungstenKg3.linear.end()));
-        ASSERT_TRUE(product.payload.printMainIlluminant);
+        ASSERT_EQ(productView.exposure_tables.illuminant.count, curves->tungstenKg3.linear.size());
+        EXPECT_TRUE(std::equal(productView.exposure_tables.illuminant.data, productView.exposure_tables.illuminant.data + productView.exposure_tables.illuminant.count, curves->tungstenKg3.linear.begin()));
+        ASSERT_EQ(productView.print.main_illuminant.count, 81u);
         FjStatus result{};
-        auto state = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), authored, result, diagnostic);
+        std::string stateDiagnostic;
+        auto state = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), authored, result, stateDiagnostic);
         expect_status(result, FJ_STATUS_SUCCESS);
-        ASSERT_TRUE(state) << diagnostic;
+        ASSERT_TRUE(state) << stateDiagnostic;
         FjPreparedStateView prepared{};
-        expect_status(fj_test_prepared_state_view(state.get(), &prepared, nullptr), FJ_STATUS_SUCCESS);
-        EXPECT_EQ(prepared.recipe_hash, product.recipe.hash);
-        EXPECT_EQ(prepared.film_reference.hash, product.recipe.scannerOutput.syntheticFilmReference.hash);
+        error = {diagnostic.data(), diagnostic.size(), 0};
+        expect_status(state->view(prepared, error), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(prepared.recipe_hash, productView.recipe_hash);
+        EXPECT_EQ(prepared.film_reference.hash, productView.film_reference.hash);
+
+        FjFilmProfile* profileOwner = nullptr;
+        expect_status(fj_legacy_film_profile_acquire(assets.borrow_rust_assets(), text("kodak_portra_400"), &profileOwner, &error), FJ_STATUS_SUCCESS);
+        const auto releaseProfile = [](FjFilmProfile* held) {
+            (void)fj_legacy_film_profile_release(held, nullptr);
+        };
+        std::unique_ptr<FjFilmProfile, decltype(releaseProfile)> profileHold(profileOwner, releaseProfile);
+        FjFilmProfileView profileView{};
+        expect_status(fj_legacy_film_profile_view(profileOwner, &profileView, &error), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(profileView.reference_illuminant.kind, FJ_ILLUMINANT_NAMED);
+        EXPECT_EQ(std::string(profileView.reference_illuminant.label.data, profileView.reference_illuminant.label.count), "TH-KG3");
+        EXPECT_EQ(profileView.tables.linear_sensitivity_rgb.count, 243u);
+
+        FjFilmDevelopmentOwner* developmentOwner = nullptr;
+        expect_status(fj_legacy_film_development_acquire(
+                          profileOwner,
+                          static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan),
+                          authored.filmGammaFactor,
+                          0,
+                          &developmentOwner,
+                          &error),
+                      FJ_STATUS_SUCCESS);
+        const auto releaseDevelopment = [](FjFilmDevelopmentOwner* held) {
+            (void)fj_legacy_film_development_release(held, nullptr);
+        };
+        std::unique_ptr<FjFilmDevelopmentOwner, decltype(releaseDevelopment)> developmentHold(developmentOwner, releaseDevelopment);
+
+        ASSERT_EQ(prepared.film_exposure.mallett_basis.count, 243u);
+        ASSERT_EQ(prepared.film_exposure.sensitivity_rgb.count, 243u);
+        FjFilmReferenceInput referenceInput{};
+        referenceInput.method = static_cast<std::uint32_t>(authored.spectralUpsamplingMode);
+        referenceInput.auto_exposure_enabled = authored.cameraAutoExposureEnabled != 0 ? 1u : 0u;
+        referenceInput.manual_exposure_ev = static_cast<float>(authored.cameraExposureCompensationEv);
+        referenceInput.mallett_green_scale = prepared.film_exposure.mallett_green_midgray_scale;
+        std::copy_n(productView.input_policy.projection_white_xyz, 3, referenceInput.projection_white_xyz);
+        referenceInput.basis_rgb = prepared.film_exposure.mallett_basis;
+        referenceInput.film_illuminant = prepared.exposure_tables.illuminant;
+        referenceInput.sensitivity_rgb = prepared.film_exposure.sensitivity_rgb;
+        FjFilmReference heldReference{};
+        FjFilmReferenceFailure referenceFailure{};
+        expect_status(fj_test_film_reference_prepare(developmentOwner, &referenceInput, &heldReference, &referenceFailure, &error), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(referenceFailure.reason, FJ_FILM_REFERENCE_REASON_NONE);
+        EXPECT_EQ(std::memcmp(heldReference.baseline_raw_rgb, productView.film_reference.baseline_raw_rgb, sizeof(heldReference.baseline_raw_rgb)), 0);
+        EXPECT_EQ(std::memcmp(heldReference.compensated_raw_rgb, productView.film_reference.compensated_raw_rgb, sizeof(heldReference.compensated_raw_rgb)), 0);
+        EXPECT_EQ(std::memcmp(heldReference.baseline_density_cmy, productView.film_reference.baseline_density_cmy, sizeof(heldReference.baseline_density_cmy)), 0);
+        EXPECT_EQ(std::memcmp(heldReference.compensated_density_cmy, productView.film_reference.compensated_density_cmy, sizeof(heldReference.compensated_density_cmy)), 0);
+        EXPECT_EQ(std::bit_cast<std::uint32_t>(heldReference.meter_scale), std::bit_cast<std::uint32_t>(productView.film_reference.meter_scale));
+        EXPECT_EQ(heldReference.hash, productView.film_reference.hash);
+
         ASSERT_EQ(prepared.exposure_tables.illuminant.count, curves->tungstenKg3.linear.size());
         EXPECT_TRUE(std::equal(curves->tungstenKg3.linear.begin(), curves->tungstenKg3.linear.end(), prepared.exposure_tables.illuminant.data));
-        JuicerCuda::PrintResourceInput input;
-        std::array<float, 81> preflash{};
-        const JuicerCuda::PrintResourcePreparation request{&product.recipe, &assets, &*product.payload.printMainIlluminant};
+
+        FjPrintIlluminantParams illuminantParams{};
+        const std::array<float, 4> edges{{516.0f, 500.0f, 610.0f, 607.0f}};
+        const std::array<float, 4> transitions{{12.0f, 8.0f, 8.0f, 8.0f}};
+        std::copy(edges.begin(), edges.end(), illuminantParams.edges_nm);
+        std::copy(transitions.begin(), transitions.end(), illuminantParams.transitions_nm);
+        std::copy_n(productView.print_filter_preflash_cmy_cc, 3, illuminantParams.cmy_cc);
+        FjIlluminant independentPreflashIlluminant{};
+        FjPrintIlluminantFailure illuminantFailure{};
+        expect_status(fj_test_print_illuminant_prepare(
+                          &illuminantParams,
+                          productView.print_source_illuminant,
+                          &independentPreflashIlluminant,
+                          &illuminantFailure,
+                          &error),
+                      FJ_STATUS_SUCCESS);
+        EXPECT_EQ(illuminantFailure.reason, FJ_PRINT_ILLUMINANT_REASON_NONE);
+        std::array<float, 81> savedPreflashIlluminant{};
+        std::copy_n(independentPreflashIlluminant.samples, savedPreflashIlluminant.size(), savedPreflashIlluminant.begin());
+        EXPECT_EQ(std::memcmp(savedPreflashIlluminant.data(), prepared.print.preflash_illuminant.data, sizeof(savedPreflashIlluminant)), 0);
+
+        FjPrintPreflashInput input{
+            productView.print.film_base_density,
+            {savedPreflashIlluminant.data(), savedPreflashIlluminant.size()},
+            productView.print.sensitivity_cmy};
+        FjPrintPreflashRaw preflashRaw{};
+        FjPrintPreflashFailure preflashFailure{};
         expect_status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
-        ASSERT_TRUE(JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic)) << diagnostic;
-        EXPECT_EQ(input.preflashIlluminant.data(), preflash.data());
+        expect_status(fj_test_print_preflash_prepare(&input, &preflashRaw, &preflashFailure, &error), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(preflashFailure.reason, FJ_PRINT_PREFLASH_REASON_NONE);
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-        const auto saved = preflash;
-        ASSERT_EQ(prepared.print.preflash_illuminant.count, saved.size());
-        EXPECT_TRUE(std::equal(saved.begin(), saved.end(), prepared.print.preflash_illuminant.data));
+        const auto savedPreflashRawCmy = std::array<float, 3>{preflashRaw.cmy[0], preflashRaw.cmy[1], preflashRaw.cmy[2]};
+        EXPECT_EQ(std::memcmp(prepared.print.preflash_raw_cmy, preflashRaw.cmy, sizeof(preflashRaw.cmy)), 0);
         expect_status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
-        EXPECT_EQ(preflash, saved);
-        for (const unsigned fault : {1u, 3u}) {
-            expect_status(fj_test_assets_curve_fault(assets.borrow_rust_assets(), FJ_CSV_D55, fault, nullptr), FJ_STATUS_SUCCESS);
-            EXPECT_THROW(JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic), JuicerCuda::ExecutionFailure);
-            EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-        }
+        EXPECT_EQ(std::memcmp(savedPreflashIlluminant.data(), prepared.print.preflash_illuminant.data, sizeof(savedPreflashIlluminant)), 0);
+        EXPECT_EQ(savedPreflashRawCmy, (std::array<float, 3>{prepared.print.preflash_raw_cmy[0], prepared.print.preflash_raw_cmy[1], prepared.print.preflash_raw_cmy[2]}));
         expect_status(fj_test_assets_curve_fault(assets.borrow_rust_assets(), FJ_CSV_D55, 1, nullptr), FJ_STATUS_SUCCESS);
-        auto failed = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), authored, result, diagnostic);
+        stateDiagnostic.clear();
+        auto failed = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), authored, result, stateDiagnostic);
         expect_status(result, FJ_STATUS_ALLOCATION_FAILURE);
         EXPECT_FALSE(failed);
         expect_status(fj_test_assets_curve_fault(assets.borrow_rust_assets(), FJ_CSV_D55, 3, nullptr), FJ_STATUS_SUCCESS);
-        failed = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), authored, result, diagnostic);
+        stateDiagnostic.clear();
+        failed = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), authored, result, stateDiagnostic);
         expect_status(result, FJ_STATUS_INTERNAL_FAILURE);
         EXPECT_FALSE(failed);
-        EXPECT_TRUE(std::equal(saved.begin(), saved.end(), prepared.print.preflash_illuminant.data));
+        EXPECT_EQ(std::memcmp(savedPreflashIlluminant.data(), prepared.print.preflash_illuminant.data, sizeof(savedPreflashIlluminant)), 0);
+        EXPECT_EQ(savedPreflashRawCmy, (std::array<float, 3>{prepared.print.preflash_raw_cmy[0], prepared.print.preflash_raw_cmy[1], prepared.print.preflash_raw_cmy[2]}));
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
     }
 
@@ -924,12 +1022,16 @@ namespace {
         owner.create(root);
         JuicerProcess::root().ensure_bootstrap();
         auto& assets = JuicerProcess::root().assets();
-        FocusedRenderStateBuildProduct product;
         std::string diagnostic;
         for (unsigned mode = 1; mode <= 4; ++mode) {
             expect_status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
             fj_test_calibration_read_fault(mode);
-            EXPECT_THROW(build_print_render_state_product(controls(true), product, diagnostic), std::bad_alloc);
+            std::optional<PreparedState> product;
+            std::array<char, 2048> errorText{};
+            FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+            const auto failedProduct = prepare_state(assets.borrow_rust_assets(), controls(true), product, error);
+            EXPECT_EQ(failedProduct.category, FJ_STATUS_ALLOCATION_FAILURE);
+            EXPECT_FALSE(product);
             EXPECT_EQ(fj_test_calibration_reads(), 1u);
             FjStatus result{};
             auto failed = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), controls(true), result, diagnostic);
@@ -937,13 +1039,20 @@ namespace {
             EXPECT_FALSE(failed);
             EXPECT_EQ(fj_test_calibration_reads(), 1u);
             fj_test_calibration_read_fault(0);
-            EXPECT_THROW(build_print_render_state_product(controls(true), product, diagnostic), std::bad_alloc);
             expect_status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
-            ASSERT_TRUE(build_print_render_state_product(controls(true), product, diagnostic)) << diagnostic;
+            error = {errorText.data(), errorText.size(), 0};
+            const auto recovered = prepare_state(assets.borrow_rust_assets(), controls(true), product, error);
+            expect_status(recovered, FJ_STATUS_SUCCESS);
+            ASSERT_TRUE(product);
         }
         expect_status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
         fj_test_calibration_read_fault(1);
-        ASSERT_TRUE(build_direct_render_state_product(controls(), product, diagnostic)) << diagnostic;
+        std::optional<PreparedState> product;
+        std::array<char, 2048> errorText{};
+        FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+        const auto directResult = prepare_state(assets.borrow_rust_assets(), controls(), product, error);
+        expect_status(directResult, FJ_STATUS_SUCCESS);
+        ASSERT_TRUE(product);
         EXPECT_EQ(fj_test_calibration_reads(), 0u);
         FjStatus result{};
         auto direct = JuicerCudaTest::prepare_state(assets.borrow_rust_assets(), controls(), result, diagnostic);
@@ -983,8 +1092,12 @@ namespace {
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
         for (const unsigned fault : {1u, 3u}) {
             expect_status(fj_test_assets_curve_fault(probe.owner(), FJ_CSV_D55, fault, nullptr), FJ_STATUS_SUCCESS);
-            FocusedRenderStateBuildProduct rejected;
-            EXPECT_THROW(build_direct_render_state_product(params, rejected, diagnostic), JuicerCuda::ExecutionFailure);
+            std::optional<PreparedState> rejected;
+            std::array<char, 2048> errorText{};
+            FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+            const auto failure = prepare_state(probe.owner(), params, rejected, error);
+            EXPECT_EQ(failure.category, fault == 1 ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_INTERNAL_FAILURE);
+            EXPECT_FALSE(rejected);
             EXPECT_EQ(probe.metrics().live_bytes, 0u);
             EXPECT_EQ(fj_test_csv_live_owners(), 0u);
         }
@@ -992,12 +1105,19 @@ namespace {
         expect_status(result, FJ_STATUS_SUCCESS);
         ASSERT_TRUE(state) << diagnostic;
         FjPreparedStateView before{};
-        expect_status(fj_test_prepared_state_view(state.get(), &before, nullptr), FJ_STATUS_SUCCESS);
-        FocusedRenderStateBuildProduct native;
-        ASSERT_TRUE(build_direct_render_state_product(params, native, diagnostic)) << diagnostic;
-        EXPECT_EQ(before.recipe_hash, native.recipe.hash);
-        ASSERT_EQ(before.exposure_tables.illuminant.count, native.payload.exposureTables.illum.size());
-        EXPECT_TRUE(std::equal(native.payload.exposureTables.illum.begin(), native.payload.exposureTables.illum.end(), before.exposure_tables.illuminant.data));
+        std::array<char, 2048> beforeText{};
+        FjErrorBuffer beforeError{beforeText.data(), beforeText.size(), 0};
+        expect_status(state->view(before, beforeError), FJ_STATUS_SUCCESS);
+        std::optional<PreparedState> native;
+        std::array<char, 2048> nativeText{};
+        FjErrorBuffer nativeError{nativeText.data(), nativeText.size(), 0};
+        expect_status(prepare_state(probe.owner(), params, native, nativeError), FJ_STATUS_SUCCESS);
+        ASSERT_TRUE(native);
+        FjPreparedStateView nativeView{};
+        expect_status(native->view(nativeView, nativeError), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(before.recipe_hash, nativeView.recipe_hash);
+        ASSERT_EQ(before.exposure_tables.illuminant.count, nativeView.exposure_tables.illuminant.count);
+        EXPECT_TRUE(std::equal(nativeView.exposure_tables.illuminant.data, nativeView.exposure_tables.illuminant.data + nativeView.exposure_tables.illuminant.count, before.exposure_tables.illuminant.data));
         FjInputHullOwner* acquired = nullptr;
         expect_status(fj_test_assets_input_hull_acquire(probe.owner(), &acquired, nullptr), FJ_STATUS_SUCCESS);
         const auto releaseHull = [](FjInputHullOwner* value) {

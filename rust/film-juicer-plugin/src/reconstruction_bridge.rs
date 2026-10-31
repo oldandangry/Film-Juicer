@@ -162,24 +162,15 @@ pub(crate) fn take_consumed() -> Option<(u32, u32)> {
     reconstruction::testing::take_consumed()
 }
 pub(crate) fn fault(operation: u32) -> Result<(), Failure> {
-    #[cfg(feature = "test-support")]
-    if let Some(fault) = reconstruction::testing::take(operation) {
-        return injected(fault);
-    }
-    #[cfg(not(feature = "test-support"))]
-    let _ = operation;
-    Ok(())
+    reconstruction::check_tc_boundary(operation).map_err(checked_failure)
 }
-#[cfg(feature = "test-support")]
-pub(crate) fn injected(fault: u32) -> Result<(), Failure> {
-    match fault {
-        1 => Err(Failure::Input("TC production boundary fault")),
-        2 => panic!("TC production boundary fault"),
-        3 => Err(Failure::FilmTc(reconstruction::TcError::AllocationFailure)),
-        4 => Err(Failure::FilmTc(
-            reconstruction::TcError::NonfiniteIntegratedSample,
-        )),
-        _ => unreachable!("closed TC fault"),
+
+fn checked_failure(error: reconstruction::CheckedTcError) -> Failure {
+    match error {
+        reconstruction::CheckedTcError::BoundaryUnsupported => {
+            Failure::Input("TC production boundary fault")
+        }
+        reconstruction::CheckedTcError::Tc(error) => Failure::FilmTc(error),
     }
 }
 /// # Safety

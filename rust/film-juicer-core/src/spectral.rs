@@ -4,6 +4,126 @@ use std::fmt;
 
 use crate::hash;
 
+#[derive(Clone, Copy, Debug)]
+pub enum Operation {
+    Tables,
+    White,
+    Inverse,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BoundaryKind {
+    Unsupported,
+    AllocationCategory,
+    PreparationCategory,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BoundaryError {
+    pub operation: Operation,
+    pub kind: BoundaryKind,
+}
+
+impl fmt::Display for BoundaryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.operation {
+            Operation::Tables => "Spectral table preparation: ",
+            Operation::White => "Scanner white preparation: ",
+            Operation::Inverse => "Film S inverse preparation: ",
+        })?;
+        match self.kind {
+            BoundaryKind::Unsupported => f.write_str("spectral injected unsupported input"),
+            BoundaryKind::AllocationCategory => {
+                f.write_str("injected spectral allocation category")
+            }
+            BoundaryKind::PreparationCategory => WhiteError::InvalidLuminance(0.0).fmt(f),
+        }
+    }
+}
+impl std::error::Error for BoundaryError {}
+
+#[derive(Debug)]
+pub enum CheckedError {
+    White(WhiteError),
+    Boundary(BoundaryError),
+}
+
+fn check(operation: Operation) -> Result<(), CheckedError> {
+    #[cfg(feature = "test-support")]
+    if let Some(fault) = testing::take(operation) {
+        let kind = match fault {
+            1 => BoundaryKind::Unsupported,
+            2 => panic!("spectral injected panic"),
+            3 => BoundaryKind::AllocationCategory,
+            4 => BoundaryKind::PreparationCategory,
+            _ => unreachable!("closed spectral boundary fault"),
+        };
+        return Err(CheckedError::Boundary(BoundaryError { operation, kind }));
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = operation;
+    Ok(())
+}
+
+pub fn checked_build_tables(input: Input<'_>) -> Result<Tables, CheckedError> {
+    check(Operation::Tables)?;
+    Ok(build_tables(input))
+}
+
+pub fn checked_integrate_white(
+    observer: Observer<'_>,
+    illuminant: &[f32; 81],
+) -> Result<White, CheckedError> {
+    check(Operation::White)?;
+    integrate_white(observer, illuminant).map_err(CheckedError::White)
+}
+
+pub fn checked_s_inverse(weights: [&[f32; 81]; 3]) -> Result<[f32; 9], CheckedError> {
+    check(Operation::Inverse)?;
+    Ok(s_inverse(weights))
+}
+
+#[cfg(feature = "test-support")]
+pub mod testing {
+    use super::Operation;
+    use std::cell::Cell;
+
+    thread_local! {
+        static FAULT: Cell<Option<(u32, u32, u32)>> = const { Cell::new(None) };
+    }
+
+    pub fn arm(operation: u32, index: u32, fault: u32) -> bool {
+        clear();
+        if !(1..=3).contains(&operation) || index == 0 || !(1..=4).contains(&fault) {
+            return false;
+        }
+        FAULT.set(Some((operation, index, fault)));
+        true
+    }
+
+    pub fn clear() {
+        FAULT.set(None);
+    }
+
+    pub(super) fn take(operation: Operation) -> Option<u32> {
+        let tag = match operation {
+            Operation::Tables => 1,
+            Operation::White => 2,
+            Operation::Inverse => 3,
+        };
+        let (selected, remaining, fault) = FAULT.get()?;
+        if selected != tag {
+            return None;
+        }
+        FAULT.set(if remaining > 1 {
+            Some((selected, remaining - 1, fault))
+        } else {
+            None
+        });
+        (remaining == 1).then_some(fault)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Observer<'a> {
     pub x: &'a [f32; 81],

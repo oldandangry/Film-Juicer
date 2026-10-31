@@ -1,6 +1,8 @@
 //! Synchronous fixed spectral value edge; native payload ownership remains native.
 
-use film_juicer_core::spectral::{self, Baseline, Observer, WhiteError};
+use film_juicer_core::spectral::{
+    self, Baseline, BoundaryError, BoundaryKind, CheckedError, Observer, WhiteError,
+};
 
 use crate::asset_bridge::Failure;
 use crate::asset_illuminant;
@@ -207,18 +209,14 @@ fn white_failure(e: &WhiteError) -> FjSpectralWhiteFailure {
 }
 
 #[cfg(feature = "test-support")]
-thread_local! {static SPECTRAL_FAULT:std::cell::Cell<Option<(u32,u32,u32)>>=const {std::cell::Cell::new(None)};}
-#[cfg(feature = "test-support")]
 pub(crate) fn arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
-    clear_fault();
-    if !(1..=3).contains(&operation) || index == 0 || !(1..=4).contains(&fault) {
+    if !spectral::testing::arm(operation, index, fault) {
         return FjStatus {
             category: FJ_STATUS_UNSUPPORTED_INPUT,
             api: FJ_API_NONE,
             native_code: 0,
         };
     }
-    SPECTRAL_FAULT.set(Some((operation, index, fault)));
     FjStatus {
         category: FJ_STATUS_SUCCESS,
         api: FJ_API_NONE,
@@ -227,28 +225,33 @@ pub(crate) fn arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn clear_fault() {
-    SPECTRAL_FAULT.set(None);
+    spectral::testing::clear();
 }
-fn inject(operation: u32) -> Result<(), Failure> {
+fn checked_failure(error: CheckedError) -> Failure {
+    match error {
+        CheckedError::White(error) => Failure::Spectral(error),
+        CheckedError::Boundary(BoundaryError { kind, .. }) => match kind {
+            BoundaryKind::Unsupported => Failure::Input("spectral injected unsupported input"),
+            BoundaryKind::AllocationCategory => {
+                #[cfg(feature = "test-support")]
+                return Failure::InjectedAllocation;
+                #[cfg(not(feature = "test-support"))]
+                unreachable!("core spectral test fault is disabled without test-support")
+            }
+            BoundaryKind::PreparationCategory => {
+                Failure::Spectral(WhiteError::InvalidLuminance(0.0))
+            }
+        },
+    }
+}
+
+fn fixture_fault(enabled: bool) -> Result<(), Failure> {
     #[cfg(feature = "test-support")]
-    if let Some((selected, remaining, fault)) = SPECTRAL_FAULT.get()
-        && selected == operation
-    {
-        if remaining > 1 {
-            SPECTRAL_FAULT.set(Some((selected, remaining - 1, fault)));
-            return Ok(());
-        }
-        SPECTRAL_FAULT.set(None);
-        return match fault {
-            1 => Err(Failure::Input("spectral injected unsupported input")),
-            2 => panic!("spectral injected panic"),
-            3 => Err(Failure::InjectedAllocation),
-            4 => Err(Failure::Spectral(WhiteError::InvalidLuminance(0.0))),
-            _ => unreachable!("closed spectral fault"),
-        };
+    if enabled {
+        crate::test_support::spectral_facade_fault()?;
     }
     #[cfg(not(feature = "test-support"))]
-    let _ = operation;
+    let _ = enabled;
     Ok(())
 }
 /// # Safety
@@ -257,7 +260,7 @@ pub(crate) unsafe fn tables_call(
     input: *const FjSpectralInput,
     out: *mut FjSpectralTables,
     error: *mut FjErrorBuffer,
-    fault: impl FnOnce() -> Result<(), Failure>,
+    fixture: bool,
 ) -> FjStatus {
     // SAFETY: Only authorized valid records clear; containment checks diagnostics.
     unsafe {
@@ -267,8 +270,16 @@ pub(crate) unsafe fn tables_call(
                 return Err(Failure::Input("invalid spectral tables output"));
             }
             let input = table_input(input)?;
-            fault()?;
-            out.write(project_tables(&spectral::build_tables(input)));
+            fixture_fault(fixture)?;
+            // The independent test fixture has its own fault seam. Keep a
+            // production operation arm pending for the legacy wrapper or
+            // complete-state producer that the caller is testing next.
+            let tables = if fixture {
+                spectral::build_tables(input)
+            } else {
+                spectral::checked_build_tables(input).map_err(checked_failure)?
+            };
+            out.write(project_tables(&tables));
             Ok(())
         })
     }
@@ -280,7 +291,7 @@ pub(crate) unsafe fn white_call(
     out: *mut FjSpectralWhite,
     failure: *mut FjSpectralWhiteFailure,
     error: *mut FjErrorBuffer,
-    fault: impl FnOnce() -> Result<(), Failure>,
+    fixture: bool,
 ) -> FjStatus {
     // SAFETY: Cleared outputs are exclusive; scoped checked borrows expire at return.
     unsafe {
@@ -293,8 +304,8 @@ pub(crate) unsafe fn white_call(
             let input = &*input;
             let observer = observer(input.observer)?;
             let illuminant = fixed(input.illuminant)?;
-            fault()?;
-            match spectral::integrate_white(observer, illuminant) {
+            fixture_fault(fixture)?;
+            match spectral::checked_integrate_white(observer, illuminant) {
                 Ok(w) => {
                     out.write(FjSpectralWhite {
                         normalization: w.normalization(),
@@ -304,10 +315,11 @@ pub(crate) unsafe fn white_call(
                     });
                     Ok(())
                 }
-                Err(e) => {
+                Err(CheckedError::White(e)) => {
                     failure.write(white_failure(&e));
                     Err(Failure::Spectral(e))
                 }
+                Err(error @ CheckedError::Boundary(_)) => Err(checked_failure(error)),
             }
         })
     }
@@ -318,7 +330,7 @@ pub(crate) unsafe fn inverse_call(
     input: *const FjSpectralSInput,
     out: *mut FjSpectralInverse,
     error: *mut FjErrorBuffer,
-    fault: impl FnOnce() -> Result<(), Failure>,
+    fixture: bool,
 ) -> FjStatus {
     // SAFETY: Only valid writable output clears; references borrow live caller arrays.
     unsafe {
@@ -333,9 +345,9 @@ pub(crate) unsafe fn inverse_call(
                 fixed(input.weighted_y)?,
                 fixed(input.weighted_z)?,
             ];
-            fault()?;
+            fixture_fault(fixture)?;
             out.write(FjSpectralInverse {
-                matrix: spectral::s_inverse(weights),
+                matrix: spectral::checked_s_inverse(weights).map_err(checked_failure)?,
             });
             Ok(())
         })
@@ -351,7 +363,7 @@ pub(crate) unsafe extern "C" fn fj_legacy_spectral_tables(
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
     // SAFETY: Caller supplies the complete initialized input and exclusive outputs.
-    unsafe { tables_call(input, out, error, || inject(1)) }
+    unsafe { tables_call(input, out, error, false) }
 }
 /// # Safety
 /// Required inputs/outputs/error obey the synchronous C spectral contract.
@@ -363,7 +375,7 @@ pub(crate) unsafe extern "C" fn fj_legacy_spectral_white(
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
     // SAFETY: Caller retains all live source arrays and exclusive output storage.
-    unsafe { white_call(input, out, failure, error, || inject(2)) }
+    unsafe { white_call(input, out, failure, error, false) }
 }
 /// # Safety
 /// Weighted arrays and output/error obey the synchronous C spectral contract.
@@ -374,7 +386,7 @@ pub(crate) unsafe extern "C" fn fj_legacy_spectral_s_inverse(
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
     // SAFETY: Caller retains immutable weights and exclusive output/diagnostic storage.
-    unsafe { inverse_call(input, out, error, || inject(3)) }
+    unsafe { inverse_call(input, out, error, false) }
 }
 
 #[cfg(test)]

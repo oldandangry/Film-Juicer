@@ -90,6 +90,100 @@ class CompilationInputsTests(unittest.TestCase):
             self.assertEqual(final.paths(rows[1]), {"main.cpp", "second/other.h", "forced.h"})
 
 
+class S4eOwnerRetirementTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name).resolve()
+        self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        self.build = self.root / "out/build" / self.preset
+        self.build.mkdir(parents=True)
+        self.owner, _ = build_evidence.preparation_paths(self.build, ["juicer"])
+        self.producer = self.root / "out/validation" / self.preset / "old/attempts/prepare-old/result.json"
+        self.proof = {"protocol": build_evidence.SCOPED_PROTOCOL, "targets": ["juicer"],
+                      "source": str(self.root), "build": str(self.build), "producer": str(self.producer)}
+        write_json(self.owner, self.proof)
+        self.original = self.owner.read_bytes()
+        self.expected = {"source": str(self.root), "sha256": digest(self.owner),
+                         "producer": str(self.producer.relative_to(self.root / "out/validation" / self.preset))}
+        self.patched = patch.object(build_evidence, "S4E_ABORTED_OWNERS", {self.preset: self.expected})
+        self.patched.start()
+        self.addCleanup(self.patched.stop)
+
+    def test_exact_retirement_preserves_bytes_and_never_qualifies_outputs(self):
+        artifact = self.build / "libfilm_juicer_plugin.a"
+        artifact.write_bytes(b"unqualified archive")
+        retired = build_evidence.retire_s4e_aborted_owner(self.root, self.preset)
+        record = json.loads(retired.read_bytes())
+        self.assertFalse(self.owner.exists())
+        self.assertEqual(Path(record["original"]["file"]).read_bytes(), self.original)
+        self.assertEqual(record["original"]["sha256"], self.expected["sha256"])
+        self.assertEqual(record["disposition"], "retired-unqualified")
+        self.assertEqual(record["historical_drainage"], "unavailable")
+        self.assertTrue(record["fresh_preparation_required"])
+        self.assertEqual(artifact.read_bytes(), b"unqualified archive")
+        self.assertFalse(OutputLease(self.root, self.build).path.exists())
+        with self.assertRaisesRegex(ValueError, "already retired"):
+            build_evidence.retire_s4e_aborted_owner(self.root, self.preset)
+
+    def test_changed_unknown_present_or_active_owners_are_preserved(self):
+        for fault in ("bytes", "scope", "source", "producer", "active", "pending"):
+            with self.subTest(fault=fault):
+                extras = []
+                expected = dict(self.expected)
+                if fault == "bytes":
+                    self.owner.write_bytes(self.original + b" ")
+                elif fault == "scope":
+                    write_json(self.owner, {**self.proof, "targets": ["all"]})
+                    expected["sha256"] = digest(self.owner)
+                elif fault == "source":
+                    expected["source"] += "-other"
+                elif fault == "producer":
+                    self.producer.parent.mkdir(parents=True)
+                    self.producer.write_bytes(b"unavailable old evidence is now present")
+                    extras.append(self.producer)
+                else:
+                    extra = (self.producer.parents[2] / "running.lock" if fault == "active"
+                             else self.build / "unknown.pending.json")
+                    extra.parent.mkdir(parents=True, exist_ok=True)
+                    extra.write_bytes(b"unproved")
+                    extras.append(extra)
+                presented = self.owner.read_bytes()
+                try:
+                    with patch.object(build_evidence, "S4E_ABORTED_OWNERS", {self.preset: expected}), self.assertRaises(ValueError):
+                        build_evidence.retire_s4e_aborted_owner(self.root, self.preset)
+                    self.assertEqual(self.owner.read_bytes(), presented)
+                finally:
+                    self.owner.write_bytes(self.original)
+                    for extra in extras:
+                        extra.unlink()
+        foreign = "linux-debug" if os.name == "nt" else "windows-clang-debug"
+        with patch.object(build_evidence, "OutputLease", side_effect=AssertionError("invalid request took ownership")):
+            for preset in (foreign, "linux-release", "unknown"):
+                with self.subTest(preset=preset), self.assertRaises(ValueError):
+                    build_evidence.retire_s4e_aborted_owner(self.root, preset)
+
+    @unittest.skipIf(os.name == "nt", "only Linux has the authorized current pending preparation")
+    def test_normal_pending_proof_is_required_and_left_unchanged(self):
+        campaign = Campaign(self.root, self.preset, "pending-control", ["prepare"])
+        targets = ["juicer_analysis_inputs"]
+        pending = build_evidence.preparation_paths(self.build, targets)[1]
+        with self.assertRaisesRegex(ValueError, "intentional no-command failure"):
+            with OutputLease(self.root, self.build) as lease, build_evidence._pending_preparation(
+                    campaign, "prepare", self.root, self.build, targets, pending, lease):
+                raise ValueError("intentional no-command failure")
+        original = pending.read_bytes()
+        pending.write_bytes(b"{}")
+        with self.assertRaisesRegex(ValueError, "sealed recovery proof"):
+            build_evidence.retire_s4e_aborted_owner(self.root, self.preset)
+        self.assertEqual(self.owner.read_bytes(), self.original)
+        pending.write_bytes(original)
+        result = build_evidence.retire_s4e_aborted_owner(self.root, self.preset)
+        self.assertEqual(pending.read_bytes(), original)
+        record = json.loads(result.read_bytes())
+        self.assertEqual(record["pending_owners_unchanged"], {str(pending): digest(pending)})
+
+
 class BuildEvidenceTests(unittest.TestCase):
     def setUp(self):
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
@@ -558,6 +652,9 @@ class BuildEvidenceTests(unittest.TestCase):
             path.write_bytes((ROOT / "scripts" / name).read_bytes())
         with (root / "CMakeLists.txt").open("a") as stream:
             stream.write('\nadd_custom_target(juicer DEPENDS behavior)\n'
+                         'add_custom_target(JuicerProductionPreparedRenderProbe DEPENDS behavior)\n'
+                         'add_custom_target(JuicerPreparedStateTests DEPENDS behavior)\n'
+                         'add_custom_target(JuicerPreparedProjectionTests DEPENDS behavior)\n'
                          'add_test(NAME must-not-run COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/runtime-ran")\n')
         variables = {arg[2:].split("=", 1)[0]: arg.split("=", 1)[1] for arg in self.args if arg.startswith("-D")}
         variables["CMAKE_BUILD_TYPE"] = "Release"
@@ -565,14 +662,25 @@ class BuildEvidenceTests(unittest.TestCase):
             "name": preset, "generator": "Ninja", "binaryDir": "${sourceDir}/out/build/" + preset,
             "cacheVariables": variables}]}), encoding="utf-8")
         build = root / "out/build" / preset
+        (root / "tests/ffi").mkdir(parents=True)
+        (root / "tests/ofx/fixtures/exposure").mkdir(parents=True)
+        (root / "tests/print/illuminant-fixtures").mkdir(parents=True)
+        for name in build_evidence.production_prepared_render_inputs(root, preset):
+            if name == "CMakeLists.txt":
+                continue
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"OFF prepared-render input\n")
         development = build / "verification-development.json"
         build.mkdir(parents=True)
         development.write_text('{"pending":["preserve-me"]}\n', encoding="utf-8")
         saved = development.read_bytes()
-        for testing in ("ON", "OFF", "ON"):
-            prepared = build_evidence.prepare_targets(root, preset, ["juicer"], testing)
+        for targets, testing in ((["juicer"], "ON"), (["juicer"], "OFF"),
+                                 (["JuicerPreparedStateTests", "JuicerPreparedProjectionTests"], "ON")):
+            prepared = build_evidence.prepare_targets(root, preset, targets, testing)
             record = json.loads(prepared.read_text())
-            self.assertEqual(record["scoped_preparation"]["targets"], ["juicer"])
+            effective = sorted(set(targets) | ({build_evidence.PRODUCTION_PREPARED_RENDER_TARGET} if testing == "OFF" else set()))
+            self.assertEqual(record["scoped_preparation"]["targets"], effective)
             self.assertEqual(record["scoped_preparation"]["configure_args"], ["-DBUILD_TESTING=" + testing])
             self.assertTrue(record["process_tree"]["drained"])
             self.assertFalse((build / "runtime-ran").exists())
@@ -589,6 +697,14 @@ class BuildEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another pending"):
             build_evidence.prepare_targets(root, preset, ["juicer"])
         self.assertEqual(pending.read_text(), '{"protocol":"legacy"}\n')
+
+    def test_prepared_render_target_is_off_only_and_uses_distinct_receipt_key(self):
+        target = build_evidence.PRODUCTION_PREPARED_RENDER_TARGET
+        self.assertNotIn(target, build_evidence.PREPARATION_TARGETS)
+        self.assertNotEqual(build_evidence.preparation_paths(self.build, ["juicer"])[0],
+                            build_evidence.preparation_paths(self.build, ["juicer", target])[0])
+        with self.assertRaisesRegex(ValueError, "explicit maintained build targets"):
+            build_evidence.prepare_targets(self.root, "linux-release", [target], "ON")
 
     def assert_legacy_disposition_is_exact_drained(self):
         preset = "linux-release"
