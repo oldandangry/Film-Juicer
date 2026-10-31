@@ -27,8 +27,7 @@ public:
 
     FjStatus frame_policy(const FjExtent&, FjPreparedFramePolicy&, FjErrorBuffer&) const;
     FjCallCompletionResult render(
-        FjAssets*, FjCudaCallAccess, const FjFrame&, const FjPreparedFramePolicy&,
-        FjSubmissionAccess, FjAbortCallback, FjErrorBuffer&) const;
+        FjAssets*, FjCudaCallAccess, const FjFrame&, const FjPreparedFramePolicy&, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer&) const;
     FjCallCompletionResult reject_missing_instance(
         FjAssets*, FjCudaCallAccess, const FjFrame&, FjAbortCallback, FjErrorBuffer&) const;
 
