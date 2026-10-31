@@ -1505,8 +1505,7 @@ for name in ['film','accepted-output-color']:
                    'source':str(source),'source_sha256':source_hash})
 render_target='JuicerProductionPreparedRenderProbe'+('.exe' if sys.platform=='win32' else '')
 render_original=build/'tests/bin'/render_target
-render_retained=out/render_target
-shutil.copy2(render_original,render_retained)
+render_retained=out/'build/tests/bin'/render_target
 render_sha=checksum(render_original)
 def render_word_hash(words):
     return hashlib.sha256(b''.join(struct.pack('<I',word) for word in words)).hexdigest()
@@ -1626,12 +1625,12 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         write_json(render_fixture_manifest, {"files": {render_fixture.name: fixture_sha}})
         render_executable = build / "tests/bin" / render_name
         retained_render_build_executable = out / "build/tests/bin" / render_name
-        retained_render_executable = out / render_name
+        retained_render_executable = retained_render_build_executable
         render_executable.parent.mkdir(parents=True)
         retained_render_build_executable.parent.mkdir(parents=True, exist_ok=True)
         render_executable.write_bytes(b"prepared executable")
         retained_render_build_executable.write_bytes(render_executable.read_bytes())
-        retained_render_executable.write_bytes(render_executable.read_bytes())
+        self.assertEqual(retained_render_executable, retained_render_build_executable)
         render_sha = digest(render_executable)
         inputs[str(render_executable.relative_to(self.root).as_posix())] = render_sha
         copies[str(render_executable)] = {"file": str(retained_render_build_executable), "sha256": render_sha}
@@ -1733,7 +1732,8 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                                                           inputs=inputs, resolve=resolve)
                 finally:
                     path.write_bytes(original)
-            for mutation in ("unknown", "missing", "reordered", "missing-command", "changed-command"):
+            for mutation in ("unknown", "missing", "reordered", "missing-command", "changed-command",
+                             "unbound-retention-path"):
                 damaged = json.loads(json.dumps(document))
                 if mutation == "unknown":
                     damaged["prepared_render"]["rows"][0]["unexpected"] = 1
@@ -1741,6 +1741,8 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                     del damaged["prepared_render"]["rows"][0]["api"]
                 elif mutation == "reordered":
                     damaged["prepared_render"]["rows"].reverse()
+                elif mutation == "unbound-retention-path":
+                    damaged["prepared_render"]["executable"] = str(out / render_name)
                 elif mutation == "missing-command":
                     write_json(commands_file, [])
                     damaged["commands"]["sha256"] = digest(commands_file)
@@ -1754,6 +1756,8 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                            else "prepared-render row membership" if mutation == "reordered"
                            else "production retained command membership is incomplete or duplicated"
                            if mutation == "missing-command"
+                           else "production prepared-render execution identities disagree"
+                           if mutation == "unbound-retention-path"
                            else "production prepared-render command execution identity changed")
                 try:
                     with self.assertRaisesRegex(ValueError, message):

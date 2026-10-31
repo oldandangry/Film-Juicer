@@ -30,6 +30,7 @@
 #include "exposure_fixture.h"
 #include "print_illuminant_fixture.h"
 #include "spectral_source_fixture.h"
+#include "test_asset_workspace.h"
 
 extern "C" int fj_test_exposure_abi_c(const FjReferenceWhiteInput*, FjReferenceWhite*, const FjSensitivityInput*, FjSensitivity*, FjSensitivityFailure*, FjErrorBuffer*);
 
@@ -388,6 +389,10 @@ int main(int argc, char** argv) {
         } else
             throw std::runtime_error("unknown exposure group");
         std::puts("PASS exposure construction/ABI/failure contract");
+        if (group == "products") {
+            const bool ownersDrained = fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0;
+            return JuicerTestSupport::test_asset_workspaces.finish(0, ownersDrained);
+        }
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());

@@ -34,6 +34,7 @@
 #include "juicer_cuda_owner.h"
 #include "prepared_product_fixture.h"
 #include "spectral_source_fixture.h"
+#include "test_asset_workspace.h"
 
 namespace {
     namespace SpectralFixtures {
@@ -374,10 +375,8 @@ namespace {
         require(output.good(), "write exact resource bytes");
     }
     fs::path scaled_cmf_root(const fs::path& resources, const fs::path& scratch, int route) {
-        const auto root = scratch / ("spectral-inverse-suppression-route-" + std::to_string(route));
-        fs::remove_all(root);
-        fs::create_directories(root.parent_path());
-        fs::copy(resources, root, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / ("spectral-inverse-suppression-route-" + std::to_string(route)));
+        JuicerTestSupport::copy_consumer_assets(resources, root);
         const auto sourcePath = resources / "cie1931_2deg.csv";
         const auto targetPath = root / "cie1931_2deg.csv";
         std::ifstream input(sourcePath);
@@ -957,11 +956,10 @@ namespace {
     }
 } // namespace
 void fj_test_spectral_products(const nlohmann::json& fixture, const JuicerTestSupport::SpectralFixturePaths& paths, bool faults, void (*nativeAllocationCheck)(const nlohmann::json&)) {
-    const auto resourceRoot = paths.scratch / "Resources";
-    std::filesystem::remove_all(resourceRoot);
-    std::filesystem::create_directories(resourceRoot.parent_path());
-    std::filesystem::copy(paths.resources, resourceRoot, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
-    const auto artifactRoot = paths.scratch / "cases";
+    const auto workspace = JuicerTestSupport::test_asset_workspaces.create(paths.scratch / "spectral-products");
+    const auto resourceRoot = workspace / "Resources";
+    JuicerTestSupport::copy_consumer_assets(paths.resources, resourceRoot);
+    const auto artifactRoot = workspace / "cases";
     std::filesystem::create_directories(artifactRoot);
     JuicerCuda::Owner owner;
     owner.create(resourceRoot);

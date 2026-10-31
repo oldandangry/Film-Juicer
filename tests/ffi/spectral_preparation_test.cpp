@@ -27,6 +27,7 @@
 #include "exposure_fixture.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_source_fixture.h"
+#include "test_asset_workspace.h"
 
 extern "C" int fj_test_spectral_preparation_abi_c(void);
 void fj_test_spectral_native_allocation(const nlohmann::json&);
@@ -327,6 +328,10 @@ int main(int argc, char** argv) {
         else
             throw std::runtime_error("unknown spectral group");
         std::puts("PASS spectral frozen native values/contract");
+        if (group == "products" || group == "admission") {
+            const bool ownersDrained = fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0;
+            return JuicerTestSupport::test_asset_workspaces.finish(0, ownersDrained);
+        }
         return 0;
     } catch (const JuicerCuda::ExecutionFailure& e) {
         std::fprintf(stderr, "spectral execution failure category=%u: %s\n", e.failure.status.category, e.failure.diagnostic.c_str());

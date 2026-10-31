@@ -31,6 +31,7 @@
 #include "prepared_product_fixture.h"
 #include "spectral_source_fixture.h"
 #include "spectral_test_resources.h"
+#include "test_asset_workspace.h"
 
 namespace JuicerProcess::TestSupport {
     class RootLifetimeObserver final {
@@ -138,20 +139,19 @@ namespace {
         failCurve = 0;
     }
     fs::path source_root(const fs::path& name) {
-        const auto root = scratch / name;
-        fs::remove_all(root);
-        fs::create_directories(root);
-        fs::copy_file(resources / "cie1931_2deg.csv", root / "cie1931_2deg.csv");
-        for (const auto* file : {SpectralFixture::kHanatos, SpectralFixture::kArctic, SpectralFixture::kMallett}) {
-            const auto path = SpectralFixture::source_path(root, file);
-            fs::create_directories(path.parent_path());
-            fs::copy_file(SpectralFixture::source_path(resources, file), path);
+        fs::path root;
+        if (name.is_absolute()) {
+            root = name;
+            fs::create_directories(root);
+        } else {
+            root = JuicerTestSupport::test_asset_workspaces.create(scratch / name);
         }
+        JuicerTestSupport::copy_reconstruction_assets(resources, root);
         return root;
     }
     fs::path consumer_root(const std::string& name) {
         const auto root = source_root(name);
-        for (const char* directory : {"profiles", "illuminants", "filters", "gamut"}) {
+        for (const char* directory : {"profiles", "illuminants", "filters"}) {
             if (fs::exists(resources / directory)) {
                 fs::copy(resources / directory, root / directory, fs::copy_options::recursive);
             }
@@ -812,7 +812,8 @@ int main(int argc, char** argv) try {
     fs::create_directories(scratch);
     acquisitions.reserve(32);
     const int result = RUN_ALL_TESTS();
-    return result == 0 && fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0 ? 0 : 1;
+    const bool ownersDrained = fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0;
+    return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
 } catch (const std::exception& error) {
     std::fprintf(stderr, "spectral fixture setup failed: %s\n", error.what());
     return 2;

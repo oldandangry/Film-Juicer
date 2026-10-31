@@ -334,7 +334,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     target = "JuicerProductionPreparedRenderProbe"
     executable_name = target + suffix
     original_executable = build / "tests/bin" / executable_name
-    retained_executable = manifest.parent / executable_name
+    retained_executable = manifest.parent / "build/tests/bin" / executable_name
     fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{preset}.dat"
     source = root / "tests/ffi/production-prepared-render.cpp"
     overlay = root / "tests/print/illuminant-fixtures/product-updates.json"

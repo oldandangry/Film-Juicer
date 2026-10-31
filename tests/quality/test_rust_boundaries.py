@@ -45,6 +45,7 @@ class RustBoundaryTests(unittest.TestCase):
             shutil.copy2(ROOT / name, cls.workspace / name)
         shutil.copytree(ROOT / "rust", cls.workspace / "rust")
         cls.environment = quality.cargo_environment()
+        cls.environment.setdefault("CARGO_INCREMENTAL", "0")
         cls.invocation = 0
         cls.invocation_lock = threading.Lock()
 

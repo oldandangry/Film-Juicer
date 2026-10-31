@@ -731,6 +731,11 @@ CTest selects the preset's profile; native CI/checkpoints retain both
 development and release contracts. The probes compile without
 linking or executing native CUDA calls.
 
+Compiler probes default to `CARGO_INCREMENTAL=0` to avoid retaining incremental
+sessions for disposable source variants. Product builds retain their configured
+incremental policy. Set `CARGO_INCREMENTAL=1` explicitly when comparing probe
+timings or choosing that cache tradeoff; the harnesses honor an existing setting.
+
 At compiler-probe closeout, the owning change selects the runs still needed for
 reusable evidence, active diagnosis or rollback. Ordinary superseded success logs
 follow the seven-day retention window in [failure diagnosis](#diagnosing-a-failure);
@@ -772,6 +777,17 @@ Successful, fully drained synthetic workspaces clean up after the outer test
 consumes their receipts. Set `JUICER_TEST_RETAIN_FIXTURES=1` for deliberate diagnostic
 capture. Outer failures (including subtests), interrupted/undrained work and
 unproved owners retain their diagnostics and configured paths.
+
+Asset-owner, spectral/exposure-product, bootstrap and illuminant tests create
+isolated input workspaces under their configured scratch roots. Host preparation
+tests copy only their consumed reconstruction, profile, illuminant and filter
+assets; noise-owner tests keep the noise inputs they exercise. Successful outer
+tests remove only the workspaces they created, after owner-drain checks pass.
+Failures, interruptions and `JUICER_TEST_RETAIN_FIXTURES=1` preserve those inputs;
+previous runs, logs and capture fixtures are not swept. A workspace-removal error
+fails the test. Production OFF evidence retains its prepared-render executable
+once under `production/build/tests/bin/`, serving both execution and build-input
+identity checks.
 
 Add construction/lifetime probes as the corresponding real API lands. Put
 identity, reuse, conversion and failure-transition cases in the owning domain's

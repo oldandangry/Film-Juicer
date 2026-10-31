@@ -268,6 +268,7 @@ fn fixed_boundary_failure(error: exposure::BoundaryError) -> Failure {
     }
 }
 fn inject(operation: u32) -> Result<(), Failure> {
+    #[cfg(feature = "test-support")]
     if operation == 1 {
         return reconstruction::check_reference_white_boundary().map_err(|error| match error {
             reconstruction::CheckedReferenceWhiteError::BoundaryUnsupported => {

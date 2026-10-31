@@ -36,6 +36,7 @@ class RustNamingTests(unittest.TestCase):
         artifact_root.mkdir(parents=True, exist_ok=True)
         cls.artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=artifact_root))
         cls.environment = quality.cargo_environment()
+        cls.environment.setdefault("CARGO_INCREMENTAL", "0")
 
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory(prefix="probe-", dir=self.artifacts)

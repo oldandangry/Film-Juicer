@@ -2384,8 +2384,11 @@ pub(crate) fn failure_category(error: &recipe::PrepareError) -> u32 {
         E::EqualEnergy(film_juicer_core::illuminant::EqualEnergyError::Unsupported) => {
             FJ_STATUS_UNSUPPORTED_INPUT
         }
-        E::Blackbody(film_juicer_core::illuminant::BlackbodyError::Unsupported)
-        | E::ReferenceWhite(
+        E::Blackbody(film_juicer_core::illuminant::BlackbodyError::Unsupported) => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
+        #[cfg(feature = "test-support")]
+        E::ReferenceWhite(
             film_juicer_core::reconstruction::CheckedReferenceWhiteError::BoundaryUnsupported,
         )
         | E::Tc(film_juicer_core::reconstruction::CheckedTcError::BoundaryUnsupported) => {

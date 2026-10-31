@@ -76,6 +76,7 @@ impl std::error::Error for Error {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CheckedReferenceWhiteError {
+    #[cfg(feature = "test-support")]
     BoundaryUnsupported,
     Preparation(Error),
     Reconstruction(Error),
@@ -84,6 +85,7 @@ pub enum CheckedReferenceWhiteError {
 impl fmt::Display for CheckedReferenceWhiteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "test-support")]
             Self::BoundaryUnsupported => f.write_str("exposure production boundary fault"),
             Self::Preparation(error) | Self::Reconstruction(error) => error.fmt(f),
         }
@@ -397,6 +399,7 @@ pub enum TcError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CheckedTcError {
+    #[cfg(feature = "test-support")]
     BoundaryUnsupported,
     Tc(TcError),
 }
@@ -404,6 +407,7 @@ pub enum CheckedTcError {
 impl fmt::Display for CheckedTcError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "test-support")]
             Self::BoundaryUnsupported => f.write_str("TC production boundary fault"),
             Self::Tc(error) => f.write_str(error.diagnostic()),
         }

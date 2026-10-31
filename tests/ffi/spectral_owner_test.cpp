@@ -1,11 +1,13 @@
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -35,6 +37,7 @@ static_assert(std::is_same_v<decltype(&fj_legacy_cmf_view), FjStatus (*)(const F
 static_assert(std::is_same_v<decltype(&fj_legacy_cmf_release), FjStatus (*)(FjCmf*, FjErrorBuffer*)>);
 
 #include "spectral_test_resources.h"
+#include "test_asset_workspace.h"
 
 namespace {
     namespace fs = std::filesystem;
@@ -102,6 +105,77 @@ namespace {
         EXPECT_EQ(span.count, 0u);
     }
 
+    TEST(SpectralOwner, FailedOrUndrainedOutcomePreservesGeneratedWorkspace) {
+        JuicerTestSupport::TestAssetWorkspaces workspaces;
+        struct RetainEnvironment final {
+            const std::optional<std::string> saved = JuicerTestSupport::test_fixture_retention_setting();
+            bool restored = false;
+
+            void restore() noexcept {
+                if (restored)
+                    return;
+#if defined(_WIN32)
+                _putenv_s("JUICER_TEST_RETAIN_FIXTURES", saved ? saved->c_str() : "");
+#else
+                if (saved)
+                    setenv("JUICER_TEST_RETAIN_FIXTURES", saved->c_str(), 1);
+                else
+                    unsetenv("JUICER_TEST_RETAIN_FIXTURES");
+#endif
+                restored = true;
+            }
+
+            ~RetainEnvironment() {
+                restore();
+            }
+        } retainEnvironment;
+
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto parent = scratch / ("asset-workspace-lifecycle-" + std::to_string(stamp));
+        ASSERT_TRUE(fs::create_directory(parent));
+        const auto workspace = workspaces.create(parent / "failed-outcome");
+        const auto marker = workspace / "failure-evidence.txt";
+        std::ofstream(marker) << "retain until the outer run succeeds";
+        ASSERT_TRUE(fs::exists(marker));
+        const auto sibling = parent / "unregistered-sibling";
+        ASSERT_TRUE(fs::create_directory(sibling));
+        EXPECT_EQ(workspaces.finish(7, true), 7);
+        EXPECT_TRUE(fs::exists(marker));
+        EXPECT_EQ(workspaces.finish(0, false), 1);
+        EXPECT_TRUE(fs::exists(marker));
+
+#if defined(_WIN32)
+        _putenv_s("JUICER_TEST_RETAIN_FIXTURES", "0");
+#else
+        unsetenv("JUICER_TEST_RETAIN_FIXTURES");
+#endif
+        EXPECT_EQ(workspaces.finish(0, true), 0);
+        EXPECT_FALSE(fs::exists(workspace));
+        EXPECT_TRUE(fs::exists(sibling));
+        if (::testing::Test::HasFailure())
+            return;
+        std::error_code siblingError;
+        fs::remove_all(sibling, siblingError);
+        EXPECT_FALSE(siblingError);
+        std::error_code parentError;
+        fs::remove(parent, parentError);
+        EXPECT_FALSE(parentError);
+
+        const auto retained = workspaces.create(scratch / "retained-by-environment");
+#if defined(_WIN32)
+        _putenv_s("JUICER_TEST_RETAIN_FIXTURES", "1");
+#else
+        setenv("JUICER_TEST_RETAIN_FIXTURES", "1", 1);
+#endif
+        EXPECT_EQ(workspaces.finish(0, true), 0);
+        EXPECT_TRUE(fs::exists(retained));
+        retainEnvironment.restore();
+        if (!::testing::Test::HasFailure()) {
+            EXPECT_EQ(workspaces.finish(0, true), 0);
+            EXPECT_EQ(fs::exists(retained), retainEnvironment.saved == "1");
+        }
+    }
+
     TEST(SpectralOwner, NativeLayoutsAndBundledSources) {
         static constexpr std::size_t expected[] = {
 #define FJ_ABI_TYPE(type, size, alignment) sizeof(type), alignof(type),
@@ -141,7 +215,7 @@ namespace {
     }
 
     TEST(SpectralOwner, SnapshotsShareBytesAndSurviveAssetsDrop) {
-        const auto root = scratch / "snapshot";
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "snapshot");
         SpectralFixture::write_npy(root, SpectralFixture::kHanatos, {.elementBytes = 4, .sampleCount = SpectralFixture::kLutCount});
         SpectralFixture::write_npy(root, SpectralFixture::kMallett, {.elementBytes = 4, .sampleCount = 243, .shape = "81,3"});
         SpectralFixture::write_cmf(root);
@@ -185,8 +259,7 @@ namespace {
     }
 
     TEST(SpectralOwner, LazyIndependentFamiliesAndFirstFailure) {
-        const auto root = scratch / "lazy";
-        fs::remove_all(root);
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "lazy");
         Assets assets(root);
         SpectralFixture::write_npy(root, SpectralFixture::kHanatos, {.elementBytes = 2, .sampleCount = SpectralFixture::kLutCount});
         const Lut hanatos(assets);
@@ -309,7 +382,8 @@ int main(int argc, char** argv) try {
     scratch = fs::absolute(argv[2]);
     fs::create_directories(scratch);
     const int result = RUN_ALL_TESTS();
-    return result == 0 && fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0 ? 0 : 1;
+    const bool ownersDrained = fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0;
+    return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
 } catch (const std::exception& error) {
     std::fprintf(stderr, "spectral fixture setup failed: %s\n", error.what());
     return 2;

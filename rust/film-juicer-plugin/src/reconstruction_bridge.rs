@@ -167,6 +167,7 @@ pub(crate) fn fault(operation: u32) -> Result<(), Failure> {
 
 fn checked_failure(error: reconstruction::CheckedTcError) -> Failure {
     match error {
+        #[cfg(feature = "test-support")]
         reconstruction::CheckedTcError::BoundaryUnsupported => {
             Failure::Input("TC production boundary fault")
         }

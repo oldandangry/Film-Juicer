@@ -110,6 +110,6 @@ add_custom_target(bundle-archive
     COMMAND "${CMAKE_COMMAND}" -E rm -rf "${CMAKE_INSTALL_PREFIX}/${JUICER_BUNDLE}"
     COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --config "$<CONFIG>"
     COMMAND "${CMAKE_COMMAND}" -E chdir "${CMAKE_INSTALL_PREFIX}"
-        "${CMAKE_COMMAND}" -E tar czf "${CMAKE_BINARY_DIR}/juicer-${JUICER_ARCH_DIR}.tar.gz"
+        "${CMAKE_COMMAND}" -E tar czf "${CMAKE_INSTALL_PREFIX}/juicer-${JUICER_ARCH_DIR}.tar.gz"
         "${JUICER_BUNDLE}"
     DEPENDS juicer VERBATIM USES_TERMINAL)

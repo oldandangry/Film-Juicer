@@ -32,6 +32,7 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
+#include "test_asset_workspace.h"
 #include "RustAssetBridge.h"
 #include "ColorTransforms.h"
 #include "Cuda/JuicerCudaHostViews.h"
@@ -233,15 +234,14 @@ namespace {
         }
     };
     fs::path empty_root(const char* name) {
-        const auto root = scratch / name;
-        fs::remove_all(root);
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / name);
         fs::create_directories(root / "illuminants");
         fs::create_directories(root / "filters");
         return root;
     }
     fs::path full_root(const char* name) {
         const auto root = empty_root(name);
-        fs::copy(resources, root, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+        JuicerTestSupport::copy_consumer_assets(resources, root);
         return root;
     }
     void write(const fs::path& path, const std::string& bytes) {
@@ -1230,7 +1230,9 @@ int main(int argc, char** argv) try {
     scratch = argv[3];
     fs::create_directories(scratch);
     IlluminantConstruction::initialize(resources, fixtures, scratch);
-    return RUN_ALL_TESTS();
+    const int result = RUN_ALL_TESTS();
+    const bool ownersDrained = fj_test_illuminant_live_lenses() == 0 && fj_test_csv_live_owners() == 0 && fj_test_assets_live_owners() == 0;
+    return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
 } catch (const std::exception& error) {
     std::fprintf(stderr, "illuminant/calibration test setup: %s\n", error.what());
     return 1;

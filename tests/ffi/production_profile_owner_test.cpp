@@ -24,6 +24,7 @@
 
 #include "Cuda/JuicerCudaExecutor.h"
 #include "ResourceAssetLibrary.h"
+#include "test_asset_workspace.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ColorTransforms.h"
@@ -609,7 +610,7 @@ namespace {
     }
 
     TEST(ProductionProfileOwner, CacheReleasePreservesExactPrintSourceAndIndependentNativeCopy) {
-        const auto root = scratch / "same-source";
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "same-source");
         fs::create_directories(root / "profiles");
         fs::copy_file(resources / "profiles/kodak_portra_400.json", root / "profiles/kodak_portra_400.json", fs::copy_options::overwrite_existing);
         fs::copy_file(resources / "profiles/kodak_portra_endura.json", root / "profiles/kodak_portra_endura.json", fs::copy_options::overwrite_existing);
@@ -639,9 +640,8 @@ namespace {
         std::printf("Print independent native cold copy capacity=%zu; gamma totals copy capacity=%zu; source lease inline=%zu; warm copies=0; transient gamma Rust/native overlap logical=%zu (allocator/RSS excluded)\n", nativeCapacity, old.totals.capacity() * sizeof(std::array<float, 3>), sizeof(JuicerAssets::PrintProfileSource), 2 * old.totals.size() * sizeof(std::array<float, 3>));
     }
     fs::path consumer_resources(const char* name) {
-        const auto root = scratch / name;
-        fs::create_directories(root);
-        fs::copy(resources, root, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / name);
+        JuicerTestSupport::copy_consumer_assets(resources, root);
         return root;
     }
     void save_film(const fs::path& root, const Json& document) {
@@ -1133,7 +1133,9 @@ int main(int argc, char** argv) {
         fixtures = argv[2];
         scratch = argv[3];
         fs::create_directories(scratch);
-        return RUN_ALL_TESTS();
+        const int result = RUN_ALL_TESTS();
+        const bool ownersDrained = fj_test_profile_live_owners() == 0 && fj_test_print_density_live_owners() == 0 && fj_test_catalog_live_owners() == 0 && fj_test_assets_live_owners() == 0;
+        return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "production profile fixture: %s\n", error.what());
         return 1;

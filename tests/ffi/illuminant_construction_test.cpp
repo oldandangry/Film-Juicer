@@ -21,6 +21,7 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
+#include "test_asset_workspace.h"
 #include "RustAssetBridge.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "prepared_boundary.h"
@@ -511,9 +512,8 @@ namespace IlluminantConstruction {
     }
     TEST(IlluminantConstruction, PublishedCallerProductsMatchFrozenNativeParent) {
         const auto& f = fixture();
-        const auto root = scratch / "construction-products";
-        fs::remove_all(root);
-        fs::copy(resources, root, fs::copy_options::recursive);
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "construction-products");
+        JuicerTestSupport::copy_consumer_assets(resources, root);
         JuicerCuda::Owner owner;
         owner.create(root);
         JuicerProcess::root().ensure_bootstrap();
@@ -604,9 +604,8 @@ namespace IlluminantConstruction {
 
     unsigned nativeSubmissions = 0;
     TEST(IlluminantConstruction, ConstructionAdmissionAndEqualPreflashProjection) {
-        const auto root = scratch / "construction-failures";
-        fs::remove_all(root);
-        fs::copy(resources, root, fs::copy_options::recursive);
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "construction-failures");
+        JuicerTestSupport::copy_consumer_assets(resources, root);
         JuicerCuda::Owner owner;
         owner.create(root);
         JuicerProcess::root().ensure_bootstrap();

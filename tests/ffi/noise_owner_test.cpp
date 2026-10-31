@@ -18,6 +18,7 @@
 #include "juicer_cuda_owner.h"
 #include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
+#include "test_asset_workspace.h"
 
 namespace {
     namespace fs = std::filesystem;
@@ -192,9 +193,7 @@ namespace {
     }
 
     TEST(NoiseOwner, OrdinarySourceErrorStaysCachedUntilRelease) {
-        const auto root = scratch / "failure-cache";
-        fs::remove_all(root);
-        fs::create_directories(root);
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "failure-cache");
         const Assets assets(root);
         FjNoise* owner = nullptr;
         expect_status(fj_legacy_noise_acquire(assets.owner, &owner, nullptr), FJ_STATUS_PREPARATION_FAILURE);
@@ -208,7 +207,7 @@ namespace {
     }
 
     TEST(NoiseOwner, NativePathAndFacadeUseCompleteProducer) {
-        const auto root = scratch / fs::path(std::u8string(u8"noise-å-film"));
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / fs::path(std::u8string(u8"noise-å-film")));
         copy_noise(root);
         {
             const Assets assets(root);
@@ -285,7 +284,8 @@ int main(int argc, char** argv) try {
     scratch = fs::absolute(argv[2]);
     fs::create_directories(scratch);
     const int result = RUN_ALL_TESTS();
-    return result == 0 && fj_test_live_noise_owners() == 0 && !gateViolation ? 0 : 1;
+    const bool ownersDrained = fj_test_live_noise_owners() == 0 && fj_test_assets_live_owners() == 0 && !gateViolation;
+    return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
 } catch (const std::exception& error) {
     std::fprintf(stderr, "noise fixture setup failed: %s\n", error.what());
     return 2;

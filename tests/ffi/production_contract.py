@@ -698,9 +698,7 @@ def execute(arguments):
         assert all(type(row[name]) is int and row[name] == 0 for name in ("status", "api", "native_code"))
         assert row["accepted_fixture_match"] is True and row["diagnostic"] == ""
         prepared_rows.append(row)
-    retained_prepared = out / prepared_executable.name
-    shutil.copyfile(prepared_executable, retained_prepared)
-    assert digest(retained_prepared) == prepared_after, "retained prepared executable changed"
+    retained_prepared = out / "build" / prepared_executable.relative_to(build)
     prepared_render = {
         "executable": str(retained_prepared), "executable_sha256_before": prepared_before,
         "executable_sha256_after": prepared_after, "command": prepared_command,
@@ -733,6 +731,9 @@ def execute(arguments):
         shutil.copyfile(path, retained)
         assert digest(retained) == expected, "production build input changed during retention"
         retained_build_inputs[original] = {"file": str(retained), "sha256": expected}
+        if path == prepared_executable:
+            assert retained == retained_prepared, "prepared executable retention path changed"
+            assert digest(retained_prepared) == prepared_after, "retained prepared executable changed"
     check_consumed()
     check_build_inputs()
     (out / "production.json").write_text(
