@@ -289,11 +289,11 @@ class CheckQualityTests(IsolatedOwnerTests):
             self.assertNotIn("Quality checks passed", output.getvalue())
 
     def test_edited_native_failure_blocks_rust_and_header_consumers(self) -> None:
-        producer = check_quality.AnalysisCommand(["tool", "producer"], Path("."), "producer", "src/Illuminants.cpp")
+        producer = check_quality.AnalysisCommand(["tool", "producer"], Path("."), "producer", "src/mainProcessing.cpp")
         consumer = check_quality.AnalysisCommand(["tool", "consumer"], Path("."), "consumer", "src/main.cpp")
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files",
-                "src/Illuminants.cpp", "native/juicer_legacy_api.h", "rust/film-juicer-core/src/exposure.rs"]),
+                "src/mainProcessing.cpp", "native/juicer_legacy_api.h", "rust/film-juicer-core/src/exposure.rs"]),
             patch.object(check_quality, "Runner") as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
@@ -308,13 +308,13 @@ class CheckQualityTests(IsolatedOwnerTests):
             rust.assert_not_called()
 
     def test_success_retains_all_header_consumers_and_cuda_variants(self) -> None:
-        producer = check_quality.AnalysisCommand(["tool", "producer"], Path("."), "producer", "src/Illuminants.cpp")
+        producer = check_quality.AnalysisCommand(["tool", "producer"], Path("."), "producer", "src/mainProcessing.cpp")
         consumers = [check_quality.AnalysisCommand(["tool", variant], Path("."), variant,
             "src/Cuda/Film/JuicerCudaFilmPipeline.cu") for variant in ("ordinary", "test")]
         events = []
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files",
-                "src/Illuminants.cpp", "native/juicer_legacy_api.h", "rust/film-juicer-core/src/exposure.rs"]),
+                "src/mainProcessing.cpp", "native/juicer_legacy_api.h", "rust/film-juicer-core/src/exposure.rs"]),
             patch.object(check_quality, "Runner") as runner,
             patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
