@@ -22,7 +22,7 @@
 #include "GamutCompression.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 #include "JuicerState.h"
 #include "RustGamutBridge.h"
 #include "SpectralData.h"
@@ -539,7 +539,6 @@ int main(int argc, char** argv) {
         else {
             JuicerCuda::Owner owner;
             owner.create(argv[2]);
-            JuicerProcess::root().ensure_bootstrap();
             if (mode == "products")
                 fj_test_input_hull_products(fixture, directory / member["tables"].get<std::string>());
             else if (mode == "cache")

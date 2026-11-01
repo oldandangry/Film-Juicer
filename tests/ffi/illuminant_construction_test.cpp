@@ -10,12 +10,10 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
-#include "Illuminants.h"
 #include "ColorTransforms.h"
 #include "RustColorBridge.h"
 #include "JuicerState.h"
@@ -26,17 +24,11 @@
 #include "Cuda/JuicerCudaResources.h"
 #include "prepared_boundary.h"
 #include "Cuda/JuicerCudaHostViews.h"
-#include "CudaRenderProjection.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
 #include "print_illuminant_fixture.h"
 #include "prepared_product_fixture.h"
-template <typename T>
-concept RvalueCsvView = requires(T&& value) { std::move(value).view(); };
-static_assert(!std::is_default_constructible_v<JuicerAssets::CsvRows> && !std::is_copy_constructible_v<JuicerAssets::CsvRows> && std::is_move_constructible_v<JuicerAssets::CsvRows> && !RvalueCsvView<JuicerAssets::CsvRows>);
-static_assert(!std::is_default_constructible_v<JuicerIlluminant::Lens> && !std::is_copy_constructible_v<JuicerIlluminant::Lens>);
-
 namespace IlluminantConstruction {
     using Json = nlohmann::json;
     void require(bool condition, const std::string& diagnostic) {
@@ -292,7 +284,7 @@ namespace IlluminantConstruction {
         return owner;
     }
 
-    TEST(IlluminantConstruction, RawAbiCoreFacadeAndWrappersMatchFrozenLeaves) {
+    TEST(IlluminantConstruction, RawAbiAndCoreFacadeMatchFrozenLeaves) {
         const auto& f = fixture();
         Diagnostic d;
         FjIlluminant curve{}, core{};
@@ -304,11 +296,9 @@ namespace IlluminantConstruction {
             samples(curve, row["normalized"]);
             status(fj_test_illuminant_curve(2, {}, {}, temperature, &core, &c, &d.error), FJ_STATUS_SUCCESS);
             samples(core, row["normalized"]);
-            EXPECT_EQ(bits(JuicerIlluminant::blackbody(temperature).linear), row["normalized"]);
         }
         status(fj_legacy_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
         samples(curve, f["leaf"]["equal"]["samples"]);
-        EXPECT_EQ(bits(JuicerIlluminant::equal_energy().linear), f["leaf"]["equal"]["samples"]);
         for (const auto& row : f["leaf"]["direct"]) {
             SCOPED_TRACE(row["id"].dump());
             const auto input = scalars(row["rows"]);
@@ -346,16 +336,24 @@ namespace IlluminantConstruction {
     }
     TEST(IlluminantConstruction, BorrowedRowsAndMeasuredScratchHaveScopedLifetimes) {
         auto bridge = std::make_unique<JuicerAssets::AssetBridge>(resources);
+        Diagnostic d;
         {
-            auto borrowed = bridge->csv_rows(JuicerAssets::CsvSource::D65);
+            FjCsvPairs* acquired = nullptr;
+            status(fj_legacy_csv_acquire(bridge->borrow_assets(), FJ_CSV_D65, &acquired, &d.error), FJ_STATUS_SUCCESS);
+            const auto releaseCsv = [](FjCsvPairs* held) {
+                (void)fj_legacy_csv_release(held, nullptr);
+            };
+            std::unique_ptr<FjCsvPairs, decltype(releaseCsv)> borrowed(acquired, releaseCsv);
+            FjFloatSpan rows{};
+            status(fj_legacy_csv_view(borrowed.get(), &rows, &d.error), FJ_STATUS_SUCCESS);
             status(bridge->release_cached_payloads(), FJ_STATUS_SUCCESS);
             bridge.reset();
             EXPECT_EQ(fj_test_csv_live_owners(), 1u);
-            const auto curve = JuicerIlluminant::from_samples(borrowed, "D65 retained borrow");
-            EXPECT_EQ(curve.linear.size(), 81u);
+            FjIlluminant retainedCurve{};
+            status(fj_legacy_illuminant_from_samples(rows, &retainedCurve, &d.error), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(rows.count, 162u);
         }
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-        Diagnostic d;
         FjIlluminant curve{};
         FjIlluminantCoverage c{};
         const auto& f = fixture();
@@ -506,7 +504,9 @@ namespace IlluminantConstruction {
         auto csvAssets = std::make_unique<JuicerAssets::AssetBridge>(resources);
         fj_test_csv_fault(1);
         status(fj_legacy_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
-        EXPECT_THROW(csvAssets->csv_rows(JuicerAssets::CsvSource::D65), JuicerCuda::ExecutionFailure);
+        FjCsvPairs* rejected = reinterpret_cast<FjCsvPairs*>(std::uintptr_t{1});
+        status(fj_legacy_csv_acquire(csvAssets->borrow_assets(), FJ_CSV_D65, &rejected, &d.error), FJ_STATUS_INTERNAL_FAILURE);
+        EXPECT_EQ(rejected, nullptr);
         csvAssets.reset();
         fj_test_illuminant_clear_fault();
     }
@@ -516,7 +516,6 @@ namespace IlluminantConstruction {
         JuicerTestSupport::copy_consumer_assets(resources, root);
         JuicerCuda::Owner owner;
         owner.create(root);
-        JuicerProcess::root().ensure_bootstrap();
         auto& assets = JuicerProcess::root().assets();
         const auto read = [](const fs::path& path) {
             std::ifstream file(path);
@@ -602,13 +601,11 @@ namespace IlluminantConstruction {
         }
     }
 
-    unsigned nativeSubmissions = 0;
-    TEST(IlluminantConstruction, ConstructionAdmissionAndEqualPreflashProjection) {
+    TEST(IlluminantConstruction, ConstructionAdmissionAndEqualPreflashPublication) {
         const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "construction-failures");
         JuicerTestSupport::copy_consumer_assets(resources, root);
         JuicerCuda::Owner owner;
         owner.create(root);
-        JuicerProcess::root().ensure_bootstrap();
         auto& assets = JuicerProcess::root().assets();
         {
             const auto path = root / "profiles/kodak_portra_400.json";
@@ -701,18 +698,6 @@ namespace IlluminantConstruction {
         controls.printPreflashExposure = .1;
         controls.grainControls.active = false;
         controls.dirCouplers.active = false;
-        InstanceState published;
-        pending(published, controls);
-        const auto admitted = admit_pending_render_state(published);
-        ASSERT_TRUE(admitted.printState);
-        const auto publishedView = JuicerTestSupport::published_view(admitted);
-        // SF_TEMP_BRIDGE_NATIVE_PUBLICATION_RENDER_OBSERVER: the legacy native
-        // projection/render failure observation remains until its I7 deletion.
-        FocusedRenderStateBuildProduct product;
-        std::string productDiagnostic;
-        ASSERT_TRUE(build_print_render_state_product(controls, product, productDiagnostic)) << productDiagnostic;
-        const auto retainedHash = product.recipe.hash;
-        const auto retainedCounter = published.buildCounterNext.load();
         auto heldRustState = JuicerTestSupport::prepare_product(controls);
         FjPreparedStateView heldRustView{};
         std::array<char, 2048> heldRustText{};
@@ -730,7 +715,6 @@ namespace IlluminantConstruction {
             "illuminant scratch capacity",
             "illuminant CSV axis mismatch"};
         for (std::uint32_t fault : {1u, 2u, 3u, 4u}) {
-            nativeSubmissions = 0;
             status(fj_test_illuminant_arm_fault(3, 1, fault), FJ_STATUS_SUCCESS);
             std::optional<PreparedState> failed;
             std::array<char, 2048> failureText{};
@@ -740,7 +724,6 @@ namespace IlluminantConstruction {
             status(failure, faultCategories[faultIndex]);
             EXPECT_FALSE(failed);
             EXPECT_EQ(std::string(failureText.data(), failureError.length), faultDiagnostics[faultIndex]);
-            EXPECT_EQ(nativeSubmissions, 0u);
             // This independent factory call preserves the raw category and
             // diagnostic contract, separate from the active publisher witness below.
             FjPreparedStateView stillHeld{};
@@ -760,7 +743,7 @@ namespace IlluminantConstruction {
         }
 
         // Actual complete-state publication for EQUAL faults is independent
-        // from both the raw factory diagnostics above and the native bridge below.
+        // from the raw factory diagnostics above.
         InstanceState equalPublisher;
         auto retainedControls = controls;
         pending(equalPublisher, retainedControls);
@@ -777,7 +760,6 @@ namespace IlluminantConstruction {
             const auto previousHash = equalPublisher.lastHash.load();
             const auto previousCounter = equalPublisher.buildCounterNext.load();
             const auto previousValues = complete_result(JuicerTestSupport::published_view(retainedPublication), retainedControls);
-            nativeSubmissions = 0;
             status(fj_test_illuminant_arm_fault(3, 1, fault), FJ_STATUS_SUCCESS);
 
             bool failed = false;
@@ -794,7 +776,6 @@ namespace IlluminantConstruction {
                 failed = failure.status == PendingRenderAdmissionStatus::RebuildFailed;
             }
             ASSERT_TRUE(failed) << "actual equal-energy publisher fault=" << fault;
-            EXPECT_EQ(nativeSubmissions, 0u);
             EXPECT_EQ(equalPublisher.lastHash.load(), previousHash);
             EXPECT_EQ(equalPublisher.buildCounterNext.load(), previousCounter);
             EXPECT_EQ(JuicerAtomic::load_shared_ptr(&equalPublisher.activeDirectState), previousDirect);
@@ -816,45 +797,9 @@ namespace IlluminantConstruction {
             const auto warm = admit_pending_render_state(equalPublisher);
             EXPECT_EQ(warm.printState, retainedPublication.printState);
             EXPECT_EQ(equalPublisher.buildCounterNext.load(), previousCounter + 1);
-            EXPECT_EQ(nativeSubmissions, 0u);
             retainedControls = changed;
         }
         EXPECT_EQ(equalPublisher.buildCounterNext.load(), retainedCounterStart + 4);
-
-        std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
-        std::optional<ScatterHalationFrameDescriptor> halation;
-        Spektrafilm::FilmJuicerEffectsGeometry geometry{};
-        JuicerCuda::AutoExposurePreviewDescriptor meter{};
-        JuicerCuda::ExecutionFrame frame{{0, 0, 16, 16}, {0, 0, 16, 16}, {0, 0, 16, 16}, nullptr, nullptr, nullptr, 0, 0, 4, nullptr, diffusion, halation, geometry, 10.0f, 0, 24, 1, 0, meter, false, false};
-        FjFrame raw{};
-        JuicerCuda::ResourceManager::SubmissionSnapshot submission{};
-        for (std::uint32_t fault : {1u, 2u, 3u, 4u}) {
-            Diagnostic d;
-            FjIlluminant value{};
-            JuicerCuda::PendingContextLossRecovery recovery;
-            std::string diagnostic;
-            nativeSubmissions = 0;
-            status(fj_test_illuminant_arm_fault(3, 1, fault), FJ_STATUS_SUCCESS);
-            {
-                JuicerCuda::NativeCall call(JuicerCuda::borrowed_owner());
-                const auto result = JuicerCuda::project_and_render(call, product.recipe, product.payload, frame, raw, submission, recovery, {}, nullptr, {}, diagnostic);
-                status(result.status, fault == 1 ? FJ_STATUS_UNSUPPORTED_INPUT : fault == 2 ? FJ_STATUS_INTERNAL_FAILURE
-                                                                             : fault == 3   ? FJ_STATUS_ALLOCATION_FAILURE
-                                                                                            : FJ_STATUS_PREPARATION_FAILURE);
-            }
-            EXPECT_EQ(nativeSubmissions, 0u);
-            EXPECT_EQ(product.recipe.hash, retainedHash);
-            EXPECT_EQ(JuicerTestSupport::published_view(admitted).recipe_hash, publishedView.recipe_hash);
-            EXPECT_EQ(JuicerAtomic::load_shared_ptr(&published.activePrintState), admitted.printState);
-            EXPECT_EQ(published.buildCounterNext.load(), retainedCounter);
-            status(fj_legacy_illuminant_equal_energy(&value, &d.error), FJ_STATUS_SUCCESS);
-        }
     }
 
 } // namespace IlluminantConstruction
-
-namespace JuicerAssets::IlluminantTest {
-    void before_native_render() noexcept {
-        ++IlluminantConstruction::nativeSubmissions;
-    }
-} // namespace JuicerAssets::IlluminantTest

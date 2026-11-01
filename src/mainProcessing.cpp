@@ -293,11 +293,6 @@ namespace {
             diagnostic = {input->diagnostic.data, input->diagnostic.count};
         }
         const FjRenderOutcome outcome = input->outcome;
-#if defined(JUICER_NOISE_TEST_HOOK)
-        if (input->render_outcome_valid != 0) {
-            JuicerAssets::NoiseTest::outcome(outcome.status);
-        }
-#endif
         auto& recovery = completion->callScope->recovery();
         if (!recovery.pending && outcome.status.category == FJ_STATUS_CONTEXT_LOSS &&
             input->has_inspected_context != 0) {

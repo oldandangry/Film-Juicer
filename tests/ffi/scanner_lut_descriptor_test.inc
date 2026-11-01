@@ -1,7 +1,4 @@
 namespace ScannerDescriptorTest {
-    Json project(const Scanner::ScannerSpectralLutDescriptor& d) {
-        return {{"route", static_cast<unsigned>(d.route)}, {"medium", static_cast<unsigned>(d.medium)}, {"capture_polarity", static_cast<unsigned>(d.polarity)}, {"resolution", d.lutResolution}, {"density_bounds_hash", d.densityBoundsHash}, {"channel_density_hash", d.channelDensityHash}, {"base_density_hash", d.baseDensityHash}, {"viewing_illuminant_hash", d.scanIlluminantHash}, {"observer_hash", d.observerHash}, {"hash", d.hash}};
-    }
     Json bytes(const std::string& text) {
         Json out = Json::array();
         for (unsigned char byte : text)
@@ -13,11 +10,6 @@ namespace ScannerDescriptorTest {
         for (const auto& byte : value)
             out.push_back(static_cast<char>(byte.get<unsigned>()));
         return out;
-    }
-    Json input(const ProfileRoute& route, const DensityBoundsRecipe& bounds, const ScannerOutputRecipe& output, const std::string& observer, bool print, unsigned missing = 0) {
-        const auto& channel = print ? route.printProfile->data.channelDensity : route.filmProfile->data.channelDensity;
-        const auto& base = print ? route.printProfile->data.baseDensity : route.filmProfile->data.baseDensity;
-        return {{"mode", print ? 1 : 0}, {"route", static_cast<unsigned>(route.scanRoute)}, {"capture_polarity", static_cast<unsigned>(route.capturePolarity)}, {"bounds_medium", static_cast<unsigned>(bounds.medium)}, {"bounds_source", static_cast<unsigned>(bounds.source)}, {"output_medium", static_cast<unsigned>(output.medium)}, {"profile_present", missing != 4}, {"missing", missing}, {"density_bounds_hash", bounds.hash}, {"print_profile_token", route.printProfileAssetVersionToken}, {"print_profile_key", bytes(route.printProfileKey)}, {"channel_density_cmy", words(&channel[0][0], 243)}, {"base_density", words(base.data(), 81)}, {"viewing_illuminant", bytes(output.viewingIlluminant)}, {"profile_viewing_illuminant", bytes(print ? route.printProfile->info.viewingIlluminant.value : route.filmProfile->info.viewingIlluminant.value)}, {"observer_identity", bytes(observer)}, {"resolution", output.lutResolution}};
     }
     Json prepared_input(const FjPreparedStateView& prepared, std::string_view observer) {
         auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
@@ -61,163 +53,6 @@ namespace ScannerDescriptorTest {
             status(fj_legacy_print_profile_release(printOwner, nullptr));
         return value;
     }
-    Json native(const Json& in) {
-        auto film = std::make_shared<Profiles::FilmProfile>();
-        auto print = std::make_shared<Profiles::PrintProfile>();
-        for (std::size_t i = 0; i < 243; ++i) {
-            film->data.channelDensity[i / 3][i % 3] = print->data.channelDensity[i / 3][i % 3] = std::bit_cast<float>(in.at("channel_density_cmy")[i].get<std::uint32_t>());
-        }
-        for (std::size_t i = 0; i < 81; ++i)
-            film->data.baseDensity[i] = print->data.baseDensity[i] = std::bit_cast<float>(in.at("base_density")[i].get<std::uint32_t>());
-        film->info.viewingIlluminant.value = print->info.viewingIlluminant.value = text(in.at("profile_viewing_illuminant"));
-        ProfileRoute route;
-        route.scanRoute = static_cast<Spektrafilm::ScanRoute>(in.at("route").get<unsigned>());
-        route.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(in.at("capture_polarity").get<unsigned>());
-        if (in.at("profile_present").get<bool>()) {
-            route.filmProfile = film;
-            route.printProfile = print;
-        }
-        route.printProfileKey = text(in.at("print_profile_key"));
-        route.printProfileAssetVersionToken = in.at("print_profile_token");
-        DensityBoundsRecipe bounds;
-        bounds.medium = static_cast<Spektrafilm::DensityMedium>(in.at("bounds_medium").get<unsigned>());
-        bounds.source = static_cast<Spektrafilm::DensityBoundsSource>(in.at("bounds_source").get<unsigned>());
-        bounds.hash = in.at("density_bounds_hash");
-        ScannerOutputRecipe output;
-        output.medium = static_cast<Spektrafilm::DensityMedium>(in.at("output_medium").get<unsigned>());
-        output.viewingIlluminant = text(in.at("viewing_illuminant"));
-        output.lutResolution = in.at("resolution");
-        const auto observer = text(in.at("observer_identity"));
-        const unsigned missing = in.at("missing");
-        Scanner::ScannerSpectralLutDescriptor result;
-        result.hash = 99;
-        std::string diagnostic = "seed";
-        bool success = false;
-        bool exception = false;
-        try {
-            success = in.at("mode") == 1 ? Scanner::build_print_scanner_spectral_lut_descriptor({missing == 1 ? nullptr : &route, missing == 2 ? nullptr : &bounds, missing == 3 ? nullptr : &output, observer}, result, diagnostic)
-                                         : Scanner::build_direct_scanner_spectral_lut_descriptor({missing == 1 ? nullptr : &route, missing == 2 ? nullptr : &bounds, missing == 3 ? nullptr : &output, observer}, result, diagnostic);
-        } catch (const std::out_of_range&) {
-            exception = true;
-        }
-        return {{"success", success}, {"exception", exception}, {"diagnostic", diagnostic}, {"descriptor", project(result)}};
-    }
-    Json cases() {
-        auto film = std::make_shared<Profiles::FilmProfile>();
-        auto print = std::make_shared<Profiles::PrintProfile>();
-        for (unsigned i = 0; i < 243; ++i)
-            film->data.channelDensity[i / 3][i % 3] = print->data.channelDensity[i / 3][i % 3] = static_cast<float>(i + 1) / 256;
-        for (unsigned i = 0; i < 81; ++i)
-            film->data.baseDensity[i] = print->data.baseDensity[i] = static_cast<float>(i) / 128;
-        Json rows = Json::array();
-        for (unsigned r = 0; r < 4; ++r) {
-            const bool printing = r % 2;
-            ProfileRoute route;
-            route.scanRoute = static_cast<Spektrafilm::ScanRoute>(r);
-            route.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(r / 2);
-            route.filmProfile = film;
-            route.printProfile = print;
-            route.printProfileKey = "selected";
-            route.printProfileAssetVersionToken = 42;
-            DensityBoundsRecipe bounds;
-            bounds.medium = printing ? Spektrafilm::DensityMedium::Print : Spektrafilm::DensityMedium::Film;
-            bounds.source = Spektrafilm::DensityBoundsSource::PrintMediaAuthoredCurves;
-            bounds.hash = 0x123456789abcdef0;
-            ScannerOutputRecipe output;
-            output.medium = bounds.medium;
-            output.viewingIlluminant = "D50";
-            output.lutResolution = 17;
-            const auto original = input(route, bounds, output, "CIE1931_2deg", printing);
-            const auto add = [&](const std::string& id, Json value) {
-                rows.push_back({{"id", std::to_string(r) + "/" + id}, {"input", value}, {"native", native(value)}});
-            };
-            add("normal", original);
-            for (unsigned resolution : {0u, 1u, 33u, UINT32_MAX}) {
-                auto value = original;
-                value["resolution"] = resolution;
-                add("resolution-" + std::to_string(resolution), value);
-            }
-            for (unsigned polarity : {2u, 255u, 1u - r / 2}) {
-                auto value = original;
-                value["capture_polarity"] = polarity;
-                add("polarity-" + std::to_string(polarity), value);
-            }
-            for (unsigned missing = 1; missing <= 4; ++missing) {
-                auto value = original;
-                value["missing"] = missing;
-                value["profile_present"] = missing != 4;
-                add("missing-" + std::to_string(missing), value);
-            }
-            for (const char* field : {"density_bounds_hash", "print_profile_token", "bounds_medium", "bounds_source", "output_medium", "route"}) {
-                auto value = original;
-                value[field] = std::string_view(field) == "route" ? (r ^ 1) : std::string_view(field) == "density_bounds_hash" || std::string_view(field) == "print_profile_token" ? 0
-                                                                                                                                                                                   : 255;
-                add(std::string("predicate-") + field, value);
-            }
-            for (const char* field : {"print_profile_key", "viewing_illuminant", "observer_identity", "profile_viewing_illuminant"}) {
-                auto value = original;
-                value[field] = Json::array();
-                add(std::string("empty-") + field, value);
-            }
-            auto value = original;
-            value["viewing_illuminant"] = value["profile_viewing_illuminant"] = Json::array();
-            add("both-empty", value);
-            value["observer_identity"] = Json::array();
-            value["density_bounds_hash"] = 0;
-            add("priority-bounds-labels", value);
-            value = original;
-            value["viewing_illuminant"] = value["observer_identity"] = Json::array();
-            add("priority-observer-label", value);
-            value = original;
-            value["viewing_illuminant"] = value["profile_viewing_illuminant"] = {68, 0, 255, 32};
-            value["observer_identity"] = {0, 255};
-            add("exact-bytes", value);
-            for (unsigned invalid : {4u, 255u}) {
-                value = original;
-                value["route"] = invalid;
-                add("invalid-route-" + std::to_string(invalid), value);
-                value["missing"] = 1;
-                add("null-preempts-route-" + std::to_string(invalid), value);
-            }
-            value = original;
-            value["print_profile_token"] = 43;
-            value["print_profile_key"] = {99};
-            add("admitted-token-key-change", value);
-            value = original;
-            value["density_bounds_hash"] = 9;
-            add("bounds-dependency", value);
-            for (const char* field : {"channel_density_cmy", "base_density"}) {
-                const std::vector<unsigned> positions = std::string_view(field) == "base_density" ? std::vector<unsigned>{0, 63, 64, 80} : std::vector<unsigned>{0, 1, 2, 63, 64, 127, 128, 191, 192, 242};
-                for (unsigned position : positions)
-                    for (std::uint32_t word : {0u, 0x80000000u, 0x7fc00001u, 0xffc00123u, 0x7f800000u, 0xff800000u, 0x3f012345u}) {
-                        value = original;
-                        value[field][position] = word;
-                        add(std::string(field) + "-" + std::to_string(position) + "-" + std::to_string(word), value);
-                    }
-            }
-        }
-        return rows;
-    }
-    Json products(const std::filesystem::path& resources) {
-        JuicerCuda::Owner owner;
-        owner.create(resources);
-        JuicerProcess::root().ensure_bootstrap();
-        Json rows = Json::array();
-        for (unsigned r = 0; r < 4; ++r) {
-            auto params = FilmReferenceTest::controls(1, static_cast<Spektrafilm::ScanRoute>(r), 0);
-            std::array<char, 2048> diagnostic{};
-            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-            std::optional<PreparedState> product;
-            const auto result = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), params, product, error);
-            require(result.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
-            FjPreparedStateView view{};
-            status(product->view(view, error));
-            const auto value = prepared_input(view, "CIE1931_2deg");
-            rows.push_back({{"route", r}, {"input", value}, {"native", native(value)}, {"snapshot_hash", hash_params(params)}, {"final_hash", view.recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"upload_hash", view.upload_core_hash}});
-        }
-        return rows;
-    }
-
     struct Borrowed {
         std::array<float, 243> channel{};
         std::array<float, 81> base{};
@@ -241,6 +76,37 @@ namespace ScannerDescriptorTest {
     Json project(const FjScannerLutDescriptor& d) {
         return {{"route", d.route}, {"medium", d.medium}, {"capture_polarity", d.capture_polarity}, {"resolution", d.resolution}, {"density_bounds_hash", d.density_bounds_hash}, {"channel_density_hash", d.channel_density_hash}, {"base_density_hash", d.base_density_hash}, {"viewing_illuminant_hash", d.viewing_illuminant_hash}, {"observer_hash", d.observer_hash}, {"hash", d.hash}};
     }
+    FjScannerLutDescriptor describe(const Json& in) {
+        const Borrowed borrowed(in);
+        FjScannerLutDescriptor result{};
+        FjScannerLutDescriptorFailure failure{};
+        std::array<char, 256> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        status(fj_test_scanner_lut_describe(&borrowed.wire, &result, &failure, &error));
+        require(failure.reason == 0 && failure.lane == 0 && error.length == 0 && message[0] == '\0',
+                "raw descriptor product has a complete success envelope");
+        return result;
+    }
+    Json products(const std::filesystem::path& resources) {
+        JuicerCuda::Owner owner;
+        owner.create(resources);
+        Json rows = Json::array();
+        for (unsigned r = 0; r < 4; ++r) {
+            auto params = FilmReferenceTest::controls(1, static_cast<Spektrafilm::ScanRoute>(r), 0);
+            std::array<char, 2048> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            std::optional<PreparedState> product;
+            const auto result = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), params, product, error);
+            require(result.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
+            FjPreparedStateView view{};
+            status(product->view(view, error));
+            const auto value = prepared_input(view, "CIE1931_2deg");
+            const Json described{{"success", true}, {"exception", false}, {"diagnostic", ""}, {"descriptor", project(describe(value))}};
+            rows.push_back({{"route", r}, {"input", value}, {"native", described}, {"snapshot_hash", hash_params(params)}, {"final_hash", view.recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"upload_hash", view.upload_core_hash}});
+        }
+        return rows;
+    }
+
     bool cleared(const FjScannerLutDescriptor& result) {
         const FjScannerLutDescriptor zero{};
         return std::memcmp(&result, &zero, sizeof result) == 0;
@@ -258,12 +124,39 @@ namespace ScannerDescriptorTest {
             return FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_ILLUMINANT;
         throw std::runtime_error("unknown frozen scanner descriptor diagnostic");
     }
-    void values(const Json& rows) {
+    void values(const Json& rows, bool products) {
+        require(rows.size() == (products ? 4u : 520u), "scanner descriptor frozen membership");
+        constexpr std::array<const char*, 5> retiredNames{
+            "missing-1", "missing-2", "missing-3", "null-preempts-route-4", "null-preempts-route-255"};
+        std::array<std::array<bool, 5>, 4> retiredRows{};
+        std::size_t representableRows = 0;
+        std::size_t retiredPointerRows = 0;
         for (const auto& row : rows) {
             const auto& in = row.at("input");
-            require(native(in) == row.at("native"), row.value("id", "product").c_str());
-            if (in.at("missing").get<unsigned>() >= 1 && in.at("missing").get<unsigned>() <= 3)
+            if (in.at("missing").get<unsigned>() >= 1 && in.at("missing").get<unsigned>() <= 3) {
+                // These recorded null model-pointer outcomes have no raw ABI equivalent.
+                bool identified = false;
+                for (unsigned route = 0; route < 4; ++route) {
+                    for (std::size_t index = 0; index < retiredNames.size(); ++index) {
+                        if (row.at("id") != std::to_string(route) + "/" + retiredNames[index])
+                            continue;
+                        require(!products && !retiredRows[route][index], "each retired pointer row is named once");
+                        require(in.at("missing") == (index < 3 ? index + 1 : 1), "retired pointer marker is unchanged");
+                        const auto& expected = row.at("native");
+                        require(!expected.at("success").get<bool>() && !expected.at("exception").get<bool>() &&
+                                    expected.at("diagnostic") == (route % 2 == 0
+                                                                      ? "ResourceDescriptorMismatch phase=3A scanner direct inputs unavailable"
+                                                                      : "ResourceDescriptorMismatch phase=4C scanner print inputs unavailable"),
+                                "retained historical pointer-only disposition");
+                        retiredRows[route][index] = true;
+                        identified = true;
+                    }
+                }
+                require(identified, "only the twenty named model-pointer rows retire");
+                ++retiredPointerRows;
                 continue;
+            }
+            ++representableRows;
             for (auto call : {fj_legacy_scanner_lut_describe, fj_test_scanner_lut_describe}) {
                 const Borrowed borrowed(in);
                 FjScannerLutDescriptor out;
@@ -287,6 +180,9 @@ namespace ScannerDescriptorTest {
                 }
             }
         }
+        require(representableRows == (products ? 4u : 500u) &&
+                    retiredPointerRows == (products ? 0u : 20u),
+                "raw descriptor rows and retired model-pointer membership");
     }
     struct Rejection {
         unsigned category = FJ_STATUS_UNSUPPORTED_INPUT;
@@ -421,113 +317,7 @@ namespace ScannerDescriptorTest {
         }
     }
 
-    thread_local unsigned projectionFault = 0;
-    void corrupt(FjStatus& status, FjScannerLutDescriptor& result, FjScannerLutDescriptorFailure& failure, FjErrorBuffer& error) {
-        switch (std::exchange(projectionFault, 0u)) {
-            case 1:
-                status.api = 1;
-                break;
-            case 2:
-                status.native_code = 1;
-                break;
-            case 3:
-                status.category = 99;
-                break;
-            case 4:
-                failure.reason = 99;
-                break;
-            case 5:
-                failure.lane = 1;
-                break;
-            case 6:
-                ++result.route;
-                break;
-            case 7:
-                result.medium ^= 1;
-                break;
-            case 8:
-                ++result.capture_polarity;
-                break;
-            case 9:
-                ++result.resolution;
-                break;
-            case 10:
-                ++result.density_bounds_hash;
-                break;
-            case 11:
-                result.channel_density_hash = 0;
-                break;
-            case 12:
-                result.base_density_hash = 0;
-                break;
-            case 13:
-                result.viewing_illuminant_hash = 0;
-                break;
-            case 14:
-                result.observer_hash = 0;
-                break;
-            case 15:
-                result.hash = 0;
-                break;
-            case 16:
-                error.length = error.capacity;
-                break;
-            case 17:
-                error.length = 1;
-                break;
-            case 18:
-                failure.reason = 7;
-                status.category = FJ_STATUS_PREPARATION_FAILURE;
-                break;
-            case 19:
-                failure.reason = 6;
-                failure.lane = 6;
-                status.category = FJ_STATUS_PREPARATION_FAILURE;
-                break;
-            case 20:
-                error.data = nullptr;
-                break;
-            default:
-                break;
-        }
-    }
-    void adapters(const Json& rows) {
-        struct Reset {
-            ~Reset() {
-                JuicerScanner::Test::set_descriptor_projection(nullptr);
-            }
-        } reset;
-        JuicerScanner::Test::set_descriptor_projection(corrupt);
-        for (unsigned mode = 0; mode < 2; ++mode) {
-            const auto& in = rows.at(mode ? rows.size() / 4 : 0).at("input");
-            for (unsigned fault = 1; fault <= 20; ++fault) {
-                projectionFault = fault;
-                bool caught = false;
-                try {
-                    native(in);
-                } catch (const JuicerCuda::ExecutionFailure& failure) {
-                    caught = true;
-                    require(failure.failure.status.category == FJ_STATUS_PREPARATION_FAILURE && failure.failure.status.api == FJ_API_NONE && failure.failure.status.native_code == 0 && failure.failure.diagnostic == "scanner LUT descriptor projection invalid", "corrupt descriptor envelope typed failure");
-                }
-                require(caught && projectionFault == 0, "every corrupt descriptor projection rejected");
-                require(native(in) == rows.at(mode ? rows.size() / 4 : 0).at("native"), "projection recovers");
-            }
-            status(fj_test_scanner_lut_descriptor_fault(6));
-            bool caught = false;
-            try {
-                native(in);
-            } catch (const JuicerCuda::ExecutionFailure& failure) {
-                caught = true;
-                require(failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE && failure.failure.status.api == 0 && failure.failure.status.native_code == 0 && failure.failure.diagnostic == "scanner LUT descriptor preparation panicked", "native descriptor contained panic");
-            }
-            require(caught, "panic remains typed at native adapter");
-            for (unsigned fault = 1; fault <= 5; ++fault) {
-                status(fj_test_scanner_lut_descriptor_fault(fault));
-                const auto rejected = native(in);
-                require(!rejected.at("success").get<bool>() && rejected.at("descriptor") == project(Scanner::ScannerSpectralLutDescriptor{}), "native hash failures retain default carrier");
-                require(rejected.at("diagnostic") == (mode ? "ResourceDescriptorMismatch phase=4C scanner print descriptor hash" : "ResourceDescriptorMismatch phase=3A scanner descriptor hash invalid"), "native hash diagnostic");
-            }
-        }
+    void lifetime(const Json& rows) {
         const Borrowed borrowed(rows[0].at("input"));
         FjScannerLutDescriptor retained{};
         {
@@ -551,7 +341,6 @@ namespace ScannerDescriptorTest {
     void callers(const std::filesystem::path& resources) {
         JuicerCuda::Owner owner;
         owner.create(resources);
-        JuicerProcess::root().ensure_bootstrap();
         struct ClearReferenceFault {
             ~ClearReferenceFault() {
                 fj_test_exposure_clear_fault();
@@ -600,10 +389,9 @@ namespace ScannerDescriptorTest {
                     "actual Rust state construction recovers after both one-shot faults");
             FjPreparedStateView actual{};
             status(prepared->view(actual, error));
-            const auto expected = native(prepared_input(actual, "CIE1931_2deg_380_780_5nm"));
-            require(expected.at("success").get<bool>() &&
-                        project(actual.scanner_lut) == expected.at("descriptor"),
-                    "actual held-state scanner descriptor matches the independent native composer");
+            const auto described = describe(prepared_input(actual, "CIE1931_2deg_380_780_5nm"));
+            require(project(actual.scanner_lut) == project(described),
+                    "actual held-state scanner descriptor matches the raw descriptor consumer");
 
             const auto retainedDescriptor = project(actual.scanner_lut);
             const auto originalBoundsHash = actual.scanner_bounds.hash;
@@ -628,34 +416,6 @@ namespace ScannerDescriptorTest {
                     "held original Rust state keeps its descriptor readable after a distinct profile owner is constructed");
             changed.reset();
             prepared.reset();
-
-            // SF_TEMP_BRIDGE_NATIVE_PREPARED_WIRE: retain the pre-cutover
-            // native constructor/projection hook assertion until its I7/G2
-            // deletion gate. The Rust owner witness above is the accepted
-            // complete-state path; this block only preserves the old ordering
-            // comparison while that bridge remains in the target.
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            FilmReferenceTest::observeHold = true;
-            FilmReferenceTest::nextProjection = 1;
-            status(fj_test_scanner_lut_descriptor_fault(1));
-            require(!build_direct_render_state_product(controls, product, diagnostic), "actual direct state rejects descriptor before reference completion");
-            require(diagnostic == "ResourceDescriptorMismatch phase=3A scanner descriptor hash invalid", "direct state keeps early descriptor failure");
-            require(FilmReferenceTest::nextProjection == 1, "early descriptor failure precedes the armed later reference projection");
-            FilmReferenceTest::nextProjection = 0;
-            require(fj_test_film_development_live_owners() == 0, "early descriptor failure drops moved preparation hold");
-            require(build_direct_render_state_product(controls, product, diagnostic), diagnostic.c_str());
-            FilmReferenceTest::observeHold = false;
-            const auto before = product.recipe.densityBounds.hash;
-            controls.filmProfileKey = r == 0 ? "kodak_portra_800" : "fujifilm_velvia_100";
-            FocusedRenderStateBuildProduct comparisonChanged;
-            require(build_direct_render_state_product(controls, comparisonChanged, diagnostic), diagnostic.c_str());
-            require(before != comparisonChanged.recipe.densityBounds.hash, "actual selected profile changes bound dependency");
-            Scanner::ScannerSpectralLutDescriptor first, second;
-            const auto& a = product.recipe;
-            const auto& b = comparisonChanged.recipe;
-            require(Scanner::build_direct_scanner_spectral_lut_descriptor({&a.profileRoute, &a.densityBounds, &a.scannerOutput}, first, diagnostic) && Scanner::build_direct_scanner_spectral_lut_descriptor({&b.profileRoute, &b.densityBounds, &b.scannerOutput}, second, diagnostic), "actual dependency descriptors");
-            require(first.densityBoundsHash != second.densityBoundsHash && first.hash != second.hash, "actual caller propagates upstream bound identity");
         }
     }
 
@@ -667,11 +427,19 @@ namespace ScannerDescriptorTest {
                     return row.at("id") == prefix + name;
                 });
             };
-            const auto baseline = native(find("normal").at("input"));
-            const auto changed = native(find("admitted-token-key-change").at("input"));
-            require(baseline.at("success").get<bool>() && changed == baseline, "admitted nonzero print token/key changes preserve complete identity");
-            const auto rejected = native(find("empty-profile_viewing_illuminant").at("input"));
-            require(!rejected.at("success").get<bool>() && rejected.at("diagnostic") == "ResourceDescriptorMismatch phase=4C scanner print recipe" && rejected.at("descriptor") == project(Scanner::ScannerSpectralLutDescriptor{}), "public viewing-label mismatch replacement rejects with native defaults");
+            const auto baseline = describe(find("normal").at("input"));
+            const auto changed = describe(find("admitted-token-key-change").at("input"));
+            require(project(changed) == project(baseline), "admitted nonzero print token/key changes preserve complete raw identity");
+            const Borrowed rejected(find("empty-profile_viewing_illuminant").at("input"));
+            FjScannerLutDescriptor result;
+            std::memset(&result, 0xa5, sizeof result);
+            FjScannerLutDescriptorFailure failure{};
+            std::array<char, 256> message{};
+            FjErrorBuffer error{message.data(), message.size(), 0};
+            status(fj_test_scanner_lut_describe(&rejected.wire, &result, &failure, &error), FJ_STATUS_PREPARATION_FAILURE);
+            require(failure.reason == FJ_SCANNER_LUT_DESCRIPTOR_PRINT_RECIPE && failure.lane == 0 && cleared(result) &&
+                        std::string(message.data(), error.length) == "ResourceDescriptorMismatch phase=4C scanner print recipe",
+                    "raw viewing-label mismatch retains typed failure, exact diagnostic and zero output");
         }
     }
 } // namespace ScannerDescriptorTest

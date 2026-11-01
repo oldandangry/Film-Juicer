@@ -313,7 +313,6 @@ namespace {
                 throw std::runtime_error("unknown color operation");
         }
     }
-    thread_local unsigned constructionFault = 0;
     struct FaultScope {
         FaultScope() = default;
         FaultScope(const FaultScope&) = delete;
@@ -325,7 +324,6 @@ namespace {
                 std::abort();
             }
             fj_test_profile_fault(0);
-            constructionFault = 0;
             set_pending_capture_test_hook(nullptr, nullptr);
         }
     };
@@ -736,34 +734,9 @@ namespace {
         Json color_result(const FjScannerColor& color) {
             return {{"cat02", bits(color.cat02, 9)}, {"xyz_to_rgb", bits(color.xyz_to_rgb, 9)}, {"illuminant_xyz", bits(color.illuminant_xyz, 3)}, {"encoding", {color.output_space, (color.flags & 1u) != 0, (color.flags & 2u) != 0}}, {"gamut_recipe_hash", color.active_gamut_recipe_hash}, {"hash", color.hash}};
         }
-        // SF_TEMP_BRIDGE_NATIVE_COLOR_TABLE_READER: retained native comparison
-        // templates own this overload until their I7 deletion gate.
-        [[maybe_unused]] Json tables_result(const Spectral::SpectralTables& tables) {
-            return {{"lambda", bits(tables.lambda)}, {"K", tables.K}, {"delta_lambda", bits(std::array{tables.deltaLambda})}, {"inv_yn", bits(std::array{tables.invYn})}, {"white_xyz", bits(tables.whiteXYZ)}, {"ref_illum_white_xyz", bits(tables.refIllumWhiteXYZ)}, {"ax", bits(tables.Ax)}, {"ay", bits(tables.Ay)}, {"az", bits(tables.Az)}, {"xbar", bits(tables.Xbar)}, {"ybar", bits(tables.Ybar)}, {"zbar", bits(tables.Zbar)}, {"illum", bits(tables.illum)}, {"eps_c", bits(tables.epsC)}, {"eps_m", bits(tables.epsM)}, {"eps_y", bits(tables.epsY)}, {"base_density_min", bits(tables.baseDensityMin)}, {"base_density_mid", bits(tables.baseDensityMid)}, {"has_baseline", tables.hasBaseline}, {"baseline_mix", bits(std::array{tables.densityBaselineMixReference})}, {"illuminant_hash", tables.illuminantHash}, {"tables_hash", tables.tablesHash}};
-        }
         Json tables_result(const FjPreparedSpectralView& tables) {
             const std::array<float, 1> zeros{};
             return {{"lambda", bits(tables.lambda_nm.data, tables.lambda_nm.count)}, {"K", tables.lambda_nm.count}, {"delta_lambda", bits(std::array{5.0f})}, {"inv_yn", bits(std::array{tables.inv_yn})}, {"white_xyz", bits(tables.white_xyz, 3)}, {"ref_illum_white_xyz", bits(tables.white_xyz, 3)}, {"ax", bits(tables.weighted_xyz[0].data, tables.weighted_xyz[0].count)}, {"ay", bits(tables.weighted_xyz[1].data, tables.weighted_xyz[1].count)}, {"az", bits(tables.weighted_xyz[2].data, tables.weighted_xyz[2].count)}, {"xbar", bits(tables.observer_xyz[0].data, tables.observer_xyz[0].count)}, {"ybar", bits(tables.observer_xyz[1].data, tables.observer_xyz[1].count)}, {"zbar", bits(tables.observer_xyz[2].data, tables.observer_xyz[2].count)}, {"illum", bits(tables.illuminant.data, tables.illuminant.count)}, {"eps_c", bits(tables.dyes_cmy[0].data, tables.dyes_cmy[0].count)}, {"eps_m", bits(tables.dyes_cmy[1].data, tables.dyes_cmy[1].count)}, {"eps_y", bits(tables.dyes_cmy[2].data, tables.dyes_cmy[2].count)}, {"base_density_min", bits(tables.baseline_min.data, tables.baseline_min.count)}, {"base_density_mid", bits(tables.baseline_mid.data, tables.baseline_mid.count)}, {"has_baseline", tables.has_baseline != 0}, {"baseline_mix", bits(zeros)}, {"illuminant_hash", tables.illuminant_hash}, {"tables_hash", tables.hash}};
-        }
-        // Native producer comparison retained until the matching I7 gate.
-        template <typename State>
-        Json scanner_descriptor(const State& product) {
-            Scanner::ScannerSpectralLutDescriptor out;
-            std::string diagnostic;
-            const auto& recipe = product.recipe;
-            const bool ok = Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ? Scanner::build_print_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, out, diagnostic) : Scanner::build_direct_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, out, diagnostic);
-            require(ok, diagnostic);
-            return {{"route", static_cast<int>(out.route)}, {"medium", static_cast<int>(out.medium)}, {"polarity", static_cast<int>(out.polarity)}, {"density_bounds_hash", out.densityBoundsHash}, {"channel_density_hash", out.channelDensityHash}, {"base_density_hash", out.baseDensityHash}, {"illuminant_hash", out.scanIlluminantHash}, {"observer_hash", out.observerHash}, {"resolution", out.lutResolution}, {"hash", out.hash}};
-        }
-        // Native producer comparison retained until the matching I7 gate.
-        template <typename State>
-        Json complete_result(const State& product) {
-            const auto& recipe = product.recipe;
-            const auto& raw = recipe.filmRaw;
-            const auto& reference = recipe.scannerOutput.syntheticFilmReference;
-            const auto& balance = recipe.print.balance;
-            const auto& config = product.payload.filmRawConfig;
-            return {{"input_rgb_to_xyz", bits(raw.inputRgbToXyz)}, {"input_adapt", bits(raw.inputXyzAdapt)}, {"xyz_to_linear_srgb", bits(raw.xyzToLinearSrgb)}, {"source_white", bits(raw.inputNominalWhiteXYZ)}, {"projection_white", bits(raw.projectionWhiteXYZ)}, {"config_rgb_to_xyz", bits(config.inputRGBToXYZ.m)}, {"config_adapt", bits(config.inputXYZAdapt.m)}, {"raw_midgray", bits(config.rawMidgray)}, {"midgray_dwg", bits(config.midgrayDWG)}, {"midgray_scale_green", bits(std::array{config.midgrayScale, config.rawMidgrayGreen})}, {"config_whites", {bits(config.inputWhiteXYZ), bits(config.workingWhiteXYZ), bits(config.refIllumWhiteXYZ)}}, {"config_flags", {static_cast<int>(config.inputColorSpace), config.applyCctfDecoding, static_cast<int>(config.spectralUpsamplingMode), config.applyInputChromaticAdapt, config.hasRefIllumWhite, config.valid}}, {"spd_s_inv", bits(product.payload.spdSInv)}, {"baseline_raw", bits(reference.baselineRawRgb)}, {"compensated_raw", bits(reference.compensatedRawRgb)}, {"baseline_density", bits(reference.baselineDensityCmy)}, {"compensated_density", bits(reference.compensatedDensityCmy)}, {"print_baseline_raw", bits(balance.baselinePrintRawRgb)}, {"print_compensated_raw", bits(balance.compensatedPrintRawRgb)}, {"print_factors", bits(std::array{balance.factorMidgray, balance.factorMidgrayComp, balance.normalizer})}, {"hashes", {raw.hash, raw.tcLutHash, reference.hash, balance.hash, recipe.print.hash, recipe.scannerOutput.hash, recipe.scannerOutput.outputGamut.hash, recipe.hash, product.payload.uploadCoreHash, product.payload.scannerHash}}, {"scanner_color", color_result(product.payload.scannerColor)}, {"scanner_tables", tables_result(product.payload.scannerTables)}, {"scanner_descriptor", scanner_descriptor(product)}, {"gamut_entry", bits(recipe.scannerOutput.outputGamut.transform.nativeRgbToD65Xyz)}, {"gamut_exit", bits(recipe.scannerOutput.outputGamut.transform.d65XyzToNativeRgb)}};
         }
         Json scanner_descriptor(const FjScannerLutDescriptor& descriptor) {
             return {{"route", static_cast<int>(descriptor.route)}, {"medium", static_cast<int>(descriptor.medium)}, {"polarity", static_cast<int>(descriptor.capture_polarity)}, {"density_bounds_hash", descriptor.density_bounds_hash}, {"channel_density_hash", descriptor.channel_density_hash}, {"base_density_hash", descriptor.base_density_hash}, {"illuminant_hash", descriptor.viewing_illuminant_hash}, {"observer_hash", descriptor.observer_hash}, {"resolution", descriptor.resolution}, {"hash", descriptor.hash}};
@@ -1092,26 +1065,6 @@ namespace {
         std::uintptr_t boundaryEntryIdentity = 0;
         const float* boundaryBacking = nullptr;
     };
-    template <typename State>
-    RetainedValues retain_values(const State& state) {
-        RetainedValues out;
-        out.complete = Cat02Fixtures::complete_result(state);
-        out.exposureTables = Cat02Fixtures::tables_result(state.payload.exposureTables);
-        if (state.payload.filmTcLut) {
-            out.tcRgba = retained_bits(state.payload.filmTcLut->samples());
-        }
-        if (state.payload.printMainIlluminant) {
-            out.printIlluminant = retained_bits(*state.payload.printMainIlluminant);
-        }
-        require(bool(state.payload.outputBoundaryTable), "completed state boundary owner");
-        const auto& boundary = *state.payload.outputBoundaryTable;
-        require(boundary.entryIdentity != 0 && boundary.cmax.size() == Gamut::kOutputBoundaryValueCount, "retained completed boundary owner and extent");
-        out.boundary = retained_bits(boundary.cmax);
-        out.boundaryHashes = {boundary.transformHash, boundary.contractHash, boundary.hash};
-        out.boundaryEntryIdentity = boundary.entryIdentity;
-        out.boundaryBacking = boundary.cmax.data();
-        return out;
-    }
     RetainedValues retain_values(const PreparedState& state) {
         std::array<char, 2048> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
@@ -1142,19 +1095,6 @@ namespace {
         out.boundaryEntryIdentity = boundary.entry_identity;
         out.boundaryBacking = boundary.cmax.data;
         return out;
-    }
-    template <typename State>
-    void require_retained_values(const State& state, const RetainedValues& expected) {
-        const auto complete = Cat02Fixtures::complete_result(state);
-        const auto exposureTables = Cat02Fixtures::tables_result(state.payload.exposureTables);
-        const auto& payload = state.payload;
-        const bool tcExact = payload.filmTcLut ? same_retained_bits(payload.filmTcLut->samples(), expected.tcRgba) : expected.tcRgba.empty();
-        const bool printExact = payload.printMainIlluminant ? same_retained_bits(*payload.printMainIlluminant, expected.printIlluminant) : expected.printIlluminant.empty();
-        require(bool(payload.outputBoundaryTable), "completed state boundary owner");
-        const auto& boundary = *payload.outputBoundaryTable;
-        require(boundary.entryIdentity != 0 && boundary.cmax.size() == Gamut::kOutputBoundaryValueCount, "retained completed boundary owner and extent");
-        const std::array<std::uint64_t, 3> boundaryHashes{boundary.transformHash, boundary.contractHash, boundary.hash};
-        require(complete == expected.complete && exposureTables == expected.exposureTables && tcExact && printExact && same_retained_bits(boundary.cmax, expected.boundary) && boundaryHashes == expected.boundaryHashes && boundary.entryIdentity == expected.boundaryEntryIdentity && boundary.cmax.data() == expected.boundaryBacking, "retained complete route/color/tables/TC/boundary values remain exact");
     }
     void require_retained_values(const PreparedState& state, const RetainedValues& expected) {
         const auto actual = retain_values(state);
@@ -1272,7 +1212,7 @@ namespace {
         const auto& tables = view.exposure_tables;
         const std::array<float, 9> sInv{view.s_inverse[0], view.s_inverse[1], view.s_inverse[2], view.s_inverse[3], view.s_inverse[4], view.s_inverse[5], view.s_inverse[6], view.s_inverse[7], view.s_inverse[8]};
         require(Cat02Fixtures::tables_result(tables) == fixture.at("helper_tables") && bits(sInv) == fixture.at("helper_s_inv"), "independent canonical helper tables/S inverse");
-        require(Json{{"K", Spectral::gShape.K}, {"dwg_white", bits(Spectral::gDWG_WhitePoint_XYZ)}} == fixture.at("helper_hanatos_axes"), "independent retained Hanatos helper axes/white");
+        require(Json{{"K", Spectral::kReferenceShape.K}, {"dwg_white", bits(Spectral::gDWG_WhitePoint_XYZ)}} == fixture.at("helper_hanatos_axes"), "independent retained Hanatos helper axes/white");
         const auto cases = Cat02Fixtures::helper_inputs();
         require(cases.size() == fixture.at("helpers").size(), "retained helper case membership");
         for (std::size_t i = 0; i < cases.size(); ++i) {
@@ -1711,29 +1651,6 @@ namespace {
             }
             return result;
         }
-        // Keep native conversion fields available to the named I7 comparison.
-        template <typename State>
-        Json publication_complete_result(const State& product) {
-            auto result = Cat02Fixtures::complete_result(product);
-            const auto& raw = product.recipe.filmRaw;
-            result["config_xyz_to_linear_srgb"] = bits(product.payload.filmRawConfig.xyzToLinearSrgb.m);
-            result["recipe_mallett_scale"] = bits(std::array{raw.mallettGreenMidgrayScale});
-            result["meter_scale"] = bits(std::array{product.recipe.scannerOutput.syntheticFilmReference.baselineMeterScale});
-            result["raw_flags"] = {raw.inputColorSpace, raw.inputCctfDecoding, static_cast<int>(raw.rgbToRawMethod), raw.autoExposureEnabled, raw.inputCompressionActive};
-            result["sensitivity_hash"] = raw.finalSensitivityHash;
-            for (const auto& sample : raw.finalSensitivity) {
-                result["sensitivity"].push_back(bits(sample));
-            }
-            result["tc_source_hash"] = raw.tcSourceAssetHash;
-            result["tc_lut_size"] = product.payload.filmTcLut ? product.payload.filmTcLut->samples().size() : 0;
-            if (product.payload.filmTcLut) {
-                const auto& data = product.payload.filmTcLut->samples();
-                for (std::size_t index : std::array<std::size_t, 5>{0, 768, 73728, 100000, 147452}) {
-                    result["tc_samples"].push_back({{"index", index}, {"rgba", bits(std::array{data[index], data[index + 1], data[index + 2], data[index + 3]})}});
-                }
-            }
-            return result;
-        }
         Json publication_complete_result(const PreparedState& product) {
             const auto view = prepared_view(product);
             auto result = complete_result(product);
@@ -1852,10 +1769,6 @@ namespace {
         for (std::uint32_t operation = 5; operation <= 10; ++operation) {
             FaultScope cleanup;
             expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
-            Spectral::FilmRawConfig unready;
-            require(!unready.valid, "default carrier remains unready");
-            const auto identity = Spectral::make_identity_mat3();
-            require(bits(unready.inputRGBToXYZ.m) == bits(identity.m) && bits(unready.inputXYZAdapt.m) == bits(identity.m) && bits(unready.xyzToLinearSrgb.m) == bits(identity.m), "unready carrier has only identity matrices and performs no derivation");
             std::array<float, 3> decoded{};
             const std::array<float, 3> rgb{.184f, -0.0f, -1.0f};
             expect_status(fj_test_decode_input(3, 1, rgb.data(), decoded.data()), FJ_STATUS_SUCCESS);
@@ -1902,35 +1815,6 @@ namespace {
         std::array<std::uint64_t, 13> hashes{};
         bool operator==(const InputValues&) const = default;
     };
-    // Native producer comparison retained until the matching I7 gate.
-    template <typename State>
-    InputValues input_values(const State& state) {
-        InputValues out;
-        const auto& raw = state.recipe.filmRaw;
-        const auto& config = state.payload.filmRawConfig;
-        const auto append = [&](const auto& samples) {
-            for (float value : samples)
-                out.bits.push_back(std::bit_cast<std::uint32_t>(value));
-        };
-        append(raw.inputRgbToXyz);
-        append(raw.inputXyzAdapt);
-        append(raw.xyzToLinearSrgb);
-        append(raw.inputNominalWhiteXYZ);
-        append(raw.projectionWhiteXYZ);
-        append(config.inputRGBToXYZ.m);
-        append(config.inputXYZAdapt.m);
-        append(config.xyzToLinearSrgb.m);
-        append(config.rawMidgray);
-        append(config.midgrayDWG);
-        append(config.inputWhiteXYZ);
-        append(config.workingWhiteXYZ);
-        append(config.refIllumWhiteXYZ);
-        append(std::array{config.midgrayScale, config.rawMidgrayGreen, raw.mallettGreenMidgrayScale, state.recipe.scannerOutput.syntheticFilmReference.baselineMeterScale});
-        for (auto value : {static_cast<std::uint32_t>(config.inputColorSpace), std::uint32_t(config.applyCctfDecoding), static_cast<std::uint32_t>(config.spectralUpsamplingMode), std::uint32_t(config.applyInputChromaticAdapt), std::uint32_t(config.hasRefIllumWhite), std::uint32_t(config.valid), std::uint32_t(raw.inputColorSpace), std::uint32_t(raw.inputCctfDecoding), static_cast<std::uint32_t>(raw.rgbToRawMethod), std::uint32_t(raw.autoExposureEnabled), std::uint32_t(raw.inputCompressionActive)})
-            out.bits.push_back(value);
-        out.hashes = {raw.hash, raw.tcLutHash, state.recipe.scannerOutput.syntheticFilmReference.hash, state.recipe.print.balance.hash, state.recipe.print.hash, state.recipe.scannerOutput.hash, state.recipe.scannerOutput.outputGamut.hash, state.recipe.hash, state.payload.uploadCoreHash, state.payload.scannerHash, raw.finalSensitivityHash, raw.tcSourceAssetHash, state.payload.filmTcLut ? state.payload.filmTcLut->samples().size() : 0};
-        return out;
-    }
     InputValues input_values(const PreparedState& state) {
         const auto view = prepared_view(state);
         const auto& raw = view.film_exposure;
@@ -1975,7 +1859,7 @@ namespace {
         return input_values(prepared_state(result));
     }
     void input_admission_tests() {
-        std::size_t failures = 0, heldSupersessions = 0, counts = 0, nativeOnlyFailures = 0;
+        std::size_t failures = 0, heldSupersessions = 0, counts = 0;
         std::size_t skippedOperation10Supersessions = 0;
         for (int route = 0; route < 4; ++route) {
             for (int method = 0; method < 3; ++method) {
@@ -1995,63 +1879,15 @@ namespace {
                         const auto calls = callCounts[operation - 5];
                         {
                             FaultScope cleanup;
-                            expect_status(arm_color_fault(operation, calls + 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
-                            // SF_TEMP_BRIDGE_NATIVE_INPUT_OPERATION_COUNTS: retain
-                            // the original native visit counts until I7.
-                            FocusedRenderStateBuildProduct SF_TEMP_BRIDGE_nativeProduct;
-                            std::string SF_TEMP_BRIDGE_nativeDiagnostic;
-                            require(route % 2 == 1
-                                        ? build_print_render_state_product(controls, SF_TEMP_BRIDGE_nativeProduct, SF_TEMP_BRIDGE_nativeDiagnostic)
-                                        : build_direct_render_state_product(controls, SF_TEMP_BRIDGE_nativeProduct, SF_TEMP_BRIDGE_nativeDiagnostic),
-                                    SF_TEMP_BRIDGE_nativeDiagnostic);
-                            expect_status(raw_call(operation), FJ_STATUS_INTERNAL_FAILURE);
-                            ++counts;
-                        }
-                        {
-                            FaultScope cleanup;
                             // Complete preparation has no native projection-wrapper
                             // visit. Its other checked input operations are shared.
                             const auto heldCalls = operation == FJ_TEST_PROJECT_LINEAR_RGB_TO_XYZ ? 0u : calls;
                             expect_status(arm_color_fault(operation, heldCalls + 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
                             (void)Cat02Fixtures::prepare(controls);
                             expect_status(raw_call(operation), FJ_STATUS_INTERNAL_FAILURE);
+                            ++counts;
                         }
                         if (operation == FJ_TEST_PROJECT_LINEAR_RGB_TO_XYZ) {
-                            // SF_TEMP_BRIDGE_NATIVE_INPUT_OPERATION10_FAILURE:
-                            // this native conversion has no held-state visit.
-                            // Keep its actual producer failure/retry and retained
-                            // values separate until the matching I7 gate.
-                            FocusedRenderStateBuildProduct comparison;
-                            std::string diagnostic;
-                            const auto buildComparison = [&](FocusedRenderStateBuildProduct& out) {
-                                return route % 2 == 1
-                                           ? build_print_render_state_product(controls, out, diagnostic)
-                                           : build_direct_render_state_product(controls, out, diagnostic);
-                            };
-                            require(buildComparison(comparison), diagnostic);
-                            const auto retained = input_values(comparison);
-                            for (std::uint32_t index = 1; index <= calls; ++index) {
-                                for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-                                    FaultScope cleanup;
-                                    expect_status(arm_color_fault(operation, index, fault), FJ_STATUS_SUCCESS);
-                                    bool rejected = false;
-                                    try {
-                                        FocusedRenderStateBuildProduct failedComparison;
-                                        (void)buildComparison(failedComparison);
-                                    } catch (const JuicerCuda::ExecutionFailure& error) {
-                                        expect_status(error.failure.status, fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
-                                        require(!error.deferredDirError && error.failure.diagnostic.find("Linear RGB to XYZ projection") != std::string::npos,
-                                                "native operation10 keeps its typed conversion diagnostic");
-                                        rejected = true;
-                                    }
-                                    require(rejected && input_values(comparison) == retained, "native operation10 failure preserves the completed comparison values");
-                                    for (std::uint32_t call = 0; call < index; ++call)
-                                        expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
-                                    FocusedRenderStateBuildProduct retry;
-                                    require(buildComparison(retry) && input_values(retry) == retained, "native operation10 one-shot retry keeps exact values");
-                                    ++nativeOnlyFailures;
-                                }
-                            }
                             if (calls == 1) {
                                 for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
                                     for (int mode = 0; mode < 3; ++mode) {
@@ -2223,11 +2059,10 @@ namespace {
                 }
             }
         }
-        require(counts == 144 && failures == 176 && nativeOnlyFailures == 32 &&
+        require(counts == 144 && failures == 176 &&
                     heldSupersessions == 528 && skippedOperation10Supersessions == 96 &&
                     heldSupersessions + skippedOperation10Supersessions == 624,
-                "held failing-leaf, native-only, and distinct held operation10 supersession memberships");
-        std::printf("Native operation10: %zu separate conversion failure/retention/retry witnesses passed\n", nativeOnlyFailures);
+                "held failing-leaf and distinct held operation10 supersession memberships");
         std::printf("Input-color admission: %zu exact operation counts; %zu early/late failure/recovery, %zu held failing-leaf and %zu held zero-visit operation10 supersessions passed\n", counts, failures, heldSupersessions, skippedOperation10Supersessions);
     }
 
@@ -2562,27 +2397,6 @@ namespace {
 } // namespace
 
 namespace JuicerAssets::ProfileTest {
-    void film_view(FjFilmProfileView& view) {
-        if (constructionFault == 5) {
-            constructionFault = 0;
-            --view.tables.density_curves_cmy.count;
-        }
-    }
-    void print_view(FjPrintProfileView& view) {
-        (void)view;
-    }
-    void after_tables() {
-        const unsigned fault = std::exchange(constructionFault, 0);
-        if (fault == 3) {
-            throw std::runtime_error("standard construction control");
-        }
-        if (fault != 0) {
-            const auto category = fault == 1 ? FJ_STATUS_CANCELLED : fault == 4 ? FJ_STATUS_UNSUPPORTED_INPUT
-                                                                                : FJ_STATUS_INTERNAL_FAILURE;
-            throw JuicerCuda::ExecutionFailure{{{category, FJ_API_NONE, 0}, "construction rethrow control"}, fault == 2 || fault == 4};
-        }
-    }
-    void before_publication() {}
     void before_catalog_publication() {}
 } // namespace JuicerAssets::ProfileTest
 
@@ -2596,7 +2410,6 @@ int main(int argc, char** argv) {
             return 0;
         }
         owner.create(argv[1]);
-        JuicerProcess::root().ensure_bootstrap();
         const auto fixture = PrintIlluminantFixtures::apply(argv[2], load_exposure_qualified_fixture(argv[2]));
         if (group == "leaf") {
             leaf_tests(fixture);

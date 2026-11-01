@@ -268,7 +268,6 @@ extern "C" cudaError_t juicer_cuda_print_pipeline(
     void* cudaStreamOpaque);
 
 #include "Cuda/JuicerCudaExecutor.h"
-#include "FocusedRenderPayload.h"
 #include "Logging.h"
 #include "Hash.h"
 #include "SpectralData.h"
@@ -628,15 +627,6 @@ namespace {
         return true;
     }
 
-    Spektrafilm::DirFrameExtent spatial_dir_extent_from_rect(const JuicerCuda::FrameRect& rect) {
-        Spektrafilm::DirFrameExtent extent{};
-        extent.x = rect.x1;
-        extent.y = rect.y1;
-        extent.width = rect.x2 - rect.x1;
-        extent.height = rect.y2 - rect.y1;
-        return extent;
-    }
-
     const Spektrafilm::DirGaussianComponentPlan& spatial_dir_component_or_empty(
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         int index) {
@@ -705,87 +695,6 @@ namespace {
         payload.spatialDir = JuicerCuda::SpatialDirPayload{};
     }
 
-    void trace_spatial_dir_descriptor_build(
-        const char* route,
-        const Spektrafilm::SpatialDirDescriptor& descriptor) {
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (!JTRACE_ENABLED(1)) {
-            return;
-        }
-        const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.planeRoles;
-        const Spektrafilm::DirScratchPlaneRoles& targetRoles = descriptor.targetPlaneRoles;
-        std::string msg = "event=spatial_dir_descriptor_build route=";
-        msg += nonempty_cstr_or(route, "unknown");
-        msg += " descriptor_hash=";
-        msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
-        msg += " dir_recipe_hash=";
-        msg += std::to_string(static_cast<unsigned long long>(descriptor.dirRecipeHash));
-        msg += " support=";
-        msg += Spektrafilm::to_cstr(descriptor.support);
-        msg += " scratch_tier=";
-        msg += Spektrafilm::to_cstr(descriptor.scratchTier);
-        msg += " target_scratch_tier=";
-        msg += Spektrafilm::to_cstr(descriptor.targetScratchTier);
-        msg += " component_count=";
-        msg += std::to_string(descriptor.filterPlan.componentCount);
-        msg += " render_extent=";
-        msg += std::to_string(descriptor.renderExtent.x) + "," +
-               std::to_string(descriptor.renderExtent.y) + "," +
-               std::to_string(descriptor.renderExtent.width) + "x" +
-               std::to_string(descriptor.renderExtent.height);
-        msg += " full_frame_extent=";
-        msg += std::to_string(descriptor.fullFrameExtent.x) + "," +
-               std::to_string(descriptor.fullFrameExtent.y) + "," +
-               std::to_string(descriptor.fullFrameExtent.width) + "x" +
-               std::to_string(descriptor.fullFrameExtent.height);
-        msg += " filter_domain_extent=";
-        msg += std::to_string(descriptor.filterDomainExtent.x) + "," +
-               std::to_string(descriptor.filterDomainExtent.y) + "," +
-               std::to_string(descriptor.filterDomainExtent.width) + "x" +
-               std::to_string(descriptor.filterDomainExtent.height);
-        msg += " raw_correction_planes=";
-        msg += std::to_string(roles.rawCorrectionPlanes);
-        msg += " filtered_correction_planes=";
-        msg += std::to_string(roles.filteredCorrectionPlanes);
-        msg += " filter_temp_planes=";
-        msg += std::to_string(roles.filterTempPlanes);
-        msg += " cached_log_raw_planes=";
-        msg += std::to_string(roles.cachedLogRawPlanes);
-        msg += " target_raw_correction_planes=";
-        msg += std::to_string(targetRoles.rawCorrectionPlanes);
-        msg += " target_filtered_correction_planes=";
-        msg += std::to_string(targetRoles.filteredCorrectionPlanes);
-        msg += " target_filter_temp_planes=";
-        msg += std::to_string(targetRoles.filterTempPlanes);
-        msg += " target_cached_log_raw_planes=";
-        msg += std::to_string(targetRoles.cachedLogRawPlanes);
-        for (int component = 0; component < Spektrafilm::DirFilterPlan::kMaxComponents; ++component) {
-            const Spektrafilm::DirGaussianComponentPlan& plan =
-                spatial_dir_component_or_empty(descriptor, component);
-            msg += " component";
-            msg += std::to_string(component);
-            msg += "_sigma_px=";
-            msg += std::to_string(plan.sigmaPixels);
-            msg += " component";
-            msg += std::to_string(component);
-            msg += "_weight=";
-            msg += std::to_string(plan.weight);
-            msg += " component";
-            msg += std::to_string(component);
-            msg += "_reference_operator=";
-            msg += Spektrafilm::to_cstr(plan.referenceOperator);
-            msg += " component";
-            msg += std::to_string(component);
-            msg += "_target_scratch_tier=";
-            msg += Spektrafilm::to_cstr(plan.targetScratchTier);
-        }
-        JTRACE("DIR_DESCRIPTOR", msg);
-#else
-        (void)route;
-        (void)descriptor;
-#endif
-    }
-
     struct CudaFailureTrace {
         const char* prefix = "CUDA operation failed";
         const char* detail = nullptr;
@@ -815,86 +724,6 @@ namespace {
         std::memcpy(dst, src, 9u * sizeof(float));
     }
 
-    // NOLINTBEGIN(bugprone-easily-swappable-parameters) Both route call sites share this fixed descriptor context order.
-    bool build_visual_grain_descriptor_for_frame(
-        const Spektrafilm::VisualGrainRecipe& recipe,
-        const Spektrafilm::FilmDevelopRecipe& filmDevelop,
-        Spektrafilm::ProfilePolarity capturePolarity,
-        const Spektrafilm::VisualGrainFrameExtent& renderExtent,
-        const Spektrafilm::VisualGrainFrameExtent& fullFrameExtent,
-        float pixelSizeUm,
-        double frameTime,
-        double frameRate,
-        std::uint64_t sessionSeed,
-        std::uint64_t clipToken,
-        std::optional<Spektrafilm::VisualGrainFrameDescriptor>& out,
-        std::string& diagnostic) {
-        out.reset();
-        diagnostic.clear();
-        if (!recipe.active) {
-            return true;
-        }
-        Spektrafilm::VisualGrainFrameDescriptorInput input{};
-        input.recipe = &recipe;
-        input.filmDevelop = &filmDevelop;
-        input.capturePolarity = capturePolarity;
-        input.renderExtent = renderExtent;
-        input.fullFrameExtent = fullFrameExtent;
-        input.pixelSizeUm = pixelSizeUm;
-        input.frameTime = frameTime;
-        input.frameRate = frameRate;
-        input.sessionSeed = sessionSeed;
-        input.clipToken = clipToken;
-        Spektrafilm::VisualGrainFrameDescriptor descriptor{};
-        if (!Spektrafilm::build_visual_grain_frame_descriptor(
-                input,
-                descriptor,
-                diagnostic)) {
-            return false;
-        }
-        out = descriptor;
-        return true;
-    }
-
-    bool build_film_juicer_effects_descriptor_for_frame(
-        const Spektrafilm::FilmJuicerEffectsRecipe& recipe,
-        const Spektrafilm::FilmJuicerEffectsFrameExtent& renderExtent,
-        const Spektrafilm::FilmJuicerEffectsFrameExtent& fullFrameExtent,
-        const Spektrafilm::FilmJuicerEffectsGeometry& geometry,
-        float filmFormatLongEdgeMm,
-        float pixelSizeUm,
-        double frameTime,
-        double frameRate,
-        std::uint64_t sessionSeed,
-        std::uint64_t clipToken,
-        std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& out,
-        std::string& diagnostic) {
-        out.reset();
-        diagnostic.clear();
-        if (!recipe.active) {
-            return true;
-        }
-        Spektrafilm::FilmJuicerEffectsFrameDescriptor descriptor{};
-        if (!Spektrafilm::build_film_juicer_effects_frame_descriptor(
-                {&recipe,
-                 renderExtent,
-                 fullFrameExtent,
-                 pixelSizeUm,
-                 frameTime,
-                 frameRate,
-                 sessionSeed,
-                 clipToken,
-                 geometry,
-                 filmFormatLongEdgeMm},
-                descriptor,
-                diagnostic)) {
-            return false;
-        }
-        out = descriptor;
-        return true;
-    }
-
-    // NOLINTEND(bugprone-easily-swappable-parameters)
     bool visual_grain_full_frame_preflight(
         const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& descriptor,
         const JuicerCuda::FrameRect& renderWindow,
@@ -1055,27 +884,23 @@ namespace {
         std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effects;
     };
 
-    struct PrintCorrectionSource {
-        const RenderRecipe& recipe;
-        const FocusedRenderPayload& payload;
-    };
-
     struct ScheduleInput {
         const JuicerCuda::ExecutionFrame& frame;
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;
         JuicerProcess::Root::PreparationIdentity identity;
         const RouteDescriptors& descriptors;
         JuicerCuda::FilmPayloadInput film;
-        float filmRouteCorrectionScale;
-        const VisualGrainRecipe& grain;
+        float filmRouteCorrectionScale{};
+        const JuicerCuda::VisualGrainPayloadInput& grain;
         const OutputGamutRecipe& outputGamut;
-        std::uint64_t scannerBoundsHash;
-        std::uint64_t recipeHash;
-        bool cameraAutoEnabled;
-        Spektrafilm::AutoExposureMethod meteringMethod;
-        std::variant<const JuicerProcess::Root::CudaFramePreparationRequest*, const JuicerProcess::Root::PreparedFrameInput*> preparation;
-        std::variant<Scanner::ScannerColorCorrectionDescriptor, PrintCorrectionSource> correction;
-        PrintExposureRecipe printExposure{};
+        std::uint64_t scannerBoundsHash{};
+        std::uint64_t recipeHash{};
+        bool cameraAutoEnabled{};
+        Spektrafilm::AutoExposureMethod meteringMethod{};
+        const JuicerProcess::Root::PreparedFrameInput& preparation;
+        Scanner::ScannerColorCorrectionDescriptor correction;
+        float printExposure = 0.0f;
+        float preflashExposure = 0.0f;
         const FjHostPreparation* hostPreparation = nullptr;
     };
 
@@ -1233,138 +1058,6 @@ namespace {
                 autoExposureDescriptor.hash});
         filmPayloads.filmExposure.exposureScaleDevice =
             buffers.deviceState.exposureScale;
-    }
-
-    RouteDescriptors build_direct_descriptors(
-        const RenderRecipe& recipe,
-        const FocusedRenderPayload& payload,
-        const JuicerCuda::ExecutionFrame& frame,
-        Scanner::ScannerColorCorrectionDescriptor& scannerCorrection,
-        const ExecutionErrors& errors) {
-        RouteDescriptors descriptors;
-        const auto* directRecipe = &recipe;
-        const auto* directPayload = &payload;
-        const auto& win = frame.renderWindow;
-        const auto& srcBounds = frame.sourceBounds;
-        const int width = win.x2 - win.x1;
-        const int height = win.y2 - win.y1;
-
-        std::string scannerDescriptorDiagnostic;
-        Scanner::DirectScannerSpectralLutDescriptorInput scannerDescriptorInput{};
-        scannerDescriptorInput.profileRoute = &directRecipe->profileRoute;
-        scannerDescriptorInput.densityBounds = &directRecipe->densityBounds;
-        scannerDescriptorInput.scannerOutput = &directRecipe->scannerOutput;
-        if (!Scanner::build_direct_scanner_spectral_lut_descriptor(
-                scannerDescriptorInput,
-                descriptors.scanner,
-                scannerDescriptorDiagnostic)) {
-            errors.fail_route(scannerDescriptorDiagnostic.c_str());
-        }
-
-        if (!Scanner::build_direct_scanner_color_correction_descriptor(
-                *directRecipe,
-                directPayload->scannerTables,
-                scannerCorrection,
-                scannerDescriptorDiagnostic)) {
-            errors.fail_route(scannerDescriptorDiagnostic.c_str());
-        }
-
-        if (!Scanner::build_scanner_post_effects_descriptor(
-                directRecipe->scannerOutput,
-                descriptors.post,
-                scannerDescriptorDiagnostic)) {
-            errors.fail_route(scannerDescriptorDiagnostic.c_str());
-        }
-
-        const JuicerCuda::FrameRect directFullFrameRect =
-            (frame.fullFrameExtent.x2 > frame.fullFrameExtent.x1 && frame.fullFrameExtent.y2 > frame.fullFrameExtent.y1)
-                ? frame.fullFrameExtent
-                : srcBounds;
-        const bool dirFrameBuilt = Spektrafilm::build_spatial_dir_descriptor(
-            directRecipe->dirCouplers,
-            frame.pixelSizeUm,
-            spatial_dir_extent_from_rect(win),
-            spatial_dir_extent_from_rect(directFullFrameRect),
-            "direct",
-            descriptors.dir);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_dir_frame(
-            directRecipe->profileRoute.scanRoute, frame.pixelSizeUm, spatial_dir_extent_from_rect(win), spatial_dir_extent_from_rect(directFullFrameRect), dirFrameBuilt, descriptors.dir);
-#endif
-        if (!dirFrameBuilt) {
-            trace_spatial_dir_descriptor_build("direct", descriptors.dir);
-            errors.fail_route(
-                "ResourceDescriptorMismatch phase=3D-3 field=spatial_dir_descriptor");
-        }
-        trace_spatial_dir_descriptor_build("direct", descriptors.dir);
-
-        std::string directGrainDescriptorDiagnostic;
-        const bool grainFrameBuilt = build_visual_grain_descriptor_for_frame(
-            directRecipe->visualGrain,
-            directRecipe->filmDevelop,
-            directRecipe->profileRoute.capturePolarity,
-            {win.x1, win.y1, width, height},
-            {directFullFrameRect.x1,
-             directFullFrameRect.y1,
-             directFullFrameRect.x2 - directFullFrameRect.x1,
-             directFullFrameRect.y2 - directFullFrameRect.y1},
-            frame.pixelSizeUm,
-            frame.timeFrames,
-            frame.frameRate,
-            frame.sessionSeed,
-            static_cast<std::uint64_t>(frame.clipToken),
-            descriptors.grain,
-            directGrainDescriptorDiagnostic);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_grain_frame({directRecipe->profileRoute.scanRoute, 0, {win.x1, win.y1, width, height}, {directFullFrameRect.x1, directFullFrameRect.y1, directFullFrameRect.x2 - directFullFrameRect.x1, directFullFrameRect.y2 - directFullFrameRect.y1}, frame.pixelSizeUm, frame.timeFrames, frame.frameRate, frame.sessionSeed, static_cast<std::uint64_t>(frame.clipToken), grainFrameBuilt, grainFrameBuilt ? descriptors.grain : std::nullopt});
-#endif
-        if (!grainFrameBuilt) {
-            errors.fail_route(
-                directGrainDescriptorDiagnostic.c_str());
-        }
-        if (!visual_grain_full_frame_preflight(
-                descriptors.grain,
-                win,
-                srcBounds,
-                directFullFrameRect)) {
-            errors.fail_route(
-                "ResourceDescriptorMismatch phase=grain_preflight field=full_frame_extent");
-        }
-
-        std::string directEffectsDescriptorDiagnostic;
-        const bool effectsFrameBuilt = build_film_juicer_effects_descriptor_for_frame(
-            directRecipe->filmJuicerEffects,
-            {win.x1, win.y1, width, height},
-            {directFullFrameRect.x1,
-             directFullFrameRect.y1,
-             directFullFrameRect.x2 - directFullFrameRect.x1,
-             directFullFrameRect.y2 - directFullFrameRect.y1},
-            frame.effectsGeometry,
-            directRecipe->filmRaw.filmFormatLongEdgeMm,
-            frame.pixelSizeUm,
-            frame.timeFrames,
-            frame.frameRate,
-            frame.sessionSeed,
-            static_cast<std::uint64_t>(frame.clipToken),
-            descriptors.effects,
-            directEffectsDescriptorDiagnostic);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_effects_frame({directRecipe->profileRoute.scanRoute, 0, {win.x1, win.y1, width, height}, {directFullFrameRect.x1, directFullFrameRect.y1, directFullFrameRect.x2 - directFullFrameRect.x1, directFullFrameRect.y2 - directFullFrameRect.y1}, frame.effectsGeometry, directRecipe->filmRaw.filmFormatLongEdgeMm, frame.pixelSizeUm, frame.timeFrames, frame.frameRate, frame.sessionSeed, static_cast<std::uint64_t>(frame.clipToken), effectsFrameBuilt, effectsFrameBuilt ? descriptors.effects : std::nullopt});
-#endif
-        if (!effectsFrameBuilt) {
-            errors.fail_route(
-                directEffectsDescriptorDiagnostic.c_str());
-        }
-        if (!film_juicer_effects_full_frame_preflight(
-                descriptors.effects,
-                win,
-                srcBounds,
-                directFullFrameRect)) {
-            errors.fail_route(
-                "ResourceDescriptorMismatch phase=effects_preflight field=full_frame_extent");
-        }
-
-        return descriptors;
     }
 
     std::string halation_completion_diagnostic(
@@ -1618,7 +1311,7 @@ namespace {
     void bind_grain(
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
-        const VisualGrainRecipe& recipe,
+        const JuicerCuda::VisualGrainPayloadInput& input,
         GrainBinding& grain,
         const ExecutionErrors& errors) {
         const auto resources = preparedFrame.visual_grain_resources();
@@ -1628,7 +1321,7 @@ namespace {
         if (!resources.active ||
             !grain.workspace.active ||
             !JuicerCuda::pack_visual_grain_payload(
-                recipe,
+                input,
                 resources,
                 grain.payload,
                 grain.kernels,
@@ -2049,123 +1742,6 @@ namespace {
         }
     }
 
-    RouteDescriptors build_print_descriptors(const RenderRecipe& recipe, const JuicerCuda::ExecutionFrame& frame, const ExecutionErrors& errors) {
-        RouteDescriptors descriptors;
-        const auto* printRecipe = &recipe;
-        const auto& win = frame.renderWindow;
-        const auto& srcBounds = frame.sourceBounds;
-        const int width = win.x2 - win.x1;
-        const int height = win.y2 - win.y1;
-
-        std::string scannerDescriptorDiagnostic;
-        if (!Scanner::build_print_scanner_spectral_lut_descriptor(
-                Scanner::PrintScannerSpectralLutDescriptorInput{
-                    &printRecipe->profileRoute,
-                    &printRecipe->densityBounds,
-                    &printRecipe->scannerOutput},
-                descriptors.scanner,
-                scannerDescriptorDiagnostic)) {
-            errors.fail_route(scannerDescriptorDiagnostic.c_str());
-        }
-
-        if (!Scanner::build_scanner_post_effects_descriptor(
-                printRecipe->scannerOutput,
-                descriptors.post,
-                scannerDescriptorDiagnostic)) {
-            errors.fail_route(scannerDescriptorDiagnostic.c_str());
-        }
-
-        const JuicerCuda::FrameRect printFullFrameRect =
-            (frame.fullFrameExtent.x2 > frame.fullFrameExtent.x1 && frame.fullFrameExtent.y2 > frame.fullFrameExtent.y1)
-                ? frame.fullFrameExtent
-                : srcBounds;
-        const bool dirFrameBuilt = Spektrafilm::build_spatial_dir_descriptor(
-            printRecipe->dirCouplers,
-            frame.pixelSizeUm,
-            spatial_dir_extent_from_rect(win),
-            spatial_dir_extent_from_rect(printFullFrameRect),
-            "print",
-            descriptors.dir);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_dir_frame(
-            printRecipe->profileRoute.scanRoute, frame.pixelSizeUm, spatial_dir_extent_from_rect(win), spatial_dir_extent_from_rect(printFullFrameRect), dirFrameBuilt, descriptors.dir);
-#endif
-        if (!dirFrameBuilt) {
-            trace_spatial_dir_descriptor_build("print", descriptors.dir);
-            errors.fail_route(
-                "ResourceDescriptorMismatch phase=4C field=spatial_dir_descriptor");
-        }
-        trace_spatial_dir_descriptor_build("print", descriptors.dir);
-
-        std::string printGrainDescriptorDiagnostic;
-        const bool grainFrameBuilt = build_visual_grain_descriptor_for_frame(
-            printRecipe->visualGrain,
-            printRecipe->filmDevelop,
-            printRecipe->profileRoute.capturePolarity,
-            {win.x1, win.y1, width, height},
-            {printFullFrameRect.x1,
-             printFullFrameRect.y1,
-             printFullFrameRect.x2 - printFullFrameRect.x1,
-             printFullFrameRect.y2 - printFullFrameRect.y1},
-            frame.pixelSizeUm,
-            frame.timeFrames,
-            frame.frameRate,
-            frame.sessionSeed,
-            static_cast<std::uint64_t>(frame.clipToken),
-            descriptors.grain,
-            printGrainDescriptorDiagnostic);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_grain_frame({printRecipe->profileRoute.scanRoute, 0, {win.x1, win.y1, width, height}, {printFullFrameRect.x1, printFullFrameRect.y1, printFullFrameRect.x2 - printFullFrameRect.x1, printFullFrameRect.y2 - printFullFrameRect.y1}, frame.pixelSizeUm, frame.timeFrames, frame.frameRate, frame.sessionSeed, static_cast<std::uint64_t>(frame.clipToken), grainFrameBuilt, grainFrameBuilt ? descriptors.grain : std::nullopt});
-#endif
-        if (!grainFrameBuilt) {
-            errors.fail_route(
-                printGrainDescriptorDiagnostic.c_str());
-        }
-        if (!visual_grain_full_frame_preflight(
-                descriptors.grain,
-                win,
-                srcBounds,
-                printFullFrameRect)) {
-            errors.fail_route(
-                "ResourceDescriptorMismatch phase=grain_preflight field=full_frame_extent");
-        }
-
-        std::string printEffectsDescriptorDiagnostic;
-        const bool effectsFrameBuilt = build_film_juicer_effects_descriptor_for_frame(
-            printRecipe->filmJuicerEffects,
-            {win.x1, win.y1, width, height},
-            {printFullFrameRect.x1,
-             printFullFrameRect.y1,
-             printFullFrameRect.x2 - printFullFrameRect.x1,
-             printFullFrameRect.y2 - printFullFrameRect.y1},
-            frame.effectsGeometry,
-            printRecipe->filmRaw.filmFormatLongEdgeMm,
-            frame.pixelSizeUm,
-            frame.timeFrames,
-            frame.frameRate,
-            frame.sessionSeed,
-            static_cast<std::uint64_t>(frame.clipToken),
-            descriptors.effects,
-            printEffectsDescriptorDiagnostic);
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-        JuicerCuda::ExecutorTest::observe_effects_frame({printRecipe->profileRoute.scanRoute, 0, {win.x1, win.y1, width, height}, {printFullFrameRect.x1, printFullFrameRect.y1, printFullFrameRect.x2 - printFullFrameRect.x1, printFullFrameRect.y2 - printFullFrameRect.y1}, frame.effectsGeometry, printRecipe->filmRaw.filmFormatLongEdgeMm, frame.pixelSizeUm, frame.timeFrames, frame.frameRate, frame.sessionSeed, static_cast<std::uint64_t>(frame.clipToken), effectsFrameBuilt, effectsFrameBuilt ? descriptors.effects : std::nullopt});
-#endif
-        if (!effectsFrameBuilt) {
-            errors.fail_route(
-                printEffectsDescriptorDiagnostic.c_str());
-        }
-        if (!film_juicer_effects_full_frame_preflight(
-                descriptors.effects,
-                win,
-                srcBounds,
-                printFullFrameRect)) {
-            errors.fail_route(
-                "ResourceDescriptorMismatch phase=effects_preflight field=full_frame_extent");
-        }
-
-        return descriptors;
-    }
-
     void bind_print_diffusion(
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerCuda::ExecutionFrame& frame,
@@ -2216,60 +1792,6 @@ namespace {
         }
     }
 
-    Scanner::ScannerColorCorrectionDescriptor build_print_correction(
-        const RenderRecipe& recipe,
-        const FocusedRenderPayload& payload,
-        const JuicerProcess::Root::PreparedCudaFrame::PrintPreparedView& preparedPrint,
-        bool traceVerbose,
-        const ExecutionErrors& errors) {
-        const auto* printRecipe = &recipe;
-        const auto* printPayload = &payload;
-        std::string scannerDescriptorDiagnostic;
-        Scanner::ScannerColorCorrectionDescriptor scannerCorrection{};
-        Scanner::PrintCorrectionDerivationInput correctionInput{};
-        correctionInput.recipe = printRecipe;
-        correctionInput.scannerTables = &printPayload->scannerTables;
-        correctionInput.mainIlluminant = preparedPrint.mainIlluminantHost;
-        correctionInput.spectralSampleCount = preparedPrint.spectralSampleCount;
-        correctionInput.preflashRawCmy = preparedPrint.preflashRawCmy;
-        correctionInput.normalizer = preparedPrint.normalizer;
-        if (!Scanner::build_print_scanner_color_correction_descriptor(
-                correctionInput,
-                scannerCorrection,
-                scannerDescriptorDiagnostic)) {
-            errors.fail_route(scannerDescriptorDiagnostic.c_str());
-        }
-        if (traceVerbose) {
-            const PrintFilterRecipe& filters = printRecipe->print.filters;
-            std::string msg;
-            msg.reserve(512);
-            msg = "event=focused_route_prepared recipeHash=";
-            msg += std::to_string(printRecipe->hash);
-            msg += " mainCmyCc(C/M/Y)=";
-            msg += std::to_string(filters.mainCmyCc.c);
-            msg += "/";
-            msg += std::to_string(filters.mainCmyCc.m);
-            msg += "/";
-            msg += std::to_string(filters.mainCmyCc.y);
-            msg += " preflashCmyCc(C/M/Y)=";
-            msg += std::to_string(filters.preflashCmyCc.c);
-            msg += "/";
-            msg += std::to_string(filters.preflashCmyCc.m);
-            msg += "/";
-            msg += std::to_string(filters.preflashCmyCc.y);
-            msg += " filterRecipeHash=";
-            msg += std::to_string(filters.hash);
-            msg += " filteredMainIlluminantDescriptorHash=";
-            msg += std::to_string(preparedPrint.mainIlluminantHash);
-            msg += " balanceHash=";
-            msg += std::to_string(preparedPrint.balanceHash);
-            msg += " preparationHash=";
-            msg += std::to_string(preparedPrint.preparationHash);
-            JTRACE_VERBOSE("PHASE4C_BALANCE", msg);
-        }
-
-        return scannerCorrection;
-    }
 
     JuicerCuda::CameraFilmLinearExposurePlanes expose_print_camera(
         JuicerCuda::PrintPipelineRunParams& run,
@@ -2953,7 +2475,7 @@ namespace JuicerCuda {
         const bool grainStageActive =
             descriptors.grain.has_value();
         const bool grainDebugActive =
-            grainStageActive && input.grain.debugView != 0;
+            grainStageActive && input.grain.coefficients.debug_view != 0;
         const bool filmEffectsActive =
             descriptors.effects.has_value() &&
             descriptors.effects->filmActive;
@@ -2965,14 +2487,11 @@ namespace JuicerCuda {
             frame.diffusionFrameSet->camera.has_value();
         const bool captureDensityConsumerActive =
             grainStageActive || filmEffectsActive;
-        const auto scannerCorrection = std::get<Scanner::ScannerColorCorrectionDescriptor>(input.correction);
+        const auto scannerCorrection = input.correction;
         JuicerCuda::Failure directPrepareError;
         check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-            std::visit([&](const auto* preparation) {
-                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, directPrepareError, input.hostPreparation);
-            },
-                       input.preparation);
+            JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, directPrepareError, input.hostPreparation);
         if (!preparedFrame.active()) {
             errors.fail_submission(
                 preparedFrame.failure_stage_tag(),
@@ -3222,7 +2741,7 @@ namespace JuicerCuda {
         const bool grainStageActive =
             descriptors.grain.has_value();
         const bool grainDebugActive =
-            grainStageActive && input.grain.debugView != 0;
+            grainStageActive && input.grain.coefficients.debug_view != 0;
         const bool filmEffectsActive =
             descriptors.effects.has_value() &&
             descriptors.effects->filmActive;
@@ -3242,10 +2761,7 @@ namespace JuicerCuda {
         JuicerCuda::Failure prepareError;
         check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-            std::visit([&](const auto* preparation) {
-                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, prepareError, input.hostPreparation);
-            },
-                       input.preparation);
+            JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, prepareError, input.hostPreparation);
         if (!preparedFrame.active()) {
             errors.fail_submission(
                 preparedFrame.failure_stage_tag(),
@@ -3276,15 +2792,7 @@ namespace JuicerCuda {
             errors.fail_route(
                 "ResourceDescriptorMismatch phase=4C field=print_prepared_view");
         }
-        const auto scannerCorrection = std::visit([&](const auto& source) -> Scanner::ScannerColorCorrectionDescriptor {
-            using Source = std::decay_t<decltype(source)>;
-            if constexpr (std::is_same_v<Source, PrintCorrectionSource>) {
-                return build_print_correction(source.recipe, source.payload, preparedPrint, frame.traceVerbose, errors);
-            } else {
-                return source;
-            }
-        },
-                                                  input.correction);
+        const auto scannerCorrection = input.correction;
         JuicerCuda::PrintPipelineRunParams run{};
         run.src = frame.source;
         run.srcRowBytes = static_cast<std::size_t>(frame.sourceRowBytes);
@@ -3319,6 +2827,7 @@ namespace JuicerCuda {
         JuicerCuda::PrintCudaPayloadPack printPayloads{};
         if (!JuicerCuda::pack_print_cuda_payloads(
                 input.printExposure,
+                input.preflashExposure,
                 preparedPrint,
                 scannerCorrection.exposureScale,
                 printPayloads,
@@ -3517,123 +3026,6 @@ namespace JuicerCuda {
         }
         return;
     }
-    void execute_direct(const DirectExecutionInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
-        const RenderRecipe* directRecipe = &input.recipe;
-        const FocusedRenderPayload* directPayload = &input.payload;
-        const auto& frame = input.frame;
-        const auto& win = frame.renderWindow;
-        const int width = win.x2 - win.x1;
-        const int height = win.y2 - win.y1;
-        const auto cameraMeteringMethod = input.recipe.filmRaw.autoExposureMethod;
-        const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA direct route blocked"};
-        if (cameraMeteringMethod == Spektrafilm::AutoExposureMethod::Median) {
-            errors.fail_route(Spektrafilm::kQuantizedMedianNotAcceptedForPhase3);
-        }
-        if (!(frame.components == 3 || frame.components == 4)) {
-            errors.fail_route("UnsupportedDirectComponentCountForPhase3C");
-        }
-        Scanner::ScannerColorCorrectionDescriptor scannerCorrection{};
-        const RouteDescriptors descriptors = build_direct_descriptors(*directRecipe, *directPayload, frame, scannerCorrection, errors);
-        const ScatterHalationFrameDescriptor* halationRequestDescriptor =
-            frame.scatterHalation ? &*frame.scatterHalation : nullptr;
-
-        JuicerProcess::Root::CudaFramePreparationRequest directPreparation{};
-        directPreparation.recipe = directRecipe;
-        directPreparation.exposureTables = &directPayload->exposureTables;
-        directPreparation.filmRawConfig = &directPayload->filmRawConfig;
-        directPreparation.filmTcLut = directPayload->filmTcLut
-                                          ? &*directPayload->filmTcLut
-                                          : nullptr;
-        directPreparation.scannerTables = &directPayload->scannerTables;
-        directPreparation.scannerColor = &directPayload->scannerColor;
-        directPreparation.scannerLutDescriptor = &descriptors.scanner;
-        directPreparation.outputBoundaryTable =
-            directPayload->outputBoundaryTable.get();
-        directPreparation.scannerPostEffects = &descriptors.post;
-        directPreparation.spatialDirDescriptor = &descriptors.dir;
-        directPreparation.diffusionFrameSetDescriptor =
-            frame.diffusionFrameSet
-                ? &*frame.diffusionFrameSet
-                : nullptr;
-        directPreparation.scatterHalationDescriptor = halationRequestDescriptor;
-        directPreparation.visualGrainDescriptor =
-            descriptors.grain;
-        directPreparation.effectsDescriptor = descriptors.effects;
-        directPreparation.requestedWidth = width;
-        directPreparation.requestedHeight = height;
-        const ScheduleInput schedule{frame, input.snapshot, JuicerProcess::Root::preparation_identity(*directRecipe), descriptors, film_payload_input(directRecipe->filmRaw, directRecipe->filmDevelop, directRecipe->dirCouplers, directRecipe->densityBounds), scannerCorrection.exposureScale, directRecipe->visualGrain, directRecipe->scannerOutput.outputGamut, directRecipe->densityBounds.hash, directRecipe->hash, directRecipe->filmRaw.autoExposureEnabled, directRecipe->filmRaw.autoExposureMethod, &directPreparation, scannerCorrection, {}};
-        execute_direct_schedule(schedule, recovery, abortCallback);
-    }
-
-    void execute_print(const PrintExecutionInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
-        const RenderRecipe* printRecipe = &input.recipe;
-        const FocusedRenderPayload* printPayload = &input.payload;
-        const auto& frame = input.frame;
-        const auto& win = frame.renderWindow;
-        const int width = win.x2 - win.x1;
-        const int height = win.y2 - win.y1;
-        const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA print route blocked"};
-        if (!(frame.components == 3 || frame.components == 4)) {
-            errors.fail_route("UnsupportedPrintComponentCountForPhase4C");
-        }
-
-        const RouteDescriptors descriptors = build_print_descriptors(*printRecipe, frame, errors);
-        const ScatterHalationFrameDescriptor* halationRequestDescriptor =
-            frame.scatterHalation ? &*frame.scatterHalation : nullptr;
-
-        JuicerProcess::Root::CudaFramePreparationRequest preparation{};
-        preparation.recipe = printRecipe;
-        preparation.exposureTables = &printPayload->exposureTables;
-        preparation.filmRawConfig = &printPayload->filmRawConfig;
-        preparation.filmTcLut = printPayload->filmTcLut
-                                    ? &*printPayload->filmTcLut
-                                    : nullptr;
-        preparation.printMainIlluminant = printPayload->printMainIlluminant
-                                              ? &*printPayload->printMainIlluminant
-                                              : nullptr;
-        preparation.scannerTables = &printPayload->scannerTables;
-        preparation.scannerColor = &printPayload->scannerColor;
-        preparation.scannerLutDescriptor = &descriptors.scanner;
-        preparation.outputBoundaryTable =
-            printPayload->outputBoundaryTable.get();
-        preparation.scannerPostEffects = &descriptors.post;
-        preparation.spatialDirDescriptor = &descriptors.dir;
-        preparation.diffusionFrameSetDescriptor =
-            frame.diffusionFrameSet
-                ? &*frame.diffusionFrameSet
-                : nullptr;
-        preparation.scatterHalationDescriptor = halationRequestDescriptor;
-        preparation.visualGrainDescriptor =
-            descriptors.grain;
-        preparation.effectsDescriptor = descriptors.effects;
-        preparation.requestedWidth = width;
-        preparation.requestedHeight = height;
-        const ScheduleInput schedule{frame, input.snapshot, JuicerProcess::Root::preparation_identity(*printRecipe), descriptors, film_payload_input(printRecipe->filmRaw, printRecipe->filmDevelop, printRecipe->dirCouplers, printRecipe->enlargerFilmBounds), 1.0f, printRecipe->visualGrain, printRecipe->scannerOutput.outputGamut, printRecipe->densityBounds.hash, printRecipe->hash, printRecipe->filmRaw.autoExposureEnabled, printRecipe->filmRaw.autoExposureMethod, &preparation, PrintCorrectionSource{*printRecipe, *printPayload}, printRecipe->print.exposure};
-        execute_print_schedule(schedule, recovery, abortCallback);
-    }
-
-    PreparedDescriptors describe_execution(const RenderRecipe& recipe, const FocusedRenderPayload& payload, const ExecutionFrame& frame) {
-        PendingContextLossRecovery recovery;
-        const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA prepared descriptor construction failed"};
-        PreparedDescriptors result;
-        const auto descriptors = Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute)
-                                     ? build_print_descriptors(recipe, frame, errors)
-                                     : build_direct_descriptors(recipe, payload, frame, result.correction, errors);
-        result.route = recipe.profileRoute.scanRoute;
-        result.capturePolarity = recipe.profileRoute.capturePolarity;
-        result.scanner = descriptors.scanner;
-        result.post = descriptors.post;
-        result.spatialDir = descriptors.dir;
-        result.grain = descriptors.grain;
-        result.effects = descriptors.effects;
-        result.grainRecipe = recipe.visualGrain;
-        result.color = payload.scannerColor;
-        result.outputGamut = recipe.scannerOutput.outputGamut;
-        result.diffusion = frame.diffusionFrameSet;
-        result.halation = frame.scatterHalation;
-        return result;
-    }
-
     void execute_prepared(const PreparedExecutionInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
         const bool print = Spektrafilm::scan_route_is_print(input.descriptors.route);
         const ExecutionErrors errors{recovery, input.frame.traceInfo, print ? "CUDA print route blocked" : "CUDA direct route blocked"};
@@ -3648,7 +3040,7 @@ namespace JuicerCuda {
             errors.fail_route("ResourceDescriptorMismatch component=prepared_frame field=full_frame_domain");
         }
         const RouteDescriptors descriptors{input.descriptors.scanner, input.descriptors.post, input.descriptors.spatialDir, input.descriptors.grain, input.descriptors.effects};
-        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainRecipe, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.recipeHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, &input.preparation, input.descriptors.correction, input.printExposure, input.hostPreparation};
+        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainPayload, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.recipeHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, input.preparation, input.descriptors.correction, input.printExposure, input.preflashExposure, input.hostPreparation};
         if (Spektrafilm::scan_route_is_print(input.descriptors.route)) {
             execute_print_schedule(schedule, recovery, abortCallback);
         } else {

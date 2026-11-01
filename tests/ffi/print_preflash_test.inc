@@ -28,12 +28,19 @@ namespace PrintPreflashTest {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         auto& assets = JuicerProcess::root().assets();
-        JuicerProcess::root().ensure_bootstrap();
         for (const char* key : {"kodak_portra_400", "fujifilm_provia_100f"}) {
-            const auto film = assets.selected_film_profile_for_key(key);
-            require(bool(film), "primitive actual film source");
+            const std::string selectedKey = key;
+            FjFilmProfile* acquired = nullptr;
+            status(fj_legacy_film_profile_acquire(assets.borrow_rust_assets(), {selectedKey.data(), selectedKey.size()}, &acquired, nullptr));
+            const auto releaseProfile = [](FjFilmProfile* held) {
+                (void)fj_legacy_film_profile_release(held, nullptr);
+            };
+            std::unique_ptr<FjFilmProfile, decltype(releaseProfile)> film(acquired, releaseProfile);
+            FjFilmProfileView view{};
+            status(fj_legacy_film_profile_view(film.get(), &view, nullptr));
+            require(view.tables.base_density.count == 81, "primitive actual film source");
             for (std::size_t sample : {std::size_t{0}, std::size_t{40}, std::size_t{80}})
-                densities.push_back(film->data.baseDensity[sample]);
+                densities.push_back(view.tables.base_density.data[sample]);
         }
         for (float density : densities)
             for (float illuminant : {0.0f, -0.0f, 1.0f, 0.1234567f, -1.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
@@ -68,7 +75,6 @@ namespace PrintPreflashTest {
             JuicerCuda::Owner owner;
             owner.create(resources.string().c_str());
             auto& assets = JuicerProcess::root().assets();
-            JuicerProcess::root().ensure_bootstrap();
             for (unsigned route = 0; route < 4; ++route)
                 for (int mode = 0; mode < 3; ++mode)
                     for (unsigned variant = 0; variant < 6; ++variant) {
@@ -122,7 +128,6 @@ namespace PrintPreflashTest {
 namespace PrintPreflashTest {
     using Prepare = FjStatus (*)(const FjPrintPreflashInput*, FjPrintPreflashRaw*, FjPrintPreflashFailure*, FjErrorBuffer*);
     void caller(const std::filesystem::path& resources);
-    thread_local unsigned nextProjection = 0;
     struct Inputs {
         std::array<float, 81> base{};
         std::array<float, 81> light{};
@@ -133,13 +138,6 @@ namespace PrintPreflashTest {
               sensitivity(array<243>(row.at("print_sensitivity_cmy"))) {}
         FjPrintPreflashInput wire() const {
             return {{base.data(), base.size()}, {light.data(), light.size()}, {sensitivity.data(), sensitivity.size()}};
-        }
-        std::array<std::array<float, 3>, 81> channels() const {
-            std::array<std::array<float, 3>, 81> out{};
-            for (std::size_t i = 0; i < 81; ++i)
-                for (std::size_t c = 0; c < 3; ++c)
-                    out[i][c] = sensitivity[i * 3 + c];
-            return out;
         }
     };
     void metadata(const FjPrintPreflashFailure& failure, std::uint32_t reason, std::uint32_t channel = UINT32_MAX) {
@@ -154,7 +152,7 @@ namespace PrintPreflashTest {
         for (const auto& row : captured.at("cases")) {
             Inputs source(row);
             const auto input = source.wire();
-            for (Prepare prepare : {fj_legacy_print_preflash_prepare, fj_test_print_preflash_prepare}) {
+            for (Prepare prepare : {fj_test_print_preflash_c_prepare, fj_test_print_preflash_prepare}) {
                 FjPrintPreflashRaw out{{-13, -13, -13}};
                 FjPrintPreflashFailure failure{99, 98};
                 std::array<char, 128> text{};
@@ -174,7 +172,7 @@ namespace PrintPreflashTest {
         }
     }
     void transport(const Json& captured) {
-        for (Prepare prepare : {fj_legacy_print_preflash_prepare, fj_test_print_preflash_prepare}) {
+        for (Prepare prepare : {fj_test_print_preflash_c_prepare, fj_test_print_preflash_prepare}) {
             Inputs source(captured.at("cases")[0]);
             auto input = source.wire();
             FjPrintPreflashRaw out{};
@@ -293,101 +291,11 @@ namespace PrintPreflashTest {
             require(words(retained.cmy, 3) == captured.at("cases")[0].at("raw"), "raw facade result owns all words after input destruction");
         }
     }
-    void native(const Json& captured) {
-        for (const auto& row : captured.at("cases")) {
-            Inputs input(row);
-            std::array<float, 3> out{-13, -13, -13};
-            std::string diagnostic;
-            const bool success = JuicerAssets::prepare_print_preflash(input.base, input.light, input.channels(), out, diagnostic);
-            require(success == row.at("success").get<bool>(), "native preflash success/failure parity");
-            if (success)
-                require(words(out.data(), 3) == row.at("raw") && diagnostic.empty(), "native complete exact triplet including infinity");
-            else
-                require(words(out.data(), 3) == Json::array({0, 0, 0}) && diagnostic == row.at("diagnostic").get<std::string>(), "native exact old malformed-resource diagnostic and cleared result");
-        }
-        Inputs input(captured.at("cases")[0]);
-        for (unsigned fault = 1; fault <= 16; ++fault) {
-            nextProjection = fault;
-            std::array<float, 3> out{-13, -13, -13};
-            std::string diagnostic;
-            bool threw = false;
-            try {
-                JuicerAssets::prepare_print_preflash(input.base, input.light, input.channels(), out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& failure) {
-                status(failure.failure.status, fault == 15 ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
-                threw = true;
-            }
-            require(threw && nextProjection == 0 && words(out.data(), 3) == Json::array({0, 0, 0}), "native preflash rejects contradictory envelope/diagnostic without publication");
-        }
-    }
     void products(const std::filesystem::path& resources, const Json& captured) {
         require(product_observations(resources) == captured.at("products"), "all 72 frozen caller values, input bindings, descriptor and final/seed identities");
         caller(resources);
     }
 } // namespace PrintPreflashTest
-namespace JuicerAssets::RecipeTest {
-    void print_preflash(FjStatus& status, FjPrintPreflashFailure& failure, FjPrintPreflashRaw&, FjErrorBuffer& error) {
-        const auto fault = std::exchange(PrintPreflashTest::nextProjection, 0u);
-        switch (fault) {
-            case 1:
-                status.category = 99;
-                break;
-            case 2:
-                status.api = 99;
-                break;
-            case 3:
-                status.native_code = 1;
-                break;
-            case 4:
-                failure.reason = 99;
-                break;
-            case 5:
-                failure.channel = 0;
-                break;
-            case 6:
-                failure.reason = FJ_PRINT_PREFLASH_REASON_CHANNEL;
-                failure.channel = 3;
-                break;
-            case 7:
-                status.category = FJ_STATUS_PREPARATION_FAILURE;
-                failure.reason = FJ_PRINT_PREFLASH_REASON_CHANNEL;
-                failure.channel = UINT32_MAX;
-                break;
-            case 8:
-                status.category = FJ_STATUS_PREPARATION_FAILURE;
-                failure.reason = FJ_PRINT_PREFLASH_REASON_NONE;
-                break;
-            case 9:
-                failure.reason = FJ_PRINT_PREFLASH_REASON_PANIC;
-                break;
-            case 10:
-                failure.reason = FJ_PRINT_PREFLASH_REASON_RAW;
-                break;
-            case 11:
-                error.length = error.capacity;
-                break;
-            case 12:
-                error.data = nullptr;
-                break;
-            case 13:
-                error.capacity = 0;
-                break;
-            case 14:
-                error.data[error.length] = 'x';
-                break;
-            case 15:
-                status.category = FJ_STATUS_UNSUPPORTED_INPUT;
-                failure.reason = FJ_PRINT_PREFLASH_REASON_RAW;
-                break;
-            case 16:
-                status.category = FJ_STATUS_INTERNAL_FAILURE;
-                failure.reason = FJ_PRINT_PREFLASH_REASON_PANIC;
-                break;
-            default:
-                break;
-        }
-    }
-} // namespace JuicerAssets::RecipeTest
 
 namespace PrintPreflashTest {
     ParamSnapshot controls() {
@@ -426,7 +334,7 @@ namespace PrintPreflashTest {
     };
     bool prepare_cache(void* opaque, const FrameFixture::Inputs& prepared, std::string& diagnostic) {
         auto& call = *static_cast<CacheCall*>(opaque);
-        const auto* input = std::get_if<JuicerCuda::PrintResourceInput>(&prepared.preparation.print);
+        const auto* input = prepared.preparation.print ? &*prepared.preparation.print : nullptr;
         if (!input) {
             diagnostic = "prepared print state has no complete print resource input";
             return false;
@@ -502,16 +410,13 @@ namespace PrintPreflashTest {
         view.printSensC = view.printSensM = view.printSensY = {nullptr, samples.data(), 81, 0, 80};
         view.printDcC = view.printDcM = view.printDcY = {samples.data(), samples.data(), 81, 0, 80};
         view.mainIlluminant = view.preflashIlluminant = samples.data();
-        PrintExposureRecipe exposure;
-        exposure.printExposure = 1;
-        exposure.preflashExposure = 0.125f;
         JuicerCuda::PrintCudaPayloadPack packed;
         std::string diagnostic;
-        require(JuicerCuda::pack_print_cuda_payloads(exposure, view, 1, packed, diagnostic), diagnostic.c_str());
+        require(JuicerCuda::pack_print_cuda_payloads(1.0f, 0.125f, view, 1, packed, diagnostic), diagnostic.c_str());
         view.preflashRawCmy[0] = std::numeric_limits<float>::infinity();
-        require(!JuicerCuda::pack_print_cuda_payloads(exposure, view, 1, packed, diagnostic) && diagnostic == "ResourceDescriptorMismatch phase=4B field=preflash_raw", "later payload guard still rejects successful narrowing infinity");
+        require(!JuicerCuda::pack_print_cuda_payloads(1.0f, 0.125f, view, 1, packed, diagnostic) && diagnostic == "ResourceDescriptorMismatch phase=4B field=preflash_raw", "later payload guard still rejects successful narrowing infinity");
         view.preflashActive = false;
-        require(JuicerCuda::pack_print_cuda_payloads(exposure, view, 1, packed, diagnostic), "disabled preflash omits executable raw admission");
+        require(JuicerCuda::pack_print_cuda_payloads(1.0f, 0.125f, view, 1, packed, diagnostic), "disabled preflash omits executable raw admission");
     }
     struct CallerInputFacts {
         bool consumeFault = false;
@@ -522,7 +427,7 @@ namespace PrintPreflashTest {
     };
     bool inspect_caller_input(void* opaque, const FrameFixture::Inputs& prepared, std::string& diagnostic) {
         auto& facts = *static_cast<CallerInputFacts*>(opaque);
-        const auto* input = std::get_if<JuicerCuda::PrintResourceInput>(&prepared.preparation.print);
+        const auto* input = prepared.preparation.print ? &*prepared.preparation.print : nullptr;
         if (!input) {
             diagnostic = "prepared print state has no complete print resource input";
             return false;
@@ -545,7 +450,7 @@ namespace PrintPreflashTest {
     }
     bool prepare_caller_raw(void* opaque, const FrameFixture::Inputs& prepared, std::string& diagnostic) {
         auto& facts = *static_cast<CallerInputFacts*>(opaque);
-        const auto* input = std::get_if<JuicerCuda::PrintResourceInput>(&prepared.preparation.print);
+        const auto* input = prepared.preparation.print ? &*prepared.preparation.print : nullptr;
         if (!input) {
             diagnostic = "prepared print state has no complete print resource input";
             return false;
@@ -570,7 +475,6 @@ namespace PrintPreflashTest {
     void caller(const std::filesystem::path& resources) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         auto p = controls();
         auto active = build(p);
         auto disabledControls = p;
@@ -633,7 +537,6 @@ namespace PrintPreflashTest {
     void cache(const std::filesystem::path& resources, const Json& captured) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         cuda_ok(cudaSetDevice(0));
         cuda_ok(cudaFree(nullptr));
         void* context = nullptr;
@@ -656,8 +559,6 @@ namespace PrintPreflashTest {
                 PrintPreflashTest::consume_fault(state, controls);
             };
             prepare(product, p);
-            FocusedRenderStateBuildProduct oldProduct;
-            require(build_print_render_state_product(p, oldProduct, diagnostic), diagnostic.c_str());
             const auto originalHash = cached.printPreflashRawDescriptorHash;
             const auto originalLightHash = cached.printPreflashIlluminantDescriptorHash;
             auto* const originalLight = cached.printPreflashIllumFiltered;
@@ -680,18 +581,6 @@ namespace PrintPreflashTest {
             prepare(product, p);
             cached.printPreflashRawDescriptorHash = 0;
             const auto hostLight = cached.printPreflashIllumFilteredHost;
-            status(fj_test_film_recipe_fault(11, 1));
-            // SF_TEMP_BRIDGE_NATIVE_PREFLASH_MISS: old native derivation still owns
-            // this exact cache-miss panic comparison until I7 retires it.
-            const auto SF_TEMP_BRIDGE_NATIVE_PREFLASH_MISS = [&] {
-                auto& assets = JuicerProcess::root().assets();
-                JuicerCuda::PrintResourcePreparation oldRequest{&oldProduct.recipe, &assets, &*oldProduct.payload.printMainIlluminant};
-                expect_panic([&] {
-                    JuicerCuda::prepare_print_resources(cached, oldRequest, nullptr, failure);
-                });
-            };
-            SF_TEMP_BRIDGE_NATIVE_PREFLASH_MISS();
-            require(cached.printPreflashRawDescriptorHash == 0 && words(cached.printPreflashRaw, 3) == originalRaw, "failed raw miss commits no new raw identity or partial triplet");
             prepare(product, p);
             require(cached.printPreflashRawDescriptorHash == originalHash && cached.printPreflashIllumFiltered == originalLight && cached.printPreflashIllumFilteredHost == hostLight && words(cached.printPreflashRaw, 3) == originalRaw, "illuminant-hit/raw-miss uses retained host light and recovers");
             for (bool film : {true, false}) {
@@ -710,19 +599,6 @@ namespace PrintPreflashTest {
             changedControls.preflashMFilterCc = 5;
             changedControls.preflashYFilterCc = -3;
             auto changed = build(changedControls);
-            FocusedRenderStateBuildProduct oldChangedProduct;
-            require(build_print_render_state_product(changedControls, oldChangedProduct, diagnostic), diagnostic.c_str());
-            status(fj_test_film_recipe_fault(11, 1));
-            const auto SF_TEMP_BRIDGE_NATIVE_PREFLASH_MISS_CHANGED_LIGHT = [&] {
-                auto& assets = JuicerProcess::root().assets();
-                JuicerCuda::PrintResourcePreparation oldRequest{
-                    &oldChangedProduct.recipe, &assets, &*oldChangedProduct.payload.printMainIlluminant};
-                expect_panic([&] {
-                    JuicerCuda::prepare_print_resources(cached, oldRequest, nullptr, failure);
-                });
-            };
-            SF_TEMP_BRIDGE_NATIVE_PREFLASH_MISS_CHANGED_LIGHT();
-            require(cached.printPreflashRawDescriptorHash == originalHash, "failed changed-light integral commits no new raw key");
             prepare(changed, changedControls);
             require(cached.printPreflashRawDescriptorHash != originalHash && cached.printPreflashIlluminantDescriptorHash != originalLightHash, "preflash offsets invalidate both light and raw families");
             for (const auto& row : captured.at("products"))

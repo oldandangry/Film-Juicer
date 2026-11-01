@@ -11,6 +11,7 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <source_location>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -25,8 +26,7 @@
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
 #include "RustAssetBridge.h"
-#include "RustExposureBridge.h"
-#include "RustSpectralBridge.h"
+#include "spectral_source_fixture.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "print_illuminant_fixture.h"
@@ -85,18 +85,11 @@ static_assert(std::is_same_v<decltype(FjFilmInputFailure::origin), uint32_t>);
 static_assert(std::is_same_v<decltype(FjFilmInputFailure::reason), uint32_t>);
 static_assert(std::is_same_v<decltype(FjFilmInputFailure::sensitivity), FjSensitivityFailure>);
 
-namespace JuicerAssets::InputTest {
-    // SF_TEMP_BRIDGE_NATIVE_FILM_INPUT_FACADE remains a raw characterization
-    // surface; complete-state admission faults use the checked Rust producer.
-    void before_prepare(const FilmSource&, const Spektrafilm::FilmFoundationBuildInput&) {}
-    void after_prepare(FjStatus&, FjFilmInputFailure&) {}
-    bool translate_failure(FjStatus, const FjFilmInputFailure&, const FjFilmInputParams&, std::string_view, std::string&);
-} // namespace JuicerAssets::InputTest
 
 namespace {
     using Json = nlohmann::json;
     void require(bool condition, const char* message);
-    void status(FjStatus value, std::uint32_t category = FJ_STATUS_SUCCESS);
+    void status(FjStatus value, std::uint32_t category = FJ_STATUS_SUCCESS, std::source_location location = std::source_location::current());
     struct PreparedInputLifetimeWitness {
         FjAssets* assets = nullptr;
         InstanceState* state = nullptr;
@@ -175,11 +168,11 @@ namespace {
             status(fj_legacy_film_profile_release(profile.release(), nullptr));
 
             FjInputHullOwner* acquiredHull = nullptr;
-            const auto releaseHull = [](FjInputHullOwner* owner) {
+            const auto release_hull = [](FjInputHullOwner* owner) {
                 if (owner)
                     (void)fj_legacy_input_hull_release(owner, nullptr);
             };
-            std::unique_ptr<FjInputHullOwner, decltype(releaseHull)> hull(acquiredHull, releaseHull);
+            std::unique_ptr<FjInputHullOwner, decltype(release_hull)> hull(acquiredHull, release_hull);
             const FjStatus hullStatus = fj_legacy_assets_input_hull_acquire(witness->assets, &acquiredHull, nullptr);
             hull.reset(acquiredHull);
             status(hullStatus);
@@ -225,8 +218,14 @@ namespace {
             throw std::runtime_error(message);
         }
     }
-    void status(FjStatus value, std::uint32_t category) {
-        require(value.category == category && value.api == FJ_API_NONE && value.native_code == 0, "closed input status");
+    void status(FjStatus value, std::uint32_t category, std::source_location location) {
+        if (value.category != category || value.api != FJ_API_NONE || value.native_code != 0) {
+            throw std::runtime_error("closed input status at line " + std::to_string(location.line()) +
+                                     ": expected=" + std::to_string(category) +
+                                     " actual=" + std::to_string(value.category) +
+                                     " api=" + std::to_string(value.api) +
+                                     " code=" + std::to_string(value.native_code));
+        }
     }
     Json words(const float* values, std::size_t count) {
         Json result = Json::array();
@@ -554,175 +553,54 @@ namespace {
                 error = {errorText.data(), errorText.size(), 0};
                 status(prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls, product, error));
                 require(product.has_value(), "matrix fault is consumed once before complete-state retry");
-
-                // SF_TEMP_BRIDGE_NATIVE_INPUT_SELECTOR_PRECHECK: retain the
-                // old wrapper's boolean/typed diagnostic through its I7 gate.
-                status(fj_test_color_arm_fault(5, 1, 1));
-                FocusedRenderStateBuildProduct comparison;
-                std::string comparisonDiagnostic;
-                const bool built = route % 2 ? build_print_render_state_product(invalid, comparison, comparisonDiagnostic)
-                                             : build_direct_render_state_product(invalid, comparison, comparisonDiagnostic);
-                require(!built && comparisonDiagnostic.starts_with("UnsupportedMode phase=3B field="),
-                        "native signed selectors retain ordinary precheck failure before raw packing");
-                bool nativePropagated = false;
-                try {
-                    (void)(route % 2 ? build_print_render_state_product(controls, comparison, comparisonDiagnostic)
-                                     : build_direct_render_state_product(controls, comparison, comparisonDiagnostic));
-                } catch (const JuicerCuda::ExecutionFailure& failure) {
-                    nativePropagated = failure.failure.diagnostic == "Input matrix preparation failed";
-                }
-                require(nativePropagated, "each native selector precheck preserves the armed matrix fault for the next valid call");
             }
         }
         std::puts("PASS actual source/hull lifetimes, slot return/throw distinctions, admission, supersession, recovery and selector priority");
     }
-    void native_resource_prechecks() {
-        auto& assets = JuicerProcess::root().assets();
-        for (unsigned route = 0; route < 4; ++route) {
-            const auto selected = assets.selected_profiles_for_route({route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f", "kodak_portra_endura", static_cast<Spektrafilm::ScanRoute>(route)});
-            require(selected.valid && selected.filmSource && (route % 2 == 0 || selected.printSource), "selected native precheck fixture sources");
-            for (bool missingProfile : {true, false}) {
-                status(fj_test_color_arm_fault(5, 1, 1));
-                std::string diagnostic;
-                bool valid = false;
-                if (route % 2) {
-                    Spektrafilm::PrintRecipeBuildInput input;
-                    input.film.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                    input.film.filmSource = missingProfile ? nullptr : selected.filmSource.get();
-                    input.film.inputColorSpace = -1;
-                    input.printSource = selected.printSource;
-                    const auto result = Spektrafilm::build_print_render_recipe(std::move(input));
-                    valid = result.valid;
-                    diagnostic = result.diagnostic;
-                } else {
-                    Spektrafilm::DirectRecipeBuildInput input;
-                    input.film.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                    input.film.filmSource = missingProfile ? nullptr : selected.filmSource.get();
-                    input.film.inputColorSpace = -1;
-                    const auto result = Spektrafilm::build_direct_render_recipe(std::move(input));
-                    valid = result.valid;
-                    diagnostic = result.diagnostic;
-                }
-                const char* expected = missingProfile ? (route % 2 ? "MissingRequiredResource phase=4A field=selected_profile" : "MissingRequiredResource phase=3B field=film_profile") : "MissingRequiredResource phase=3B field=reference_illuminant";
-                require(!valid && diagnostic == expected, "native missing profile/reference priority precedes selectors and matrix faults");
-                FjInputColorMatrices matrices{};
-                status(fj_legacy_input_matrices(FJ_INPUT_DWG, &matrices), FJ_STATUS_UNSUPPORTED_INPUT);
-            }
-        }
-    }
-    void routing() {
-        enum class Domain : std::uint8_t {
-            Any,
-            Hanatos,
-            Tc,
-            Mallett,
-            CompressedTc
-        };
-        struct Row {
-            unsigned origin;
-            unsigned reason;
-            unsigned categories;
-            Domain domain;
-        };
-        // Literal origin/reason/category codes independently pin the approved wire envelope.
-        std::vector<Row> rows{{0, 0, 1, Domain::Any}};
-        for (unsigned reason = 1; reason <= 7; ++reason) {
-            rows.push_back({1, reason, 1u << 2, Domain::Any});
-        }
-        for (unsigned reason = 1; reason <= 6; ++reason) {
-            rows.push_back({2, reason, 1u << 3, reason <= 3 ? Domain::Hanatos : reason == 6 ? Domain::CompressedTc
-                                                                                            : Domain::Tc});
-        }
-        rows.push_back({3, 1, 0x1fe, Domain::Any});
-        rows.push_back({3, 2, 0x1fe, Domain::Tc});
-        rows.push_back({3, 3, 0x1fe, Domain::Mallett});
-        rows.push_back({4, 1, 1u << 3, Domain::Any});
-        rows.push_back({4, 2, 0x1fe, Domain::Any});
-        rows.push_back({5, 1, 1u << 3, Domain::Any});
-        for (unsigned reason = 1; reason <= 6; ++reason) {
-            rows.push_back({6, reason, 1u << 8, reason == 4 ? Domain::Tc : reason == 5 ? Domain::Mallett
-                                                                                       : Domain::Any});
-        }
-        rows.push_back({99, 99, 0, Domain::Any});
-        rows.push_back({6, 99, 0, Domain::Any});
-        for (const auto& row : rows) {
-            for (unsigned method = 0; method < 3; ++method) {
-                for (unsigned compression = 0; compression < 2; ++compression) {
-                    for (unsigned category = 0; category <= 9; ++category) {
-                        FjFilmInputParams params{};
-                        params.method = method;
-                        params.input_compression = compression;
-                        const bool tc = method != FJ_RAW_MALLETT_2019;
-                        const bool applicable = row.domain == Domain::Any || (row.domain == Domain::Hanatos && method == 0) ||
-                                                (row.domain == Domain::Tc && tc) || (row.domain == Domain::Mallett && !tc) || (row.domain == Domain::CompressedTc && tc && compression);
-                        const bool valid = applicable && (row.categories & (1u << category));
-                        FjFilmInputFailure failure{row.origin, row.reason, {0, 0}};
-                        std::string diagnostic;
-                        bool returned = false, threw = false, allocated = false;
-                        try {
-                            returned = JuicerAssets::InputTest::translate_failure({category, FJ_API_NONE, 0}, failure, params, "opaque boundary diagnostic", diagnostic);
-                        } catch (const std::bad_alloc&) {
-                            allocated = true;
-                        } catch (const JuicerCuda::ExecutionFailure& error) {
-                            threw = true;
-                            status(error.failure.status, valid ? category : FJ_STATUS_INTERNAL_FAILURE);
-                            if (!valid) {
-                                require(error.failure.diagnostic == "Film input preparation: invalid failure contract", "impossible failure tuple is terminal integrity failure");
-                            }
-                        }
-                        const bool ordinary = valid && (row.origin == 2 || row.origin == 5 || (row.origin == 4 && category == 3));
-                        const bool success = valid && category == 0;
-                        const bool allocation = valid && row.origin == 4 && row.reason == 2 && category == 4;
-                        require(returned == success && allocated == allocation && threw == (!ordinary && !success && !allocation), "every closed origin/reason/category/method/compression routing row");
-                        if (ordinary) {
-                            require(!diagnostic.empty(), "ordinary return preserves owning diagnostic");
-                        }
-                    }
-                }
-            }
-        }
-        for (const auto malformed : {FjSensitivityFailure{0, 1}, {1, 243}, {2, 1}, {3, 0}}) {
-            FjFilmInputParams params{};
-            FjFilmInputFailure failure{4, 1, malformed};
-            std::string diagnostic;
-            bool rejected = false;
-            try {
-                (void)JuicerAssets::InputTest::translate_failure({3, 0, 0}, failure, params, "ignored", diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                rejected = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected, "invalid sensitivity metadata cannot dispatch");
-        }
-        for (auto value : {FjStatus{0, 1, 0}, FjStatus{0, 0, 1}}) {
-            FjFilmInputParams params{};
-            FjFilmInputFailure failure{};
-            std::string diagnostic;
-            bool rejected = false;
-            try {
-                (void)JuicerAssets::InputTest::translate_failure(value, failure, params, "ignored", diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                rejected = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected, "API and native-code fields are closed for CPU preparation");
-        }
-        std::puts("PASS complete native failure-envelope and origin-sensitive return/throw table");
-    }
     void cases(const std::filesystem::path& root, const Json& fixture) {
-        auto& assets = JuicerProcess::root().assets();
-        const auto illuminants = assets.illuminant_filter_curves();
-        Scanner::ScannerIlluminant reference, d65;
-        require(JuicerSpectral::integrate_white(illuminants->d55.copy_curve(), "D55", reference) &&
-                    JuicerSpectral::integrate_white(illuminants->d65.copy_curve(), "D65", d65),
-                "integrated input whites");
-        std::array<float, 81> reconstructed{};
-        std::string diagnostic;
-        require(JuicerExposure::reference_white(Spectral::gHanSpectra, 0.0f, {reference.whiteXYZ[0], reference.whiteXYZ[1], reference.whiteXYZ[2]}, reconstructed, diagnostic), "preceding reference leaf");
-        const auto hull = assets.input_compression_hull();
+        const auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+        JuicerTestSupport::CmfSource cmf(assets);
+        const JuicerTestSupport::HanatosSource hanatos(assets);
+        const JuicerTestSupport::ArcticSource arctic(assets);
+        FjIlluminantsOwner* illuminant_owner = nullptr;
+        FjInputHullOwner* hull_owner = nullptr;
+        status(fj_test_assets_illuminants_acquire(assets, &illuminant_owner, nullptr));
+        const auto release_illuminants = [](FjIlluminantsOwner* owner) {
+            if (owner)
+                (void)fj_test_illuminants_release(owner, nullptr);
+        };
+        std::unique_ptr<FjIlluminantsOwner, decltype(release_illuminants)> illuminant_hold(illuminant_owner, release_illuminants);
+        FjIlluminantsView illuminants{};
+        status(fj_test_illuminants_view(illuminant_hold.get(), &illuminants, nullptr));
+        status(fj_test_assets_input_hull_acquire(assets, &hull_owner, nullptr));
+        const auto release_hull = [](FjInputHullOwner* owner) {
+            if (owner)
+                (void)fj_test_input_hull_release(owner, nullptr);
+        };
+        std::unique_ptr<FjInputHullOwner, decltype(release_hull)> hull_hold(hull_owner, release_hull);
+        FjInputHullView hull{};
+        status(fj_test_input_hull_view(hull_hold.get(), &hull, nullptr));
+        const auto integrated_white = [&](FjFloatSpan source) {
+            const FjSpectralWhiteInput input{{cmf.x(), cmf.y(), cmf.z()}, source};
+            FjSpectralWhite white{};
+            FjSpectralWhiteFailure failure{};
+            FjErrorBuffer error{nullptr, 0, 0};
+            status(fj_test_spectral_white(&input, &white, &failure, &error));
+            return std::array<float, 3>{white.white_xyz[0], white.white_xyz[1], white.white_xyz[2]};
+        };
+        const auto reference = integrated_white(illuminants.d55);
+        const auto d65 = integrated_white(illuminants.d65);
+        FjReferenceWhiteInput reference_input{hanatos.view().samples, {reference[0], reference[1], reference[2]}, 0.0f};
+        FjReferenceWhite reference_white{};
+        FjErrorBuffer referenceError{nullptr, 0, 0};
+        status(fj_test_reconstruction_reference_white(&reference_input, &reference_white, &referenceError));
+        const FjFloatSpan reconstructed{reference_white.samples, 81};
         for (const auto& row : fixture.at("rows")) {
             Profile profile(root, row.at("key"));
             const auto input = params(row);
+            const std::uint64_t source_hash = input.method == FJ_RAW_ARCTIC_2026_BETA04 ? arctic.view().asset_hash : hanatos.view().asset_hash;
             const FjFilmInputResources resources{
-                {illuminants->d55.linear.data(), 81}, {reference.whiteXYZ, 3}, {d65.whiteXYZ, 3}, {reconstructed.data(), 81}, input.method == FJ_RAW_ARCTIC_2026_BETA04 ? Spectral::context().arcticSpectra.assetHash : Spectral::gHanSpectra.assetHash, input.input_compression ? hull->hash : 0};
+                illuminants.d55, {reference.data(), reference.size()}, {d65.data(), d65.size()}, reconstructed, source_hash, input.input_compression ? hull.hash : 0};
             for (auto call : {&fj_legacy_film_input_prepare, &fj_test_film_input_prepare, &fj_test_film_input_c_call}) {
                 FjFilmInput result = poisoned();
                 FjFilmInputFailure failure{99, 99, {99, 99}};
@@ -744,15 +622,15 @@ namespace {
         }
         Profile profile(root, "kodak_portra_400");
         auto input = params(fixture.at("rows").at(0));
-        FjFilmInputResources resources{{illuminants->d55.linear.data(), 81}, {reference.whiteXYZ, 3}, {d65.whiteXYZ, 3}, {reconstructed.data(), 81}, Spectral::gHanSpectra.assetHash, 0};
+        FjFilmInputResources resources{illuminants.d55, {reference.data(), reference.size()}, {d65.data(), d65.size()}, reconstructed, hanatos.view().asset_hash, 0};
         FjFilmInput result{};
         FjFilmInputFailure failure{};
         std::array<char, 8> bytes{};
         FjErrorBuffer error{bytes.data(), bytes.size(), 0};
         auto inactiveHold = resources;
-        inactiveHold.input_hull_hash = hull->hash;
+        inactiveHold.input_hull_hash = hull.hash;
         status(fj_legacy_film_input_prepare(profile.film, &input, &inactiveHold, &result, &failure, nullptr));
-        require(result.input_hull_hash == hull->hash && result.hash == fixture.at("rows")[0].at("raw").at("hash"), "inactive TC hold identity is retained without a conditional hash contribution");
+        require(result.input_hull_hash == hull.hash && result.hash == fixture.at("rows")[0].at("raw").at("hash"), "inactive TC hold identity is retained without a conditional hash contribution");
         for (unsigned test = 0; test < 13; ++test) {
             auto badInput = input;
             auto badResources = resources;
@@ -904,7 +782,7 @@ namespace {
             cleared(result);
         }
         status(fj_legacy_assets_release_cached_payloads(profile.assets, nullptr));
-        status(assets.release_cached_payloads());
+        status(JuicerProcess::root().assets().release_cached_payloads());
         status(fj_legacy_film_input_prepare(profile.film, &input, &resources, &result, &failure, nullptr));
         require(result.hash == fixture.at("rows")[0].at("raw").at("hash"), "held source and arrays survive cache release");
         resources.reference_white_xyz = {nullptr, 0};
@@ -932,17 +810,14 @@ namespace {
 int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all fixture failures return nonzero.
     require(argc == 3 || (argc == 4 && std::string_view(argv[3]) == "products"), "resource root and immutable preset fixture required");
     layouts();
-    routing();
     std::ifstream stream(argv[2]);
     const auto fixture = PrintIlluminantFixtures::apply(argv[2], Json::parse(stream));
     require(fixture.at("rows").size() == 140, "exact nonempty native case membership");
     JuicerCuda::Owner owner;
     owner.create(std::filesystem::path(argv[1]));
-    JuicerProcess::root().ensure_bootstrap();
     if (argc == 4) {
         native_products(argv[1], fixture);
         lifetime_and_admission();
-        native_resource_prechecks();
     } else {
         cases(argv[1], fixture);
     }

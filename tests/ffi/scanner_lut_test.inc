@@ -1,3 +1,5 @@
+#include "host_preparation_fixture.h"
+
 namespace ScannerLutTest {
     constexpr std::array kArrayNames{"log2_xyz", "slope_c", "slope_m", "slope_y", "cell_min", "cell_max"};
     struct Literal {
@@ -56,42 +58,38 @@ namespace ScannerLutTest {
         require(f.reason == reason && f.buffer == buffer && f.index == index && f.channel == channel, "exact scanner LUT failure fields");
     }
     void values(const Json& rows) {
-        for (bool facade : {false, true})
-            for (const auto& row : rows) {
-                const Literal literal(row.at("input"));
-                const auto input = wire(literal);
-                FjScannerLutOwner* owner = reinterpret_cast<FjScannerLutOwner*>(std::uintptr_t{0x5555});
-                FjScannerLutFailure f{99, 99, 99, 99};
-                std::array<char, 256> text{};
-                FjErrorBuffer error{text.data(), text.size(), 99};
-                const auto acquire = facade ? fj_test_scanner_lut_acquire : fj_legacy_scanner_lut_acquire;
-                const auto view = facade ? fj_test_scanner_lut_view : fj_legacy_scanner_lut_view;
-                const auto release = facade ? fj_test_scanner_lut_release : fj_legacy_scanner_lut_release;
-                const auto result = acquire(&input, &owner, &f, &error);
-                const auto& expected = row.at("native");
-                if (!expected.at("success").get<bool>()) {
-                    status(result, FJ_STATUS_PREPARATION_FAILURE);
-                    require(!owner, "failed LUT publishes no owner");
-                    const bool resolution = input.resolution < 2;
-                    metadata(f, resolution ? 2u : 5u, 0, expected.at("failed_voxel"), expected.at("failed_channel"));
-                    require(std::string(text.data(), error.length) == expected.at("diagnostic").get<std::string>(), "native LUT diagnostic continuity");
-                    continue;
-                }
-                status(result);
-                metadata(f);
-                require(owner && error.length == 0 && text[0] == 0, "successful complete LUT owner");
-                FjScannerLutView borrowed{};
-                status(view(owner, &borrowed, &f, &error));
-                metadata(f);
-                compare(project(borrowed), expected);
-                FjScannerLutView repeated{};
-                status(view(owner, &repeated, &f, nullptr));
-                metadata(f);
-                require(borrowed.log2_xyz.data == repeated.log2_xyz.data, "immutable repeated view does no copy");
-                compare(project(repeated), expected);
-                status(release(owner, nullptr));
-                owner = nullptr;
+        for (const auto& row : rows) {
+            const Literal literal(row.at("input"));
+            const auto input = wire(literal);
+            FjScannerLutOwner* owner = reinterpret_cast<FjScannerLutOwner*>(std::uintptr_t{0x5555});
+            FjScannerLutFailure f{99, 99, 99, 99};
+            std::array<char, 256> text{};
+            FjErrorBuffer error{text.data(), text.size(), 99};
+            const auto result = fj_test_scanner_lut_c_acquire(&input, &owner, &f, &error);
+            const auto& expected = row.at("native");
+            if (!expected.at("success").get<bool>()) {
+                status(result, FJ_STATUS_PREPARATION_FAILURE);
+                require(!owner, "failed LUT publishes no owner");
+                const bool resolution = input.resolution < 2;
+                metadata(f, resolution ? 2u : 5u, 0, expected.at("failed_voxel"), expected.at("failed_channel"));
+                require(std::string(text.data(), error.length) == expected.at("diagnostic").get<std::string>(), "native LUT diagnostic continuity");
+                continue;
             }
+            status(result);
+            metadata(f);
+            require(owner && error.length == 0 && text[0] == 0, "successful complete LUT owner");
+            FjScannerLutView borrowed{};
+            status(fj_test_scanner_lut_c_view(owner, &borrowed, &f, &error));
+            metadata(f);
+            compare(project(borrowed), expected);
+            FjScannerLutView repeated{};
+            status(fj_test_scanner_lut_c_view(owner, &repeated, &f, nullptr));
+            metadata(f);
+            require(borrowed.log2_xyz.data == repeated.log2_xyz.data, "immutable repeated view does no copy");
+            compare(project(repeated), expected);
+            status(fj_test_scanner_lut_c_release(owner, nullptr));
+            owner = nullptr;
+        }
         require(fj_test_scanner_lut_live_owners() == 0, "value cohort drops every host owner");
     }
     void callback_failure_diagnostics(const Literal& literal) {
@@ -150,7 +148,7 @@ namespace ScannerLutTest {
             FjScannerLutFailure f{99, 99, 99, 99};
             std::array<char, 256> text{};
             FjErrorBuffer error{text.data(), text.size(), 99};
-            status(fj_legacy_scanner_lut_acquire(&input, &owner, &f, &error), expected.category);
+            status(fj_test_scanner_lut_acquire(&input, &owner, &f, &error), expected.category);
             require(!owner, "rejected LUT clears owner");
             metadata(f, expected.reason, expected.buffer);
             require(error.length < error.capacity && text[error.length] == 0, "LUT diagnostics bounded and terminated");
@@ -189,101 +187,97 @@ namespace ScannerLutTest {
             FjScannerLutFailure f{};
             FjScannerLutView view{};
             if (operation)
-                status(fj_legacy_scanner_lut_acquire(&original, &owner, &f, nullptr));
+                status(fj_test_scanner_lut_acquire(&original, &owner, &f, nullptr));
             status(fj_test_scanner_lut_fault(operation, 1));
             status(fj_test_scanner_lut_fault(operation, 12), 2); // Invalid pair preserves the armed panic.
             if (operation == 0) {
-                status(fj_legacy_scanner_lut_acquire(&original, &owner, &f, nullptr), 8);
+                status(fj_test_scanner_lut_acquire(&original, &owner, &f, nullptr), 8);
                 metadata(f, 6);
                 require(!owner, "acquire panic no publication");
             } else if (operation == 1) {
-                status(fj_legacy_scanner_lut_view(owner, &view, &f, nullptr), 8);
+                status(fj_test_scanner_lut_view(owner, &view, &f, nullptr), 8);
                 metadata(f, 6);
                 require(view.resolution == 0 && view.cell_max.data == nullptr, "view panic clears all storage");
-                status(fj_legacy_scanner_lut_release(owner, nullptr));
+                status(fj_test_scanner_lut_release(owner, nullptr));
             } else
-                status(fj_legacy_scanner_lut_release(owner, nullptr), 8);
+                status(fj_test_scanner_lut_release(owner, nullptr), 8);
             require(fj_test_scanner_lut_live_owners() == 0, "contained panic consumes/drops its owned storage");
         }
         FjScannerLutOwner* owner = nullptr;
         FjScannerLutFailure f{99, 99, 99, 99};
         FjScannerLutView view{};
-        status(fj_legacy_scanner_lut_acquire(nullptr, &owner, &f, nullptr), 2);
+        status(fj_test_scanner_lut_acquire(nullptr, &owner, &f, nullptr), 2);
         metadata(f, 1);
         owner = reinterpret_cast<FjScannerLutOwner*>(std::uintptr_t{0x5555});
-        status(fj_legacy_scanner_lut_acquire(&original, &owner, reinterpret_cast<FjScannerLutFailure*>(std::uintptr_t{1}), nullptr), 2);
+        status(fj_test_scanner_lut_acquire(&original, &owner, reinterpret_cast<FjScannerLutFailure*>(std::uintptr_t{1}), nullptr), 2);
         require(!owner, "malformed peer cannot prevent owner clearing");
         f = {99, 99, 99, 99};
-        status(fj_legacy_scanner_lut_acquire(&original, nullptr, &f, nullptr), 2);
+        status(fj_test_scanner_lut_acquire(&original, nullptr, &f, nullptr), 2);
         metadata(f, 1);
         FjErrorBuffer malformed{nullptr, 1, 99};
-        status(fj_legacy_scanner_lut_acquire(&original, &owner, &f, &malformed), 2);
+        status(fj_test_scanner_lut_acquire(&original, &owner, &f, &malformed), 2);
         metadata(f, 1);
         require(!owner && malformed.length == 0, "diagnostic admission clears independent outputs");
         std::memset(&view, 0x55, sizeof(view));
-        status(fj_legacy_scanner_lut_view(nullptr, &view, &f, nullptr), 2);
+        status(fj_test_scanner_lut_view(nullptr, &view, &f, nullptr), 2);
         metadata(f, 1);
         require(view.resolution == 0 && view.log2_xyz.data == nullptr && view.slope_c.count == 0 && view.slope_m.data == nullptr && view.slope_y.count == 0 && view.cell_min.data == nullptr && view.cell_max.count == 0, "all six view fields independently cleared");
         std::array<char, 4> text{};
         FjErrorBuffer truncated{text.data(), text.size(), 99};
-        status(fj_legacy_scanner_lut_acquire(nullptr, &owner, &f, &truncated), 2);
+        status(fj_test_scanner_lut_acquire(nullptr, &owner, &f, &truncated), 2);
         require(truncated.length == 3 && text[3] == 0, "truncated diagnostic NUL");
         FjErrorBuffer zero{reinterpret_cast<char*>(std::uintptr_t{1}), 0, 99};
-        status(fj_legacy_scanner_lut_acquire(nullptr, &owner, &f, &zero), 2);
+        status(fj_test_scanner_lut_acquire(nullptr, &owner, &f, &zero), 2);
         require(zero.length == 0, "zero-capacity diagnostic ignores backing");
         // Ignored baseline and nonpositive-K backing are never admitted or read.
         input = original;
         input.has_baseline = 0;
         input.baseline_min = {reinterpret_cast<const float*>(std::uintptr_t{1}), SIZE_MAX};
-        status(fj_legacy_scanner_lut_acquire(&input, &owner, &f, nullptr));
-        status(fj_legacy_scanner_lut_release(owner, nullptr));
+        status(fj_test_scanner_lut_acquire(&input, &owner, &f, nullptr));
+        status(fj_test_scanner_lut_release(owner, nullptr));
         input = original;
         input.sample_count = 0;
         input.eps_c = input.eps_m = input.eps_y = input.weighted_x = input.weighted_y = input.weighted_z = input.baseline_min = {reinterpret_cast<const float*>(std::uintptr_t{1}), SIZE_MAX};
         status(fj_test_scanner_lut_fault(0, 11));
-        status(fj_legacy_scanner_lut_acquire(&input, &owner, &f, nullptr), 3);
+        status(fj_test_scanner_lut_acquire(&input, &owner, &f, nullptr), 3);
         metadata(f, 5, 0, 0, 0);
-        status(fj_legacy_scanner_lut_acquire(&original, &owner, &f, nullptr)); // Unreached reservation fault was consumed at admission.
-        status(fj_legacy_scanner_lut_release(owner, &malformed), 2);
+        status(fj_test_scanner_lut_acquire(&original, &owner, &f, nullptr)); // Unreached reservation fault was consumed at admission.
+        status(fj_test_scanner_lut_release(owner, &malformed), 2);
         require(fj_test_scanner_lut_live_owners() == 0, "invalid diagnostics consume legitimate release");
-        status(fj_legacy_scanner_lut_release(nullptr, nullptr));
+        status(fj_test_scanner_lut_release(nullptr, nullptr));
         {
             Literal expiring(row.at("input"));
             const auto wireInput = wire(expiring);
-            status(fj_legacy_scanner_lut_acquire(&wireInput, &owner, &f, nullptr));
+            status(fj_test_scanner_lut_acquire(&wireInput, &owner, &f, nullptr));
             for (auto& spectrum : expiring.spectra) {
                 std::fill(spectrum.begin(), spectrum.end(), -999.0f);
                 spectrum.clear();
                 spectrum.shrink_to_fit();
             }
         }
-        status(fj_legacy_scanner_lut_view(owner, &view, &f, nullptr));
+        status(fj_test_scanner_lut_view(owner, &view, &f, nullptr));
         compare(project(view), row.at("native"));
-        status(fj_legacy_scanner_lut_release(owner, nullptr));
+        status(fj_test_scanner_lut_release(owner, nullptr));
     }
-    void native_values(const Json& rows) {
-        static_assert(!std::is_copy_constructible_v<JuicerScanner::Lut>);
-        static_assert(std::is_nothrow_move_constructible_v<JuicerScanner::Lut>);
+    void callback_values(const Json& rows) {
         for (const auto& row : rows) {
             const Literal literal(row.at("input"));
-            // Distinct prior values make dropped error forwarding observable.
-            JuicerCuda::Failure failure{{FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, 1}, "previous failure"};
-            auto owner = JuicerScanner::Lut::acquire(literal.medium, literal.resolution, failure);
-            require(owner.has_value() == row.at("native").at("success").get<bool>(), "native adapter success/failure");
-            if (!owner) {
-                status(failure.status, FJ_STATUS_PREPARATION_FAILURE);
-                require(failure.diagnostic == row.at("native").at("diagnostic").get<std::string>(), "native adapter preserves scanner LUT failure diagnostic");
-                continue;
-            }
-            auto moved = std::move(*owner);
-            owner.reset();
-            const auto span = [](std::span<const float> v) -> FjFloatSpan {
-                return {v.data(), v.size()};
-            };
-            const FjScannerLutView view{literal.resolution, span(moved.log2_xyz()), span(moved.slope_c()), span(moved.slope_m()), span(moved.slope_y()), span(moved.cell_min()), span(moved.cell_max())};
-            compare(project(view), row.at("native"));
+            JuicerTestSupport::with_host_preparation([&](const FjHostPreparation* preparation) {
+                // Distinct prior values make dropped error forwarding observable.
+                JuicerCuda::Failure failure{{FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, 1}, "previous failure"};
+                FjScannerLutView view{};
+                const bool built = JuicerCuda::prepare_scanner_lut(*preparation, literal.medium, literal.resolution, view, failure);
+                require(built == row.at("native").at("success").get<bool>(), "callback adapter success/failure");
+                if (!built) {
+                    status(failure.status, FJ_STATUS_PREPARATION_FAILURE);
+                    require(failure.diagnostic == row.at("native").at("diagnostic").get<std::string>(), "callback adapter preserves scanner LUT failure diagnostic");
+                } else {
+                    compare(project(view), row.at("native"));
+                }
+                return true;
+            });
         }
-        require(fj_test_scanner_lut_live_owners() == 0, "native moves and error cleanup consume once");
+        require(fj_test_scanner_lut_live_owners() == 0, "callback values release every host owner");
     }
 } // namespace ScannerLutTest
 
@@ -291,7 +285,6 @@ namespace ScannerLutTest {
     void check_products(const std::filesystem::path& resources, const Json& captured) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         require(captured.at("products").size() == 4, "exact actual scanner product membership");
         for (unsigned route = 0; route < 4; ++route) {
             auto params = PrintPreflashTest::controls();
@@ -321,42 +314,31 @@ namespace ScannerLutTest {
             const auto& expected = captured.at("products")[route];
             require(expected.at("route").get<unsigned>() == route && expected.at("descriptor_hash").get<std::uint64_t>() == descriptor.hash, "actual scanner product descriptor identity");
             require(input(medium, descriptor.resolution) == expected.at("input"), "every actual selected scanner table and bound word");
-            JuicerCuda::Failure failure;
-            auto owner = JuicerScanner::Lut::acquire(medium, descriptor.resolution, failure);
-            require(owner.has_value(), failure.diagnostic.c_str());
-            const auto span = [](std::span<const float> values) -> FjFloatSpan {
-                return {values.data(), values.size()};
-            };
-            const FjScannerLutView lutView{descriptor.resolution, span(owner->log2_xyz()), span(owner->slope_c()), span(owner->slope_m()), span(owner->slope_y()), span(owner->cell_min()), span(owner->cell_max())};
-            compare(project(lutView), expected.at("native"));
+            JuicerTestSupport::with_host_preparation([&](const FjHostPreparation* preparation) {
+                JuicerCuda::Failure failure;
+                FjScannerLutView lutView{};
+                const bool prepared = JuicerCuda::prepare_scanner_lut(*preparation, medium, descriptor.resolution, lutView, failure);
+                require(prepared, failure.diagnostic.c_str());
+                // All six borrowed arrays are compared before callback backing expires.
+                compare(project(lutView), expected.at("native"));
+                return true;
+            });
         }
     }
-    void native_failures(const Json& captured) {
+    void lifetime(const Json& captured) {
         const Literal literal(captured.at("cases")[0].at("input"));
-        for (unsigned buffer = 1; buffer <= 10; ++buffer) {
-            status(fj_test_scanner_lut_fault(0, buffer + 1));
-            JuicerCuda::Failure failure;
-            auto owner = JuicerScanner::Lut::acquire(literal.medium, literal.resolution, failure);
-            require(!owner && failure.status.category == FJ_STATUS_ALLOCATION_FAILURE && failure.status.api == FJ_API_NONE && failure.status.native_code == 0 && failure.diagnostic == "scanner LUT host allocation failed", "native adapter preserves typed host allocation failure");
-        }
-        for (unsigned operation : {0u, 1u}) {
-            status(fj_test_scanner_lut_fault(operation, 1));
-            JuicerCuda::Failure failure;
-            auto owner = JuicerScanner::Lut::acquire(literal.medium, literal.resolution, failure);
-            require(!owner && failure.status.category == FJ_STATUS_INTERNAL_FAILURE && failure.diagnostic == "scanner LUT preparation panicked", "native adapter preserves acquire/view panic and drops provisional owner");
-        }
         const auto in = wire(literal);
         FjScannerLutOwner* first = nullptr;
         FjScannerLutOwner* second = nullptr;
         FjScannerLutFailure f{};
-        status(fj_legacy_scanner_lut_acquire(&in, &first, &f, nullptr));
-        status(fj_legacy_scanner_lut_acquire(&in, &second, &f, nullptr));
+        status(fj_test_scanner_lut_acquire(&in, &first, &f, nullptr));
+        status(fj_test_scanner_lut_acquire(&in, &second, &f, nullptr));
         require(first != second && fj_test_scanner_lut_live_owners() == 2, "independent LUT owners");
-        status(fj_legacy_scanner_lut_release(std::exchange(first, nullptr), nullptr));
+        status(fj_test_scanner_lut_release(std::exchange(first, nullptr), nullptr));
         FjScannerLutView view{};
-        status(fj_legacy_scanner_lut_view(second, &view, &f, nullptr));
+        status(fj_test_scanner_lut_view(second, &view, &f, nullptr));
         compare(project(view), captured.at("cases")[0].at("native"));
-        status(fj_legacy_scanner_lut_release(std::exchange(second, nullptr), nullptr));
-        require(fj_test_scanner_lut_live_owners() == 0, "native errors and independent owners release exactly once");
+        status(fj_test_scanner_lut_release(std::exchange(second, nullptr), nullptr));
+        require(fj_test_scanner_lut_live_owners() == 0, "independent raw owners release exactly once");
     }
 } // namespace ScannerLutTest

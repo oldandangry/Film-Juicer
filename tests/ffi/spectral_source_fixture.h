@@ -253,5 +253,4 @@ namespace JuicerTestSupport {
 
 void fj_test_spectral_products(const nlohmann::json& fixture,
                                const JuicerTestSupport::SpectralFixturePaths& paths,
-                               bool faults,
-                               void (*nativeAllocationCheck)(const nlohmann::json&));
+                               bool faults);

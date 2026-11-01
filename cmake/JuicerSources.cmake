@@ -25,35 +25,24 @@ set(JUICER_NATIVE_SOURCES
 )
 
 set(JUICER_HOST_SOURCES
-    src/CudaRenderProjection.cpp
     src/JuicerState.cpp
     src/PreparedState.cpp
     src/RustAssetBridge.cpp
-    src/RustSpectralBridge.cpp
-    src/RustReconstructionBridge.cpp
-    src/RustFilmInputBridge.cpp
-    src/RustFilmRecipeBridge.cpp
     src/RustScannerBridge.cpp
     src/RustFrameBridge.cpp
-    src/RustGaussianBridge.cpp
-    src/RustExposureBridge.cpp
     src/RustGamutBridge.cpp
     src/RustColorBridge.cpp
     src/DiffusionHostBehavior.cpp
-    src/RenderRecipe.cpp
+    src/RenderValues.cpp
     src/FilmEffectsFrameDescriptors.cpp
     src/ResourceAssetLibrary.cpp
-    src/Illuminants.cpp
     src/ScatterHalation.cpp
     src/RustHalationBridge.cpp
     src/RustDiffusionBridge.cpp
     src/RustDirBridge.cpp
-    src/RustGrainFrameBridge.cpp
     src/RustEffectsFrameBridge.cpp
     src/RustDirBoundaryBridge.cpp
     src/ScanRoute.cpp
-    src/Scanner.cpp
-    src/SpectralProcessing.cpp
 )
 
 set(JUICER_ADAPTER_SOURCES

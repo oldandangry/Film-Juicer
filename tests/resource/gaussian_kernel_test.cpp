@@ -95,7 +95,7 @@ namespace {
         require(a.entries == b.entries && a.allocations == b.allocations &&
                     a.ledger.chargedBytes == b.ledger.chargedBytes && a.ledger.reservedBytes == b.ledger.reservedBytes &&
                     a.ledger.committedBytes == b.ledger.committedBytes && a.ledger.retiringBytes == b.ledger.retiringBytes &&
-                    a.ledger.recordCount == b.ledger.recordCount,
+                    a.ledger.recordCount == b.ledger.recordCount && a.ledger.capBytes == b.ledger.capBytes,
                 "Gaussian failed transition preserves cache/record/ledger balance");
     }
     void download(const Resources::DeviceGaussianKernel& kernel, const Json& fixture) {
@@ -157,6 +157,20 @@ namespace {
         Fixture fixture;
         auto& r = *fixture.resources;
         Failure failure;
+        const auto empty = snapshot(r);
+        const auto coldAcquires = fj_test_gaussian_kernel_acquires();
+        require(empty.entries == 0 && empty.allocations == 0 && empty.ledger.reservedBytes == 0 &&
+                    empty.ledger.committedBytes == 0 && empty.ledger.retiringBytes == 0 && empty.ledger.chargedBytes == 0 && empty.ledger.recordCount == 0,
+                "fresh Gaussian owner has no kernel candidate or device charge");
+        require(!ensure_gaussian_kernel(r, r.scannerLensBlurKernel, 1.0f, 3, failure, nullptr), "cold Gaussian miss requires host preparation");
+        require(failure.status.category == FJ_STATUS_PREPARATION_FAILURE && failure.status.api == FJ_API_NONE &&
+                    failure.status.native_code == 0 && failure.diagnostic == "Gaussian kernel projection invalid",
+                "cold null Gaussian preparation keeps the exact typed transport failure");
+        require(!r.scannerLensBlurKernel.weights && r.scannerLensBlurKernel.radius == 0 && std::bit_cast<std::uint32_t>(r.scannerLensBlurKernel.sigma) == 0,
+                "cold null Gaussian preparation publishes no kernel candidate");
+        equal(snapshot(r), empty);
+        require(fj_test_gaussian_kernel_acquires() == coldAcquires && fj_test_gaussian_kernel_live_owners() == 0,
+                "cold null Gaussian preparation visits no callback and retains no Rust owner");
         require(ensure_prepared_gaussian(r, r.scannerLensBlurKernel, 1.0f, 3, failure), "key witness seed");
         const auto old = r.scannerLensBlurKernel;
         const auto initial = snapshot(r);
@@ -164,6 +178,12 @@ namespace {
         require(fj_test_gaussian_kernel_fault(0, 1).category == 0, "arm acquire panic before Gaussian warm hit");
         require(ensure_prepared_gaussian(r, r.scannerUnsharpKernel, 1.0f, 3, failure), "warm Gaussian hit while callback fault is armed");
         require(fj_test_gaussian_kernel_acquires() == warmAcquires && r.scannerUnsharpKernel.weights == old.weights, "warm hit leaves callback unvisited");
+        require(ensure_gaussian_kernel(r, r.scannerUnsharpKernel, 1.0f, 3, failure, nullptr), "warm Gaussian hit succeeds without host preparation");
+        require(r.scannerUnsharpKernel.weights == old.weights && r.scannerUnsharpKernel.radius == old.radius &&
+                    std::bit_cast<std::uint32_t>(r.scannerUnsharpKernel.sigma) == std::bit_cast<std::uint32_t>(old.sigma) &&
+                    fj_test_gaussian_kernel_acquires() == warmAcquires && fj_test_gaussian_kernel_live_owners() == 0,
+                "warm null Gaussian preparation reuses exact metadata without a callback or Rust owner");
+        equal(snapshot(r), initial);
         require(!ensure_prepared_gaussian(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "next actual miss consumes the pending acquire panic");
         require(failure.status.category == FJ_STATUS_INTERNAL_FAILURE && fj_test_gaussian_kernel_acquires() == warmAcquires + 1 &&
                     r.scannerLensBlurKernel.weights == old.weights && fj_test_gaussian_kernel_live_owners() == 0,

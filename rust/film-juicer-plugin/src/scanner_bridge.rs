@@ -959,7 +959,7 @@ const _: fn(FjScannerCorrectionTrace) = |value| {
     let _: u64 = value.hash;
 };
 
-// SF_TEMP_BRIDGE_SCANNER_LUT: immutable owner/view transport; remove S4.E.
+// Scanner LUT input and borrowed output for call-local host preparation.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct FjScannerLutInput {
@@ -978,6 +978,7 @@ pub(crate) struct FjScannerLutInput {
     pub(crate) medium: u32,
     pub(crate) resolution: u32,
 }
+#[cfg(feature = "test-support")]
 #[repr(C)]
 pub(crate) struct FjScannerLutOwner {
     _private: [u8; 0],
@@ -1335,6 +1336,7 @@ pub(crate) unsafe fn prepare_host_lut(
 /// # Safety
 /// Same live/disjoint synchronous contract as lut_call; input backing expires
 /// on return. A successful unique handle transfers to its matching release.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn lut_acquire(
     input: *const FjScannerLutInput,
     out: *mut *mut FjScannerLutOwner,
@@ -1357,6 +1359,7 @@ pub(crate) unsafe fn lut_acquire(
 /// # Safety
 /// The caller holds a legitimate live unique owner, excludes release and owns
 /// the disjoint output records. Borrowed view storage expires at release.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn lut_view(
     owner: *const FjScannerLutOwner,
     out: *mut FjScannerLutView,
@@ -1377,6 +1380,7 @@ pub(crate) unsafe fn lut_view(
 /// # Safety
 /// NULL or one legitimate live matching owner transfers exactly once, excluding
 /// all views. Invalid diagnostics still consume an admitted nonnull owner.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn lut_release(
     owner: *mut FjScannerLutOwner,
     error: *mut FjErrorBuffer,
@@ -1408,55 +1412,6 @@ pub(crate) unsafe fn lut_release(
         })
     }
 }
-
-/// # Safety
-/// Same acquire contract as lut_acquire.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_scanner_lut_acquire(
-    input: *const FjScannerLutInput,
-    out: *mut *mut FjScannerLutOwner,
-    failure: *mut FjScannerLutFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked owner operation scopes all raw access.
-    unsafe { lut_acquire(input, out, failure, error) }
-}
-/// # Safety
-/// Same live-owner/view exclusion contract as lut_view.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_scanner_lut_view(
-    owner: *const FjScannerLutOwner,
-    out: *mut FjScannerLutView,
-    failure: *mut FjScannerLutFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked view operation scopes all raw access.
-    unsafe { lut_view(owner, out, failure, error) }
-}
-/// # Safety
-/// Same consuming live-owner contract as lut_release.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_scanner_lut_release(
-    owner: *mut FjScannerLutOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked release consumes matching ownership on every outcome.
-    unsafe { lut_release(owner, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjScannerLutInput,
-    *mut *mut FjScannerLutOwner,
-    *mut FjScannerLutFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_lut_acquire;
-const _: unsafe extern "C" fn(
-    *const FjScannerLutOwner,
-    *mut FjScannerLutView,
-    *mut FjScannerLutFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_lut_view;
-const _: unsafe extern "C" fn(*mut FjScannerLutOwner, *mut FjErrorBuffer) -> FjStatus =
-    fj_legacy_scanner_lut_release;
 
 #[cfg(feature = "test-support")]
 pub(crate) mod lut_faults {

@@ -707,7 +707,7 @@ namespace JuicerCuda {
         }
     }
 
-#if defined(JUICER_NOISE_TEST_HOOK)
+#if defined(JUICER_NATIVE_CALL_TEST_HOOK)
     bool calling_thread_native_gate_active() noexcept {
         return gNativeCallActive;
     }

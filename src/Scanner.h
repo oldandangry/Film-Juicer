@@ -12,10 +12,6 @@
 #include "ScanRoute.h"
 #include "SpectralData.h"
 
-struct DensityBoundsRecipe;
-struct ProfileRoute;
-struct ScannerOutputRecipe;
-struct RenderRecipe;
 
 namespace Scanner {
 
@@ -69,8 +65,6 @@ namespace Scanner {
         ScannerDensityRange range;
     };
 
-    SpectralTablesView spectral_tables_view(const Spectral::SpectralTables& tables);
-
     enum class ScannedMediumKind : std::uint8_t {
         Film,
         Print
@@ -79,7 +73,7 @@ namespace Scanner {
     // ScannerSpectralLutDescriptor family contract:
     // Producer: safe Rust scanner::describe_lut through the synchronous S4.E bridge.
     // Consumer: focused scanner LUT preparation behind PreparedCudaFrame.
-    // Identity: route, medium/polarity, DensityBoundsRecipe hash, selected channel/base density,
+    // Identity: route, medium/polarity, density-bounds hash, selected channel/base density,
     // viewing illuminant, observer, LUT resolution, and the fixed LUT representation schema.
     // Scanner correction, output color/CCTF, glare, blur, unsharp, frame bounds, auto exposure,
     // and downstream scanner effects are excluded.
@@ -97,30 +91,6 @@ namespace Scanner {
         std::uint64_t hash = 0;
     };
 
-    struct DirectScannerSpectralLutDescriptorInput {
-        const ::ProfileRoute* profileRoute = nullptr;
-        const ::DensityBoundsRecipe* densityBounds = nullptr;
-        const ::ScannerOutputRecipe* scannerOutput = nullptr;
-        std::string_view observerIdentity = "CIE1931_2deg_380_780_5nm";
-    };
-
-    struct PrintScannerSpectralLutDescriptorInput {
-        const ::ProfileRoute* profileRoute = nullptr;
-        const ::DensityBoundsRecipe* densityBounds = nullptr;
-        const ::ScannerOutputRecipe* scannerOutput = nullptr;
-        std::string_view observerIdentity = "CIE1931_2deg_380_780_5nm";
-    };
-
-    bool build_direct_scanner_spectral_lut_descriptor(
-        const DirectScannerSpectralLutDescriptorInput& input,
-        ScannerSpectralLutDescriptor& outDescriptor,
-        std::string& outDiagnostic);
-
-    bool build_print_scanner_spectral_lut_descriptor(
-        const PrintScannerSpectralLutDescriptorInput& input,
-        ScannerSpectralLutDescriptor& outDescriptor,
-        std::string& outDiagnostic);
-
     struct ScannerColorCorrectionDescriptor {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         bool active = false;
@@ -137,18 +107,7 @@ namespace Scanner {
         std::uint64_t hash = 0;
     };
 
-    struct PrintCorrectionDerivationInput {
-        const ::RenderRecipe* recipe = nullptr;
-        const Spectral::SpectralTables* scannerTables = nullptr;
-        const float* mainIlluminant = nullptr;
-        int spectralSampleCount = 0;
-        const float* preflashRawCmy = nullptr;
-        float normalizer = 1.0f;
-    };
-
-    // SF_TEMP_BRIDGE_SCANNER_POST_EFFECTS: Rust constructs complete scalar policy
-    // through the synchronous adapter; native frame/resource consumers bind it.
-    // Retire this model carrier at S4.E. Gaussian weights/residency stay native.
+    // Resolved post-effects values; Gaussian weights and residency remain native.
     struct ScannerPostEffectsDescriptor {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         bool glareActive = false;
@@ -168,22 +127,6 @@ namespace Scanner {
             return hash != 0;
         }
     };
-
-    bool build_direct_scanner_color_correction_descriptor(
-        const ::RenderRecipe& recipe,
-        const Spectral::SpectralTables& scannerTables,
-        ScannerColorCorrectionDescriptor& outDescriptor,
-        std::string& outDiagnostic);
-
-    bool build_print_scanner_color_correction_descriptor(
-        const PrintCorrectionDerivationInput& input,
-        ScannerColorCorrectionDescriptor& outDescriptor,
-        std::string& outDiagnostic);
-
-    bool build_scanner_post_effects_descriptor(
-        const ::ScannerOutputRecipe& recipe,
-        ScannerPostEffectsDescriptor& outDescriptor,
-        std::string& outDiagnostic);
 
     ColorRuntime build_color_runtime(
         ScannerMedium medium,

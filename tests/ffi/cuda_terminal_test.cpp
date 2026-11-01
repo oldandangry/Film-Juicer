@@ -126,17 +126,14 @@ namespace {
     void check_host_cache_result(bool nativeFailure) {
         JuicerCuda::Owner owner;
         owner.create(JuicerProcess::data_directory());
-        {
-            const auto selected = JuicerProcess::root().assets().selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", Spektrafilm::ScanRoute::NegativePrintScan});
-            require(selected.valid && fj_test_profile_live_owners() == 2, "terminal profile acquisition failed");
-        }
+        const auto& catalog = JuicerProcess::root().assets().spektrafilm_profile_catalog();
+        require(catalog.valid && fj_test_catalog_live_owners() == 1, "terminal catalog acquisition failed");
         fj_test_cache_release_failure();
         auto* borrowed = JuicerCuda::borrowed_owner();
         if (nativeFailure) {
             injection = "typed";
             require(fj_cuda_shutdown(borrowed, nullptr).native_code == -701, "host failure erased native close failure");
-            require(hostCleanupAttempts == 0 && fj_test_profile_live_owners() == 2, "native failure started host purge");
-            fj_test_profile_fault(3);
+            require(hostCleanupAttempts == 0 && fj_test_catalog_live_owners() == 1, "native failure started host purge");
             injection.clear();
             require(owner.close().native_code == -701, "terminal cleanup erased native failure");
             require_host_detached();
@@ -169,7 +166,7 @@ namespace {
         for (std::size_t i = 0; i < workers.size(); ++i) {
             require(results[i].category == FJ_STATUS_INTERNAL_FAILURE && same_status(results[i], results[0]) && std::strcmp(diagnostics[i].data(), diagnostics[0].data()) == 0, "concurrent shutdown saw another cleanup result");
         }
-        require(hostCleanupAttempts == 1 && shutdownAttempts == 1 && fj_test_profile_live_owners() == 0, "cache release repeated or failed to detach profiles");
+        require(hostCleanupAttempts == 1 && shutdownAttempts == 1 && fj_test_catalog_live_owners() == 1, "cache release repeated or revoked the catalog");
         reject_accepting_calls(borrowed);
         require(same_status(fj_cuda_shutdown(borrowed, nullptr), results[0]) && hostCleanupAttempts == 1 && shutdownAttempts == 1, "repeated shutdown retried cleanup/native retirement");
         require(same_status(owner.close(), results[0]) && destructions == 1 && !JuicerCuda::borrowed_owner(), "host cleanup failure retained closed native graph or lost precedence");

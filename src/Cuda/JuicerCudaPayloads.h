@@ -34,7 +34,7 @@ namespace JuicerCuda {
         int domainEnd = 0;
     };
 
-    // Mirrors the subset of Spectral::FilmRawConfig needed by CUDA kernels.
+    // Resolved film-input fields consumed by CUDA kernels.
     struct FilmRawPayload {
         int inputColorSpaceIndex = 0;
         int applyCctfDecoding = 0;
@@ -222,7 +222,7 @@ namespace JuicerCuda {
     };
 
     struct FilmDevelopPayload {
-        // Direct production packs only DirCouplersRecipe and prepared-frame views here.
+        // Production binds resolved DIR values and prepared-frame views here.
         float gammaFactorB = 1.0f;
         float gammaFactorG = 1.0f;
         float gammaFactorR = 1.0f;

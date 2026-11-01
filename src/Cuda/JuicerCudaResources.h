@@ -22,26 +22,9 @@
 #include "Cuda/Diffusion/JuicerCudaDiffusionResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 
 struct FjHostPreparation;
-
-namespace Spectral {
-    struct FilmTcLut;
-    struct FilmRawConfig;
-    struct SpectralTables;
-} // namespace Spectral
-namespace Scanner {
-    struct ColorRuntime;
-    struct ScannerSpectralLutDescriptor;
-} // namespace Scanner
-namespace Gamut {
-    struct OutputGamutTransform;
-    class OutputBoundaryHold;
-} // namespace Gamut
-namespace JuicerAssets {
-    class Library;
-} // namespace JuicerAssets
 
 struct JuicerCudaAutoExposurePartial {
     static constexpr int kLaneCount = 4;
@@ -71,21 +54,22 @@ namespace JuicerCuda {
     struct PrintResourceInput;
     struct StaticNoiseInput;
 
-    // Phase 4B focused print-preparation contract:
-    // - producer: build_print_resource_descriptors() from RenderRecipe::print and selected
-    //   validated profiles; consumer: prepare_print_resources() and pack_print_cuda_payloads().
+    // Focused print-preparation contract:
+    // - producer: complete Rust preparation supplies resolved descriptors and host inputs;
+    //   consumers: prepare_print_resources() and pack_print_cuda_payloads().
     // - update frequency: descriptor miss only; descriptor hits perform no asset lookup,
     //   spectral derivation, profile packing, allocation, or upload.
     // - layouts/units: canonical 81-sample host/device spectra, capture-film spectral density,
     //   resolved density curves on the selected Float32 logE axis, and C/M/Y channel order.
     //   Filter values are Kodak CC units.
-    // - ownership/lifetime: immutable host derivations are temporary; device arrays and scalar
-    //   results are exact-context/epoch Resources residency exposed through PreparedCudaFrame.
+    // - ownership/lifetime: host inputs borrow held preparation storage for the immediate call;
+    //   device arrays and scalar results are exact-context/epoch Resources residency exposed
+    //   through PreparedCudaFrame.
     // - schema/hash: profile-table schema v2 separates resolved density-table content from selected
     //   stock identity. Balance/preflash schema v2 retain stock identity without creative curves.
     //   Descriptors exclude file discovery, CUDA pointers, frame tokens, and launch policy.
-    // - preparation point: Root's Phase 4B print prelaunch prepared-frame overload.
-    // - disabled behavior: disabled preflash has zero descriptor identity and no derivation/upload.
+    // - preparation point: Root's prepared-frame boundary.
+    // - disabled behavior: disabled preflash has zero descriptor identity and no upload.
     struct PrintProfileTablesDescriptor {
         static constexpr std::uint32_t kSchemaVersion = 2u;
 
@@ -133,8 +117,6 @@ namespace JuicerCuda {
         std::uint64_t filmDevelopRecipeHash = 0;
         std::uint64_t printProfileAssetVersionToken = 0;
         std::uint64_t filteredMainIlluminantHash = 0;
-        Spektrafilm::PrintNormalizationMode normalizationMode =
-            Spektrafilm::PrintNormalizationMode::None;
         float cameraExposureCompensationEv = 0.0f;
         std::uint64_t printBalanceRecipeHash = 0;
         std::uint64_t hash = 0;
@@ -149,12 +131,6 @@ namespace JuicerCuda {
         PrintBalanceDescriptor balance{};
         bool preflashActive = false;
         std::uint64_t hash = 0;
-    };
-
-    struct PrintResourcePreparation {
-        const RenderRecipe* recipe = nullptr;
-        JuicerAssets::Library* assets = nullptr;
-        const std::array<float, 81>* mainIlluminant = nullptr;
     };
 
     struct PrintPreparedView {
@@ -576,43 +552,14 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         Failure& outError);
 
-    struct FocusedRouteResourcePreparation {
-        const RenderRecipe* recipe = nullptr;
-        const Spectral::SpectralTables* exposureTables = nullptr;
-        const Spectral::FilmRawConfig* filmRawConfig = nullptr;
-        const Spectral::FilmTcLut* filmTcLut = nullptr;
-        const Spectral::SpectralTables* scannerTables = nullptr;
-        const Scanner::ColorRuntime* scannerColor = nullptr;
-        const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
-        const Gamut::OutputBoundaryHold* outputBoundaryTable = nullptr;
-        const FjHostPreparation* hostPreparation = nullptr;
-    };
-
     // Descriptor-driven film and selected scan-route preparation. This is called only behind
     // Root's prepared-frame boundary and intentionally has no static-noise input.
-    bool prepare_focused_route_resources(
-        Resources& resources,
-        const FocusedRouteResourcePreparation& request,
-        void* cudaStreamOpaque,
-        Failure& outError);
-
     bool prepare_focused_route_resources(
         Resources& resources,
         const FocusedRouteResourceInput& input,
         void* cudaStreamOpaque,
         Failure& outError,
         const FjHostPreparation* hostPreparation = nullptr);
-
-    bool build_print_resource_descriptors(
-        const RenderRecipe& recipe,
-        PrintResourceDescriptors& out,
-        std::string& diagnostic);
-
-    bool prepare_print_resources(
-        Resources& resources,
-        const PrintResourcePreparation& request,
-        void* cudaStreamOpaque,
-        Failure& outError);
 
     bool prepare_print_resources(
         Resources& resources,
@@ -621,14 +568,8 @@ namespace JuicerCuda {
         Failure& outError);
 
     bool pack_print_cuda_payloads(
-        const PrintRecipe& recipe,
-        const PrintPreparedView& prepared,
-        float routeCorrectionScale,
-        PrintCudaPayloadPack& out,
-        std::string& diagnostic);
-
-    bool pack_print_cuda_payloads(
-        const PrintExposureRecipe& exposure,
+        float printExposure,
+        float preflashExposure,
         const PrintPreparedView& prepared,
         float routeCorrectionScale,
         PrintCudaPayloadPack& out,

@@ -7,7 +7,7 @@
 #include "ofxsImageEffect.h"
 #include "ofxsProcessing.h"
 
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 #include "juicer_cuda_frame_values.h"
 
 struct InstanceState;

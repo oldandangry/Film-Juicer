@@ -1,5 +1,4 @@
 namespace {
-    thread_local unsigned nextEffectsProjection = 0;
     FjPhysicalEffectsParams effects_params(const Json& controls) {
         const auto& amounts = controls.at("amounts");
         return {std::bit_cast<float>(amounts[0].get<std::uint32_t>()),
@@ -9,9 +8,6 @@ namespace {
                 std::bit_cast<double>(controls.at("weave").get<std::uint64_t>()),
                 controls.at("grain_active").get<bool>() ? 1u : 0u,
                 controls.at("grain_debug_view").get<std::int32_t>()};
-    }
-    PhysicalEffectsControls effects_controls(const FjPhysicalEffectsParams& v) {
-        return {v.film_dust_amount, v.film_scratch_amount, v.gate_dust_amount, v.gate_scratch_amount, v.gate_weave_amount};
     }
     Json effects_projection(const FjDust& v) {
         return Json::array({std::bit_cast<std::uint32_t>(v.cell_width_mm),
@@ -57,50 +53,6 @@ namespace {
                             std::bit_cast<std::uint32_t>(v.compact_subsidiary_offset_max),
                             std::bit_cast<std::uint32_t>(v.compact_subsidiary_angle_max_radians)});
     }
-    Json effects_projection(const DefectDustRecipe& v) {
-        return Json::array({std::bit_cast<std::uint32_t>(v.cellWidthMm),
-                            std::bit_cast<std::uint32_t>(v.cellHeightMm),
-                            std::bit_cast<std::uint32_t>(v.slotProbability),
-                            std::bit_cast<std::uint32_t>(v.softnessMinMm),
-                            std::bit_cast<std::uint32_t>(v.softnessMaxMm),
-                            std::bit_cast<std::uint32_t>(v.softnessSizeCapFraction),
-                            std::bit_cast<std::uint32_t>(v.supportXMm),
-                            std::bit_cast<std::uint32_t>(v.supportYMm),
-                            std::bit_cast<std::uint32_t>(v.fiberFraction),
-                            std::bit_cast<std::uint32_t>(v.fiberDriftFraction),
-                            std::bit_cast<std::uint32_t>(v.fiberFirstKnotMin),
-                            std::bit_cast<std::uint32_t>(v.fiberFirstKnotMax),
-                            std::bit_cast<std::uint32_t>(v.fiberSecondKnotMin),
-                            std::bit_cast<std::uint32_t>(v.fiberSecondKnotMax),
-                            std::bit_cast<std::uint32_t>(v.fiberInteriorWidthMinFraction),
-                            std::bit_cast<std::uint32_t>(v.fiberInteriorWidthMaxFraction),
-                            std::bit_cast<std::uint32_t>(v.diameterMinMm),
-                            std::bit_cast<std::uint32_t>(v.diameterBulkMaxMm),
-                            std::bit_cast<std::uint32_t>(v.diameterMaxMm),
-                            std::bit_cast<std::uint32_t>(v.diameterTailFraction),
-                            std::bit_cast<std::uint32_t>(v.fiberLengthMinMm),
-                            std::bit_cast<std::uint32_t>(v.fiberLengthMaxMm),
-                            std::bit_cast<std::uint32_t>(v.fiberWidthMinMm),
-                            std::bit_cast<std::uint32_t>(v.fiberWidthMaxMm),
-                            std::bit_cast<std::uint32_t>(v.opacityFaintCumulative),
-                            std::bit_cast<std::uint32_t>(v.opacityIntermediateCumulative),
-                            std::bit_cast<std::uint32_t>(v.compactOpacityMin),
-                            std::bit_cast<std::uint32_t>(v.compactOpacityFaintEnd),
-                            std::bit_cast<std::uint32_t>(v.compactOpacityIntermediateEnd),
-                            std::bit_cast<std::uint32_t>(v.compactOpacityMax),
-                            std::bit_cast<std::uint32_t>(v.fiberOpacityMin),
-                            std::bit_cast<std::uint32_t>(v.fiberOpacityFaintEnd),
-                            std::bit_cast<std::uint32_t>(v.fiberOpacityIntermediateEnd),
-                            std::bit_cast<std::uint32_t>(v.fiberOpacityMax),
-                            std::bit_cast<std::uint32_t>(v.compactDominantAspectMin),
-                            std::bit_cast<std::uint32_t>(v.compactDominantAspectMax),
-                            std::bit_cast<std::uint32_t>(v.compactSubsidiaryScaleMin),
-                            std::bit_cast<std::uint32_t>(v.compactSubsidiaryScaleMax),
-                            std::bit_cast<std::uint32_t>(v.compactSubsidiaryAspectMin),
-                            std::bit_cast<std::uint32_t>(v.compactSubsidiaryAspectMax),
-                            std::bit_cast<std::uint32_t>(v.compactSubsidiaryOffsetMax),
-                            std::bit_cast<std::uint32_t>(v.compactSubsidiaryAngleMaxRadians)});
-    }
     Json effects_projection(const FjScratch& v) {
         return Json::array({std::bit_cast<std::uint32_t>(v.cell_width_mm),
                             std::bit_cast<std::uint32_t>(v.cell_height_mm),
@@ -139,49 +91,8 @@ namespace {
                             std::bit_cast<std::uint32_t>(v.strength_min),
                             std::bit_cast<std::uint32_t>(v.strength_max)});
     }
-    Json effects_projection(const DefectScratchRecipe& v) {
-        return Json::array({std::bit_cast<std::uint32_t>(v.cellWidthMm),
-                            std::bit_cast<std::uint32_t>(v.cellHeightMm),
-                            std::bit_cast<std::uint32_t>(v.slotProbability),
-                            std::bit_cast<std::uint32_t>(v.softnessMinMm),
-                            std::bit_cast<std::uint32_t>(v.softnessMaxMm),
-                            std::bit_cast<std::uint32_t>(v.softnessSizeCapFraction),
-                            std::bit_cast<std::uint32_t>(v.supportXMm),
-                            std::bit_cast<std::uint32_t>(v.supportYMm),
-                            std::bit_cast<std::uint32_t>(v.lengthMinMm),
-                            std::bit_cast<std::uint32_t>(v.lengthBulkMaxMm),
-                            std::bit_cast<std::uint32_t>(v.lengthMaxMm),
-                            std::bit_cast<std::uint32_t>(v.lengthTailFraction),
-                            std::bit_cast<std::uint32_t>(v.widthMinMm),
-                            std::bit_cast<std::uint32_t>(v.widthBulkMaxMm),
-                            std::bit_cast<std::uint32_t>(v.widthMaxMm),
-                            std::bit_cast<std::uint32_t>(v.widthTailFraction),
-                            std::bit_cast<std::uint32_t>(v.driftFraction),
-                            std::bit_cast<std::uint32_t>(v.firstKnotMin),
-                            std::bit_cast<std::uint32_t>(v.firstKnotMax),
-                            std::bit_cast<std::uint32_t>(v.secondKnotMin),
-                            std::bit_cast<std::uint32_t>(v.secondKnotMax),
-                            std::bit_cast<std::uint32_t>(v.interiorWidthMinFraction),
-                            std::bit_cast<std::uint32_t>(v.interiorWidthMaxFraction),
-                            std::bit_cast<std::uint32_t>(v.interiorDepthMinFraction),
-                            std::bit_cast<std::uint32_t>(v.interiorDepthMaxFraction),
-                            std::bit_cast<std::uint32_t>(v.endpointAbruptProbability),
-                            std::bit_cast<std::uint32_t>(v.interruptionProbability),
-                            std::bit_cast<std::uint32_t>(v.gapCenterMin),
-                            std::bit_cast<std::uint32_t>(v.gapCenterMax),
-                            std::bit_cast<std::uint32_t>(v.gapSpanMin),
-                            std::bit_cast<std::uint32_t>(v.gapSpanMax),
-                            std::bit_cast<std::uint32_t>(v.scuffProbability),
-                            std::bit_cast<std::uint32_t>(v.scuffLengthMaxMm),
-                            std::bit_cast<std::uint32_t>(v.scuffAngleMaxRadians),
-                            std::bit_cast<std::uint32_t>(v.strengthMin),
-                            std::bit_cast<std::uint32_t>(v.strengthMax)});
-    }
     Json effects_projection(const FjPhysicalEffectsRecipe& v) {
         return {{"film_dust", effects_projection(v.film_dust)}, {"film_scratch", effects_projection(v.film_scratch)}, {"gate_dust", effects_projection(v.gate_dust)}, {"gate_scratch", effects_projection(v.gate_scratch)}, {"weave", std::bit_cast<std::uint64_t>(v.gate_weave_amount)}, {"active", v.active != 0}, {"hash", v.hash}};
-    }
-    Json effects_projection(const FilmJuicerEffectsRecipe& v) {
-        return {{"film_dust", effects_projection(v.filmDust)}, {"film_scratch", effects_projection(v.filmScratch)}, {"gate_dust", effects_projection(v.gateDust)}, {"gate_scratch", effects_projection(v.gateScratch)}, {"weave", std::bit_cast<std::uint64_t>(v.gateWeaveAmount)}, {"active", v.active}, {"hash", v.hash}};
     }
     FjPhysicalEffectsRecipe effects_sentinel() {
         FjPhysicalEffectsRecipe v{};
@@ -460,77 +371,9 @@ namespace {
             thread.join();
         require(complete, "effects fault containment and recovery are thread local");
     }
-    void effects_native(const Json& captured) {
-        const PhysicalEffectsControls controls{1, 2, 3, 4, 0.1};
-        VisualGrainRecipe grain;
-        FilmJuicerEffectsRecipe out;
-        std::string diagnostic;
-        for (const auto& row : captured.at("cases")) {
-            const auto params = effects_params(row.at("controls"));
-            grain.active = params.grain_active != 0;
-            grain.debugView = params.grain_debug_view;
-            require(JuicerAssets::prepare_physical_effects(effects_controls(params), grain, out, diagnostic) && diagnostic.empty() && effects_projection(out) == row.at("recipe"), "all 156 named native mapping lanes and retained f64/activity/hash");
-        }
-        grain.active = false;
-        grain.debugView = 0;
-        for (unsigned fault : {5u, 6u}) {
-            nextEffectsProjection = fault;
-            require(JuicerAssets::prepare_physical_effects(controls, grain, out, diagnostic), "finite projection sentinel admitted");
-            auto expected = effects_sentinel();
-            if (fault == 6) {
-                expected.active = 0;
-                expected.gate_weave_amount = -0.0;
-            }
-            require(effects_projection(out) == effects_projection(expected), "field-distinct copy sentinel and active hash zero / populated inactive negative-zero admission");
-        }
-        for (unsigned fault : {1u, 2u, 3u, 4u}) {
-            nextEffectsProjection = fault;
-            bool rejected = false;
-            try {
-                (void)JuicerAssets::prepare_physical_effects(controls, grain, out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                rejected = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected && effects_projection(out) == effects_projection(FilmJuicerEffectsRecipe{}), "corrupt effects projection is fatal and cannot partially publish");
-        }
-        for (unsigned fault = 0; fault < 9; ++fault) {
-            wireMutation = WireMutation{};
-            wireMutation.active = true;
-            wireMutation.operation = 5;
-            wireMutation.failure = {FJ_FILM_RECIPE_EFFECTS_PROBABILITY, 3, UINT64_MAX};
-            if (fault == 0)
-                wireMutation.status.category = FJ_STATUS_SUCCESS;
-            if (fault == 1)
-                wireMutation.status.api = FJ_API_CUDA_RUNTIME;
-            if (fault == 2)
-                wireMutation.status.native_code = 1;
-            if (fault == 3)
-                wireMutation.failure.channel = 0;
-            if (fault == 4)
-                wireMutation.failure.sample = 0;
-            if (fault == 5)
-                wireMutation.failure.reason = FJ_FILM_RECIPE_GRAIN_CONTROLS;
-            if (fault == 6)
-                wireMutation.failure.reason = FJ_FILM_RECIPE_ALLOCATION;
-            if (fault == 7)
-                wireMutation.failure.reason = FJ_FILM_RECIPE_IDENTITY;
-            if (fault == 8)
-                wireMutation.failure.reason = 99;
-            bool rejected = false;
-            try {
-                (void)JuicerAssets::prepare_physical_effects(controls, grain, out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                rejected = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected && !wireMutation.active, "stateless effects admits only its closed failure envelope");
-        }
-        status(fj_test_film_recipe_fault(8, 4));
-        require(!JuicerAssets::prepare_physical_effects(controls, grain, out, diagnostic) && diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy", "real computed probability guard preserves ordinary native diagnostic");
-    }
     void effects_products(const std::filesystem::path& resources, const Json& captured) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         require(captured.at("products").size() == 92, "exact physical effects product membership");
         for (const auto& row : captured.at("products")) {
             const auto controls = effects_params(row.at("controls"));
@@ -611,23 +454,3 @@ namespace {
         std::puts("PASS 92 genuine physical effects products across four routes");
     }
 } // namespace
-namespace JuicerAssets::RecipeTest {
-    void effects(FjPhysicalEffectsRecipe& recipe) {
-        const auto fault = nextEffectsProjection;
-        nextEffectsProjection = 0;
-        if (fault == 1)
-            recipe.active = 2;
-        if (fault == 2)
-            recipe.film_dust.cell_width_mm = std::numeric_limits<float>::quiet_NaN();
-        if (fault == 3)
-            recipe.gate_weave_amount = std::numeric_limits<double>::infinity();
-        if (fault == 4)
-            recipe.gate_scratch.strength_max = std::numeric_limits<float>::infinity();
-        if (fault == 5 || fault == 6)
-            recipe = effects_sentinel();
-        if (fault == 6) {
-            recipe.active = 0;
-            recipe.gate_weave_amount = -0.0;
-        }
-    }
-} // namespace JuicerAssets::RecipeTest

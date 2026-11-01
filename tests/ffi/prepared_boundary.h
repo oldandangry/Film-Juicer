@@ -51,19 +51,16 @@ namespace JuicerCudaTest {
     bool execute_prepared_state(FjAssets*, const ParamSnapshot&, const FjFrame&, std::uint64_t instanceToken, bool contract, bool lifetime, std::string&, StateLifetimeCase = StateLifetimeCase::SuppliedStream);
     void check_prepared_state_lifetime(std::optional<PreparedState>&, FjAssets*, FjCuda*, const FjCudaContext&, const FjFrame&, const FjSubmission&, FjPreparedHostData&, FjErrorBuffer*, StateLifetimeCase);
 
-    // The retained grain fixtures need a recipe; DIR-only held-state callers do not.
-    void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const RenderRecipe* recipe = nullptr);
+    // Temporal grain fixtures borrow the complete state; DIR-only callers need no hold here.
+    void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const FjPreparedStateView* state = nullptr, const FjHostPreparation* hostPreparation = nullptr);
 
     FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error);
 
 
     bool execute_boundary(
         const PreparedState& owner,
-        const RenderRecipe& recipe,
-        const FocusedRenderPayload& payload,
-        const JuicerCuda::ExecutionFrame& frame,
+        const FjFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
-        const JuicerCuda::PreparedDescriptors& descriptors,
         std::string& diagnostic);
 
 } // namespace JuicerCudaTest

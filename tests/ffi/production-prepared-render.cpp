@@ -457,7 +457,6 @@ int main(int argc, char** argv) {
         require_cuda(cudaSetDevice(0), "select CUDA device");
         JuicerCuda::Owner owner;
         owner.create(resources);
-        JuicerProcess::root().ensure_bootstrap();
 
         const auto expected = expected_pixels(fixture, updatesJson);
         DeviceBuffers device;

@@ -318,11 +318,10 @@ namespace JuicerCuda {
         focused.mallettColumns = focused.mallettAvailable ? 3 : 0;
         focused.outputGamut = {floats(source.output_color.gamut_cmax), source.output_color.gamut_table_hash, source.output_color.gamut_recipe_hash, descriptors.outputGamut.enabled};
 
-        Spectral::FilmRawConfig config;
-        std::copy_n(exposure.input_rgb_to_xyz, 9, config.inputRGBToXYZ.m);
-        std::copy_n(exposure.input_xyz_adapt, 9, config.inputXYZAdapt.m);
-        std::copy_n(exposure.xyz_to_linear_srgb, 9, config.xyzToLinearSrgb.m);
-        config.applyInputChromaticAdapt = (exposure.flags & FJ_FILM_ADAPT_INPUT) != 0;
+        std::copy_n(exposure.input_rgb_to_xyz, 9, focused.inputRgbToXyz.begin());
+        std::copy_n(exposure.input_xyz_adapt, 9, focused.inputXyzAdapt.begin());
+        std::copy_n(exposure.xyz_to_linear_srgb, 9, focused.xyzToLinearSrgb.begin());
+        focused.applyInputChromaticAdapt = (exposure.flags & FJ_FILM_ADAPT_INPUT) != 0;
 
         FilmPayloadInput film;
         film.inputColorSpace = static_cast<int>(exposure.input_color_space);
@@ -364,14 +363,11 @@ namespace JuicerCuda {
         identity.effectsHash = source.effects.recipe_hash;
         identity.effectsActive = descriptors.effects.has_value();
         JuicerProcess::Root::PreparedFrameInput preparation{
-            identity, focused, config, descriptors.color, descriptors.outputGamut, {}, &descriptors.post, &descriptors.spatialDir, descriptors.diffusion ? &*descriptors.diffusion : nullptr, descriptors.halation ? &*descriptors.halation : nullptr, descriptors.grain, descriptors.effects, &staticNoise, frame.renderWindow.x2 - frame.renderWindow.x1, frame.renderWindow.y2 - frame.renderWindow.y1};
-        PrintExposureRecipe printExposure;
+            identity, focused, descriptors.color, descriptors.outputGamut, {}, &descriptors.post, &descriptors.spatialDir, descriptors.diffusion ? &*descriptors.diffusion : nullptr, descriptors.halation ? &*descriptors.halation : nullptr, descriptors.grain, descriptors.effects, &staticNoise, frame.renderWindow.x2 - frame.renderWindow.x1, frame.renderWindow.y2 - frame.renderWindow.y1};
         if (print) {
             preparation.print = decode_print(source);
-            printExposure.printExposure = source.print.exposure;
-            printExposure.preflashExposure = source.print.preflash_exposure;
         }
-        execute_prepared({preparation, descriptors, film, exposure.route_correction_scale, printExposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot, hostPreparation}, recovery, abortCallback);
+        execute_prepared({preparation, descriptors, film, exposure.route_correction_scale, source.print.exposure, source.print.preflash_exposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot, hostPreparation}, recovery, abortCallback);
         return true;
     }
 

@@ -19,7 +19,6 @@
 #include "RustFrameBridge.h"
 #include "ColorTransforms.h"
 #include "DiffusionHostBehavior.h"
-#include "Illuminants.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
 #include "Cuda/JuicerCudaExecutor.h"
@@ -1686,7 +1685,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     updateGammaControlState(gammaRoute, gammaFilmProfileKey);
     updateSpectralControlState();
 
-    // Defer heavy bootstrap until first param change
+    // Defer initial pending render state publication until the first parameter change.
 }
 
 JuicerEffect::~JuicerEffect() {
@@ -2366,8 +2365,7 @@ bool JuicerEffect::snapshotParams(
 }
 
 void JuicerEffect::initialize_pending_render_state() {
-    JuicerProcess::root().ensure_bootstrap();
-    JTRACE("BUILD", "spectral globals ensured; publishing initial pending render state");
+    JTRACE("BUILD", "publishing initial pending render state");
     applyDirGammaProfileDefaults();
     ParamSnapshot params;
     std::string diagnostic;

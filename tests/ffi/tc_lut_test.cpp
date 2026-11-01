@@ -13,9 +13,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
-#include "SpectralData.h"
+#include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "print_illuminant_fixture.h"
@@ -233,7 +232,6 @@ int main(int argc, char** argv) {
         } else {
             JuicerCuda::Owner owner;
             owner.create(argv[2]);
-            JuicerProcess::root().ensure_bootstrap();
             const std::filesystem::path manifestPath(argv[3]);
             std::ifstream manifestFile(manifestPath);
             const auto manifest = Json::parse(manifestFile);

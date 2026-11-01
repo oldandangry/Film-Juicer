@@ -690,8 +690,8 @@ cmake --build --preset linux-debug
 | `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
 | `quality/test_tooling_lint.py` | Supporting-code runner scope, tool failures, argument boundaries and unchanged-input guarantees | `host`; lint executables are provisioned only for explicit lint runs |
 | `quality/test_rust_boundaries.py` | Dependency/build contract and compiler-enforced profile/CSV privacy, borrowed-view lifetimes and safe-module prohibitions, with valid consumer controls | `host`; pinned Cargo required |
-| `ffi/spectral_owner_test.cpp`, `ffi/spectral_bootstrap_test.cpp` | Production spectral ABI, independent native copies, fail-closed bootstrap, selected computation and measured lifetime/capacity checks | `host` |
-| `ffi/illuminant_calibration_test.cpp` | Closed CSV ABI, independent seven-curve captures, retained snapshots, selected CMY calibration and actual read/probe allocation transport through native recipes | `host` |
+| `ffi/spectral_owner_test.cpp`, `ffi/spectral_bootstrap_test.cpp` | Raw spectral ABI, independently captured source values, lazy source acquisition, complete preparation and retained-owner lifetime/capacity checks | `host` |
+| `ffi/illuminant_calibration_test.cpp` | Closed CSV ABI, independent seven-curve captures, raw source/cache holds, selected CMY calibration and actual complete-state publication/failure checks | `host` |
 | `ffi/test_native_boundary.py` | Native operation/host/context boundaries and retired profile authority, including new nested source/header and forbidden-symbol controls | `host` |
 | `ofx/probe.py` | Linux synthetic OFX load/describe/unload and captured describe properties; no parameter varargs or render | `host`, Linux only |
 | `ofx/processor_reference_test.cpp` | Native OFX image/property seam driving the current CUDA processor for four routes, a combined optics/grain/print case, and signed-zero print transitions | `gpu` |
@@ -1090,10 +1090,11 @@ isolates the subsequent blur/delta schedule and does not validate the sampler.
 
 ### Scanner spectral LUT construction
 
-`Ffi.Host.ScannerLut` checks the complete immutable host owner, full six-array
-native words, C11/C++/Rust ABI, raw/facade failure clearing, ten reservation
-stages, panic containment and input expiry. `Scanner.Host.LutProducts` checks
-matching native profile/route products and the native move-only adapter.
+`Ffi.Host.ScannerLut` checks full six-array native-characterization words,
+C11/C++/Rust ABI, raw/facade failure clearing, ten reservation stages, panic
+containment and input expiry. Valid callback construction and span comparisons
+stay inside the existing host-preparation scope. `Scanner.Host.LutProducts`
+checks actual complete profile/route products and their held inputs.
 `Scanner.Gpu.OutputEncoding` includes whole-array prepared upload comparisons,
 cache reuse and resolution transitions; `Ofx.Gpu.ResourceFailure.ScannerLut`
 exercises all six upload failure positions through actual render preparation.
@@ -1105,27 +1106,32 @@ same scoped Rust callbacks as held rendering. It checks all four route products,
 warm hits with armed faults, individual construction/upload/retirement failures,
 both owner rechecks, later gamut failure and upload backing expiry. Retirement
 checks account exactly for prefix fences that are still queued or already reaped.
+Cold null preparation rejects with the exact internal-failure status and no LUT
+candidate, preserves any old six-array winner and clears route metadata. A
+separate warmed-input case checks unchanged ledger/allocation accounting;
+valid callbacks recover, while warm hits require no callback.
 The fixture drains resources and pinned staging before destroying its CUDA context.
 The four logical native captures share `lut-fixtures/native.json`; the manifest's
 `contexts` map selects each preset's label and primitive results. Shared payload
 and context fields must be disjoint. `storage_files` hashes the physical files;
 the original per-preset hashes and capture/compiler/resource provenance remain
 unchanged. `Ffi.Host.SharedFixtureFormat` reconstructs every original capture byte
-for byte, including its line endings. Rust, ABI/native, prepared-upload and Release
-testing-OFF readers expand the same logical capture before their existing checks.
+for byte, including its line endings. Rust, raw ABI/C11 and prepared-upload
+readers expand the same logical capture before their existing checks.
 
 `Ffi.Host.ScannerLutDescriptor` and `Scanner.Host.LutDescriptorProducts` check
 complete scanner spectral-LUT metadata through the safe Rust family, synchronous
-legacy transport, gated facade and same-signature native adapters. The independent
+legacy transport and gated facade. The independent
 [descriptor fixtures](scanner/descriptor-fixtures/README.md) preserve 520 literal
 cases and four products in four native contexts. Exact byte labels, NaN masks,
-signed-zero equivalence, unrestricted native polarity/resolution lanes, admission
-asymmetries, native defaults versus raw zero clearing, closed failure envelopes,
-C11/C++20/Rust ABI, projection integrity, expiry and direct-state early failure
-are covered. Existing scanner routes own the actual frame/cache/upload witnesses.
+signed-zero equivalence, raw admission/zero clearing, closed failure envelopes,
+C11/C++20/Rust ABI, expiry and actual complete-state early failure are covered.
+Named missing-model-pointer outcomes remain historical dispositions in the
+unchanged captures; the native model adapters are removed. Existing scanner
+routes own the actual frame/cache/upload witnesses.
 Compiler probes enforce private complete construction, readonly getters and owned
 results. Both Release production gates execute 41 descriptor C11 cases alongside
-every older probe, with fixture/fault code excluded from normal artifacts.
+the retained probes, with fixture/fault code excluded from normal artifacts.
 These are bounded characterization and construction checks; installed Resolve,
 visual acceptance, S4.D/E and parent closure remain separate.
 
@@ -1147,15 +1153,15 @@ bounded `scanner/post-effects-fixtures` supplement: 400 independently captured
 whole native constructor cases with distinct Linux/Windows Debug/Release contexts.
 Floats remain raw f32 words; all fields, radii, schema, exact hash, masking,
 diagnostics and ordinary rejected attempts are checked through safe Rust, raw C
-and native readers. The original producer executables and source/configuration/
-tool receipts are retained in each context's provenance. Ordinary tests never
+and actual complete-state products. The original producer executables and
+source/configuration/tool receipts are retained in each context's provenance. Ordinary tests never
 generate these expectations. The capture-only dispatch was removed at cutover.
 
 The post-effects transport uses separate 32/56/64-byte input/result/failure
 records, with independent output clearing and optional diagnostics. The permanent
 48-byte CUDA execution record is unchanged. RadiusRange defines only consumed
 finite int32 conversion overflow; multiplication overflow retains radius-zero
-behavior. ON-only faults cover hash-zero, panic, projection rejection and recovery.
+behavior. ON-only faults cover hash-zero, panic, descriptor rejection and recovery.
 Both actual route schedules, prepared projection and Gaussian slot reuse/rebuild/
 failed descriptor admission and retired-frame view rejection are exercised by
 the owning host and scanner GPU groups.
@@ -1163,7 +1169,7 @@ Both native Release OFF probes additionally assert 410 exact post-effects result
 alongside every existing probe including Slice 8's 41 descriptor rows.
 
 `Ffi.Host.ScannerCorrection` checks complete direct/print correction construction,
-coordinated C11/C++20/Rust ABI facts, raw/facade/native failure and clearing rules,
+coordinated C11/C++20/Rust ABI facts, raw/facade failure and clearing rules,
 all byte/flag demand combinations, independent fault consumption, integrity and
 expired input ownership. `Scanner.Host.CorrectionProducts` checks 48 actual
 route/state/resource inputs and their enclosing identities against the separately
@@ -1173,14 +1179,14 @@ scanner-correction[-products] <preset>` and require no CUDA device at runtime.
 The early `scanner-correction-primitives` maintenance mode compares native/Rust
 math primitives; native whole-builder capture mode is retired after cutover.
 
-`Scanner.Gpu.CorrectionRoutes` uses actual legacy execution and prepared C
-projection on all four routes, including active positive direct and both print
+`Scanner.Gpu.CorrectionRoutes` uses held prepared-state execution and raw C
+bindings on all four routes, including active positive direct and both print
 polarities. It checks correction-only LUT/print-resource reuse, exact repeated
-and projected output, frame-stage computed failure, fault consumption/recovery
-and held immutable recipes. `Ofx.Gpu.AdapterTrace` additionally checks actual
+and raw-boundary output, fault consumption/recovery and held immutable states.
+`Ofx.Gpu.AdapterTrace` additionally checks actual
 current getters, all correction flag combinations, encoded-level sanitation and
-f64-to-f32 narrowing. These witnesses preserve the correction construction point
-after state publication and retain the ordinary finish/abort owners.
+f64-to-f32 narrowing. Complete-state correction construction precedes publication;
+native frame/resource execution retains the ordinary finish/abort owners.
 
 The production C11 probe executes all 28 revision-1 correction cases and the
 shared Rust demand query against each native Release testing-OFF archive. The
@@ -1238,8 +1244,8 @@ These are product contracts and need no device at runtime.
 
 `Ffi.Host.PreparedState` checks complete-state C11/C++/Rust layouts, clearing,
 consume-once ownership and retained cache backing. `Prepare.Host.StateProducts`
-compares complete Rust preparation with accepted family expectations and native
-composition for all twelve route/reconstruction combinations, perturbations and
+compares complete Rust preparation with 31 ordered frozen expectations across
+all twelve route/reconstruction combinations, perturbations and
 competing failures. `Ffi.Gpu.PreparedStateLifetime` consumes held direct/print
 states after enqueue with active spatial DIR and verifies native staging survives
 borrow expiry. The fixture keeps optics, grain and physical effects disabled.
@@ -1295,28 +1301,29 @@ the calling thread's actual NativeCall lifetime. Grain upload failure cases also
 retain the source through abort/recovery. `Resource.Gpu.PinnedUpload` includes a
 Rust noise owner released while the native staging transfer is still pending.
 The prepared-boundary fixture acquires through the same safe Rust source via the
-test facade and asserts that supplied views cause no fallback acquisition.
+test facade. Active grain requires an explicit call-local noise view; missing
+views reject before submission/resources, with no native fallback acquisition.
 These seams exist only in test objects/test-support; normal Release has none.
 Installed Resolve and actual driver/context-loss acceptance remain separate.
 
 `Assets.Host.IlluminantConstruction` qualifies Rust illuminant math and its
 synchronous C/native bindings against four frozen native-parent captures, with
 exact products/identities, scoped source/lens lifetimes, cache and failure
-contracts. The separate negative-print C render contract checks the later native
-preflash unwind/completion terminal. See [the illuminant guide](ffi/README.md#illuminant-construction).
+contracts. The separate negative-print C render contract checks actual prepared
+execution, abort and completion. See [the illuminant guide](ffi/README.md#illuminant-construction).
 
 `Ffi.Host.PrintPreflash` checks the fixed preflash integral, compiled C11/C++20/Rust
-ABI, raw/facade/native agreement, independent failure clearing, diagnostics and
+ABI, actual C11/direct-facade agreement, independent failure clearing, diagnostics and
 stage-11 recovery. `Print.Host.PreflashProducts` checks frozen native caller
 products for both capture polarities and all three reconstruction methods, direct/
-disabled omission, the unconditional builder and later executable-payload admission.
+disabled omission, actual complete preparation and later executable-payload admission.
 `Print.Gpu.PreflashCache` checks actual request/input preparation, full/partial hits,
 descriptor dependencies, fault nonconsumption, failed commits and resource release.
 The immutable `print/preflash-fixtures/manifest.json` binds native provenance and
 exact words; ordinary tests never regenerate them. Finite double totals may narrow
 successfully to float infinity here; the later active-preflash payload guard rejects
-it. Both Release testing-OFF witnesses execute twelve explicit preflash C11 cases
-alongside every older production probe.
+it. The superseded native wrapper/export and twelve standalone OFF rows are
+removed; final I8 retains positive complete-state print execution and feature isolation.
 
 `Spectral.Host.{Tables,White,SInverse,Products,Admission}` and
 `Ffi.Host.SpectralPreparation` qualify fixed spectral math, synchronous C11/native
@@ -1343,8 +1350,8 @@ Existing fixture bytes and bounds remain unchanged.
 Native-undefined coordinate cases have required ordinary preparation-failure
 categories rather than manufactured native pixels. Defined brightness overflow
 still reaches final sanitation. A completed TC result owns one Rust Vec; the
-native move-only holder exposes readonly spans and releases the original
-pointer/length/capacity once in Rust. Source and hull borrows expire on return.
+raw owner exposes readonly spans and its consuming release returns the original
+pointer/length/capacity to Rust once. Source and hull borrows expire on return.
 The Lifetime group observes actual publication paths without an external old
 state hold and checks release outside both publication and rebuild locks;
 retained-reader and cross-thread cases are separate.
@@ -1398,20 +1405,19 @@ with unchanged maximum/mean error bounds, nonfinite and alpha/padding checks.
 
 `Ffi.Host.FilmReference` checks the complete borrowed film-reference boundary,
 compiled C11/C++ layouts, exact frozen values/hash, independent output clearing,
-raw admission, dependency faults and native envelope integrity.
+raw admission, dependency faults and closed envelope integrity.
 `Film.Host.ReferenceProducts` compares all 36 method/route/EV-auto products and
 nine numerical observations per native profile, then exercises actual admission,
-failure/recovery, supersession and temporary Development hold release. Frozen
-native provenance is under `film/reference-fixtures/`; capture maintenance uses
-the existing `JuicerFilmRecipeTests <resources> unused reference-capture <preset> <new-output>`
-entry and cannot overwrite an existing candidate. Replacement captures never
-establish expectations. `reference-primitives` compares the actual native/Rust
+failure/recovery, supersession and actual held-owner release. Frozen native
+provenance is under `film/reference-fixtures/`; the native capture entry has been
+removed. Ordinary tests never regenerate expectations. `reference-primitives`
+compares the actual native/Rust
 log10 words before qualification. These are host construction checks.
 
 `Ffi.Host.FilmDevelopment` compares the safe completed development family, raw
-legacy transport, gated fixture facade and native source projection against
+legacy transport and gated fixture facade against
 [the native characterization](film/fixtures/manifest.json). It checks coordinated
-C11/C++20/Rust ABI facts, invalid controls/tags, bounded reservation and copy
+C11/C++20/Rust ABI facts, invalid controls/tags, bounded reservation and raw view
 failure, contained panics, consuming release and source-cache replacement while
 a selected source remains held. It needs no device at runtime.
 
@@ -1481,7 +1487,7 @@ export's values and failures and exclude fixture/fault code from final artifacts
 
 `Ffi.Host.FilmRecipes` checks the completed DIR/minimum/film-bounds boundary,
 C11/C++20/Rust field/layout/signature facts, independent development holds,
-borrow expiry, native move/copy/unwind, typed failures and exact F1 diagnostics.
+borrow expiry, raw owner release, typed failures and exact F1 diagnostics.
 `Film.Host.DirDensityProducts` compares 64 complete products per configuration
 with [independent native captures](film/dir-fixtures/README.md), including all RGB
 axes, CMY bounds and snapshot/family/final identities, then exercises four-route
@@ -1526,28 +1532,30 @@ probes call the real `fj_legacy_effects_frame_prepare` with the shared strict C1
 assertions and all 453 common-ABI full-result/failure/diagnostic cases. Native-only
 missing-recipe and ON-only fault cohorts remain separate.
 
-`Ffi.Host.SpatialOptics` checks all 553 frozen native literal recipes through the
-production and test facade entries, C11/C++20/Rust layouts and signatures,
+`Ffi.Host.SpatialOptics` checks all 553 frozen native literal recipes through
+an actual C11 forwarder and the direct test facade, C11/C++20/Rust layouts and
+signatures,
 independent raw output admission/clearing, closed failure metadata, diagnostics,
-call-bounded stage-9 panic and actual resolved-hash guard, and complete native
-projection. `Film.Host.SpatialOpticsProducts` checks 32 genuine products and
+call-bounded stage-9 panic and actual resolved-hash guard. Successful nonzero
+lens values retain the render-preflight rejection check.
+`Film.Host.SpatialOpticsProducts` checks 32 genuine products and
 four-route publication, first-failure ordering, held states, recovery and authored
 versus resolved identity. The [optics fixtures](film/optics-fixtures/README.md)
 retain separate logical native configurations and immutable raw IEEE words.
 Existing diffusion and scatter/halation fixtures prepare their recipes through
 `fj_test_spatial_optics_prepare`; PSF/frame/operator expectations are unchanged.
-The OFX adapter group compares all 96 captured getter/publication rows. Both
-Release testing-OFF production gates execute 15 optics cases against the actual
-archive, including complete seeded semantic clearing. Compiler privacy retains
+The OFX adapter group compares all 96 captured getter/publication rows. The
+superseded native wrapper/export and its 15 standalone OFF rows are removed;
+actual complete-state optics preparation remains in Rust. Compiler privacy retains
 the ordinary unbounded individual and boundary execution and two
 isolated workers. These checks do not establish installed Resolve or visual
 acceptance.
 
 
 `Ffi.Host.PrintIlluminant` checks the fixed print illumination constructor through
-production and facade entries, compiled C11/C++20/Rust facts, exact approved sample
-words, actual Sample/Energy failures, independent clearing, optional diagnostics,
-stage-10 panic recovery/thread isolation, owned lifetime and native projection.
+an actual C11 forwarder and the direct facade, compiled C11/C++20/Rust facts,
+exact approved sample words, actual Sample/Energy failures, independent clearing, optional diagnostics,
+stage-10 panic recovery/thread isolation and owned lifetime.
 It has explicit boundary relevance. `Print.Host.IlluminantProducts` checks 72
 actual route/reconstruction/control products against immutable
 [print illuminant fixtures](print/illuminant-fixtures/README.md), including direct
@@ -1555,10 +1563,10 @@ omission, main/preflash samples and consumed descriptor/balance/final identities
 Both are host groups without an elapsed deadline and with an exact preset argument.
 The six `print_illuminant_*` compiler fixtures enforce construction, privacy,
 read-only access and source-independent ownership under existing deadlines.
-The Release production probe includes twelve print illuminant calls, with frozen
-approved pinned-erff words and exact typed failure envelopes; successful OFF execution on each
-platform is required separately. Test registration does not establish a pass or
-numerical/caller/installed-host acceptance.
+The superseded native wrapper/export and twelve standalone OFF rows are removed.
+Positive complete-state direct/print execution in both native Release testing-OFF
+configurations remains a separate I8 gate. Test registration does not establish a
+pass or numerical/caller/installed-host acceptance.
 
 The owner-approved 20 October print numerical exception selects the existing
 `libm::erff` 0.2.15 evaluator and accepts its characterized small native differences
@@ -1587,14 +1595,14 @@ source/normalization dependencies, unchanged-family residency/accounting and
 absence of balance construction during resource preparation. These are bounded
 Film-Juicer characterization/product contracts; ordinary tests never capture or
 modify their frozen fixtures. Both Release OFF C11 probes retain sixteen frozen
-balance cases and all earlier boundary/feature-isolation checks.
+balance cases and the retained boundary/feature-isolation checks.
 
 ### Shared Gaussian coefficients
 
 `Ffi.Host.GaussianKernel` checks safe Rust optics, compiled C11/C++20/Rust ABI,
-checked owner/view/release transport and the native move-only hold against the
+raw owner/view/release transport and call-local host-preparation callbacks against the
 four independently captured native cohorts in `optics/gaussian-fixtures/`.
-`Optics.Host.GaussianKernelProducts` reconstructs actual four-route scanner,
+`Optics.Host.GaussianKernelProducts` consumes actual four-route scanner,
 visual-grain and small FIR DIR products and compares every coefficient and its
 metadata. Ordinary tests never regenerate expectations. The constructor preserves
 ascending f64 exp accumulation and both f32 rounding points; family radius and
@@ -1610,14 +1618,18 @@ seconds and workers join before fixture/context destruction. The unchanged
 allocation probe is linked once per fixture executable. These are bounded injected
 operation/allocation results, not physical driver failure or universal OOM proof.
 Ordinary native objects and final testing-OFF artifacts exclude these controls.
+Cold null preparation returns the exact preparation-failure envelope with no
+candidate/cache/ledger/acquisition change; valid callbacks recover. Warm null
+preparation returns the existing kernel without another acquisition.
 
 The owning scanner, grain and DIR GPU groups also download their actual prepared
 kernels and compare every word with the independent fixtures. Warm preparations
 must not acquire another Rust coefficient owner. Existing route numerics,
 identities, FIR/YVV separation, scratch and context-lifetime cases remain active.
-Both Release OFF C11 probes execute 201 Gaussian value/failure cases, preserving
-all earlier probe memberships, including 410 post-effects and 41 LUT descriptor
-rows. The local Box allocation still has the established allocator-abort limit.
+The old Gaussian wrapper/export and standalone OFF Gaussian rows are removed.
+Both Release OFF gates still require actual prepared rendering and the retained
+post-effects/descriptor protocols; their execution remains a separate I8 gate.
+The local Box allocation still has the established allocator-abort limit.
 
 Gaussian Debug/Release captures share exact payload bytes within each platform;
 four context sidecars preserve distinct provenance and original LF/CRLF capture
@@ -1656,7 +1668,7 @@ Both need no driver/device and have no elapsed deadline. See the owning
 [scatter/halation guide](scatter_halation/README.md) and
 [fixture authority](scatter_halation/frame-fixtures/README.md). The existing
 strict C11 Release testing-OFF film probe also executes the complete frozen
-eighty-six-result membership, retaining all earlier production probe results.
+eighty-six-result membership alongside retained production probe results.
 
 ### Spatial DIR mathematical frame construction
 
@@ -1667,7 +1679,7 @@ with 180-second limits. Every mathematical/default word and final native hash is
 compared exactly; fixtures are never regenerated during tests.
 
 `Ofx.Gpu.DirFrame` uses the existing executor-failure probe and GPU lock with a
-180-second limit. Its 100 bounded invocations cover the two real legacy builder
+180-second limit. Its 100 bounded invocations cover the two actual prepared route
 sites, all four routes/polarities, current pixel/domain/origin facts, full-frame
 fallback, inactive/Identity/FIR/YVV/mixed plans, zero-weight construction and
 pre-builder/mathematical failure stops. Four genuine route products execute
@@ -1677,7 +1689,7 @@ operator, route and lifecycle groups retain their complete downstream assertions
 
 Prepared projection retains the native decoder's distinct unconsumed zero-weight
 target tiers and carries the original final hash. Both native Release OFF C11
-probes execute 121 complete value/failure rows, in addition to all older probes.
+probes execute 121 complete value/failure rows alongside the retained probes.
 Reflected-YVV boundary construction has its own contract below. Wider workspace
 construction, defect/weave mappings and S4.E integration remain later work.
 
@@ -1696,7 +1708,7 @@ failure rollback, same-key candidate disposal and context retirement. The native
 owner still controls allocation, upload, cache publication and retirement.
 
 Both Release testing-OFF C11 probes execute 171 full boundary value/failure/raw/
-lifetime rows while retaining every predecessor probe. Diagnostic length counts
+lifetime rows alongside retained probes. Diagnostic length counts
 written bytes without NUL at capacities zero, one, short, M and M+1. Ordinary tests
 never regenerate expectations.
 
@@ -1728,6 +1740,6 @@ The three native setup consumers use the maintained facade and shared composer.
 Prepared transport preserves static recipe/chroma/amplitude/preset and layer-axis
 metadata. Both native Release testing-OFF probes call the real
 `fj_legacy_grain_frame_prepare` through strict C11 signatures and all 188 frozen
-full-value/metadata/failure/diagnostic rows, retaining every predecessor probe.
+full-value/metadata/failure/diagnostic rows alongside retained probes.
 Written-byte capacities 0/1/short/M/M+1 include R1. Ordinary tests never regenerate
 fixtures; conversion safety expectations do not execute undefined native casts.

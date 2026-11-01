@@ -1,13 +1,4 @@
 namespace {
-    struct WireMutation {
-        bool active = false;
-        unsigned operation = 1;
-        FjStatus status{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-        FjFilmRecipeFailure failure{FJ_FILM_RECIPE_LOG_EXPOSURE, 3, 1};
-    };
-    thread_local WireMutation wireMutation;
-    thread_local unsigned nextViewFault = 0;
-
     struct RecipeSupersession {
         ParamSnapshot replacement;
         bool fired = false;
@@ -44,16 +35,8 @@ namespace {
         for (const auto& row : f1) {
             const auto name = row.at("case").get<std::string>();
             const auto root = (name == "duplicates" || name == "singleton") ? fixture.parent_path().parent_path() / "fixtures/synthetic" / name : fixture.parent_path() / "synthetic" / name;
-            JuicerAssets::AssetBridge assets(root);
-            require(assets.load_catalog().valid, "F1 native catalog");
-            const auto source = assets.film_source("kodak_portra_400");
-            auto development = source->prepare_development(Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, false);
-            const auto* address = development.hold.get();
-            auto moved = std::move(development.hold);
-            require(!development.hold.get() && moved.get() == address, "native move transfers and nulls consuming hold");
-            development.hold = std::move(moved);
-            // NOLINTNEXTLINE(bugprone-use-after-move): this owner explicitly guarantees a null moved-from handle; the fixture verifies that contract.
-            require(!moved.get() && development.hold.get() == address, "native move assignment preserves same development");
+            Assets assets(root);
+            auto* development = assets.development(captured.at("cases")[2]);
             auto raw = params(captured.at("cases")[2].at("controls"));
             const unsigned kind = row.at("kind");
             if (kind == 1)
@@ -74,7 +57,7 @@ namespace {
                 raw.amount = -1;
             FjFilmDirOwner* owner = nullptr;
             FjFilmRecipeFailure failure{};
-            const auto result = fj_legacy_film_dir_acquire(development.hold.get(), &raw, &owner, &failure, nullptr);
+            const auto result = fj_legacy_film_dir_acquire(development, &raw, &owner, &failure, nullptr);
             if (row.at("success").get<bool>()) {
                 status(result);
                 metadata(failure);
@@ -85,140 +68,15 @@ namespace {
                 if (row.at("diagnostic").get<std::string>().find("log_exposure") != std::string::npos)
                     metadata(failure, FJ_FILM_RECIPE_LOG_EXPOSURE, 3, 1);
             }
-            // SF_TEMP_BRIDGE_NATIVE_DIR_SOURCE_DIAGNOSTIC keeps the legacy
-            // malformed-source diagnostic comparison until its source owner
-            // moves; publication admission below injects at the checked Rust DIR producer.
-            DirCouplersRecipe out;
-            std::string diagnostic;
-            const auto controls = native_controls(raw);
-            const bool success = JuicerAssets::prepare_film_dir(development.hold, controls, *source->profile(), development.route, development.recipe.logExposure.size(), out, diagnostic);
-            require(success == row.at("success").get<bool>() && diagnostic == row.at("diagnostic").get<std::string>(), "exact native F1 returned diagnostic and bypass order");
-            require(fj_test_film_dir_live_owners() == 0, "temporary DIR owners end after copies/failure");
-            if (name == "duplicates" && kind == 0) {
-                for (unsigned fault = 0; fault < 11; ++fault) {
-                    wireMutation = WireMutation{};
-                    wireMutation.active = true;
-                    switch (fault) {
-                        case 0:
-                            wireMutation.status.category = FJ_STATUS_SUCCESS;
-                            break;
-                        case 1:
-                            wireMutation.status.category = FJ_STATUS_UNSUPPORTED_INPUT;
-                            break;
-                        case 2:
-                            wireMutation.status.category = FJ_STATUS_ALLOCATION_FAILURE;
-                            break;
-                        case 3:
-                            wireMutation.status.category = FJ_STATUS_INTERNAL_FAILURE;
-                            break;
-                        case 4:
-                            wireMutation.status.api = FJ_API_CUDA_RUNTIME;
-                            break;
-                        case 5:
-                            wireMutation.status.native_code = 1;
-                            break;
-                        case 6:
-                            wireMutation.failure.channel = 0;
-                            break;
-                        case 7:
-                            wireMutation.failure.sample = 0;
-                            break;
-                        case 8:
-                            wireMutation.failure.sample = development.recipe.logExposure.size();
-                            break;
-                        case 9:
-                            wireMutation.failure.sample = UINT64_MAX;
-                            break;
-                        case 10:
-                            wireMutation.failure.reason = 99;
-                            break;
-                    }
-                    bool threw = false;
-                    try {
-                        (void)JuicerAssets::prepare_film_dir(development.hold, controls, *source->profile(), development.route, development.recipe.logExposure.size(), out, diagnostic);
-                    } catch (const JuicerCuda::ExecutionFailure& failure) {
-                        threw = failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-                    }
-                    require(threw, "impossible reason-16 envelope becomes integrity");
-                }
-            }
-            if (name == "singleton" && kind == 0) {
-                wireMutation = WireMutation{};
-                wireMutation.active = true;
-                bool threw = false;
-                try {
-                    (void)JuicerAssets::prepare_film_dir(development.hold, controls, *source->profile(), development.route, 1, out, diagnostic);
-                } catch (const JuicerCuda::ExecutionFailure& failure) {
-                    threw = failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-                }
-                require(threw, "reason-16 impossible for N=1");
-            }
-            if (name == "duplicates" && kind == 0)
-                status(fj_test_film_development_fault(2, 1));
+            status(fj_legacy_film_development_release(development, nullptr));
+            require(fj_test_film_dir_live_owners() == 0, "all F1 raw DIR owners drain after each fixture row");
         }
         require(fj_test_film_development_live_owners() == 0, "all F1 development holds released");
-        JuicerAssets::AssetBridge assets(fixture.parent_path().parent_path() / "fixtures/synthetic/n21");
-        require(assets.load_catalog().valid, "view contract catalog");
-        const auto source = assets.film_source("kodak_portra_400");
-        auto development = source->prepare_development(Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, false);
-        const auto controls = native_controls(params(captured.at("cases")[2].at("controls")));
-        for (bool cleanupFault : {false, true}) {
-            DirCouplersRecipe out;
-            std::string diagnostic;
-            if (cleanupFault)
-                status(fj_test_film_recipe_fault(2, 1));
-            SpectralAllocationProbe::arm();
-            bool failed = false;
-            try {
-                (void)JuicerAssets::prepare_film_dir(development.hold, controls, *source->profile(), development.route, development.recipe.logExposure.size(), out, diagnostic);
-            } catch (const std::bad_alloc&) {
-                failed = true;
-            }
-            SpectralAllocationProbe::clear();
-            require(failed && SpectralAllocationProbe::bytes() == development.recipe.logExposure.size() * sizeof(float) && fj_test_film_dir_live_owners() == 0, "native axis copy failure consumes view owner and preserves primary failure through cleanup");
-        }
-        for (unsigned fault : {1u, 2u, 3u, 4u, 5u}) {
-            nextViewFault = fault;
-            DirCouplersRecipe out;
-            std::string diagnostic;
-            bool rejected = false;
-            try {
-                (void)JuicerAssets::prepare_film_dir(development.hold, controls, *source->profile(), development.route, development.recipe.logExposure.size(), out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                rejected = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected && fj_test_film_dir_live_owners() == 0, "malformed view rejected before copying; temporary owner released");
-        }
-        for (unsigned operation : {0u, 2u, 3u}) {
-            wireMutation = WireMutation{};
-            wireMutation.active = true;
-            wireMutation.operation = operation;
-            bool rejected = false;
-            try {
-                std::string diagnostic;
-                if (operation == 0) {
-                    GrainContract out;
-                    (void)JuicerAssets::prepare_film_density_minimum(GrainContract{}, out, diagnostic);
-                }
-                if (operation == 2) {
-                    DirCouplersRecipe out;
-                    (void)JuicerAssets::prepare_film_dir(development.hold, controls, *source->profile(), development.route, development.recipe.logExposure.size(), out, diagnostic);
-                }
-                if (operation == 3) {
-                    DensityBoundsRecipe out;
-                    (void)JuicerAssets::prepare_film_density_bounds(development.hold, GrainContract{}, *source->profile(), development.route, out, diagnostic);
-                }
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                rejected = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected && !wireMutation.active && fj_test_film_dir_live_owners() == 0, "reason 16 rejected for minimum/view/bounds operations");
-        }
     }
 
     void products(const std::filesystem::path& resources, const Json& captured) {
         JuicerCuda::Owner owner;
         owner.create(resources);
-        JuicerProcess::root().ensure_bootstrap();
         for (const auto& row : captured.at("cases")) {
             ParamSnapshot controls;
             controls.filmProfileKey = row.at("key").get<std::string>();
@@ -313,37 +171,3 @@ namespace {
         std::puts("PASS 64 independent complete products, four-route failure/admission/recovery and family reuse");
     }
 } // namespace
-namespace JuicerAssets::RecipeTest {
-    void after_call(unsigned operation, FjStatus& status, FjFilmRecipeFailure& failure) {
-        if (wireMutation.active && operation == wireMutation.operation) {
-            status = wireMutation.status;
-            failure = wireMutation.failure;
-            wireMutation.active = false;
-        }
-    }
-    void view(FjFilmDirView& view) {
-        if (nextViewFault == 1)
-            view.mode = 99;
-        if (nextViewFault == 2)
-            view.compensated_axes_rgb[0].count = SIZE_MAX;
-        if (nextViewFault == 3)
-            view.compensated_axes_rgb[0].data = reinterpret_cast<const float*>(std::uintptr_t{1});
-        if (nextViewFault == 4) {
-            view.mode = 0;
-            view.hash = 0;
-            view.compensated_axes_hash = 0;
-            for (auto& axis : view.compensated_axes_rgb)
-                axis = {nullptr, 0};
-        }
-        if (nextViewFault == 5)
-            view.receiver_c_ref_rgb[0] = 1;
-        nextViewFault = 0;
-    }
-} // namespace JuicerAssets::RecipeTest
-namespace JuicerAssets::RecipeStateTest {
-    void selected_source(std::shared_ptr<const FilmSource>& source) {
-        // SF_TEMP_BRIDGE_NATIVE_DIR_SOURCE_DIAGNOSTIC has no publisher override;
-        // the raw native comparison is covered directly in native_cases().
-        (void)source;
-    }
-} // namespace JuicerAssets::RecipeStateTest

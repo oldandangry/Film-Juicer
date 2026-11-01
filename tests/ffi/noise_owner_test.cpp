@@ -7,8 +7,6 @@
 #include <memory>
 #include <string>
 #include <thread>
-#include <type_traits>
-#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -24,9 +22,6 @@ namespace {
     namespace fs = std::filesystem;
     fs::path resources;
     fs::path scratch;
-    std::array<unsigned, 3> operations{};
-    bool gateViolation = false;
-    bool corruptView = false;
 
     void expect_status(FjStatus result, std::uint32_t category) {
         EXPECT_EQ(result.category, category);
@@ -166,7 +161,7 @@ namespace {
         EXPECT_EQ(zero.length, 0u);
     }
 
-    TEST(NoiseOwner, ContainedPanicAndFailedNativeConstructionReleaseOnce) {
+    TEST(NoiseOwner, RawFacadeFailuresReleaseOwnersOnce) {
         const Assets assets(resources);
         FjNoise* output = reinterpret_cast<FjNoise*>(1);
         fj_test_noise_fault(1);
@@ -184,12 +179,7 @@ namespace {
         expect_status(fj_legacy_noise_release(owner.release(), nullptr), FJ_STATUS_INTERNAL_FAILURE);
         EXPECT_EQ(fj_test_live_noise_owners(), before - 1);
         fj_test_noise_fault(0);
-        JuicerAssets::AssetBridge bridge(resources);
-        corruptView = true;
-        EXPECT_THROW((void)bridge.noise(), JuicerCuda::ExecutionFailure);
-        corruptView = false;
         EXPECT_EQ(fj_test_live_noise_owners(), before - 1);
-        EXPECT_FALSE(gateViolation);
     }
 
     TEST(NoiseOwner, OrdinarySourceErrorStaysCachedUntilRelease) {
@@ -230,24 +220,7 @@ namespace {
         EXPECT_EQ(owner, nullptr);
     }
 
-    TEST(NoiseOwner, MoveOnlyBorrowAndNonlockingReentryPrecheck) {
-        static_assert(!std::is_default_constructible_v<JuicerAssets::NoiseSource>);
-        static_assert(!std::is_copy_constructible_v<JuicerAssets::NoiseSource>);
-        static_assert(std::is_nothrow_move_constructible_v<JuicerAssets::NoiseSource>);
-        static_assert(!std::is_move_assignable_v<JuicerAssets::NoiseSource>);
-        operations = {};
-        {
-            JuicerAssets::AssetBridge bridge(resources);
-            auto source = bridge.noise();
-            const auto* const address = source.view().stbn.data();
-            auto moved = std::move(source);
-            EXPECT_EQ(moved.view().stbn.data(), address);
-            EXPECT_EQ(operations[0], 1u);
-            EXPECT_EQ(operations[1], 1u);
-            EXPECT_EQ(operations[2], 0u);
-        }
-        EXPECT_EQ(operations[2], 1u);
-        EXPECT_FALSE(gateViolation);
+    TEST(NoiseOwner, NativeCallReentryPrecheck) {
         JuicerCuda::Owner owner;
         owner.create(resources);
         JuicerCuda::check_native_call_admission(JuicerCuda::borrowed_owner());
@@ -259,21 +232,8 @@ namespace {
         }
         EXPECT_FALSE(JuicerCuda::calling_thread_native_gate_active());
         expect_status(owner.close(), FJ_STATUS_SUCCESS);
-        std::printf("NoiseSource=%zu FjStaticNoise=%zu StaticNoiseInput=%zu; shared source=68157456 bytes\n", sizeof(JuicerAssets::NoiseSource), sizeof(FjStaticNoise), sizeof(JuicerCuda::StaticNoiseInput));
     }
 } // namespace
-
-namespace JuicerAssets::NoiseTest {
-    void observe(Operation operation) noexcept {
-        ++operations[static_cast<unsigned>(operation)];
-        gateViolation = gateViolation || JuicerCuda::calling_thread_native_gate_active();
-    }
-    void view(FjStaticNoise& view) {
-        if (corruptView) {
-            view.stbn.count = 1;
-        }
-    }
-} // namespace JuicerAssets::NoiseTest
 
 int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
@@ -284,7 +244,7 @@ int main(int argc, char** argv) try {
     scratch = fs::absolute(argv[2]);
     fs::create_directories(scratch);
     const int result = RUN_ALL_TESTS();
-    const bool ownersDrained = fj_test_live_noise_owners() == 0 && fj_test_assets_live_owners() == 0 && !gateViolation;
+    const bool ownersDrained = fj_test_live_noise_owners() == 0 && fj_test_assets_live_owners() == 0;
     return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
 } catch (const std::exception& error) {
     std::fprintf(stderr, "noise fixture setup failed: %s\n", error.what());

@@ -42,7 +42,8 @@ namespace JuicerCudaTest {
         const FjSubmission& submission,
         const FjPreparedHostData& prepared,
         FjAbortCallback abort = {},
-        FjErrorBuffer* error = nullptr) {
+        FjErrorBuffer* error = nullptr,
+        const FjHostPreparation* hostPreparation = nullptr) {
         FjErrorBuffer emptyError{nullptr, 0, 0};
         FjErrorBuffer* const effectiveError = error ? error : &emptyError;
         const FjRenderOutcome unsupported{{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0};
@@ -90,7 +91,10 @@ namespace JuicerCudaTest {
         }
         inspected = true;
 
-        const FjStatus hostStatus = fj_test_with_host_preparation(&consumer, &PreparedRawRenderFixture::render_with_borrowed_preparation, effectiveError);
+        // Preserve the caller's optional diagnostic pointer through the C render callback.
+        const FjStatus hostStatus = hostPreparation
+                                        ? PreparedRawRenderFixture::render_with_borrowed_preparation(&consumer, hostPreparation, error)
+                                        : fj_test_with_host_preparation(&consumer, &PreparedRawRenderFixture::render_with_borrowed_preparation, error);
         outcome = consumer.invoked ? consumer.outcome : FjRenderOutcome{hostStatus, 0};
         return finish(consumer.invoked);
     }

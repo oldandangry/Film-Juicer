@@ -28,7 +28,6 @@
 
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaResources.h"
-#include "Illuminants.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
@@ -38,7 +37,6 @@
 #include "Cuda/JuicerCudaHostViews.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
-#include "spectral_allocation_probe.h"
 #include "prepared_boundary.h"
 #include "prepared_product_fixture.h"
 
@@ -59,20 +57,14 @@ namespace IlluminantConstruction {
 namespace {
     namespace fs = std::filesystem;
     using Json = nlohmann::json;
-    using JuicerAssets::CsvSource;
     fs::path resources, fixtures, scratch;
-    thread_local unsigned viewFault = 0;
     thread_local unsigned calibrationFault = 0;
-    thread_local bool failCopy = false;
     thread_local bool failLensAcquisition = false;
-    thread_local std::vector<CsvSource>* acquisitions = nullptr;
+    thread_local std::vector<std::uint32_t>* acquisitions = nullptr;
     std::barrier<>* publicationBarrier = nullptr;
     std::atomic<unsigned> publications{0};
     thread_local bool failPublication = false;
-    std::atomic<std::size_t> pairCapacity{0};
-    std::barrier<>* copyBarrier = nullptr;
     std::barrier<>* calibrationBarrier = nullptr;
-    std::array<float, 81> foundationReference{};
     std::mutex rustCandidatesMutex;
     std::vector<std::uintptr_t> rustCandidates;
 
@@ -126,9 +118,7 @@ namespace {
                     return FJ_STATUS_ALLOCATION_FAILURE;
                 }
                 if (acquisitions)
-                    acquisitions->push_back(static_cast<CsvSource>(source - FJ_CSV_D65));
-                if (source == FJ_CSV_D55 && std::exchange(viewFault, 0) != 0)
-                    return FJ_STATUS_INTERNAL_FAILURE;
+                    acquisitions->push_back(source);
                 return FJ_STATUS_SUCCESS;
             } catch (const std::bad_alloc&) {
                 return FJ_STATUS_ALLOCATION_FAILURE;
@@ -337,17 +327,23 @@ namespace {
     TEST(IlluminantAbi, AcceptedCsvRepresentationEmptySuccessAndFailureRetry) {
         const auto root = empty_root("csv-representation");
         write(root / "illuminants/D65.csv", "# comment\n380,1 trailing\n385 1e-999\n0x1p2 4\nbad\n390 2;note\n395;3\n");
-        JuicerAssets::AssetBridge bridge(root);
-        const auto rows = bridge.copy_csv_pairs(CsvSource::D65);
-        ASSERT_EQ(rows.size(), 3u);
-        EXPECT_EQ(rows[0], (std::pair<float, float>{380, 1}));
-        EXPECT_EQ(rows[1], (std::pair<float, float>{385, 0}));
-        EXPECT_EQ(rows[2], (std::pair<float, float>{390, 2}));
-        EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-        write(root / "illuminants/D55.csv", "# no rows\n");
-        EXPECT_TRUE(bridge.copy_csv_pairs(CsvSource::D55).empty());
         Assets assets(root);
         FjCsvPairs* owner = nullptr;
+        expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D65, &owner, nullptr), FJ_STATUS_SUCCESS);
+        const auto releaseCsv = [](FjCsvPairs* held) {
+            expect_status(fj_legacy_csv_release(held, nullptr), FJ_STATUS_SUCCESS);
+        };
+        std::unique_ptr<FjCsvPairs, decltype(releaseCsv)> rowsHold(owner, releaseCsv);
+        FjFloatSpan rows{};
+        expect_status(fj_legacy_csv_view(rowsHold.get(), &rows, nullptr), FJ_STATUS_SUCCESS);
+        ASSERT_EQ(rows.count, 6u);
+        EXPECT_EQ((std::array{rows.data[0], rows.data[1]}), (std::array<float, 2>{380, 1}));
+        EXPECT_EQ((std::array{rows.data[2], rows.data[3]}), (std::array<float, 2>{385, 0}));
+        EXPECT_EQ((std::array{rows.data[4], rows.data[5]}), (std::array<float, 2>{390, 2}));
+        rowsHold.reset();
+        EXPECT_EQ(fj_test_csv_live_owners(), 0u);
+        write(root / "illuminants/D55.csv", "# no rows\n");
+        owner = nullptr;
         expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D55, &owner, nullptr), FJ_STATUS_SUCCESS);
         FjFloatSpan view{};
         expect_status(fj_legacy_csv_view(owner, &view, nullptr), FJ_STATUS_SUCCESS);
@@ -375,22 +371,6 @@ namespace {
             EXPECT_EQ(bytes[error.length], '\0');
             EXPECT_EQ(fj_test_csv_live_owners(), 0u);
         }
-    }
-
-    TEST(IlluminantCopy, InvalidSpansAndAllocationUnwindReleaseOwners) {
-        JuicerAssets::AssetBridge bridge(resources);
-        for (unsigned fault = 1; fault <= 4; ++fault) {
-            viewFault = fault;
-            EXPECT_THROW(bridge.copy_csv_pairs(CsvSource::D55), JuicerCuda::ExecutionFailure);
-            EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-        }
-        failCopy = true;
-        EXPECT_THROW(bridge.copy_csv_pairs(CsvSource::D55), std::bad_alloc);
-        EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-        const auto rows = bridge.copy_csv_pairs(CsvSource::D55);
-        expect_status(bridge.release_cached_payloads(), FJ_STATUS_SUCCESS);
-        EXPECT_EQ(rows.size(), 81u);
-        EXPECT_FLOAT_EQ(rows[0].first, 380);
     }
 
     TEST(CalibrationAbi, SelectedFieldsExactUtf8KeysAndClearedInvalidInputs) {
@@ -486,32 +466,13 @@ namespace {
         EXPECT_EQ(hash_floats(coefficients.data(), coefficients.size()), 0x3ef43845b118f2f9ull);
     }
 
-    TEST(IlluminantLibrary, NativeHeldViewAllocationFailuresReleaseForeignHolds) {
-        for (unsigned allocation = 1; allocation <= 2; ++allocation) {
-            JuicerAssets::Library native(resources);
-            (void)native.illuminant_filter_curves();
-            SpectralAllocationProbe::arm(allocation);
-            EXPECT_THROW((void)native.illuminant_filter_curves(), std::bad_alloc);
-            EXPECT_GT(SpectralAllocationProbe::bytes(), 0u);
-            SpectralAllocationProbe::clear();
-            EXPECT_LT(SpectralAllocationProbe::bytes(), std::size_t{7} * 81u * sizeof(float));
-            expect_status(native.release_cached_payloads(), FJ_STATUS_SUCCESS);
-            FjCacheMetrics metrics{};
-            expect_status(fj_test_cache_metrics(native.borrow_rust_assets(), FJ_TEST_CACHE_ILLUMINANTS, &metrics, nullptr), FJ_STATUS_SUCCESS);
-            EXPECT_EQ(metrics.allocations, 1u);
-            EXPECT_EQ(metrics.destructions, 1u);
-            EXPECT_EQ(metrics.live_bytes, 0u);
-        }
-    }
-
     TEST(IlluminantLibrary, SevenDerivedCurvesMatchAcceptedNativeProducerAndRetainSnapshots) {
         IlluminantCacheProbe library(resources);
-        std::vector<CsvSource> order;
+        std::vector<std::uint32_t> order;
         acquisitions = &order;
         auto curves = library.acquire();
         acquisitions = nullptr;
-        EXPECT_EQ(order, (std::vector<CsvSource>{CsvSource::D65, CsvSource::D55, CsvSource::D50, CsvSource::T, CsvSource::K75p, CsvSource::Kg3, CsvSource::Canon24F28Is}));
-        EXPECT_EQ(pairCapacity.load(), 0u);
+        EXPECT_EQ(order, (std::vector<std::uint32_t>{FJ_CSV_D65, FJ_CSV_D55, FJ_CSV_D50, FJ_CSV_T, FJ_CSV_K75P, FJ_CSV_KG3, FJ_CSV_CANON_24_F28_IS}));
 #if defined(_WIN32)
         std::ifstream expected(fixtures / "windows.bits");
 #else
@@ -556,7 +517,7 @@ namespace {
         fs::remove(root / "illuminants/D55.csv");
         write(root / "filters/heat_absorbing/schott/KG3.csv", "# empty decoded success\n");
         IlluminantCacheProbe library(root);
-        std::vector<CsvSource> order;
+        std::vector<std::uint32_t> order;
         acquisitions = &order;
         const auto partial = library.acquire();
         acquisitions = nullptr;
@@ -564,7 +525,7 @@ namespace {
         EXPECT_TRUE(partial->d55.linear.empty());
         EXPECT_TRUE(partial->tungstenKg3Lens.linear.empty());
         EXPECT_EQ(order.size(), 6u);
-        EXPECT_EQ(order.back(), CsvSource::Kg3);
+        EXPECT_EQ(order.back(), FJ_CSV_KG3);
         fs::copy_file(resources / "illuminants/D55.csv", root / "illuminants/D55.csv");
         const auto later = library.acquire();
         EXPECT_NE(partial, later);
@@ -645,42 +606,13 @@ namespace {
         const auto recovered = library.acquire();
         EXPECT_EQ(recovered->d65.linear.size(), 81u);
         const auto before = library.metrics();
-        SpectralAllocationProbe::arm();
-        bool wrapperFailure = false;
-        try {
-            (void)library.acquire();
-        } catch (const std::bad_alloc&) {
-            wrapperFailure = true;
-        }
-        EXPECT_TRUE(wrapperFailure);
-        EXPECT_GT(SpectralAllocationProbe::bytes(), 0u);
-        EXPECT_EQ(library.metrics().allocations, before.allocations);
         EXPECT_EQ(library.acquire(), recovered);
-        std::printf("Rust retained bytes one=%llu overlap=%llu; real final-drop reentry; native wrapper rejection remains separate\n", static_cast<unsigned long long>(one), 2ull * static_cast<unsigned long long>(one));
+        EXPECT_EQ(library.metrics().allocations, before.allocations);
+        std::printf("Rust retained bytes one=%llu overlap=%llu; real final-drop reentry\n", static_cast<unsigned long long>(one), 2ull * static_cast<unsigned long long>(one));
     }
 
     TEST(IlluminantNative, LensAcquisitionUnwindConsumesPreparedOwnerAndPreservesSourceFailure) {
         for (bool cleanupFault : {false, true}) {
-            // The standalone native mathematical wrapper keeps its original
-            // foreign-lens unwind witness, separate from the moved cache owner.
-            EXPECT_THROW(([&] {
-                             JuicerAssets::AssetBridge bridge(resources);
-                             auto kg3 = bridge.csv_rows(CsvSource::Kg3);
-                             auto lens = JuicerIlluminant::prepare_lens(kg3, "KG3");
-                             ASSERT_TRUE(lens);
-                             if (cleanupFault)
-                                 expect_status(fj_test_illuminant_arm_fault(FJ_TEST_ILLUMINANT_LENS_RELEASE, 1, 2), FJ_STATUS_SUCCESS);
-                             failLensAcquisition = true;
-                             (void)bridge.csv_rows(CsvSource::Canon24F28Is);
-                         })(),
-                         std::bad_alloc);
-            EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
-            EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-            // Observe the intended destructor export before clearing any slot.
-            std::array<char, 128> bytes{};
-            FjErrorBuffer error{bytes.data(), bytes.size(), 0};
-            FjIlluminantLens* empty = nullptr;
-            expect_status(fj_legacy_illuminant_lens_release(&empty, &error), FJ_STATUS_SUCCESS);
             IlluminantCacheProbe probe(resources);
             expect_status(fj_test_cache_drop_reentry(probe.owner(), FJ_TEST_CACHE_ILLUMINANTS, nullptr), FJ_STATUS_SUCCESS);
             expect_status(fj_test_cache_clear_failures(probe.owner(), 0, cleanupFault ? 1u : 0u, nullptr), FJ_STATUS_SUCCESS);
@@ -699,26 +631,30 @@ namespace {
     }
 
     TEST(IlluminantMath, DirectConstraintsAndAsymmetricCoverage) {
-        JuicerAssets::AssetBridge bridge(resources);
-        auto direct = bridge.copy_csv_pairs(CsvSource::D65);
-        const auto check = [](const std::vector<std::pair<float, float>>& pairs) {
-            std::vector<float> rows;
-            for (const auto& pair : pairs) {
-                rows.push_back(pair.first);
-                rows.push_back(pair.second);
-            }
+        Assets assets(resources);
+        FjCsvPairs* acquired = nullptr;
+        expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D65, &acquired, nullptr), FJ_STATUS_SUCCESS);
+        const auto releaseCsv = [](FjCsvPairs* held) {
+            (void)fj_legacy_csv_release(held, nullptr);
+        };
+        std::unique_ptr<FjCsvPairs, decltype(releaseCsv)> source(acquired, releaseCsv);
+        FjFloatSpan original{};
+        expect_status(fj_legacy_csv_view(source.get(), &original, nullptr), FJ_STATUS_SUCCESS);
+        ASSERT_EQ(original.count, 162u);
+        auto direct = std::vector<float>(original.data, original.data + original.count);
+        const auto check = [](const std::vector<float>& rows) {
             std::array<char, 256> bytes{};
             FjErrorBuffer error{bytes.data(), bytes.size(), 0};
             FjIlluminant curve{};
             expect_status(fj_legacy_illuminant_from_samples({rows.data(), rows.size()}, &curve, &error), FJ_STATUS_PREPARATION_FAILURE);
         };
-        direct[0].first += 0.01f;
+        direct[0] += 0.01f;
         check(direct);
-        direct = bridge.copy_csv_pairs(CsvSource::D65);
-        direct[0].second = std::numeric_limits<float>::infinity();
+        direct.assign(original.data, original.data + original.count);
+        direct[1] = std::numeric_limits<float>::infinity();
         check(direct);
-        direct = bridge.copy_csv_pairs(CsvSource::D65);
-        direct[0].second += 1;
+        direct.assign(original.data, original.data + original.count);
+        direct[1] += 1;
         check(direct);
         const std::array<float, 4> narrow{380, 1, 780, 1};
         std::array<char, 256> bytes{};
@@ -734,31 +670,12 @@ namespace {
         expect_status(fj_legacy_illuminant_lens_prepare({}, &owner, &coverage, &error), FJ_STATUS_PREPARATION_FAILURE);
     }
 
-    TEST(IlluminantCopy, BorrowedCopyCompletesAcrossSourceCacheRelease) {
-        JuicerAssets::AssetBridge bridge(resources);
-        std::barrier barrier(2);
-        copyBarrier = &barrier;
-        std::vector<std::pair<float, float>> copied;
-        std::thread reader([&] {
-            copied = bridge.copy_csv_pairs(CsvSource::D65);
-        });
-        barrier.arrive_and_wait();
-        expect_status(bridge.release_cached_payloads(), FJ_STATUS_SUCCESS);
-        EXPECT_EQ(fj_test_csv_live_owners(), 1u);
-        barrier.arrive_and_wait();
-        reader.join();
-        copyBarrier = nullptr;
-        EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-        EXPECT_EQ(copied.size(), 81u);
-    }
-
     TEST(CalibrationNative, LookupCompletesAcrossCacheReleaseAndStockKeysOwnRecipeSelection) {
         const auto root = full_root("stock-recipe");
         JuicerCuda::Owner owner;
         owner.create(root);
-        JuicerProcess::root().ensure_bootstrap();
         auto& assets = JuicerProcess::root().assets();
-        // Retain catalog keys before changing copied metadata for cold profile decoding.
+        // Retain catalog keys before changing stock metadata for cold profile decoding.
         ASSERT_TRUE(assets.spektrafilm_profile_catalog().valid);
         const auto load = [](const fs::path& path) {
             std::ifstream file(path);
@@ -778,10 +695,7 @@ namespace {
         FjErrorBuffer productError{productText.data(), productText.size(), 0};
         FjPreparedStateView productView{};
         ASSERT_EQ(product.view(productView, productError).category, FJ_STATUS_SUCCESS);
-        const auto selectedProfiles = assets.selected_profiles_for_route({params.filmProfileKey, params.printProfileKey, params.scanRoute});
-        ASSERT_TRUE(selectedProfiles.valid);
-        EXPECT_NE(selectedProfiles.filmSource->profile()->info.stock, params.filmProfileKey);
-        EXPECT_NE(selectedProfiles.printSource->profile()->info.stock, params.printProfileKey);
+
         EXPECT_EQ(productView.print_filter_main_cmy_cc[0], 11);
         EXPECT_EQ(productView.print_filter_main_cmy_cc[1], 22);
         EXPECT_EQ(productView.print_filter_main_cmy_cc[2], 33);
@@ -860,7 +774,7 @@ namespace {
         EXPECT_EQ(prepared.print_filter_main_cmy_cc[1], 65);
     }
 
-    TEST(IlluminantNative, FilmReferenceLensAliasAndPreflashUseRetainedSourceCopies) {
+    TEST(IlluminantNative, FilmReferenceLensAliasAndPreflashRetainOwners) {
         const auto root = full_root("aliases-preflash");
         std::ifstream file(root / "profiles/kodak_portra_400.json");
         auto film = Json::parse(file);
@@ -868,22 +782,16 @@ namespace {
         write(root / "profiles/kodak_portra_400.json", film.dump());
         JuicerCuda::Owner owner;
         owner.create(root);
-        JuicerProcess::root().ensure_bootstrap();
         auto& assets = JuicerProcess::root().assets();
         auto authored = controls(true);
         authored.printPreflashExposure = 0.1;
-        // SF_TEMP_BRIDGE_NATIVE_ILLUMINANT_REFERENCE: retain the original
-        // native source-copy witness through I7; this build owns the hook call.
-        FocusedRenderStateBuildProduct SF_TEMP_BRIDGE_nativeProduct;
-        std::string SF_TEMP_BRIDGE_nativeDiagnostic;
-        ASSERT_TRUE(build_print_render_state_product(authored, SF_TEMP_BRIDGE_nativeProduct, SF_TEMP_BRIDGE_nativeDiagnostic))
-            << SF_TEMP_BRIDGE_nativeDiagnostic;
         auto product = JuicerTestSupport::prepare_product(authored);
         std::array<char, 2048> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
         FjPreparedStateView productView{};
         ASSERT_EQ(product.view(productView, error).category, FJ_STATUS_SUCCESS);
-        const auto curves = assets.illuminant_filter_curves();
+        IlluminantCacheProbe cache(assets);
+        const auto curves = cache.acquire();
         FjIlluminantsOwner* selected = nullptr;
         expect_status(fj_test_assets_illuminants_acquire(assets.borrow_rust_assets(), &selected, nullptr), FJ_STATUS_SUCCESS);
         const auto releaseIlluminants = [](FjIlluminantsOwner* held) {
@@ -892,10 +800,9 @@ namespace {
         std::unique_ptr<FjIlluminantsOwner, decltype(releaseIlluminants)> selectedHold(selected, releaseIlluminants);
         FjIlluminantsView shared{};
         expect_status(fj_test_illuminants_view(selected, &shared, nullptr), FJ_STATUS_SUCCESS);
-        EXPECT_EQ(curves->entryIdentity, shared.entry_identity);
+        EXPECT_EQ(curves->identity, shared.entry_identity);
         EXPECT_EQ(curves->d65.linear.data(), shared.d65.data);
         EXPECT_EQ(curves->tungstenKg3Lens.linear.data(), shared.tungsten_kg3_lens.data);
-        EXPECT_TRUE(std::equal(foundationReference.begin(), foundationReference.end(), curves->tungstenKg3Lens.linear.begin()));
         ASSERT_EQ(productView.exposure_tables.illuminant.count, curves->tungstenKg3.linear.size());
         EXPECT_TRUE(std::equal(productView.exposure_tables.illuminant.data, productView.exposure_tables.illuminant.data + productView.exposure_tables.illuminant.count, curves->tungstenKg3.linear.begin()));
         ASSERT_EQ(productView.print.main_illuminant.count, 81u);
@@ -921,6 +828,28 @@ namespace {
         EXPECT_EQ(profileView.reference_illuminant.kind, FJ_ILLUMINANT_NAMED);
         EXPECT_EQ(std::string(profileView.reference_illuminant.label.data, profileView.reference_illuminant.label.count), "TH-KG3");
         EXPECT_EQ(profileView.tables.linear_sensitivity_rgb.count, 243u);
+
+        ASSERT_EQ(productView.film_exposure.method, 1u);
+        ASSERT_EQ(shared.tungsten_kg3_lens.count, 81u);
+        FjSensitivityInput foundationInput{};
+        foundationInput.linear_sensitivity_rgb = profileView.tables.linear_sensitivity_rgb;
+        foundationInput.reference_illuminant = shared.tungsten_kg3_lens;
+        foundationInput.method = productView.film_exposure.method;
+        foundationInput.band_pass_active = productView.input_policy.band_pass_active;
+        std::copy_n(productView.input_policy.uv, 3, foundationInput.uv);
+        std::copy_n(productView.input_policy.ir, 3, foundationInput.ir);
+        FjSensitivity foundationSensitivity{};
+        FjSensitivityFailure foundationFailure{};
+        expect_status(fj_test_exposure_sensitivity(&foundationInput, &foundationSensitivity, &foundationFailure, &error), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(foundationFailure.hash_failure, 0u);
+        EXPECT_EQ(foundationFailure.hash_sample_index, 0u);
+        ASSERT_EQ(productView.film_exposure.sensitivity_rgb.count, 243u);
+        ASSERT_NE(productView.film_exposure.sensitivity_rgb.data, nullptr);
+        EXPECT_EQ(std::memcmp(foundationSensitivity.values_rgb, productView.film_exposure.sensitivity_rgb.data, sizeof(foundationSensitivity.values_rgb)), 0);
+        EXPECT_EQ(foundationSensitivity.hash, productView.film_exposure.sensitivity_hash);
+        // Mallett's recipe scale distinguishes the foundation lens alias from the exposure light.
+        EXPECT_EQ(std::bit_cast<std::uint32_t>(foundationSensitivity.mallett_green_scale),
+                  std::bit_cast<std::uint32_t>(productView.film_exposure.mallett_green_midgray_scale));
 
         FjFilmDevelopmentOwner* developmentOwner = nullptr;
         expect_status(fj_legacy_film_development_acquire(
@@ -1020,7 +949,6 @@ namespace {
         const auto root = full_root("native-allocation");
         JuicerCuda::Owner owner;
         owner.create(root);
-        JuicerProcess::root().ensure_bootstrap();
         auto& assets = JuicerProcess::root().assets();
         std::string diagnostic;
         for (unsigned mode = 1; mode <= 4; ++mode) {
@@ -1072,7 +1000,6 @@ namespace {
         write(root / "profiles/kodak_portra_400.json", film.dump());
         JuicerCuda::Owner owner;
         owner.create(root);
-        JuicerProcess::root().ensure_bootstrap();
         auto& assets = JuicerProcess::root().assets();
         IlluminantCacheProbe probe(assets);
         std::string diagnostic;
@@ -1151,50 +1078,6 @@ namespace {
 } // namespace
 
 namespace JuicerAssets::IlluminantTest {
-    void before_csv_acquisition(CsvSource source) {
-        if (source == CsvSource::Canon24F28Is && std::exchange(failLensAcquisition, false)) {
-            EXPECT_EQ(fj_test_illuminant_live_lenses(), 1u);
-            throw std::bad_alloc();
-        }
-
-        if (acquisitions)
-            acquisitions->push_back(source);
-    }
-    void csv_view(CsvSource source, FjFloatSpan& view) {
-        if (copyBarrier && source == CsvSource::D65) {
-            copyBarrier->arrive_and_wait();
-            copyBarrier->arrive_and_wait();
-        }
-        // Library faults target the unrelated D55 after the selected D65 succeeded.
-        if (source != CsvSource::D55)
-            return;
-        switch (std::exchange(viewFault, 0)) {
-            case 1:
-                --view.count;
-                break;
-            case 2:
-                view.count = std::numeric_limits<std::size_t>::max();
-                break;
-            case 3:
-                view.data = nullptr;
-                break;
-            case 4:
-                view.data = reinterpret_cast<const float*>(reinterpret_cast<const char*>(view.data) + 1);
-                break;
-            default:
-                break;
-        }
-    }
-    void before_csv_copy(CsvSource source, std::size_t) {
-        if (source == CsvSource::D55 && std::exchange(failCopy, false))
-            throw std::bad_alloc();
-    }
-    void after_csv_copy(CsvSource, std::size_t, std::size_t capacity) {
-        pairCapacity.fetch_add(capacity);
-    }
-    void film_reference_samples(const std::array<float, 81>& samples) {
-        foundationReference = samples;
-    }
     void calibration_result(FjNeutralCalibrationResult& result) {
         if (calibrationBarrier) {
             calibrationBarrier->arrive_and_wait();

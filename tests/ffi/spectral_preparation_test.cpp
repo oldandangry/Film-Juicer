@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <new>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -16,12 +15,9 @@
 #include <nlohmann/json.hpp>
 
 #include "Cuda/JuicerCudaExecutor.h"
-#include "RustSpectralBridge.h"
 #include "RustAssetBridge.h"
-#include "spectral_allocation_probe.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "ColorTransforms.h"
 #include "juicer_test_api.h"
 #include "print_illuminant_fixture.h"
 #include "exposure_fixture.h"
@@ -30,7 +26,6 @@
 #include "test_asset_workspace.h"
 
 extern "C" int fj_test_spectral_preparation_abi_c(void);
-void fj_test_spectral_native_allocation(const nlohmann::json&);
 namespace {
     using Json = nlohmann::json;
     void require(bool condition, const std::string& why) {
@@ -174,36 +169,6 @@ namespace {
             }
         }
     }
-    void native_allocation(const Json& fixture) {
-        Input in(fixture.at("leaf").at("tables")[0].at("input"));
-        std::array<std::array<float, 3>, 81> dyes{};
-        for (std::size_t i = 0; i < 81; ++i)
-            std::copy_n(in.dyes.data() + i * 3, 3, dyes[i].data());
-        Spectral::Curve illuminant;
-        illuminant.linear.assign(in.illuminant.begin(), in.illuminant.end());
-        Spectral::SpectralTables out;
-        SpectralAllocationProbe::arm();
-        bool rejected = false;
-        try {
-            JuicerSpectral::build_tables(dyes, in.minimum, illuminant, in.view.illuminant_hash, out);
-        } catch (const std::bad_alloc&) {
-            rejected = true;
-        }
-        SpectralAllocationProbe::clear();
-        require(rejected && SpectralAllocationProbe::bytes() == 81 * sizeof(float) && out.tablesHash == 0, "real native projection allocation throws before result identity publication");
-        JuicerSpectral::build_tables(dyes, in.minimum, illuminant, in.view.illuminant_hash, out);
-        std::size_t capacity = 0;
-        for (const auto* array : {&out.lambda, &out.illum, &out.Xbar, &out.Ybar, &out.Zbar, &out.Ax, &out.Ay, &out.Az, &out.epsC, &out.epsM, &out.epsY, &out.baseDensityMin, &out.baseDensityMid}) {
-            require(array->size() == 81, "native table complete extent");
-            capacity += array->capacity() * sizeof(float);
-        }
-        require(capacity >= std::size_t{13} * 81 * sizeof(float), "real native vector capacities");
-        auto* const address = out.lambda.data();
-        const auto hash = out.tablesHash;
-        JuicerSpectral::build_tables(dyes, in.minimum, illuminant, in.view.illuminant_hash, out);
-        require(out.lambda.data() == address && out.tablesHash == hash, "existing vector capacity can be reused without a derived cache");
-        std::printf("Native spectral projection: 13 arrays, %zu capacity bytes; rejected %zu-byte allocation; fixed C table %zu bytes. These are capacities, not RSS or a live-peak claim.\n", capacity, SpectralAllocationProbe::bytes(), sizeof(FjSpectralTables));
-    }
     void edge(const Json& fixture, const std::filesystem::path& resources) {
         require(fj_test_spectral_preparation_abi_c() == 1, "compiled C11 prototypes/layouts");
         Input in(fixture.at("leaf").at("tables")[0].at("input"));
@@ -324,7 +289,7 @@ int main(int argc, char** argv) {
         else if (group == "edge" && argc == 5)
             edge(fixture, argv[3]);
         else if ((group == "products" || group == "admission") && argc == 5)
-            fj_test_spectral_products(fixture, {.resources = argv[3], .scratch = argv[4]}, group == "admission", fj_test_spectral_native_allocation);
+            fj_test_spectral_products(fixture, {.resources = argv[3], .scratch = argv[4]}, group == "admission");
         else
             throw std::runtime_error("unknown spectral group");
         std::puts("PASS spectral frozen native values/contract");
@@ -340,8 +305,4 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s\n", e.what());
         return 1;
     }
-}
-
-void fj_test_spectral_native_allocation(const nlohmann::json& fixture) {
-    native_allocation(fixture);
 }

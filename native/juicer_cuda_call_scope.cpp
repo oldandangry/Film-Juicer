@@ -9,7 +9,7 @@
 #include <string_view>
 
 #include "FilmEffectsFrameDescriptors.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 #include "RustEffectsFrameBridge.h"
 #include "Cuda/JuicerCudaFailure.h"
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)

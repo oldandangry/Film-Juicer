@@ -4,7 +4,6 @@ namespace PrintPreflashTest {
 
 namespace PrintIlluminantTest {
     using Prepare = FjStatus (*)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*);
-    thread_local unsigned nextProjection = 0;
 
     FjPrintIlluminantParams params(const Json& row) {
         FjPrintIlluminantParams out{};
@@ -23,7 +22,7 @@ namespace PrintIlluminantTest {
                                 const JuicerCudaTest::PreparedFrameFixture::Inputs& prepared,
                                 std::string& diagnostic) {
         auto& facts = *static_cast<PreparedPrintFacts*>(opaque);
-        const auto* input = std::get_if<JuicerCuda::PrintResourceInput>(&prepared.preparation.print);
+        const auto* input = prepared.preparation.print ? &*prepared.preparation.print : nullptr;
         if (!input) {
             diagnostic = "prepared print state has no complete resource input";
             return false;
@@ -53,43 +52,14 @@ namespace PrintIlluminantTest {
     void seed(FjIlluminant& out) {
         std::fill_n(out.samples, 81, -13.0f);
     }
-    void run_SF_TEMP_BRIDGE_native_main_illuminant_panic_retry(const Json& literalCases) {
-        const auto& row = literalCases.at("cases")[0];
-        const auto input = params(row);
-        DichroicFilterRecipe filters;
-        std::copy_n(input.edges_nm, 4, filters.customEdgesNm.begin());
-        std::copy_n(input.transitions_nm, 4, filters.customTransitionsNm.begin());
-        const CmyCcTriplet cmy{input.cmy_cc[0], input.cmy_cc[1], input.cmy_cc[2]};
-        std::array<float, 81> source{};
-        for (std::size_t index = 0; index < source.size(); ++index)
-            source[index] = std::bit_cast<float>(row.at("source")[index].get<std::uint32_t>());
-        std::array<float, 81> out{};
-        out.fill(-13.0f);
-        std::string diagnostic;
-        status(fj_test_film_recipe_fault(10, 1));
-        bool panicked = false;
-        try {
-            (void)JuicerAssets::prepare_print_illuminant(filters, source, cmy, out, diagnostic);
-        } catch (const JuicerCuda::ExecutionFailure& error) {
-            panicked = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-        }
-        require(panicked && std::all_of(out.begin(), out.end(), [](float value) {
-                    return std::bit_cast<std::uint32_t>(value) == 0;
-                }),
-                "SF_TEMP_BRIDGE native main illuminant panic clears output");
-        require(JuicerAssets::prepare_print_illuminant(filters, source, cmy, out, diagnostic) &&
-                    diagnostic.empty() && words(out.data(), out.size()) == row.at("samples"),
-                "SF_TEMP_BRIDGE native main illuminant retry matches retained literal result");
-    }
 
     void raw_main_illuminant_followup(const FjPreparedStateView& held) {
         const auto source = held.print_source_illuminant;
         const auto& expected = held.print.main_illuminant;
         require(source.count == 81 && expected.count == 81, "held print state supplies complete main illuminant inputs and output");
-        DichroicFilterRecipe filters;
-        FjPrintIlluminantParams input{};
-        std::copy(filters.customEdgesNm.begin(), filters.customEdgesNm.end(), input.edges_nm);
-        std::copy(filters.customTransitionsNm.begin(), filters.customTransitionsNm.end(), input.transitions_nm);
+        FjPrintIlluminantParams input{{516.0f, 500.0f, 610.0f, 607.0f},
+                                      {12.0f, 8.0f, 8.0f, 8.0f},
+                                      {}};
         std::copy_n(held.print.main_cc_cmy, 3, input.cmy_cc);
         FjIlluminant out{};
         seed(out);
@@ -103,7 +73,7 @@ namespace PrintIlluminantTest {
     }
     void values(const Json& captured) {
         require(captured.at("cases").size() == 127, "exact adopted print illuminant literal membership");
-        for (Prepare prepare : {fj_legacy_print_illuminant_prepare, fj_test_print_illuminant_prepare})
+        for (Prepare prepare : {fj_test_print_illuminant_c_prepare, fj_test_print_illuminant_prepare})
             for (const auto& row : captured.at("cases")) {
                 auto input = params(row);
                 float source[81];
@@ -132,7 +102,7 @@ namespace PrintIlluminantTest {
         auto input = params(captured.at("cases")[0]);
         float source[81];
         std::fill_n(source, 81, 1.0f);
-        for (Prepare prepare : {fj_legacy_print_illuminant_prepare, fj_test_print_illuminant_prepare}) {
+        for (Prepare prepare : {fj_test_print_illuminant_c_prepare, fj_test_print_illuminant_prepare}) {
             FjIlluminant out{};
             FjPrintIlluminantFailure failure{};
             const auto call = [&](const FjPrintIlluminantParams* p, FjFloatSpan span, FjIlluminant* result, FjPrintIlluminantFailure* detail, FjErrorBuffer* error = nullptr) {
@@ -253,9 +223,19 @@ namespace PrintIlluminantTest {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         auto& assets = JuicerProcess::root().assets();
-        JuicerProcess::root().ensure_bootstrap();
+        FjIlluminantsOwner* rawIlluminants = nullptr;
+        status(fj_test_assets_illuminants_acquire(assets.borrow_rust_assets(), &rawIlluminants, nullptr));
+        require(rawIlluminants != nullptr, "raw selected illuminant owner acquired");
+        struct ReleaseIlluminants {
+            FjIlluminantsOwner* owner;
+            ~ReleaseIlluminants() {
+                if (owner && fj_test_illuminants_release(owner, nullptr).category != FJ_STATUS_SUCCESS)
+                    std::abort();
+            }
+        } release{rawIlluminants};
+        FjIlluminantsView rawIlluminantsView{};
+        status(fj_test_illuminants_view(rawIlluminants, &rawIlluminantsView, nullptr));
         require(captured.at("products").size() == 72, "exact genuine print illuminant product membership");
-        run_SF_TEMP_BRIDGE_native_main_illuminant_panic_retry(literalCases);
         for (const auto& expected : captured.at("products")) {
             const unsigned route = expected.at("route");
             const int mode = expected.at("mode");
@@ -311,9 +291,8 @@ namespace PrintIlluminantTest {
                     actual["preflash_cmy"] = words(mainCmy, 3);
                 }
                 const auto source = view.print_source_illuminant;
-                const auto curves = assets.illuminant_filter_curves();
-                require(p.enlIll == 3 && source.count == curves->tungstenKg3.linear.size() &&
-                            std::equal(source.data, source.data + source.count, curves->tungstenKg3.linear.begin()),
+                require(p.enlIll == 3 && source.count == rawIlluminantsView.tungsten_kg3.count &&
+                            std::equal(source.data, source.data + source.count, rawIlluminantsView.tungsten_kg3.data),
                         "completed source illuminant matches the selected TH-KG3 asset identity");
                 actual["source_key"] = "TH-KG3";
                 std::array<float, 81> preflashScratch{};
@@ -393,105 +372,4 @@ namespace PrintIlluminantTest {
                 "active preflash input is supplied from the completed held state");
         consume_stage10(literalCases);
     }
-    void native(const Json& captured) {
-        const auto input = params(captured.at("cases")[0]);
-        DichroicFilterRecipe filters;
-        std::copy_n(input.edges_nm, 4, filters.customEdgesNm.begin());
-        std::copy_n(input.transitions_nm, 4, filters.customTransitionsNm.begin());
-        CmyCcTriplet cmy{};
-        std::array<float, 81> source{};
-        source.fill(1);
-        std::array<float, 81> out{};
-        std::string diagnostic;
-        require(JuicerAssets::prepare_print_illuminant(filters, source, cmy, out, diagnostic) && diagnostic.empty() && words(out.data(), 81) == captured.at("cases")[0].at("samples"), "native named projection and complete copy");
-        for (bool energy : {false, true}) {
-            source.fill(energy ? 0.0f : 1.0f);
-            if (!energy)
-                source[37] = -1;
-            out.fill(-13);
-            require(!JuicerAssets::prepare_print_illuminant(filters, source, cmy, out, diagnostic) && diagnostic == "MalformedRequiredResource phase=4B field=filtered_print_illuminant", "exact native Sample/Energy diagnostic");
-            for (float sample : out)
-                require(std::bit_cast<std::uint32_t>(sample) == 0, "native failure clears output");
-        }
-        source.fill(1);
-        for (unsigned fault = 1; fault <= 16; ++fault) {
-            nextProjection = fault;
-            out.fill(-13);
-            bool threw = false;
-            try {
-                JuicerAssets::prepare_print_illuminant(filters, source, cmy, out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& failure) {
-                status(failure.failure.status, fault == 15 ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
-                threw = true;
-            }
-            require(threw && nextProjection == 0, "native rejects contradictory closed status/metadata/diagnostic");
-            for (float sample : out)
-                require(std::bit_cast<std::uint32_t>(sample) == 0, "native integrity failure publishes no result");
-        }
-    }
 } // namespace PrintIlluminantTest
-namespace JuicerAssets::RecipeTest {
-    void print_illuminant(FjStatus& status, FjPrintIlluminantFailure& failure, FjIlluminant&, FjErrorBuffer& error) {
-        const unsigned fault = PrintIlluminantTest::nextProjection;
-        PrintIlluminantTest::nextProjection = 0;
-        switch (fault) {
-            case 1:
-                status.category = 99;
-                break;
-            case 2:
-                status.api = 99;
-                break;
-            case 3:
-                status.native_code = 1;
-                break;
-            case 4:
-                failure.reason = 99;
-                break;
-            case 5:
-                failure.sample = 0;
-                break;
-            case 6:
-                failure.reason = FJ_PRINT_ILLUMINANT_REASON_SAMPLE;
-                failure.sample = 81;
-                break;
-            case 7:
-                status.category = FJ_STATUS_PREPARATION_FAILURE;
-                failure.reason = FJ_PRINT_ILLUMINANT_REASON_SAMPLE;
-                failure.sample = UINT32_MAX;
-                break;
-            case 8:
-                status.category = FJ_STATUS_PREPARATION_FAILURE;
-                failure.reason = FJ_PRINT_ILLUMINANT_REASON_ENERGY;
-                failure.sample = 0;
-                break;
-            case 9:
-                failure.reason = FJ_PRINT_ILLUMINANT_REASON_PANIC;
-                break;
-            case 10:
-                failure.reason = FJ_PRINT_ILLUMINANT_REASON_RAW;
-                break;
-            case 11:
-                error.length = error.capacity;
-                break;
-            case 12:
-                error.data = nullptr;
-                break;
-            case 13:
-                error.capacity = 0;
-                break;
-            case 14:
-                error.data[error.length] = 'x';
-                break;
-            case 15:
-                status.category = FJ_STATUS_UNSUPPORTED_INPUT;
-                failure.reason = FJ_PRINT_ILLUMINANT_REASON_RAW;
-                break;
-            case 16:
-                status.category = FJ_STATUS_INTERNAL_FAILURE;
-                failure.reason = FJ_PRINT_ILLUMINANT_REASON_PANIC;
-                break;
-            default:
-                break;
-        }
-    }
-} // namespace JuicerAssets::RecipeTest

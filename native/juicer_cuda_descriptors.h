@@ -4,6 +4,7 @@
 #include <string>
 
 #include "juicer_cuda_api.h"
+#include "Cuda/JuicerCudaFilmPayloads.h"
 #include "FilmEffectsFrameDescriptors.h"
 #include "Scanner.h"
 
@@ -21,7 +22,7 @@ namespace JuicerCuda {
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
         std::optional<ScatterHalationFrameDescriptor> halation;
         Spektrafilm::SpatialDirDescriptor spatialDir{};
-        Spektrafilm::VisualGrainRecipe grainRecipe{};
+        VisualGrainPayloadInput grainPayload{};
         std::optional<Spektrafilm::VisualGrainFrameDescriptor> grain;
         std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effects;
     };

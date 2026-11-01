@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "GamutCompression.h"
@@ -275,21 +276,17 @@ namespace {
                                     routeValue == static_cast<int>(Spektrafilm::ScanRoute::PositivePrintScan);
             require(source.at("medium").get<int>() == (printRoute ? 1 : 0), "scanner fixture medium agrees with route");
 
-            input.densityBounds.route = input.route;
-            input.densityBounds.medium = printRoute ? Spektrafilm::DensityMedium::Print : Spektrafilm::DensityMedium::Film;
-            input.densityBounds.polarity = (routeValue >= 2) ? Spektrafilm::ProfilePolarity::Positive : Spektrafilm::ProfilePolarity::Negative;
+            const auto polarity = (routeValue >= 2) ? Spektrafilm::ProfilePolarity::Positive : Spektrafilm::ProfilePolarity::Negative;
             input.densityBounds.hash = row.at("descriptor_hash").get<std::uint64_t>();
             const auto rangeMin = float_triplet(source.at("range_min_cmy"));
             input.densityBounds.invSpanCmy = float_triplet(source.at("inverse_span_cmy"));
             for (std::size_t channel = 0; channel < 3; ++channel) {
                 input.densityBounds.dataMinCmy[channel] = printRoute ? rangeMin[channel] : -rangeMin[channel];
-                input.densityBounds.dataMaxCmy[channel] = input.densityBounds.dataMinCmy[channel] +
-                                                          1.0f / input.densityBounds.invSpanCmy[channel];
             }
 
             input.scannerLutDescriptor.route = input.route;
             input.scannerLutDescriptor.medium = printRoute ? Scanner::ScannedMediumKind::Print : Scanner::ScannedMediumKind::Film;
-            input.scannerLutDescriptor.polarity = input.densityBounds.polarity;
+            input.scannerLutDescriptor.polarity = polarity;
             input.scannerLutDescriptor.densityBoundsHash = input.densityBounds.hash;
             input.scannerLutDescriptor.lutResolution = source.at("resolution").get<std::uint32_t>();
             input.scannerLutDescriptor.hash = row.at("descriptor_hash").get<std::uint64_t>();
@@ -573,7 +570,31 @@ namespace {
             ContextFixture routeFixture;
             Failure routeFailure;
             const auto& routeRow = product(route);
-            prepare_route(routeFixture, route, routeFailure);
+            PreparedInput freshInput(routeRow);
+            const auto empty = pointers(*routeFixture.resources, route);
+            require(std::all_of(empty.values.begin(), empty.values.end(), [](const float* pointer) {
+                        return pointer == nullptr;
+                    }) &&
+                        empty.hash == 0 && empty.resolution == 0,
+                    "fresh scanner route has no serving LUT");
+            const auto freshOwners = fj_test_scanner_lut_live_owners();
+            bool freshRejected = false;
+            try {
+                (void)prepare(routeFixture, routeRow, freshInput, routeFailure, nullptr);
+            } catch (const ExecutionFailure& error) {
+                freshRejected = true;
+                require(error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE && error.failure.status.api == FJ_API_NONE &&
+                            error.failure.status.native_code == 0 && error.failure.diagnostic == "Scanner LUT preparation: invalid transport contract",
+                        "fresh null scanner preparation keeps the exact typed transport failure");
+            }
+            require(freshRejected, "fresh scanner miss requires host preparation");
+            const auto afterFreshFailure = pointers(*routeFixture.resources, route);
+            require(afterFreshFailure.values == empty.values && afterFreshFailure.hash == empty.hash && afterFreshFailure.resolution == empty.resolution,
+                    "fresh null scanner preparation publishes no six-array candidate");
+            require_route_metadata_cleared(*routeFixture.resources);
+            require(fj_test_scanner_lut_live_owners() == freshOwners, "fresh null scanner preparation acquires no Rust owner");
+            require(prepare_with_owner(routeFixture, routeRow, freshInput, routeFailure), "valid scanner preparation recovers after fresh null rejection");
+            expect_words(pointers(*routeFixture.resources, route), routeRow.at("native"), routeRow.at("descriptor_hash").get<std::uint64_t>(), routeFixture.stream);
             Controls armed;
             armed.uploadSlot = 0;
             if (route == 0)
@@ -582,6 +603,10 @@ namespace {
             require(prepare_with_owner(routeFixture, routeRow, warmInput, routeFailure, &armed), "scanner hit stays warm while producer fault is armed");
             require(!armed.uploadConsumed && armed.uploadVisits == 0, "warm hit does not consume callback-upload fault");
             const auto previousRoute = pointers(*routeFixture.resources, route);
+            require(prepare(routeFixture, routeRow, warmInput, routeFailure, nullptr), "warm scanner hit succeeds without host preparation");
+            const auto afterWarmNull = pointers(*routeFixture.resources, route);
+            require(afterWarmNull.values == previousRoute.values && afterWarmNull.hash == previousRoute.hash && afterWarmNull.resolution == previousRoute.resolution,
+                    "warm null scanner preparation preserves every serving LUT field");
             expect_words(pointers(*routeFixture.resources, route), routeRow.at("native"), routeRow.at("descriptor_hash").get<std::uint64_t>(), routeFixture.stream);
             if (route == 0) {
                 auto changedRoute = PreparedInput(routeRow);
@@ -602,6 +627,66 @@ namespace {
                 expect_words(pointers(*routeFixture.resources, route), routeRow.at("native"), routeRow.at("descriptor_hash").get<std::uint64_t>(), routeFixture.stream);
             }
             routeFixture.close();
+        }
+
+        // Earlier film/reconstruction allocations stay warm for this device-ownership check.
+        for (int route = 0; route < 4; ++route) {
+            ContextFixture warmed;
+            Failure failure;
+            const auto& row = product(route);
+            PreparedInput input(row);
+            require(prepare_with_owner(warmed, row, input, failure), "seed unchanged scanner inputs before null-miss accounting");
+            expect_words(pointers(*warmed.resources, route), row.at("native"), input.input.scannerLutDescriptor.hash, warmed.stream);
+            require(cudaStreamSynchronize(warmed.stream) == cudaSuccess, "complete warm scanner work before null-miss baseline");
+            PinnedUploadTest::poll(warmed.key);
+            std::size_t reclaimed = 0;
+            require(reap_retired_allocations(*warmed.resources, reclaimed, failure), "reap completed scanner retirement without clearing serving resources");
+            {
+                std::lock_guard lock(warmed.resources->m);
+                require(warmed.resources->retireQueue.empty() && warmed.resources->pendingFrameUseEvents.empty(),
+                        "warm scanner null-miss baseline has no pending retirement or frame-use work");
+            }
+            const auto old = pointers(*warmed.resources, route);
+            constexpr std::uint64_t kDescriptorDelta = 0x0400000000000000ull;
+            input.input.scannerLutDescriptor.hash ^= kDescriptorDelta;
+            input.input.densityBounds.hash ^= kDescriptorDelta;
+            input.input.scannerLutDescriptor.densityBoundsHash = input.input.densityBounds.hash;
+            require(input.input.scannerLutDescriptor.hash != 0 && input.input.densityBounds.hash != 0,
+                    "changed scanner identities remain nonzero");
+            const auto owners = fj_test_scanner_lut_live_owners();
+            const auto beforeLedger = warmed.ledger->snapshot();
+            const auto beforeAllocations = allocation_bytes(*warmed.resources);
+            bool rejected = false;
+            try {
+                (void)prepare(warmed, row, input, failure, nullptr);
+            } catch (const ExecutionFailure& error) {
+                rejected = true;
+                require(error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE && error.failure.status.api == FJ_API_NONE &&
+                            error.failure.status.native_code == 0 && error.failure.diagnostic == "Scanner LUT preparation: invalid transport contract",
+                        "warmed null scanner miss keeps the exact typed transport failure");
+            }
+            require(rejected, "changed-key scanner miss requires host preparation");
+            const auto afterLedger = warmed.ledger->snapshot();
+            require(beforeLedger.reservedBytes == 0 && beforeLedger.retiringBytes == 0 &&
+                        afterLedger.capBytes == beforeLedger.capBytes && afterLedger.reservedBytes == beforeLedger.reservedBytes &&
+                        afterLedger.committedBytes == beforeLedger.committedBytes && afterLedger.retiringBytes == beforeLedger.retiringBytes &&
+                        afterLedger.chargedBytes == beforeLedger.chargedBytes && afterLedger.recordCount == beforeLedger.recordCount,
+                    "warmed null scanner miss preserves the full device-ledger snapshot");
+            require(allocation_bytes(*warmed.resources) == beforeAllocations, "warmed null scanner miss preserves every device allocation and byte extent");
+            const auto afterFailure = pointers(*warmed.resources, route);
+            require(afterFailure.values == old.values && afterFailure.hash == old.hash && afterFailure.resolution == old.resolution,
+                    "warmed null scanner miss preserves all six old pointers, hash and resolution");
+            require_route_metadata_cleared(*warmed.resources);
+            require(fj_test_scanner_lut_live_owners() == owners, "warmed null scanner miss acquires no Rust owner");
+            require(prepare_with_owner(warmed, row, input, failure), "valid scanner preparation recovers the same changed key");
+            expect_words(pointers(*warmed.resources, route), row.at("native"), input.input.scannerLutDescriptor.hash, warmed.stream);
+            {
+                std::lock_guard lock(warmed.resources->m);
+                require(warmed.resources->routeDensityBoundsHash == input.input.densityBounds.hash &&
+                            warmed.resources->routeScannerDescriptorHash == input.input.scannerLutDescriptor.hash,
+                        "valid changed-key recovery restores matching route metadata");
+            }
+            warmed.close();
         }
 
         ContextFixture fixture;

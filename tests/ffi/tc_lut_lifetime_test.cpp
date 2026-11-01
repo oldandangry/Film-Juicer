@@ -1,7 +1,6 @@
 #include <atomic>
 #include <array>
 #include <bit>
-#include <new>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -12,12 +11,9 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
-#include "RustReconstructionBridge.h"
-#include "ColorTransforms.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "prepared_product_fixture.h"
-#include "spectral_allocation_probe.h"
 
 namespace {
     void require(bool condition, const char* why) {
@@ -185,99 +181,18 @@ namespace {
         });
         finalRelease.join();
     }
-    const float* moveWanted = nullptr;
-    unsigned moveReleases = 0;
-    void move_observer(const float* samples) noexcept {
-        if (samples == moveWanted)
-            ++moveReleases;
-    }
-    std::optional<Spectral::FilmTcLut> make_owner() {
-        FilmRawRecipe recipe;
-        recipe.tcLutHash = 1;
-        recipe.inputCompressionActive = false;
-        recipe.rgbToRawMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
-        for (auto& row : recipe.finalSensitivity)
-            row = {1, 2, 4};
-        std::array<float, 81> spd{};
-        spd.fill(1);
-        std::optional<Spectral::FilmTcLut> owner;
-        std::string diagnostic;
-        require(Spectral::build_film_tc_lut(recipe, Spectral::gHanSpectra, spd, owner, diagnostic), "native completed owner");
-        return owner;
-    }
-    void native_owner_moves_and_allocation_terminal() {
-        auto first = make_owner(), second = make_owner();
-        moveWanted = first->samples().data();
-        const auto* secondAddress = second->samples().data();
-        moveReleases = 0;
-        Spectral::TcLutTest::set_release_observer(move_observer);
-        std::optional<Spectral::FilmTcLut> moved{std::move(*first)};
-        require(first->samples().empty() && moved->samples().data() == moveWanted, "move preserves allocation and empties source");
-        auto* same = &*moved;
-        *moved = std::move(*same);
-        require(moveReleases == 0 && moved->samples().data() == moveWanted, "safe self move");
-        std::array<std::size_t, 2> facadeCountsBeforeReplacement{};
-        require(fj_test_tc_lut_allocation_counts(facadeCountsBeforeReplacement.data()).category == FJ_STATUS_SUCCESS,
-                "SF_TEMP_BRIDGE facade release counter before move replacement");
-        *moved = std::move(*second);
-        std::array<std::size_t, 2> facadeCountsAfterReplacement{};
-        require(fj_test_tc_lut_allocation_counts(facadeCountsAfterReplacement.data()).category == FJ_STATUS_SUCCESS &&
-                    facadeCountsAfterReplacement[1] == facadeCountsBeforeReplacement[1] + 1,
-                "SF_TEMP_BRIDGE direct reconstruction facade release counter advances once for move-replaced owner");
-        require(moveReleases == 1 && second->samples().empty() && moved->samples().data() == secondAddress, "move assignment releases previous allocation once");
-        moveWanted = secondAddress;
-        moveReleases = 0;
-        std::thread release([owner = std::optional<Spectral::FilmTcLut>{std::move(*moved)}]() mutable {
-            owner.reset();
-        });
-        release.join();
-        require(moveReleases == 1 && moved->samples().empty(), "native cross-thread last release");
-        moveReleases = 0;
-        bool unwound = false;
-        try {
-            auto owner = make_owner();
-            moveWanted = owner->samples().data();
-            throw std::runtime_error("owner unwind witness");
-        } catch (const std::runtime_error&) {
-            unwound = true;
-        }
-        require(unwound && moveReleases == 1, "exception unwind releases native owner once");
-        Spectral::TcLutTest::set_release_observer(nullptr);
-        FilmRawRecipe recipe;
-        recipe.tcLutHash = 1;
-        recipe.inputCompressionActive = false;
-        recipe.rgbToRawMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
-        recipe.hanatos.spectralGaussianBlur = std::bit_cast<float>(0x5c000000u);
-        for (auto& row : recipe.finalSensitivity)
-            row = {1, 1, 1};
-        std::array<float, 81> spd{};
-        spd.fill(1);
-        std::optional<Spectral::FilmTcLut> owner;
-        std::string diagnostic;
-        bool memory = false;
-        SpectralAllocationProbe::arm();
-        try {
-            (void)Spectral::build_film_tc_lut(recipe, Spectral::gHanSpectra, spd, owner, diagnostic);
-        } catch (const std::bad_alloc&) {
-            memory = true;
-        }
-        SpectralAllocationProbe::clear();
-        require(memory && !owner && SpectralAllocationProbe::bytes() == 0, "actual failed Rust reservation becomes bad_alloc before diagnostic allocation");
-        std::puts("Native move/assignment/self-move/unwind/cross-thread and real failed-reservation terminal PASS");
-    }
+
 } // namespace
 int main(int argc, char** argv) {
     try {
         require(argc == 2, "resource root required");
         JuicerCuda::Owner owner;
         owner.create(argv[1]);
-        JuicerProcess::root().ensure_bootstrap();
         for (bool positive : {false, true})
             for (bool print : {false, true})
                 for (int action = 0; action < 3; ++action)
                     publication(positive, print, action);
         retained_reader();
-        native_owner_moves_and_allocation_terminal();
         require(owner.close().category == FJ_STATUS_SUCCESS, "close host owner");
         return 0;
     } catch (const std::exception& error) {

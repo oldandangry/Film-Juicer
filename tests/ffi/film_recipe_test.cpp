@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <thread>
 #include <bit>
 #include <cstdint>
@@ -33,18 +34,15 @@
 #include "Logging.h"
 #include "RustAssetBridge.h"
 #include "RustScannerBridge.h"
-#include "RustGaussianBridge.h"
 #include "RustFrameBridge.h"
 #include "RustHalationBridge.h"
 #include "RustDiffusionBridge.h"
 #include "RustDirBridge.h"
-#include "RustGrainFrameBridge.h"
 #include "RustEffectsFrameBridge.h"
 #include "RustDirBoundaryBridge.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_cuda_call_scope.h"
 #include "juicer_host_preparation.h"
-#include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
 #include "exposure_fixture.h"
 #include "spatial_optics_fixture.h"
@@ -53,17 +51,18 @@
 #include "../dir/boundary_test_hooks.h"
 
 #include "film_recipe_abi_cpp.inc"
-static_assert(!std::is_copy_constructible_v<JuicerAssets::DevelopmentHold>);
-static_assert(!std::is_copy_constructible_v<JuicerAssets::FilmDevelopment>);
-static_assert(!std::is_copy_constructible_v<Spektrafilm::DirectRecipeBuildResult>);
-static_assert(!std::is_copy_constructible_v<Spektrafilm::PrintRecipeBuildResult>);
-static_assert(std::is_nothrow_move_constructible_v<JuicerAssets::DevelopmentHold>);
 extern "C" const std::size_t* fj_test_film_recipe_abi_c_facts(std::size_t* count);
+extern "C" FjStatus fj_test_spatial_optics_c_prepare(const FjSpatialOpticsParams* input, FjSpatialOpticsRecipe* out, FjSpatialOpticsFailure* failure, FjErrorBuffer* error);
+extern "C" FjStatus fj_test_print_illuminant_c_prepare(const FjPrintIlluminantParams* input, FjFloatSpan source, FjIlluminant* out, FjPrintIlluminantFailure* failure, FjErrorBuffer* error);
+extern "C" FjStatus fj_test_print_preflash_c_prepare(const FjPrintPreflashInput* input, FjPrintPreflashRaw* out, FjPrintPreflashFailure* failure, FjErrorBuffer* error);
 extern "C" FjStatus fj_test_film_reference_c_prepare(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*);
 extern "C" int fj_test_scanner_correction_c_call(unsigned, const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, const FjScannerPrintCorrectionInput*, const FjScannerColorCorrection*, unsigned, unsigned);
 
 extern "C" int fj_test_gaussian_c_call(const FjGaussianKernelInput*, const uint32_t*, size_t);
 extern "C" int fj_test_scanner_descriptor_c_call(const FjScannerLutDescriptorInput*, const FjScannerLutDescriptor*);
+extern "C" FjStatus fj_test_scanner_lut_c_acquire(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*);
+extern "C" FjStatus fj_test_scanner_lut_c_view(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
+extern "C" FjStatus fj_test_scanner_lut_c_release(FjScannerLutOwner*, FjErrorBuffer*);
 
 namespace {
     using Json = nlohmann::json;
@@ -453,9 +452,9 @@ int main(int argc, char** argv) try {
         require(captured.at("preset") == argv[4] && captured.at("cases").size() == 400, "post fixture preset and membership");
         if (std::string_view(argv[3]) == "scanner-post") {
             ScannerPostTest::boundary(captured.at("cases"));
-            ScannerPostTest::adapters(captured.at("cases"));
+            ScannerPostTest::lifetime(captured.at("cases"));
         } else
-            ScannerPostTest::native_values(captured.at("cases"));
+            ScannerPostTest::values(captured.at("cases"));
         if (std::string_view(argv[3]) == "scanner-post-products")
             ScannerPostTest::callers(argv[1], captured.at("cases"));
         return 0;
@@ -466,25 +465,16 @@ int main(int argc, char** argv) try {
         const auto captured = load_shared_fixture(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
         require(captured.at("preset") == argv[4], "descriptor native preset context");
         const bool products = std::string_view(argv[3]) == "scanner-descriptor-products";
-        ScannerDescriptorTest::values(captured.at(products ? "products" : "cases"));
+        ScannerDescriptorTest::values(captured.at(products ? "products" : "cases"), products);
         if (products)
             require_equal(ScannerDescriptorTest::products(argv[1]), captured.at("products"), "complete actual descriptor products and enclosing identities");
         else {
             ScannerDescriptorTest::boundary(captured.at("cases"));
-            ScannerDescriptorTest::adapters(captured.at("cases"));
+            ScannerDescriptorTest::lifetime(captured.at("cases"));
             ScannerDescriptorTest::admitted_token_change_preserves_identity_and_viewing_label_mismatch_is_rejected(captured.at("cases"));
         }
         if (products)
             ScannerDescriptorTest::callers(argv[1]);
-        return 0;
-    }
-    if (argc == 6 && std::string_view(argv[3]) == "capture-scanner-descriptors") {
-        PrintPreflashTest::save(argv[5], {{"schema", 1}, {"preset", argv[4]}, {"cases", ScannerDescriptorTest::cases()}, {"products", ScannerDescriptorTest::products(argv[1])}});
-        return 0;
-    }
-    if (argc == 6 && std::string_view(argv[3]) == "reference-capture") {
-        PrintPreflashTest::save(argv[5], {{"schema", 1}, {"preset", argv[4]}, {"products", FilmReferenceTest::products(argv[1])}, {"numerical_failures", FilmReferenceTest::numerical_failures(argv[1])}});
-        std::puts("PASS native film reference observations recorded; independent analysis required");
         return 0;
     }
     if (argc == 4 && std::string_view(argv[3]) == "reference-primitives") {
@@ -499,7 +489,7 @@ int main(int argc, char** argv) try {
         if (std::string_view(argv[3]) == "film-reference")
             FilmReferenceTest::boundary(argv[1], captured);
         else {
-            require(FilmReferenceTest::products(argv[1]) == captured.at("products") && FilmReferenceTest::numerical_failures(argv[1]) == captured.at("numerical_failures"), "complete frozen reference products, failures and downstream identities");
+            require(FilmReferenceTest::products(argv[1]) == captured.at("products"), "complete frozen reference products and downstream identities");
             FilmReferenceTest::callers(argv[1]);
         }
         return 0;
@@ -511,10 +501,10 @@ int main(int argc, char** argv) try {
         layouts();
         const bool products = std::string_view(argv[3]) == "scanner-lut-products";
         ScannerLutTest::values(captured.at(products ? "products" : "cases"));
-        ScannerLutTest::native_values(captured.at(products ? "products" : "cases"));
+        ScannerLutTest::callback_values(captured.at(products ? "products" : "cases"));
         if (!products) {
             ScannerLutTest::boundary(captured);
-            ScannerLutTest::native_failures(captured);
+            ScannerLutTest::lifetime(captured);
         } else {
             ScannerLutTest::check_products(argv[1], captured);
         }
@@ -526,17 +516,14 @@ int main(int argc, char** argv) try {
         const auto directory = std::filesystem::path(argv[2]).parent_path();
         const auto captured = read(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
         const auto checked = read(directory / manifest.at("normative").get<std::string>());
-        const auto tracePath = directory / manifest.at("presets").at(argv[4]).at("traces").get<std::string>();
         if (std::string_view(argv[3]) == "scanner-correction-products")
-            ScannerCorrectionTest::check_products(argv[1], captured, read(tracePath));
+            ScannerCorrectionTest::check_products(argv[1], captured);
         else {
             layouts();
             ScannerCorrectionTest::values(captured, checked);
             ScannerCorrectionTest::boundary(captured);
-            ScannerCorrectionTest::native(captured, checked);
-            ScannerCorrectionTest::callers(captured, checked, tracePath);
         }
-        std::puts("PASS scanner correction exact values, checked demand, ABI, clearing and actual native binding");
+        std::puts("PASS scanner correction exact values, checked demand, ABI, clearing and complete held products");
         return 0;
     }
     if (argc == 6 && std::string_view(argv[3]) == "scanner-correction-primitives") {
@@ -577,9 +564,8 @@ int main(int argc, char** argv) try {
             layouts();
             PrintPreflashTest::values(captured, argv[2]);
             PrintPreflashTest::transport(captured);
-            PrintPreflashTest::native(captured);
         }
-        std::puts("PASS preflash exact adopted values, closed transport, native projection and selected caller contracts");
+        std::puts("PASS preflash exact adopted values, closed transport and selected caller contracts");
         return 0;
     }
     if (argc == 5 && std::string_view(argv[3]) == "print-preflash-cache") {
@@ -611,10 +597,9 @@ int main(int argc, char** argv) try {
         const auto captured = read(directory / selected.at("literal").get<std::string>());
         layouts();
         PrintIlluminantTest::transport(captured);
-        PrintIlluminantTest::native(captured);
         if (std::string_view(argv[3]) == "print-illuminant")
             PrintIlluminantTest::values(captured);
-        std::puts("PASS print illuminant selected ABI/transport/projection/value cohort");
+        std::puts("PASS print illuminant selected ABI/transport/value cohort");
         return 0;
     }
 
@@ -637,8 +622,7 @@ int main(int argc, char** argv) try {
         layouts();
         OpticsTest::values(captured);
         OpticsTest::raw_and_faults(captured);
-        OpticsTest::native(captured);
-        std::puts("PASS spatial optics exact values, compiled ABI, facade, failures and native projection");
+        std::puts("PASS spatial optics exact values, compiled ABI, facade and failures");
         return 0;
     }
 
@@ -653,7 +637,6 @@ int main(int argc, char** argv) try {
             layouts();
             effects_values(captured);
             effects_failures(captured.at("cases")[0].at("recipe"));
-            effects_native(captured);
         }
         std::puts("PASS physical effects exact value/ABI/facade/failure/projection cohort");
         return 0;
@@ -669,7 +652,6 @@ int main(int argc, char** argv) try {
             layouts();
             grain_values(argv[1], captured, read(directory / selected.at("synthetic").get<std::string>()), directory);
             grain_failures(argv[1], captured);
-            grain_native_bridge(argv[1], captured, read(directory / selected.at("synthetic").get<std::string>()), directory);
         }
         std::puts("PASS visual grain complete value/ABI/facade/failure/lifetime cohort");
         return 0;

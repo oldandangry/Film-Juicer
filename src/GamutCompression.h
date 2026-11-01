@@ -16,10 +16,6 @@ namespace JuicerAssets {
     class AssetBridge;
 }
 
-namespace Spectral {
-    struct FilmTcLut;
-} // namespace Spectral
-
 namespace Gamut {
 
     inline constexpr int kInputHullDirectionCount = 1024;

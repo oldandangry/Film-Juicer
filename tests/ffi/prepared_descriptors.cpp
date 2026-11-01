@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 
 #include "JuicerState.h"
@@ -202,25 +203,18 @@ namespace {
             return;
         }
         const auto& descriptor = *source.grain;
-        const auto& recipe = source.grainRecipe;
-        out.flags = FJ_GRAIN_ACTIVE;
-        if (recipe.sublayersActive) {
-            out.flags |= FJ_GRAIN_SUBLAYERS;
-        }
+        const auto& payload = source.grainPayload;
+        const auto& coefficients = payload.coefficients;
+        out.flags = coefficients.flags;
         if (descriptor.requiresFullFrame) {
             out.flags |= FJ_GRAIN_FULL_FRAME;
         }
-        constexpr std::uint32_t kAxisFlags[] = {
-            FJ_GRAIN_AXIS_FINITE_C, FJ_GRAIN_AXIS_FINITE_M, FJ_GRAIN_AXIS_FINITE_Y};
-        for (std::size_t channel = 0; channel < recipe.grainLayerAxisFinite.size(); ++channel) {
-            if (recipe.grainLayerAxisFinite[channel]) {
-                out.flags |= kAxisFlags[channel];
-            }
-            std::copy(recipe.grainLayerAxisBlockPrefixMax[channel].begin(),
-                      recipe.grainLayerAxisBlockPrefixMax[channel].end(),
+        for (std::size_t channel = 0; channel < std::size(coefficients.layer_axis_block_prefix_max); ++channel) {
+            std::copy(std::begin(coefficients.layer_axis_block_prefix_max[channel]),
+                      std::end(coefficients.layer_axis_block_prefix_max[channel]),
                       out.layer_axis_block_prefix_max[channel]);
         }
-        out.debug_view = static_cast<std::uint32_t>(recipe.debugView);
+        out.debug_view = coefficients.debug_view;
         out.render_extent = encode_extent(descriptor.renderExtent);
         out.full_frame_extent = encode_extent(descriptor.fullFrameExtent);
         out.pixel_size_um = descriptor.pixelSizeUm;
@@ -244,16 +238,16 @@ namespace {
         out.size_mix_weights[1] = descriptor.effectiveMidWeight;
         out.size_mix_weights[2] = descriptor.effectiveCoarseWeight;
         out.size_mix_gain = descriptor.sizeMixGain;
-        out.sublayer_count = static_cast<std::size_t>(recipe.nSubLayers);
-        std::copy(recipe.microStructure.begin(), recipe.microStructure.end(), out.micro_structure);
-        out.clump_temporal_mix = recipe.clumpTemporalMix;
-        out.size_mix_scale = recipe.sizeMixScale;
-        out.amplitude = recipe.amplitude;
-        out.chroma_mix = recipe.chromaMix;
-        out.chroma_shared_weight = recipe.chromaSharedWeight;
-        out.chroma_independent_weight = recipe.chromaIndependentWeight;
-        std::copy(recipe.visualParticleDensityMinCmy.begin(), recipe.visualParticleDensityMinCmy.end(), out.particle_density_min_cmy);
-        std::copy(recipe.uniformityCmy.begin(), recipe.uniformityCmy.end(), out.uniformity_cmy);
+        out.sublayer_count = coefficients.sublayer_count;
+        std::copy(std::begin(coefficients.micro_structure), std::end(coefficients.micro_structure), out.micro_structure);
+        out.clump_temporal_mix = coefficients.clump_temporal_mix;
+        out.size_mix_scale = coefficients.size_mix_scale;
+        out.amplitude = coefficients.amplitude;
+        out.chroma_mix = coefficients.chroma_mix;
+        out.chroma_shared_weight = coefficients.chroma_shared_weight;
+        out.chroma_independent_weight = coefficients.chroma_independent_weight;
+        std::copy(std::begin(coefficients.particle_density_min_cmy), std::end(coefficients.particle_density_min_cmy), out.particle_density_min_cmy);
+        std::copy(std::begin(coefficients.uniformity_cmy), std::end(coefficients.uniformity_cmy), out.uniformity_cmy);
         std::copy(descriptor.densityMaxCmy.begin(), descriptor.densityMaxCmy.end(), out.density_max_cmy);
         std::copy(descriptor.nParticlesCmy.begin(), descriptor.nParticlesCmy.end(), out.n_particles_cmy);
         std::copy(descriptor.odParticleCmy.begin(), descriptor.odParticleCmy.end(), out.od_particle_cmy);
@@ -267,8 +261,8 @@ namespace {
                 out.dye_cloud[layer][channel] = encode_grain_gaussian(descriptor.dyeCloud[layer][channel]);
             }
         }
-        out.recipe_hash = descriptor.recipeHash;
-        out.density_layers_hash = descriptor.densityCurvesLayersHash;
+        out.recipe_hash = payload.recipeHash;
+        out.density_layers_hash = payload.densityLayersHash;
         out.hash = descriptor.hash;
     }
 

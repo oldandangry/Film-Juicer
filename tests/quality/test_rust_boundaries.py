@@ -722,33 +722,68 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_deleted_film_development_definitions_and_foundation_policy(self) -> None:
         import re
-        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8-sig")
+        recipe = (ROOT / "src/RenderValues.cpp").read_text(encoding="utf-8-sig")
         def definition(name: str, source: str) -> bool:
             # Declarations and names in diagnostic strings are not definitions.
             return re.search(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source) is not None
-        for name in ("hash_film_develop_recipe", "hash_density_curves_layers", "visual_grain_requires_density_layers"):
+        for name in ("hash_film_develop_recipe", "hash_density_curves_layers", "visual_grain_requires_density_layers", "normalize_density_curves"):
             self.assertFalse(definition(name, recipe), name)
             self.assertTrue(definition(name, "std::uint64_t " + name + "(const FilmDevelopRecipe& recipe) { return 1; }"))
             self.assertFalse(definition(name, "std::uint64_t " + name + "(const FilmDevelopRecipe& recipe);"))
-        start = recipe.index("        bool build_film_foundation(")
-        end = recipe.index("    } // namespace", start)
-        foundation = recipe[start:end]
         for name in ("normalize_density_curves", "hash_nan_preserving_floats", "resolve_scan_route"):
             call = r"\b" + name + r"\s*\("
-            self.assertNotRegex(foundation, call)
+            self.assertNotRegex(recipe, call)
             self.assertRegex("auto value = " + name + "(source);", call)
-        self.assertIn("recipe.filmDevelop = std::move(input.filmDevelop)", foundation)
-        self.assertTrue(definition("normalize_density_curves", recipe))
-        self.assertFalse(definition("hash_nan_preserving_floats", recipe))
-        # Print-medium bounds retain native normalization; DIR span hashing has moved.
-        self.assertGreaterEqual(len(re.findall(r"\bnormalize_density_curves\s*\(", recipe)), 2)
-        state = (ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8-sig")
-        self.assertIn("params.grainControls.active && params.grainControls.sublayersActive", state)
-        self.assertEqual(state.count("film_foundation_input_from_snapshot(params, *selected.filmSource, assets, input.film, outError)"), 2)
+        header = (ROOT / "src/RenderValues.h").read_text(encoding="utf-8-sig")
+        retired = (r"\b(?:struct|class)\s+(?:RenderRecipe|ProfileRoute|ScannerOutputRecipe|PrintRecipe|"
+                   r"PrintFilterRecipe|PrintExposureRecipe|PrintIlluminantRecipe|PrintDevelopRecipe|FilmFoundationBuildInput|FilmDevelopRecipe|FilmDevelopment|DevelopmentHold)\b|"
+                   r"\busing\s+(?:::)?(?:RenderRecipe|ProfileRoute|ScannerOutputRecipe|PrintRecipe|"
+                   r"PrintFilterRecipe|PrintExposureRecipe|PrintIlluminantRecipe|PrintDevelopRecipe)\b|"
+                   r"\b(?:Direct|Print)RecipeBuild(?:Input|Result)\b|"
+                   r"\b(?:make_render_recipe|build_film_foundation|build_direct_render_recipe|"
+                   r"build_print_render_recipe|finish_synthetic_reference_recipes)\s*\(")
+        self.assertNotRegex(recipe + header, retired)
+        for text in ("struct RenderRecipe {};", "struct ProfileRoute {};", "using ::RenderRecipe;", "using ::ProfileRoute;",
+                     "struct ScannerOutputRecipe {};", "struct PrintRecipe {};", "struct PrintFilterRecipe {};",
+                     "struct PrintExposureRecipe {};", "struct PrintIlluminantRecipe {};", "struct PrintDevelopRecipe {};",
+                     "using ::ScannerOutputRecipe;", "using ::PrintRecipe;", "using ::PrintFilterRecipe;",
+                     "using ::PrintExposureRecipe;", "using ::PrintIlluminantRecipe;", "using ::PrintDevelopRecipe;",
+                     "DirectRecipeBuildInput input;", "DirectRecipeBuildResult result;",
+                     "PrintRecipeBuildInput input;", "PrintRecipeBuildResult result;", "make_render_recipe()",
+                     "build_film_foundation()", "build_direct_render_recipe()", "build_print_render_recipe()",
+                     "finish_synthetic_reference_recipes()"):
+            self.assertRegex(text, retired)
+        for text in ("struct PrintBalanceRecipe {};", "struct DichroicFilterRecipe {};", "struct CmyCcTriplet {};"):
+            self.assertNotRegex(text, retired)
+        for text in ("struct FilmFoundationBuildInput {};", "struct FilmDevelopRecipe {};",
+                     "class DevelopmentHold {};", "struct FilmDevelopment {};"):
+            self.assertRegex(text, retired)
+        self.assertFalse((ROOT / "src/ProfileAssets.h").exists())
+        self.assertFalse((ROOT / "src/RustFilmInputBridge.cpp").exists())
+        bridge = (ROOT / "src/RustAssetBridge.cpp").read_text(encoding="utf-8")
+        for text in ("ConversionSlots", "FilmSource::", "PrintProfileSource::", "copy_tables("):
+            self.assertNotIn(text, bridge)
+        self.assertIn("AssetBridge::film_defaults(", bridge)
+        self.assertIn("fj_legacy_film_profile_acquire(", bridge)
+        self.assertIn("fj_legacy_film_profile_release(owner", bridge)
+        complete = (ROOT / "rust/film-juicer-core/src/recipe.rs").read_text(encoding="utf-8")
+        self.assertIn("let development = film::Development::new(", complete)
+        self.assertIn("layers_required: params.grain.active && params.grain.sublayers_active", complete)
+        self.assertIn("pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareError>", complete)
+        self.assertIn("grain::Recipe::new(&acquired.development, params.grain)", complete)
+        preparation = (ROOT / "rust/film-juicer-plugin/src/preparation.rs").read_text(encoding="utf-8")
+        self.assertIn("let completed = recipe::prepare(assets, params)", preparation)
+        self.assertIn("state.push(completed)", preparation)
+        owner = complete.split("pub struct RenderState {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("development: film::Development", owner)
+        public_fields = r"\bpub(?:\([^)]*\))?\s+\w+\s*:"
+        self.assertNotRegex(owner, public_fields)
+        self.assertRegex("pub development: film::Development", public_fields)
+        self.assertRegex("pub(crate) development: film::Development", public_fields)
 
     def test_deleted_dir_density_producers_and_stage_order(self) -> None:
         import re
-        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8-sig")
+        recipe = (ROOT / "src/RenderValues.cpp").read_text(encoding="utf-8-sig")
         def definition(name: str, source: str) -> bool:
             return re.search(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source) is not None
         for name in ("build_grain_contract", "build_dir_couplers_recipe", "evaluate_dir_langmuir",
@@ -757,34 +792,32 @@ class RustBoundaryTests(unittest.TestCase):
                      "derive_grain_layer_axis_search_metadata", "finite_nonnegative_grain_triplet",
                      "finite_positive_triplet", "finite_nonnegative_pair",
                      "normalize_effect_amount", "hash_defect_policy",
-                     "hash_film_juicer_effects_recipe", "build_film_juicer_effects_recipe"):
+                     "hash_film_juicer_effects_recipe", "build_film_juicer_effects_recipe",
+                     "hash_density_bounds_recipe", "build_print_density_bounds"):
             self.assertFalse(definition(name, recipe), name)
             self.assertTrue(definition(name, "bool " + name + "(const Recipe& recipe) { return true; }"))
             self.assertFalse(definition(name, "bool " + name + "(const Recipe& recipe);"))
-        for name in ("hash_density_bounds_recipe", "build_print_density_bounds"):
-            self.assertTrue(definition(name, recipe), name)
-            self.assertGreaterEqual(len(re.findall(r"\b" + name + r"\s*\(", recipe)), 2)
-        start = recipe.index("        bool build_film_foundation(")
-        end = recipe.index("    } // namespace", start)
-        foundation = recipe[start:end]
-        stages = [foundation.index(name) for name in ("prepare_spatial_optics(",
-                  "prepare_film_density_minimum(", "prepare_visual_grain(",
-                  "prepare_physical_effects(", "prepare_film_dir(", "prepare_film_density_bounds(")]
+        self.assertNotIn("build_film_foundation(", recipe)
+        self.assertNotIn("JuicerAssets::prepare_physical_effects(", recipe)
+        complete = (ROOT / "rust/film-juicer-core/src/recipe.rs").read_text(encoding="utf-8")
+        complete = complete.split("pub fn prepare(", 1)[1].split("\n}\n", 1)[0]
+        stages = [complete.index(name) for name in ("optics::Recipe::new(",
+                  "density::Minimum::new(", "grain::Recipe::new(",
+                  "effects::Recipe::new(", "dir::Recipe::new(", "density::Bounds::new(")]
         self.assertEqual(stages, sorted(stages))
-        self.assertEqual(recipe.count("JuicerAssets::prepare_physical_effects("), 1)
-        self.assertLess(foundation.index("recipe.filmDevelop = std::move(input.filmDevelop)"), foundation.index("prepare_visual_grain("))
-        self.assertIn("input.grainContract, recipe.grainContract", foundation)
-        bounds = foundation[stages[-1]:]
-        self.assertIn("input.grainContract", bounds)
-        self.assertNotIn("recipe.grainContract", bounds)
+        self.assertLess(complete.index("let acquired = acquire_foundation("), complete.index("grain::Recipe::new(&acquired.development"))
+        self.assertIn("dir::Recipe::new(&acquired.development, params.dir_couplers)", complete)
+        bounds = complete[stages[-1]:complete.index("let profile_route_hash", stages[-1])]
+        self.assertIn("&acquired.development, &minimum", bounds)
+        self.assertNotIn("&grain", bounds)
 
     def test_deleted_spatial_optics_producers_and_retained_consumers(self) -> None:
         import re
         sources = {name: (ROOT / ("src/" + name)).read_text(encoding="utf-8-sig")
-                   for name in ["RenderRecipe.cpp", "DiffusionHostBehavior.cpp", "ScatterHalation.cpp"]}
+                   for name in ["RenderValues.cpp", "DiffusionHostBehavior.cpp", "ScatterHalation.cpp"]}
         def definition(name: str, text: str) -> bool:
             return re.search(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", text) is not None
-        for file, names in [("RenderRecipe.cpp", ["build_spatial_optics_recipe", "hash_diffusion_filter_optics", "hash_camera_lens_blur_optics"]),
+        for file, names in [("RenderValues.cpp", ["build_spatial_optics_recipe", "hash_diffusion_filter_optics", "hash_camera_lens_blur_optics"]),
                             ("DiffusionHostBehavior.cpp", ["resolve_diffusion_filter", "resolved_hash", "strength_to_scatter", "validate_authored_finite"]),
                             ("ScatterHalation.cpp", ["resolve_scatter_halation_recipe", "hash_scatter_halation_recipe", "any_positive", "build_gaussian_descriptor", "fail_descriptor", "canonical_float", "hash_value"])]:
             for name in names:
@@ -805,9 +838,10 @@ class RustBoundaryTests(unittest.TestCase):
         for token in ("capture-halation-frames", "nativeCapture", "Json capture(", "std::exp"):
             self.assertNotIn(token, fixtures)
         self.assertIn("SF_TEMP_BRIDGE_HALATION_FRAME", (ROOT / "src/RustHalationBridge.h").read_text())
-        recipe = sources["RenderRecipe.cpp"]
-        self.assertEqual(recipe.count("JuicerAssets::prepare_spatial_optics("), 1)
-        header = (ROOT / "src/RenderRecipe.h").read_text(encoding="utf-8-sig")
+        recipe = sources["RenderValues.cpp"]
+        self.assertNotIn("JuicerAssets::prepare_spatial_optics(", recipe)
+        self.assertNotIn("build_film_foundation(", recipe)
+        header = (ROOT / "src/RenderValues.h").read_text(encoding="utf-8-sig")
         self.assertRegex(
             header,
             r'\bkExactOpticsNotImplementedForPhase6\[\]\s*=\s*"ExactOpticsNotImplementedForPhase6";',
@@ -818,9 +852,10 @@ class RustBoundaryTests(unittest.TestCase):
             r'outDiagnostic\s*=\s*std::string\(kExactOpticsNotImplementedForPhase6\)'
             r'\s*\+\s*" component=camera_lens_blur";',
         )
-        foundation = recipe[recipe.index("        bool build_film_foundation("):]
-        self.assertLess(foundation.index("prepare_input("), foundation.index("prepare_spatial_optics("))
-        self.assertLess(foundation.index("prepare_spatial_optics("), foundation.index("prepare_film_density_minimum("))
+        complete = (ROOT / "rust/film-juicer-core/src/recipe.rs").read_text(encoding="utf-8")
+        complete = complete.split("pub fn prepare(", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(complete.index("input::Recipe::new("), complete.index("optics::Recipe::new("))
+        self.assertLess(complete.index("optics::Recipe::new("), complete.index("density::Minimum::new("))
         for file in ["diffusion/host_reference_test.cpp", "scatter_halation/recipe_descriptor_test.cpp", "scatter_halation/integration_test.cpp", "scatter_halation/integration_test_cases.cpp"]:
             text = (ROOT / "tests" / file).read_text(encoding="utf-8-sig")
             self.assertNotRegex(text, r"\bresolve_(?:diffusion_filter|scatter_halation_recipe)\s*\(")
@@ -831,8 +866,8 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_deleted_dir_frame_mathematics_and_retained_native_policy(self) -> None:
         import re
-        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8-sig")
-        header = (ROOT / "src/RenderRecipe.h").read_text(encoding="utf-8-sig")
+        recipe = (ROOT / "src/RenderValues.cpp").read_text(encoding="utf-8-sig")
+        header = (ROOT / "src/RenderValues.h").read_text(encoding="utf-8-sig")
         for name in ("finite_nonnegative", "dir_extent_valid", "dir_extents_match",
                      "dir_reference_operator_for_sigma", "build_dir_iir_coefficients", "add_dir_component"):
             pattern = r"\b" + name + r"\s*\([^;{}]*\)\s*\{"
@@ -850,20 +885,25 @@ class RustBoundaryTests(unittest.TestCase):
                          "resolve_spatial_dir_scratch", "hash_dir_extent", "hash_dir_plane_roles",
                          "finish_spatial_dir_descriptor", "compose_spatial_dir_descriptor"):
             self.assertIn(retained + "(", recipe)
-        self.assertEqual(recipe.count("JuicerDir::prepare_math("), 1)
+        self.assertNotIn("JuicerDir::prepare_math(", recipe)
         resources = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text()
         self.assertNotIn("build_spatial_dir_boundary_axis_cpu(", resources)
         self.assertIn("bool ensure_spatial_dir_boundary(", resources)
         self.assertIn("JuicerDirBoundary::Boundary::acquire(", resources)
         executor = (ROOT / "src/Cuda/JuicerCudaExecutor.cpp").read_text()
-        self.assertEqual(executor.count("Spektrafilm::build_spatial_dir_descriptor("), 2)
-        for route, phase in (("direct", "3D-3"), ("print", "4C")):
-            start = executor.index("const bool dirFrameBuilt", executor.index("RouteDescriptors build_" + route + "_descriptors"))
-            end = executor.index("std::string " + route + "GrainDescriptorDiagnostic", start)
-            block = executor[start:end]
-            self.assertLess(block.index("build_spatial_dir_descriptor("), block.index("observe_dir_frame("))
-            self.assertLess(block.index("observe_dir_frame("), block.index("if (!dirFrameBuilt)"))
-            self.assertIn("ResourceDescriptorMismatch phase=" + phase + " field=spatial_dir_descriptor", block)
+        retired = r"\b(?:build_direct_descriptors|build_print_descriptors|Spektrafilm::build_spatial_dir_descriptor)\s*\("
+        self.assertNotRegex(executor, retired)
+        for text in ("build_direct_descriptors()", "build_print_descriptors()", "Spektrafilm::build_spatial_dir_descriptor()"):
+            self.assertRegex(text, retired)
+        scope = (ROOT / "native/juicer_cuda_call_scope.cpp").read_text(encoding="utf-8")
+        block = scope.split("const bool dirComposed =", 1)[1].split("Spektrafilm::VisualGrainFrameDescriptor grain", 1)[0]
+        stages = [block.index(token) for token in ("compose_spatial_dir_descriptor(", "observe_dir_frame(", "if (!dirComposed)")]
+        self.assertEqual(stages, sorted(stages))
+        self.assertIn("ResourceDescriptorMismatch phase=dir_descriptor field=rust_result", block)
+        frame = (ROOT / "rust/film-juicer-plugin/src/cuda/frame.rs").read_text(encoding="utf-8")
+        self.assertIn("let source = state.dir();", frame)
+        self.assertIn("crate::dir_frame_bridge::checked_plan(input, fault)", frame)
+        for route in ("direct", "print"):
             schedule = executor[executor.index("static void execute_" + route + "_schedule"):]
             self.assertLess(schedule.index("check_abort(abortCallback)"), schedule.index("prepare_cuda_frame("))
         fixtures = "\n".join((ROOT / "tests/ffi" / name).read_text() for name in ("film_recipe_test.cpp", "dir_frame_test.inc"))
@@ -887,12 +927,16 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertIn("component.sigma_px", gaussian_fixture)
         self.assertIn("require(rows.size() == 188", gaussian_fixture)
         self.assertIn("fj_test_dir_frame_prepare(", (ROOT / "tests/ffi/spatial_optics_fixture.cpp").read_text())
-        self.assertIn("SF_TEMP_BRIDGE_DIR_FRAME", (ROOT / "src/RustDirBridge.h").read_text())
+        bridge = (ROOT / "src/RustDirBridge.h").read_text()
+        self.assertNotIn("prepare_math(", bridge)
+        self.assertIn("static MathOutcome admit(", bridge)
+        self.assertIn("FjDirFrameInput", bridge)
+        self.assertIn("MathOutcome::admit(", (ROOT / "src/RustDirBridge.cpp").read_text())
 
     def test_deleted_diffusion_construction_and_retained_native_consumers(self) -> None:
         import re
         diffusion = (ROOT / "src/DiffusionHostBehavior.cpp").read_text(encoding="utf-8-sig")
-        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8-sig")
+        recipe = (ROOT / "src/RenderValues.cpp").read_text(encoding="utf-8-sig")
         for token in ("GroupConfig", "FamilyConfig", "ExpandedGroup", "kFamilyConfigs",
                       "kMinimumScale", "kHaloWarmthAxis", "sample_descriptor_hash(",
                       "validate_sample_descriptor(", "expand_group(", "halo_channel_weights(",
@@ -912,7 +956,10 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertNotIn("kDiffusionFrameFnvPrime", recipe)
         self.assertEqual(diffusion.count("JuicerDiffusion::prepare_sample("), 1)
         self.assertEqual(diffusion.count("JuicerDiffusion::prepare_components("), 1)
-        self.assertEqual(recipe.count("JuicerDiffusion::prepare_frame("), 1)
+        self.assertNotIn("JuicerDiffusion::prepare_frame(", recipe)
+        bridge = (ROOT / "src/RustDiffusionBridge.cpp").read_text()
+        self.assertIn("fj_legacy_diffusion_frame_prepare(&input, &wire, &rejected, &error)", bridge)
+        self.assertIn("JuicerDiffusion::prepare_frame(", (ROOT / "tests/ffi/diffusion_frame_test.inc").read_text())
         self.assertIn("std::uint64_t hash_diffusion_authored_controls(", diffusion)
         self.assertIn("hash_diffusion_authored_controls(", (ROOT / "src/JuicerState.cpp").read_text())
         resources = (ROOT / "src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp").read_text()
@@ -955,15 +1002,72 @@ class RustBoundaryTests(unittest.TestCase):
         fixture = (ROOT / "tests/ffi/scanner_lut_test.inc").read_text(encoding="utf-8")
         self.assertNotIn("capture_scanner_lut", fixture)
         self.assertIn("compare(project(borrowed), expected)", fixture)
+        retired = r"\b(?:JuicerScanner::Lut|SF_TEMP_BRIDGE_SCANNER_LUT|fj_legacy_scanner_lut_(?:acquire|view|release))\b"
+        self.assertNotRegex(processing, retired)
+        for token in ("JuicerScanner::Lut", "SF_TEMP_BRIDGE_SCANNER_LUT", "fj_legacy_scanner_lut_acquire",
+                      "fj_legacy_scanner_lut_view", "fj_legacy_scanner_lut_release"):
+            self.assertRegex(token, retired)
+        self.assertNotRegex("SF_TEMP_BRIDGE_SCANNER_COLOR ScannerSpectralLutDescriptor", retired)
         resources = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text(encoding="utf-8")
-        self.assertEqual(resources.count("JuicerScanner::Lut::acquire("), 1)
-        self.assertIn("SF_TEMP_BRIDGE_SCANNER_LUT", resources)
-        scanner = (ROOT / "src/Scanner.cpp").read_text(encoding="utf-8")
-        self.assertIn("SpectralTablesView spectral_tables_view(", scanner)
-        self.assertNotIn("ColorRuntime build_color_runtime(", scanner)
+        body = resources.split("        if (coreAlreadyPrepared)", 1)[1]
+        stages = [body.index(token) for token in (
+            "resources.routeDensityBoundsHash = 0;", "resources.routeScannerDescriptorHash = 0;",
+            "if (!routeLutAlreadyPrepared)", "const FjHostPreparation emptyPreparation{};",
+            "const auto& preparation = hostPreparation ? *hostPreparation : emptyPreparation;",
+            "prepare_scanner_lut(preparation,", "struct NextCanonicalScanLut", "alloc_and_upload_bytes(")]
+        self.assertEqual(stages, sorted(stages))
+        self.assertIn("return prepare_output_gamut_table_locked(", body[:stages[0]])
+        dispatch = (ROOT / "native/juicer_host_preparation.cpp").read_text(encoding="utf-8")
+        lut = dispatch.split("    bool prepare_scanner_lut(", 1)[1].split("    bool prepare_gaussian_kernel(", 1)[0]
+        self.assertIn("!preparation.user || !preparation.scanner_lut || !preparation.gaussian", lut)
+        self.assertIn("preparation.scanner_lut(preparation.user, &input, &view, &failure, &error)", lut)
+        self.assertIn('{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "Scanner LUT preparation: invalid transport contract"', lut)
+        callback = (ROOT / "rust/film-juicer-plugin/src/cuda/host_preparation.rs").read_text(encoding="utf-8")
+        for token in ("unsafe extern \"C\" fn scanner_lut(", "scanner_bridge::prepare_host_lut(", "&mut backing.scanner_luts"):
+            self.assertIn(token, callback)
+        owner = (ROOT / "rust/film-juicer-plugin/src/scanner_bridge.rs").read_text(encoding="utf-8")
+        facades = (ROOT / "rust/film-juicer-plugin/src/test_support.rs").read_text(encoding="utf-8")
+        c11 = (ROOT / "tests/ffi/film_recipe_abi_c.c").read_text(encoding="utf-8")
+        values = fixture.split("    void values(", 1)[1].split("    void callback_failure_diagnostics(", 1)[0]
+        for operation in ("acquire", "view", "release"):
+            name = f"fj_test_scanner_lut_c_{operation}"
+            self.assertRegex(c11, rf"\bFjStatus\s+{name}\s*\([^;{{}}]*\)\s*\{{")
+            consumer = c11.split(f"FjStatus {name}(", 1)[1].split("\n}", 1)[0]
+            self.assertIn(f"return fj_test_scanner_lut_{operation}(", consumer)
+            self.assertIn(f"{name}(", values)
+            self.assertIn(f"pub(crate) unsafe fn lut_{operation}(", owner)
+            self.assertIn(f"fn fj_test_scanner_lut_{operation}(", facades)
+            self.assertIn(f"scanner_bridge::lut_{operation}(", facades)
+        self.assertIn("with_host_preparation(", fixture)
+        self.assertIn("prepare_scanner_lut(", fixture)
+        cases = (ROOT / "tests/resource/scanner_lut_test.cpp").read_text(encoding="utf-8")
+        for token in (
+            "require(freshRejected,", "error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE",
+            "error.failure.status.api == FJ_API_NONE", 'error.failure.diagnostic == "Scanner LUT preparation: invalid transport contract"',
+            "warm scanner hit succeeds without host preparation", "warmed.resources->retireQueue.empty()",
+            "warmed.resources->pendingFrameUseEvents.empty()", "const auto beforeLedger = warmed.ledger->snapshot();",
+            "const auto beforeAllocations = allocation_bytes(*warmed.resources);",
+            "allocation_bytes(*warmed.resources) == beforeAllocations", "afterFailure.values == old.values",
+            "afterFailure.hash == old.hash", "afterFailure.resolution == old.resolution",
+            "require_route_metadata_cleared(*warmed.resources)", "valid scanner preparation recovers the same changed key",
+        ):
+            self.assertIn(token, cases)
+        self.assertFalse((ROOT / "src/Scanner.cpp").exists())
+        scanner = (ROOT / "src/Scanner.h").read_text(encoding="utf-8")
+        self.assertIn("struct SpectralTablesView", scanner)
+        definition = r"\bColorRuntime\s+build_color_runtime\s*\([^;{}]*\)\s*\{"
+        self.assertNotRegex(scanner, definition)
+        self.assertRegex("ColorRuntime build_color_runtime() {}", definition)
+        self.assertNotRegex("ColorRuntime build_color_runtime();", definition)
+        adapter = r"\bspectral_tables_view\s*\("
+        self.assertNotRegex(processing, adapter)
+        self.assertRegex("SpectralTablesView spectral_tables_view(const SpectralTables& tables)", adapter)
         bridge = (ROOT / "src/RustScannerBridge.cpp").read_text(encoding="utf-8")
         self.assertIn("ColorRuntime build_color_runtime(", bridge)
         self.assertIn("SF_TEMP_BRIDGE_SCANNER_COLOR", bridge)
+        self.assertNotRegex((ROOT / "src/RustScannerBridge.h").read_text(encoding="utf-8"), r"\bclass\s+Lut\b")
+        self.assertIn("add_library(juicer_scanner_test_objects OBJECT ../src/RustScannerBridge.cpp)", cmake)
+        self.assertIn("target_compile_definitions(juicer_scanner_test_objects PRIVATE JUICER_SCANNER_TEST_HOOK=1)", cmake)
 
     def test_deleted_spectral_producers_and_white_loop(self) -> None:
         import re
@@ -1000,8 +1104,18 @@ class RustBoundaryTests(unittest.TestCase):
             pattern = rf"\bfn\s+{name}\s*\("
             self.assertIsNone(re.search(pattern, legacy))
             self.assertIsNotNone(re.search(pattern, legacy + f"\nfn {name}() {{}}"))
-        self.assertEqual(state.count("JuicerSpectral::build_tables("), 3)
-        self.assertIn("JuicerSpectral::integrate_white(curve, label, out)", state)
+        self.assertNotIn("JuicerSpectral::build_tables(", state)
+        self.assertNotIn("JuicerSpectral::integrate_white(", state)
+        complete = (ROOT / "rust/film-juicer-core/src/recipe.rs").read_text(encoding="utf-8")
+        self.assertIn("spectral::checked_build_tables(spectral::Input {", complete)
+        self.assertIn("let exposure_tables = build_tables(", complete)
+        self.assertIn("let scanner_tables = build_tables(", complete)
+        self.assertIn("spectral::checked_integrate_white(", complete)
+        self.assertIn("spectral::checked_s_inverse(", complete)
+        preparation = (ROOT / "rust/film-juicer-plugin/src/preparation.rs").read_text(encoding="utf-8")
+        self.assertIn("let completed = recipe::prepare(assets, params)", preparation)
+        self.assertIn("out.exposure_tables =", preparation)
+        self.assertIn("out.scanner_tables =", preparation)
         loop = r"double\s+sum[XYZ]\s*=\s*0\.0"
         self.assertIsNone(re.search(loop, state))
         self.assertIsNotNone(re.search(loop, state + "\ndouble sumX = 0.0;"))

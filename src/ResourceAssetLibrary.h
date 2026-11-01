@@ -1,67 +1,26 @@
 #pragma once
 
-#include <array>
-#include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <span>
-#include <vector>
 
 #include "GamutCompression.h"
-#include "ProfileAssets.h"
 #include "ProfileCatalog.h"
-#include "ScanRoute.h"
 #include "RustAssetBridge.h"
-#include "SpectralData.h"
 
 namespace JuicerAssets {
-
-    struct IlluminantCurveView {
-        std::span<const float> lambda_nm;
-        std::span<const float> linear;
-        // Existing native scalar/illuminant transports still require an owning
-        // curve. This explicit copy retires with those S4.E integration callers.
-        Spectral::Curve copy_curve() const;
-    };
-
-    class IlluminantFilterCurveSet final {
-    public:
-        ~IlluminantFilterCurveSet();
-        IlluminantFilterCurveSet(const IlluminantFilterCurveSet&) = delete;
-        IlluminantFilterCurveSet& operator=(const IlluminantFilterCurveSet&) = delete;
-        const IlluminantCurveView d65, d55, d50, tungsten, kinoton75P, tungstenKg3, tungstenKg3Lens;
-        const std::uintptr_t entryIdentity;
-
-    private:
-        friend class AssetBridge;
-        IlluminantFilterCurveSet(FjIlluminantsOwner*, const FjIlluminantsView&) noexcept;
-        FjIlluminantsOwner* _owner;
-    };
-
-    using SelectedProfileRequest = Profiles::SelectedProfileRequest;
-    using SelectedProfileResult = Profiles::SelectedProfileResult;
 
     class Library {
     public:
         explicit Library(const std::filesystem::path& resourceRoot);
         ~Library();
 
-        Spectral::ReconstructionLut copy_hanatos_lut();
-        Spectral::ReconstructionLut copy_arctic_lut();
-        Spectral::MallettBasis copy_mallett_basis();
-        Spectral::CMFTriplets copy_cmf_triplets();
         const Spektrafilm::ProfileCatalog& spektrafilm_profile_catalog();
         FjStatus film_defaults(
             const std::string& key,
             FjFilmDigest& out,
             FjErrorBuffer& error);
-        std::shared_ptr<const Profiles::FilmProfile>
-        selected_film_profile_for_key(const std::string& key);
-        SelectedProfileResult selected_profiles_for_route(
-            const SelectedProfileRequest& request);
-        NoiseSource noise();
-        std::shared_ptr<const IlluminantFilterCurveSet> illuminant_filter_curves();
         std::shared_ptr<const Gamut::InputHullHold>
         input_compression_hull();
         std::shared_ptr<const Gamut::OutputBoundaryHold>

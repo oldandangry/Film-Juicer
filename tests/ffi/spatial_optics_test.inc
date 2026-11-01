@@ -1,5 +1,4 @@
 namespace OpticsTest {
-    thread_local unsigned nextProjection = 0;
     using Prepare = FjStatus (*)(const FjSpatialOpticsParams*, FjSpatialOpticsRecipe*, FjSpatialOpticsFailure*, FjErrorBuffer*);
     Json double_words(const double* values, std::size_t count) {
         Json out = Json::array();
@@ -43,16 +42,6 @@ namespace OpticsTest {
         const float values[]{h.scatter_amount, h.scatter_spatial_scale, h.halation_spatial_scale, h.first_sigma_um[0], h.first_sigma_um[1], h.first_sigma_um[2], h.total_strength[0], h.total_strength[1], h.total_strength[2]};
         return {{"camera", project(v.camera_diffusion)}, {"enlarger", project(v.enlarger_diffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(v.camera_lens_blur.sigma_um)}, {"lens_hash", v.camera_lens_blur.hash}, {"halation", {{"scatter_active", h.scatter_active != 0}, {"back_reflection_active", h.back_reflection_active != 0}, {"f32", words(values, 9)}, {"hash", h.hash}}}, {"hash", v.hash}};
     }
-    Json project(const DiffusionFilterOpticsRecipe& v) {
-        const auto& r = v.resolved;
-        const double values[]{r.scatterFraction, r.groupWeightsCoreHaloBloom[0], r.groupWeightsCoreHaloBloom[1], r.groupWeightsCoreHaloBloom[2], r.groupCenterLambdaUm[0], r.groupCenterLambdaUm[1], r.groupCenterLambdaUm[2], r.effectiveWarmth, r.spatialScale};
-        return {{"domain", static_cast<unsigned>(v.domain)}, {"active", r.active}, {"family", static_cast<unsigned>(r.family)}, {"f64", double_words(values, 9)}, {"resolved_hash", r.hash}, {"hash", v.hash}};
-    }
-    Json project(const SpatialOptics& v) {
-        const auto& h = v.scatterHalation;
-        const float values[]{h.scatterAmount, h.scatterSpatialScale, h.halationSpatialScale, h.halationFirstSigmaUm[0], h.halationFirstSigmaUm[1], h.halationFirstSigmaUm[2], h.totalStrength[0], h.totalStrength[1], h.totalStrength[2]};
-        return {{"camera", project(v.cameraDiffusion)}, {"enlarger", project(v.enlargerDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(v.cameraLensBlur.sigmaUm)}, {"lens_hash", v.cameraLensBlur.hash}, {"halation", {{"scatter_active", h.scatterActive}, {"back_reflection_active", h.backReflectionActive}, {"f32", words(values, 9)}, {"hash", h.hash}}}, {"hash", v.hash}};
-    }
     void metadata(const FjSpatialOpticsFailure& actual, std::uint32_t reason = FJ_OPTICS_REASON_NONE, std::uint32_t component = FJ_OPTICS_COMPONENT_NONE, std::uint32_t field = FJ_OPTICS_FIELD_NONE, std::uint32_t channel = 3) {
         require(actual.reason == reason && actual.component == component && actual.field == field && actual.channel == channel, "complete optics failure envelope");
     }
@@ -89,7 +78,7 @@ namespace OpticsTest {
     }
     void values(const Json& captured) {
         require(captured.at("cases").size() == 553, "exact frozen optics literal membership");
-        for (Prepare prepare : {fj_legacy_spatial_optics_prepare, fj_test_spatial_optics_prepare})
+        for (Prepare prepare : {fj_test_spatial_optics_c_prepare, fj_test_spatial_optics_prepare})
             for (const auto& row : captured.at("cases")) {
                 auto input = params(row.at("input"));
                 FjSpatialOpticsRecipe out{};
@@ -100,6 +89,11 @@ namespace OpticsTest {
                 if (success) {
                     metadata(failure);
                     representations(out);
+                    if (out.camera_lens_blur.hash != 0) {
+                        const CameraLensBlurOpticsRecipe lens{out.camera_lens_blur.sigma_um, out.camera_lens_blur.hash};
+                        std::string diagnostic;
+                        require(!Spektrafilm::preflight_camera_lens_blur(lens, diagnostic) && diagnostic == "ExactOpticsNotImplementedForPhase6 component=camera_lens_blur", "positive lens remains rejected by render preflight");
+                    }
                     require(project(out) == row.at("recipe"), "all frozen f32/f64 fields, flags/tags and seven identities");
                 } else {
                     const auto expected = expected_failure(row.at("diagnostic").get<std::string>());
@@ -118,7 +112,7 @@ namespace OpticsTest {
         };
         const auto inactive = params(find("optics-inactive").at("input"));
         const auto active = params(find("optics-active-print").at("input"));
-        for (Prepare prepare : {fj_legacy_spatial_optics_prepare, fj_test_spatial_optics_prepare}) {
+        for (Prepare prepare : {fj_test_spatial_optics_c_prepare, fj_test_spatial_optics_prepare}) {
             FjSpatialOpticsRecipe out{};
             FjSpatialOpticsFailure failure{};
             const auto raw = [&](const FjSpatialOpticsParams* input, FjSpatialOpticsRecipe* result, FjSpatialOpticsFailure* rejected, FjErrorBuffer* error) {
@@ -221,56 +215,6 @@ namespace OpticsTest {
     Spektrafilm::SpatialOpticsControls native_controls(const FjSpatialOpticsParams& v) {
         return {native_diffusion(v.camera_diffusion), v.camera_lens_blur_um, {v.scatter_halation.active != 0, v.scatter_halation.scatter_amount, v.scatter_halation.scatter_spatial_scale, v.scatter_halation.halation_amount, v.scatter_halation.halation_spatial_scale}, native_diffusion(v.enlarger_diffusion)};
     }
-    Profiles::ProfileDigest native_digest(const FjSpatialOpticsParams& v) {
-        Profiles::ProfileDigest out;
-        std::copy_n(v.scatter_halation.first_sigma_um, 3, out.halationFirstSigmaUm.begin());
-        std::copy_n(v.scatter_halation.primary_amount, 3, out.halationPrimaryAmount.begin());
-        return out;
-    }
-    void native(const Json& captured) {
-        for (const auto& row : captured.at("cases")) {
-            const auto input = params(row.at("input"));
-            SpatialOptics out;
-            std::string diagnostic;
-            const bool success = JuicerAssets::prepare_spatial_optics(native_controls(input), native_digest(input), input.print_domain != 0, out, diagnostic);
-            require(success == row.at("success").get<bool>(), "typed native optics outcome");
-            if (success) {
-                require(project(out) == row.at("recipe"), "complete native named-field projection including unusual permitted values");
-                if (out.cameraLensBlur.hash != 0) {
-                    require(!Spektrafilm::preflight_camera_lens_blur(out.cameraLensBlur, diagnostic) && diagnostic == "ExactOpticsNotImplementedForPhase6 component=camera_lens_blur", "positive lens remains rejected by render preflight");
-                }
-            } else
-                require(diagnostic == row.at("diagnostic").get<std::string>(), "typed native diagnostics retain exact words and first failure");
-        }
-        const auto input = params(captured.at("cases")[3].at("input"));
-        {
-            SpatialOptics out;
-            std::string diagnostic;
-            status(fj_test_film_recipe_fault(9, 2));
-            require(!JuicerAssets::prepare_spatial_optics(native_controls(input), native_digest(input), true, out, diagnostic) && diagnostic == "ResourceDescriptorMismatch phase=6A component=camera_diffusion field=resolved_hash", "actual resolved-hash guard translates through typed native fields");
-            status(fj_test_film_recipe_fault(9, 1));
-            bool contained = false;
-            try {
-                (void)JuicerAssets::prepare_spatial_optics(native_controls(input), native_digest(input), true, out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                contained = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(contained, "caught optics panic stays a typed native boundary failure");
-        }
-        for (unsigned fault = 1; fault <= 13; ++fault) {
-            SpatialOptics out;
-            out.hash = 99;
-            std::string diagnostic;
-            nextProjection = fault;
-            bool rejected = false;
-            try {
-                (void)JuicerAssets::prepare_spatial_optics(native_controls(input), native_digest(input), input.print_domain != 0, out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                rejected = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected && project(out) == project(SpatialOptics{}), "malformed status/metadata/representation/diagnostics cannot partially project");
-        }
-    }
     struct ProductFixtures {
         Json products;
         Json literals;
@@ -282,7 +226,6 @@ namespace OpticsTest {
         const auto& ofx = fixtures.ofx;
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         const auto find = [&](const char* id) -> const Json& {
             for (const auto& row : literals.at("cases"))
                 if (row.at("id") == id)
@@ -331,26 +274,16 @@ namespace OpticsTest {
             if (built)
                 status(product->view(view, error));
             require(built == row.at("success").get<bool>() && observedDiagnostic == row.at("diagnostic").get<std::string>(), "genuine held-state route product outcome and first failure");
-            Json recipe;
+            Json actual{{"snapshot_hash", hash_params(params)}, {"final_hash", built ? view.recipe_hash : 0}};
+            Json expected{{"snapshot_hash", row.at("snapshot_hash")}, {"final_hash", row.at("final_hash")}};
             if (built) {
-                recipe = project(view.optics);
+                actual["recipe"] = project(view.optics);
+                expected["recipe"] = row.at("recipe");
             } else {
                 require(result.category == FJ_STATUS_PREPARATION_FAILURE && result.api == FJ_API_NONE &&
                             result.native_code == 0 && !product,
                         "failed optics preparation returns no complete owner");
-                // SF_TEMP_BRIDGE_NATIVE_OPTICS_FAILURE_OUTPUT: the frozen
-                // default C++ output is not a failed Rust state's projection.
-                // Retain this original assertion through its I7 owner gate.
-                FocusedRenderStateBuildProduct comparison;
-                std::string comparisonDiagnostic;
-                const bool comparisonBuilt = route % 2 ? build_print_render_state_product(params, comparison, comparisonDiagnostic)
-                                                       : build_direct_render_state_product(params, comparison, comparisonDiagnostic);
-                require(!comparisonBuilt && comparisonDiagnostic == observedDiagnostic,
-                        "original native optics failure retains its exact diagnostic");
-                recipe = project(comparison.recipe.spatialOptics);
             }
-            const Json actual{{"snapshot_hash", hash_params(params)}, {"final_hash", built ? view.recipe_hash : 0}, {"recipe", std::move(recipe)}};
-            const Json expected{{"snapshot_hash", row.at("snapshot_hash")}, {"final_hash", row.at("final_hash")}, {"recipe", row.at("recipe")}};
             require_equal(actual, expected, "native authored snapshot, complete optics and final route identities");
         }
         for (unsigned route = 0; route < 4; ++route) {
@@ -430,52 +363,3 @@ namespace OpticsTest {
         std::puts("PASS 32 genuine optics products and four-route publication, ordering, recovery and identity contracts");
     }
 } // namespace OpticsTest
-namespace JuicerAssets::RecipeTest {
-    void optics(FjStatus& status, FjSpatialOpticsFailure& failure, FjSpatialOpticsRecipe& recipe, FjErrorBuffer& error) {
-        const unsigned fault = OpticsTest::nextProjection;
-        OpticsTest::nextProjection = 0;
-        switch (fault) {
-            case 1:
-                status.category = 999;
-                break;
-            case 2:
-                status.api = 999;
-                break;
-            case 3:
-                status.native_code = 99;
-                break;
-            case 4:
-                failure.reason = 99;
-                break;
-            case 5:
-                failure.component = 99;
-                break;
-            case 6:
-                failure.field = 99;
-                break;
-            case 7:
-                failure.channel = 99;
-                break;
-            case 8:
-                recipe.camera_diffusion.active = 2;
-                break;
-            case 9:
-                recipe.enlarger_diffusion.family = 99;
-                break;
-            case 10:
-                recipe.camera_diffusion.domain = 99;
-                break;
-            case 11:
-                recipe.scatter_halation.back_reflection_active = 2;
-                break;
-            case 12:
-                error.length = error.capacity;
-                break;
-            case 13:
-                failure.reason = FJ_OPTICS_REASON_PANIC;
-                break;
-            default:
-                break;
-        }
-    }
-} // namespace JuicerAssets::RecipeTest

@@ -26,10 +26,8 @@
 #include <dlfcn.h>
 #endif
 
-#include "Illuminants.h"
 #include "Logging.h"
 #include "Scanner.h"
-#include "SpectralData.h"
 #include "ColorTransforms.h"
 
 #include <cuda_runtime.h>
@@ -304,56 +302,6 @@ namespace JuicerProcess {
                 return "strict_yvv_component_streamed";
             }
             return "unknown";
-        }
-
-
-        void load_process_spectral_assets(JuicerAssets::Library& assets) {
-            // Next-owner replacement excludes prior host readers. A failed attempt
-            // must never leave stale CMFs available to the new owner's consumers.
-            Spectral::gXBar = {};
-            Spectral::gYBar = {};
-            Spectral::gZBar = {};
-            try {
-                Spectral::lock_shape_to_reference_axis();
-                const auto cmf = assets.copy_cmf_triplets();
-                if (!Spectral::cmf_triplets_match_reference_axis(cmf)) {
-                    throw std::runtime_error("CMF grid mismatch");
-                }
-                Spectral::set_cie_1931_2deg_cmf(cmf.xbar, cmf.ybar, cmf.zbar);
-            } catch (...) {
-                Spectral::gXBar = {};
-                Spectral::gYBar = {};
-                Spectral::gZBar = {};
-                try {
-                    JTRACE("INIT", "FATAL: CMF bootstrap failed");
-                } catch (...) {
-                    JuicerLogging::discard_current_exception();
-                }
-            }
-
-            Spectral::set_hanatos_available(false);
-            try {
-                Spectral::gHanSpectra = assets.copy_hanatos_lut();
-                Spectral::set_hanatos_available(true);
-            } catch (...) {
-                Spectral::gHanSpectra = {};
-            }
-
-            Spectral::set_arctic_available(false);
-            try {
-                Spectral::context().arcticSpectra = assets.copy_arctic_lut();
-                Spectral::set_arctic_available(true);
-            } catch (...) {
-                Spectral::context().arcticSpectra = {};
-            }
-
-            Spectral::set_mallett_available(false);
-            try {
-                Spectral::gMallettBasis = assets.copy_mallett_basis();
-                Spectral::set_mallett_available(true);
-            } catch (...) {
-                Spectral::gMallettBasis = {};
-            }
         }
 
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -662,7 +610,10 @@ namespace JuicerProcess {
         float* scatterHalationWeightedAccumulation = nullptr;
         int scatterHalationFrameWidth = 0;
         int scatterHalationFrameHeight = 0;
-        std::optional<Spectral::FilmRawConfig> focusedFilmRawConfig;
+        std::array<float, 9> focusedInputRgbToXyz{};
+        std::array<float, 9> focusedInputXyzAdapt{};
+        std::array<float, 9> focusedXyzToLinearSrgb{};
+        bool focusedApplyInputChromaticAdapt = false;
         std::optional<Scanner::ColorRuntime> focusedScannerColor;
         std::optional<Gamut::OutputGamutTransform> focusedOutputGamutTransform;
         const JuicerCuda::Resources::DeviceScanRange* focusedScanRange = nullptr;
@@ -3820,7 +3771,7 @@ namespace JuicerProcess {
     Root::PreparedCudaFrame::FocusedPreparedView Root::PreparedCudaFrame::focused_resources() const noexcept {
         FocusedPreparedView view{};
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed ||
-            !_state->focusedFilmRawConfig || !_state->focusedScannerColor ||
+            !_state->focusedScannerColor ||
             !_state->focusedScanRange || !_state->focusedScanLut) {
             return view;
         }
@@ -3843,13 +3794,13 @@ namespace JuicerProcess {
         view.film.filmTcLutExtent = resources.filmTcLutExtent;
         view.film.mallettBasis = resources.mallettBasis;
         view.film.mallettBasisK = resources.mallettBasisK;
-        std::copy_n(_state->focusedFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
-        std::copy_n(_state->focusedFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
+        std::copy_n(_state->focusedInputRgbToXyz.data(), 9, view.film.inputRGBToXYZ);
+        std::copy_n(_state->focusedInputXyzAdapt.data(), 9, view.film.inputXYZAdapt);
         std::copy_n(
-            _state->focusedFilmRawConfig->xyzToLinearSrgb.m,
+            _state->focusedXyzToLinearSrgb.data(),
             9,
             view.film.xyzToLinearSrgb);
-        view.film.applyInputChromaticAdapt = _state->focusedFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
+        view.film.applyInputChromaticAdapt = _state->focusedApplyInputChromaticAdapt ? 1 : 0;
         view.film.finalSensitivityHash = resources.filmFinalSensitivityHash;
         view.film.normalizedDensityCurvesHash = resources.filmDensityCurvesHash;
         view.film.dirCouplersHash = resources.filmDirHash;
@@ -4401,12 +4352,6 @@ namespace JuicerProcess {
     }
 
     Root::~Root() = default;
-
-    void Root::ensure_bootstrap() {
-        std::call_once(_bootstrapOnce, [this]() {
-            load_process_spectral_assets(assets());
-        });
-    }
 
     bool Root::shutdown(std::mutex& nativeCallMutex, JuicerCuda::Failure& outError) {
         if (!wait_for_frame_preparation()) {
@@ -5002,80 +4947,6 @@ namespace JuicerProcess {
             JuicerLogging::discard_current_exception();
         }
     }
-    Root::PreparationIdentity Root::preparation_identity(const RenderRecipe& recipe) {
-        return {recipe.profileRoute.scanRoute, recipe.profileRoute.capturePolarity, recipe.profileRoute.filmProfileKey, recipe.profileRoute.filmProfileAssetVersionToken, recipe.spatialOptics.scatterHalation.hash, recipe.visualGrain.hash, recipe.visualGrain.densityCurvesLayersHash, recipe.visualGrain.active, recipe.filmJuicerEffects.hash, recipe.filmJuicerEffects.active};
-    }
-
-    Root::PreparedCudaFrame Root::prepare_cuda_frame(
-        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
-        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
-        const CudaFramePreparationRequest& request,
-        const AutoExposureBufferRequest& autoExposureBufferRequest,
-        void* cudaStreamOpaque,
-        JuicerCuda::Failure& outError,
-        const FjHostPreparation* hostPreparation) {
-        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-        PreparedCudaFrame frame = create_prepared_frame(cudaStreamOpaque, outError);
-        if (!frame._state) {
-            return frame;
-        }
-        if (!request.recipe) {
-            outError.diagnostic = "MissingRequiredResource component=cuda_frame_preparation field=recipe";
-            return frame;
-        }
-        const auto reject_request = [&] {
-            frame._state->set_failure(
-                PreparedCudaFailureStage{"validate_cuda_frame_preparation_request"},
-                "CUDA frame preparation request validation failed");
-            outError.diagnostic += " route=";
-            outError.diagnostic += Spektrafilm::scan_route_key(request.recipe->profileRoute.scanRoute);
-        };
-        if (!request.exposureTables || !request.filmRawConfig ||
-            !request.scannerTables || !request.scannerColor || !request.scannerLutDescriptor) {
-            outError.diagnostic = "MissingRequiredResource component=cuda_frame_preparation field=serving_inputs";
-            reject_request();
-            return frame;
-        }
-        const OutputGamutRecipe& outputGamut = request.recipe->scannerOutput.outputGamut;
-        if ((outputGamut.enabled && !request.outputBoundaryTable) ||
-            (!outputGamut.enabled && request.outputBoundaryTable)) {
-            outError.diagnostic = "ResourceDescriptorMismatch component=cuda_frame_preparation field=output_gamut_binding";
-            reject_request();
-            return frame;
-        }
-        JuicerCuda::FocusedRouteResourcePreparation source;
-        source.recipe = request.recipe;
-        source.exposureTables = request.exposureTables;
-        source.filmRawConfig = request.filmRawConfig;
-        source.filmTcLut = request.filmTcLut;
-        source.scannerTables = request.scannerTables;
-        source.scannerColor = request.scannerColor;
-        source.scannerLutDescriptor = request.scannerLutDescriptor;
-        source.outputBoundaryTable = request.outputBoundaryTable;
-        JuicerCuda::FocusedRouteResourceInput focused;
-        if (!JuicerCuda::build_focused_route_resource_input(source, focused, outError.diagnostic)) {
-            frame._state->set_failure(
-                PreparedCudaFailureStage{"prepare_focused_route_resources"},
-                "CUDA focused route resource preparation failed");
-            outError.diagnostic += " route=";
-            outError.diagnostic += Spektrafilm::scan_route_key(request.recipe->profileRoute.scanRoute);
-            return frame;
-        }
-        PreparedFrameInput prepared{preparation_identity(*request.recipe), focused, *request.filmRawConfig, *request.scannerColor, request.recipe->scannerOutput.outputGamut, {}};
-        if (Spektrafilm::scan_route_is_print(prepared.identity.scanRoute)) {
-            prepared.print = JuicerCuda::PrintResourcePreparation{request.recipe, &assets(), request.printMainIlluminant};
-        }
-        prepared.scannerPostEffects = request.scannerPostEffects;
-        prepared.spatialDirDescriptor = request.spatialDirDescriptor;
-        prepared.diffusionFrameSetDescriptor = request.diffusionFrameSetDescriptor;
-        prepared.scatterHalationDescriptor = request.scatterHalationDescriptor;
-        prepared.visualGrainDescriptor = request.visualGrainDescriptor;
-        prepared.effectsDescriptor = request.effectsDescriptor;
-        prepared.requestedWidth = request.requestedWidth;
-        prepared.requestedHeight = request.requestedHeight;
-        return prepare_cuda_frame(std::move(frame), deviceContextKey, snapshot, prepared, autoExposureBufferRequest, cudaStreamOpaque, outError, hostPreparation);
-    }
-
     Root::PreparedCudaFrame Root::prepare_cuda_frame(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
@@ -5179,21 +5050,20 @@ namespace JuicerProcess {
             request.visualGrainDescriptor;
         frame._state->effectsDescriptor = request.effectsDescriptor;
         if (printRoute) {
-            const auto* legacyPrint = std::get_if<JuicerCuda::PrintResourcePreparation>(&request.print);
-            const auto* suppliedPrint = std::get_if<JuicerCuda::PrintResourceInput>(&request.print);
-            const bool described = suppliedPrint || (legacyPrint && legacyPrint->recipe && JuicerCuda::build_print_resource_descriptors(*legacyPrint->recipe, frame._state->printDescriptors, outError.diagnostic));
-            if (suppliedPrint) {
-                frame._state->printDescriptors = suppliedPrint->descriptors;
-            }
-            if (!described) {
-                if (!legacyPrint || !legacyPrint->recipe) {
-                    outError.diagnostic = "MissingRequiredResource phase=4B field=print_preparation_request";
-                }
+            if (!request.print) {
+                outError.diagnostic = "MissingRequiredResource phase=4B field=print_preparation_request";
                 recordFailure(
                     "build_print_resource_descriptors",
                     "CUDA print resource descriptor construction failed");
                 return frame;
             }
+            frame._state->printDescriptors = request.print->descriptors;
+        }
+        if (request.identity.grainActive && !request.noise) {
+            outError.diagnostic = "MissingRequiredResource phase=grain_static field=noise";
+            appendRoute();
+            frame.abort();
+            return frame;
         }
         std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deviceLedger;
         if (!begin_submission(
@@ -5289,16 +5159,8 @@ namespace JuicerProcess {
             return frame;
         }
         if (printRoute) {
-            const bool printPrepared = std::visit([&](const auto& source) {
-                using Source = std::decay_t<decltype(source)>;
-                if constexpr (std::is_same_v<Source, std::monostate>) {
-                    outError.diagnostic = "MissingRequiredResource phase=4B field=print_preparation_request";
-                    return false;
-                } else {
-                    return JuicerCuda::prepare_print_resources(*frame._state->resources, source, cudaStreamOpaque, outError);
-                }
-            },
-                                                  request.print);
+            const bool printPrepared = JuicerCuda::prepare_print_resources(
+                *frame._state->resources, *request.print, cudaStreamOpaque, outError);
             if (!printPrepared) {
                 recordFailure(
                     "prepare_print_resources",
@@ -5322,7 +5184,10 @@ namespace JuicerProcess {
             request.identity.filmProfileKey;
         frame._state->scanRoute =
             request.identity.scanRoute;
-        frame._state->focusedFilmRawConfig = request.filmRawConfig;
+        frame._state->focusedInputRgbToXyz = request.focused.inputRgbToXyz;
+        frame._state->focusedInputXyzAdapt = request.focused.inputXyzAdapt;
+        frame._state->focusedXyzToLinearSrgb = request.focused.xyzToLinearSrgb;
+        frame._state->focusedApplyInputChromaticAdapt = request.focused.applyInputChromaticAdapt;
         frame._state->focusedScannerColor = request.scannerColor;
         frame._state->focusedOutputGamutTransform =
             outputGamut.enabled ? std::optional{outputGamut.transform} : std::nullopt;
@@ -5355,32 +5220,9 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
-        std::optional<JuicerAssets::NoiseSource> noiseSource;
-        JuicerCuda::StaticNoiseInput noise;
-        const JuicerCuda::StaticNoiseInput* selectedNoise = request.noise;
-        if (frame._state->visualGrainDescriptor && !selectedNoise) {
-            try {
-                noiseSource.emplace(assets().noise());
-                noise = noiseSource->view();
-                selectedNoise = &noise;
-            } catch (JuicerCuda::ExecutionFailure& failure) {
-                outError = std::move(failure.failure);
-            } catch (const std::bad_alloc&) {
-                JuicerCuda::set_failure(outError, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "static noise source allocation failed");
-            } catch (const std::exception& detail) {
-                JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what());
-            } catch (...) {
-                JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "static noise source failed with unknown exception");
-            }
-            if (!selectedNoise) {
-                recordFailure("acquire_noise_source", "CUDA grain-static source preparation failed");
-                frame.abort();
-                return frame;
-            }
-        }
         if (!frame.prepare_visual_grain_resources(
                 *this,
-                selectedNoise,
+                request.noise,
                 deviceContextKey,
                 cudaStreamOpaque,
                 outError,

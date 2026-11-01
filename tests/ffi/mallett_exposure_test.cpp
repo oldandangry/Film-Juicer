@@ -16,10 +16,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ColorTransforms.h"
+#include "SpectralData.h"
 #include "Cuda/JuicerCudaExecutor.h"
-#include "RustExposureBridge.h"
-#include "RustAssetBridge.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
 #include "print_illuminant_fixture.h"
@@ -91,12 +89,6 @@ namespace {
         FjFloatSpan illuminant_span() const {
             return {illuminant.data(), 81};
         }
-        Spectral::MallettBasis native_basis() const {
-            Spectral::MallettBasis result{81, 3, {}};
-            for (const auto& rgb : basis)
-                result.data.insert(result.data.end(), rgb.begin(), rgb.end());
-            return result;
-        }
     };
     struct FocusedInput : Operands {
         FjMallettMidgrayInput input{};
@@ -112,16 +104,6 @@ namespace {
             input.basis_rgb = basis_span();
             input.illuminant = illuminant_span();
             input.sensitivity_rgb = sensitivity_span();
-        }
-        Spectral::FilmRawConfig config() const {
-            Spectral::FilmRawConfig result;
-            result.inputColorSpace = static_cast<Spectral::InputColorSpace>(input.color.input_space);
-            result.applyCctfDecoding = input.color.decode_cctf != 0;
-            result.applyInputChromaticAdapt = input.color.adapt_xyz != 0;
-            std::copy_n(input.color.rgb_to_xyz, 9, result.inputRGBToXYZ.m);
-            std::copy_n(input.color.xyz_adapt, 9, result.inputXYZAdapt.m);
-            std::copy_n(input.xyz_to_linear_srgb, 9, result.xyzToLinearSrgb.m);
-            return result;
         }
     };
     struct ReferenceInput : Operands {
@@ -146,14 +128,6 @@ namespace {
                 status((facade ? fj_test_exposure_mallett_midgray : fj_legacy_exposure_mallett_midgray)(&input.input, &result, &error.error), FJ_STATUS_SUCCESS);
                 check(result, row.at("expected"));
             }
-            auto config = input.config();
-            auto basis = input.native_basis();
-            std::string diagnostic;
-            require(JuicerExposure::mallett_midgray(basis, input.illuminant, input.sensitivity, config, diagnostic), "native focused binding");
-            exact<3>(config.midgrayDWG, row.at("expected").at("dwg"));
-            exact<3>(config.rawMidgray, row.at("expected").at("raw_bgr"));
-            const float normalization[]{config.rawMidgrayGreen, config.midgrayScale};
-            exact<2>(normalization, row.at("expected").at("normalization"));
             error.guards();
         }
         for (const auto& row : fixture.at("normalizations")) {
@@ -166,11 +140,6 @@ namespace {
                 const float values[]{result.raw_green, result.scale};
                 exact<2>(values, expected);
             }
-            Spectral::FilmRawConfig config;
-            std::string diagnostic;
-            require(JuicerExposure::tc_midgray(green, config, diagnostic), "native TC binding");
-            const float values[]{config.rawMidgrayGreen, config.midgrayScale};
-            exact<2>(values, expected);
         }
         for (const auto& row : fixture.at("sources")) {
             const float ev = std::bit_cast<float>(row.at("ev").get<std::uint32_t>());
@@ -184,13 +153,6 @@ namespace {
                 else
                     require(std::bit_cast<std::uint32_t>(result) == 0, "failed source clear");
             }
-            float result = -1;
-            std::string diagnostic;
-            require(JuicerExposure::reference_source(ev, result, diagnostic) == built, "native source disposition");
-            if (built)
-                exact<1>(&result, Json::array({row.at("exp2_source")[1]}));
-            else
-                require(result == 0 && !diagnostic.empty(), "native source failure");
         }
         for (const auto& row : fixture.at("references")) {
             ReferenceInput input(row);
@@ -207,12 +169,6 @@ namespace {
                             }),
                             "failed reference clear");
             }
-            auto basis = input.native_basis();
-            std::array<float, 3> result{};
-            std::string diagnostic;
-            require(JuicerExposure::mallett_reference_raw(basis, input.illuminant, input.sensitivity, input.input.source, input.input.green_scale, result, diagnostic) == built, "native reference disposition");
-            if (built)
-                exact<3>(result.data(), row.at("expected"));
         }
         FocusedInput focused(fixture.at("focused")[0]);
         ReferenceInput reference(fixture.at("references")[0]);
@@ -397,23 +353,6 @@ namespace {
         status(fj_legacy_exposure_mallett_midgray(&input.input, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
         require(fj_test_exposure_fault_consumed(3, 1) == 1, "later valid call consumes armed fault");
         fj_test_exposure_clear_fault();
-        for (std::uint32_t fault : {1u, 2u, 4u}) {
-            status(fj_test_exposure_arm_fault(3, 1, fault), FJ_STATUS_SUCCESS);
-            auto config = input.config();
-            auto basis = input.native_basis();
-            std::string diagnostic;
-            bool exceptional = false;
-            bool built = false;
-            try {
-                built = JuicerExposure::mallett_midgray(basis, input.illuminant, input.sensitivity, config, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& e) {
-                exceptional = true;
-                status(e.failure.status, fault == 1 ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
-            }
-            require(!built && exceptional == (fault != 4), "native ordinary-false versus exceptional mapping");
-            require(fj_test_exposure_fault_consumed(3, fault) == 1, "native binding fault consumption");
-            fj_test_exposure_clear_fault();
-        }
         status(fj_test_exposure_arm_fault(3, 1, 1), FJ_STATUS_SUCCESS);
         FjStatus other{};
         std::thread worker([&] {

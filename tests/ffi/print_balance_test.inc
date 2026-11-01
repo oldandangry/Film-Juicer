@@ -21,7 +21,7 @@ namespace PrintBalanceTest {
                              const JuicerCudaTest::PreparedFrameFixture::Inputs& prepared,
                              std::string& diagnostic) {
         auto& call = *static_cast<CacheCall*>(opaque);
-        const auto* input = std::get_if<JuicerCuda::PrintResourceInput>(&prepared.preparation.print);
+        const auto* input = prepared.preparation.print ? &*prepared.preparation.print : nullptr;
         if (!input) {
             diagnostic = "prepared print state has no complete balance resource input";
             return false;
@@ -61,13 +61,6 @@ namespace PrintBalanceTest {
         contentHash = call.contentHash;
     }
 
-    Json project(const PrintBalanceRecipe& balance) {
-        return {{"baseline_raw_rgb", words(balance.baselinePrintRawRgb.data(), 3)},
-                {"compensated_raw_rgb", words(balance.compensatedPrintRawRgb.data(), 3)},
-                {"scalars", words(std::array{balance.factorMidgray, balance.factorMidgrayComp, balance.normalizer}.data(), 3)},
-                {"filtered_main_illuminant_hash", balance.filteredMainIlluminantHash},
-                {"hash", balance.hash}};
-    }
     Json project(const FjPrintBalance& balance) {
         return {{"baseline_raw_rgb", words(balance.baseline_raw_rgb, 3)},
                 {"compensated_raw_rgb", words(balance.compensated_raw_rgb, 3)},
@@ -126,7 +119,6 @@ namespace PrintBalanceTest {
         Json products = Json::array();
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         for (unsigned route = 0; route < 4; ++route)
             for (int mode = 0; mode < 3; ++mode)
                 for (unsigned variant = 0; variant < 10; ++variant) {
@@ -182,50 +174,31 @@ namespace PrintBalanceTest {
 
 namespace PrintBalanceTest {
     using Prepare = FjStatus (*)(const FjPrintBalanceInput*, FjPrintBalance*, FjPrintBalanceFailure*, FjErrorBuffer*);
-    thread_local unsigned nextProjection = 0;
     struct Inputs {
-        std::array<float, 81> base, light;
-        std::array<float, 243> dye, sensitivity;
-        std::array<float, 3> baseline, compensated;
+        std::array<float, 81> filmBaseDensity, filteredMainIlluminant;
+        std::array<float, 243> filmChannelDensityCmy, printSensitivityRgb;
+        std::array<float, 3> baselineDensityCmy, compensatedDensityCmy;
         std::uint64_t referenceHash;
         std::uint32_t mode;
         explicit Inputs(const Json& row)
-            : base(PrintPreflashTest::array<81>(row.at("film_base_density"))),
-              light(PrintPreflashTest::array<81>(row.at("filtered_main_illuminant"))),
-              dye(PrintPreflashTest::array<243>(row.at("film_channel_density_cmy"))),
-              sensitivity(PrintPreflashTest::array<243>(row.at("print_sensitivity_rgb"))),
-              baseline(PrintPreflashTest::array<3>(row.at("baseline_density_cmy"))),
-              compensated(PrintPreflashTest::array<3>(row.at("compensated_density_cmy"))),
+            : filmBaseDensity(PrintPreflashTest::array<81>(row.at("film_base_density"))),
+              filteredMainIlluminant(PrintPreflashTest::array<81>(row.at("filtered_main_illuminant"))),
+              filmChannelDensityCmy(PrintPreflashTest::array<243>(row.at("film_channel_density_cmy"))),
+              printSensitivityRgb(PrintPreflashTest::array<243>(row.at("print_sensitivity_rgb"))),
+              baselineDensityCmy(PrintPreflashTest::array<3>(row.at("baseline_density_cmy"))),
+              compensatedDensityCmy(PrintPreflashTest::array<3>(row.at("compensated_density_cmy"))),
               referenceHash(row.at("reference_hash")), mode(row.at("normalization_mode")) {}
         FjPrintBalanceInput wire() const {
-            FjPrintBalanceInput out{{base.data(), 81}, {dye.data(), 243}, {sensitivity.data(), 243}, {light.data(), 81}, {}, {}, referenceHash, mode};
-            std::copy(baseline.begin(), baseline.end(), out.baseline_density_cmy);
-            std::copy(compensated.begin(), compensated.end(), out.compensated_density_cmy);
-            return out;
-        }
-        Profiles::FilmProfileSamples film() const {
-            Profiles::FilmProfileSamples out{};
-            out.baseDensity = base;
-            out.channelDensity = channels(dye);
-            return out;
-        }
-        Profiles::PrintProfileSamples print() const {
-            Profiles::PrintProfileSamples out{};
-            out.linearSensitivity = channels(sensitivity);
-            return out;
-        }
-        static std::array<std::array<float, 3>, 81> channels(const std::array<float, 243>& flat) {
-            std::array<std::array<float, 3>, 81> out{};
-            for (std::size_t s = 0; s < 81; ++s)
-                for (std::size_t c = 0; c < 3; ++c)
-                    out[s][c] = flat[3 * s + c];
-            return out;
-        }
-        SyntheticFilmReferenceRecipe reference() const {
-            SyntheticFilmReferenceRecipe out{};
-            out.baselineDensityCmy = baseline;
-            out.compensatedDensityCmy = compensated;
-            out.hash = referenceHash;
+            FjPrintBalanceInput out{{filmBaseDensity.data(), filmBaseDensity.size()},
+                                    {filmChannelDensityCmy.data(), filmChannelDensityCmy.size()},
+                                    {printSensitivityRgb.data(), printSensitivityRgb.size()},
+                                    {filteredMainIlluminant.data(), filteredMainIlluminant.size()},
+                                    {},
+                                    {},
+                                    referenceHash,
+                                    mode};
+            std::copy(baselineDensityCmy.begin(), baselineDensityCmy.end(), out.baseline_density_cmy);
+            std::copy(compensatedDensityCmy.begin(), compensatedDensityCmy.end(), out.compensated_density_cmy);
             return out;
         }
     };
@@ -261,12 +234,6 @@ namespace PrintBalanceTest {
                 } else
                     zero(out);
             }
-            PrintBalanceRecipe native{};
-            native.hash = 99;
-            std::string diagnostic;
-            const bool success = JuicerAssets::prepare_print_balance(source.film(), source.print(), source.light, source.reference(), static_cast<Spektrafilm::PrintNormalizationMode>(source.mode), native, diagnostic);
-            require(success == row.at("success").get<bool>() && diagnostic == row.at("diagnostic").get<std::string>(), "native balance bool and exact old diagnostic");
-            require(project(native) == (success ? row.at("balance") : project(PrintBalanceRecipe{})), "native assignment only on complete success; failure carrier defaults");
         }
     }
     void transport(const Json& captured) {
@@ -399,31 +366,15 @@ namespace PrintBalanceTest {
                 Inputs ephemeral(captured.at("cases")[0]);
                 const auto wire = ephemeral.wire();
                 status(prepare(&wire, &retained, &failure, nullptr));
-                ephemeral.base.fill(100);
-                ephemeral.light.fill(0);
+                ephemeral.filmBaseDensity.fill(100);
+                ephemeral.filteredMainIlluminant.fill(0);
             }
             require(project(retained) == captured.at("cases")[0].at("balance"), "fixed raw result owns words after all inputs expire");
-        }
-        Inputs input(captured.at("cases")[0]);
-        for (unsigned fault = 1; fault <= 24; ++fault) {
-            nextProjection = fault;
-            PrintBalanceRecipe out{};
-            out.hash = 99;
-            std::string diagnostic;
-            bool threw = false;
-            try {
-                JuicerAssets::prepare_print_balance(input.film(), input.print(), input.light, input.reference(), Spektrafilm::PrintNormalizationMode::None, out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                status(error.failure.status, fault == 15 ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
-                threw = true;
-            }
-            require(threw && nextProjection == 0 && project(out) == project(PrintBalanceRecipe{}), "native integrity rejects malformed envelope/result without publication");
         }
     }
     void caller(const std::filesystem::path& resources) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         auto p = PrintPreflashTest::controls();
         for (int normalize : {0, 1})
             for (int compensate : {0, 1}) {
@@ -487,7 +438,7 @@ namespace PrintBalanceTest {
         } bound;
         const auto inspect_input = [](void* opaque, const JuicerCudaTest::PreparedFrameFixture::Inputs& prepared, std::string& diagnostic) {
             auto& facts = *static_cast<BoundFacts*>(opaque);
-            const auto* input = std::get_if<JuicerCuda::PrintResourceInput>(&prepared.preparation.print);
+            const auto* input = prepared.preparation.print ? &*prepared.preparation.print : nullptr;
             if (!input) {
                 diagnostic = "prepared print state has no complete balance resource input";
                 return false;
@@ -514,21 +465,6 @@ namespace PrintBalanceTest {
         status(fj_test_print_balance_prepare(&raw, &output, &failure, nullptr));
         require(project(output) == project(activeView.print_balance),
                 "unconsumed raw balance fault is one-shot and retry matches the held complete owner");
-
-        // SF_TEMP_BRIDGE_NATIVE_BALANCE_FAULT_CONSUMER: retain the original
-        // native constructor's typed exception/retry comparison through I7.
-        // Actual complete-state construction and resource assembly above do
-        // not visit this legacy facade.
-        status(fj_test_film_recipe_fault(12, 1));
-        bool threw = false;
-        FocusedRenderStateBuildProduct comparison;
-        try {
-            require(build_print_render_state_product(activeControls, comparison, diagnostic), diagnostic.c_str());
-        } catch (const JuicerCuda::ExecutionFailure&) {
-            threw = true;
-        }
-        require(threw, "SF_TEMP_BRIDGE native constructor consumes its legacy balance fault");
-        require(build_print_render_state_product(activeControls, comparison, diagnostic), diagnostic.c_str());
     }
     void products(const std::filesystem::path& resources, const Json& captured) {
         const auto actual = product_observations(resources);
@@ -539,98 +475,11 @@ namespace PrintBalanceTest {
     }
 } // namespace PrintBalanceTest
 
-namespace JuicerAssets::RecipeTest {
-    void print_balance(FjStatus& status, FjPrintBalanceFailure& failure, FjPrintBalance& balance, FjErrorBuffer& error) {
-        const auto fault = std::exchange(PrintBalanceTest::nextProjection, 0u);
-        switch (fault) {
-            case 1:
-                status.category = 99;
-                break;
-            case 2:
-                status.api = 99;
-                break;
-            case 3:
-                status.native_code = 1;
-                break;
-            case 4:
-                failure.reason = 99;
-                break;
-            case 5:
-                failure.channel = 0;
-                break;
-            case 6:
-                failure.reason = FJ_PRINT_BALANCE_REASON_BASELINE_RAW;
-                failure.channel = 3;
-                break;
-            case 7:
-                status.category = FJ_STATUS_PREPARATION_FAILURE;
-                failure.reason = FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW;
-                failure.channel = UINT32_MAX;
-                break;
-            case 8:
-                status.category = FJ_STATUS_PREPARATION_FAILURE;
-                break;
-            case 9:
-                failure.reason = FJ_PRINT_BALANCE_REASON_PANIC;
-                break;
-            case 10:
-                failure.reason = FJ_PRINT_BALANCE_REASON_RAW;
-                break;
-            case 11:
-                error.length = error.capacity;
-                break;
-            case 12:
-                error.data = nullptr;
-                break;
-            case 13:
-                error.capacity = 0;
-                break;
-            case 14:
-                error.data[error.length] = 'x';
-                break;
-            case 15:
-                status.category = FJ_STATUS_UNSUPPORTED_INPUT;
-                failure.reason = FJ_PRINT_BALANCE_REASON_RAW;
-                break;
-            case 16:
-                status.category = FJ_STATUS_INTERNAL_FAILURE;
-                failure.reason = FJ_PRINT_BALANCE_REASON_PANIC;
-                break;
-            case 17:
-                balance.baseline_raw_rgb[1] = -1;
-                break;
-            case 18:
-                balance.compensated_raw_rgb[2] = std::numeric_limits<float>::quiet_NaN();
-                break;
-            case 19:
-                balance.factor_midgray = 0;
-                break;
-            case 20:
-                balance.factor_midgray_comp = std::numeric_limits<float>::infinity();
-                break;
-            case 21:
-                balance.normalizer = 0;
-                break;
-            case 22:
-                balance.hash = 0;
-                break;
-            case 23:
-                balance.filtered_main_illuminant_hash = 0;
-                break;
-            case 24:
-                balance.factor_midgray = -1;
-                break;
-            default:
-                break;
-        }
-    }
-} // namespace JuicerAssets::RecipeTest
 
 namespace PrintBalanceTest {
     void cache(const std::filesystem::path& resources) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         PrintPreflashTest::cuda_ok(cudaSetDevice(0));
         PrintPreflashTest::cuda_ok(cudaFree(nullptr));
         void* context = nullptr;

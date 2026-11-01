@@ -3,7 +3,7 @@
 #include <array>
 
 #include "FilmEffectsFrameDescriptors.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 #include "juicer_cuda_frame_values.h"
 
 namespace JuicerFrame::FrameGeometryTest {

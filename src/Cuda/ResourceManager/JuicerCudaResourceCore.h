@@ -9,7 +9,7 @@
 #include <optional>
 #include <variant>
 
-#include "../../RenderRecipe.h"
+#include "../../RenderValues.h"
 #include "../../FilmEffectsFrameDescriptors.h"
 
 namespace JuicerCuda {

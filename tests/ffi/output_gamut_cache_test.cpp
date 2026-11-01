@@ -556,7 +556,6 @@ int main(int argc, char** argv) {
     try {
         require(argc == 4, "resources, fixture manifest, preset");
         owner.create(argv[1]);
-        JuicerProcess::root().ensure_bootstrap();
         std::ifstream input(argv[2]);
         Json manifest;
         input >> manifest;

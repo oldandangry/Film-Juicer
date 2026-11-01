@@ -6,7 +6,7 @@
 #include <limits>
 #include <string>
 
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 
 namespace Spektrafilm {
 

@@ -97,8 +97,8 @@ PRODUCTION_SOURCES = (
     "src/Cuda/Diffusion/JuicerCudaDiffusion.cu",
     "src/DiffusionHostBehavior.h",
     "src/DiffusionHostBehavior.cpp",
-    "src/RenderRecipe.h",
-    "src/RenderRecipe.cpp",
+    "src/RenderValues.h",
+    "src/RenderValues.cpp",
     "src/DiffusionExecution.h",
     "src/DiffusionExecution.cpp",
 )

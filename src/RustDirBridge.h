@@ -3,13 +3,11 @@
 #include <array>
 #include <variant>
 
-#include "RenderRecipe.h"
 #include "Cuda/JuicerCudaFailure.h"
 #include "juicer_legacy_api.h"
 
 namespace JuicerDir {
-    // SF_TEMP_BRIDGE_DIR_FRAME: remove mathematical preparation at its final
-    // native model caller, no later than S6.D; S4.E narrows final execution inputs.
+    // Admits a completed raw DIR result for native workspace composition.
     // Native workspace composition and its prepared decoder remain native.
     class MathOutcome final {
     public:
@@ -36,6 +34,4 @@ namespace JuicerDir {
         const Result _result;
     };
 
-    MathOutcome prepare_math(
-        const DirCouplersRecipe&, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent);
 } // namespace JuicerDir

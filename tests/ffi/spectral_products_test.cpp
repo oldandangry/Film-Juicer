@@ -28,8 +28,6 @@
 #include "PreparedState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
-#include "RustSpectralBridge.h"
-#include "ColorTransforms.h"
 #include "juicer_test_api.h"
 #include "juicer_cuda_owner.h"
 #include "prepared_product_fixture.h"
@@ -199,9 +197,6 @@ namespace {
             out.inputCompressionEnabled = 0;
             return out;
         }
-        [[maybe_unused]] Json SF_TEMP_BRIDGE_native_color_result(const Scanner::ColorRuntime& color) {
-            return {{"cat02", bits(color.cat02)}, {"xyz_to_rgb", bits(color.xyzToRgb)}, {"illuminant_xyz", bits(color.illuminantXYZ)}, {"encoding", {static_cast<int>(color.encoding.colorSpace), color.encoding.applyCctfEncoding, color.encoding.inputIsOutputSpace}}, {"gamut_recipe_hash", color.outputGamutRecipeHash}, {"hash", color.hash}};
-        }
         Json color_result(const FjScannerColor& color) {
             return {{"cat02", bits(color.cat02, 9)},
                     {"xyz_to_rgb", bits(color.xyz_to_rgb, 9)},
@@ -209,9 +204,6 @@ namespace {
                     {"encoding", {color.output_space, (color.flags & 1u) != 0, (color.flags & 2u) != 0}},
                     {"gamut_recipe_hash", color.active_gamut_recipe_hash},
                     {"hash", color.hash}};
-        }
-        [[maybe_unused]] Json SF_TEMP_BRIDGE_native_tables_result(const Spectral::SpectralTables& tables) {
-            return {{"lambda", bits(tables.lambda)}, {"K", tables.K}, {"delta_lambda", bits(std::array{tables.deltaLambda})}, {"inv_yn", bits(std::array{tables.invYn})}, {"white_xyz", bits(tables.whiteXYZ)}, {"ref_illum_white_xyz", bits(tables.refIllumWhiteXYZ)}, {"ax", bits(tables.Ax)}, {"ay", bits(tables.Ay)}, {"az", bits(tables.Az)}, {"xbar", bits(tables.Xbar)}, {"ybar", bits(tables.Ybar)}, {"zbar", bits(tables.Zbar)}, {"illum", bits(tables.illum)}, {"eps_c", bits(tables.epsC)}, {"eps_m", bits(tables.epsM)}, {"eps_y", bits(tables.epsY)}, {"base_density_min", bits(tables.baseDensityMin)}, {"base_density_mid", bits(tables.baseDensityMid)}, {"has_baseline", tables.hasBaseline}, {"baseline_mix", bits(std::array{tables.densityBaselineMixReference})}, {"illuminant_hash", tables.illuminantHash}, {"tables_hash", tables.tablesHash}};
         }
         Json tables_result(const FjPreparedSpectralView& tables) {
             const auto lambdaCount = tables.lambda_nm.count;
@@ -246,27 +238,7 @@ namespace {
             require(status.category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
             return view;
         }
-        // Keep the old producer overload for the named I7 comparison consumer.
-        template <typename State>
-        Json publication_scanner_descriptor(const State& product) {
-            Scanner::ScannerSpectralLutDescriptor out;
-            std::string diagnostic;
-            const auto& recipe = product.recipe;
-            const bool ok = Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ? Scanner::build_print_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, out, diagnostic) : Scanner::build_direct_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, out, diagnostic);
-            require(ok, diagnostic);
-            return {{"route", static_cast<int>(out.route)}, {"medium", static_cast<int>(out.medium)}, {"polarity", static_cast<int>(out.polarity)}, {"density_bounds_hash", out.densityBoundsHash}, {"channel_density_hash", out.channelDensityHash}, {"base_density_hash", out.baseDensityHash}, {"illuminant_hash", out.scanIlluminantHash}, {"observer_hash", out.observerHash}, {"resolution", out.lutResolution}, {"hash", out.hash}};
-        }
         Json scanner_descriptor(const FjScannerLutDescriptor& descriptor);
-        // Retain the native producer reader until its I7 comparison gate.
-        template <typename State>
-        Json publication_complete_result(const State& product) {
-            const auto& recipe = product.recipe;
-            const auto& raw = recipe.filmRaw;
-            const auto& reference = recipe.scannerOutput.syntheticFilmReference;
-            const auto& balance = recipe.print.balance;
-            const auto& config = product.payload.filmRawConfig;
-            return {{"input_rgb_to_xyz", bits(raw.inputRgbToXyz)}, {"input_adapt", bits(raw.inputXyzAdapt)}, {"xyz_to_linear_srgb", bits(raw.xyzToLinearSrgb)}, {"source_white", bits(raw.inputNominalWhiteXYZ)}, {"projection_white", bits(raw.projectionWhiteXYZ)}, {"config_rgb_to_xyz", bits(config.inputRGBToXYZ.m)}, {"config_adapt", bits(config.inputXYZAdapt.m)}, {"raw_midgray", bits(config.rawMidgray)}, {"midgray_dwg", bits(config.midgrayDWG)}, {"midgray_scale_green", bits(std::array{config.midgrayScale, config.rawMidgrayGreen})}, {"config_whites", {bits(config.inputWhiteXYZ), bits(config.workingWhiteXYZ), bits(config.refIllumWhiteXYZ)}}, {"config_flags", {static_cast<int>(config.inputColorSpace), config.applyCctfDecoding, static_cast<int>(config.spectralUpsamplingMode), config.applyInputChromaticAdapt, config.hasRefIllumWhite, config.valid}}, {"spd_s_inv", bits(product.payload.spdSInv)}, {"baseline_raw", bits(reference.baselineRawRgb)}, {"compensated_raw", bits(reference.compensatedRawRgb)}, {"baseline_density", bits(reference.baselineDensityCmy)}, {"compensated_density", bits(reference.compensatedDensityCmy)}, {"print_baseline_raw", bits(balance.baselinePrintRawRgb)}, {"print_compensated_raw", bits(balance.compensatedPrintRawRgb)}, {"print_factors", bits(std::array{balance.factorMidgray, balance.factorMidgrayComp, balance.normalizer})}, {"hashes", {raw.hash, raw.tcLutHash, reference.hash, balance.hash, recipe.print.hash, recipe.scannerOutput.hash, recipe.scannerOutput.outputGamut.hash, recipe.hash, product.payload.uploadCoreHash, product.payload.scannerHash}}, {"scanner_color", SF_TEMP_BRIDGE_native_color_result(product.payload.scannerColor)}, {"scanner_tables", SF_TEMP_BRIDGE_native_tables_result(product.payload.scannerTables)}, {"scanner_descriptor", publication_scanner_descriptor(product)}, {"gamut_entry", bits(recipe.scannerOutput.outputGamut.transform.nativeRgbToD65Xyz)}, {"gamut_exit", bits(recipe.scannerOutput.outputGamut.transform.d65XyzToNativeRgb)}};
-        }
         Json publication_complete_result(const PreparedState& product) {
             const auto view = prepared_view(product);
             const auto& raw = view.film_exposure;
@@ -534,7 +506,7 @@ namespace {
                     require(prepared.category == FJ_STATUS_PREPARATION_FAILURE && prepared.api == FJ_API_NONE &&
                                 prepared.native_code == 0 && !product,
                             "computed product failure returns its exact category and no owner");
-                    require(!actualDiagnostic.empty(), "native failed product diagnostic retained");
+                    require(!actualDiagnostic.empty(), "failed prepared-state diagnostic retained");
                     const bool sourceFailure = expected.starts_with("profile ");
                     const std::string expectedRust = expected == "MalformedRequiredProfileData phase=3B field=final_sensitivity"
                                                          ? expected + " requirement=BandPassResponse"
@@ -544,16 +516,6 @@ namespace {
                     comparison += " expected ";
                     comparison += expectedRust;
                     require(sourceFailure ? actualDiagnostic.ends_with("info.reference_illuminant requires Illuminant") : actualDiagnostic == expectedRust, comparison);
-
-                    // SF_TEMP_BRIDGE_NATIVE_FAILURE_DIAGNOSTIC: retain each
-                    // frozen native diagnostic until its I7 constructor gate.
-                    FocusedRenderStateBuildProduct nativeComparison;
-                    std::string nativeDiagnostic;
-                    const bool nativeBuilt = route ? build_print_render_state_product(p, nativeComparison, nativeDiagnostic)
-                                                   : build_direct_render_state_product(p, nativeComparison, nativeDiagnostic);
-                    require(!nativeBuilt, "original native product rejects the unchanged failure input");
-                    require(sourceFailure ? nativeDiagnostic.ends_with("info.reference_illuminant requires Illuminant") : nativeDiagnostic == expected,
-                            "frozen native failure diagnostic retained: " + nativeDiagnostic);
                 }
                 ++count;
             }
@@ -721,37 +683,6 @@ namespace {
                     require(raw(3, scaledCmf).category == FJ_STATUS_UNSUPPORTED_INPUT, "failed film white/hash gate never consumes inverse operation");
                     require(raw(3, scaledCmf).category == FJ_STATUS_SUCCESS, "suppressed inverse fault consumption then recovery");
                 }
-                {
-                    // SF_TEMP_BRIDGE_NATIVE_SPECTRAL_PUBLICATION_COMPARISON (I7):
-                    // keep the old global-CMF producer diagnostic independent of
-                    // the Rust-owned actual publication gate below.
-                    struct ObserverRestore {
-                        std::array<std::vector<float>, 3> saved{Spectral::gXBar.linear, Spectral::gYBar.linear, Spectral::gZBar.linear};
-                        ~ObserverRestore() {
-                            Spectral::gXBar.linear = std::move(saved[0]);
-                            Spectral::gYBar.linear = std::move(saved[1]);
-                            Spectral::gZBar.linear = std::move(saved[2]);
-                        }
-                    } restore;
-                    require(Spectral::gXBar.linear.size() == 81 && Spectral::gYBar.linear.size() == 81 && Spectral::gZBar.linear.size() == 81,
-                            "native comparison CMF lanes retain source extents");
-                    for (auto* lane : {&Spectral::gXBar.linear, &Spectral::gYBar.linear, &Spectral::gZBar.linear})
-                        for (auto& value : *lane)
-                            value = std::ldexp(value, -136);
-                    for (std::size_t i = 0; i < 81; ++i) {
-                        require(std::bit_cast<std::uint32_t>(Spectral::gXBar.linear[i]) == std::bit_cast<std::uint32_t>(scaledCmf.x().data[i]) &&
-                                    std::bit_cast<std::uint32_t>(Spectral::gYBar.linear[i]) == std::bit_cast<std::uint32_t>(scaledCmf.y().data[i]) &&
-                                    std::bit_cast<std::uint32_t>(Spectral::gZBar.linear[i]) == std::bit_cast<std::uint32_t>(scaledCmf.z().data[i]),
-                                "Rust scaled CMF source reproduces prior native observer input words");
-                    }
-                    FocusedRenderStateBuildProduct nativeComparison;
-                    std::string nativeDiagnostic;
-                    const bool nativeBuilt = route % 2
-                                                 ? build_print_render_state_product(changed, nativeComparison, nativeDiagnostic)
-                                                 : build_direct_render_state_product(changed, nativeComparison, nativeDiagnostic);
-                    require(!nativeBuilt && nativeDiagnostic == "MalformedRequiredResource component=focused_film_payload field=exposure_tables",
-                            "native global-CMF producer retains the exact pre-cutover computed-gate diagnostic");
-                }
                 const std::string routeScaledCmfBytes = read_bytes(isolatedRoot / "cie1931_2deg.csv");
                 require(!routeScaledCmfBytes.empty() && routeScaledCmfBytes != originalCmfBytes,
                         "isolated exact CMF sources are available for actual publication gate");
@@ -771,7 +702,7 @@ namespace {
                 publication.oldHash = publication.state->lastHash.load();
                 publication.oldCounter = publication.state->buildCounterNext.load();
                 publications.push_back(std::move(publication));
-                require(raw(3, *defaultCmf).category == FJ_STATUS_SUCCESS, "default Rust CMF observer remains unchanged during native comparison");
+                require(raw(3, *defaultCmf).category == FJ_STATUS_SUCCESS, "default Rust CMF observer remains available alongside the scaled source");
                 InstanceState state;
                 pending(state, controls);
                 auto old = admit_pending_render_state(state);
@@ -798,7 +729,6 @@ namespace {
             require(read_bytes(cmfPath) == scaledCmfBytes,
                     "install exact scaled source before constructing the fresh Root");
             owner.create(resources);
-            JuicerProcess::root().ensure_bootstrap();
 
             for (auto& publication : publications) {
                 const JuicerTestSupport::SpectralSourceAssets isolatedAssets(publication.scaledSourceRoot);
@@ -857,7 +787,6 @@ namespace {
             require(read_bytes(cmfPath) == originalCmfBytes,
                     "restore exact original CMF source bytes before fresh recovery Root");
             owner.create(resources);
-            JuicerProcess::root().ensure_bootstrap();
             const JuicerTestSupport::CmfSource recoveredCmf(
                 JuicerProcess::root().assets().borrow_rust_assets());
             for (auto& publication : publications) {
@@ -955,7 +884,7 @@ namespace {
         std::printf("PASS %zu A5 cold/current, actual fault-consumption, memory/ordinary terminals, hold/cache/recovery witnesses\n", witnesses);
     }
 } // namespace
-void fj_test_spectral_products(const nlohmann::json& fixture, const JuicerTestSupport::SpectralFixturePaths& paths, bool faults, void (*nativeAllocationCheck)(const nlohmann::json&)) {
+void fj_test_spectral_products(const nlohmann::json& fixture, const JuicerTestSupport::SpectralFixturePaths& paths, bool faults) {
     const auto workspace = JuicerTestSupport::test_asset_workspaces.create(paths.scratch / "spectral-products");
     const auto resourceRoot = workspace / "Resources";
     JuicerTestSupport::copy_consumer_assets(paths.resources, resourceRoot);
@@ -963,12 +892,9 @@ void fj_test_spectral_products(const nlohmann::json& fixture, const JuicerTestSu
     std::filesystem::create_directories(artifactRoot);
     JuicerCuda::Owner owner;
     owner.create(resourceRoot);
-    JuicerProcess::root().ensure_bootstrap();
-    if (faults) {
-        require(nativeAllocationCheck != nullptr, "spectral admission requires its owning allocation check");
-        nativeAllocationCheck(fixture);
+    if (faults)
         admission(resourceRoot, artifactRoot, owner);
-    } else
+    else
         products(fixture, resourceRoot);
     require(owner.close().category == FJ_STATUS_SUCCESS, "spectral fixture owner close");
 }
@@ -976,7 +902,6 @@ void fj_test_spectral_products(const nlohmann::json& fixture, const JuicerTestSu
 void fj_test_exposure_admission(const std::filesystem::path& resource) {
     JuicerCuda::Owner owner;
     owner.create(resource);
-    JuicerProcess::root().ensure_bootstrap();
     exposure_admission();
     require(owner.close().category == FJ_STATUS_SUCCESS, "A5 admission owner close");
 }
@@ -1116,9 +1041,22 @@ void fj_test_input_hull_products(const nlohmann::json& fixture, const std::files
         require(product->view(view, error).category == FJ_STATUS_SUCCESS && view.input_hull.xy.count == 0, "disabled/Mallett acquires no hull");
         require(fj_test_gamut_fault_consumed(0, 1) == 0, "no-work does not consume construction fault");
     }
-    const auto d65 = JuicerProcess::root().assets().illuminant_filter_curves();
+    FjIlluminantsOwner* rawIlluminants = nullptr;
+    const auto acquired = fj_test_assets_illuminants_acquire(
+        JuicerProcess::root().assets().borrow_rust_assets(), &rawIlluminants, nullptr);
+    require(acquired.category == FJ_STATUS_SUCCESS && acquired.api == FJ_API_NONE && acquired.native_code == 0 && rawIlluminants,
+            "raw illuminant owner acquired for standalone hull boundary");
+    const auto releaseIlluminants = [](FjIlluminantsOwner* owner) noexcept {
+        if (fj_test_illuminants_release(owner, nullptr).category != FJ_STATUS_SUCCESS)
+            std::abort();
+    };
+    std::unique_ptr<FjIlluminantsOwner, decltype(releaseIlluminants)> illuminantOwner(rawIlluminants, releaseIlluminants);
+    FjIlluminantsView illuminants{};
+    const auto viewed = fj_test_illuminants_view(illuminantOwner.get(), &illuminants, nullptr);
+    require(viewed.category == FJ_STATUS_SUCCESS && viewed.api == FJ_API_NONE && viewed.native_code == 0,
+            "raw illuminant view opened for standalone hull boundary");
     const JuicerTestSupport::CmfSource cmf(JuicerProcess::root().assets().borrow_rust_assets());
-    FjInputHullSource source{cmf.x(), cmf.y(), cmf.z(), {d65->d65.linear.data(), 81}};
+    FjInputHullSource source{cmf.x(), cmf.y(), cmf.z(), illuminants.d65};
     FjInputHull hull{};
     FjErrorBuffer error{nullptr, 0, 0};
     require(fj_legacy_gamut_input_hull(&source, &hull, &error).category == FJ_STATUS_UNSUPPORTED_INPUT && fj_test_gamut_fault_consumed(0, 1) == 1, "next real call consumes skipped construction fault before cleanup");
@@ -1221,9 +1159,21 @@ void fj_test_input_hull_admission(std::uint32_t fault) {
     require(pendingFault() == 0, "explicit owner fault cleanup");
     // The standalone raw ABI retains its separate ownerless fault witness.
     require(fj_test_gamut_arm_fault(0, 1).category == FJ_STATUS_SUCCESS, "arm standalone mathematical boundary");
-    const auto curves = JuicerProcess::root().assets().illuminant_filter_curves();
+    FjIlluminantsOwner* rawIlluminants = nullptr;
+    const auto acquired = fj_test_assets_illuminants_acquire(cacheOwner, &rawIlluminants, nullptr);
+    require(acquired.category == FJ_STATUS_SUCCESS && acquired.api == FJ_API_NONE && acquired.native_code == 0 && rawIlluminants,
+            "raw illuminant owner acquired for standalone mathematical boundary");
+    const auto releaseIlluminants = [](FjIlluminantsOwner* owner) noexcept {
+        if (fj_test_illuminants_release(owner, nullptr).category != FJ_STATUS_SUCCESS)
+            std::abort();
+    };
+    std::unique_ptr<FjIlluminantsOwner, decltype(releaseIlluminants)> illuminantOwner(rawIlluminants, releaseIlluminants);
+    FjIlluminantsView illuminants{};
+    const auto viewed = fj_test_illuminants_view(illuminantOwner.get(), &illuminants, nullptr);
+    require(viewed.category == FJ_STATUS_SUCCESS && viewed.api == FJ_API_NONE && viewed.native_code == 0,
+            "raw illuminant view opened for standalone mathematical boundary");
     const JuicerTestSupport::CmfSource cmf(JuicerProcess::root().assets().borrow_rust_assets());
-    FjInputHullSource source{cmf.x(), cmf.y(), cmf.z(), {curves->d65.linear.data(), 81}};
+    FjInputHullSource source{cmf.x(), cmf.y(), cmf.z(), illuminants.d65};
     FjInputHull out{};
     FjErrorBuffer error{nullptr, 0, 0};
     require(fj_legacy_gamut_input_hull(&source, &out, &error).category == FJ_STATUS_UNSUPPORTED_INPUT && fj_test_gamut_fault_consumed(0, 1) == 1, "standalone mathematical boundary consumes its separate fault");

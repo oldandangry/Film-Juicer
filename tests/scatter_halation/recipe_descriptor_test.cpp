@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -19,20 +20,12 @@
 #include "ScatterHalation.h"
 #include "spatial_optics_fixture.h"
 #include "SpectralData.h"
+#include "juicer_legacy_api.h"
 
 namespace {
 
     std::uint32_t float_bits(float value) {
         return std::bit_cast<std::uint32_t>(value);
-    }
-
-    Profiles::ProfileDigest profile_digest(
-        float sigma,
-        std::array<float, 3> strength) {
-        Profiles::ProfileDigest digest;
-        digest.halationFirstSigmaUm = {sigma, sigma, sigma};
-        digest.halationPrimaryAmount = strength;
-        return digest;
     }
 
     ScatterHalationControls controls_or_fail(
@@ -49,12 +42,14 @@ namespace {
 
     ScatterHalationOpticsRecipe recipe_or_fail(
         const ScatterHalationControls& controls,
-        const Profiles::ProfileDigest& digest) {
+        const std::array<float, 3>& firstSigmaUm,
+        const std::array<float, 3>& primaryAmount) {
         ScatterHalationOpticsRecipe recipe;
         std::string diagnostic;
         EXPECT_TRUE(JuicerTestSupport::prepare_scatter_halation(
             controls,
-            digest,
+            firstSigmaUm,
+            primaryAmount,
             recipe,
             diagnostic))
             << diagnostic;
@@ -230,10 +225,11 @@ namespace {
              1.0,
              1.0,
              1.0});
-        const auto digest = profile_digest(65.0f, {0.08f, 0.02f, 0.0f});
-        const auto firstRecipe = recipe_or_fail(first, digest);
-        const auto sameRecipe = recipe_or_fail(same, digest);
-        const auto distinctRecipe = recipe_or_fail(distinct, digest);
+        const std::array<float, 3> firstSigmaUm{65.0f, 65.0f, 65.0f};
+        const std::array<float, 3> primaryAmount{0.08f, 0.02f, 0.0f};
+        const auto firstRecipe = recipe_or_fail(first, firstSigmaUm, primaryAmount);
+        const auto sameRecipe = recipe_or_fail(same, firstSigmaUm, primaryAmount);
+        const auto distinctRecipe = recipe_or_fail(distinct, firstSigmaUm, primaryAmount);
         EXPECT_EQ(firstRecipe.hash, sameRecipe.hash);
         EXPECT_NE(firstRecipe.hash, distinctRecipe.hash);
     }
@@ -291,12 +287,12 @@ namespace {
         const auto active = controls_or_fail({true, 1.0, 1.0, 1.0, 1.0});
         for (const Mapping& mapping : mappings) {
             SCOPED_TRACE(mapping.sigma);
-            const auto digest = profile_digest(mapping.sigma, mapping.strength);
-            const auto recipe = recipe_or_fail(active, digest);
+            const std::array<float, 3> firstSigmaUm{mapping.sigma, mapping.sigma, mapping.sigma};
+            const auto recipe = recipe_or_fail(active, firstSigmaUm, mapping.strength);
             EXPECT_TRUE(recipe.scatterActive);
             EXPECT_TRUE(recipe.backReflectionActive);
             EXPECT_NE(recipe.hash, 0u);
-            EXPECT_EQ(recipe.halationFirstSigmaUm, digest.halationFirstSigmaUm);
+            EXPECT_EQ(recipe.halationFirstSigmaUm, firstSigmaUm);
             for (std::size_t channel = 0; channel < mapping.strength.size(); ++channel) {
                 EXPECT_EQ(
                     float_bits(recipe.totalStrength[channel]),
@@ -307,24 +303,26 @@ namespace {
         const ScatterHalationControls inactive;
         const auto identity = recipe_or_fail(
             inactive,
-            profile_digest(65.0f, {0.08f, 0.02f, 0.0f}));
+            std::array<float, 3>{65.0f, 65.0f, 65.0f},
+            std::array<float, 3>{0.08f, 0.02f, 0.0f});
         EXPECT_FALSE(identity.scatterActive);
         EXPECT_FALSE(identity.backReflectionActive);
         EXPECT_EQ(identity.hash, 0u);
     }
 
     TEST(ScatterHalationRecipe, KeepsScatterAndReflectionIndependent) {
-        const auto digest = profile_digest(65.0f, {0.08f, 0.02f, 0.0f});
         const auto scatterOnly = recipe_or_fail(
             controls_or_fail({true, 1.0, 1.0, 0.0, 1.0}),
-            digest);
+            std::array<float, 3>{65.0f, 65.0f, 65.0f},
+            std::array<float, 3>{0.08f, 0.02f, 0.0f});
         EXPECT_TRUE(scatterOnly.scatterActive);
         EXPECT_FALSE(scatterOnly.backReflectionActive);
         EXPECT_NE(scatterOnly.hash, 0u);
 
         const auto reflectionOnly = recipe_or_fail(
             controls_or_fail({true, 0.0, 1.0, 1.0, 1.0}),
-            digest);
+            std::array<float, 3>{65.0f, 65.0f, 65.0f},
+            std::array<float, 3>{0.08f, 0.02f, 0.0f});
         EXPECT_FALSE(reflectionOnly.scatterActive);
         EXPECT_TRUE(reflectionOnly.backReflectionActive);
         EXPECT_NE(reflectionOnly.hash, 0u);
@@ -334,7 +332,8 @@ namespace {
     TEST(ScatterHalationDescriptor, BindsRecipeAndSelectsReferenceOperators) {
         const auto recipe = recipe_or_fail(
             controls_or_fail({true, 1.0, 1.0, 1.0, 1.0}),
-            profile_digest(65.0f, {0.08f, 0.02f, 0.0f}));
+            std::array<float, 3>{65.0f, 65.0f, 65.0f},
+            std::array<float, 3>{0.08f, 0.02f, 0.0f});
         std::optional<ScatterHalationFrameDescriptor> descriptor;
         std::string diagnostic;
         ASSERT_TRUE(JuicerTestSupport::prepare_halation_frame(
@@ -368,22 +367,27 @@ namespace {
     }
 
     TEST(ScatterHalationBootstrap, LoadsPublishedProfilesWithoutCuda) {
-        JuicerProcess::root().ensure_bootstrap();
         const Spektrafilm::ProfileCatalog& catalog =
             JuicerProcess::root().assets().spektrafilm_profile_catalog();
         ASSERT_TRUE(catalog.valid) << catalog.failure;
         EXPECT_TRUE(catalog.defaultFilmPresent);
         EXPECT_TRUE(catalog.defaultPrintPresent);
 
-        const auto profile = JuicerProcess::root().assets().selected_film_profile_for_key(
-            Spektrafilm::kDefaultFilmProfileKey);
+        const std::string key = Spektrafilm::kDefaultFilmProfileKey;
+        FjFilmProfile* acquired = nullptr;
+        ASSERT_EQ(fj_legacy_film_profile_acquire(JuicerProcess::root().assets().borrow_rust_assets(), {key.data(), key.size()}, &acquired, nullptr).category, FJ_STATUS_SUCCESS);
+        const auto releaseProfile = [](FjFilmProfile* held) {
+            (void)fj_legacy_film_profile_release(held, nullptr);
+        };
+        std::unique_ptr<FjFilmProfile, decltype(releaseProfile)> profile(acquired, releaseProfile);
         ASSERT_TRUE(profile);
-        EXPECT_EQ(profile->info.stock, Spektrafilm::kDefaultFilmProfileKey);
-        EXPECT_EQ(profile->data.wavelengths.front(), 380.0f);
-        EXPECT_EQ(profile->data.wavelengths.back(), 780.0f);
-        EXPECT_TRUE(Spectral::spectral_shape_matches_reference(Spectral::gShape));
-        EXPECT_TRUE(Spectral::hanatos_available());
-        EXPECT_TRUE(Spectral::mallett_available());
+        FjFilmProfileView view{};
+        ASSERT_EQ(fj_legacy_film_profile_view(profile.get(), &view, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(std::string(view.stock.data, view.stock.count), key);
+        ASSERT_EQ(view.wavelengths.count, 81u);
+        EXPECT_EQ(view.wavelengths.data[0], 380.0f);
+        EXPECT_EQ(view.wavelengths.data[80], 780.0f);
+        EXPECT_TRUE(Spectral::spectral_shape_matches_reference(Spectral::kReferenceShape));
     }
 
 

@@ -40,7 +40,8 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         const JuicerCuda::VisualGrainPayloadInput& grainPayload;
         const FjHostPreparation* hostPreparation;
         float filmRouteCorrectionScale;
-        const PrintExposureRecipe& printExposure;
+        float printExposure;
+        float preflashExposure;
     };
 
     using Consumer = bool (*)(void*, const Inputs&, std::string& diagnostic);

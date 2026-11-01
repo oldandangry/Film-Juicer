@@ -220,19 +220,19 @@ typedef struct FjFilmExposure {
     float input_xyz_adapt[9];
     float xyz_to_linear_srgb[9];
     /* float[81*3], wavelength-major RGB, relative linear sensitivity.
-     * FilmRawRecipe::finalSensitivity -> prepare_focused_route_resources (B/G/R
+     * PreparedState exposure sensitivities -> prepare_focused_route_resources (B/G/R
      * curve split); expires at native-call return. */
     FjFloatSpan sensitivity_rgb;
     /* float[192*192*4] or empty, FilmTcLut::samples() C-order [tc0][tc1][R,G,B,padding].
-     * FocusedRenderPayload -> film TC-LUT upload; integrated reconstruction
+     * PreparedState reconstruction -> film TC-LUT upload; integrated reconstruction
      * values, no physical units; expires at native-call return. */
     FjFloatSpan tc_lut_rgba;
     /* float[81] or empty, ascending 380..780 nm in 5 nm steps, relative SPD.
-     * FocusedRenderPayload::exposureTables.illum -> Mallett upload;
+     * PreparedState exposure illuminant -> Mallett upload;
      * expires at native-call return. */
     FjFloatSpan mallett_illuminant;
     /* float[81*3] or empty, [wavelength][basis R/G/B], relative basis weights.
-     * SpectralContext::mallettBasis -> Mallett upload;
+     * PreparedState reconstruction basis -> Mallett upload;
      * expires at native-call return. */
     FjFloatSpan mallett_basis;
     uint64_t sensitivity_hash;
@@ -241,7 +241,7 @@ typedef struct FjFilmExposure {
 } FjFilmExposure;
 
 typedef struct FjFilmDevelopment {
-    /* float[N], ascending log10 exposure; FilmDevelopRecipe::logExposure ->
+    /* float[N], ascending log10 exposure; PreparedState development ->
      * focused density-curve upload; expires at native-call return. */
     FjFloatSpan log_exposure;
     /* float[N*3], [sample][RGB] optical density; normalizedDensityCurves ->
@@ -249,7 +249,7 @@ typedef struct FjFilmDevelopment {
     FjFloatSpan density_rgb;
     /* Nine separate float[N] spans, [layer 0..2][channel 0..2], optical density.
      * Channel indices are unchanged: R/G/B sensitivity, C/M/Y at grain consumption.
-     * FilmDevelopRecipe::densityCurvesLayers -> grain layer upload, without
+     * PreparedState development layers -> grain layer upload, without
      * flattening the nine owners; empty when unused; expires at native-call return. */
     FjFloatSpan density_layers[3][3];
     float gamma_rgb[3];
@@ -270,7 +270,7 @@ typedef struct FjDirCouplers {
     float receiver_c_ref_rgb[3];
     float receiver_kr_rgb[3];
     /* Three float[N] spans, [RGB][sample], compensated log10 exposure axes.
-     * DirCouplersRecipe -> focused DIR curve upload (B/G/R split).
+     * Held Rust state -> focused DIR curve upload (B/G/R split).
      * Empty when inactive; expires at native-call return. */
     FjFloatSpan compensated_axes_rgb[3];
     uint64_t compensated_axes_hash;
@@ -288,8 +288,8 @@ typedef struct FjDensityBounds {
 
 typedef struct FjScannerSpectra {
     /* Each float[81], wavelength order 380..780 nm, 5 nm steps, Y/M/C optical
-     * extinction. FocusedRenderPayload::scannerTables.epsY/M/C ->
-     * Scanner::spectral_to_log_xyz; expires at native-call return. */
+     * extinction. PreparedState scanner tables -> scanner-LUT callback;
+     * expires at native-call return. */
     FjFloatSpan dye_y;
     FjFloatSpan dye_m;
     FjFloatSpan dye_c;
@@ -399,16 +399,16 @@ typedef struct FjPrint {
     FjFloatSpan film_density_cmy;
     FjFloatSpan film_base_density;
     /* float[81*3], [wavelength][CMY], relative linear sensitivity.
-     * PrintProfile::data.linearSensitivity -> print sensitivity upload;
+     * PreparedState print-medium sensitivity -> print sensitivity upload;
      * expires at native-call return. */
     FjFloatSpan sensitivity_cmy;
     /* float[N], ascending log10 exposure, and float[N*3], [sample][CMY] density.
-     * PrintProfile::data.logExposure / PrintRecipe::develop.densityCurves ->
+     * PreparedState print-medium exposure axis and developed curves ->
      * print development upload; expires at native-call return. */
     FjFloatSpan log_exposure;
     FjFloatSpan density_cmy;
     /* Each float[81], canonical wavelength order, relative filtered SPD.
-     * FocusedRenderPayload / print illuminant derivation -> print illuminant
+     * PreparedState print illuminants -> print illuminant
      * upload. Preflash is empty when disabled; expires at native-call return. */
     FjFloatSpan main_illuminant;
     FjFloatSpan preflash_illuminant;
@@ -418,7 +418,7 @@ typedef struct FjPrint {
     float exposure;
     float preflash_exposure;
     float preflash_raw_cmy[3]; /* derive_preflash_raw result; relative exposure. */
-    float normalizer;          /* PrintRecipe::balance.normalizer, dimensionless. */
+    float normalizer;          /* Resolved print-balance normalizer, dimensionless. */
     uint64_t film_density_hash;
     uint64_t profile_tables_hash;
     uint64_t main_illuminant_hash;
@@ -742,7 +742,7 @@ typedef struct FjStaticNoise {
 typedef struct FjPreparedHostData {
     uint32_t route;            /* FJ_ROUTE_* */
     uint32_t capture_polarity; /* FJ_POLARITY_* */
-    /* UTF-8 byte spans from ProfileRoute -> native failure diagnostics;
+    /* UTF-8 prepared profile identity spans -> native failure diagnostics;
      * no physical units; expires at native-call return. */
     FjStringView film_profile_key;
     FjStringView print_profile_key;

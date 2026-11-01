@@ -6,7 +6,7 @@
 
 #include "Cuda/JuicerCudaPayloads.h"
 #include "FilmEffectsFrameDescriptors.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 #include "juicer_cuda_frame_values.h"
 
 namespace JuicerCuda {
@@ -72,25 +72,8 @@ namespace JuicerCuda {
         std::uint64_t densityBoundsHash = 0;
     };
 
-    FilmPayloadInput film_payload_input(
-        const FilmRawRecipe& filmRaw,
-        const FilmDevelopRecipe& filmDevelop,
-        const DirCouplersRecipe& dirCouplers,
-        const DensityBoundsRecipe& densityBounds);
-
     bool pack_film_payloads(
         const FilmPayloadInput& input,
-        const FilmPreparedView& prepared,
-        const float* autoExposureScaleDevice,
-        float routeCorrectionScale,
-        FilmPayloadPack& out,
-        std::string& diagnostic);
-
-    bool pack_film_payloads(
-        const FilmRawRecipe& filmRaw,
-        const FilmDevelopRecipe& filmDevelop,
-        const DirCouplersRecipe& dirCouplers,
-        const DensityBoundsRecipe& densityBounds,
         const FilmPreparedView& prepared,
         const float* autoExposureScaleDevice,
         float routeCorrectionScale,
@@ -139,13 +122,6 @@ namespace JuicerCuda {
 
     bool pack_visual_grain_payload(
         const VisualGrainPayloadInput& input,
-        const PreparedVisualGrainView& prepared,
-        GrainPayload& outGrain,
-        GrainKernelPayload& outKernels,
-        std::string& diagnostic);
-
-    bool pack_visual_grain_payload(
-        const Spektrafilm::VisualGrainRecipe& recipe,
         const PreparedVisualGrainView& prepared,
         GrainPayload& outGrain,
         GrainKernelPayload& outKernels,

@@ -21,13 +21,11 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "RenderRecipe.h"
 #include "RustAssetBridge.h"
 #include "juicer_test_api.h"
 #include "prepared_product_fixture.h"
 #include "print_illuminant_fixture.h"
 #include "juicer_cuda_owner.h"
-#include "spectral_allocation_probe.h"
 
 extern "C" const std::size_t* fj_test_film_development_abi_c_facts(std::size_t* count);
 static_assert(!std::is_same_v<FjFilmDevelopment, FjFilmDevelopmentOwner>);
@@ -37,7 +35,6 @@ static_assert(std::is_same_v<decltype(&fj_legacy_film_development_release), FjSt
 
 namespace {
     using Json = nlohmann::json;
-    thread_local unsigned viewFault = 0;
     void require(bool condition, const char* message) {
         if (!condition)
             throw std::runtime_error(message);
@@ -199,80 +196,9 @@ namespace {
         }
         status(fj_legacy_film_profile_release(profile, nullptr));
     }
-    void native_source(const std::filesystem::path& root, const Json& fixture) {
-        JuicerAssets::AssetBridge bridge(root);
-        require(bridge.load_catalog().valid, "native catalog");
-        const auto& table = fixture.at("profiles").at("kodak_portra_400");
-        const auto source = bridge.film_source("kodak_portra_400");
-        auto prepared = source->prepare_development(Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, true);
-        require(prepared.route == Spektrafilm::ScanRoute::NegativeDirectScan && words(prepared.recipe.logExposure.data(), prepared.recipe.logExposure.size()) == table.at("axis"), "same-source native development projection");
-        require(prepared.recipe.normalizedDensityCurvesHash == table.at("normalized_hash") && prepared.recipe.densityCurvesLayersHash == table.at("layers_hash"), "native copy preserves identities");
-        for (const auto& row : fixture.at("cases")) {
-            const auto key = row.at("key").get<std::string>();
-            const auto& expected = fixture.at("profiles").at(key);
-            const auto selectedSource = bridge.film_source(key);
-            const auto actual = selectedSource->prepare_development(static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>()),
-                                                                    std::bit_cast<float>(row.at("development").at("gamma")[0].get<std::uint32_t>()),
-                                                                    row.at("development").at("layers_required"));
-            const auto& recipe = actual.recipe;
-            require(recipe.hash == row.at("development").at("hash") && recipe.normalizedDensityCurvesHash == expected.at("normalized_hash") && recipe.densityCurvesLayersHash == row.at("development").at("layers_hash"), "all native copied identities");
-            require(words(recipe.authoredMinCmy.data(), 3) == expected.at("minimum") && words(recipe.authoredMaxCmy.data(), 3) == expected.at("maximum") && words(recipe.densityCurveGamma.data(), 3) == row.at("development").at("gamma"), "all native fixed values");
-            require(words(recipe.logExposure.data(), recipe.logExposure.size()) == expected.at("axis"), "all native axes");
-            for (std::size_t i = 0; i < recipe.logExposure.size(); ++i)
-                require(words(recipe.authoredDensityCurves[i].data(), 3) == expected.at("authored")[i] && words(recipe.normalizedDensityCurves[i].data(), 3) == expected.at("normalized")[i], "all native copied rows");
-            if (recipe.densityCurvesLayersRequired)
-                for (std::size_t layer = 0; layer < 3; ++layer)
-                    for (std::size_t channel = 0; channel < 3; ++channel)
-                        require(words(recipe.densityCurvesLayers[layer][channel].data(), recipe.densityCurvesLayers[layer][channel].size()) == expected.at("layers")[layer][channel], "all native copied layers");
-        }
-        for (unsigned fault = 1; fault <= 9; ++fault) {
-            viewFault = fault;
-            bool rejected = false;
-            try {
-                (void)source->prepare_development(Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, true);
-            } catch (const JuicerCuda::ExecutionFailure& failure) {
-                rejected = failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected && fj_test_film_development_live_owners() == 1, "malformed native view rejected before copying and owner released");
-        }
-        SpectralAllocationProbe::arm();
-        bool failed = false;
-        try {
-            (void)source->prepare_development(Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, true);
-        } catch (const std::bad_alloc&) {
-            failed = true;
-        }
-        SpectralAllocationProbe::clear();
-        require(failed && fj_test_film_development_live_owners() == 1, "native copy allocation failure consumes foreign result");
-        std::barrier selected(2), detached(2);
-        std::shared_ptr<const JuicerAssets::FilmSource> held;
-        std::exception_ptr failure;
-        std::thread worker([&] {
-            try {
-                held = bridge.film_source("kodak_portra_400");
-                selected.arrive_and_wait();
-                detached.arrive_and_wait();
-                const auto old = held->prepare_development(Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, true);
-                require(old.recipe.normalizedDensityCurvesHash == prepared.recipe.normalizedDensityCurvesHash, "detached source preparation/copy survives");
-            } catch (...) {
-                failure = std::current_exception();
-            }
-        });
-        selected.arrive_and_wait();
-        status(bridge.release_cached_payloads());
-        const auto replacement = bridge.film_source("kodak_portra_400");
-        detached.arrive_and_wait();
-        worker.join();
-        if (failure)
-            std::rethrow_exception(failure);
-        require(held == source && held != replacement && held->profile() != replacement->profile(), "actual source holds remain distinct across replacement");
-        require(bridge.film_source("kodak_portra_400") == replacement, "new source winner acquisition");
-    }
-
     void products(const std::filesystem::path& root, const Json& fixture) {
         JuicerCuda::Owner owner;
         owner.create(root);
-        JuicerProcess::root().ensure_bootstrap();
         std::size_t count = 0;
         for (const auto& row : fixture.at("cases")) {
             ParamSnapshot controls;
@@ -298,7 +224,6 @@ namespace {
         }
         require(count == 480, "complete actual-consumer matrix");
         std::size_t failureRows = 0;
-        std::size_t nativeViewRows = 0;
         for (unsigned route = 0; route < 4; ++route) {
             for (bool layers : {false, true}) {
                 ParamSnapshot controls;
@@ -440,58 +365,13 @@ namespace {
                                 fj_test_development_curve_count(2) == dropsBefore + temporaryAllocations + 1,
                             "replacing the test hold releases only the prior complete state and its actual normalized curves");
                 }
-                // SF_TEMP_BRIDGE_NATIVE_DEVELOPMENT_FAULT keeps the legacy
-                // facade warm-reuse comparison separate from the checked
-                // Development::new failures above until its I7 retirement.
-                status(fj_test_film_development_fault(0, 1));
                 const auto warm = admit_pending_render_state(state);
                 require(warm.directState == publication.directState && warm.printState == publication.printState,
                         "identical current snapshot reuses the complete state");
-                JuicerAssets::AssetBridge bridge(root);
-                require(bridge.load_catalog().valid, "warm probe catalog");
-                const auto selected = bridge.film_source(controls.filmProfileKey);
-                bool stillArmed = false;
-                std::string failureDiagnostic;
-                try {
-                    (void)selected->prepare_development(controls.scanRoute, 1, layers);
-                } catch (const JuicerCuda::ExecutionFailure& failure) {
-                    stillArmed = failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-                    failureDiagnostic = failure.failure.diagnostic;
-                }
-                require(stillArmed && failureDiagnostic == "asset boundary panic" &&
-                            fj_test_film_development_live_owners() == 0,
-                        "warm state leaves the native acquire fault armed and the named native source consumes it cleanly");
-
-                status(fj_test_film_development_fault(1, 1));
-                const auto warmView = admit_pending_render_state(state);
-                require(warmView.directState == publication.directState && warmView.printState == publication.printState,
-                        "warm prepared-state admission does not visit the legacy development view");
-                bool viewFaultArmed = false;
-                failureDiagnostic.clear();
-                try {
-                    (void)selected->prepare_development(controls.scanRoute, 1, layers);
-                } catch (const JuicerCuda::ExecutionFailure& failure) {
-                    viewFaultArmed = failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-                    failureDiagnostic = failure.failure.diagnostic;
-                }
-                require(viewFaultArmed && failureDiagnostic == "asset boundary panic" &&
-                            fj_test_film_development_live_owners() == 0,
-                        "warm complete state leaves operation-1 fault armed and raw view failure releases its owner");
-                ++nativeViewRows;
-                {
-                    const auto nativeRecovered = selected->prepare_development(controls.scanRoute, 1, layers);
-                    require(nativeRecovered.recipe.hash != 0 &&
-                                nativeRecovered.recipe.normalizedDensityCurvesHash == oldView.film_development.density_curves_hash &&
-                                nativeRecovered.recipe.densityCurvesLayersHash == oldView.film_development.density_layers_hash &&
-                                fj_test_film_development_live_owners() == 1 && fj_test_development_curve_count(0) == 2,
-                            "native view-panic recovery retains its complete development beside the actual publication");
-                }
-                require(fj_test_film_development_live_owners() == 0 && fj_test_development_curve_count(0) == 1,
-                        "dropping recovered native hold releases only its owner and normalized curves");
             }
         }
-        require(failureRows == 28 && nativeViewRows == 8, "complete restored development fault and native view membership");
-        std::puts("PASS 28 actual development fault/retry rows and 8 separate native view-panic cleanup/recovery rows");
+        require(failureRows == 28, "complete actual development fault membership");
+        std::puts("PASS 28 actual development fault/retry rows");
         std::puts("PASS 480 independent complete direct/print recipe and reference/scanner/final identities");
     }
 } // namespace
@@ -504,9 +384,8 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
     } else {
         layouts();
         raw_cases(argv[1], fixture);
-        native_source(argv[1], fixture);
     }
-    std::puts("PASS film development: exact raw/facade/native values, lifetime, source replacement, failures and ABI");
+    std::puts("PASS film development: exact raw/facade values, lifetime, failures and ABI");
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "%s\n", error.what());
@@ -515,38 +394,3 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
     std::fputs("unknown film development failure\n", stderr);
     return 1;
 }
-namespace JuicerAssets::DevelopmentTest {
-    void view(FjFilmDevelopmentView& view) {
-        switch (std::exchange(viewFault, 0)) {
-            case 1:
-                view.layers_required = 2;
-                break;
-            case 2:
-                view.route = 99;
-                break;
-            case 3:
-                view.polarity = 99;
-                break;
-            case 4:
-                view.log_exposure.count = SIZE_MAX;
-                break;
-            case 5:
-                --view.authored_curves_cmy.count;
-                break;
-            case 6:
-                view.normalized_curves_cmy.data = reinterpret_cast<const float*>(std::uintptr_t{1});
-                break;
-            case 7:
-                --view.density_curves_layers[0][0].count;
-                break;
-            case 8:
-                view.normalized_curves_hash = 0;
-                break;
-            case 9:
-                view.normalized_curves_cmy.data = reinterpret_cast<const float*>(std::numeric_limits<std::uintptr_t>::max() & ~std::uintptr_t{3});
-                break;
-            default:
-                break;
-        }
-    }
-} // namespace JuicerAssets::DevelopmentTest

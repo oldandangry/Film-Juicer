@@ -14,7 +14,7 @@
 #include "prepared_descriptors.h"
 #include "JuicerState.h"
 #include "PreparedState.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 #include "Scanner.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
@@ -75,36 +75,46 @@ namespace {
             JuicerCuda::PreparedDescriptors source, decoded;
             std::string diagnostic;
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, source, diagnostic)) << diagnostic;
-            const auto amplitude = source.grainRecipe.amplitude;
-            const auto independent = source.grainRecipe.chromaIndependentWeight;
-            const auto finite = source.grainRecipe.grainLayerAxisFinite;
-            const auto prefix = source.grainRecipe.grainLayerAxisBlockPrefixMax;
-            const auto uniformity = source.grainRecipe.uniformityCmy;
-            const auto microStructure = source.grainRecipe.microStructure;
-            FilmDevelopRecipe film;
-            const auto input = JuicerTestSupport::grain_frame_input(row.at("input"), source.grainRecipe, film);
+            const auto coefficients = source.grainPayload.coefficients;
+            const auto input = JuicerTestSupport::grain_frame_input(row.at("input"), coefficients);
             Spektrafilm::VisualGrainFrameDescriptor frame;
             ASSERT_TRUE(JuicerTestSupport::prepare_grain_frame(input, frame, diagnostic)) << diagnostic;
             ASSERT_EQ(JuicerTestSupport::grain_frame_fields(frame), row.at("native"));
             source.grain = frame;
-            source.capturePolarity = film.polarity;
-            source.route = film.polarity == Spektrafilm::ProfilePolarity::Positive ? Spektrafilm::ScanRoute::PositivePrintScan : Spektrafilm::ScanRoute::NegativePrintScan;
+            source.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(input.frame.capture_polarity);
+            source.route = source.capturePolarity == Spektrafilm::ProfilePolarity::Positive ? Spektrafilm::ScanRoute::PositivePrintScan : Spektrafilm::ScanRoute::NegativePrintScan;
+            source.grainPayload.coefficients = input.coefficients;
+            source.grainPayload.recipeHash = frame.recipeHash;
+            source.grainPayload.densityLayersHash = frame.densityCurvesLayersHash;
             JuicerCudaTest::encode_prepared_descriptors(source, wire);
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic)) << diagnostic;
             ASSERT_TRUE(decoded.grain);
             EXPECT_EQ(JuicerTestSupport::grain_frame_fields(*decoded.grain), row.at("native"));
-            EXPECT_EQ(decoded.grainRecipe.amplitude, amplitude);
-            EXPECT_EQ(decoded.grainRecipe.chromaMix, source.grainRecipe.chromaMix);
-            EXPECT_EQ(decoded.grainRecipe.chromaSharedWeight, source.grainRecipe.chromaSharedWeight);
-            EXPECT_EQ(decoded.grainRecipe.chromaIndependentWeight, independent);
-            EXPECT_EQ(decoded.grainRecipe.grainLayerAxisFinite, finite);
-            EXPECT_EQ(decoded.grainRecipe.grainLayerAxisBlockPrefixMax, prefix);
-            EXPECT_EQ(decoded.grainRecipe.uniformityCmy, uniformity);
-            EXPECT_EQ(decoded.grainRecipe.microStructure, microStructure);
-            EXPECT_EQ(decoded.grainRecipe.clumpTemporalMix, source.grainRecipe.clumpTemporalMix);
-            EXPECT_EQ(decoded.grainRecipe.sizeMixScale, source.grainRecipe.sizeMixScale);
-            EXPECT_EQ(decoded.grainRecipe.nSubLayers, source.grainRecipe.nSubLayers);
-            EXPECT_EQ(decoded.grainRecipe.debugView, source.grainRecipe.debugView);
+            EXPECT_EQ(decoded.grainPayload.coefficients.amplitude, coefficients.amplitude);
+            EXPECT_EQ(decoded.grainPayload.coefficients.chroma_mix, source.grainPayload.coefficients.chroma_mix);
+            EXPECT_EQ(decoded.grainPayload.coefficients.chroma_shared_weight, source.grainPayload.coefficients.chroma_shared_weight);
+            EXPECT_EQ(decoded.grainPayload.coefficients.chroma_independent_weight, coefficients.chroma_independent_weight);
+            EXPECT_EQ(decoded.grainPayload.coefficients.flags,
+                      (coefficients.flags & ~(FJ_GRAIN_ACTIVE | FJ_GRAIN_SUBLAYERS)) |
+                          FJ_GRAIN_ACTIVE | (row.at("input").at("sublayers_active").get<bool>() ? FJ_GRAIN_SUBLAYERS : 0u));
+            EXPECT_EQ(std::memcmp(decoded.grainPayload.coefficients.layer_axis_block_prefix_max,
+                                  coefficients.layer_axis_block_prefix_max,
+                                  sizeof(coefficients.layer_axis_block_prefix_max)),
+                      0);
+            EXPECT_EQ(std::memcmp(decoded.grainPayload.coefficients.uniformity_cmy,
+                                  coefficients.uniformity_cmy,
+                                  sizeof(coefficients.uniformity_cmy)),
+                      0);
+            EXPECT_EQ(std::memcmp(decoded.grainPayload.coefficients.micro_structure,
+                                  coefficients.micro_structure,
+                                  sizeof(coefficients.micro_structure)),
+                      0);
+            EXPECT_EQ(decoded.grainPayload.coefficients.clump_temporal_mix, coefficients.clump_temporal_mix);
+            EXPECT_EQ(decoded.grainPayload.coefficients.size_mix_scale, input.coefficients.size_mix_scale);
+            EXPECT_EQ(decoded.grainPayload.coefficients.sublayer_count, input.coefficients.sublayer_count);
+            EXPECT_EQ(decoded.grainPayload.coefficients.debug_view, input.coefficients.debug_view);
+            EXPECT_EQ(decoded.grainPayload.recipeHash, frame.recipeHash);
+            EXPECT_EQ(decoded.grainPayload.densityLayersHash, frame.densityCurvesLayersHash);
         }
     }
 
@@ -127,17 +137,20 @@ namespace {
             const auto scalar = [](const nlohmann::json& v) {
                 return std::bit_cast<float>(v.get<std::uint32_t>());
             };
-            const auto extent = [](const nlohmann::json& v) -> Spektrafilm::DirFrameExtent {
+            const auto extent = [](const nlohmann::json& v) -> FjExtent {
                 return {v.at(0), v.at(1), v.at(2), v.at(3)};
             };
-            DirCouplersRecipe recipe;
-            recipe.active = input.at("active");
-            recipe.diffusionSizeUm = scalar(input.at("size"));
-            recipe.diffusionTailUm = scalar(input.at("tail"));
-            recipe.diffusionTailWeight = scalar(input.at("weight"));
-            recipe.hash = input.at("hash");
+            const FjDirFrameInput frameInput{
+                input.at("active").get<bool>() ? 1u : 0u,
+                scalar(input.at("size")),
+                scalar(input.at("tail")),
+                scalar(input.at("weight")),
+                scalar(input.at("pixel")),
+                extent(input.at("render")),
+                extent(input.at("full")),
+                input.at("hash").get<std::uint64_t>()};
             SpatialDirDescriptor frame;
-            ASSERT_TRUE(JuicerTestSupport::prepare_dir_frame(recipe, scalar(input.at("pixel")), extent(input.at("render")), extent(input.at("full")), "print", frame));
+            ASSERT_TRUE(JuicerTestSupport::prepare_dir_frame(frameInput, "print", frame));
             auto expected = row.at("native");
             if (!expected.at("label").is_null())
                 expected["label"] = "print";
@@ -399,21 +412,21 @@ namespace {
     TEST(PreparedProjection, RealPostConstructorSurvivesExecutionProjection) {
         const std::uint64_t expectedHashes[]{7511645345345342884ull, 3186614872363949542ull, 2245189015135736206ull, 1365222576910583988ull};
         for (unsigned route = 0; route < 4; ++route) {
-            ScannerOutputRecipe recipe;
-            recipe.route = static_cast<Spektrafilm::ScanRoute>(route);
-            recipe.glareActive = true;
-            recipe.glarePercent = 2.0f;
-            recipe.glareRoughness = 0.3f;
-            recipe.glareBlurSigmaPx = 0.7f;
-            recipe.lensBlurSigmaPx = 1.25f;
-            recipe.unsharpSigmaPx = 0.7f;
-            recipe.unsharpAmount = 0.8f;
+            const FjScannerPostEffectsInput postInput{route, 1, 2.0f, 0.3f, 0.7f, 1.25f, 0.7f, 0.8f};
+            FjScannerPostEffectsDescriptor post{};
+            FjScannerPostEffectsFailure failure{};
+            std::array<char, 256> message{};
+            FjErrorBuffer error{message.data(), message.size(), 0};
+            const auto status = fj_test_scanner_post_describe(&postInput, &post, &failure, &error);
+            ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << message.data();
+            ASSERT_EQ(status.api, FJ_API_NONE);
+            ASSERT_EQ(status.native_code, 0);
             JuicerCuda::PreparedDescriptors source;
-            source.route = recipe.route;
+            source.route = static_cast<Spektrafilm::ScanRoute>(route);
             source.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(route / 2);
             source.color.preparedEncoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_SRGB);
+            source.post = {static_cast<Spektrafilm::ScanRoute>(post.route), post.glare_active != 0, post.glare_percent, post.glare_roughness, post.glare_blur_sigma_px, post.glare_blur_radius, post.lens_blur_sigma_px, post.lens_blur_radius, post.unsharp_sigma_px, post.unsharp_radius, post.unsharp_amount, post.schema, post.hash};
             std::string diagnostic;
-            ASSERT_TRUE(Scanner::build_scanner_post_effects_descriptor(recipe, source.post, diagnostic)) << diagnostic;
             ASSERT_EQ(source.post.hash, expectedHashes[route]);
             FjPreparedHostData encoded{};
             JuicerCudaTest::encode_prepared_descriptors(source, encoded);
@@ -422,7 +435,7 @@ namespace {
             EXPECT_EQ(input.capture_polarity, route / 2);
             JuicerCuda::PreparedDescriptors decoded;
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, decoded, diagnostic)) << diagnostic;
-            EXPECT_EQ(decoded.post.route, recipe.route);
+            EXPECT_EQ(decoded.post.route, static_cast<Spektrafilm::ScanRoute>(route));
             EXPECT_EQ(decoded.post.schemaVersion, 2u);
             EXPECT_EQ(decoded.post.hash, expectedHashes[route]);
             EXPECT_EQ(decoded.post.glareActive, bool(route & 1));
@@ -615,7 +628,7 @@ namespace {
         ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic)) << diagnostic;
         ASSERT_TRUE(actual.grain);
         const auto& grain = *actual.grain;
-        const auto& recipe = actual.grainRecipe;
+        const auto& coefficients = actual.grainPayload.coefficients;
         EXPECT_EQ(grain.frame0, -17);
         EXPECT_FLOAT_EQ(grain.frameAlpha, 0.375f);
         EXPECT_EQ(grain.seedBase, 401u);
@@ -638,19 +651,18 @@ namespace {
         EXPECT_EQ(grain.recipeHash, 408u);
         EXPECT_EQ(grain.densityCurvesLayersHash, 409u);
         EXPECT_EQ(grain.hash, 410u);
-        EXPECT_TRUE(recipe.active);
-        EXPECT_TRUE(recipe.sublayersActive);
-        EXPECT_EQ(recipe.nSubLayers, 3);
-        EXPECT_TRUE(recipe.grainLayerAxisFinite[0]);
-        EXPECT_FALSE(recipe.grainLayerAxisFinite[1]);
-        EXPECT_TRUE(recipe.grainLayerAxisFinite[2]);
-        EXPECT_FLOAT_EQ(recipe.grainLayerAxisBlockPrefixMax[0][15], 2.125f);
-        EXPECT_FLOAT_EQ(recipe.grainLayerAxisBlockPrefixMax[2][4], 3.25f);
-        EXPECT_FLOAT_EQ(recipe.visualParticleDensityMinCmy[2], 0.12f);
-        EXPECT_FLOAT_EQ(recipe.microStructure[0], 0.2f);
-        EXPECT_FLOAT_EQ(recipe.microStructure[1], 30.0f);
-        EXPECT_FLOAT_EQ(recipe.chromaSharedWeight, 0.75f);
-        EXPECT_FLOAT_EQ(recipe.chromaIndependentWeight, 0.5f);
+        EXPECT_EQ(coefficients.flags, FJ_GRAIN_ACTIVE | FJ_GRAIN_SUBLAYERS | FJ_GRAIN_AXIS_FINITE_C | FJ_GRAIN_AXIS_FINITE_Y);
+        EXPECT_EQ(coefficients.flags & FJ_GRAIN_FULL_FRAME, 0u);
+        EXPECT_EQ(coefficients.sublayer_count, 3u);
+        EXPECT_FLOAT_EQ(coefficients.layer_axis_block_prefix_max[0][15], 2.125f);
+        EXPECT_FLOAT_EQ(coefficients.layer_axis_block_prefix_max[2][4], 3.25f);
+        EXPECT_FLOAT_EQ(coefficients.particle_density_min_cmy[2], 0.12f);
+        EXPECT_FLOAT_EQ(coefficients.micro_structure[0], 0.2f);
+        EXPECT_FLOAT_EQ(coefficients.micro_structure[1], 30.0f);
+        EXPECT_FLOAT_EQ(coefficients.chroma_shared_weight, 0.75f);
+        EXPECT_FLOAT_EQ(coefficients.chroma_independent_weight, 0.5f);
+        EXPECT_EQ(actual.grainPayload.recipeHash, 408u);
+        EXPECT_EQ(actual.grainPayload.densityLayersHash, 409u);
     }
 
     TEST(PreparedProjection, EffectsKeepFilmGateAndPhysicalCoordinatesDistinct) {
@@ -733,11 +745,12 @@ namespace {
         source.grain->dyeCloud[0][2] = {1.25f, 4, 612};
         source.grain->recipeHash = 613;
         source.grain->hash = 614;
-        source.grainRecipe.active = true;
-        source.grainRecipe.nSubLayers = 2;
-        source.grainRecipe.grainLayerAxisFinite[1] = true;
-        source.grainRecipe.grainLayerAxisBlockPrefixMax[1][14] = 2.875f;
-        source.grainRecipe.chromaIndependentWeight = 0.625f;
+        source.grainPayload.coefficients.flags = FJ_GRAIN_ACTIVE | FJ_GRAIN_AXIS_FINITE_M;
+        source.grainPayload.coefficients.sublayer_count = 2;
+        source.grainPayload.coefficients.layer_axis_block_prefix_max[1][14] = 2.875f;
+        source.grainPayload.coefficients.chroma_independent_weight = 0.625f;
+        source.grainPayload.recipeHash = 613;
+        source.grainPayload.densityLayersHash = 0;
         source.effects.emplace();
         source.effects->filmActive = true;
         source.effects->filmScratch.interiorDepthMaxFraction = 0.8125f;
@@ -779,6 +792,8 @@ namespace {
         EXPECT_EQ(actual.optics.camera.sample_hash, 606u);
         EXPECT_EQ(actual.optics.camera.hash, 607u);
         EXPECT_EQ(actual.optics.scatter_halation.recipe_hash, 608u);
+        EXPECT_EQ(actual.grain.recipe_hash, 613u);
+        EXPECT_EQ(actual.grain.density_layers_hash, 0u);
         EXPECT_EQ(actual.optics.scatter_halation.channels[2].bounce[0].kind, FJ_HALATION_YVV_REPLICATE);
         EXPECT_FLOAT_EQ(actual.optics.scatter_halation.channels[2].bounce[0].feedback[1], -0.3125f);
         EXPECT_EQ(actual.spatial_dir.hash, 609u);
@@ -1025,7 +1040,9 @@ namespace {
             EXPECT_FALSE(actual.halation);
             EXPECT_FALSE(actual.grain);
             EXPECT_FALSE(actual.effects);
-            EXPECT_FALSE(actual.grainRecipe.active);
+            EXPECT_EQ(actual.grainPayload.coefficients.flags, 0u);
+            EXPECT_EQ(actual.grainPayload.recipeHash, 0u);
+            EXPECT_EQ(actual.grainPayload.densityLayersHash, 0u);
             EXPECT_EQ(actual.spatialDir.hash, 0u);
             EXPECT_EQ(actual.scanner.hash, 0u);
         }

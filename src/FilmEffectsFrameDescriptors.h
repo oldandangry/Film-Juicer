@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <string>
 
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 
 struct FjGrainFrameMath;
 struct FjGrainCoefficients;
@@ -74,37 +74,12 @@ namespace Spektrafilm {
         std::uint64_t hash = 0;
     };
 
-    struct VisualGrainFrameDescriptorInput {
-        const VisualGrainRecipe* recipe = nullptr;
-        const FilmDevelopRecipe* filmDevelop = nullptr;
-        ProfilePolarity capturePolarity = ProfilePolarity::Unsupported;
-        VisualGrainFrameExtent renderExtent{};
-        VisualGrainFrameExtent fullFrameExtent{};
-        float pixelSizeUm = 0.0f;
-        double frameTime = 0.0;
-        double frameRate = 0.0;
-        std::uint64_t sessionSeed = 0;
-        std::uint64_t clipToken = 0;
-    };
-
-    VisualGrainScratchShape visual_grain_scratch_shape(const VisualGrainRecipe& recipe) noexcept;
     VisualGrainScratchShape visual_grain_scratch_shape(const FjGrainCoefficients& coefficients) noexcept;
-
-    bool compose_visual_grain_frame_descriptor(
-        const VisualGrainFrameDescriptorInput& input,
-        const FjGrainFrameMath& math,
-        VisualGrainFrameDescriptor& out,
-        std::string& diagnostic);
 
     bool compose_visual_grain_frame_descriptor(
         const FjGrainCoefficients& coefficients,
         ProfilePolarity capturePolarity,
         const FjGrainFrameMath& math,
-        VisualGrainFrameDescriptor& out,
-        std::string& diagnostic);
-
-    bool build_visual_grain_frame_descriptor(
-        const VisualGrainFrameDescriptorInput& input,
         VisualGrainFrameDescriptor& out,
         std::string& diagnostic);
 

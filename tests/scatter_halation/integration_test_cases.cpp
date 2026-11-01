@@ -30,7 +30,7 @@
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "ProcessRoot.h"
-#include "ProfileAssets.h"
+#include "RenderValues.h"
 #include "Scanner.h"
 #include "ScatterHalation.h"
 #include "spatial_optics_fixture.h"
@@ -325,7 +325,8 @@ namespace {
 
     struct ResolvedRow {
         ScatterHalationControls controls{};
-        Profiles::ProfileDigest profile{};
+        std::array<float, 3> firstSigmaUm{};
+        std::array<float, 3> primaryAmount{};
         ScatterHalationOpticsRecipe recipe{};
         ScatterHalationFrameDescriptor descriptor{};
         float pixelSizeUm = 0.0f;
@@ -353,13 +354,13 @@ namespace {
         }
         const auto& profile = input.at("profile");
         for (std::size_t channel = 0; channel < 3; ++channel) {
-            row.profile.halationFirstSigmaUm[channel] = parse_float(
+            row.firstSigmaUm[channel] = parse_float(
                 profile.at("halationFirstSigmaUmFloat32Bits").at(channel));
-            row.profile.halationPrimaryAmount[channel] = parse_float(
+            row.primaryAmount[channel] = parse_float(
                 profile.at("halationPrimaryAmountFloat32Bits").at(channel));
         }
         if (!JuicerTestSupport::prepare_scatter_halation(
-                row.controls, row.profile, row.recipe, diagnostic)) {
+                row.controls, row.firstSigmaUm, row.primaryAmount, row.recipe, diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
         row.pixelSizeUm = parse_float(input.at("pixelSizeUmFloat32Bits"));
@@ -772,12 +773,11 @@ namespace {
                 raw, controls, diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
-        Profiles::ProfileDigest profile;
-        profile.halationFirstSigmaUm = {65.0f, 65.0f, 65.0f};
-        profile.halationPrimaryAmount = {0.08f, 0.02f, 0.0f};
+        const std::array<float, 3> firstSigmaUm{65.0f, 65.0f, 65.0f};
+        const std::array<float, 3> primaryAmount{0.08f, 0.02f, 0.0f};
         ScatterHalationOpticsRecipe recipe;
         if (!JuicerTestSupport::prepare_scatter_halation(
-                controls, profile, recipe, diagnostic)) {
+                controls, firstSigmaUm, primaryAmount, recipe, diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
         std::optional<ScatterHalationFrameDescriptor> descriptor;

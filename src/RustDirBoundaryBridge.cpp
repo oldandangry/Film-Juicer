@@ -12,7 +12,7 @@
 #include <utility>
 
 #include "Cuda/JuicerCudaFailure.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 
 namespace JuicerDirBoundary {
     namespace {

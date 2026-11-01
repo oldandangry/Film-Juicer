@@ -14,7 +14,7 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 #include "ResourceAssetLibrary.h"
 #include "FilmEffectsFrameDescriptors.h"
 
@@ -172,33 +172,12 @@ namespace JuicerProcess {
         Root(const Root&) = delete;
         Root& operator=(const Root&) = delete;
 
-        void ensure_bootstrap();
         FramePreparationToken begin_frame_preparation() noexcept;
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         struct AutoExposureBufferRequest {
             bool enabled = false;
             JuicerCuda::AutoExposurePreviewDescriptor descriptor{};
-        };
-
-        struct CudaFramePreparationRequest {
-            const Spektrafilm::RenderRecipe* recipe = nullptr;
-            const Spectral::SpectralTables* exposureTables = nullptr;
-            const Spectral::FilmRawConfig* filmRawConfig = nullptr;
-            const Spectral::FilmTcLut* filmTcLut = nullptr;
-            const std::array<float, Spectral::kNumSamples>* printMainIlluminant = nullptr;
-            const Spectral::SpectralTables* scannerTables = nullptr;
-            const Scanner::ColorRuntime* scannerColor = nullptr;
-            const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
-            const Gamut::OutputBoundaryHold* outputBoundaryTable = nullptr;
-            const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
-            const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
-            const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSetDescriptor = nullptr;
-            const ScatterHalationFrameDescriptor* scatterHalationDescriptor = nullptr;
-            std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor = std::nullopt;
-            std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor = std::nullopt;
-            int requestedWidth = 0;
-            int requestedHeight = 0;
         };
 
         struct PreparationIdentity {
@@ -214,28 +193,24 @@ namespace JuicerProcess {
             bool effectsActive = false;
         };
 
-        // Resolved invocation-local inputs. The legacy print alternative preserves
-        // descriptor-hit laziness until host preparation moves at S4.
+        // Resolved invocation-local inputs borrowed through frame preparation.
         struct PreparedFrameInput {
             PreparationIdentity identity;
             const JuicerCuda::FocusedRouteResourceInput& focused;
-            const Spectral::FilmRawConfig& filmRawConfig;
             const Scanner::ColorRuntime& scannerColor;
             const OutputGamutRecipe& outputGamut;
-            std::variant<std::monostate, JuicerCuda::PrintResourcePreparation, JuicerCuda::PrintResourceInput> print;
+            std::optional<JuicerCuda::PrintResourceInput> print;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
             const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSetDescriptor = nullptr;
             const ScatterHalationFrameDescriptor* scatterHalationDescriptor = nullptr;
             std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor = std::nullopt;
             std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor = std::nullopt;
-            // A supplied view forbids asset lookup; absent is the current C++ producer.
+            // Active grain requires a call-local noise view borrowed through frame preparation.
             const JuicerCuda::StaticNoiseInput* noise = nullptr;
             int requestedWidth = 0;
             int requestedHeight = 0;
         };
-
-        static PreparationIdentity preparation_identity(const RenderRecipe& recipe);
 
         class PreparedCudaFrame final {
         public:
@@ -515,14 +490,6 @@ namespace JuicerProcess {
         PreparedCudaFrame prepare_cuda_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
-            const CudaFramePreparationRequest& request,
-            const AutoExposureBufferRequest& autoExposureBufferRequest,
-            void* cudaStreamOpaque,
-            JuicerCuda::Failure& outError,
-            const FjHostPreparation* hostPreparation = nullptr);
-        PreparedCudaFrame prepare_cuda_frame(
-            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
-            const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
             const PreparedFrameInput& request,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
@@ -558,7 +525,6 @@ namespace JuicerProcess {
         void finish_frame_preparation() noexcept;
         bool wait_for_frame_preparation() noexcept;
 
-        std::once_flag _bootstrapOnce;
         // FJ_TEMP_BRIDGE: native host asset owner; remove S5.C.
         std::unique_ptr<JuicerAssets::Library> _assets;
         std::mutex _framePreparationMutex;

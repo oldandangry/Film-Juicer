@@ -1,4 +1,4 @@
-//! SF_TEMP_BRIDGE_SPATIAL_OPTICS: checked fixed completed recipes; remove S4.E.
+//! Checked optics values and call-local host preparation.
 use std::fmt::{self, Write};
 use std::mem::{align_of, size_of};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -7,33 +7,61 @@ use crate::cuda::sys::{
     FjStatus, FjErrorBuffer, FJ_API_NONE, FJ_STATUS_SUCCESS, FJ_STATUS_UNSUPPORTED_INPUT,
     FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_INTERNAL_FAILURE,
 };
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_NONE: u32 = 0;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_RAW: u32 = 1;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_DIFFUSION: u32 = 2;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_LENS_BLUR: u32 = 3;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_HALATION: u32 = 4;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_PANIC: u32 = 5;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_NONE: u32 = 0;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_CAMERA_DIFFUSION: u32 = 1;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_CAMERA_LENS_BLUR: u32 = 2;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_SCATTER_HALATION: u32 = 3;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_ENLARGER_DIFFUSION: u32 = 4;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_NONE: u32 = 0;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_FAMILY: u32 = 1;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_STRENGTH: u32 = 2;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_SPATIAL_SCALE: u32 = 3;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_HALO_WARMTH: u32 = 4;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_CORE_INTENSITY: u32 = 5;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_CORE_SIZE: u32 = 6;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_HALO_INTENSITY: u32 = 7;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_HALO_SIZE: u32 = 8;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_BLOOM_INTENSITY: u32 = 9;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_BLOOM_SIZE: u32 = 10;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_SCATTER_FRACTION: u32 = 11;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_GROUP_WEIGHTS: u32 = 12;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_GROUP_CENTERS: u32 = 13;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_RESOLVED_HASH: u32 = 14;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_SIGMA_UM: u32 = 15;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_TOTAL_STRENGTH: u32 = 16;
 
 #[repr(C)]
@@ -68,6 +96,7 @@ pub(crate) struct FjHalationParams {
 const _: () = assert!(size_of::<FjHalationParams>() == 44 && align_of::<FjHalationParams>() == 4);
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(feature = "test-support")]
 pub(crate) struct FjSpatialOpticsParams {
     pub(crate) camera_diffusion: FjDiffusionParams,
     pub(crate) camera_lens_blur_um: f32,
@@ -76,6 +105,7 @@ pub(crate) struct FjSpatialOpticsParams {
     pub(crate) print_domain: u32,
 }
 
+#[cfg(feature = "test-support")]
 const _: () =
     assert!(size_of::<FjSpatialOpticsParams>() == 216 && align_of::<FjSpatialOpticsParams>() == 8);
 #[repr(C)]
@@ -131,6 +161,7 @@ const _: () =
     assert!(size_of::<FjSpatialOpticsRecipe>() == 288 && align_of::<FjSpatialOpticsRecipe>() == 8);
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(feature = "test-support")]
 pub(crate) struct FjSpatialOpticsFailure {
     pub(crate) reason: u32,
     pub(crate) component: u32,
@@ -138,6 +169,7 @@ pub(crate) struct FjSpatialOpticsFailure {
     pub(crate) channel: u32,
 }
 
+#[cfg(feature = "test-support")]
 const _: () =
     assert!(size_of::<FjSpatialOpticsFailure>() == 16 && align_of::<FjSpatialOpticsFailure>() == 4);
 
@@ -213,6 +245,7 @@ impl Write for Diagnostic {
         Ok(())
     }
 }
+#[cfg(feature = "test-support")]
 fn none() -> FjSpatialOpticsFailure {
     FjSpatialOpticsFailure {
         reason: FJ_OPTICS_REASON_NONE,
@@ -221,10 +254,12 @@ fn none() -> FjSpatialOpticsFailure {
         channel: 3,
     }
 }
+#[cfg(feature = "test-support")]
 struct Failure {
     category: u32,
     details: FjSpatialOpticsFailure,
 }
+#[cfg(feature = "test-support")]
 impl Failure {
     fn raw() -> Self {
         Self {
@@ -292,6 +327,7 @@ impl Failure {
         }
     }
 }
+#[cfg(feature = "test-support")]
 fn diffusion_params(v: &FjDiffusionParams) -> optics::DiffusionParams {
     optics::DiffusionParams {
         active: v.active != 0,
@@ -307,6 +343,7 @@ fn diffusion_params(v: &FjDiffusionParams) -> optics::DiffusionParams {
         bloom_size: v.bloom_size,
     }
 }
+#[cfg(feature = "test-support")]
 fn project_diffusion(v: &optics::Diffusion) -> FjDiffusionRecipe {
     FjDiffusionRecipe {
         domain: match v.domain() {
@@ -329,6 +366,7 @@ fn project_diffusion(v: &optics::Diffusion) -> FjDiffusionRecipe {
         hash: v.hash(),
     }
 }
+#[cfg(feature = "test-support")]
 fn project(v: &optics::Recipe) -> FjSpatialOpticsRecipe {
     let lens = v.camera_lens_blur();
     let halation = v.scatter_halation();
@@ -357,6 +395,7 @@ fn project(v: &optics::Recipe) -> FjSpatialOpticsRecipe {
 /// and optional diagnostic record/backing are mutually disjoint and disjoint
 /// from immutable input through synchronous return. No borrow escapes. Numeric
 /// pointer admission does not establish those allocation/lifetime obligations.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn prepare(
     params: *const FjSpatialOpticsParams,
     out: *mut FjSpatialOpticsRecipe,
@@ -451,32 +490,15 @@ pub(crate) unsafe fn prepare(
         }
     }
 }
-/// # Safety
-/// The checked operation's live, initialized, aligned and disjoint record contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_spatial_optics_prepare(
-    params: *const FjSpatialOpticsParams,
-    out: *mut FjSpatialOpticsRecipe,
-    failure: *mut FjSpatialOpticsFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Identical checked synchronous operation with no retained pointer.
-    unsafe { prepare(params, out, failure, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjSpatialOpticsParams,
-    *mut FjSpatialOpticsRecipe,
-    *mut FjSpatialOpticsFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_spatial_optics_prepare;
 
-// SF_TEMP_BRIDGE_GAUSSIAN_KERNEL: miss-local owned coefficients; remove S4.E.
+// Gaussian input and borrowed coefficients for call-local host preparation.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct FjGaussianKernelInput {
     pub(crate) radius: i32,
     pub(crate) sigma_px: f32,
 }
+#[cfg(feature = "test-support")]
 #[repr(C)]
 pub(crate) struct FjGaussianKernelOwner {
     _private: [u8; 0],
@@ -783,6 +805,7 @@ pub(crate) unsafe fn prepare_host_gaussian(
 /// # Safety
 /// Live initialized input and disjoint exclusive output/failure/diagnostics stay
 /// valid through return. Successful ownership transfers to matching release.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn gaussian_acquire(
     input: *const FjGaussianKernelInput,
     out: *mut *mut FjGaussianKernelOwner,
@@ -810,6 +833,7 @@ pub(crate) unsafe fn gaussian_acquire(
 /// # Safety
 /// Borrow one legitimate live owner excluding release. Exclusive initialized
 /// output/failure/diagnostic storage is disjoint; all spans expire at release.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn gaussian_view(
     owner: *const FjGaussianKernelOwner,
     out: *mut FjGaussianKernelView,
@@ -838,6 +862,7 @@ pub(crate) unsafe fn gaussian_view(
 /// # Safety
 /// NULL or one matching live owner transfers exactly once, excluding views.
 /// Malformed diagnostics and contained unwind still consume an admitted owner.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn gaussian_release(
     owner: *mut FjGaussianKernelOwner,
     error: *mut FjErrorBuffer,
@@ -866,40 +891,6 @@ pub(crate) unsafe fn gaussian_release(
             Ok(0)
         })
     }
-}
-/// # Safety
-/// Same initialized/disjoint input and ownership transfer contract as gaussian_acquire.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_gaussian_kernel_acquire(
-    input: *const FjGaussianKernelInput,
-    out: *mut *mut FjGaussianKernelOwner,
-    failure: *mut FjGaussianKernelFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical checked ownership contract.
-    unsafe { gaussian_acquire(input, out, failure, error) }
-}
-/// # Safety
-/// Same legitimate owner/borrow expiry/disjoint output contract as gaussian_view.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_gaussian_kernel_view(
-    owner: *const FjGaussianKernelOwner,
-    out: *mut FjGaussianKernelView,
-    failure: *mut FjGaussianKernelFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical checked borrowing contract.
-    unsafe { gaussian_view(owner, out, failure, error) }
-}
-/// # Safety
-/// Same once-only matching ownership transfer contract as gaussian_release.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_gaussian_kernel_release(
-    owner: *mut FjGaussianKernelOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical checked consuming contract.
-    unsafe { gaussian_release(owner, error) }
 }
 #[cfg(feature = "test-support")]
 pub(crate) mod gaussian_faults {
@@ -952,21 +943,6 @@ pub(crate) mod gaussian_faults {
         view
     }
 }
-
-const _: unsafe extern "C" fn(
-    *const FjGaussianKernelInput,
-    *mut *mut FjGaussianKernelOwner,
-    *mut FjGaussianKernelFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_gaussian_kernel_acquire;
-const _: unsafe extern "C" fn(
-    *const FjGaussianKernelOwner,
-    *mut FjGaussianKernelView,
-    *mut FjGaussianKernelFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_gaussian_kernel_view;
-const _: unsafe extern "C" fn(*mut FjGaussianKernelOwner, *mut FjErrorBuffer) -> FjStatus =
-    fj_legacy_gaussian_kernel_release;
 
 // SF_TEMP_BRIDGE_HALATION_FRAME: remove at the final native frame-preparation
 // caller, no later than S6.D. State integration remains S4.E's responsibility.

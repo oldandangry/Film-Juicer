@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "FilmEffectsFrameDescriptors.h"
-#include "ColorTransforms.h"
 #include "GamutCompression.h"
 #include "RustEffectsFrameBridge.h"
 #include "Scanner.h"
@@ -573,6 +572,8 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         descriptors.diffusion = diffusion;
         descriptors.halation = halation;
         descriptors.spatialDir = spatialDir;
+        descriptors.grainPayload = {
+            grainCoefficients, view.grain.hash, view.grain.layers_hash};
         if (grainDescriptor.active)
             descriptors.grain = grainDescriptor;
         if (effectsDescriptor.hash != 0)
@@ -580,11 +581,10 @@ namespace JuicerCudaTest::PreparedFrameFixture {
 
         JuicerCuda::FocusedRouteResourceInput focused{};
         fill_focused(view, focused);
-        Spectral::FilmRawConfig filmRawConfig{};
-        std::copy_n(view.film_exposure.input_rgb_to_xyz, 9, filmRawConfig.inputRGBToXYZ.m);
-        std::copy_n(view.film_exposure.input_xyz_adapt, 9, filmRawConfig.inputXYZAdapt.m);
-        std::copy_n(view.film_exposure.xyz_to_linear_srgb, 9, filmRawConfig.xyzToLinearSrgb.m);
-        filmRawConfig.applyInputChromaticAdapt =
+        std::copy_n(view.film_exposure.input_rgb_to_xyz, 9, focused.inputRgbToXyz.begin());
+        std::copy_n(view.film_exposure.input_xyz_adapt, 9, focused.inputXyzAdapt.begin());
+        std::copy_n(view.film_exposure.xyz_to_linear_srgb, 9, focused.xyzToLinearSrgb.begin());
+        focused.applyInputChromaticAdapt =
             (view.film_exposure.flags & FJ_FILM_ADAPT_INPUT) != 0;
         Scanner::ColorRuntime scannerColor{};
         fill_scanner_color(view.scanner_color, scannerColor);
@@ -595,17 +595,13 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         JuicerCuda::VisualGrainPayloadInput grainPayload{
             grainCoefficients, view.grain.hash, view.grain.layers_hash};
         JuicerCuda::PrintResourceInput printInput{};
-        PrintExposureRecipe printExposure{};
-        std::variant<std::monostate, JuicerCuda::PrintResourcePreparation, JuicerCuda::PrintResourceInput> printResources;
+        float printExposure = 0.0f;
+        float preflashExposure = 0.0f;
+        std::optional<JuicerCuda::PrintResourceInput> printResources;
         if (print) {
             print_input(view, printInput);
-            printExposure.printExposure = view.print.exposure;
-            printExposure.preflashExposure = view.print.preflash_exposure;
-            printExposure.normalizePrintExposure = view.normalize_print_exposure != 0;
-            printExposure.printExposureCompensation = view.print_exposure_compensation != 0;
-            printExposure.normalizationMode =
-                static_cast<Spektrafilm::PrintNormalizationMode>(view.print_normalization_mode);
-            printExposure.hash = view.print_exposure_hash;
+            printExposure = view.print.exposure;
+            preflashExposure = view.print.preflash_exposure;
             printResources = printInput;
         }
 
@@ -647,13 +643,13 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         }
 
         JuicerProcess::Root::PreparedFrameInput preparation{
-            identity, focused, filmRawConfig, scannerColor, outputGamut, printResources, &descriptors.post, &descriptors.spatialDir, descriptors.diffusion ? &*descriptors.diffusion : nullptr, descriptors.halation ? &*descriptors.halation : nullptr, descriptors.grain, descriptors.effects, &staticNoise, facts.renderExtent.width, facts.renderExtent.height};
+            identity, focused, scannerColor, outputGamut, printResources, &descriptors.post, &descriptors.spatialDir, descriptors.diffusion ? &*descriptors.diffusion : nullptr, descriptors.halation ? &*descriptors.halation : nullptr, descriptors.grain, descriptors.effects, &staticNoise, facts.renderExtent.width, facts.renderExtent.height};
         bool consumed = false;
         std::exception_ptr primary;
         try {
             consumed = JuicerTestSupport::with_host_preparation(
                 [&](const FjHostPreparation* hostPreparation) {
-                    const Inputs inputs{view, descriptors, preparation, filmPayload, grainPayload, hostPreparation, view.film_exposure.route_correction_scale, printExposure};
+                    const Inputs inputs{view, descriptors, preparation, filmPayload, grainPayload, hostPreparation, view.film_exposure.route_correction_scale, printExposure, preflashExposure};
                     return consume(user, inputs, diagnostic);
                 });
         } catch (...) {

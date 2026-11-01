@@ -99,7 +99,7 @@ FjStatus fj_legacy_gamut_output_boundary(const FjOutputBoundarySource* source, f
  * Fixed observer/illuminant arrays contain 81 positional samples on 380..780 nm
  * at 5 nm. Dyes contain 243 wavelength-major C/M/Y floats from profile storage.
  * Baselines are null/zero absent or exactly 81; midpoint requires minimum.
- * Tables project into native FocusedRenderPayload; family math/hashes are Rust.
+ * Tables project into retained native test values; family math/hashes are Rust.
  * Defined writable outputs clear before fallible work (padding is not a value).
  * Malformed structures -> UnsupportedInput; computed white -> PreparationFailure;
  * contained panic/integrity -> InternalFailure. Fixed array math has no allocator.
@@ -163,7 +163,7 @@ FjStatus fj_legacy_spectral_s_inverse(const FjSpectralSInput* input, FjSpectralI
  * Inactive window spans are ignored, including their pointer/count values.
  * UV/IR controls are already narrowed amplitude/center_nm/width_nm triplets;
  * band_pass_active retains native cameraFilterOverride activation policy.
- * Complete sensitivity/hash/recipe Mallett scale bind once into native FilmRawRecipe;
+ * Complete sensitivity/hash/recipe Mallett scale serve complete Rust preparation;
  * reference white is invocation-local. TC/enclosing keys remain native.
  * Malformed structure -> UnsupportedInput; computed/size failure -> PreparationFailure;
  * real kernel reservation failure -> AllocationFailure; panic -> InternalFailure.
@@ -262,7 +262,7 @@ FjStatus fj_legacy_project_linear_rgb_to_xyz(const float rgb[3], const float rgb
  * return. Basis/final-sensitivity spans contain exactly 243 wavelength-major RGB
  * floats; illuminant has 81 canonical positional samples. Current process/state
  * owners retain those arrays. No source ownership or pointer escapes the call.
- * Complete fixed results bind once into FilmRawConfig or synthetic references.
+ * Complete fixed results serve Rust preparation and standalone raw fixtures.
  * Output/error storage is exclusive, mutually disjoint and disjoint from inputs.
  * Valid outputs clear before fallible work. Unsupported structure/tags/flags ->
  * UnsupportedInput; computed source/reference failure -> PreparationFailure;
@@ -556,7 +556,7 @@ FjStatus fj_legacy_film_profile_release(FjFilmProfile* profile, FjErrorBuffer* e
 /* SF_TEMP_BRIDGE_FILM_DEVELOPMENT: completed capture-film family; remove S4.E.
  * The opaque owner retains its completed profile independently of the input
  * profile handle/cache. Views expire at consuming release; no pointer escapes
- * synchronous native copying into FilmDevelopRecipe or its async staging.
+ * borrowed raw development views and frame-owned asynchronous staging.
  * log_exposure has N elements; authored/normalized CMY are exposure-major 3N;
  * selected layers have nine N-element [layer][channel][sample] lanes. Omitted
  * layers are (NULL,0) and layers_hash=0. Route tags are 0..3, polarity/layers 0/1.
@@ -866,7 +866,6 @@ typedef struct FjSpatialOpticsFailure {
     uint32_t channel;
 } FjSpatialOpticsFailure;
 
-FjStatus fj_legacy_spatial_optics_prepare(const FjSpatialOpticsParams* params, FjSpatialOpticsRecipe* out_recipe, FjSpatialOpticsFailure* out_failure, FjErrorBuffer* error);
 
 /* SF_TEMP_BRIDGE_PHYSICAL_EFFECTS: completed fixed recipe transport; remove S4.E.
  * Call records/backing must be initialized, live, aligned, mutually disjoint and
@@ -1188,12 +1187,6 @@ typedef struct FjPrintIlluminantFailure {
 #define FJ_PRINT_ILLUMINANT_REASON_SAMPLE UINT32_C(2)
 #define FJ_PRINT_ILLUMINANT_REASON_ENERGY UINT32_C(3)
 #define FJ_PRINT_ILLUMINANT_REASON_PANIC UINT32_C(4)
-FjStatus fj_legacy_print_illuminant_prepare(
-    const FjPrintIlluminantParams* params,
-    FjFloatSpan source,
-    FjIlluminant* out_illuminant,
-    FjPrintIlluminantFailure* out_failure,
-    FjErrorBuffer* error);
 
 /* SF_TEMP_BRIDGE_PRINT_PREFLASH; remove S4.E. Synchronous borrowed f32 inputs:
  * 81 film base-density samples, 81 already filtered light samples and 243 print
@@ -1225,11 +1218,6 @@ typedef struct FjPrintPreflashFailure {
 #define FJ_PRINT_PREFLASH_REASON_RAW UINT32_C(1)
 #define FJ_PRINT_PREFLASH_REASON_CHANNEL UINT32_C(2)
 #define FJ_PRINT_PREFLASH_REASON_PANIC UINT32_C(3)
-FjStatus fj_legacy_print_preflash_prepare(
-    const FjPrintPreflashInput* input,
-    FjPrintPreflashRaw* out_raw,
-    FjPrintPreflashFailure* out_failure,
-    FjErrorBuffer* error);
 
 /* SF_TEMP_BRIDGE_PRINT_BALANCE, retirement S4.E. Synchronous safe-core producer;
  * native recipe completion consumes the finished copy. Four immutable spans of
@@ -1424,8 +1412,8 @@ FjStatus fj_legacy_scanner_print_correction_prepare(
 FjStatus fj_legacy_scanner_correction_input_demand(
     const FjScannerCorrectionParams*, uint32_t operation, uint32_t* required, FjScannerCorrectionFailure*, FjErrorBuffer*);
 
-/* SF_TEMP_BRIDGE_SCANNER_LUT: remove S4.E after the last native preparation consumer.
- * A successful acquire owns all six immutable arrays; inputs expire at return.
+/* Scanner LUT records for call-local preparation and test-only raw owners.
+ * A successful test acquire owns six immutable arrays; inputs expire at return.
  * Every aligned writable output clears independently before peer admission.
  * Records/backing must be live, initialized and disjoint; view excludes release.
  * Handles have unique live provenance. Release consumes a nonnull admitted owner
@@ -1458,9 +1446,6 @@ typedef struct FjScannerLutFailure {
 #define FJ_SCANNER_LUT_REASON_ALLOCATION UINT32_C(4)
 #define FJ_SCANNER_LUT_REASON_NONFINITE UINT32_C(5)
 #define FJ_SCANNER_LUT_REASON_PANIC UINT32_C(6)
-FjStatus fj_legacy_scanner_lut_acquire(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*);
-FjStatus fj_legacy_scanner_lut_view(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
-FjStatus fj_legacy_scanner_lut_release(FjScannerLutOwner*, FjErrorBuffer*);
 
 /* SF_TEMP_BRIDGE_SCANNER_COLOR: complete synchronous copied value; remove S4.E.
  * Input/result/failure/error and nonempty error backing are live, aligned,
@@ -1591,10 +1576,10 @@ typedef struct FjScannerPostEffectsFailure {
 #define FJ_SCANNER_POST_PANIC UINT32_C(5)
 FjStatus fj_legacy_scanner_post_describe(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*);
 
-/* SF_TEMP_BRIDGE_GAUSSIAN_KERNEL; remove S4.E with the native cache-miss caller.
- * Safe Rust optics constructs scanner/grain/FIR-DIR coefficients. Acquire owns
- * one immutable kernel, retaining no input borrow. The native miss borrows its
- * view only through synchronous upload; no Rust pointer enters the device cache.
+/* Gaussian records for call-local preparation and test-only raw owners.
+ * Safe Rust optics constructs scanner/grain/FIR-DIR coefficients. Test acquire
+ * owns one immutable kernel, retaining no input borrow. Callback views remain
+ * valid through the synchronous preparation scope; no Rust pointer enters the device cache.
  * Required records are live/initialized/aligned; writable records and diagnostic
  * backing are exclusive and disjoint from peers/inputs. Numeric checks do not
  * establish memory/handle provenance. Valid peers clear independently on failure.
@@ -1622,9 +1607,6 @@ typedef struct FjGaussianKernelFailure {
 #define FJ_GAUSSIAN_KERNEL_SIGMA UINT32_C(3)
 #define FJ_GAUSSIAN_KERNEL_ALLOCATION UINT32_C(4)
 #define FJ_GAUSSIAN_KERNEL_PANIC UINT32_C(5)
-FjStatus fj_legacy_gaussian_kernel_acquire(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*);
-FjStatus fj_legacy_gaussian_kernel_view(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
-FjStatus fj_legacy_gaussian_kernel_release(FjGaussianKernelOwner*, FjErrorBuffer*);
 
 /* SF_TEMP_BRIDGE_FRAME_GEOMETRY: synchronous callback values, remove with the
  * final native OFX consumer, no later than S6.D. Signed dimensions admit neither

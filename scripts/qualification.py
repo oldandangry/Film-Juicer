@@ -288,6 +288,13 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     if not manifest.is_file() or digest(manifest) != expected_manifest_sha256:
         raise ValueError("production manifest execution identity changed")
     document = json.loads(manifest.read_text())
+    for field in (
+        "scanner_lut_results", "scanner_lut_fixture", "gaussian_results", "gaussian_fixture",
+        "optics_results", "optics_fixture", "print_illuminant_results",
+        "print_illuminant_fixture", "preflash_results", "preflash_fixture",
+    ):
+        if field in document:
+            raise ValueError("production retired mathematical owner field remains: " + field)
     probes = document.get("probes", [])
     expected_names = {"film", "accepted-output-color"}
     if len(probes) != 2 or {row["name"] for row in probes} != expected_names:
@@ -610,34 +617,6 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     expected_post = post_spec["production_cases"]
     if len(expected_post) != 410 or document.get("scanner_post_results") != expected_post:
         raise ValueError("production scanner post-effects value/failure results are incomplete")
-    gaussian_manifest = root / "tests/optics/gaussian-fixtures/manifest.json"
-    gaussian_spec = json.loads(gaussian_manifest.read_bytes())
-    logical = gaussian_spec["presets"][document["preset"]]["native"]
-    gaussian_payload = gaussian_manifest.parent / gaussian_spec["payloads"][logical]
-    gaussian_context = gaussian_manifest.parent / gaussian_spec["contexts"][logical]
-    gaussian = document.get("gaussian_fixture", {})
-    if gaussian.get("logical_preset") != document["preset"] or any(
-            resolve(gaussian.get(key, "")) != path for key, path in
-            (("manifest", gaussian_manifest), ("payload", gaussian_payload), ("context", gaussian_context))):
-        raise ValueError("production Gaussian fixture membership is incomplete")
-    for path in (gaussian_manifest, gaussian_payload, gaussian_context):
-        checksum = digest(path)
-        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum or (path != gaussian_manifest and checksum != gaussian_spec["sha256"][path.name]):
-            raise ValueError("production Gaussian consumed fixture changed")
-    expected_gaussian = []
-    for row in json.loads(gaussian_payload.read_bytes())["cases"]:
-        radius, sigma = row["radius"], row["sigma_bits"]
-        reason = 2 if radius < 1 or radius > 2048 else (3 if sigma & 0x80000000 or sigma == 0 or sigma >= 0x7f800000 else 0)
-        expected_gaussian.append({"case": row["name"], "envelope": [3 if reason else 0, 0, 0, reason],
-                                  "radius": 0 if reason else radius, "sigma_bits": 0 if reason else sigma,
-                                  "weights": [] if reason else row["weights"]})
-    for name in gaussian_spec["production_cases"][188:]:
-        reason = 2 if name == "radius-upper-reject" else (0 if name in {"zero-capacity", "null-release"} else 1)
-        expected_gaussian.append({"case": name, "envelope": [3 if reason == 2 else 2 if reason else 0, 0, 0, reason],
-                                  "radius": 0, "sigma_bits": 0, "weights": []})
-    if len(expected_gaussian) != 201 or document.get("gaussian_results") != expected_gaussian:
-        raise ValueError("production Gaussian full arrays/metadata/failure results are incomplete")
-
     frame_manifest = root / "tests/frame/geometry-fixtures/manifest.json"
     frame_spec = json.loads(frame_manifest.read_bytes())
     frame_logical = frame_spec["presets"][document["preset"]]["native"]

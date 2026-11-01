@@ -12,12 +12,11 @@
 #include <vector>
 
 #include "ColorTransforms.h"
-#include "FocusedRenderPayload.h"
 #include "GamutCompression.h"
 #include "ProfileCatalog.h"
 #include "PreparedState.h"
 #include "RenderControls.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 #include "ScanRoute.h"
 #include "Scanner.h"
 #include "ScatterHalation.h"
@@ -54,11 +53,6 @@ namespace JuicerAtomic {
 } // namespace JuicerAtomic
 
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
-
-struct FocusedRenderStateBuildProduct {
-    Spektrafilm::RenderRecipe recipe;
-    FocusedRenderPayload payload;
-};
 
 struct DirectRenderState {
     explicit DirectRenderState(PreparedState&& state);
@@ -214,14 +208,6 @@ const char* print_profile_option_key(int index);
 const char* print_profile_option_label(int index);
 bool rebuild_direct_render_state(InstanceState& S, const ParamSnapshot& P);
 bool rebuild_print_render_state(InstanceState& S, const ParamSnapshot& P);
-bool build_direct_render_state_product(
-    const ParamSnapshot& snapshot,
-    FocusedRenderStateBuildProduct& out,
-    std::string& outError);
-bool build_print_render_state_product(
-    const ParamSnapshot& snapshot,
-    FocusedRenderStateBuildProduct& out,
-    std::string& outError);
 PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state);
 #if defined(JUICER_ADMISSION_TEST_HOOK)
 using PendingCaptureTestHook = void (*)(InstanceState&, void*);

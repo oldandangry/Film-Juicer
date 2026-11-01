@@ -7,6 +7,7 @@
 
 #include "DiffusionHostBehavior.h"
 #include "ProcessRoot.h"
+#include "RenderControls.h"
 #include "ScatterHalation.h"
 #include "../ffi/prepared_frame_fixture.h"
 

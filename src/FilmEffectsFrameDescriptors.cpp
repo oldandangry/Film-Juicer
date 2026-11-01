@@ -6,7 +6,6 @@
 #include <limits>
 
 #include "Hash.h"
-#include "RustGrainFrameBridge.h"
 #include "RustEffectsFrameBridge.h"
 #include "juicer_cuda_call_scope.h"
 
@@ -283,17 +282,6 @@ namespace {
 
 namespace Spektrafilm {
 
-    VisualGrainScratchShape visual_grain_scratch_shape(const VisualGrainRecipe& recipe) noexcept {
-        if (!recipe.active) {
-            return VisualGrainScratchShape::None;
-        }
-        const bool sharedChroma =
-            (recipe.debugView == 0 || recipe.debugView == 1) &&
-            recipe.chromaMix < 0.999f &&
-            recipe.chromaSharedWeight > 0.0f;
-        return select_scratch_shape(recipe.sublayersActive, sharedChroma);
-    }
-
     VisualGrainScratchShape visual_grain_scratch_shape(const FjGrainCoefficients& coefficients) noexcept {
         if ((coefficients.flags & FJ_GRAIN_ACTIVE) == 0) {
             return VisualGrainScratchShape::None;
@@ -302,19 +290,6 @@ namespace Spektrafilm {
             (coefficients.debug_view == FJ_GRAIN_DEBUG_OFF || coefficients.debug_view == FJ_GRAIN_DEBUG_DELTA_MIX) &&
             coefficients.chroma_mix < 0.999f && coefficients.chroma_shared_weight > 0.0f;
         return select_scratch_shape((coefficients.flags & FJ_GRAIN_SUBLAYERS) != 0, sharedChroma);
-    }
-
-    bool compose_visual_grain_frame_descriptor(
-        const VisualGrainFrameDescriptorInput& input, const FjGrainFrameMath& math, VisualGrainFrameDescriptor& out, std::string& diagnostic) {
-        out = {};
-        diagnostic.clear();
-        if (!JuicerGrain::admit_math(input, math)) {
-            diagnostic = "ResourceDescriptorMismatch phase=grain_descriptor field=rust_result";
-            return false;
-        }
-        if (!math.present)
-            return true;
-        return bind_visual_grain_math(math, input.capturePolarity, visual_grain_scratch_shape(*input.recipe), out, diagnostic);
     }
 
     bool compose_visual_grain_frame_descriptor(
@@ -349,13 +324,6 @@ namespace Spektrafilm {
             return false;
         }
         return bind_visual_grain_math(math, capturePolarity, visual_grain_scratch_shape(coefficients), out, diagnostic);
-    }
-
-    bool build_visual_grain_frame_descriptor(
-        const VisualGrainFrameDescriptorInput& input,
-        VisualGrainFrameDescriptor& out,
-        std::string& diagnostic) {
-        return JuicerGrain::prepare_frame(input, out, diagnostic);
     }
 
 } // namespace Spektrafilm

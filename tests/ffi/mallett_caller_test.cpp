@@ -459,7 +459,6 @@ namespace {
 void fj_test_mallett_callers(const std::filesystem::path& resources, const Json& fixture, const std::filesystem::path& contractPath, bool admissionOnly, const std::filesystem::path& artifactRoot) {
     JuicerCuda::Owner owner;
     owner.create(resources);
-    JuicerProcess::root().ensure_bootstrap();
     FjAssets* assets = JuicerProcess::root().assets().borrow_rust_assets();
     require(assets != nullptr, "prepared-state assets owner");
     if (admissionOnly) {

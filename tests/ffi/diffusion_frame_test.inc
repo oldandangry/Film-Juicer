@@ -124,7 +124,6 @@ namespace DiffusionFrameTest {
         progress("bootstrap", "");
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         Json rows = Json::array();
         for (const auto& spec : specs) {
             const auto name = spec.at("name").get<std::string>();

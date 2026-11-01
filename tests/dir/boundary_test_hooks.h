@@ -8,7 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 #include "Cuda/JuicerCudaResources.h"
 
 namespace JuicerCuda::DirBoundaryTest {

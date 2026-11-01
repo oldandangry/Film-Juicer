@@ -5,7 +5,6 @@
 #include <optional>
 #include <string>
 
-#include "ProfileAssets.h"
 
 struct ScatterHalationRawControls {
     bool active = false;

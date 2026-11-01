@@ -782,7 +782,6 @@ int main(int argc, char** argv) {
     JuicerCuda::Owner cudaOwner;
     cudaOwner.create(JuicerProcess::data_directory());
     testing::InitGoogleTest(&argc, argv);
-    JuicerProcess::root().ensure_bootstrap();
     const int result = RUN_ALL_TESTS();
     const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
     return closed.category == FJ_STATUS_SUCCESS ? result : 1;

@@ -26,7 +26,6 @@
 #include <gtest/gtest.h>
 
 #include "JuicerState.h"
-#include "Illuminants.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "ProcessRoot.h"
@@ -35,7 +34,6 @@
 #include "juicer_cuda_owner.h"
 #include "prepared_boundary.h"
 #include "prepared_descriptors.h"
-#include "prepared_state_native.h"
 #include "prepared_state_oracle.h"
 #include "juicer_test_api.h"
 #include "juicer_cuda_call_scope.h"
@@ -97,9 +95,7 @@ namespace {
     constexpr std::array<std::string_view, 31> kProjectionCases{
         "NegativeDirectHanatos", "NegativeDirectMallett", "NegativeDirectArctic", "NegativePrintHanatos", "NegativePrintMallett", "NegativePrintArctic", "PositiveDirectHanatos", "PositiveDirectMallett", "PositiveDirectArctic", "PositivePrintHanatos", "PositivePrintMallett", "PositivePrintArctic", "DirectIgnoresPrintControls", "PreflashAndNormalizationModes[norm=0,compensate=0]", "PreflashAndNormalizationModes[norm=0,compensate=1]", "PreflashAndNormalizationModes[norm=1,compensate=0]", "PreflashAndNormalizationModes[norm=1,compensate=1]", "GammaAndGrainLayers", "PhysicalDefectsAndWeave", "CameraAndEnlargerOptics", "DirAndCompressionOff", "SignedZeroGlare[+0]", "SignedZeroGlare[-0]", "CorrectionsAndScannerControls[print]", "CorrectionsAndScannerControls[direct]", "EncodingOnlyReusesMediumIdentities[encoded]", "EncodingOnlyReusesMediumIdentities[linear]", "SnapshotIntegerBooleansPreserveNonzeroCasts[direct]", "SnapshotIntegerBooleansPreserveNonzeroCasts[print]", "DisabledFamiliesExcludeUnusedControls", "GrainDebugSuppressesPhysicalEffects"};
     std::optional<Json> projectionOracle;
-    Json projectionRows = Json::array();
     std::vector<std::string> observedProjectionCases;
-    bool captureProjection = false;
 
     void exact_keys(const Json& value, std::initializer_list<std::string_view> names) {
         if (!value.is_object() || value.size() != names.size())
@@ -207,39 +203,50 @@ namespace {
             throw std::runtime_error("prepared-state oracle live backing relationship mismatch");
     }
 
-    void record_projection(const ParamSnapshot& params, const FjPreparedStateView& expected, const FjPreparedStateView& actual) {
+    void record_projection(const ParamSnapshot& params, FjAssets* resourceOwner, const FjPreparedStateView& actual) {
         const auto name = projection_case(params);
         if (std::find(kProjectionCases.begin(), kProjectionCases.end(), name) == kProjectionCases.end() ||
             std::find(observedProjectionCases.begin(), observedProjectionCases.end(), name) != observedProjectionCases.end())
             throw std::runtime_error("unknown or duplicate prepared-state projection case " + name);
         observedProjectionCases.push_back(name);
-        const auto expectedRecord = PreparedStateOracle::view(expected);
-        const auto actualRecord = PreparedStateOracle::view(actual);
-        PreparedStateOracle::compare(expectedRecord, actualRecord);
+        const auto& row = oracle_row(name);
+        PreparedStateOracle::compare(row.at("input"), PreparedStateOracle::params(preparation_params(params)));
+        PreparedStateOracle::compare(row.at("expected"), PreparedStateOracle::view(actual));
         Json relations = Json::array();
-        if (expected.input_hull.xy.count != 0) {
-            relations.push_back(backing_edge("native.input_hull.entry_identity", "actual.input_hull.entry_identity", expected.input_hull.entry_identity == actual.input_hull.entry_identity));
-            relations.push_back(backing_edge("native.input_hull.xy", "actual.input_hull.xy", expected.input_hull.xy.data == actual.input_hull.xy.data));
+        // Frozen native.* labels now identify raw consumers of the same Rust cache entry.
+        if (actual.input_hull.xy.count != 0) {
+            FjInputHullOwner* hull = nullptr;
+            ASSERT_EQ(fj_test_assets_input_hull_acquire(resourceOwner, &hull, nullptr).category, FJ_STATUS_SUCCESS);
+            const auto release = [](FjInputHullOwner* owner) {
+                (void)fj_test_input_hull_release(owner, nullptr);
+            };
+            std::unique_ptr<FjInputHullOwner, decltype(release)> hold(hull, release);
+            FjInputHullView input{};
+            ASSERT_EQ(fj_test_input_hull_view(hold.get(), &input, nullptr).category, FJ_STATUS_SUCCESS);
+            relations.push_back(backing_edge("native.input_hull.entry_identity", "actual.input_hull.entry_identity", input.entry_identity == actual.input_hull.entry_identity));
+            relations.push_back(backing_edge("native.input_hull.xy", "actual.input_hull.xy", input.xy.data == actual.input_hull.xy.data));
         }
-        if (expected.output_boundary.cmax.count != 0) {
-            relations.push_back(backing_edge("native.output_boundary.entry_identity", "actual.output_boundary.entry_identity", expected.output_boundary.entry_identity == actual.output_boundary.entry_identity));
-            relations.push_back(backing_edge("native.output_boundary.cmax", "actual.output_boundary.cmax", expected.output_boundary.cmax.data == actual.output_boundary.cmax.data));
+        if (actual.output_boundary.cmax.count != 0) {
+            FjOutputBoundarySource source{};
+            source.output_space = actual.output_color.color_space;
+            std::copy_n(actual.output_color.d65_xyz_to_native_rgb, 9, source.d65_xyz_to_native_rgb);
+            source.transform_hash = actual.output_boundary.transform_hash;
+            FjOutputBoundaryOwner* boundary = nullptr;
+            ASSERT_EQ(fj_test_assets_output_boundary_acquire(resourceOwner, &source, actual.output_boundary.contract_hash, &boundary, nullptr).category, FJ_STATUS_SUCCESS);
+            const auto release = [](FjOutputBoundaryOwner* owner) {
+                (void)fj_test_output_boundary_release(owner, nullptr);
+            };
+            std::unique_ptr<FjOutputBoundaryOwner, decltype(release)> hold(boundary, release);
+            FjOutputBoundaryView output{};
+            ASSERT_EQ(fj_test_output_boundary_view(hold.get(), &output, nullptr).category, FJ_STATUS_SUCCESS);
+            relations.push_back(backing_edge("native.output_boundary.entry_identity", "actual.output_boundary.entry_identity", output.entry_identity == actual.output_boundary.entry_identity));
+            relations.push_back(backing_edge("native.output_boundary.cmax", "actual.output_boundary.cmax", output.cmax.data == actual.output_boundary.cmax.data));
         }
-        for (const auto& edge : relations)
-            EXPECT_EQ(edge.at("equal"), true);
-        const auto input = PreparedStateOracle::params(preparation_params(params));
-        if (projectionOracle) {
-            const auto& row = oracle_row(name);
-            PreparedStateOracle::compare(row.at("input"), input);
-            PreparedStateOracle::compare(row.at("expected"), actualRecord);
-            Json recordedRelations = Json::array();
-            for (const auto& edge : row.at("backing_relations"))
-                if (!encoding_edge(edge))
-                    recordedRelations.push_back(edge);
-            compare_backing(recordedRelations, relations);
-        }
-        if (captureProjection)
-            projectionRows.push_back({{"case_id", name}, {"input", input}, {"status", FJ_STATUS_SUCCESS}, {"api", FJ_API_NONE}, {"native_code", 0}, {"diagnostic", ""}, {"expected", expectedRecord}, {"captured_actual", actualRecord}, {"backing_relations", std::move(relations)}});
+        Json recordedRelations = Json::array();
+        for (const auto& edge : row.at("backing_relations"))
+            if (!encoding_edge(edge))
+                recordedRelations.push_back(edge);
+        compare_backing(recordedRelations, relations);
     }
 
     void observe_encoding_relation(bool equal) {
@@ -252,10 +259,6 @@ namespace {
                         edges.push_back(recorded);
                 compare_backing(edges, Json::array({edge}));
             }
-            if (captureProjection)
-                for (auto& row : projectionRows)
-                    if (row.at("case_id") == name)
-                        row.at("backing_relations").push_back(edge);
         }
     }
 
@@ -272,11 +275,7 @@ namespace {
         return filter;
     }
 
-    Json projection_payload(const std::string& preset, const std::string& resources) {
-        return {{"schema_version", 1}, {"preset", preset}, {"producer", {{"authority", "Film-Juicer native composition"}, {"target", "JuicerPreparedStateTests"}, {"manifest_entry", preset}}}, {"toolchain", {{"cxx", __VERSION__}, {"rust_toolchain", "1.98.1"}, {"pointer_bits", sizeof(void*) * 8}}}, {"configuration", {{"build_type", preset.ends_with("debug") ? "Debug" : "Release"}, {"testing", true}}}, {"inputs", {{"resource_directory", resources}, {"parameter_type", "FjPreparationParams"}}}, {"cases", projectionRows}};
-    }
     FjAssets* assets() {
-        JuicerProcess::root().ensure_bootstrap();
         return JuicerProcess::root().assets().borrow_rust_assets();
     }
 
@@ -303,463 +302,15 @@ namespace {
         }
     }
 
-    void equal_triplets(FjFloatSpan actual, const std::vector<std::array<float, 3>>& expected) {
-        static_assert(sizeof(std::array<float, 3>) == 3 * sizeof(float));
-        ASSERT_EQ(actual.count, expected.size() * 3);
-        if (!expected.empty()) {
-            ASSERT_NE(actual.data, nullptr);
-            EXPECT_EQ(std::memcmp(actual.data, expected.data(), expected.size() * sizeof(expected.front())), 0);
-        }
-    }
-
-    void equal_tables(const FjPreparedSpectralView& actual, const Spectral::SpectralTables& expected) {
-        equal_span(actual.lambda_nm, expected.lambda);
-        equal_span(actual.illuminant, expected.illum);
-        equal_span(actual.observer_xyz[0], expected.Xbar);
-        equal_span(actual.observer_xyz[1], expected.Ybar);
-        equal_span(actual.observer_xyz[2], expected.Zbar);
-        equal_span(actual.weighted_xyz[0], expected.Ax);
-        equal_span(actual.weighted_xyz[1], expected.Ay);
-        equal_span(actual.weighted_xyz[2], expected.Az);
-        equal_span(actual.dyes_cmy[0], expected.epsC);
-        equal_span(actual.dyes_cmy[1], expected.epsM);
-        equal_span(actual.dyes_cmy[2], expected.epsY);
-        equal_span(actual.baseline_min, expected.baseDensityMin);
-        equal_span(actual.baseline_mid, expected.baseDensityMid);
-        equal_bits(actual.inv_yn, expected.invYn);
-        for (std::size_t c = 0; c < 3; ++c)
-            equal_bits(actual.white_xyz[c], expected.whiteXYZ[c]);
-        EXPECT_EQ(actual.has_baseline, expected.hasBaseline);
-        EXPECT_EQ(actual.illuminant_hash, expected.illuminantHash);
-        EXPECT_EQ(actual.hash, expected.tablesHash);
-    }
-
-    void equal_bounds(const FjFilmDensityBounds& actual, const DensityBoundsRecipe& expected) {
-        EXPECT_EQ(actual.route, static_cast<unsigned>(expected.route));
-        EXPECT_EQ(actual.medium, static_cast<unsigned>(expected.medium));
-        EXPECT_EQ(actual.polarity, static_cast<unsigned>(expected.polarity));
-        EXPECT_EQ(actual.source, static_cast<unsigned>(expected.source));
-        equal_span({actual.minimum_cmy, 3}, expected.dataMinCmy);
-        equal_span({actual.maximum_cmy, 3}, expected.dataMaxCmy);
-        equal_span({actual.inv_span_cmy, 3}, expected.invSpanCmy);
-        equal_span({actual.authored_minimum_cmy, 3}, expected.authoredMinCmy);
-        equal_span({actual.authored_maximum_cmy, 3}, expected.authoredMaxCmy);
-        EXPECT_EQ(actual.hash, expected.hash);
-    }
-
-    void equal_encoding(const FjOutputEncoding& actual, const FjOutputEncoding& expected) {
-        EXPECT_EQ(actual.schema, expected.schema);
-        EXPECT_EQ(actual.cctf_kind, expected.cctf_kind);
-        equal_bits(actual.gamma, expected.gamma);
-        equal_bits(actual.a, expected.a);
-        equal_bits(actual.b, expected.b);
-        equal_bits(actual.c, expected.c);
-        equal_bits(actual.d, expected.d);
-        equal_bits(actual.linear_cutoff, expected.linear_cutoff);
-        equal_span({actual.dwg_to_output, 9}, expected.dwg_to_output);
-    }
-
-    void equal_diffusion(const FjDiffusionRecipe& actual, const DiffusionFilterOpticsRecipe& expected) {
-        const auto& resolved = expected.resolved;
-        EXPECT_EQ(actual.domain, static_cast<unsigned>(expected.domain));
-        EXPECT_EQ(actual.active, resolved.active);
-        EXPECT_EQ(actual.family, static_cast<unsigned>(resolved.family));
-        equal_bits(actual.scatter_fraction, resolved.scatterFraction);
-        equal_bits(actual.warmth, resolved.effectiveWarmth);
-        equal_bits(actual.spatial_scale, resolved.spatialScale);
-        for (std::size_t i = 0; i < 3; ++i) {
-            equal_bits(actual.group_weights[i], resolved.groupWeightsCoreHaloBloom[i]);
-            equal_bits(actual.group_lambda_um[i], resolved.groupCenterLambdaUm[i]);
-        }
-        EXPECT_EQ(actual.resolved_hash, resolved.hash);
-        EXPECT_EQ(actual.hash, expected.hash);
-    }
-
-    void equal_fixed_recipes(const FjPreparedStateView& actual, const RenderRecipe& expected, const FocusedRenderPayload& payload) {
-        const auto& grain = expected.visualGrain;
-        EXPECT_EQ(actual.grain.active, grain.active);
-        EXPECT_EQ(actual.grain.sublayers_active, grain.sublayersActive);
-        EXPECT_EQ(actual.grain.sublayer_count, grain.nSubLayers);
-        EXPECT_EQ(actual.grain.debug_view, grain.debugView);
-        EXPECT_EQ(actual.grain.layers_hash, grain.densityCurvesLayersHash);
-        equal_span({actual.grain.particle_scale_cmy, 3}, grain.particleScaleCmy);
-        equal_span({actual.grain.particle_scale_layers, 3}, grain.particleScaleLayers);
-        equal_span({actual.grain.particle_density_min_cmy, 3}, grain.visualParticleDensityMinCmy);
-        equal_span({actual.grain.uniformity_cmy, 3}, grain.uniformityCmy);
-        equal_span({actual.grain.micro_structure, 2}, grain.microStructure);
-        for (std::size_t c = 0; c < 3; ++c) {
-            EXPECT_EQ(actual.grain.axis_finite_cmy[c], grain.grainLayerAxisFinite[c]);
-            equal_span({actual.grain.axis_block_prefix_max_cmy[c], 16}, grain.grainLayerAxisBlockPrefixMax[c]);
-        }
-        equal_bits(actual.grain.particle_area_um2, grain.particleAreaUm2);
-        equal_bits(actual.grain.correlation_sigma_px, grain.correlationSigmaPx);
-        equal_bits(actual.grain.dye_cloud_blur_um, grain.dyeCloudBlurUm);
-        equal_bits(actual.grain.amplitude, grain.amplitude);
-        equal_bits(actual.grain.chroma_mix, grain.chromaMix);
-        equal_bits(actual.grain.chroma_shared_weight, grain.chromaSharedWeight);
-        equal_bits(actual.grain.chroma_independent_weight, grain.chromaIndependentWeight);
-        equal_bits(actual.grain.fine_weight, grain.fineWeight);
-        equal_bits(actual.grain.mid_weight, grain.midWeight);
-        equal_bits(actual.grain.coarse_weight, grain.coarseWeight);
-        equal_bits(actual.grain.size_mix_scale, grain.sizeMixScale);
-        equal_bits(actual.grain.clump_temporal_mix, grain.clumpTemporalMix);
-        equal_bits(actual.grain.clump_morph_period_sec, grain.clumpMorphPeriodSec);
-        const auto& optics = expected.spatialOptics;
-        equal_diffusion(actual.optics.camera_diffusion, optics.cameraDiffusion);
-        equal_diffusion(actual.optics.enlarger_diffusion, optics.enlargerDiffusion);
-        equal_bits(actual.optics.camera_lens_blur.sigma_um, optics.cameraLensBlur.sigmaUm);
-        EXPECT_EQ(actual.optics.camera_lens_blur.hash, optics.cameraLensBlur.hash);
-        const auto& halation = optics.scatterHalation;
-        EXPECT_EQ(actual.optics.scatter_halation.scatter_active, halation.scatterActive);
-        EXPECT_EQ(actual.optics.scatter_halation.back_reflection_active, halation.backReflectionActive);
-        equal_bits(actual.optics.scatter_halation.scatter_amount, halation.scatterAmount);
-        equal_bits(actual.optics.scatter_halation.scatter_spatial_scale, halation.scatterSpatialScale);
-        equal_bits(actual.optics.scatter_halation.halation_spatial_scale, halation.halationSpatialScale);
-        equal_span({actual.optics.scatter_halation.first_sigma_um, 3}, halation.halationFirstSigmaUm);
-        equal_span({actual.optics.scatter_halation.total_strength, 3}, halation.totalStrength);
-        EXPECT_EQ(actual.optics.scatter_halation.hash, halation.hash);
-        JuicerCuda::PreparedDescriptors fixed;
-        fixed.color = payload.scannerColor;
-        fixed.outputGamut = expected.scannerOutput.outputGamut;
-        fixed.effects.emplace();
-        fixed.effects->filmDust = expected.filmJuicerEffects.filmDust;
-        fixed.effects->filmScratch = expected.filmJuicerEffects.filmScratch;
-        fixed.effects->gateDust = expected.filmJuicerEffects.gateDust;
-        fixed.effects->gateScratch = expected.filmJuicerEffects.gateScratch;
-        FjPreparedHostData wire{};
-        JuicerCudaTest::encode_prepared_descriptors(fixed, wire);
-        // These records contain exactly the listed float words and no padding.
-        static_assert(sizeof(FjDust) == 42 * sizeof(float) && alignof(FjDust) == alignof(float));
-        static_assert(sizeof(FjScratch) == 36 * sizeof(float) && alignof(FjScratch) == alignof(float));
-        EXPECT_EQ(std::memcmp(&actual.effects.film_dust, &wire.effects.film_dust, sizeof(FjDust)), 0);
-        EXPECT_EQ(std::memcmp(&actual.effects.gate_dust, &wire.effects.gate_dust, sizeof(FjDust)), 0);
-        EXPECT_EQ(std::memcmp(&actual.effects.film_scratch, &wire.effects.film_scratch, sizeof(FjScratch)), 0);
-        EXPECT_EQ(std::memcmp(&actual.effects.gate_scratch, &wire.effects.gate_scratch, sizeof(FjScratch)), 0);
-        EXPECT_EQ(actual.effects.active, expected.filmJuicerEffects.active);
-        equal_bits(actual.effects.gate_weave_amount, expected.filmJuicerEffects.gateWeaveAmount);
-        const auto& color = wire.output_color;
-        EXPECT_EQ(actual.output_color.color_space, color.color_space);
-        EXPECT_EQ(actual.output_color.flags, color.flags);
-        equal_span({actual.output_color.cat02, 9}, color.cat02);
-        equal_span({actual.output_color.xyz_to_rgb, 9}, color.xyz_to_rgb);
-        equal_span({actual.output_color.illuminant_xyz, 3}, color.illuminant_xyz);
-        equal_span({actual.output_color.native_rgb_to_d65_xyz, 9}, color.native_rgb_to_d65_xyz);
-        equal_span({actual.output_color.d65_xyz_to_native_rgb, 9}, color.d65_xyz_to_native_rgb);
-        equal_span({actual.output_color.lightness_knee, 3}, color.lightness_knee);
-        equal_span({actual.output_color.chroma_knee, 3}, color.chroma_knee);
-        EXPECT_EQ(actual.output_color.gamut_recipe_hash, color.gamut_recipe_hash);
-        equal_encoding(actual.output_color.encoding, color.encoding);
-        equal_encoding(actual.scanner_color.encoding, color.encoding);
-        EXPECT_EQ(actual.scanner_color.output_space, color.color_space);
-        EXPECT_EQ(actual.scanner_color.flags, color.flags & ~FJ_COLOR_GAMUT_COMPRESSION);
-        EXPECT_EQ(actual.scanner_color.active_gamut_recipe_hash, payload.scannerColor.outputGamutRecipeHash);
-    }
-
     void compare_product(const ParamSnapshot& params) {
-        // Unchanged accepted native assembly is the independent composition oracle.
-        FocusedRenderStateBuildProduct expected;
-        std::string diagnostic;
-        const bool print = params.scanRoute == Spektrafilm::ScanRoute::NegativePrintScan ||
-                           params.scanRoute == Spektrafilm::ScanRoute::PositivePrintScan;
-        ASSERT_TRUE(print ? build_print_render_state_product(params, expected, diagnostic) : build_direct_render_state_product(params, expected, diagnostic)) << diagnostic;
         FjStatus status{};
+        std::string diagnostic;
         auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
         ASSERT_TRUE(owner.has_value());
         FjPreparedStateView actual{};
         ASSERT_EQ(state_view(owner, actual).category, FJ_STATUS_SUCCESS);
-        const auto& recipe = expected.recipe;
-        const auto& payload = expected.payload;
-        equal_fixed_recipes(actual, recipe, payload);
-        EXPECT_EQ(actual.recipe_hash, recipe.hash);
-        EXPECT_EQ(actual.profile_route_hash, recipe.profileRoute.hash);
-        EXPECT_EQ(actual.upload_core_hash, payload.uploadCoreHash);
-        EXPECT_EQ(actual.scanner_hash, payload.scannerHash);
-        EXPECT_EQ(actual.route, static_cast<unsigned>(recipe.profileRoute.scanRoute));
-        EXPECT_EQ(actual.polarity, static_cast<unsigned>(recipe.profileRoute.capturePolarity));
-        EXPECT_EQ(std::string(actual.film_profile_key.data, actual.film_profile_key.count), recipe.profileRoute.filmProfileKey);
-        EXPECT_EQ(actual.film_profile_asset_version, recipe.profileRoute.filmProfileAssetVersionToken);
-        EXPECT_EQ(actual.print_profile_asset_version, recipe.profileRoute.printProfileAssetVersionToken);
-        EXPECT_EQ(actual.film_exposure.hash, recipe.filmRaw.hash);
-        const auto& input = recipe.filmRaw;
-        EXPECT_EQ(actual.film_exposure.input_color_space, input.inputColorSpace);
-        EXPECT_EQ(actual.film_exposure.method, static_cast<unsigned>(input.rgbToRawMethod));
-        EXPECT_EQ(actual.film_exposure.flags, (input.inputCctfDecoding ? FJ_FILM_DECODE_CCTF : 0u) | (payload.filmRawConfig.applyInputChromaticAdapt ? FJ_FILM_ADAPT_INPUT : 0u) | (input.autoExposureEnabled ? FJ_FILM_AUTO_EXPOSURE : 0u));
-        equal_bits(actual.film_exposure.manual_exposure_ev, input.manualExposureCompensationEv);
-        equal_bits(actual.film_exposure.mallett_green_midgray_scale, input.mallettGreenMidgrayScale);
-        equal_span({actual.film_exposure.input_rgb_to_xyz, 9}, input.inputRgbToXyz);
-        equal_span({actual.film_exposure.input_xyz_adapt, 9}, input.inputXyzAdapt);
-        equal_span({actual.film_exposure.xyz_to_linear_srgb, 9}, input.xyzToLinearSrgb);
-        EXPECT_EQ(actual.film_exposure.sensitivity_hash, input.finalSensitivityHash);
-        EXPECT_EQ(actual.film_exposure.tc_lut_hash, input.tcLutHash);
-        const auto& policy = actual.input_policy;
-        EXPECT_EQ(policy.meter, static_cast<unsigned>(input.autoExposureMethod));
-        EXPECT_EQ(policy.band_pass_active, input.cameraBandPass.active);
-        EXPECT_EQ(policy.apply_hanatos_window, input.hanatos.applyWindow);
-        EXPECT_EQ(policy.apply_hanatos_surface, input.hanatos.applySurface);
-        EXPECT_EQ(policy.input_compression_active, input.inputCompressionActive);
-        equal_bits(policy.film_format_long_edge_mm, input.filmFormatLongEdgeMm);
-        equal_bits(policy.hanatos_spectral_blur, input.hanatos.spectralGaussianBlur);
-        equal_span({policy.uv, 3}, input.cameraBandPass.uv);
-        equal_span({policy.ir, 3}, input.cameraBandPass.ir);
-        equal_span({policy.nominal_white_xyz, 3}, input.inputNominalWhiteXYZ);
-        equal_span({policy.projection_white_xyz, 3}, input.projectionWhiteXYZ);
-        equal_span(policy.hanatos_window, input.hanatos.windowParams);
-        ASSERT_EQ(policy.hanatos_surface_rgb.count, 45u);
-        EXPECT_EQ(std::memcmp(policy.hanatos_surface_rgb.data, input.hanatos.surfaceParams.data(), sizeof(input.hanatos.surfaceParams)), 0);
-        EXPECT_EQ(policy.input_hull_hash, input.inputCompressionHullHash);
-        EXPECT_EQ(policy.tc_source_hash, input.tcSourceAssetHash);
-        EXPECT_EQ(policy.projection_illuminant, input.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 ? FJ_FILM_INPUT_ILLUMINANT_PROFILE_REFERENCE : FJ_FILM_INPUT_ILLUMINANT_D65);
-        if (input.inputCompressionHull) {
-            const auto& hull = *input.inputCompressionHull;
-            EXPECT_EQ(actual.input_hull.hash, hull.hash);
-            EXPECT_EQ(actual.input_hull.entry_identity, hull.entryIdentity);
-            EXPECT_EQ(actual.input_hull.xy.data, hull.xy.data());
-            equal_span({actual.input_hull.center_xy, 2}, hull.center);
-            ASSERT_EQ(actual.input_hull.xy.count, hull.xy.size() * 2);
-            EXPECT_EQ(std::memcmp(actual.input_hull.xy.data, hull.xy.data(), actual.input_hull.xy.count * sizeof(float)), 0);
-        } else {
-            EXPECT_EQ(actual.input_hull.xy.count, 0u);
-            EXPECT_EQ(actual.input_hull.hash, 0u);
-        }
-        ASSERT_EQ(actual.film_exposure.sensitivity_rgb.count, 81u * 3);
-        ASSERT_NE(actual.film_exposure.sensitivity_rgb.data, nullptr);
-        EXPECT_EQ(std::memcmp(actual.film_exposure.sensitivity_rgb.data, recipe.filmRaw.finalSensitivity.data(), sizeof(recipe.filmRaw.finalSensitivity)), 0);
-        equal_span(actual.film_development.log_exposure, recipe.filmDevelop.logExposure);
-        equal_triplets(actual.film_development.density_rgb, recipe.filmDevelop.normalizedDensityCurves);
-        equal_span({actual.film_development.gamma_rgb, 3}, recipe.filmDevelop.densityCurveGamma);
-        EXPECT_EQ(actual.film_development.hash, recipe.filmDevelop.hash);
-        EXPECT_EQ(actual.film_development.density_curves_hash, recipe.filmDevelop.normalizedDensityCurvesHash);
-        EXPECT_EQ(actual.film_development.density_layers_hash, recipe.filmDevelop.densityCurvesLayersHash);
-        for (std::size_t layer = 0; layer < 3; ++layer)
-            for (std::size_t c = 0; c < 3; ++c)
-                equal_span(actual.film_development.density_layers[layer][c], recipe.filmDevelop.densityCurvesLayers[layer][c]);
-        const auto& dir = recipe.dirCouplers;
-        EXPECT_EQ(actual.dir_recipe.polarity, static_cast<unsigned>(dir.polarity));
-        EXPECT_EQ(actual.dir_recipe.hash, dir.hash);
-        EXPECT_EQ(actual.dir_recipe.compensated_axes_hash, dir.compensatedDensityCurveAxesHash);
-        EXPECT_EQ(actual.dir_recipe.mode, static_cast<unsigned>(dir.nonlinearMode));
-        EXPECT_EQ(std::memcmp(actual.dir_recipe.matrix_rgb, dir.matrixRgb.data(), sizeof(actual.dir_recipe.matrix_rgb)), 0);
-        equal_span({actual.dir_recipe.density_max_rgb, 3}, dir.densityMaxRgb);
-        equal_span({actual.dir_recipe.density_ref_rgb, 3}, dir.densityRefRgb);
-        equal_span({actual.dir_recipe.donor_k_rgb, 3}, dir.donorKRgb);
-        equal_span({actual.dir_recipe.receiver_c_ref_rgb, 3}, dir.receiverCRefRgb);
-        equal_span({actual.dir_recipe.receiver_kr_rgb, 3}, dir.receiverKrRgb);
-        for (std::size_t c = 0; c < 3; ++c)
-            equal_span(actual.dir_recipe.compensated_axes_rgb[c], dir.compensatedDensityCurveAxesRgb[c]);
-        equal_bits(actual.dir_recipe.diffusion_size_um, dir.diffusionSizeUm);
-        equal_bits(actual.dir_recipe.diffusion_tail_um, dir.diffusionTailUm);
-        equal_bits(actual.dir_recipe.diffusion_tail_weight, dir.diffusionTailWeight);
-        equal_bounds(actual.scanner_bounds, recipe.densityBounds);
-        if (print) {
-            equal_bounds(actual.enlarger_film_bounds, recipe.enlargerFilmBounds);
-        } else {
-            // Direct states own no print branch; absent wire records are zero.
-            EXPECT_EQ(actual.enlarger_film_bounds.hash, 0u);
-            equal_span({actual.enlarger_film_bounds.minimum_cmy, 3}, std::array<float, 3>{});
-            equal_span({actual.enlarger_film_bounds.maximum_cmy, 3}, std::array<float, 3>{});
-            equal_span({actual.enlarger_film_bounds.inv_span_cmy, 3}, std::array<float, 3>{});
-        }
-        equal_span({actual.grain_minimum.cmy, 3}, recipe.grainContract.densityMinCmy);
-        equal_tables(actual.exposure_tables, payload.exposureTables);
-        equal_tables(actual.scanner_tables, payload.scannerTables);
-        equal_span({actual.s_inverse, 9}, payload.spdSInv);
-        equal_span({actual.midgray_dwg_rgb, 3}, payload.filmRawConfig.midgrayDWG);
-        equal_span({actual.raw_midgray, 3}, payload.filmRawConfig.rawMidgray);
-        equal_bits(actual.raw_green, payload.filmRawConfig.rawMidgrayGreen);
-        equal_bits(actual.midgray_scale, payload.filmRawConfig.midgrayScale);
-        EXPECT_EQ(actual.raw_midgray_bgr, params.spectralUpsamplingMode == 1);
-        if (payload.filmTcLut)
-            equal_span(actual.film_exposure.tc_lut_rgba, payload.filmTcLut->samples());
-        else
-            EXPECT_EQ(actual.film_exposure.tc_lut_rgba.count, 0u);
-        if (input.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
-            equal_span(actual.film_exposure.mallett_illuminant, payload.exposureTables.illum);
-            equal_span(actual.film_exposure.mallett_basis, Spectral::gMallettBasis.data);
-        } else {
-            EXPECT_EQ(actual.film_exposure.mallett_illuminant.count, 0u);
-            EXPECT_EQ(actual.film_exposure.mallett_basis.count, 0u);
-        }
-        EXPECT_EQ(actual.scanner_recipe_hash, recipe.scannerOutput.hash);
-        const auto& scan = recipe.scannerOutput;
-        const auto& scanPolicy = actual.scanner_policy;
-        EXPECT_EQ(scanPolicy.black_correction, scan.blackCorrection);
-        EXPECT_EQ(scanPolicy.white_correction, scan.whiteCorrection);
-        EXPECT_EQ(scanPolicy.glare_active, scan.glareActive);
-        equal_bits(scanPolicy.black_level, scan.blackLevel);
-        equal_bits(scanPolicy.white_level, scan.whiteLevel);
-        equal_bits(scanPolicy.glare_percent, scan.glarePercent);
-        equal_bits(scanPolicy.glare_roughness, scan.glareRoughness);
-        equal_bits(scanPolicy.glare_blur_sigma_px, scan.glareBlurSigmaPx);
-        equal_bits(scanPolicy.lens_blur_sigma_px, scan.lensBlurSigmaPx);
-        equal_bits(scanPolicy.unsharp_sigma_px, scan.unsharpSigmaPx);
-        equal_bits(scanPolicy.unsharp_amount, scan.unsharpAmount);
-        Scanner::ScannerSpectralLutDescriptor lut;
-        ASSERT_TRUE(print ? Scanner::build_print_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &scan}, lut, diagnostic) : Scanner::build_direct_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &scan}, lut, diagnostic)) << diagnostic;
-        EXPECT_EQ(actual.scanner_lut.hash, lut.hash);
-        EXPECT_EQ(actual.scanner_lut.route, static_cast<unsigned>(lut.route));
-        EXPECT_EQ(actual.scanner_lut.medium, static_cast<unsigned>(lut.medium));
-        EXPECT_EQ(actual.scanner_lut.capture_polarity, static_cast<unsigned>(lut.polarity));
-        EXPECT_EQ(actual.scanner_lut.resolution, lut.lutResolution);
-        EXPECT_EQ(actual.scanner_lut.density_bounds_hash, lut.densityBoundsHash);
-        EXPECT_EQ(actual.scanner_lut.channel_density_hash, lut.channelDensityHash);
-        EXPECT_EQ(actual.scanner_lut.base_density_hash, lut.baseDensityHash);
-        EXPECT_EQ(actual.scanner_lut.viewing_illuminant_hash, lut.scanIlluminantHash);
-        EXPECT_EQ(actual.scanner_lut.observer_hash, lut.observerHash);
-        Scanner::ScannerPostEffectsDescriptor post;
-        ASSERT_TRUE(Scanner::build_scanner_post_effects_descriptor(scan, post, diagnostic)) << diagnostic;
-        EXPECT_EQ(actual.scanner_post_effects.hash, post.hash);
-        EXPECT_EQ(actual.scanner_post_effects.route, static_cast<unsigned>(post.route));
-        EXPECT_EQ(actual.scanner_post_effects.glare_active, post.glareActive);
-        equal_bits(actual.scanner_post_effects.glare_percent, post.glarePercent);
-        equal_bits(actual.scanner_post_effects.glare_roughness, post.glareRoughness);
-        equal_bits(actual.scanner_post_effects.glare_blur_sigma_px, post.glareBlurSigmaPx);
-        equal_bits(actual.scanner_post_effects.lens_blur_sigma_px, post.lensBlurSigmaPx);
-        equal_bits(actual.scanner_post_effects.unsharp_sigma_px, post.unsharpSigmaPx);
-        equal_bits(actual.scanner_post_effects.unsharp_amount, post.unsharpAmount);
-        EXPECT_EQ(actual.scanner_post_effects.glare_blur_radius, post.glareBlurRadius);
-        EXPECT_EQ(actual.scanner_post_effects.lens_blur_radius, post.lensBlurRadius);
-        EXPECT_EQ(actual.scanner_post_effects.unsharp_radius, post.unsharpRadius);
-        EXPECT_EQ(actual.scanner_post_effects.schema, post.schemaVersion);
-        EXPECT_EQ(actual.scanner_color.hash, payload.scannerColor.hash);
-        equal_span({actual.scanner_color.cat02, 9}, payload.scannerColor.cat02);
-        equal_span({actual.scanner_color.xyz_to_rgb, 9}, payload.scannerColor.xyzToRgb);
-        equal_span({actual.scanner_color.illuminant_xyz, 3}, payload.scannerColor.illuminantXYZ);
-        const auto& ref = recipe.scannerOutput.syntheticFilmReference;
-        EXPECT_EQ(actual.film_reference.hash, ref.hash);
-        equal_span({actual.film_reference.baseline_raw_rgb, 3}, ref.baselineRawRgb);
-        equal_span({actual.film_reference.compensated_raw_rgb, 3}, ref.compensatedRawRgb);
-        equal_span({actual.film_reference.baseline_density_cmy, 3}, ref.baselineDensityCmy);
-        equal_span({actual.film_reference.compensated_density_cmy, 3}, ref.compensatedDensityCmy);
-        equal_bits(actual.film_reference.meter_scale, ref.baselineMeterScale);
-        if (payload.outputBoundaryTable) {
-            equal_span(actual.output_boundary.cmax, payload.outputBoundaryTable->cmax);
-            equal_span(actual.output_color.gamut_cmax, payload.outputBoundaryTable->cmax);
-            EXPECT_EQ(actual.output_color.gamut_table_hash, payload.outputBoundaryTable->hash);
-            EXPECT_EQ(actual.output_boundary.hash, payload.outputBoundaryTable->hash);
-            EXPECT_EQ(actual.output_boundary.entry_identity, payload.outputBoundaryTable->entryIdentity);
-            EXPECT_EQ(actual.output_boundary.cmax.data, payload.outputBoundaryTable->cmax.data());
-            EXPECT_EQ(actual.output_boundary.transform_hash, payload.outputBoundaryTable->transformHash);
-            EXPECT_EQ(actual.output_boundary.contract_hash, payload.outputBoundaryTable->contractHash);
-        } else {
-            EXPECT_EQ(actual.output_color.gamut_cmax.count, 0u);
-            EXPECT_EQ(actual.output_color.gamut_table_hash, 0u);
-        }
-        EXPECT_EQ(actual.grain.hash, recipe.visualGrain.hash);
-        EXPECT_EQ(actual.effects.hash, recipe.filmJuicerEffects.hash);
-        EXPECT_EQ(actual.optics.hash, recipe.spatialOptics.hash);
-        EXPECT_EQ(actual.print_recipe_hash, recipe.print.hash);
-        Scanner::ScannerColorCorrectionDescriptor correction;
-        if (print) {
-            EXPECT_EQ(std::string(actual.print_profile_key.data, actual.print_profile_key.count), recipe.profileRoute.printProfileKey);
-            equal_triplets(actual.print.density_cmy, recipe.print.develop.densityCurves);
-            const auto& filmData = recipe.profileRoute.filmProfile->data;
-            const auto& printData = recipe.profileRoute.printProfile->data;
-            const auto calibration = JuicerProcess::root().assets().neutral_print_calibration(recipe.profileRoute.printProfile->info.stock, recipe.print.illuminant.key, recipe.profileRoute.filmProfile->info.stock);
-            ASSERT_NE(calibration.status, JuicerAssets::NeutralPrintCalibrationStatus::Malformed);
-            EXPECT_EQ(actual.calibration, static_cast<unsigned>(calibration.status));
-            constexpr std::array<float, 3> kCurrentNeutral{0.0f, 65.0f, 55.0f};
-            equal_span({actual.neutral_cmy_cc, 3}, calibration.status == JuicerAssets::NeutralPrintCalibrationStatus::Found ? calibration.cmyCc : kCurrentNeutral);
-            const auto lights = JuicerProcess::root().assets().illuminant_filter_curves();
-            std::span<const float> sourceLight;
-            Spectral::Curve equalLight;
-            const auto& key = recipe.print.illuminant.key;
-            if (key == "D65")
-                sourceLight = lights->d65.linear;
-            else if (key == "D55")
-                sourceLight = lights->d55.linear;
-            else if (key == "D50")
-                sourceLight = lights->d50.linear;
-            else if (key == "T")
-                sourceLight = lights->tungsten.linear;
-            else if (key == "K75P")
-                sourceLight = lights->kinoton75P.linear;
-            else if (key == "TH-KG3")
-                sourceLight = lights->tungstenKg3.linear;
-            else if (key == "TH-KG3-L")
-                sourceLight = lights->tungstenKg3Lens.linear;
-            else if (key == "EQUAL") {
-                equalLight = JuicerIlluminant::equal_energy();
-                sourceLight = equalLight.linear;
-            }
-            ASSERT_EQ(sourceLight.size(), 81u) << key;
-            equal_span(actual.print_source_illuminant, sourceLight);
-            ASSERT_EQ(actual.print.film_density_cmy.count, 243u);
-            EXPECT_EQ(std::memcmp(actual.print.film_density_cmy.data, filmData.channelDensity.data(), sizeof(filmData.channelDensity)), 0);
-            equal_span(actual.print.film_base_density, filmData.baseDensity);
-            ASSERT_EQ(actual.print.sensitivity_cmy.count, 243u);
-            EXPECT_EQ(std::memcmp(actual.print.sensitivity_cmy.data, printData.linearSensitivity.data(), sizeof(printData.linearSensitivity)), 0);
-            equal_span(actual.print.log_exposure, printData.logExposure);
-            equal_bits(actual.print_gamma, recipe.print.develop.gammaFactor);
-            EXPECT_EQ(actual.print_curves_hash, recipe.print.develop.densityCurvesHash);
-            EXPECT_EQ(actual.print_filters_hash, recipe.print.filters.hash);
-            EXPECT_EQ(actual.print_exposure_hash, recipe.print.exposure.hash);
-            EXPECT_EQ(actual.print_illuminant_hash, recipe.print.illuminant.hash);
-            equal_span(actual.print.main_illuminant, *payload.printMainIlluminant);
-            const auto& balance = recipe.print.balance;
-            equal_span({actual.print_balance.baseline_raw_rgb, 3}, balance.baselinePrintRawRgb);
-            equal_span({actual.print_balance.compensated_raw_rgb, 3}, balance.compensatedPrintRawRgb);
-            equal_bits(actual.print_balance.factor_midgray, balance.factorMidgray);
-            equal_bits(actual.print_balance.factor_midgray_comp, balance.factorMidgrayComp);
-            equal_bits(actual.print_balance.normalizer, balance.normalizer);
-            EXPECT_EQ(actual.print_balance.filtered_main_illuminant_hash, balance.filteredMainIlluminantHash);
-            EXPECT_EQ(actual.print_balance.hash, balance.hash);
-            JuicerCuda::PrintResourceInput resources;
-            std::array<float, 81> preflash{};
-            ASSERT_TRUE(JuicerCuda::build_print_resource_input({&recipe, &JuicerProcess::root().assets(), &*payload.printMainIlluminant}, resources, preflash, diagnostic)) << diagnostic;
-            const auto& descriptors = resources.descriptors;
-            EXPECT_EQ(actual.print.hash, descriptors.hash);
-            EXPECT_EQ(actual.print.profile_tables_hash, descriptors.profileTables.hash);
-            EXPECT_EQ(actual.print.film_density_hash, descriptors.filmDensityTables.hash);
-            EXPECT_EQ(actual.print.main_illuminant_hash, descriptors.mainIlluminant.hash);
-            EXPECT_EQ(actual.print.preflash_illuminant_hash, descriptors.preflashIlluminant.hash);
-            EXPECT_EQ(actual.print.preflash_raw_hash, descriptors.preflashRaw.hash);
-            EXPECT_EQ(actual.print.balance_hash, descriptors.balance.hash);
-            EXPECT_EQ(actual.print.flags, descriptors.preflashActive ? FJ_PRINT_PREFLASH : 0u);
-            if (descriptors.preflashActive) {
-                equal_span(actual.print.preflash_illuminant, resources.preflashIlluminant);
-            } else {
-                // The native scratch span is unconsumed when preflash is off.
-                EXPECT_EQ(actual.print.preflash_illuminant.count, 0u);
-                EXPECT_EQ(actual.print.preflash_illuminant.data, nullptr);
-            }
-            equal_span({actual.print.preflash_raw_cmy, 3}, resources.preflashRawCmy);
-            equal_bits(actual.print.normalizer, resources.normalizer);
-            const auto& filters = recipe.print.filters;
-            const std::array<float, 3> mainCc{filters.mainCmyCc.c, filters.mainCmyCc.m, filters.mainCmyCc.y};
-            const std::array<float, 3> preflashCc{filters.preflashCmyCc.c, filters.preflashCmyCc.m, filters.preflashCmyCc.y};
-            equal_span({actual.print_filter_main_cmy_cc, 3}, mainCc);
-            equal_span({actual.print_filter_preflash_cmy_cc, 3}, preflashCc);
-            equal_span({actual.print.main_cc_cmy, 3}, mainCc);
-            equal_span({actual.print.preflash_cc_cmy, 3}, descriptors.preflashActive ? preflashCc : std::array<float, 3>{});
-            equal_bits(actual.print.exposure, recipe.print.exposure.printExposure);
-            equal_bits(actual.print.preflash_exposure, recipe.print.exposure.preflashExposure);
-            EXPECT_EQ(actual.print_normalization_mode, static_cast<unsigned>(recipe.print.exposure.normalizationMode));
-            EXPECT_EQ(actual.normalize_print_exposure, recipe.print.exposure.normalizePrintExposure);
-            EXPECT_EQ(actual.print_exposure_compensation, recipe.print.exposure.printExposureCompensation);
-            ASSERT_TRUE(Scanner::build_print_scanner_color_correction_descriptor({&recipe, &payload.scannerTables, payload.printMainIlluminant->data(), 81, resources.preflashRawCmy.data(), resources.normalizer}, correction, diagnostic)) << diagnostic;
-        } else {
-            ASSERT_TRUE(Scanner::build_direct_scanner_color_correction_descriptor(recipe, payload.scannerTables, correction, diagnostic)) << diagnostic;
-        }
-        const auto& wireCorrection = actual.scanner_correction;
-        EXPECT_EQ(wireCorrection.route, static_cast<unsigned>(correction.route));
-        EXPECT_EQ(wireCorrection.active, correction.active);
-        EXPECT_EQ(wireCorrection.black_correction, correction.blackCorrection);
-        EXPECT_EQ(wireCorrection.white_correction, correction.whiteCorrection);
-        equal_bits(wireCorrection.target_black_linear, correction.targetBlackLinear);
-        equal_bits(wireCorrection.target_white_linear, correction.targetWhiteLinear);
-        equal_bits(wireCorrection.reference_black_y, correction.referenceBlackY);
-        equal_bits(wireCorrection.reference_white_y, correction.referenceWhiteY);
-        equal_bits(wireCorrection.xyz_slope, correction.xyzSlope);
-        equal_bits(wireCorrection.xyz_offset, correction.xyzOffset);
-        equal_bits(wireCorrection.exposure_scale, correction.exposureScale);
-        EXPECT_EQ(wireCorrection.schema_version, correction.schemaVersion);
-        EXPECT_EQ(wireCorrection.hash, correction.hash);
-        equal_bits(actual.film_exposure.route_correction_scale, print ? 1.0f : correction.exposureScale);
-        PreparedStateOracle::NativeBacking backing;
-        FjPreparedStateView nativeView{};
-        ASSERT_TRUE(PreparedStateOracle::SF_TEMP_BRIDGE_native_prepared_view(expected, params, nativeView, backing, diagnostic)) << diagnostic;
-        record_projection(params, nativeView, actual);
+        record_projection(params, assets(), actual);
     }
 
     void baseline(bool positive, bool print, int method) {
@@ -802,13 +353,8 @@ namespace {
 
     TEST(PreparedStateProducts, OracleReaderRejectsFieldShapeWidthTagAndBackingMutations) {
         const auto params = print_params();
-        FocusedRenderStateBuildProduct product;
+        const auto expected = oracle_row("NegativePrintMallett").at("expected");
         std::string diagnostic;
-        ASSERT_TRUE(build_print_render_state_product(params, product, diagnostic)) << diagnostic;
-        PreparedStateOracle::NativeBacking backing;
-        FjPreparedStateView native{};
-        ASSERT_TRUE(PreparedStateOracle::SF_TEMP_BRIDGE_native_prepared_view(product, params, native, backing, diagnostic)) << diagnostic;
-        const auto expected = PreparedStateOracle::view(native);
         FjStatus status{};
         auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << diagnostic;
@@ -832,7 +378,7 @@ namespace {
         damaged.at("route")["value"] = 4;
         EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
         damaged = expected;
-        ASSERT_NE(native.output_boundary.cmax.count, 0u);
+        ASSERT_NE(actual.output_boundary.cmax.count, 0u);
         damaged.at("output_boundary").at("entry_identity")["relation"] = "unrelated_backing";
         EXPECT_THROW(PreparedStateOracle::compare(damaged, current), std::runtime_error);
         const Json positiveZero{{"type", "f32"}, {"bits", "00000000"}};
@@ -975,31 +521,10 @@ namespace {
                 fj_test_exposure_clear_fault();
             }
         } clearExposureFault;
-        const bool print = Spektrafilm::scan_route_is_print(params.scanRoute);
         auto repaired = print_params();
         repaired.scanRoute = params.scanRoute;
-        const auto nativeBuild = [&](const ParamSnapshot& input, FocusedRenderStateBuildProduct& result, std::string& diagnostic) {
-            return print ? build_print_render_state_product(input, result, diagnostic) : build_direct_render_state_product(input, result, diagnostic);
-        };
         for (bool cold : {true, false}) {
             SCOPED_TRACE(cold ? "cold" : "warm");
-            if (cold)
-                equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
-            equal_status(fj_test_exposure_arm_fault(5, 1, 1), FJ_STATUS_SUCCESS);
-            FocusedRenderStateBuildProduct native;
-            std::string nativeDiagnostic;
-            ASSERT_FALSE(nativeBuild(params, native, nativeDiagnostic));
-            EXPECT_EQ(nativeDiagnostic, expectedDiagnostic);
-            const auto earlierDiagnostic = nativeDiagnostic;
-            EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 0u);
-            try {
-                (void)nativeBuild(repaired, native, nativeDiagnostic);
-                FAIL() << "native reference source fault remained unconsumed";
-            } catch (const JuicerCuda::ExecutionFailure& failure) {
-                equal_status(failure.failure.status, FJ_STATUS_UNSUPPORTED_INPUT);
-                EXPECT_EQ(failure.failure.diagnostic, "Reference source preparation: exposure production boundary fault");
-            }
-            EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 1u);
             if (cold)
                 equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
             equal_status(fj_test_exposure_arm_fault(5, 1, 1), FJ_STATUS_SUCCESS);
@@ -1008,7 +533,7 @@ namespace {
             auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
             equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
             EXPECT_FALSE(owner.has_value());
-            EXPECT_EQ(diagnostic, earlierDiagnostic);
+            EXPECT_EQ(diagnostic, expectedDiagnostic);
             equal_preparation_trace(expectedTrace);
             EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 0u);
             owner = JuicerCudaTest::prepare_state(assets(), repaired, status, diagnostic);
@@ -1055,17 +580,7 @@ namespace {
         for (bool cold : {true, false}) {
             SCOPED_TRACE(cold ? "cold" : "warm");
             equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
-            FocusedRenderStateBuildProduct native;
-            std::string nativeDiagnostic;
-            if (!cold) {
-                ASSERT_FALSE(build_print_render_state_product(params, native, nativeDiagnostic));
-            }
             fj_test_calibration_read_fault(1);
-            ASSERT_FALSE(build_print_render_state_product(params, native, nativeDiagnostic));
-            EXPECT_EQ(nativeDiagnostic, kGammaDiagnostic);
-            EXPECT_EQ(fj_test_calibration_reads(), 0u);
-            EXPECT_THROW((void)build_print_render_state_product(repaired, native, nativeDiagnostic), std::bad_alloc);
-            EXPECT_EQ(fj_test_calibration_reads(), 1u);
             constexpr char kKey[] = "pending";
             const FjStringView selection{kKey, sizeof(kKey) - 1};
             std::array<char, 1024> bytes{};
@@ -1111,28 +626,13 @@ namespace {
         params.scannerBlackLevel = std::numeric_limits<double>::quiet_NaN();
         equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
         equal_status(fj_test_assets_curve_fault(assets(), FJ_CSV_D65, 1, nullptr), FJ_STATUS_SUCCESS);
-        FocusedRenderStateBuildProduct native;
-        std::string nativeDiagnostic;
-        FjStatus nativeStatus{};
-        try {
-            (void)build_direct_render_state_product(params, native, nativeDiagnostic);
-            FAIL() << "native cold illuminant reservation fault was not observed";
-        } catch (const JuicerCuda::ExecutionFailure& failure) {
-            nativeStatus = failure.failure.status;
-            nativeDiagnostic = failure.failure.diagnostic;
-        }
-        equal_status(nativeStatus, FJ_STATUS_ALLOCATION_FAILURE);
-        EXPECT_EQ(nativeDiagnostic, "Illuminant preparation (D65): illuminant scratch capacity");
-        const auto dependencyDiagnostic = nativeDiagnostic;
-        ASSERT_FALSE(build_direct_render_state_product(params, native, nativeDiagnostic));
-        EXPECT_EQ(nativeDiagnostic, "ResourceDescriptorMismatch phase=8 field=scanner_output");
-        equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
-        equal_status(fj_test_assets_curve_fault(assets(), FJ_CSV_D65, 1, nullptr), FJ_STATUS_SUCCESS);
+        constexpr const char* kDependencyDiagnostic = "Illuminant preparation (D65): illuminant scratch capacity";
+        constexpr const char* kScannerDiagnostic = "ResourceDescriptorMismatch phase=8 field=scanner_output";
         FjStatus status{};
         std::string diagnostic;
         auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
-        equal_status(status, nativeStatus.category);
-        EXPECT_EQ(diagnostic, dependencyDiagnostic);
+        equal_status(status, FJ_STATUS_ALLOCATION_FAILURE);
+        EXPECT_EQ(diagnostic, kDependencyDiagnostic);
         EXPECT_FALSE(owner.has_value());
         equal_preparation_trace({FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_ILLUMINANTS});
         std::uint32_t pending = 99;
@@ -1140,18 +640,18 @@ namespace {
         EXPECT_EQ(pending, 0u);
         owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
-        EXPECT_EQ(diagnostic, nativeDiagnostic);
+        EXPECT_EQ(diagnostic, kScannerDiagnostic);
         EXPECT_FALSE(owner.has_value());
         equal_status(fj_test_assets_curve_fault(assets(), FJ_CSV_D65, 1, nullptr), FJ_STATUS_SUCCESS);
         owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
-        EXPECT_EQ(diagnostic, nativeDiagnostic);
+        EXPECT_EQ(diagnostic, kScannerDiagnostic);
         equal_status(fj_test_assets_curve_fault_pending(assets(), &pending, nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(pending, 1u) << "warm entry must skip the derived acquisition";
         equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
         owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
         equal_status(status, FJ_STATUS_ALLOCATION_FAILURE);
-        EXPECT_EQ(diagnostic, dependencyDiagnostic);
+        EXPECT_EQ(diagnostic, kDependencyDiagnostic);
         equal_status(fj_test_assets_curve_fault_pending(assets(), &pending, nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(pending, 0u);
     }
@@ -1182,52 +682,31 @@ namespace {
         params.inputColorSpace = -1;
         constexpr const char* kExpectedDiagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
         for (bool cold : {true, false}) {
-            for (bool nativeActor : {true, false}) {
-                SCOPED_TRACE(::testing::Message() << cold << '/' << nativeActor);
-                equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
-                FocusedRenderStateBuildProduct native;
-                std::string diagnostic;
-                FjStatus status{};
-                if (!cold) {
-                    auto warm = print_params();
-                    warm.filmGammaFactor = std::numeric_limits<float>::quiet_NaN();
-                    if (nativeActor) {
-                        ASSERT_FALSE(build_print_render_state_product(warm, native, diagnostic));
-                    } else {
-                        auto ignored = JuicerCudaTest::prepare_state(assets(), warm, status, diagnostic);
-                        EXPECT_FALSE(ignored.has_value());
-                        equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
-                    }
-                }
-                equal_status(fj_test_assets_calibration_source(assets(), source.get(), nullptr), FJ_STATUS_SUCCESS);
-                equal_status(fj_test_exposure_arm_fault(5, 1, 1), FJ_STATUS_SUCCESS);
-                if (nativeActor) {
-                    ASSERT_FALSE(build_print_render_state_product(params, native, diagnostic));
-                } else {
-                    auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
-                    EXPECT_FALSE(owner.has_value());
-                    equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
-                    equal_preparation_trace({FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_SELECTED_PRINT, FJ_PREPARE_ILLUMINANTS, FJ_PREPARE_DEVELOPMENT, FJ_PREPARE_OBSERVER, FJ_PREPARE_RECONSTRUCTION_SOURCE, FJ_PREPARE_CALIBRATION});
-                }
-                EXPECT_EQ(diagnostic, kExpectedDiagnostic);
-                EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 0u);
-                equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
-                if (nativeActor) {
-                    try {
-                        (void)build_print_render_state_product(print_params(), native, diagnostic);
-                        FAIL() << "native later reference fault was consumed early";
-                    } catch (const JuicerCuda::ExecutionFailure& failure) {
-                        equal_status(failure.failure.status, FJ_STATUS_UNSUPPORTED_INPUT);
-                        EXPECT_EQ(failure.failure.diagnostic, "Reference source preparation: exposure production boundary fault");
-                    }
-                } else {
-                    auto owner = JuicerCudaTest::prepare_state(assets(), print_params(), status, diagnostic);
-                    EXPECT_FALSE(owner.has_value());
-                    equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
-                    EXPECT_EQ(diagnostic, "Reference source preparation: exposure production boundary fault");
-                }
-                EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 1u);
+            SCOPED_TRACE(cold ? "cold" : "warm");
+            equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
+            std::string diagnostic;
+            FjStatus status{};
+            if (!cold) {
+                auto warm = print_params();
+                warm.filmGammaFactor = std::numeric_limits<float>::quiet_NaN();
+                auto ignored = JuicerCudaTest::prepare_state(assets(), warm, status, diagnostic);
+                EXPECT_FALSE(ignored.has_value());
+                equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
             }
+            equal_status(fj_test_assets_calibration_source(assets(), source.get(), nullptr), FJ_STATUS_SUCCESS);
+            equal_status(fj_test_exposure_arm_fault(5, 1, 1), FJ_STATUS_SUCCESS);
+            auto owner = JuicerCudaTest::prepare_state(assets(), params, status, diagnostic);
+            EXPECT_FALSE(owner.has_value());
+            equal_status(status, FJ_STATUS_PREPARATION_FAILURE);
+            equal_preparation_trace({FJ_PREPARE_SELECTED_FILM, FJ_PREPARE_SELECTED_PRINT, FJ_PREPARE_ILLUMINANTS, FJ_PREPARE_DEVELOPMENT, FJ_PREPARE_OBSERVER, FJ_PREPARE_RECONSTRUCTION_SOURCE, FJ_PREPARE_CALIBRATION});
+            EXPECT_EQ(diagnostic, kExpectedDiagnostic);
+            EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 0u);
+            equal_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
+            owner = JuicerCudaTest::prepare_state(assets(), print_params(), status, diagnostic);
+            EXPECT_FALSE(owner.has_value());
+            equal_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
+            EXPECT_EQ(diagnostic, "Reference source preparation: exposure production boundary fault");
+            EXPECT_EQ(fj_test_exposure_fault_consumed(5, 1), 1u);
         }
     }
 
@@ -1882,19 +1361,10 @@ int main(int argc, char** argv) {
         artifactRoot = argv[2];
         std::string preset;
         bool checkProjection = false;
-        std::filesystem::path capturePath;
         if (argc == 6) {
             preset = argv[5];
             const std::string mode = argv[3];
-            if (mode == "--capture-state-projection") {
-                captureProjection = true;
-                capturePath = argv[4];
-                if (std::filesystem::exists(capturePath))
-                    throw std::runtime_error("preserve the existing prepared-state capture");
-                const auto parent = std::filesystem::absolute(capturePath.parent_path()).lexically_normal();
-                if (parent != std::filesystem::absolute(artifactRoot).lexically_normal())
-                    throw std::runtime_error("prepared-state capture must use its explicit artifact directory");
-            } else if (mode == "--check-state-projection") {
+            if (mode == "--check-state-projection") {
                 projectionOracle = read_projection(argv[4], preset);
                 checkProjection = true;
             } else {
@@ -1917,23 +1387,15 @@ int main(int argc, char** argv) {
             throw std::runtime_error("prepared-state resources do not match the declared native preset");
         JuicerCuda::Owner owner;
         owner.create(std::filesystem::path(argv[1]));
-        JuicerProcess::root().ensure_bootstrap();
         const int result = RUN_ALL_TESTS();
         if (result != 0)
             return result;
-        if (captureProjection || checkProjection || (::testing::GTEST_FLAG(filter) == "PreparedStateProducts.*" && projectionOracle)) {
+        if (checkProjection || (::testing::GTEST_FLAG(filter) == "PreparedStateProducts.*" && projectionOracle)) {
             if (observedProjectionCases.size() != kProjectionCases.size())
                 throw std::runtime_error("prepared-state projection did not execute all 31 rows");
             for (std::size_t i = 0; i < kProjectionCases.size(); ++i)
                 if (observedProjectionCases[i] != kProjectionCases[i])
                     throw std::runtime_error("prepared-state projection row order mismatch");
-        }
-        if (captureProjection) {
-            std::filesystem::create_directories(artifactRoot);
-            std::ofstream output(capturePath, std::ios::binary);
-            output.exceptions(std::ios::badbit | std::ios::failbit);
-            output << projection_payload(preset, resourceDirectory).dump() << '\n';
-            output.close();
         }
         return 0;
     } catch (const JuicerCuda::ExecutionFailure& error) {

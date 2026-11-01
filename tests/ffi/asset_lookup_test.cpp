@@ -17,7 +17,6 @@
 #include "juicer_test_api.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "ProfileAssets.h"
 #include "prepared_product_fixture.h"
 
 namespace AssetLookupTest {
@@ -40,17 +39,27 @@ namespace AssetLookupTest {
             throw std::runtime_error("scanner lookup fixture transport");
         return present ? std::optional<float>{out} : std::nullopt;
     }
-    std::optional<float> sample_density_curve_for_test(float query, const Profiles::FilmProfileSamples& data, std::size_t channel) {
+    std::optional<float> sample_density_curve_for_test(float query, const std::vector<float>& axis, const std::vector<std::array<float, 3>>& densityCurves, std::size_t channel) {
         std::vector<float> curves;
-        for (const auto& row : data.densityCurves)
+        for (const auto& row : densityCurves)
             for (float value : row)
                 curves.push_back(value);
         float out = 0;
         std::uint32_t present = 0;
-        const auto status = fj_test_scanner_density_curve(query, {data.logExposure.data(), data.logExposure.size()}, {curves.data(), curves.size()}, channel < 3 ? static_cast<std::uint32_t>(channel) : 3u, &out, &present);
+        const auto status = fj_test_scanner_density_curve(query, {axis.data(), axis.size()}, {curves.data(), curves.size()}, channel < 3 ? static_cast<std::uint32_t>(channel) : 3u, &out, &present);
         if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0 || present > 1)
             throw std::runtime_error("scanner density lookup fixture transport");
         return present ? std::optional<float>{out} : std::nullopt;
+    }
+    float hanatos_window_sample_for_test(float wavelength, const std::array<float, 4>& params) {
+        float result = 0.0f;
+        std::array<char, 256> bytes{};
+        FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+        const FjStatus status = fj_test_exposure_window_sample(wavelength, {params.data(), params.size()}, &result, &error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            throw std::runtime_error(std::string(bytes.data(), error.length));
+        }
+        return result;
     }
 } // namespace AssetLookupTest
 
@@ -236,14 +245,15 @@ namespace {
         // Scanner uses a linear traversal, so these cases have no partition precondition.
         EXPECT_FALSE(AssetLookupTest::interp_clamped_monotonic_for_test(1.0f, {kNan}, {1.0f}));
         EXPECT_FALSE(AssetLookupTest::interp_clamped_monotonic_for_test(1.0f, {0.0f, kNan, 2.0f}, {0.0f, 1.0f, 2.0f}));
-        Profiles::FilmProfileSamples data;
-        EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(0.0f, data, 0u));
-        data.logExposure = {0.0f};
-        EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(0.0f, data, 0u));
-        data.densityCurves = curves;
-        EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(kNan, data, 0u));
-        EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(0.0f, data, 3u));
-        EXPECT_EQ(AssetLookupTest::sample_density_curve_for_test(0.0f, data, 2u), 3.0f);
+        std::vector<float> axis;
+        std::vector<std::array<float, 3>> densityCurves;
+        EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(0.0f, axis, densityCurves, 0u));
+        axis = {0.0f};
+        EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(0.0f, axis, densityCurves, 0u));
+        densityCurves = curves;
+        EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(kNan, axis, densityCurves, 0u));
+        EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(0.0f, axis, densityCurves, 3u));
+        EXPECT_EQ(AssetLookupTest::sample_density_curve_for_test(0.0f, axis, densityCurves, 2u), 3.0f);
     }
 
     TEST(AssetLookup, DirectBuilderPropagatesLookupFailure) {
@@ -386,7 +396,6 @@ namespace {
 
         JuicerCuda::Owner processOwner;
         processOwner.create(std::filesystem::path(JUICER_LOOKUP_RESOURCE_DIR));
-        JuicerProcess::root().ensure_bootstrap();
         auto controls = lookup_controls();
         // An earlier development-construction failure must leave the later
         // baseline/channel-zero lookup fault armed and unconsumed.

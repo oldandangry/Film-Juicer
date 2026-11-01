@@ -36,7 +36,6 @@ namespace HalationFrameTest {
     Json products(const std::filesystem::path& resources, const Json& pixelBits) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         Json rows = Json::array();
         for (unsigned route = 0; route < 4; ++route) {
             for (bool active : {false, true}) {

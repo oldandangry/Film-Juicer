@@ -55,7 +55,7 @@ class CheckQualityTests(IsolatedOwnerTests):
         head = "a" * 40
         for name, required in (
             ("src/Scanner.cpp", False), ("rust/film-juicer-core/src/optics/gaussian.rs", False),
-            ("src/ScanRoute.cpp", True), ("src/RenderRecipe.cpp", True),
+            ("src/ScanRoute.cpp", True), ("src/RenderValues.cpp", True),
             ("rust/film-juicer-core/src/route.rs", True),
             ("rust/film-juicer-core/src/color/output.rs", True),
             ("tests/quality/test_checkpoint.py", True), ("scripts/execution.py", True),
@@ -1498,13 +1498,14 @@ class SelectionAndEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(check_quality.QualityError, "no consuming"):
                 check_quality.tidy_translation_units(root, ["src/choice.h"], entries, policy)
 
-    def test_asset_lookup_hook_selects_render_recipe_consumer(self) -> None:
+    def test_asset_lookup_facade_selects_test_consumer(self) -> None:
         root = SCRIPT_PATH.parent.parent
         policy = check_quality.load_policy(root)
         entries = [check_quality.CompilationEntry(
-            "src/RenderRecipe.cpp", "c++ -DJUICER_ASSET_LOOKUP_TEST_HOOK=1 -Itests/ffi -Isrc -Inative")]
-        self.assertEqual(check_quality.tidy_translation_units(root, ["tests/ffi/juicer_test_api.h"], entries, policy),
-                         ["src/RenderRecipe.cpp"])
+            "tests/ffi/asset_lookup_test.cpp", "c++ -Itests/ffi -Isrc -Inative")]
+        for header in ("tests/ffi/juicer_test_api.h", "tests/ffi/asset_lookup_test.h"):
+            self.assertEqual(check_quality.tidy_translation_units(root, [header], entries, policy),
+                             ["tests/ffi/asset_lookup_test.cpp"])
 
     def test_include_search_accepts_msvc_nvcc_quote_system_and_forced_paths(self) -> None:
         root = Path.cwd().resolve()

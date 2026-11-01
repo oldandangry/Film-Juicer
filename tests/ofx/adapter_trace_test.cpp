@@ -51,6 +51,8 @@
 #include "ParamNames.h"
 #include "ProcessRoot.h"
 #include "PreparedState.h"
+#include "RenderControls.h"
+#include "RenderValues.h"
 #include "ResourceAssetLibrary.h"
 #include "juicer_cuda_owner.h"
 #include "ColorTransforms.h"
@@ -2947,12 +2949,13 @@ namespace {
     }
     struct OpticsCase {
         Spektrafilm::SpatialOpticsControls controls;
-        Profiles::ProfileDigest digest;
+        std::array<float, 3> firstSigmaUm{65.0f, 65.0f, 65.0f};
+        std::array<float, 3> primaryAmount{0.08f, 0.02f, 0.0f};
         bool print = false;
     };
     Json optics_inputs(const OpticsCase& c) {
         const auto& h = c.controls.scatterHalation;
-        return {{"camera", optics_project(c.controls.cameraDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(c.controls.cameraLensBlurUm)}, {"halation_active", h.active}, {"halation_f32", optics_words(std::array<float, 4>{h.scatterAmount, h.scatterSpatialScale, h.halationAmount, h.halationSpatialScale})}, {"first_sigma_f32", optics_words(c.digest.halationFirstSigmaUm)}, {"primary_f32", optics_words(c.digest.halationPrimaryAmount)}, {"enlarger", optics_project(c.controls.enlargerDiffusion)}, {"print", c.print}};
+        return {{"camera", optics_project(c.controls.cameraDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(c.controls.cameraLensBlurUm)}, {"halation_active", h.active}, {"halation_f32", optics_words(std::array<float, 4>{h.scatterAmount, h.scatterSpatialScale, h.halationAmount, h.halationSpatialScale})}, {"first_sigma_f32", optics_words(c.firstSigmaUm)}, {"primary_f32", optics_words(c.primaryAmount)}, {"enlarger", optics_project(c.controls.enlargerDiffusion)}, {"print", c.print}};
     }
 
     void check_optics_capture(const std::filesystem::path& grainManifest, const char* preset) {
@@ -3461,7 +3464,6 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             cudaOwner.create(JuicerProcess::data_directory());
             if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess)
                 throw std::runtime_error("CUDA initialization failed");
-            JuicerProcess::root().ensure_bootstrap();
             run_frame_geometry_cases({.geometry = argv[2], .halation = argv[5], .diffusion = argv[6]}, argv[3], argv[4]);
             return 0;
         }
@@ -3475,7 +3477,6 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
         if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
             throw std::runtime_error("CUDA initialization failed");
         }
-        JuicerProcess::root().ensure_bootstrap();
         if (argc == 6)
             check_optics_capture(argv[4], argv[5]);
         NativeHost host;

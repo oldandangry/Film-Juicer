@@ -19,6 +19,13 @@ record actual live pointer-equality assertions; pointer addresses are absent.
 Live cache acquisition and retained-owner tests continue proving those relations
 and lifetimes at execution time.
 
+The current reader consumes the frozen `expected` records without constructing
+a native product. Historical `native.*` relation labels identify raw C consumers
+of the same Rust cache entries; scoped input-hull/output-boundary holders prove
+entry and backing-pointer equality while alive. The encoded/linear pair also
+checks its actual shared output-boundary entry. Capture mode and its native
+expected-view writer have been removed; check mode remains.
+
 The manifest binds each payload's byte count/SHA-256, native target, retained
 executable, original supervised preparation result, build/capture logs, toolchain,
 configuration and resource identities. Its historical source hashes remain

@@ -37,11 +37,12 @@
 #include "Hash.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "RenderControls.h"
+#include "RenderValues.h"
 #include "juicer_cuda_owner.h"
 #include "../ffi/juicer_test_api.h"
 #include "../ffi/prepared_product_fixture.h"
 #include "../ffi/prepared_frame_fixture.h"
-#include "ProfileAssets.h"
 #include "ScatterHalation.h"
 #include "spatial_optics_fixture.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
@@ -271,23 +272,16 @@ namespace {
         return controls;
     }
 
-    Profiles::ProfileDigest digest(
-        std::array<float, 3> sigma,
-        std::array<float, 3> strength) {
-        Profiles::ProfileDigest result;
-        result.halationFirstSigmaUm = sigma;
-        result.halationPrimaryAmount = strength;
-        return result;
-    }
-
     ScatterHalationOpticsRecipe resolve_or_throw(
         const ScatterHalationControls& controls,
-        const Profiles::ProfileDigest& profile) {
+        const std::array<float, 3>& firstSigmaUm,
+        const std::array<float, 3>& primaryAmount) {
         ScatterHalationOpticsRecipe recipe;
         std::string diagnostic;
         if (!JuicerTestSupport::prepare_scatter_halation(
                 controls,
-                profile,
+                firstSigmaUm,
+                primaryAmount,
                 recipe,
                 diagnostic)) {
             throw std::runtime_error(diagnostic);
@@ -297,7 +291,8 @@ namespace {
 
     std::string active_recipe_detail(
         const ScatterHalationControls& controls,
-        const Profiles::ProfileDigest& profile,
+        const std::array<float, 3>& firstSigmaUm,
+        const std::array<float, 3>& primaryAmount,
         const ScatterHalationOpticsRecipe& recipe) {
         std::ostringstream stream;
         stream << std::hex << std::setfill('0')
@@ -306,13 +301,13 @@ namespace {
                << ",0x" << std::setw(8) << float_bits(controls.halationAmount)
                << ",0x" << std::setw(8) << float_bits(controls.halationSpatialScale)
                << "] profile_sigma_bits=[0x" << std::setw(8)
-               << float_bits(profile.halationFirstSigmaUm[0]) << ",0x" << std::setw(8)
-               << float_bits(profile.halationFirstSigmaUm[1]) << ",0x" << std::setw(8)
-               << float_bits(profile.halationFirstSigmaUm[2])
+               << float_bits(firstSigmaUm[0]) << ",0x" << std::setw(8)
+               << float_bits(firstSigmaUm[1]) << ",0x" << std::setw(8)
+               << float_bits(firstSigmaUm[2])
                << "] profile_strength_bits=[0x" << std::setw(8)
-               << float_bits(profile.halationPrimaryAmount[0]) << ",0x" << std::setw(8)
-               << float_bits(profile.halationPrimaryAmount[1]) << ",0x" << std::setw(8)
-               << float_bits(profile.halationPrimaryAmount[2]) << "] recipe_hash=0x"
+               << float_bits(primaryAmount[0]) << ",0x" << std::setw(8)
+               << float_bits(primaryAmount[1]) << ",0x" << std::setw(8)
+               << float_bits(primaryAmount[2]) << "] recipe_hash=0x"
                << std::setw(16) << recipe.hash;
         return stream.str();
     }
@@ -405,12 +400,11 @@ namespace {
                 1.0,
                 1.0,
                 1.0});
-        const Profiles::ProfileDigest profile = digest(
-            {65.0f, 65.0f, 65.0f},
-            {0.08f, 0.02f, 0.0f});
-        const auto firstRecipe = resolve_or_throw(first, profile);
-        const auto secondRecipe = resolve_or_throw(second, profile);
-        const auto distinctRecipe = resolve_or_throw(distinct, profile);
+        const std::array<float, 3> firstSigmaUm{65.0f, 65.0f, 65.0f};
+        const std::array<float, 3> primaryAmount{0.08f, 0.02f, 0.0f};
+        const auto firstRecipe = resolve_or_throw(first, firstSigmaUm, primaryAmount);
+        const auto secondRecipe = resolve_or_throw(second, firstSigmaUm, primaryAmount);
+        const auto distinctRecipe = resolve_or_throw(distinct, firstSigmaUm, primaryAmount);
         results.record(
             "controls/same-float32-same-identity",
             controls_equal(first, second) && firstRecipe.hash == secondRecipe.hash,
@@ -540,13 +534,11 @@ namespace {
             {"recipe/cine-no", 50.0f, {0.3f, 0.1f, 0.015f}},
         }};
         for (const Mapping& mapping : mappings) {
-            const auto profile = digest(
-                {mapping.sigma, mapping.sigma, mapping.sigma},
-                mapping.strength);
-            const auto recipe = resolve_or_throw(active, profile);
+            const std::array<float, 3> firstSigmaUm{mapping.sigma, mapping.sigma, mapping.sigma};
+            const auto recipe = resolve_or_throw(active, firstSigmaUm, mapping.strength);
             bool passed = recipe.scatterActive && recipe.backReflectionActive &&
                           recipe.hash != 0 &&
-                          recipe.halationFirstSigmaUm == profile.halationFirstSigmaUm;
+                          recipe.halationFirstSigmaUm == firstSigmaUm;
             for (std::size_t channel = 0; channel < 3; ++channel) {
                 passed = passed &&
                          float_bits(recipe.totalStrength[channel]) ==
@@ -555,13 +547,14 @@ namespace {
             results.record(
                 mapping.name,
                 passed,
-                active_recipe_detail(active, profile, recipe));
+                active_recipe_detail(active, firstSigmaUm, mapping.strength, recipe));
         }
 
         const ScatterHalationControls inactive;
         const auto inactiveRecipe = resolve_or_throw(
             inactive,
-            digest({65.0f, 65.0f, 65.0f}, {0.08f, 0.02f, 0.0f}));
+            std::array<float, 3>{65.0f, 65.0f, 65.0f},
+            std::array<float, 3>{0.08f, 0.02f, 0.0f});
         results.record(
             "recipe/complete-identity-hash-zero",
             !inactiveRecipe.scatterActive && !inactiveRecipe.backReflectionActive &&
@@ -570,41 +563,41 @@ namespace {
 
         const auto scatterOnlyControls = convert_or_throw(
             ScatterHalationRawControls{true, 1.0, 1.0, 0.0, 1.0});
-        const auto scatterOnlyProfile =
-            digest({65.0f, 65.0f, 65.0f}, {0.08f, 0.02f, 0.0f});
-        const auto scatterOnly =
-            resolve_or_throw(scatterOnlyControls, scatterOnlyProfile);
+        const std::array<float, 3> defaultFirstSigmaUm{65.0f, 65.0f, 65.0f};
+        const std::array<float, 3> defaultPrimaryAmount{0.08f, 0.02f, 0.0f};
+        const auto scatterOnly = resolve_or_throw(
+            scatterOnlyControls, defaultFirstSigmaUm, defaultPrimaryAmount);
         results.record(
             "recipe/scatter-only",
             scatterOnly.scatterActive && !scatterOnly.backReflectionActive &&
                 scatterOnly.hash != 0,
-            active_recipe_detail(scatterOnlyControls, scatterOnlyProfile, scatterOnly));
+            active_recipe_detail(scatterOnlyControls, defaultFirstSigmaUm, defaultPrimaryAmount, scatterOnly));
 
         const auto reflectionOnlyControls = convert_or_throw(
             ScatterHalationRawControls{true, 0.0, 1.0, 1.0, 1.0});
-        const auto reflectionOnlyProfile =
-            digest({65.0f, 65.0f, 65.0f}, {0.08f, 0.02f, 0.0f});
         const auto reflectionOnly =
-            resolve_or_throw(reflectionOnlyControls, reflectionOnlyProfile);
+            resolve_or_throw(reflectionOnlyControls, defaultFirstSigmaUm, defaultPrimaryAmount);
         results.record(
             "recipe/back-reflection-only",
             !reflectionOnly.scatterActive && reflectionOnly.backReflectionActive &&
                 reflectionOnly.hash != 0,
             active_recipe_detail(
                 reflectionOnlyControls,
-                reflectionOnlyProfile,
+                defaultFirstSigmaUm,
+                defaultPrimaryAmount,
                 reflectionOnly));
 
-        const auto crossChannelProfile =
-            digest({0.0f, 65.0f, 0.0f}, {0.08f, 0.0f, 0.0f});
+        const std::array<float, 3> crossChannelFirstSigmaUm{0.0f, 65.0f, 0.0f};
+        const std::array<float, 3> crossChannelPrimaryAmount{0.08f, 0.0f, 0.0f};
         const auto crossChannel = resolve_or_throw(
             active,
-            crossChannelProfile);
+            crossChannelFirstSigmaUm,
+            crossChannelPrimaryAmount);
         results.record(
             "recipe/cross-channel-activation",
             crossChannel.backReflectionActive && crossChannel.totalStrength[0] > 0.0f &&
                 crossChannel.halationFirstSigmaUm[1] > 0.0f && crossChannel.hash != 0,
-            active_recipe_detail(active, crossChannelProfile, crossChannel));
+            active_recipe_detail(active, crossChannelFirstSigmaUm, crossChannelPrimaryAmount, crossChannel));
 
         results.record(
             "recipe/active-folded-zero-remap-reserved",
@@ -932,7 +925,8 @@ namespace {
             ScatterHalationRawControls{true, 1.0, 1.0, 1.0, 1.0});
         const auto recipe = resolve_or_throw(
             active,
-            digest({65.0f, 65.0f, 65.0f}, {0.08f, 0.02f, 0.0f}));
+            std::array<float, 3>{65.0f, 65.0f, 65.0f},
+            std::array<float, 3>{0.08f, 0.02f, 0.0f});
         std::optional<ScatterHalationFrameDescriptor> descriptor;
         std::string diagnostic;
         const bool success = JuicerTestSupport::prepare_halation_frame(
@@ -1070,31 +1064,19 @@ namespace {
         return status.category == FJ_STATUS_SUCCESS && out.has_value();
     }
 
-    // SF_TEMP_BRIDGE_NATIVE_PRODUCT_OBSERVATIONS (I5/I7): these legacy
-    // builder/publication observations remain until the Rust publisher has
-    // matching held-state witnesses.
     void run_build_product_rows(Results& results) {
-        ScannerOutputRecipe scannerRecipe;
-        scannerRecipe.route = Spektrafilm::ScanRoute::NegativePrintScan;
-        scannerRecipe.glareActive = true;
-        scannerRecipe.glarePercent = 0.1f;
-        scannerRecipe.glareRoughness = 0.2f;
-        scannerRecipe.glareBlurSigmaPx = 0.7f;
-        scannerRecipe.lensBlurSigmaPx = 0.7f;
-        scannerRecipe.unsharpSigmaPx = 0.7f;
-        scannerRecipe.unsharpAmount = 0.7f;
-        Scanner::ScannerPostEffectsDescriptor scannerDescriptor;
-        std::string scannerDiagnostic;
-        const bool scannerBuilt = Scanner::build_scanner_post_effects_descriptor(
-            scannerRecipe,
-            scannerDescriptor,
-            scannerDiagnostic);
+        const FjScannerPostEffectsInput scannerInput{FJ_ROUTE_NEGATIVE_PRINT, 1, 0.1f, 0.2f, 0.7f, 0.7f, 0.7f, 0.7f};
+        FjScannerPostEffectsDescriptor scannerDescriptor{};
+        FjScannerPostEffectsFailure scannerFailure{};
+        std::array<char, 256> scannerMessage{};
+        FjErrorBuffer scannerError{scannerMessage.data(), scannerMessage.size(), 0};
+        const auto scannerStatus = fj_test_scanner_post_describe(
+            &scannerInput, &scannerDescriptor, &scannerFailure, &scannerError);
         results.record(
             "scanner-post/descriptor/truncate-three-radii",
-            scannerBuilt && scannerDescriptor.glareBlurRadius == 2 &&
-                scannerDescriptor.lensBlurRadius == 2 &&
-                scannerDescriptor.unsharpRadius == 2,
-            scannerDiagnostic);
+            scannerStatus.category == FJ_STATUS_SUCCESS && scannerStatus.api == FJ_API_NONE && scannerStatus.native_code == 0 &&
+                scannerDescriptor.glare_blur_radius == 2 && scannerDescriptor.lens_blur_radius == 2 && scannerDescriptor.unsharp_radius == 2,
+            std::string(scannerMessage.data(), scannerError.length));
 
         const ParamSnapshot direct = direct_snapshot();
         std::optional<PreparedState> directState;
@@ -1176,19 +1158,6 @@ namespace {
             requestedStateBuilt && requestedFacts.recipeHash != 0 &&
                 requestedFacts.scatterHalationHash != 0,
             requestedStateDiagnostic);
-
-        // Keep the native standalone product comparison isolated until I7.
-        FocusedRenderStateBuildProduct requestedProduct;
-        std::string requestedDiagnostic;
-        const bool requestedBuilt = build_direct_render_state_product(
-            requested,
-            requestedProduct,
-            requestedDiagnostic);
-        results.record(
-            "SF_TEMP_BRIDGE_NATIVE_PUBLICATION/requested-halation-product",
-            requestedBuilt && requestedProduct.recipe.hash != 0 &&
-                requestedProduct.recipe.spatialOptics.scatterHalation.hash != 0,
-            requestedDiagnostic);
 
         InstanceState publicationState;
         seed_valid_pending(publicationState, requested);
@@ -1453,9 +1422,6 @@ namespace {
         std::uint64_t fixedGlareSeed;
     };
 
-    // The legacy builder remains only as an I5/I7 publication comparison;
-    // complete-product identities below come from held Rust state views.
-    // SF_TEMP_BRIDGE_NATIVE_IDENTITY_COMPARISON (I5/I7)
     void run_parameter_identity_pair(
         Results& results,
         std::string_view name,
@@ -1503,23 +1469,6 @@ namespace {
                            identity.str());
         }
 
-        FocusedRenderStateBuildProduct nativeComparisonA;
-        FocusedRenderStateBuildProduct nativeComparisonB;
-        std::string nativeDiagnosticA;
-        std::string nativeDiagnosticB;
-        const bool nativeBuiltA = printRoute
-                                      ? build_print_render_state_product(a, nativeComparisonA, nativeDiagnosticA)
-                                      : build_direct_render_state_product(a, nativeComparisonA, nativeDiagnosticA);
-        const bool nativeBuiltB = printRoute
-                                      ? build_print_render_state_product(b, nativeComparisonB, nativeDiagnosticB)
-                                      : build_direct_render_state_product(b, nativeComparisonB, nativeDiagnosticB);
-        if (!nativeBuiltA || !nativeBuiltB) {
-            results.record(
-                std::string(name) + "/SF_TEMP_BRIDGE_NATIVE_FRESH_BUILD",
-                false,
-                nativeDiagnosticA + " " + nativeDiagnosticB);
-            return;
-        }
         for (bool reverse : {false, true}) {
             InstanceState state;
             seed_valid_pending(state, reverse ? b : a);
@@ -1535,7 +1484,7 @@ namespace {
                                                      ? &destination.directState->prepared
                                                      : nullptr);
             const PreparedStateFacts actualFacts = actual ? inspect_prepared_state(*actual) : PreparedStateFacts{};
-            const RenderRecipe& expected = reverse ? nativeComparisonA.recipe : nativeComparisonB.recipe;
+            const PreparedStateFacts& expected = reverse ? freshA : freshB;
             const std::uint64_t firstBuild = printRoute
                                                  ? (first.printState ? first.printState->buildCounter : 0)
                                                  : (first.directState ? first.directState->buildCounter : 0);
@@ -1549,19 +1498,16 @@ namespace {
             results.record(
                 std::string(name) + (reverse ? "/B-to-A" : "/A-to-B"),
                 freshDiffer && firstBuild != 0 && destinationBuild > firstBuild &&
-                    actual && actualFacts.recipeHash == expected.hash &&
-                    actualFacts.filmExposureHash == expected.filmRaw.hash &&
-                    actualFacts.printHash == expected.print.hash &&
+                    actual && actualFacts.recipeHash == expected.recipeHash &&
+                    actualFacts.filmExposureHash == expected.filmExposureHash &&
+                    actualFacts.printHash == expected.printHash &&
                     (!signedZero ||
                      float_bits(actualFacts.manualExposureCompensationEv) ==
-                         float_bits(expected.filmRaw.manualExposureCompensationEv)),
+                         float_bits(expected.manualExposureCompensationEv)),
                 destination.diagnostic);
         }
     }
 
-    // SF_TEMP_BRIDGE_NATIVE_SIGNED_IDENTITY_COMPARISON (I5/I7): preserve the
-    // native product and publication identity observations until their Rust
-    // publisher witnesses are present.
     void run_parameter_identity_rows(Results& results) {
         std::ifstream fixture(JUICER_PARAMETER_IDENTITY_PATH);
         if (!fixture) {
@@ -3562,7 +3508,6 @@ namespace ScatterHalationValidation {
     void run_lifecycle_rows(const Arguments& arguments, Results& results) {
         (void)arguments;
         run_prepared_frame_rows(results);
-        JuicerProcess::root().ensure_bootstrap();
         run_route_lifecycle_rows_impl(results);
     }
 
@@ -3574,7 +3519,6 @@ int main(int argc, char** argv) noexcept {
         cudaOwner.create(JuicerProcess::data_directory());
         const Arguments arguments = parse_arguments(argc, argv);
         std::filesystem::create_directories(arguments.scratchRoot);
-        JuicerProcess::root().ensure_bootstrap();
 
         Results results;
         const auto run_host_contracts = [&] {
@@ -3616,7 +3560,6 @@ int main(int argc, char** argv) noexcept {
         } else {
             run_host_contracts();
             run_prepared_frame_rows(results);
-            JuicerProcess::root().ensure_bootstrap();
             ScatterHalationValidation::run_focused_cuda_reference_rows(
                 arguments,
                 results);

@@ -1,5 +1,4 @@
 namespace {
-    thread_local unsigned nextGrainProjectionFault = 0;
     FjVisualGrainParams grain_params(const Json& v) {
         FjVisualGrainParams out{};
         out.active = v.at("active").get<bool>() ? 1u : 0u;
@@ -82,36 +81,6 @@ namespace {
         out["debug_view"] = v.debug_view;
         out["fine_weight"] = words(&v.fine_weight, 1);
         out["layers_hash"] = v.layers_hash;
-        out["hash"] = v.hash;
-        return out;
-    }
-    Json native_grain_projection(const VisualGrainRecipe& v) {
-        Json out{{"active", v.active}, {"sublayers_active", v.sublayersActive}, {"axis_finite_cmy", v.grainLayerAxisFinite}};
-        Json prefix = Json::array();
-        for (const auto& lane : v.grainLayerAxisBlockPrefixMax)
-            prefix.push_back(words(lane.data(), 16));
-        out["axis_block_prefix_max_cmy"] = prefix;
-        out["particle_area_um2"] = words(&v.particleAreaUm2, 1);
-        out["particle_scale_cmy"] = words(v.particleScaleCmy.data(), 3);
-        out["particle_scale_layers"] = words(v.particleScaleLayers.data(), 3);
-        out["particle_density_min_cmy"] = words(v.visualParticleDensityMinCmy.data(), 3);
-        out["uniformity_cmy"] = words(v.uniformityCmy.data(), 3);
-        out["correlation_sigma_px"] = words(&v.correlationSigmaPx, 1);
-        out["dye_cloud_blur_um"] = words(&v.dyeCloudBlurUm, 1);
-        out["micro_structure"] = words(v.microStructure.data(), 2);
-        out["sublayer_count"] = v.nSubLayers;
-        out["amplitude"] = words(&v.amplitude, 1);
-        out["chroma_mix"] = words(&v.chromaMix, 1);
-        out["chroma_shared_weight"] = words(&v.chromaSharedWeight, 1);
-        out["chroma_independent_weight"] = words(&v.chromaIndependentWeight, 1);
-        out["coarse_weight"] = words(&v.coarseWeight, 1);
-        out["mid_weight"] = words(&v.midWeight, 1);
-        out["size_mix_scale"] = words(&v.sizeMixScale, 1);
-        out["clump_temporal_mix"] = words(&v.clumpTemporalMix, 1);
-        out["clump_morph_period_sec"] = words(&v.clumpMorphPeriodSec, 1);
-        out["debug_view"] = v.debugView;
-        out["fine_weight"] = words(&v.fineWeight, 1);
-        out["layers_hash"] = v.densityCurvesLayersHash;
         out["hash"] = v.hash;
         return out;
     }
@@ -393,109 +362,9 @@ namespace {
         }
         require(fj_test_film_development_live_owners() == 0, "grain failure/concurrency holds drain");
     }
-    void grain_native_bridge(const std::filesystem::path& resources, const Json& captured, const Json& synthetic, const std::filesystem::path& fixtureDirectory) {
-        JuicerAssets::AssetBridge assets(resources);
-        require(assets.load_catalog().valid, "grain native catalog");
-        const auto source = assets.film_source("kodak_portra_400");
-        auto development = source->prepare_development(Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, true);
-        const auto controls = native_grain_controls(grain_params(captured.at("products")[2].at("controls")));
-        VisualGrainRecipe out;
-        std::string diagnostic;
-        const auto holds = fj_test_film_development_live_owners();
-        status(assets.release_cached_payloads());
-        require(JuicerAssets::prepare_visual_grain(development.hold, controls, out, diagnostic) && diagnostic.empty(), "native grain bridge completes");
-        require(native_grain_projection(out) == captured.at("products")[2].at("grain") && fj_test_film_development_live_owners() == holds, "all native mapping anchors and unchanged holds");
-        SpectralAllocationProbe::arm();
-        const bool prepared = JuicerAssets::prepare_visual_grain(development.hold, controls, out, diagnostic);
-        SpectralAllocationProbe::clear();
-        require(prepared && SpectralAllocationProbe::bytes() == 0, "native fixed projection introduces no C++ table copy/allocation");
-        DirCouplersRecipe dir;
-        DensityBoundsRecipe bounds;
-        require(JuicerAssets::prepare_film_dir(development.hold, DirCouplersControls{}, *source->profile(), development.route, development.recipe.logExposure.size(), dir, diagnostic) &&
-                    JuicerAssets::prepare_film_density_bounds(development.hold, GrainContract{}, *source->profile(), development.route, bounds, diagnostic) && fj_test_film_development_live_owners() == holds,
-                "same retained Development survives cache detach and grain then DIR/bounds without a new hold");
-        for (const auto& row : synthetic.at("products")) {
-            JuicerAssets::AssetBridge selected(fixtureDirectory / "synthetic" / row.at("source").get<std::string>());
-            require(selected.load_catalog().valid, "native variable-row catalog");
-            const auto film = selected.film_source("kodak_portra_400");
-            auto developed = film->prepare_development(static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>()), 1.0f, true);
-            VisualGrainRecipe grain;
-            require(JuicerAssets::prepare_visual_grain(developed.hold, controls, grain, diagnostic) && native_grain_projection(grain) == row.at("grain"), "native mapping retains non-256 zeros and legitimate nonfinite partial prefixes");
-        }
-        auto bad = controls;
-        bad.particleAreaUm2 = 0;
-        require(!JuicerAssets::prepare_visual_grain(development.hold, bad, out, diagnostic) && diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain" && !out.active && out.sizeMixScale == 1, "ordinary grain failure preserves exact diagnostic and native defaults");
-        for (unsigned fault = 1; fault <= 6; ++fault) {
-            nextGrainProjectionFault = fault;
-            bool rejected = false;
-            try {
-                (void)JuicerAssets::prepare_visual_grain(development.hold, controls, out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& e) {
-                rejected = e.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected && !out.active && out.hash == 0 && out.sizeMixScale == 1, "malformed success projection is internal and cannot publish partial native coefficients");
-        }
-        for (unsigned fault = 0; fault < 8; ++fault) {
-            wireMutation = WireMutation{};
-            wireMutation.active = true;
-            wireMutation.operation = 4;
-            wireMutation.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-            wireMutation.failure = {FJ_FILM_RECIPE_GRAIN_CONTROLS, 3, UINT64_MAX};
-            if (fault == 0)
-                wireMutation.status.category = FJ_STATUS_SUCCESS;
-            if (fault == 1)
-                wireMutation.status.api = FJ_API_CUDA_RUNTIME;
-            if (fault == 2)
-                wireMutation.status.native_code = 1;
-            if (fault == 3)
-                wireMutation.failure.channel = 0;
-            if (fault == 4)
-                wireMutation.failure.sample = 0;
-            if (fault == 5)
-                wireMutation.failure.reason = FJ_FILM_RECIPE_LOG_EXPOSURE;
-            if (fault == 6)
-                wireMutation.failure.reason = FJ_FILM_RECIPE_ALLOCATION;
-            if (fault == 7)
-                wireMutation.failure.reason = 99;
-            bool rejected = false;
-            try {
-                (void)JuicerAssets::prepare_visual_grain(development.hold, controls, out, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& e) {
-                rejected = e.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-            }
-            require(rejected && !wireMutation.active, "grain admits only its operation-specific complete status/failure envelope");
-        }
-        for (unsigned reason : {FJ_FILM_RECIPE_GRAIN_CONTROLS, FJ_FILM_RECIPE_GRAIN_LAYERS})
-            for (unsigned operation : {0u, 1u, 2u, 3u}) {
-                wireMutation = WireMutation{};
-                wireMutation.active = true;
-                wireMutation.operation = operation;
-                wireMutation.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-                wireMutation.failure = {reason, 3, UINT64_MAX};
-                bool rejected = false;
-                try {
-                    if (operation == 0) {
-                        GrainContract value;
-                        (void)JuicerAssets::prepare_film_density_minimum(GrainContract{}, value, diagnostic);
-                    }
-                    if (operation == 1 || operation == 2) {
-                        DirCouplersRecipe value;
-                        (void)JuicerAssets::prepare_film_dir(development.hold, DirCouplersControls{}, *source->profile(), development.route, development.recipe.logExposure.size(), value, diagnostic);
-                    }
-                    if (operation == 3) {
-                        DensityBoundsRecipe value;
-                        (void)JuicerAssets::prepare_film_density_bounds(development.hold, GrainContract{}, *source->profile(), development.route, value, diagnostic);
-                    }
-                } catch (const JuicerCuda::ExecutionFailure& e) {
-                    rejected = e.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
-                }
-                require(rejected && !wireMutation.active && fj_test_film_dir_live_owners() == 0, "grain reasons 17/18 never become valid for minimum/DIR/bounds");
-            }
-    }
     void grain_products(const std::filesystem::path& resources, const Json& captured) {
         JuicerCuda::Owner owner;
         owner.create(resources);
-        JuicerProcess::root().ensure_bootstrap();
         for (const auto& row : captured.at("products")) {
             ParamSnapshot params;
             params.filmProfileKey = row.at("key").get<std::string>();
@@ -531,42 +400,6 @@ namespace {
             FjPreparedStateView chromaView{};
             status(chromaProduct.view(chromaView, error));
             require(chromaView.grain.hash != originalGrainHash, "resolved recipe independently includes chroma mix");
-        }
-        JuicerAssets::AssetBridge sourceAssets(resources);
-        require(sourceAssets.load_catalog().valid, "foundation ordering source catalog");
-        const auto source = sourceAssets.film_source("kodak_portra_400");
-        const auto illuminants = JuicerProcess::root().assets().illuminant_filter_curves();
-        for (int competing = 0; competing < 4; ++competing) {
-            Spektrafilm::DirectRecipeBuildInput input;
-            auto developed = source->prepare_development(Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, true);
-            input.film.filmProfileKey = "kodak_portra_400";
-            input.film.filmSource = source.get();
-            input.film.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-            input.film.filmDevelop = std::move(developed.recipe);
-            input.film.developmentHold = std::move(developed.hold);
-            input.film.spectralUpsamplingMode = 1;
-            input.film.inputCompressionRequested = false;
-            input.film.cameraAutoExposureEnabled = false;
-            std::copy_n(illuminants->d55.linear.begin(), 81, input.film.referenceIlluminant.begin());
-            input.film.referenceIlluminantValid = true;
-            input.film.visualGrain.active = true;
-            input.film.visualGrain.particleAreaUm2 = 0;
-            input.film.dirCouplers.amount = -1;
-            const char* expected = "MalformedRequiredProfileData phase=9A field=visual_grain";
-            if (competing == 1) {
-                input.film.inputColorSpace = -1;
-                expected = "UnsupportedMode phase=3B field=input_color_space";
-            }
-            if (competing == 2) {
-                input.film.spatialOptics.cameraLensBlurUm = std::numeric_limits<float>::quiet_NaN();
-                expected = "ResourceDescriptorMismatch phase=6A component=camera_lens_blur field=sigma_um";
-            }
-            if (competing == 3) {
-                input.film.grainContract.densityMinCmy[0] = -1;
-                expected = "MalformedRequiredProfileData phase=9A field=grain_contract";
-            }
-            const auto result = Spektrafilm::build_direct_render_recipe(std::move(input));
-            require(!result.valid && result.diagnostic == expected, "input/optics/minimum/grain/DIR retain first-failure order");
         }
         for (unsigned route = 0; route < 4; ++route) {
             ParamSnapshot params;
@@ -604,20 +437,3 @@ namespace {
         std::puts("PASS 36 independent grain products, four-route publication/recovery, minimum separation and stage order");
     }
 } // namespace
-namespace JuicerAssets::RecipeTest {
-    void grain(FjVisualGrainRecipe& value) {
-        if (nextGrainProjectionFault == 1)
-            value.active = 2;
-        if (nextGrainProjectionFault == 2)
-            value.axis_finite_cmy[0] = 2;
-        if (nextGrainProjectionFault == 3)
-            value.hash = 0;
-        if (nextGrainProjectionFault == 4)
-            value.layers_hash = 0;
-        if (nextGrainProjectionFault == 5)
-            value.particle_area_um2 = std::numeric_limits<float>::quiet_NaN();
-        if (nextGrainProjectionFault == 6)
-            value.axis_block_prefix_max_cmy[0][0] = std::numeric_limits<float>::infinity();
-        nextGrainProjectionFault = 0;
-    }
-} // namespace JuicerAssets::RecipeTest

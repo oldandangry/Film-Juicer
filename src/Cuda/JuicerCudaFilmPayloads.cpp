@@ -26,52 +26,6 @@ namespace {
 namespace JuicerCuda {
 
     bool pack_film_payloads(
-        const FilmRawRecipe& filmRaw,
-        const FilmDevelopRecipe& filmDevelop,
-        const DirCouplersRecipe& dirCouplers,
-        const DensityBoundsRecipe& densityBounds,
-        const FilmPreparedView& prepared,
-        const float* autoExposureScaleDevice,
-        float routeCorrectionScale,
-        FilmPayloadPack& out,
-        std::string& diagnostic) {
-        return pack_film_payloads(film_payload_input(filmRaw, filmDevelop, dirCouplers, densityBounds),
-                                  prepared,
-                                  autoExposureScaleDevice,
-                                  routeCorrectionScale,
-                                  out,
-                                  diagnostic);
-    }
-
-    FilmPayloadInput film_payload_input(
-        const FilmRawRecipe& filmRaw,
-        const FilmDevelopRecipe& filmDevelop,
-        const DirCouplersRecipe& dirCouplers,
-        const DensityBoundsRecipe& densityBounds) {
-        FilmPayloadInput input;
-        input.inputColorSpace = filmRaw.inputColorSpace;
-        input.inputCctfDecoding = filmRaw.inputCctfDecoding;
-        input.method = filmRaw.rgbToRawMethod;
-        input.manualExposureEv = filmRaw.manualExposureCompensationEv;
-        input.mallettGreenMidgrayScale = filmRaw.mallettGreenMidgrayScale;
-        input.sensitivityHash = filmRaw.finalSensitivityHash;
-        input.densityCurvesHash = filmDevelop.normalizedDensityCurvesHash;
-        input.densitySampleCount = filmDevelop.logExposure.size();
-        input.gammaRgb = filmDevelop.densityCurveGamma;
-        input.dirMode = dirCouplers.active ? dirCouplers.nonlinearMode : DirNonlinearMode::Inactive;
-        input.dirMatrixRgb = dirCouplers.matrixRgb;
-        input.densityMaxRgb = dirCouplers.densityMaxRgb;
-        input.densityRefRgb = dirCouplers.densityRefRgb;
-        input.donorKRgb = dirCouplers.donorKRgb;
-        input.receiverCRefRgb = dirCouplers.receiverCRefRgb;
-        input.receiverKrRgb = dirCouplers.receiverKrRgb;
-        input.dirAxesHash = dirCouplers.compensatedDensityCurveAxesHash;
-        input.dirHash = dirCouplers.hash;
-        input.densityBoundsHash = densityBounds.hash;
-        return input;
-    }
-
-    bool pack_film_payloads(
         const FilmPayloadInput& input,
         const FilmPreparedView& prepared,
         const float* autoExposureScaleDevice,
@@ -310,38 +264,6 @@ namespace {
 } // namespace
 
 namespace JuicerCuda {
-
-    // SF_TEMP_BRIDGE_GRAIN_PAYLOAD: old-model callers delegate to resolved
-    // execution coefficients; remove after their matching I6 proof, in I7.
-    bool pack_visual_grain_payload(
-        const Spektrafilm::VisualGrainRecipe& recipe,
-        const PreparedVisualGrainView& prepared,
-        GrainPayload& outGrain,
-        GrainKernelPayload& outKernels,
-        std::string& diagnostic) {
-        VisualGrainPayloadInput input;
-        input.recipeHash = recipe.hash;
-        input.densityLayersHash = recipe.densityCurvesLayersHash;
-        auto& coefficients = input.coefficients;
-        coefficients.flags = (recipe.active ? FJ_GRAIN_ACTIVE : 0u) |
-                             (recipe.sublayersActive ? FJ_GRAIN_SUBLAYERS : 0u);
-        coefficients.debug_view = static_cast<std::uint32_t>(recipe.debugView);
-        coefficients.sublayer_count = static_cast<std::size_t>(recipe.nSubLayers);
-        std::copy_n(recipe.microStructure.data(), 2, coefficients.micro_structure);
-        coefficients.clump_temporal_mix = recipe.clumpTemporalMix;
-        coefficients.size_mix_scale = recipe.sizeMixScale;
-        coefficients.amplitude = recipe.amplitude;
-        coefficients.chroma_mix = recipe.chromaMix;
-        coefficients.chroma_shared_weight = recipe.chromaSharedWeight;
-        coefficients.chroma_independent_weight = recipe.chromaIndependentWeight;
-        for (std::size_t channel = 0; channel < 3; ++channel) {
-            coefficients.flags |= recipe.grainLayerAxisFinite[channel] ? (1u << (3u + channel)) : 0u;
-            coefficients.particle_density_min_cmy[channel] = recipe.visualParticleDensityMinCmy[channel];
-            coefficients.uniformity_cmy[channel] = recipe.uniformityCmy[channel];
-            std::copy_n(recipe.grainLayerAxisBlockPrefixMax[channel].data(), 16, coefficients.layer_axis_block_prefix_max[channel]);
-        }
-        return pack_visual_grain_payload(input, prepared, outGrain, outKernels, diagnostic);
-    }
 
     bool pack_visual_grain_payload(
         const VisualGrainPayloadInput& input,

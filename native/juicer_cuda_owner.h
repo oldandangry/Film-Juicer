@@ -18,7 +18,7 @@ namespace JuicerCuda {
 
     // Registration/reentry precheck only: no lock, reservation or lifecycle admission.
     void check_native_call_admission(FjCuda* cuda);
-#if defined(JUICER_NOISE_TEST_HOOK)
+#if defined(JUICER_NATIVE_CALL_TEST_HOOK)
     bool calling_thread_native_gate_active() noexcept;
 #endif
 

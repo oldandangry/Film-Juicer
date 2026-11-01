@@ -1,6 +1,10 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
+
+#include "DiffusionHostBehavior.h"
+#include "ScatterHalation.h"
 
 struct DirCouplersControls {
     bool active = true;
@@ -51,3 +55,38 @@ struct VisualGrainControls {
 namespace Spektrafilm {
     using ::VisualGrainControls;
 }
+
+namespace Spektrafilm {
+
+    inline constexpr double kFilmGammaFactorMinimum = 0.05;
+    inline constexpr double kFilmGammaFactorMaximum = 4.0;
+    inline constexpr double kPrintGammaFactorMinimum = 0.5;
+    inline constexpr double kPrintGammaFactorMaximum = 2.0;
+
+    enum class SpatialOpticsComponent : std::uint8_t {
+        CameraDiffusion,
+        CameraLensBlur,
+        InEmulsionScatterHalation,
+        EnlargerDiffusion
+    };
+
+} // namespace Spektrafilm
+
+struct PhysicalEffectsControls final {
+    float filmDustAmount = 0.0f;
+    float filmScratchAmount = 0.0f;
+    float gateDustAmount = 0.0f;
+    float gateScratchAmount = 0.0f;
+    double gateWeaveAmount = 0.0;
+};
+
+namespace Spektrafilm {
+
+    struct SpatialOpticsControls {
+        DiffusionFilterAuthoredControls cameraDiffusion;
+        float cameraLensBlurUm = 0.0f;
+        ScatterHalationControls scatterHalation;
+        DiffusionFilterAuthoredControls enlargerDiffusion;
+    };
+
+} // namespace Spektrafilm

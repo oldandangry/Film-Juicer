@@ -540,7 +540,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(first["receipt"], reused["reused_from"])
 
     def test_boundary_inputs_bind_native_membership_and_foreign_fixture(self):
-        for name in ("src/RenderRecipe.cpp", "src/JuicerState.cpp", "tests/ffi/color_preparation_test.cpp",
+        for name in ("src/RenderValues.cpp", "src/JuicerState.cpp", "tests/ffi/color_preparation_test.cpp",
                      "tests/ffi/print_illuminant_test.inc", "tests/ffi/print_illuminant_fixture.h",
                      "tests/print/illuminant-fixtures/rust-manifest.json", "tests/ffi/print_preflash_test.inc",
                      "tests/print/preflash-fixtures/manifest.json", "tests/print/preflash-fixtures/linux-debug.json",
@@ -572,7 +572,7 @@ class CheckpointTests(unittest.TestCase):
         (self.build / "CMakeCache.txt").write_text("configured")
         (self.build / "CTestTestfile.cmake").write_text("")
         first = qualification.checkpoint_inputs(self.root, self.build, "boundary")
-        self.assertIn("src/RenderRecipe.cpp", first)
+        self.assertIn("src/RenderValues.cpp", first)
         self.assertIn("tests/ffi/film_reference_test.inc", first)
         self.assertIn("tests/film/reference-fixtures/manifest.json", first)
         self.assertIn("tests/film/reference-fixtures/linux-debug.json", first)
@@ -1255,16 +1255,6 @@ class CheckpointTests(unittest.TestCase):
             "payloads": {"logical.json": post_payload.name}, "contexts": {"logical.json": post_context.name},
             "sha256": {post_payload.name: digest(post_payload), post_context.name: digest(post_context)},
             "production_cases": [{"case": str(i), "envelope": [0, 0, 0, 0, 0], "hash": 10, "fields": "13-pass"} for i in range(410)]})
-        gaussian_directory = self.root / "tests/optics/gaussian-fixtures"
-        gaussian_directory.mkdir(parents=True, exist_ok=True)
-        gaussian_payload = gaussian_directory / "native.json"
-        gaussian_context = gaussian_directory / "context.json"
-        write_json(gaussian_payload, {"cases": [{"name": str(i), "radius": 1, "sigma_bits": 1065353216, "weights": [1, 2, 3]} for i in range(188)]})
-        write_json(gaussian_context, {"scope": "Gaussian retained-array protocol only"})
-        names = [str(i) for i in range(188)] + ["radius-upper-reject", "null-input", "unaligned-input", "null-owner-output", "null-failure", "malformed-diagnostic", "null-view-owner", "null-view-output", "null-view-failure", "view-malformed-diagnostic", "zero-capacity", "null-release", "release-malformed-diagnostic"]
-        write_json(gaussian_directory / "manifest.json", {"presets": {preset: {"native": "logical.json"} for preset in qualification.PRESETS},
-            "payloads": {"logical.json": gaussian_payload.name}, "contexts": {"logical.json": gaussian_context.name},
-            "sha256": {gaussian_payload.name: digest(gaussian_payload), gaussian_context.name: digest(gaussian_context)}, "production_cases": names})
         frame_directory = self.root / "tests/frame/geometry-fixtures"
         frame_directory.mkdir(parents=True, exist_ok=True)
         frame_payload = frame_directory / "native.json"
@@ -1464,17 +1454,6 @@ for row in json.loads(reference_payload.read_text())['products']:
                   [3,0,0,3,0,7,0] if case==6 else [3,0,0,4,1,8,1])
         reference_results.append({'case':f"reference-{row['method']}-{case}",'envelope':envelope,
                                   'hash':row['reference']['hash'] if case in (0,5) else 0,'fields':'13-pass'})
-gaussian_manifest=(Path('tests/optics/gaussian-fixtures')/'manifest.json').resolve()
-gaussian_spec=json.loads(gaussian_manifest.read_text())
-gaussian_logical=gaussian_spec['presets'][preset]['native']
-gaussian_payload=gaussian_manifest.parent/gaussian_spec['payloads'][gaussian_logical]
-gaussian_context=gaussian_manifest.parent/gaussian_spec['contexts'][gaussian_logical]
-consumed.update({str(path):checksum(path) for path in (gaussian_manifest,gaussian_payload,gaussian_context)})
-gaussian_results=[{'case':row['name'],'envelope':[0,0,0,0],'radius':row['radius'],'sigma_bits':row['sigma_bits'],'weights':row['weights']}
-                  for row in json.loads(gaussian_payload.read_bytes())['cases']]
-for name in gaussian_spec['production_cases'][188:]:
-    reason=2 if name=='radius-upper-reject' else 0 if name in {'zero-capacity','null-release'} else 1
-    gaussian_results.append({'case':name,'envelope':[3 if reason==2 else 2 if reason else 0,0,0,reason],'radius':0,'sigma_bits':0,'weights':[]})
 probes=[]
 for name in ['film','accepted-output-color']:
     source=out/(name+'.c')
@@ -1550,7 +1529,6 @@ record.write_text(json.dumps(commands))
     'scanner_descriptor_results':descriptor_results,
     'scanner_post_fixture':{'manifest':str(post_manifest),'payload':str(post_payload),'context':str(post_context),'logical_preset':preset},
     'scanner_post_results':post_results,
-    'gaussian_fixture':{'manifest':str(gaussian_manifest),'payload':str(gaussian_payload),'context':str(gaussian_context),'logical_preset':preset},
     'frame_fixture':{'manifest':str(frame_manifest),'payload':str(frame_payload),'context':str(frame_context),'logical_preset':preset},
     'frame_results':frame_results,
     'halation_frame_fixture':{'manifest':str(halation_manifest),'payload':str(halation_payload),'context':str(halation_context),
@@ -1571,7 +1549,6 @@ record.write_text(json.dumps(commands))
     'dir_boundary_fixture':{'manifest':str(boundary_manifest),'payload':str(boundary_payload),
                             'normative':str(boundary_checked),'input_spec':str(boundary_inputs),'logical_preset':preset},
     'dir_boundary_results':boundary_results,
-    'gaussian_results':gaussian_results,
     'reference_results':reference_results,
     'commands':{'file':str(record),'sha256':checksum(record)},
     'command_outputs':{str(out/(row['name']+'.'+extension)):row[extension+'_sha256']
@@ -2066,7 +2043,12 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         document = json.loads(manifest.read_text())
         self.assertEqual(len(document["reference_results"]), 15)
         self.assertEqual(len(document["scanner_post_results"]), 410)
-        self.assertEqual(len(document["gaussian_results"]), 201)
+        for field in (
+            "scanner_lut_results", "scanner_lut_fixture", "gaussian_results", "gaussian_fixture",
+            "optics_results", "optics_fixture", "print_illuminant_results",
+            "print_illuminant_fixture", "preflash_results", "preflash_fixture",
+        ):
+            self.assertNotIn(field, document)
         self.assertEqual(len(document["frame_results"]), 69)
         self.assertEqual(len(document["halation_frame_results"]), 86)
         self.assertEqual(len(document["diffusion_frame_results"]), 507)
@@ -2375,22 +2357,18 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             with self.assertRaisesRegex(ValueError, "frame geometry"):
                 qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
 
-        for mode in ("missing", "duplicate", "changed-weight", "changed-metadata", "changed-envelope"):
+        for field in (
+            "scanner_lut_results", "scanner_lut_fixture", "gaussian_results", "gaussian_fixture",
+            "optics_results", "optics_fixture", "print_illuminant_results",
+            "print_illuminant_fixture", "preflash_results", "preflash_fixture",
+        ):
             damaged = json.loads(json.dumps(document))
-            if mode == "missing":
-                damaged["gaussian_results"].pop()
-            elif mode == "duplicate":
-                damaged["gaussian_results"][-1] = damaged["gaussian_results"][0]
-            elif mode == "changed-weight":
-                damaged["gaussian_results"][0]["weights"][1] ^= 1
-            elif mode == "changed-metadata":
-                damaged["gaussian_results"][0]["sigma_bits"] ^= 1
-            else:
-                damaged["gaussian_results"][-1]["envelope"][0] = 0
-            damaged_path = manifest.with_name("gaussian-" + mode + ".json")
+            damaged[field] = None
+            damaged_path = manifest.with_name("retired-" + field + ".json")
             write_json(damaged_path, damaged)
-            with self.assertRaisesRegex(ValueError, "Gaussian full arrays/metadata/failure"):
-                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
+            with self.assertRaisesRegex(ValueError, "retired mathematical owner field"):
+                qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root,
+                    inputs=stage["identity"]["inputs"])
 
         for mode in ("missing", "duplicate", "changed"):
             damaged = json.loads(json.dumps(document))
@@ -2404,10 +2382,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             write_json(damaged_path, damaged)
             with self.assertRaisesRegex(ValueError, "post-effects value/failure"):
                 qualification.production_payloads(damaged_path, digest(damaged_path), root=self.root, inputs=stage["identity"]["inputs"])
-        for field in ("effects_frame_results", "effects_frame_fixture", "grain_frame_results", "grain_frame_fixture", "dir_boundary_results", "dir_boundary_fixture", "dir_frame_results", "dir_frame_fixture", "diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture", "gaussian_results", "gaussian_fixture"):
+        for field in ("effects_frame_results", "effects_frame_fixture", "grain_frame_results", "grain_frame_fixture", "dir_boundary_results", "dir_boundary_fixture", "dir_frame_results", "dir_frame_fixture", "diffusion_frame_results", "diffusion_frame_fixture", "halation_frame_results", "halation_frame_fixture", "frame_results", "frame_fixture", "reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture", "scanner_post_results", "scanner_post_fixture"):
             missing = manifest.with_name("without-" + field + ".json")
             write_json(missing, {key: value for key, value in document.items() if key != field})
-            expected = "effects frame" if field.startswith("effects_frame") else "grain frame" if field.startswith("grain_frame") else "DIR boundary" if field.startswith("dir_boundary") else "DIR frame" if field.startswith("dir_frame") else "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "Gaussian" if field.startswith("gaussian") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
+            expected = "effects frame" if field.startswith("effects_frame") else "grain frame" if field.startswith("grain_frame") else "DIR boundary" if field.startswith("dir_boundary") else "DIR frame" if field.startswith("dir_frame") else "diffusion frame" if field.startswith("diffusion") else "halation frame" if field.startswith("halation") else "frame geometry" if field.startswith("frame") else "scanner post-effects" if field.startswith("scanner_post") else "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"
             with self.assertRaisesRegex(ValueError, expected):
                 qualification.production_payloads(missing, digest(missing), root=self.root,
                     inputs=stage["identity"]["inputs"])
