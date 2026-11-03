@@ -424,10 +424,31 @@ group reuse checks all original command records and reports without requesting t
 device lease.
 `collect-qualification --receipts <paths...> --output <path>` requires product and
 boundary evidence for both native Debug/Release profiles, tooling once per native
-platform, corpus once, and both production Release gates. Host-only product checks
+platform, corpus once on Linux Debug, and both production Release gates. These are
+exactly thirteen selected roles in six ON/OFF receipt contexts; every role and
+context must occur once, with no extras. Host-only product checks
 and A1/A2 development receipts cannot supply that aggregate. Full product, GPU,
 Resolve and release acceptance remain separately required and are not established
 by this dispatcher implementation.
+
+Explicit bounded reuse retains direct original executions and their preparation
+dependencies. Collection validates current wrappers, completed immutable admissions,
+declarations, current independent tooling/quality, unchanged subjects and the exact
+old/current preparation relation. Ordinary current-source checks remain in force.
+Latest failed, pending, blocked or newer owners prevent collection; pointers alone
+cannot establish completeness. Terminal scans recheck source, tools, artifacts,
+immutable references and owners. The aggregate names executed, exact-reused and
+admitted evidence and performs no configure/build/Cargo/probe/product execution.
+
+The supported reuse recipes are fixed synthetic C11 tooling fixtures. Their policy
+contexts, finite quality checker and retained miniature OFF chronology establish
+no real product/GPU/ABI qualification or real evidence adoption. Retained OFF bytes
+and original both-OFF-before-either-ON ordering remain distinct from current ON
+owners. A reader repair must bind the actual executed old/current source and
+preserve trustworthy complete originals; it cannot supply omitted historic facts.
+The qualified external OS/tool/runtime/access-policy premise is explicit. Review
+and owner JSON supplies integrity references, not authenticated human approval.
+See the [bounded reuse tests](tests/README.md#build-and-run) for recipe limits.
 
 When collecting Windows preparation receipts from Linux/WSL, add
 `--windows-python <qualified-Windows-python.exe>` with the exact native interpreter

@@ -515,7 +515,9 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: tests/requirements.txt
+          cache-dependency-path: |
+            tests/requirements.txt
+            scripts/quality-requirements.txt
 
       - name: Enter VS 18 x64 tooling environment
         shell: pwsh
@@ -536,7 +538,9 @@ jobs:
           $llvmBin = Join-Path $vsPath "VC\Tools\Llvm\x64\bin"
           $llvmBin >> $env:GITHUB_PATH
           $rustLinker = Join-Path $llvmBin "lld-link.exe"
-          if (!(Test-Path $rustLinker -PathType Leaf)) { throw "VS 18 lld-link was not found" }
+          foreach ($tool in @($rustLinker, (Join-Path $llvmBin "clang-format.exe"), (Join-Path $llvmBin "clang-tidy.exe"))) {
+            if (!(Test-Path $tool -PathType Leaf)) { throw "Required VS 18 LLVM tool missing: $tool" }
+          }
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$rustLinker" >> $env:GITHUB_ENV
 
       - name: Install pinned Rust tools, CMake, and test requirements
@@ -547,10 +551,13 @@ jobs:
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
-          python -m pip install -r tests/requirements.txt
+          python -m pip install -r tests/requirements.txt -r scripts/quality-requirements.txt
           rustc --version --verbose
           cargo --version
           clang-cl --version
+          clang-format --version
+          clang-tidy --version
+          ruff --version
           cmake --version
           ctest --version
           python --version

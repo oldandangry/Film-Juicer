@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
+import _imp
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
+import marshal
 import os
 from pathlib import Path, PureWindowsPath
 import re
 import shlex
 import shutil
+import stat
 import subprocess
+import sys
 import time
+import types
 import uuid
 
 from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json, windows_runtime_paths, read_bytes, read_text
@@ -23,6 +30,216 @@ from build_dependencies import (
     include_membership,
     configuration_outputs,
 )
+
+
+def capture_bounded_dependencies(root, *, files, directories=(), absent=(), executables=(), python_modules=()):
+    """Read a recipe's declared inputs; this is not arbitrary runtime discovery.
+
+    Qualification owns the recipe and expected membership. Python facts describe
+    this interpreter, so a recipe must bind the actual launch to that context.
+    Installed tool/runtime internals remain the qualified-environment premise.
+    """
+    root = Path(root)
+    if not root.is_absolute() or ".." in root.parts or not root.is_dir():
+        raise ValueError("bounded dependencies need an existing native absolute root")
+
+    def names(values):
+        if isinstance(values, (str, bytes, os.PathLike)):
+            raise ValueError("bounded dependency paths must be a sequence")
+        result = []
+        for value in values:
+            path = Path(value)
+            if ".." in path.parts or "\0" in str(path):
+                raise ValueError("bounded dependency path is not lexical: " + str(path))
+            path = path if path.is_absolute() else root / path
+            result.append(str(path))
+        if len(result) != len(set(result)):
+            raise ValueError("bounded dependency paths are duplicated")
+        return set(result)
+
+    declared = names(files)
+    namespaces = names(directories)
+    missing = names(absent)
+    runnable = names(executables)
+    modules = names(python_modules)
+    if not declared | namespaces | missing | modules or not runnable <= declared:
+        raise ValueError("bounded executable roles need declared files and a nonempty recipe")
+    if (declared | modules) & (namespaces | missing) or namespaces & missing:
+        raise ValueError("bounded dependency roles conflict")
+
+    def file_row(path, executable=False):
+        before = path.resolve(strict=True)
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise ValueError("required bounded file is not a regular file: " + str(path))
+        row = {"kind": "file", "resolved": str(before), "sha256": digest(path), "executable": executable}
+        if executable:
+            if os.name == "posix":
+                row["execute_bits"] = path.stat().st_mode & 0o111
+                if os.access not in os.supports_effective_ids:
+                    raise ValueError("bounded execution identity access check is unsupported")
+                accessible = os.access(path, os.X_OK, effective_ids=True)
+            else:
+                accessible = os.access(path, os.X_OK)
+            if not accessible:
+                raise ValueError("declared bounded executable is not launch-accessible: " + str(path))
+        if path.resolve(strict=True) != before:
+            raise ValueError("bounded file target changed while reading: " + str(path))
+        return row
+
+    def absence(path):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return {"resolved": str(path.resolve(strict=False))}
+        raise ValueError("bounded input is no longer absent: " + str(path))
+
+    def directory_row(path):
+        resolved = path.resolve(strict=True)
+        if not path.is_dir():
+            raise ValueError("bounded namespace is not a directory: " + str(path))
+        members = []
+        for child in sorted(path.iterdir(), key=lambda value: value.name):
+            target = child.resolve(strict=True)
+            mode = child.stat().st_mode
+            kind = "file" if stat.S_ISREG(mode) else "directory" if stat.S_ISDIR(mode) else None
+            if kind is None:
+                raise ValueError("unsupported bounded namespace member: " + str(child))
+            members.append({"name": child.name, "kind": kind, "resolved": str(target)})
+        if path.resolve(strict=True) != resolved:
+            raise ValueError("bounded namespace target changed while reading: " + str(path))
+        return {"scope": "immediate", "resolved": str(resolved), "members": members}
+
+    def python_context():
+        if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 13):
+            raise ValueError("bounded project imports require the qualified CPython3.13 context")
+        prefix = sys.pycache_prefix
+        if prefix is not None and (not isinstance(prefix, str) or not Path(prefix).is_absolute() or ".." in Path(prefix).parts):
+            raise ValueError("unsupported bounded Python cache prefix")
+        policy = _imp.check_hash_based_pycs
+        if policy not in {"default", "always", "never"} or sys.flags.optimize not in {0, 1, 2}:
+            raise ValueError("unsupported bounded Python hash-check policy")
+        def identity(value):
+            return ((value.__module__ + "." + value.__qualname__) if isinstance(value, type)
+                    else type(value).__module__ + "." + type(value).__qualname__)
+        meta = [identity(finder) for finder in sys.meta_path]
+        allowed = {"_frozen_importlib.BuiltinImporter", "_frozen_importlib.FrozenImporter",
+                   "_frozen_importlib_external.PathFinder", "_virtualenv._Finder",
+                   "_distutils_hack.DistutilsMetaFinder"}
+        if (any(name not in allowed for name in meta)
+                or meta.count("_frozen_importlib_external.PathFinder") != 1):
+            raise ValueError("unsupported bounded Python import machinery")
+        hooks = [(getattr(hook, "__module__", "") + "." + getattr(hook, "__qualname__", ""))
+                 for hook in sys.path_hooks]
+        supported_hooks = {"zipimport.zipimporter",
+                           "_frozen_importlib_external.FileFinder.path_hook.<locals>.path_hook_for_FileFinder"}
+        if (any(hook not in supported_hooks for hook in hooks) or len(hooks) != len(set(hooks))
+                or "_frozen_importlib_external.FileFinder.path_hook.<locals>.path_hook_for_FileFinder" not in hooks):
+            raise ValueError("unsupported bounded Python path hook")
+        invoked = Path(sys.executable)
+        base = Path(sys._base_executable)
+        if not invoked.is_absolute() or not base.is_absolute():
+            raise ValueError("bounded Python executable is not a native absolute path")
+        config = {}
+        for path in sorted({directory / "pyvenv.cfg" for executable in (invoked, base)
+                            for directory in (executable.parent, executable.parent.parent)}):
+            config[str(path)] = file_row(path) if path.is_file() else absence(path)
+        overrides = {executable.with_suffix("._pth") for executable in (invoked, base)}
+        overrides.add(Path(sys.base_prefix) / "python313._pth")
+        override_absence = {}
+        for path in sorted(overrides):
+            if path.exists() or path.is_symlink():
+                raise ValueError("unsupported bounded Python path override: " + str(path))
+            override_absence[str(path)] = absence(path)
+        return {"implementation": "cpython", "version": list(sys.version_info[:3]),
+                "cache_tag": sys.implementation.cache_tag, "optimization": sys.flags.optimize,
+                "dont_write_bytecode": bool(sys.dont_write_bytecode), "hash_check": policy,
+                "pycache_prefix": prefix, "meta_path": meta, "path_hooks": hooks,
+                "interpreter": {"path": str(invoked), **file_row(invoked, True)},
+                "base_interpreter": {"path": str(base), **file_row(base, True)},
+                "configuration": config, "path_overrides": override_absence}
+
+    def inventory():
+        selected = declared | modules
+        absent_paths = set(missing)
+        directory_paths = set(namespaces)
+        python = python_context() if modules else None
+        module_rows = {}
+        for name in sorted(modules):
+            source = Path(name)
+            if source.suffix != ".py" or not source.stem.isidentifier() or source.name == "__init__.py":
+                raise ValueError("bounded Python imports support only flat source modules")
+            source.resolve(strict=True).relative_to(root.resolve(strict=True))
+            directory_paths.add(str(source.parent))
+            finder = sys.path_importer_cache.get(str(source.parent))
+            if finder is not None and type(finder) is not importlib.machinery.FileFinder:
+                raise ValueError("unsupported bounded project import finder")
+            importlib.machinery.PathFinder.invalidate_caches()
+            spec = importlib.machinery.PathFinder.find_spec(source.stem, [str(source.parent)])
+            if (spec is None or type(spec.loader) is not importlib.machinery.SourceFileLoader
+                    or spec.submodule_search_locations is not None or spec.origin != str(source)):
+                raise ValueError("bounded project module does not select its declared source loader")
+            cache = Path(importlib.util.cache_from_source(str(source)))
+            stamp = source.stat()
+            row = {"name": source.stem, "loader": "source", "source_size": stamp.st_size,
+                   "cache": str(cache), "format": "absent"}
+            if cache.is_file():
+                raw = cache.read_bytes()
+                if len(raw) <= 16 or raw[:4] != importlib.util.MAGIC_NUMBER:
+                    raise ValueError("malformed bounded Python cache")
+                flags = int.from_bytes(raw[4:8], "little")
+                if flags not in {0, 1, 3}:
+                    raise ValueError("unsupported bounded Python cache flags")
+                try:
+                    code = marshal.loads(raw[16:])
+                except (EOFError, ValueError, TypeError) as error:
+                    raise ValueError("malformed bounded Python cache body") from error
+                if not isinstance(code, types.CodeType):
+                    raise ValueError("malformed bounded Python cache body")
+                row["format"] = {0: "timestamp", 1: "unchecked-hash", 3: "checked-hash"}[flags]
+                if flags == 0:
+                    row["source_mtime"] = int(stamp.st_mtime) & 0xFFFFFFFF
+                    row["cache_mtime"] = int.from_bytes(raw[8:12], "little")
+                    row["cache_size"] = int.from_bytes(raw[12:16], "little")
+                else:
+                    row["cache_source_hash"] = raw[8:16].hex()
+                selected.add(str(cache))
+            else:
+                absent_paths.add(str(cache))
+            module_rows[name] = row
+        if selected & (absent_paths | directory_paths):
+            raise ValueError("bounded generated dependency roles conflict")
+        if python is not None:
+            python["modules"] = module_rows
+        return {"protocol": "declared-dependencies-v1", "root": str(root),
+                "files": {name: file_row(Path(name), name in runnable) for name in sorted(selected)},
+                "directories": {name: directory_row(Path(name)) for name in sorted(directory_paths)},
+                "absent": {name: absence(Path(name)) for name in sorted(absent_paths)}, "python": python}
+
+    try:
+        entry = inventory()
+        terminal = inventory()
+    except (OSError, RuntimeError) as error:
+        raise ValueError("bounded dependency input is unavailable: " + str(error)) from error
+    if entry != terminal:
+        raise ValueError("bounded dependencies changed while capturing")
+    return entry
+
+
+def check_bounded_dependencies(root, expected, **declarations):
+    """Re-read using the owning recipe, never a caller's reduced recorded keys."""
+    if (not isinstance(expected, dict) or set(expected) != {"protocol", "root", "files", "directories", "absent", "python"}
+            or expected.get("protocol") != "declared-dependencies-v1"):
+        raise ValueError("malformed bounded dependency facts")
+    current = capture_bounded_dependencies(root, **declarations)
+    try:
+        def encode(value):
+            return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        matches = encode(expected) == encode(current)
+    except (TypeError, ValueError) as error:
+        raise ValueError("malformed bounded dependency facts") from error
+    if not matches:
+        raise ValueError("bounded dependency contents, paths, membership or semantic metadata changed")
+    return current
 
 
 def configuration_files(build: Path) -> list[Path]:
@@ -40,7 +257,7 @@ def configuration_files(build: Path) -> list[Path]:
     return paths
 
 
-def registration_files(build: Path, *, allow_missing=False) -> list[Path]:
+def registration_files(build: Path, *, allow_missing=False, resolve=Path) -> list[Path]:
     """Follow generated subdirs/includes only; never scan unrelated build trees."""
     pending = [build / "CTestTestfile.cmake"]
     visited = set()
@@ -64,7 +281,13 @@ def registration_files(build: Path, *, allow_missing=False) -> list[Path]:
                     raise ValueError(
                         f"unsupported generated test include in {path}: {line}"
                     )
-                target = path.parent / match[2]
+                operand = match[2]
+                if Path(operand).is_absolute() or PureWindowsPath(operand).is_absolute():
+                    # A foreign absolute operand must reach its native-path
+                    # resolver before a local parent can hide that identity.
+                    target = resolve(operand)
+                else:
+                    target = path.parent / (operand.replace("\\", "/") if resolve is not Path else operand)
                 pending.append(
                     target / "CTestTestfile.cmake"
                     if match[1].lower() == "subdirs"
@@ -559,7 +782,7 @@ def check_preparation_inputs(build, proof, *, resolve=Path, native_file_identiti
     if any(resolve(name).stat().st_mtime_ns != stamp for name, stamp in configuration["regeneration_mtimes"].items()):
         raise ValueError("preparation regeneration inputs changed")
     registrations = {str(resolve(name)): checksum for name, checksum in configuration["registrations"].items()}
-    if {str(p): digest(p) for p in registration_files(build)} != registrations:
+    if {str(p): digest(p) for p in registration_files(build, resolve=resolve)} != registrations:
         raise ValueError("preparation test registration changed")
     if any(p.relative_to(source).as_posix() not in configuration["inputs"] for p in configuration_files(build)):
         raise ValueError("preparation configuration membership changed")
@@ -1330,8 +1553,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
             if before == after:
                 break
             if attempt or any(before[name] != after[name] for name in before if name != "files"):
-                fields = ", ".join(name for name in before if before[name] != after[name])
-                raise ValueError("unresolved dependency/configuration change during preparation: " + fields)
+                raise ValueError("unresolved dependency/configuration change during preparation")
             discovered = set(after["files"]) ^ before["files"].keys()
             discovered_outputs = fresh_graph.affected(discovered)
             retained_outputs = {name: identity for name, identity in retained_outputs.items() if name not in discovered_outputs}
@@ -1427,7 +1649,7 @@ def run_ctest(campaign, stage, *, build, prepared, inputs, timeout, env=None,
                               tools=tools, env=env, timeout=timeout, repeat_reason="execute exact owning CTest groups")
         import xml.etree.ElementTree as ET
 
-        cases = ET.fromstring(read_bytes(junit)).findall(".//testcase")
+        cases = ET.parse(junit).getroot().findall(".//testcase")
         if sorted(case.get("name") for case in cases) != sorted(tests) or any(case.find(name) is not None for case in cases for name in ("failure", "error", "skipped")):
             raise ValueError("selected CTest did not execute a nonempty successful result")
         check_scoped_preparation(campaign, build, prepared, env)

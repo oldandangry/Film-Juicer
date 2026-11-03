@@ -316,6 +316,9 @@ class ArtifactSelectionTests(unittest.TestCase):
             malformed = debug / "registration-controls/malformed marker"
             (malformed / MARKER).parent.mkdir(parents=True)
             (malformed / MARKER).write_text("[]")
+            duplicate_keys = debug / "registration-controls/duplicate marker keys"
+            (duplicate_keys / MARKER).parent.mkdir(parents=True)
+            (duplicate_keys / MARKER).write_text('{"outcome":"passed","outcome":"failed"}')
             passed = debug / "ctest-repetition-controls/passed control"
             case = unittest.FunctionTestCase(lambda: None)
             record_fixture(failed, case, "failed")
@@ -329,6 +332,15 @@ class ArtifactSelectionTests(unittest.TestCase):
             owner_record = json.loads((malformed_owners / MARKER).read_text())
             owner_record["blocked_owners"] = "not-a-list"
             (malformed_owners / MARKER).write_text(json.dumps(owner_record), encoding="utf-8")
+            held = debug / "checkpoint-controls/passed with downstream hold"
+            held_case = unittest.FunctionTestCase(lambda: None)
+            held_case.fixture_holds = {"f21-final-consumer"}
+            record_fixture(held, held_case, "passed")
+            malformed_holds = debug / "checkpoint-controls/malformed hold metadata"
+            record_fixture(malformed_holds, case, "passed")
+            hold_record = json.loads((malformed_holds / MARKER).read_text())
+            hold_record["holds"] = "not-a-list"
+            (malformed_holds / MARKER).write_text(json.dumps(hold_record), encoding="utf-8")
             sample = workspace / "out/validation" / (family + "-release") / "rust-core/npy-0081-0000.npy"
             sample.parent.mkdir(parents=True)
             sample.write_bytes(b"tiny sample")
@@ -341,8 +353,60 @@ class ArtifactSelectionTests(unittest.TestCase):
             lines = output.read_text(encoding="utf-8").splitlines()
             self.assertEqual(lines[0], "paths<<" + lines[-1])
             self.assertEqual(set(lines[1:-1]), {p.as_posix() + "/**" for p in
-                                              (failed, unproved, missing, malformed, passed, malformed_owners)}
+                                              (failed, unproved, missing, malformed, duplicate_keys, passed, malformed_owners,
+                                               held, malformed_holds)}
                              | {sample.as_posix()})
+
+    def test_selection_rescans_live_owner_directories_and_campaign_locks(self):
+        case = unittest.FunctionTestCase(lambda: None)
+        with tempfile.TemporaryDirectory() as temporary:
+            preset_root = Path(temporary).resolve()
+            owner_fixture = preset_root / "checkpoint-controls/owner appeared after pass"
+            owner_root = owner_fixture / "project"
+            owner_root.mkdir(parents=True)
+            record_fixture(owner_fixture, case, "passed", owner_root=owner_root)
+            empty_owner = owner_root / "out/verification-locks/lease-without-owner"
+            empty_owner.mkdir(parents=True)
+
+            running_fixture = preset_root / "checkpoint-controls/running appeared after pass"
+            running_root = running_fixture / "project"
+            running_root.mkdir(parents=True)
+            record_fixture(running_fixture, case, "passed", owner_root=running_root)
+            running_lock = running_root / "out/validation/linux-debug/campaign/running.lock"
+            running_lock.parent.mkdir(parents=True)
+            running_lock.write_text("running\n", encoding="utf-8")
+
+            self.assertEqual(set(selected_paths(preset_root)), {owner_fixture, running_fixture})
+
+    def test_selection_retains_project_blockers_when_owner_root_is_missing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            preset_root = Path(temporary).resolve()
+            fixture = preset_root / "checkpoint-controls/missing owner root"
+            owner_root = fixture / "project"
+            owner_root.mkdir(parents=True)
+            record_fixture(fixture, unittest.FunctionTestCase(lambda: None), "passed",
+                           owner_root=owner_root)
+            marker = fixture / MARKER
+            record = json.loads(marker.read_text(encoding="utf-8"))
+            del record["owner_root"]
+            marker.write_text(json.dumps(record), encoding="utf-8")
+            (owner_root / "out/verification-locks/owner-without-record").mkdir(parents=True)
+            self.assertEqual(selected_paths(preset_root), [fixture])
+
+    def test_selection_retains_marker_bound_to_another_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            preset_root = Path(temporary).resolve()
+            fixture = preset_root / "checkpoint-controls/fixture binding mismatch"
+            fixture.mkdir(parents=True)
+            other = preset_root / "other fixture"
+            other.mkdir()
+            record_fixture(fixture, unittest.FunctionTestCase(lambda: None), "passed",
+                           owner_root=fixture)
+            marker = fixture / MARKER
+            record = json.loads(marker.read_text(encoding="utf-8"))
+            record["fixture"] = str(other)
+            marker.write_text(json.dumps(record), encoding="utf-8")
+            self.assertEqual(selected_paths(preset_root), [fixture])
 
     def test_native_workflows_upload_selected_paths_and_keep_reports(self):
         for native in ("linux", "windows"):

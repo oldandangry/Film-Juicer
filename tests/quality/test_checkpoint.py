@@ -17,7 +17,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/ctest"))
-from control_artifacts import MARKER, record_fixture, selected_paths
+from control_artifacts import (MARKER, current_fixture_blockers, read_fixture_marker, record_fixture,
+                               release_fixture_hold, selected_paths)
 import qualification
 from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 
@@ -27,7 +28,2452 @@ ROOT = Path(__file__).resolve().parents[2]
 SUITE_STARTED = time.monotonic()
 
 
+def policy_fixture_mode(root, mode, *, early_on=False):
+    """Maintained synthetic producer/admission modes; no real product qualification."""
+    from verify import source_snapshot
+    root = Path(root).resolve()
+    environment = dict(os.environ)
+    manifest = root / "out/policy-fixture.json"
+    def state_file(preset):
+        return root / "out/build" / preset / "verification-checkpoint.json"
+    def read_state(preset):
+        return json.loads(state_file(preset).read_text()) if state_file(preset).exists() else {}
+    roles = {"linux-debug": ["product", "boundary", "tooling", "corpus"],
+             "windows-clang-debug": ["product", "boundary", "tooling"],
+             "linux-release": ["product", "boundary"], "windows-clang-release": ["product", "boundary"]}
+    if mode == "original-early-on":
+        return policy_fixture_mode(root, "original", early_on=True)
+    if mode == "original-fault":
+        actual_capture = qualification._policy_capture
+        def omitted(*args, **kwargs):
+            facts = actual_capture(*args, **kwargs)
+            registrations = facts["subject"]["registrations"]
+            if registrations:
+                registrations.pop(next(path for path in registrations if path.replace("\\", "/").endswith("policy-leaf.cmake")))
+            return facts
+        # Explicit faulty-recorder seam. The real reader and native command run;
+        # the original preparation retains the independently complete four files.
+        with patch.object(qualification, "_policy_capture", side_effect=omitted):
+            return policy_fixture_mode(root, "original")
+
+    def prepare(preset, testing, campaign_name):
+        build = root / "out/build" / preset
+        campaign = Campaign(root, preset, campaign_name, ["prepare"])
+        state = read_state(preset)
+        with OutputLease(root, build):
+            # The first configure is an ordinary owned bootstrap, as in the CLI fixture.
+            if not (build / "CMakeCache.txt").exists():
+                campaign.run("prepare", ["cmake", "--preset", preset, "-DBUILD_TESTING=" + testing],
+                    inputs=sorted(qualification._policy_candidate(root)["files"]),
+                    tools=[str(Path(__import__("shutil").which("cmake")).resolve())], env=environment, timeout=None)
+            if testing == "ON":
+                return qualification.prepare_checkpoint(campaign, build, state_file(preset), state, environment,
+                    source_files=source_snapshot(root), allow_build=True, repeat_reason="explicit synthetic policy preparation")
+            inputs = qualification.checkpoint_inputs(root, build, "prepare", source_files=source_snapshot(root))
+            outputs = []
+            def validate(path):
+                from build_evidence import check_scoped_preparation
+                outputs[:] = check_scoped_preparation(campaign, build, path, environment)["scoped_preparation"]["outputs"]
+            return qualification.run_stage(campaign, state_file(preset), state, "prepare", ["cmake", "--build", str(build)],
+                inputs=inputs, tools=qualification.checkpoint_tools(build, environment, "prepare"), environment=environment,
+                timeout=None, action=lambda: qualification.prepare_build(campaign, "prepare", source=root, build=build,
+                    inputs=[name for name in inputs if not name.startswith("out/build/")],
+                    timeout=None, targets=["all"], configure_args=["-DBUILD_TESTING=OFF"],
+                    env=environment, checkpoint=True)[1], validate=validate, payloads=outputs,
+                refresh_inputs=lambda: qualification.checkpoint_inputs(root, build, "prepare"))
+
+    def ctest_stage(preset, group, campaign_name, *, capture=False, support=False, required=None):
+        build = root / "out/build" / preset
+        state = read_state(preset)
+        campaign = Campaign(root, preset, campaign_name, required or [group])
+        name = "Tooling.Miniature" if group == "tooling" else "Policy." + group
+        junit = campaign.directory / (group + ".xml")
+        command = [*qualification.ctest_command(root, build), "-R", "^(" + re.escape(name) + ")$", "-LE", "gpu",
+                   "--no-tests=error", "--output-on-failure", "--output-junit", str(junit)]
+        inputs = qualification.checkpoint_inputs(root, build, group, source_files=source_snapshot(root))
+        tools = qualification._policy_tools(build, environment, group)
+        payloads = [junit] + ([] if group == "tooling" else [build / ("counter-" + group + ".txt")])
+        dependency = qualification.preparation_identity(build, state["prepare"]) if group != "tooling" else None
+        with OutputLease(root, build):
+            result = qualification.run_stage(campaign, state_file(preset), state, group, command,
+                inputs=inputs, tools=tools, environment=environment, timeout=None,
+                semantic_command=[qualification.ctest_identity(command)],
+                action=lambda: qualification.run_ctest_parts(campaign, group, [command], {"host": [name]}, build=build,
+                    inputs=inputs, tools=tools, environment=environment, timeout=None, repeat_reason="",
+                    state=state, state_path=state_file(preset), payloads=[junit]),
+                validate=lambda paths: qualification.validate_ctest_stage(paths, {"host": [name]}, [name],
+                    [qualification.ctest_identity(command)]), payloads=payloads,
+                dependencies=[] if dependency is None else [dependency], ctest=True,
+                bounded_capture=qualification._POLICY_RECIPE if capture else None, policy_support=support)
+        if capture and "execution_contract" not in result:
+            raise AssertionError("policy original did not capture: " + str(result.get("bounded_ineligible")))
+        return result
+
+    def quality_stage(preset, campaign_name, base):
+        build = root / "out/build" / preset
+        campaign = Campaign(root, preset, campaign_name, ["quality"])
+        state = read_state(preset)
+        with OutputLease(root, build):
+            return qualification.run_stage(campaign, state_file(preset), state, "quality",
+                [sys.executable, "-B", "scripts/check-quality.py", "--preset", preset, "--qualification", "--base", base],
+                inputs=qualification.checkpoint_inputs(root, build, "product"),
+                tools=qualification._policy_tools(build, environment, "product"), environment=environment, timeout=None,
+                dependencies=[qualification.preparation_identity(build, state["prepare"])], synthetic_quality_base=base,
+                synthetic_quality_recipe=qualification._POLICY_RECIPE, policy_support=True)
+
+    def wrapper(preset, groups, stages, campaign_name, *, chronology=None, support_path=None):
+        required = sorted(set(groups) | ({"prepare", "quality"} if "product" in groups else set()))
+        campaign = None if support_path is not None else Campaign(root, preset, campaign_name, required)
+        members = {group: ["Tooling.Miniature" if group == "tooling" else "Policy." + group]
+                   for group in groups if group != "production"}
+        record = {"mode": "checkpoint", "status": "passed", "scope_status": "passed", "reason": "synthetic policy fixture",
+                  "preset": preset, "runtime": "all", "selection": sorted(groups), "required": required,
+                  "source": source_snapshot(root), "stages": {name: stages[name] for name in required},
+                  "membership": members, "runtime_membership": {name: {"host": names} for name, names in members.items()}}
+        if chronology is not None:
+            record["policy_chronology"] = chronology
+        path = support_path if support_path is not None else campaign.directory / "qualification.json"
+        write_json(path, record)
+        return str(path)
+
+    if mode == "original":
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        originals, stages, paths, off = {}, {}, [], {}
+        for preset in ("linux-release", "windows-clang-release"):
+            build = root / "out/build" / preset
+            prepare(preset, "OFF", "policy-off-prepare")
+            state = read_state(preset)
+            campaign = Campaign(root, preset, "policy-off-original", ["production"])
+            with OutputLease(root, build):
+                retained_ref = qualification.policy_retain_off(campaign, state)
+                retained = qualification._policy_off(retained_ref)
+                command = [retained["binary"]["path"], str(root / "input.txt"), retained["counter"]]
+                inputs = qualification.checkpoint_inputs(root, build, "production")
+                result = qualification.run_stage(campaign, state_file(preset), state, "production", command,
+                    inputs=inputs, tools=qualification._policy_tools(build, environment, "production", executable=command[0]),
+                    environment=environment, timeout=None,
+                    dependencies=[retained["preparation"]["identity"]], bounded_capture=qualification._POLICY_RECIPE,
+                    payloads=[Path(retained_ref["path"]), Path(retained["counter"]),
+                              *[Path(row["path"]) for row in retained["files"].values()]])
+            if "execution_contract" not in result:
+                raise AssertionError("OFF original did not capture: " + str(result.get("bounded_ineligible")))
+            off[preset] = result
+            originals[preset + ":production"] = result["execution_contract"]
+            if early_on and preset == "linux-release":
+                prepare(preset, "ON", "policy-original-on-prepare")
+        on = {}
+        for preset in qualification.PRESETS:
+            prepare(preset, "ON", "policy-original-on-prepare")
+            prepared = read_state(preset)["prepare"]
+            preparation_campaign = Campaign(root, preset, "policy-original-on-prepare", ["prepare"])
+            starts = [raw for raw in preparation_campaign.attempts("prepare")
+                      if raw["identity"]["command"][:3] == ["cmake", "--preset", preset]
+                      and "-DBUILD_TESTING=ON" in raw["identity"]["command"]]
+            if not starts:
+                raise AssertionError("original ON restoration has no actual configure-start receipt")
+            start = starts[0]
+            start_path = (root / start["output"]).with_name("result.json")
+            on[preset] = {"preparation": prepared, "started": qualification._bounded_reference(start_path)}
+            quality_stage(preset, "policy-original-quality", base)
+            for group in ("product", "boundary", "corpus"):
+                stage = ctest_stage(preset, group, "policy-original-" + group, capture=True)
+                originals[preset + ":" + group] = stage["execution_contract"]
+            ctest_stage(preset, "tooling", "policy-original-tooling", support=True)
+            stages[preset] = read_state(preset)
+        chronology = {"off": {preset: stage["execution_contract"] for preset, stage in off.items()},
+                      "on": {preset: on[preset] for preset in off}}
+        for preset in qualification.PRESETS:
+            paths.append(wrapper(preset, roles[preset], stages[preset], "policy-original-wrapper"))
+        for preset, stage in off.items():
+            paths.append(wrapper(preset, ["production"], {"production": stage}, "policy-off-wrapper", chronology=chronology))
+        pdb_files = sorted(str(path) for preset in qualification.PRESETS
+                           for path in (root / "out/build" / preset).rglob("*.pdb") if path.is_file())
+        if pdb_files:
+            raise AssertionError("prospective ordinary policy build emitted PDBs: " + ", ".join(pdb_files))
+        data = {"root": str(root), "base": base, "candidate": qualification._policy_candidate(root),
+                "producer": qualification._policy_producer(root), "originals": originals, "original_stages": stages,
+                "off_stages": off, "chronology": chronology, "ordinary_paths": paths,
+                "actual_native": __import__("sysconfig").get_platform(), "counters": {str(p): p.read_bytes().hex()
+                    for p in (root / "out").rglob("counter*.txt")}}
+        write_json(manifest, data)
+        return data
+    data = json.loads(manifest.read_text())
+    if mode == "support":
+        support = {}
+        for preset in qualification.PRESETS:
+            final_name = "policy-admitted-valid-" + str(list(roles).index(preset))
+            final_required = sorted(set(roles[preset]) | {"prepare", "quality"})
+            in_final = "tooling" in roles[preset]
+            campaign_name = final_name if in_final else "policy-current-tooling"
+            ctest_stage(preset, "tooling", campaign_name, support=True,
+                        required=final_required if in_final else None)
+            current = read_state(preset)
+            support_path = root / "out/validation" / preset / final_name / "tooling-support.json" if in_final else None
+            support[preset] = {"tooling": wrapper(preset, ["tooling"], current, "policy-current-tooling-wrapper", support_path=support_path)}
+            prepare(preset, "ON", "policy-current-prepare")
+            quality_stage(preset, "policy-current-quality", data["base"])
+            support[preset]["state"] = read_state(preset)
+        data["support"] = support
+        data["current_candidate"] = qualification._policy_candidate(root)
+        data["current_producer"] = qualification._policy_producer(root)
+        write_json(manifest, data)
+        return data
+    if mode in {"collect-old", "collect-current"}:
+        paths = data["ordinary_paths"] if mode == "collect-old" else data["admitted_paths"]
+        windows_python = os.environ.get("JUICER_WINDOWS_PYTHON")
+        if not windows_python or os.name != "posix":
+            raise ValueError("actual foreign F21 consumer requires Linux and its qualified Windows interpreter")
+        before = {path: Path(qualification.mapped_windows_path(path)).read_bytes().hex() for path in data["counters"]}
+        try:
+            result = qualification.collect_qualification(root, [str(qualification.mapped_windows_path(path)) for path in paths],
+                                                         windows_python=windows_python)
+        except ValueError as error:
+            if mode != "collect-old" or "missing" not in str(error):
+                raise
+            import traceback
+            failure = {"mode": "actual-old-reader-foreign-collection", "status": "failed-as-expected",
+                       "reader": {"path": str(root / "scripts/build_evidence.py"),
+                                  "sha256": hashlib.sha256((root / "scripts/build_evidence.py").read_bytes()).hexdigest()},
+                       "error": str(error), "traceback": traceback.format_exc(), "originals": data["originals"],
+                       "counters_before": before, "native_identity_attempts": [str(p) for p in
+                           (root / "out/validation/linux-debug").glob("collection-*")]}
+            if "registration_files" not in failure["traceback"]:
+                raise AssertionError("F21 failure did not reach the real registration reader") from error
+            write_json(root / "out/f21-failed-collection.json", failure)
+            return failure
+        if mode == "collect-old":
+            raise AssertionError("the actual old foreign registration reader unexpectedly collected")
+        if before != {path: Path(qualification.mapped_windows_path(path)).read_bytes().hex() for path in data["counters"]}:
+            raise AssertionError("foreign collection replayed an original child")
+        write_json(root / "out/f21-current-collection.json", result)
+        return result
+    if mode == "injection":
+        preset = "linux-debug"
+        build = root / "out/build" / preset
+        state = read_state(preset)
+        original = json.loads(Path(data["originals"][preset + ":product"]["path"]).read_text())
+        command = list(original["facts"]["stage_identity"]["command"][0])
+        command[-1] = original["execution"]["junit"]["path"]
+        campaign = Campaign(root, preset, "policy-injection-controls", ["product"])
+        for key in ("LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+                    "CPATH", "C_INCLUDE_PATH", "GCC_EXEC_PREFIX", "COMPILER_PATH", "LIBRARY_PATH", "CL", "_CL_",
+                    "CMAKE_TOOLCHAIN_FILE", "CMAKE_PROJECT_TOP_LEVEL_INCLUDES", "PATH", "INCLUDE", "LIB"):
+            injected = dict(environment)
+            injected[key] = (injected.get(key, "") + os.pathsep if key in {"PATH", "INCLUDE", "LIB"} else "") + str(root)
+            with OutputLease(root, build):
+                try:
+                    qualification._policy_capture(campaign, state, "product", command,
+                        qualification.checkpoint_inputs(root, build, "product"),
+                        qualification._policy_tools(build, environment, "product"), injected)
+                except ValueError as error:
+                    if "injection" not in str(error) and "mutable miniature" not in str(error):
+                        raise
+                else:
+                    raise AssertionError("unsupported project environment was admitted: " + key)
+        return data
+    if mode == "race":
+        preset = "linux-debug"
+        state = data["support"][preset]["state"].copy()
+        for group in ("product", "boundary", "corpus"):
+            state[group] = data["original_stages"][preset][group]
+        write_json(state_file(preset), state)
+        original_declaration = root / "out/policy-declarations/valid/0/declaration.json"
+        declaration_path = root / "out/policy-declarations/race/declaration.json"
+        declaration_path.parent.mkdir()
+        declaration_path.write_bytes(original_declaration.read_bytes())
+        writer = qualification._write_admission_record
+        injected = False
+        def newer_failure(path, record):
+            nonlocal injected
+            writer(path, record)
+            if path.name == "admission.json" and not injected:
+                injected = True
+                latest = read_state(preset)
+                latest["product"]["status"] = "failed"
+                latest["product"]["error"] = "explicit current owner race injection"
+                write_json(state_file(preset), latest)
+        args = SimpleNamespace(reason="policy owner publication race", selection=roles[preset], preset=preset,
+            runtime="all", campaign="policy-race", base=data["base"], repeat_reason="", prepare=False,
+            reuse_declaration=str(declaration_path))
+        try:
+            with patch.object(qualification, "_write_admission_record", side_effect=newer_failure):
+                qualification.qualify(root, args)
+        except ValueError as error:
+            if not injected or "owner_conflict" not in str(error):
+                raise
+            if read_state(preset)["product"]["status"] != "failed":
+                raise AssertionError("admission overwrote the current failed owner") from error
+            write_json(root / "out/policy-owner-race.json", {"status": "rejected", "error": str(error), "state": read_state(preset)})
+            return data
+        raise AssertionError("policy admission ignored a newer failed owner")
+    if mode.startswith("admit"):
+        variant = mode.removeprefix("admit").removeprefix(":")
+        reuse_mode = variant == "reuse"
+        selected_roles = {key: value.copy() for key, value in roles.items()}
+        if variant and not reuse_mode:
+            selected_roles["linux-debug"].remove("corpus")
+            selected_roles[variant].append("corpus")
+        paths = []
+        for preset in qualification.PRESETS:
+            if reuse_mode:
+                state = read_state(preset)
+            else:
+                state = data["support"][preset]["state"].copy()
+                for group in ("product", "boundary", "corpus"):
+                    state[group] = data["original_stages"][preset][group]
+                if preset in data["off_stages"]:
+                    state["production"] = data["off_stages"][preset]
+            write_json(state_file(preset), state)
+        contexts = [(preset, groups) for preset, groups in selected_roles.items()]
+        contexts += [(preset, ["production"]) for preset in ("linux-release", "windows-clang-release")]
+        for index, (preset, groups) in enumerate(contexts):
+            selected = sorted(set(groups) - {"tooling"})
+            if reuse_mode:
+                path = root / "out/policy-declarations/valid" / str(index) / "declaration.json"
+            else:
+                folder = root / "out/policy-declarations" / (variant or "valid") / str(index)
+                folder.mkdir(parents=True)
+                original_refs = [{"preset": preset, "group": group, "contract": data["originals"][preset + ":" + group]}
+                                 for group in selected]
+                quality = data["support"][preset]["state"]["quality"]
+                declaration = {"protocol": "tooling-evidence-policy-transition-v1", "recipe": qualification._POLICY_RECIPE,
+                    "original_candidate": data["candidate"], "current_candidate": data["current_candidate"],
+                    "changes": [{"path": "scripts/build_evidence.py", "old_sha256": data["candidate"]["files"]["scripts/build_evidence.py"],
+                        "new_sha256": data["current_candidate"]["files"]["scripts/build_evidence.py"], "groups": selected}],
+                    "originals": original_refs, "compatibility": [{"path": "scripts/build_evidence.py", "group": group,
+                        "role": "controller-only", "outcome_integrity": "preserved"} for group in selected],
+                    "producer_transition": {"original": data["producer"], "current": data["current_producer"]},
+                    "fresh_evidence": {"tooling": [qualification._bounded_reference(data["support"][preset]["tooling"])],
+                        "quality": [{"path": quality["receipt"], "sha256": quality["sha256"]}], "quality_base": data["base"]},
+                    "chronology": data["chronology"], "review": None, "owner_decision": None}
+                core = qualification._bounded_hash({k: v for k, v in declaration.items() if k not in {"review", "owner_decision"}})
+                for key, decision in (("review", "compatible"), ("owner_decision", "approve")):
+                    path = folder / (key + ".json")
+                    proof = {"protocol": "synthetic-policy-" + key + "-v1", "transition_sha256": core,
+                             "original_candidate_sha256": qualification._bounded_hash(data["candidate"]),
+                             "current_candidate_sha256": qualification._bounded_hash(data["current_candidate"]),
+                             "originals": original_refs, "producer_transition": declaration["producer_transition"], "decision": decision}
+                    path.write_bytes(qualification._bounded_bytes(proof))
+                    declaration[key] = qualification._bounded_reference(path)
+                path = folder / "declaration.json"
+                path.write_bytes(qualification._bounded_bytes(declaration))
+            campaign_variant = "valid-reuse" if reuse_mode else (variant or "valid")
+            args = SimpleNamespace(reason="reviewed synthetic registration-reader transition", selection=groups,
+                preset=preset, runtime="all", campaign="policy-admitted-" + campaign_variant + "-" + str(index),
+                base=data["base"], repeat_reason="", prepare=False, reuse_declaration=str(path))
+            import verify
+            previous_root, previous_argv = verify.ROOT, sys.argv
+            verify.ROOT = root
+            sys.argv = ["verify.py", "qualification", "--preset", preset, "--runtime", "all", "--reason", args.reason,
+                        "--base", data["base"], "--campaign", args.campaign, "--reuse-declaration", str(path),
+                        "--selection", *groups]
+            try:
+                if verify.main() != 0:
+                    raise AssertionError("actual policy qualification CLI did not complete")
+            finally:
+                verify.ROOT, sys.argv = previous_root, previous_argv
+            paths.append(str(root / "out/validation" / preset / args.campaign / "qualification.json"))
+        data["admitted_paths" + (":" + variant if variant else "")] = paths
+        write_json(manifest, data)
+        return data
+    raise ValueError("unknown maintained policy fixture mode")
+
+
+class PolicyFactsStorageTests(unittest.TestCase):
+    def facts(self, owner, group, *, current_preparation=None):
+        candidate = {"root": str(owner.parents[3]), "head": "1" * 40, "tree": "2" * 40,
+                    "files": {"source/%03d.cpp" % index: "a" * 64 for index in range(64)}}
+        producer = {"external": {"root": str(owner), "files": {}},
+                    "reader": {"path": str(owner / "reader.py"), "sha256": "b" * 64},
+                    "modules": {"qualification": "c" * 64}, "supervisor": {}, "native_supervisor": {},
+                    "cache_policy": {}, "cache_absent": {}}
+        preparation = {"identity": "d" * 64, "stage": {"receipt": str(owner / "prepare.json"), "sha256": "e" * 64}}
+        support = {"tooling": {"path": str(owner / "tooling.json"), "sha256": "f" * 64},
+                   "tooling_stage": {"receipt": str(owner / "tooling-result.json"), "sha256": "0" * 64},
+                   "preparation": preparation,
+                   "quality_stage": {"receipt": str(owner / "quality-result.json"), "sha256": "1" * 64},
+                   "quality": {"path": str(owner / "quality.json"), "sha256": "2" * 64}}
+        current = {"policy": {"recipe": "synthetic-policy"}, "candidate": candidate,
+                   "context": {"group": group}, "subject": {"files": candidate["files"]},
+                   "preparation": current_preparation or preparation, "producer": producer,
+                   "stage_identity": {"command": [group], "inputs": candidate["files"]},
+                   "counter": str(owner / ("counter-" + group))}
+        original_facts = {"policy": current["policy"], "candidate": candidate,
+                          "context": {"preset": "linux-debug", "group": group}, "subject": current["subject"],
+                          "preparation": current["preparation"], "producer": producer,
+                          "stage_identity": current["stage_identity"], "counter": current["counter"]}
+        original_result = {"status": "passed", "receipt": str(owner / (group + "-result.json")),
+                           "sha256": "8" * 64, "additional_receipts": {}, "payloads": {}}
+        if group != "production":
+            original_result["ctest_chunks"] = []
+        original_path = owner / (group + "-original.json")
+        original_document = {"protocol": "product-evidence-policy-v2", "assurance": qualification._POLICY_ASSURANCE,
+            "facts": original_facts, "stage": {"name": group, "result": original_result}, "execution": {},
+            "started_at": "2026-11-03T00:00:00+00:00", "finished_at": "2026-11-03T00:00:01+00:00",
+            "launch": {}, "seals": {"entry": qualification._bounded_hash(original_facts),
+                                      "terminal": qualification._bounded_hash(original_facts)},
+            "producer_source": {"path": str(owner / "reader.py"), "sha256": "9" * 64}}
+        original_path.write_bytes(qualification._bounded_bytes(original_document))
+        original = qualification._bounded_reference(original_path)
+        owner_record = {**original_result, "identity": original_facts["stage_identity"],
+                        "execution_contract": original}
+        return {"declaration": {"sha256": "3" * 64}, "original": original,
+                "current": current, "comparison": {"sha256": "5" * 64}, "support": support,
+                "owner": owner_record,
+                "chronology": {"finished_at": "2026-11-03T00:00:00+00:00"}}
+
+    def read_admission(self, reference, facts):
+        with patch.object(qualification, "read_policy_contract",
+                          side_effect=AssertionError("admission storage decode ran full contract validation")) as full_reader:
+            result = qualification._policy_read_admission(reference)
+            full_reader.assert_not_called()
+            return result
+
+    def write_admission(self, record, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(qualification._bounded_bytes(record))
+        return qualification._bounded_reference(path)
+
+    def test_campaign_local_shared_payload_roundtrips_and_saves_repeated_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            project = fixture / "project"
+            owner = project / "out/validation/linux-debug/campaign"
+            build = project / "out/build/linux-debug"
+            owner.mkdir(parents=True)
+            build.mkdir(parents=True)
+            campaign = SimpleNamespace(directory=owner)
+            admissions = []
+            shared_paths = []
+            semantic_facts = [self.facts(owner, "product"),
+                               self.facts(owner, "production", current_preparation={
+                                   "identity": "6" * 64, "stage": {"receipt": str(owner / "off.json"), "sha256": "7" * 64}})]
+            for index, facts in enumerate(semantic_facts):
+                record, path = qualification._policy_encode_admission(campaign, facts,
+                    "2026-11-03T00:00:00+00:00", admission_root=build)
+                reference = self.write_admission(record, path)
+                restored, metadata = self.read_admission(reference, facts)
+                self.assertEqual(restored, facts)
+                self.assertEqual(metadata["owner_campaign"], str(owner))
+                shared_paths.append(metadata["shared_facts"]["path"])
+                self.assertEqual(record["current_preparation"]["mode"], "shared" if index == 0 else "override")
+                admissions.append((record, reference))
+            self.assertEqual(len(set(shared_paths)), 1)
+            blobs = list((owner / "policy-facts").glob("*.json"))
+            self.assertEqual(len(blobs), 1)
+            shared_bytes = blobs[0].stat().st_size
+            retained_bytes = shared_bytes + sum(Path(reference["path"]).stat().st_size for _, reference in admissions)
+            legacy_bytes = sum(len(qualification._bounded_bytes({"protocol": "synthetic-policy-admission-v1",
+                "assurance": qualification._POLICY_ASSURANCE, "admitted_at": "2026-11-03T00:00:00+00:00", **facts}))
+                for facts in semantic_facts)
+            self.assertLess(retained_bytes, legacy_bytes)
+            self.assertLess(len(blobs[0].read_bytes()) + sum(len(qualification._bounded_bytes(record))
+                for record, _ in admissions), legacy_bytes)
+            stored_bytes = len(blobs[0].read_bytes()) + sum(Path(reference["path"]).stat().st_size
+                for _, reference in admissions)
+            print(f"policy_facts_storage_bytes legacy_v1={legacy_bytes} shared_blob={shared_bytes} "
+                  f"admission_records={stored_bytes - shared_bytes} total_v2={stored_bytes} saved={legacy_bytes - stored_bytes}")
+
+    def test_shared_payload_rejects_corruption_missing_blob_unknown_schema_and_wrong_owner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            project = fixture / "project"
+            owner = project / "out/validation/linux-debug/campaign"
+            build = project / "out/build/linux-debug"
+            owner.mkdir(parents=True)
+            build.mkdir(parents=True)
+            campaign = SimpleNamespace(directory=owner)
+            facts = self.facts(owner, "product")
+            record, path = qualification._policy_encode_admission(campaign, facts,
+                "2026-11-03T00:00:00+00:00", admission_root=build)
+            reference = self.write_admission(record, path)
+            blob = Path(record["shared_facts"]["path"])
+            original = blob.read_bytes()
+            blob.write_bytes(original + b"tamper")
+            with self.assertRaisesRegex(ValueError, "policy evidence changed"):
+                self.read_admission(reference, facts)
+            blob.write_bytes(original)
+            blob.unlink()
+            with self.assertRaises((ValueError, OSError)):
+                self.read_admission(reference, facts)
+            blob.write_bytes(original)
+            malformed = dict(record, unknown=True)
+            bad = self.write_admission(malformed, fixture / "unknown.json")
+            with self.assertRaisesRegex(ValueError, "malformed policy admission v2"):
+                self.read_admission(bad, facts)
+            wrong_owner = dict(record)
+            wrong_owner["shared_facts"] = dict(record["shared_facts"],
+                path=str(fixture / "sibling" / "policy-facts" / (record["shared_facts"]["sha256"] + ".json")))
+            wrong = self.write_admission(wrong_owner, fixture / "wrong-owner.json")
+            with self.assertRaisesRegex(ValueError, "outside its campaign owner"):
+                self.read_admission(wrong, facts)
+
+    def test_flat_retained_shared_payload_uses_logical_owner_and_strict_physical_leaf(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            owner = r"C:\r4-fixture\project\out\validation\linux-debug\qualification"
+            record = {"protocol": "synthetic-policy-facts-v1", "owner_campaign": owner,
+                      "candidate": {"root": owner, "head": "1" * 40, "tree": "2" * 40, "files": {}},
+                      "producer": {"external": {"root": owner, "files": {}}, "reader": {}, "modules": {},
+                                   "supervisor": {}, "native_supervisor": {}, "cache_policy": {}, "cache_absent": {}},
+                      "support": {"tooling": {"path": "C:\\support\\tooling.json", "sha256": "3" * 64},
+                                  "tooling_stage": {}, "preparation": {"identity": "4" * 64, "stage": {}},
+                                  "quality_stage": {}, "quality": {"path": "C:\\support\\quality.json", "sha256": "5" * 64}}}
+            content = qualification._bounded_bytes(record)
+            checksum = hashlib.sha256(content).hexdigest()
+            logical = owner + "\\policy-facts\\" + checksum + ".json"
+            physical = fixture / "shared-facts.json"
+            physical.write_bytes(content)
+            def resolver(value):
+                if str(value) == logical:
+                    return physical
+                raise FileNotFoundError(value)
+            loaded = qualification._policy_read_shared_facts({"path": logical, "sha256": checksum}, owner, resolver)
+            self.assertEqual(loaded, record)
+            self.assertFalse(Path(owner).exists())
+            if os.name == "posix":
+                target = fixture / "target.json"
+                target.write_bytes(content)
+                physical.unlink()
+                physical.symlink_to(target)
+                with self.assertRaisesRegex(ValueError, "retargeted"):
+                    qualification._policy_read_shared_facts({"path": logical, "sha256": checksum}, owner, resolver)
+
+    def test_original_v1_envelope_keeps_canonical_bytes_and_nested_stage_compatibility(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            owner = Path(temporary) / "project/out/validation/linux-debug/campaign"
+            owner.mkdir(parents=True)
+            facts = self.facts(owner, "product")
+            original_path = Path(facts["original"]["path"])
+            document = json.loads(original_path.read_text())
+            document["protocol"] = "product-evidence-policy-v1"
+            document["stage"]["result"]["identity"] = document["facts"]["stage_identity"]
+            document["stage"]["legacy_note"] = "older readers permitted this nested field"
+            original_path.write_bytes(qualification._bounded_bytes(document))
+            reference = qualification._bounded_reference(original_path)
+            decoded, version = qualification._policy_decode_contract_envelope(reference)
+            self.assertEqual(version, "product-evidence-policy-v1")
+            self.assertEqual(decoded["stage"]["legacy_note"], document["stage"]["legacy_note"])
+            original_path.write_text(json.dumps(document, indent=2) + "\n")
+            noncanonical = qualification._bounded_reference(original_path)
+            with self.assertRaisesRegex(ValueError, "malformed prospective policy original"):
+                qualification._policy_decode_contract_envelope(noncanonical)
+
+    def test_v2_admission_v1_original_owner_uses_full_reader_contract_mapping(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / "project"
+            owner = project / "out/validation/linux-debug/campaign"
+            build = project / "out/build/linux-debug"
+            owner.mkdir(parents=True)
+            build.mkdir(parents=True)
+            facts = self.facts(owner, "product")
+            legacy_document = json.loads(Path(facts["original"]["path"]).read_text())
+            legacy_document["protocol"] = "product-evidence-policy-v1"
+            legacy_document["stage"]["result"]["identity"] = legacy_document["facts"]["stage_identity"]
+            legacy_path = owner / "legacy-original.json"
+            legacy_path.write_bytes(qualification._bounded_bytes(legacy_document))
+            facts["original"] = qualification._bounded_reference(legacy_path)
+            facts["owner"]["execution_contract"] = facts["original"]
+            record, admission_path = qualification._policy_encode_admission(
+                SimpleNamespace(directory=owner), facts, "2026-11-03T00:00:00+00:00", admission_root=build)
+            reference = self.write_admission(record, admission_path)
+            contract = {"facts": legacy_document["facts"], "stage": legacy_document["stage"]}
+            with patch.object(qualification, "read_policy_contract", return_value={"contract": contract}) as reader:
+                restored, metadata = qualification._policy_read_admission(reference)
+            reader.assert_called_once_with(facts["original"], resolve=Path)
+            self.assertEqual(restored, facts)
+            self.assertEqual(metadata["protocol"], "synthetic-policy-admission-v2")
+
+    def test_completion_binds_v2_admission_to_its_exact_creator_group(self):
+        original_a = {"path": "/campaign/a.json", "sha256": "a" * 64}
+        original_b = {"path": "/campaign/b.json", "sha256": "b" * 64}
+        admission_a = {"path": "/build/admission/a.json", "sha256": "c" * 64}
+        admission_b = {"path": "/build/admission/b.json", "sha256": "d" * 64}
+        metadata = {"protocol": "synthetic-policy-admission-v2"}
+        record = {"original": original_a}
+        declaration = {"originals": [{"group": "product", "contract": original_a},
+                                      {"group": "boundary", "contract": original_b}]}
+        retained = {"stages": {"product": {"reuse_admission": admission_a},
+                                "boundary": {"reuse_admission": admission_b}}}
+        qualification._policy_validate_completion_admission_owner(
+            admission_a, metadata, record, declaration, retained)
+        retained["stages"]["product"]["reuse_admission"] = admission_b
+        with self.assertRaisesRegex(ValueError, "creator wrapper does not retain this exact admission"):
+            qualification._policy_validate_completion_admission_owner(
+                admission_a, metadata, record, declaration, retained)
+        with self.assertRaisesRegex(ValueError, "no unique original group"):
+            qualification._policy_validate_completion_admission_owner(
+                admission_a, metadata, record, {"originals": [declaration["originals"][1]]}, retained)
+        qualification._policy_validate_completion_admission_owner(
+            admission_a, {"protocol": "synthetic-policy-admission-v1"}, record,
+            {"originals": []}, retained)
+
+    def test_legacy_admission_and_completion_headers_keep_v1_meaning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            wrapper = folder / "campaign/qualification.json"
+            wrapper.parent.mkdir()
+            wrapper.write_text("{}\n")
+            wrapper_ref = qualification._bounded_reference(wrapper)
+            record = {"protocol": "synthetic-policy-admission-v1", "assurance": qualification._POLICY_ASSURANCE,
+                      "admitted_at": "2026-11-03T00:00:00+00:00", "declaration": {"old": 1},
+                      "original": {"old": 2}, "current": {"old": 3}, "comparison": {"old": 4},
+                      "support": {"old": 5}, "owner": {"old": 6}, "chronology": {"old": 7}}
+            admission_path = folder / "build/verification-admissions/legacy/admission.json"
+            admission_path.parent.mkdir(parents=True)
+            admission_path.write_text(json.dumps(record, indent=2) + "\n")
+            admission = qualification._bounded_reference(admission_path)
+            semantic, metadata = qualification._policy_read_admission(admission)
+            self.assertEqual(semantic, {key: value for key, value in record.items()
+                                        if key not in {"protocol", "assurance", "admitted_at"}})
+            self.assertEqual(metadata["protocol"], "synthetic-policy-admission-v1")
+            completed = {"protocol": "synthetic-policy-completion-v1", "admission": admission, "wrapper": wrapper_ref}
+            self.assertTrue(qualification._policy_validate_completion_header(admission, metadata, completed))
+            unknown = {**completed, "shared_facts": {"path": "unused", "sha256": "0" * 64}}
+            with self.assertRaisesRegex(ValueError, "malformed or conflicting policy completion"):
+                qualification._policy_validate_completion_header(admission, metadata, unknown)
+
+    def test_command_receipt_identity_change_between_retained_and_decoded_reads_is_rejected(self):
+        import execution
+        from execution import write_command_result
+
+        with tempfile.TemporaryDirectory() as temporary:
+            owner = Path(temporary)
+            receipt = owner / "attempts/product-run/result.json"
+            receipt.parent.mkdir(parents=True)
+            identity = {"command": ["child"], "inputs": {"input.txt": "a" * 64},
+                        "tools": {"/usr/bin/child": "b" * 64}, "tool_paths": ["/usr/bin/child"],
+                        "environment": "c" * 64, "dependencies": []}
+            write_command_result(receipt, {"stage": "product", "status": "passed", "identity": identity})
+            retained = json.loads(receipt.read_text())
+            self.assertTrue(qualification._policy_receipt_decode_matches(retained, read_json(receipt), receipt))
+            tools_reference = retained["identity"]["tools_ref"]
+            tools_blob = owner / "identities" / (tools_reference["sha256"] + ".json")
+            tools_bytes = tools_blob.read_bytes()
+            tools_document = json.loads(tools_bytes)
+            tools_document["values"]["/usr/bin/child"] = "e" * 64
+            tools_blob.write_bytes(execution._identity_map_bytes(tools_document["values"]))
+            try:
+                with self.assertRaisesRegex(ValueError, "content hash changed"):
+                    read_json(receipt)
+            finally:
+                tools_blob.write_bytes(tools_bytes)
+            for field, replacement in (("command", ["other-child"]), ("environment", "d" * 64)):
+                changed = json.loads(json.dumps(retained))
+                if field == "command":
+                    changed["identity"][field][0] = replacement[0]
+                else:
+                    changed["identity"][field] = replacement
+                receipt.write_bytes(qualification._bounded_bytes(changed))
+                with self.subTest(field=field):
+                    self.assertFalse(qualification._policy_receipt_decode_matches(retained, read_json(receipt), receipt))
+
+
+class PolicyCollectionTests(unittest.TestCase):
+    def setUp(self):
+        import shutil
+        self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset)) / "checkpoint-controls"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(prefix="policy-", dir=parent, delete=False)
+        self.folder = Path(self.temporary.name).resolve()
+        self.fixture_holds = set()
+        self.retain = bool(os.environ.get("JUICER_TEST_RETAIN_FIXTURES"))
+        self.root = self.folder / "project"
+        self.root.mkdir()
+        record_fixture(self.folder, self, "running", owner_root=self.root)
+        def finish():
+            outcome = record_fixture(self.folder, self, owner_root=self.root)
+            blockers = current_fixture_blockers(self.root)
+            if (outcome == "passed" and not self.retain
+                    and not os.environ.get("JUICER_TEST_RETAIN_FIXTURES")
+                    and not self.fixture_holds and not blockers):
+                try:
+                    self.temporary.cleanup()
+                except BaseException:
+                    record_fixture(self.folder, self, "failed", owner_root=self.root)
+                    raise
+            else:
+                print("Retained policy fixture:", self.folder, file=sys.stderr, flush=True)
+        self.addCleanup(finish)
+        for name, template in qualification._policy_templates().items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(template, path)
+        (self.root / "input.txt").write_bytes(b"value=7\n")
+        (self.root / ".gitignore").write_bytes(b"out/\n__pycache__/\n")
+        (self.root / "scripts/qualification.py").write_bytes(b"# Fixed policy fixture metadata; the selected reader is actual code.\n")
+        reader = (ROOT / "scripts/build_evidence.py").read_text(encoding="utf-8")
+        (self.root / "scripts/build_evidence.py").write_bytes(qualification._policy_reader_before(reader).encode("utf-8"))
+        compiler = shutil.which("clang-cl.exe") if os.name == "nt" else "/usr/bin/gcc-13"
+        self.assertIsNotNone(compiler)
+        write_json(self.root / "CMakePresets.json", qualification._policy_presets(self.root, compiler))
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True, capture_output=True)
+        subprocess.run(["git", "-c", "core.autocrlf=false", "add", "."], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "-c", "user.name=Control", "-c", "user.email=control@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-qm", "prospective policy original"],
+                       cwd=self.root, check=True, capture_output=True)
+
+    @unittest.skipUnless(os.name == "nt", "the symbol-output contract is Windows-specific")
+    def test_prospective_policy_recipe_disables_pdb_generation_and_keeps_v1_reader_recipe(self):
+        import shutil
+
+        compiler = shutil.which("clang-cl.exe")
+        self.assertIsNotNone(compiler)
+        current = qualification._policy_presets(self.root, compiler)
+        previous = qualification._policy_presets(self.root, compiler, recipe=qualification._POLICY_RECIPE_V1)
+        for presets, expect_symbols in ((current, False), (previous, True)):
+            rows = {row["name"]: row["cacheVariables"] for row in presets["configurePresets"]}
+            for name in ("windows-clang-debug", "windows-clang-release"):
+                variables = rows[name]
+                compiler_flags = variables["CMAKE_C_FLAGS_DEBUG"] + " " + variables["CMAKE_C_FLAGS_RELEASE"]
+                linker_flags = variables["CMAKE_EXE_LINKER_FLAGS_DEBUG"] + " " + variables["CMAKE_EXE_LINKER_FLAGS_RELEASE"]
+                self.assertEqual("/Z7" in compiler_flags, expect_symbols)
+                self.assertEqual("/DEBUG" in linker_flags, expect_symbols)
+        self.assertEqual(qualification._policy_policy()["recipe"], "native-c11-policy-miniature-v2")
+        self.assertEqual(qualification._policy_policy(qualification._POLICY_RECIPE_V1)["recipe"],
+                         qualification._POLICY_RECIPE_V1)
+        environment = dict(os.environ)
+        for preset in ("windows-clang-debug", "windows-clang-release"):
+            with self.subTest(preset=preset):
+                build = self.root / "out/build" / preset
+                campaign = Campaign(self.root, preset, "v2-no-pdb-" + preset, ["prepare", "child"])
+                qualification.prepare_build(campaign, "prepare", source=self.root, build=build,
+                    inputs=qualification.checkpoint_inputs(self.root, build, "prepare"), timeout=120,
+                    targets=["BoundedEvidenceChild"], configure_args=["-DBUILD_TESTING=ON"],
+                    env=environment, checkpoint=True)
+                binary = build / "BoundedEvidenceChild.exe"
+                counter = build / "no-pdb-child-counter.txt"
+                with OutputLease(self.root, build):
+                    receipt = campaign.run("child", [str(binary), str(self.root / "input.txt"), str(counter)],
+                        inputs=["input.txt"], tools=[str(binary)], env=environment, timeout=30)
+                result = read_json(receipt)
+                transcript = (self.root / result["output"]).read_text(encoding="utf-8")
+                self.assertEqual(result["status"], "passed")
+                self.assertEqual(counter.read_text(encoding="utf-8"), "1\n")
+                self.assertIn("testing=ON", transcript)
+                self.assertIn("result=14", transcript)
+                pdb_files = [path for path in build.rglob("*")
+                             if path.is_file() and path.suffix.casefold() == ".pdb"]
+                self.assertEqual(pdb_files, [], f"v2 emitted PDB files under {build}: {pdb_files}")
+
+    def test_policy_reader_source_is_one_immutable_blob_per_owner_hash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            owner_root = Path(temporary) / "project"
+            owner_root.mkdir()
+            receipt = owner_root / "out/validation/first/attempts/product/attempt/result.json"
+            receipt.parent.mkdir(parents=True)
+            receipt.write_bytes(b"{}\n")
+            payload = b"original reader bytes\xff\n"
+            first = qualification._write_policy_reader_source(owner_root, payload)
+            other_receipt = owner_root / "out/validation/second/attempts/boundary/other/result.json"
+            other_receipt.parent.mkdir(parents=True)
+            other_receipt.write_bytes(b"{}\n")
+            second = qualification._write_policy_reader_source(owner_root, payload)
+            self.assertEqual(first, second)
+            self.assertEqual(len(list((owner_root / "out/policy-reader-sources").glob("*.py"))), 1)
+            self.assertEqual(Path(first["path"]).read_bytes(), payload)
+            Path(first["path"]).write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "existing policy reader-source blob differs"):
+                qualification._write_policy_reader_source(owner_root, payload)
+
+    def mode(self, mode, *, root=None, success=True):
+        root = root or self.root
+        bootstrap = ("import importlib.util,pathlib,runpy,sys; "
+            "source=pathlib.Path(sys.argv[1]); root=pathlib.Path(sys.argv[2]); "
+            "sys.path.insert(0,str(source/'scripts')); "
+            "spec=importlib.util.spec_from_file_location('build_evidence',root/'scripts/build_evidence.py'); "
+            "module=importlib.util.module_from_spec(spec); sys.modules['build_evidence']=module; spec.loader.exec_module(module); "
+            "scope=runpy.run_path(str(source/'tests/quality/test_checkpoint.py'),run_name='policy_fixture_helpers'); "
+            "scope['policy_fixture_mode'](root,sys.argv[3])")
+        log = self.folder / (mode.replace(":", "-") + ".log")
+        with log.open("wb") as output:
+            result = subprocess.run([sys.executable, "-B", "-c", bootstrap, str(ROOT), str(root), mode],
+                                    stdout=output, stderr=subprocess.STDOUT, check=False)
+        if success:
+            self.assertEqual(result.returncode, 0, log.read_text(errors="replace")[-20000:])
+        else:
+            self.assertNotEqual(result.returncode, 0)
+        return json.loads((root / "out/policy-fixture.json").read_text()) if (root / "out/policy-fixture.json").exists() else None
+
+    def repair(self):
+        (self.root / "scripts/build_evidence.py").write_bytes((ROOT / "scripts/build_evidence.py").read_bytes())
+
+    def handoff(self, *, original=False):
+        path = Path(os.environ["JUICER_POLICY_F21_HANDOFF"]).resolve(strict=True)
+        record = qualification.identity_json(path.read_text())
+        if set(record) != {"protocol", "root", "fixture", "data"} or record["protocol"] != "policy-f21-handoff-v1" or path.parent.name != "logs":
+            raise ValueError("malformed retained F21 handoff")
+        def local(name):
+            return qualification.mapped_windows_path(name) if os.name == "posix" else Path(name)
+        root, fixture = local(record["root"]).resolve(strict=True), local(record["fixture"]).resolve(strict=True)
+        if (root != fixture / "project" or fixture.parent != path.parent.parent / "checkpoint-controls"
+                or not fixture.name.startswith("policy-") or record["data"]["root"] != record["root"]
+                or record["data"].get("actual_native") != "win-amd64"):
+            raise ValueError("retained F21 root is outside its owned synthetic fixture")
+        fixture_outcome = qualification.identity_json((fixture / MARKER).read_text(encoding="utf-8"))
+        if (local(fixture_outcome.get("fixture", "")).resolve(strict=True) != fixture
+                or fixture_outcome.get("outcome") != "passed"
+                or fixture_outcome.get("holds") != ["policy-f21-downstream", "policy-f21-review"]
+                or fixture_outcome.get("blocked_owners") != []):
+            raise ValueError("retained F21 fixture lacks its passed consumer and review holds")
+        expected = record["data"]["candidate"] if original else record["data"].get("current_candidate", record["data"]["candidate"])
+        observed = qualification._policy_candidate(root)
+        observed["root"] = expected["root"]
+        if observed != expected:
+            raise ValueError("retained F21 fixed source candidate drifted before fixture access")
+        return path, record, root
+
+    def original_bytes(self, data):
+        paths = []
+        for reference in data["originals"].values():
+            document = json.loads(Path(reference["path"]).read_text())
+            paths += [Path(reference["path"]), Path(document["producer_source"]["path"]),
+                      *[Path(row["path"]) for row in document["execution"].values()]]
+        return {str(p): p.read_bytes() for p in paths}
+
+    def assert_counters(self, data):
+        self.assertEqual({path: Path(path).read_bytes().hex() for path in data["counters"]}, data["counters"])
+        self.assertTrue(all(bytes.fromhex(raw) == b"1\n" for raw in data["counters"].values()))
+
+    def test_native_policy_composes_without_replay_and_rejects_role_context_faults(self):
+        data = self.mode("original")
+        originals = self.original_bytes(data)
+        reference = data["originals"][self.preset + ":product"]
+        contract_path = Path(reference["path"])
+        contract_bytes = contract_path.read_bytes()
+        stored_contract = json.loads(contract_bytes)
+        self.assertEqual(stored_contract["protocol"], "product-evidence-policy-v2")
+        self.assertIn("stage_identity", stored_contract["facts"])
+        self.assertNotIn("identity", stored_contract["stage"]["result"])
+        decoded_contract = qualification.read_policy_contract(reference)["contract"]
+        raw_command = read_json(decoded_contract["execution"]["receipt"]["path"])
+        self.assertEqual(decoded_contract["facts"]["stage_identity"]["inputs"], raw_command["identity"]["inputs"])
+        self.assertEqual({key: value for key, value in decoded_contract["facts"]["stage_identity"]["tools"].items()
+                          if value is not None}, raw_command["identity"]["tools"])
+        self.assertIsNot(decoded_contract["facts"]["stage_identity"], decoded_contract["stage"]["result"]["identity"])
+        independent_identity = json.loads(json.dumps(decoded_contract["stage"]["result"]["identity"]))
+        decoded_contract["facts"]["stage_identity"]["inputs"]["mutation-probe"] = "f" * 64
+        self.assertEqual(decoded_contract["stage"]["result"]["identity"], independent_identity)
+        legacy_size = len(qualification._bounded_bytes(decoded_contract))
+        self.assertLess(len(contract_bytes), legacy_size)
+        raw_receipt_path = Path(decoded_contract["execution"]["receipt"]["path"])
+        raw_receipt_bytes = raw_receipt_path.read_bytes()
+        raw_receipt_path.write_bytes(raw_receipt_bytes + b"tamper")
+        try:
+            with self.assertRaises((ValueError, OSError)):
+                qualification.read_policy_contract(reference)
+        finally:
+            raw_receipt_path.write_bytes(raw_receipt_bytes)
+        for mutation in ("binary", "input", "counter", "working-directory", "extra-argument", "duplicate-property",
+                         "missing-runnable", "extra-runnable"):
+            document = json.loads(contract_bytes)
+            registration = document["facts"]["subject"]["registration"]
+            if mutation in {"binary", "input", "counter"}:
+                operand = {"binary": 0, "input": 1, "counter": 2}[mutation]
+                path = Path(registration["command"][operand])
+                registration["command"][operand] = str(path.with_name("wrong-" + path.name))
+            elif mutation == "working-directory":
+                next(row for row in registration["properties"] if row["name"] == "WORKING_DIRECTORY")["value"] = str(self.root)
+            elif mutation == "extra-argument":
+                registration["command"].append("--unexpected")
+            elif mutation == "duplicate-property":
+                registration["properties"].append(dict(registration["properties"][0]))
+            else:
+                files = document["facts"]["subject"]["dependencies"]["files"]
+                if mutation == "missing-runnable":
+                    row = files[str(Path(registration["command"][0]))]
+                    row["executable"] = False
+                    row.pop("execute_bits", None)
+                else:
+                    cmake = next(path for path, row in files.items() if not row["executable"]
+                                 and Path(path).name.casefold() in {"cmake", "cmake.exe"})
+                    files[cmake]["executable"] = True
+                    if os.name == "posix":
+                        files[cmake]["execute_bits"] = Path(cmake).stat().st_mode & 0o111
+            document["seals"] = dict.fromkeys(("entry", "terminal"), qualification._bounded_hash(document["facts"]))
+            contract_path.write_bytes(qualification._bounded_bytes(document))
+            try:
+                changed = {"path": str(contract_path), "sha256": hashlib.sha256(contract_path.read_bytes()).hexdigest()}
+                diagnostic = ("policy runnable role membership differs" if mutation in {"missing-runnable", "extra-runnable"}
+                              else "historical policy registration/command differs")
+                with self.subTest(registration=mutation), self.assertRaisesRegex(ValueError, diagnostic):
+                    qualification.read_policy_contract(changed)
+            finally:
+                contract_path.write_bytes(contract_bytes)
+        # Ordinary policy receipts exercise the same collector before the transition.
+        self.assertEqual(qualification.collect_qualification(self.root, data["ordinary_paths"])["status"], "passed")
+        roles = [(index, group) for index, path in enumerate(data["ordinary_paths"])
+                 for group in json.loads(Path(path).read_text())["selection"]]
+        self.assertEqual(len(roles), 13)
+        for index, group in roles:
+            records = [json.loads(Path(p).read_text()) for p in data["ordinary_paths"]]
+            record = records[index]
+            record["selection"].remove(group)
+            for lane in ("stages", "membership", "runtime_membership"):
+                record[lane].pop(group, None)
+            if group == "product":
+                for extra in ("prepare", "quality"):
+                    record["stages"].pop(extra)
+            record["required"] = list(record["stages"])
+            path = self.folder / ("missing-" + str(index) + "-" + group + ".json")
+            write_json(path, record)
+            with self.subTest(missing=(index, group)), self.assertRaises(ValueError):
+                qualification.collect_qualification(self.root, [str(path) if j == index else p for j, p in enumerate(data["ordinary_paths"])])
+            duplicate = json.loads(Path(data["ordinary_paths"][index]).read_text())
+            duplicate["selection"].append(group)
+            target = self.folder / ("duplicate-" + str(index) + "-" + group + ".json")
+            write_json(target, duplicate)
+            with self.subTest(duplicate=(index, group)), self.assertRaises(ValueError):
+                qualification.collect_qualification(self.root, [str(target) if j == index else p for j, p in enumerate(data["ordinary_paths"])])
+        for index, path in enumerate(data["ordinary_paths"]):
+            for selection in ([p for j, p in enumerate(data["ordinary_paths"]) if j != index], [*data["ordinary_paths"], path]):
+                with self.subTest(context=index), self.assertRaises(ValueError):
+                    qualification.collect_qualification(self.root, selection)
+        extra = json.loads(Path(data["ordinary_paths"][1]).read_text())
+        extra["selection"].append("tooling")
+        extra["stages"]["tooling"] = data["original_stages"][extra["preset"]]["tooling"]
+        extra["required"].append("tooling")
+        extra["membership"]["tooling"] = ["Tooling.Miniature"]
+        extra["runtime_membership"]["tooling"] = {"host": ["Tooling.Miniature"]}
+        target = self.folder / "extra-role.json"
+        write_json(target, extra)
+        with self.assertRaisesRegex(ValueError, "membership"):
+            qualification.collect_qualification(self.root, [str(target) if j == 1 else p for j, p in enumerate(data["ordinary_paths"])])
+        host = json.loads(Path(data["ordinary_paths"][0]).read_text())
+        host["runtime"] = "host"
+        target = self.folder / "host-only.json"
+        write_json(target, host)
+        with self.assertRaises(ValueError):
+            qualification.collect_qualification(self.root, [str(target), *data["ordinary_paths"][1:]])
+        self.repair()
+        data = self.mode("support")
+        self.mode("injection")
+        data = self.mode("admit")
+        for wrapper_path in data["admitted_paths"]:
+            wrapper = json.loads(Path(wrapper_path).read_text())
+            grouped_refs = [(name, result["reuse_admission"]) for name, result in wrapper["stages"].items()
+                            if result.get("reuse_admission")]
+            shared_refs = set()
+            for name, reference in grouped_refs:
+                stored = json.loads(Path(reference["path"]).read_text())
+                self.assertEqual(stored["protocol"], "synthetic-policy-admission-v2")
+                self.assertNotIn("owner", stored)
+                self.assertEqual(Path(stored["owner_campaign"]), Path(wrapper_path).parent)
+                self.assertEqual(set(stored["current"]), {"policy", "context", "subject", "stage_identity", "counter"})
+                self.assertEqual(stored["current_preparation"]["mode"], "override" if name == "production" else "shared")
+                shared_refs.add((stored["shared_facts"]["path"], stored["shared_facts"]["sha256"]))
+                completion = json.loads(Path(reference["path"]).with_name("completion.json").read_text())
+                self.assertEqual(completion["protocol"], "synthetic-policy-completion-v2")
+                self.assertEqual(completion["shared_facts"], stored["shared_facts"])
+            self.assertLessEqual(len(shared_refs), 1)
+        result = qualification.collect_qualification(self.root, data["admitted_paths"])
+        self.assertEqual(result["status"], "passed")
+        self.assert_counters(data)
+        self.assertEqual({path: Path(path).read_bytes() for path in originals}, originals)
+        self.assertEqual(len(data["admitted_paths"]), 6)
+        self.assertEqual({row["provenance"] for row in result["stages"]}, {"executed", "exact-reused", "admitted"})
+        for path in data["admitted_paths"]:
+            wrapper = json.loads(Path(path).read_text())
+            self.assertTrue(any(value == "admitted" for value in wrapper["stage_provenance"].values()))
+
+    def test_v2_shared_admissions_complete_and_collect_once(self):
+        data = self.mode("original")
+        self.repair()
+        self.mode("support")
+        data = self.mode("admit")
+        prior_admissions = {}
+        for wrapper_path in data["admitted_paths"]:
+            wrapper = json.loads(Path(wrapper_path).read_text())
+            shared_refs = set()
+            grouped_refs = []
+            for name, result in wrapper["stages"].items():
+                reference = result.get("reuse_admission")
+                if not reference:
+                    continue
+                grouped_refs.append((name, reference))
+                stored = json.loads(Path(reference["path"]).read_text())
+                self.assertEqual(stored["protocol"], "synthetic-policy-admission-v2")
+                self.assertNotIn("owner", stored)
+                self.assertEqual(Path(stored["owner_campaign"]), Path(wrapper_path).parent)
+                self.assertEqual(stored["current_preparation"]["mode"],
+                                 "override" if name == "production" else "shared")
+                shared_refs.add((stored["shared_facts"]["path"], stored["shared_facts"]["sha256"]))
+                completion = json.loads(Path(reference["path"]).with_name("completion.json").read_text())
+                self.assertEqual(completion["protocol"], "synthetic-policy-completion-v2")
+                self.assertEqual(completion["shared_facts"], stored["shared_facts"])
+                prior_admissions[(Path(wrapper_path).parent.name, name)] = {
+                    "reference": reference,
+                    "owner_campaign": stored["owner_campaign"],
+                    "admission": Path(reference["path"]).read_bytes(),
+                    "completion": Path(reference["path"]).with_name("completion.json").read_bytes(),
+                    "shared_path": stored["shared_facts"]["path"],
+                    "shared": Path(stored["shared_facts"]["path"]).read_bytes(),
+                }
+            self.assertTrue(grouped_refs, f"wrapper had no admissions: {wrapper_path}")
+            self.assertEqual(len(shared_refs), 1)
+        collected = qualification.collect_qualification(self.root, data["admitted_paths"])
+        self.assertEqual(collected["status"], "passed")
+        self.assertIn("admitted", {row["provenance"] for row in collected["stages"]})
+        self.assert_counters(data)
+        for wrapper_path in data["admitted_paths"]:
+            wrapper = json.loads(Path(wrapper_path).read_text())
+            name, result = next((name, result) for name, result in wrapper["stages"].items()
+                                if result.get("reuse_admission"))
+            old_reference = result["reuse_admission"]
+            semantic, metadata = qualification._policy_read_admission(old_reference)
+            self.assertEqual(metadata["protocol"], "synthetic-policy-admission-v2")
+            legacy_record = {"protocol": "synthetic-policy-admission-v1", "assurance": qualification._POLICY_ASSURANCE,
+                             "admitted_at": json.loads(Path(old_reference["path"]).read_text())["admitted_at"],
+                             **semantic}
+            preset = wrapper["preset"]
+            build = self.root / "out/build" / preset
+            legacy_path = build / "verification-admissions" / qualification._bounded_hash(semantic) / "admission.json"
+            legacy_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_path.write_bytes(qualification._bounded_bytes(legacy_record))
+            legacy_reference = qualification._bounded_reference(legacy_path)
+            legacy_completion = {"protocol": "synthetic-policy-completion-v1", "admission": legacy_reference,
+                                 "wrapper": qualification._bounded_reference(Path(wrapper_path))}
+            legacy_completion_path = legacy_path.with_name("completion.json")
+            legacy_completion_path.write_bytes(qualification._bounded_bytes(legacy_completion))
+            state_path = build / "verification-checkpoint.json"
+            state = json.loads(state_path.read_text())
+            state[name]["reuse_admission"] = legacy_reference
+            write_json(state_path, state)
+            prior = prior_admissions[(Path(wrapper_path).parent.name, name)]
+            prior.update(reference=legacy_reference, admission=legacy_path.read_bytes(),
+                         completion=legacy_completion_path.read_bytes(), protocol="synthetic-policy-admission-v1")
+        reused = self.mode("admit:reuse")
+        self.assertEqual(len(reused["admitted_paths:reuse"]), len(data["admitted_paths"]))
+        for wrapper_path in reused["admitted_paths:reuse"]:
+            wrapper = json.loads(Path(wrapper_path).read_text())
+            self.assertIn("reuse", Path(wrapper_path).parent.name)
+            for name, result in wrapper["stages"].items():
+                reference = result.get("reuse_admission")
+                if reference is None:
+                    continue
+                prior_campaign = Path(wrapper_path).parent.name.replace("-reuse", "")
+                prior = prior_admissions[(prior_campaign, name)]
+                self.assertEqual(reference, prior["reference"])
+                self.assertEqual(Path(reference["path"]).read_bytes(), prior["admission"])
+                self.assertEqual(Path(reference["path"]).with_name("completion.json").read_bytes(), prior["completion"])
+                stored = json.loads(Path(reference["path"]).read_text())
+                self.assertEqual(stored["protocol"], prior.get("protocol", "synthetic-policy-admission-v2"))
+                if stored["protocol"] == "synthetic-policy-admission-v1":
+                    self.assertNotIn("owner_campaign", stored)
+                else:
+                    self.assertEqual(stored["owner_campaign"], prior["owner_campaign"])
+                    self.assertEqual(Path(prior["shared_path"]).read_bytes(), prior["shared"])
+        reused_collection = qualification.collect_qualification(self.root, reused["admitted_paths:reuse"])
+        self.assertEqual(reused_collection["status"], "passed")
+        self.assertIn("admitted", {row["provenance"] for row in reused_collection["stages"]})
+        self.assert_counters(reused)
+
+    def test_wrong_preset_corpus_reaches_placement_for_ordinary_and_admitted(self):
+        data = self.mode("original")
+        for preset in ("windows-clang-debug", "linux-release", "windows-clang-release"):
+            paths = []
+            for index, original_path in enumerate(data["ordinary_paths"]):
+                record = json.loads(Path(original_path).read_text())
+                if record["preset"] == "linux-debug":
+                    record["selection"].remove("corpus")
+                    for key in ("stages", "membership", "runtime_membership"):
+                        record[key].pop("corpus", None)
+                if record["preset"] == preset and "production" not in record["selection"]:
+                    record["selection"].append("corpus")
+                    record["stages"]["corpus"] = data["original_stages"][preset]["corpus"]
+                    record["membership"]["corpus"] = ["Policy.corpus"]
+                    record["runtime_membership"]["corpus"] = {"host": ["Policy.corpus"]}
+                record["required"] = list(record["stages"])
+                target = self.folder / ("ordinary-" + preset + "-" + str(index) + ".json")
+                write_json(target, record)
+                paths.append(str(target))
+            self.assertEqual(sum("corpus" in json.loads(Path(p).read_text())["selection"] for p in paths), 1)
+            with self.subTest(kind="ordinary", preset=preset), self.assertRaisesRegex(ValueError, "corpus evidence is required only on Linux Debug"):
+                qualification.collect_qualification(self.root, paths)
+        self.repair()
+        self.mode("support")
+        for preset in ("windows-clang-debug", "linux-release", "windows-clang-release"):
+            data = self.mode("admit:" + preset)
+            paths = data["admitted_paths:" + preset]
+            self.assertEqual(len(paths), 6)
+            self.assertEqual(sum("corpus" in json.loads(Path(p).read_text())["selection"] for p in paths), 1)
+            with self.subTest(kind="admitted", preset=preset), self.assertRaisesRegex(ValueError, "corpus evidence is required only on Linux Debug"):
+                qualification.collect_qualification(self.root, paths)
+            self.assert_counters(data)
+
+    def test_off_retention_and_original_barrier_are_required(self):
+        data = self.mode("original")
+        self.assertEqual(qualification.collect_qualification(self.root, data["ordinary_paths"])["status"], "passed")
+        for index in (4, 5):
+            path = Path(data["ordinary_paths"][index])
+            wrapper = json.loads(path.read_text())
+            baseline = path.read_bytes()
+            for mutation in ("missing", "early-on", "other-off"):
+                damaged = json.loads(json.dumps(wrapper))
+                if mutation == "missing":
+                    damaged.pop("policy_chronology")
+                elif mutation == "early-on":
+                    damaged["policy_chronology"]["on"][damaged["preset"]] = {
+                        "path": data["off_stages"][damaged["preset"]]["receipt"],
+                        "sha256": data["off_stages"][damaged["preset"]]["sha256"]}
+                else:
+                    damaged["policy_chronology"]["off"][damaged["preset"]] = data["originals"][damaged["preset"] + ":product"]
+                path.write_text(json.dumps(damaged))
+                try:
+                    with self.subTest(mutation=mutation, index=index), self.assertRaises(ValueError):
+                        qualification.collect_qualification(self.root, data["ordinary_paths"])
+                finally:
+                    path.write_bytes(baseline)
+            original = json.loads(Path(data["off_stages"][wrapper["preset"]]["execution_contract"]["path"]).read_text())
+            off = json.loads(Path(original["facts"]["subject"]["off"]["path"]).read_text())
+            configuration = off["files"][str(self.root / "out/build" / wrapper["preset"] / "verification-config-outputs.json")]
+            prepared = off["preparation"]["stage"]
+            qualification._policy_configuration(self.root, configuration, preparation=prepared)
+            registry = json.loads(Path(configuration["path"]).read_text())
+            configure = read_json(Path(registry["producer"]))
+            vctip_cleanup = configure["identity"].get("vctip_cleanup")
+            if os.name == "nt":
+                self.assertIsInstance(vctip_cleanup, dict, "Windows configure must bind its VCTIP cleanup executable")
+                auxiliary_tools = {vctip_cleanup["executable"]: digest(Path(vctip_cleanup["executable"]))}
+            else:
+                self.assertIsNone(vctip_cleanup, "POSIX configure must not declare Windows VCTIP cleanup")
+                auxiliary_tools = {}
+            configure_tools = configure["identity"]["tools"]
+            self.assertEqual(configure_tools, auxiliary_tools,
+                             "configure tools may contain only its declared VCTIP cleanup executable")
+            self.assertFalse(any(Path(name.replace("\\", "/")).stem.casefold() == "cmake"
+                                 for name in configure_tools),
+                             "configure receipt must exercise its sealed CMake parent binding")
+            cmake_tools = [name for name, checksum in prepared["identity"]["tools"].items()
+                           if Path(name.replace("\\", "/")).stem.casefold() == "cmake"
+                           and checksum == configure["identity"]["executable_sha256"]]
+            self.assertEqual(len(cmake_tools), 1)
+            cmake = cmake_tools[0]
+            other_preset = next(preset for preset in data["off_stages"] if preset != wrapper["preset"])
+            other_original = json.loads(Path(data["off_stages"][other_preset]["execution_contract"]["path"]).read_text())
+            for mutation in ("missing", "ambiguous", "wrong-owner", "tool-hash", "receipt-hash"):
+                anchor = json.loads(json.dumps(prepared))
+                if mutation == "missing":
+                    anchor = None
+                elif mutation == "ambiguous":
+                    duplicate = str(self.root / "out/anchor-controls/duplicate" / Path(cmake).name)
+                    anchor["identity"]["tools"][duplicate] = configure["identity"]["executable_sha256"]
+                elif mutation == "wrong-owner":
+                    anchor = other_original["facts"]["preparation"]["stage"]
+                elif mutation == "tool-hash":
+                    anchor["identity"]["tools"][cmake] = "0" * 64
+                else:
+                    anchor["sha256"] = "0" * 64
+                with self.subTest(parent_binding=mutation, preset=wrapper["preset"]), \
+                        self.assertRaisesRegex(ValueError, "unique sealed tool binding|preparation tool anchor|policy evidence changed"):
+                    qualification._policy_configuration(self.root, configuration, preparation=anchor)
+            if os.name == "posix":
+                alias = self.root / "out/anchor-controls" / wrapper["preset"] / "prepare-alias.json"
+                alias.parent.mkdir(parents=True, exist_ok=True)
+                alias.symlink_to(prepared["receipt"])
+                anchor = json.loads(json.dumps(prepared))
+                anchor["receipt"] = str(alias)
+                try:
+                    with self.subTest(parent_binding="retarget", preset=wrapper["preset"]), \
+                            self.assertRaisesRegex(ValueError, "policy reference path was retargeted"):
+                        qualification._policy_configuration(self.root, configuration, preparation=anchor)
+                finally:
+                    alias.unlink()
+            target = Path(off["binary"]["path"])
+            raw = target.read_bytes()
+            on_binary = self.root / "out/build" / wrapper["preset"] / ("BoundedEvidenceChild.exe" if os.name == "nt" else "BoundedEvidenceChild")
+            self.assertNotEqual(on_binary.read_bytes(), raw, "synthetic OFF/ON definition must affect the native binary")
+            target.write_bytes(on_binary.read_bytes())
+            try:
+                with self.assertRaises(ValueError):
+                    qualification.collect_qualification(self.root, data["ordinary_paths"])
+            finally:
+                target.write_bytes(raw)
+        self.assert_counters(data)
+
+    def test_policy_publication_current_failure_and_terminal_mutations_reject(self):
+        data = self.mode("original")
+        self.repair()
+        self.mode("support")
+        data = self.mode("admit")
+        paths = data["admitted_paths"]
+        wrapper = json.loads(Path(paths[0]).read_text())
+        owner = self.root / "out/build" / wrapper["preset"] / "verification-checkpoint.json"
+        owner_bytes = owner.read_bytes()
+        for status in ("pending", "failed", "blocked"):
+            state = json.loads(owner_bytes)
+            state["product"]["status"] = status
+            write_json(owner, state)
+            try:
+                with self.subTest(status=status), self.assertRaisesRegex(ValueError, "pending|owner"):
+                    qualification.collect_qualification(self.root, paths)
+            finally:
+                owner.write_bytes(owner_bytes)
+        state = json.loads(owner_bytes)
+        state["product"]["sha256"] = "f" * 64
+        write_json(owner, state)
+        try:
+            with self.assertRaisesRegex(ValueError, "owner|newer"):
+                qualification.collect_qualification(self.root, paths)
+        finally:
+            owner.write_bytes(owner_bytes)
+        admission = wrapper["stages"]["product"]["reuse_admission"]
+        completion = Path(admission["path"]).with_name("completion.json")
+        completion_bytes = completion.read_bytes()
+        malformed = json.loads(completion_bytes)
+        malformed["unknown"] = True
+        completion.write_text(json.dumps(malformed))
+        try:
+            with self.assertRaisesRegex(ValueError, "completion"):
+                qualification.collect_qualification(self.root, paths)
+        finally:
+            completion.write_bytes(completion_bytes)
+        completion.unlink()
+        try:
+            with self.assertRaises((ValueError, OSError)):
+                qualification.collect_qualification(self.root, paths)
+        finally:
+            completion.write_bytes(completion_bytes)
+        original = json.loads(Path(data["originals"][wrapper["preset"] + ":product"]["path"]).read_text())
+        for target in (Path(original["execution"]["process"]["path"]), self.root / "input.txt"):
+            raw = target.read_bytes()
+            validator = qualification.policy_collection_stage
+            visits = 0
+            def terminal(*args, **kwargs):
+                nonlocal visits
+                info = validator(*args, **kwargs)
+                if args[3] == "product" and args[1].name == wrapper["preset"]:
+                    visits += 1
+                    if visits == 2:
+                        target.write_bytes(raw + b"terminal mutation")
+                return info
+            try:
+                with self.subTest(terminal=str(target)), patch.object(qualification, "policy_collection_stage", side_effect=terminal), \
+                        self.assertRaises(ValueError):
+                    qualification.collect_qualification(self.root, paths)
+                self.assertEqual(visits, 2)
+            finally:
+                target.write_bytes(raw)
+        self.assert_counters(data)
+        self.mode("race")
+        self.assert_counters(data)
+
+    def test_original_off_barrier_rejects_real_early_on_restoration(self):
+        data = self.mode("original-early-on")
+        with self.assertRaisesRegex(ValueError, "both original OFF completions must precede either ON restoration"):
+            qualification.collect_qualification(self.root, data["ordinary_paths"])
+        self.assert_counters(data)
+
+    def test_faulty_prospective_registration_closure_is_not_salvaged_by_repair(self):
+        data = self.mode("original-fault")
+        before = {path: Path(path).read_bytes() for path in data["counters"]}
+        with self.assertRaisesRegex(ValueError, "omitted a generated registration consumer") as failed_collection:
+            qualification.collect_qualification(self.root, data["ordinary_paths"])
+        write_json(self.root / "out/faulty-original-failed-collection.json", {
+            "status": "rejected-faulty-prospective-recorder", "error": str(failed_collection.exception),
+            "originals": data["originals"], "scope": "actual native commands passed; injected recorder omitted one registration fact; reader unmocked"})
+        # A separate real native child prints the expected result and exits 7.
+        # A false historical passed label cannot turn its process proof into success.
+        preset = self.preset
+        binary = self.root / "out/build" / preset / ("BoundedEvidenceChild.exe" if os.name == "nt" else "BoundedEvidenceChild")
+        campaign = Campaign(self.root, preset, "policy-false-pass", ["product"])
+        original = json.loads(Path(data["originals"][preset + ":product"]["path"]).read_text())
+        with OutputLease(self.root, binary.parent), self.assertRaises(subprocess.CalledProcessError):
+            campaign.run("product", [str(binary), str(self.root / "input.txt"), str(campaign.directory / "failed-counter.txt"), "--fail"],
+                inputs=list(original["facts"]["stage_identity"]["inputs"]),
+                tools=[path for path in original["facts"]["stage_identity"]["tool_paths"] if Path(path).is_file()],
+                env=dict(os.environ), timeout=None)
+        failed_path = next((campaign.directory / "attempts").glob("product-*/result.json"))
+        raw = json.loads(failed_path.read_text())
+        self.assertEqual(raw["returncode"], 7)
+        self.assertIn("result=14", (self.root / raw["output"]).read_text())
+        stored_original = json.loads(Path(data["originals"][preset + ":product"]["path"]).read_text())
+        false_claim = json.loads(json.dumps(stored_original))
+        false_claim["stage"]["result"].update(receipt=str(failed_path), sha256=hashlib.sha256(failed_path.read_bytes()).hexdigest())
+        false_claim["execution"]["receipt"] = {"path": str(failed_path), "sha256": hashlib.sha256(failed_path.read_bytes()).hexdigest()}
+        for key, path in (("output", self.root / raw["output"]), ("process", Path(raw["process_tree"]["receipt"]))):
+            false_claim["execution"][key] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        false_path = failed_path.with_name("execution-contract.json")
+        false_path.write_bytes(qualification._bounded_bytes(false_claim))
+        with self.assertRaisesRegex(ValueError, "raw command/process"):
+            qualification.read_policy_contract({"path": str(false_path), "sha256": hashlib.sha256(false_path.read_bytes()).hexdigest()})
+        self.repair()
+        self.mode("support")
+        self.mode("admit", success=False)
+        failed = (self.folder / "admit.log").read_text(errors="replace")
+        self.assertIn("omitted a generated registration consumer", failed)
+        self.assertEqual({path: Path(path).read_bytes() for path in before}, before)
+        self.assertFalse(list((self.root / "out").glob("build/*/verification-admissions/*/completion.json")))
+
+    @unittest.skipUnless(os.name == "nt" and os.environ.get("JUICER_POLICY_F21_HANDOFF"),
+                         "focused actual Windows F21 producer requires its reserved handoff path")
+    def test_windows_f21_produces_trustworthy_originals(self):
+        handoff = Path(os.environ["JUICER_POLICY_F21_HANDOFF"])
+        if handoff.exists() or handoff.parent.resolve() != self.folder.parent.parent / "logs":
+            raise ValueError("F21 producer requires a fresh handoff under its owned artifact logs")
+        data = self.mode("original")
+        handoff.write_text(json.dumps({"protocol": "policy-f21-handoff-v1", "root": str(self.root), "fixture": str(self.folder), "data": data}))
+        self.assert_counters(data)
+        self.fixture_holds.add("policy-f21-downstream")
+        self.fixture_holds.add("policy-f21-review")
+
+    @unittest.skipUnless(os.name == "nt" and os.environ.get("JUICER_POLICY_F21_HANDOFF"),
+                         "focused actual Windows F21 continuation requires the retained native original")
+    def test_windows_f21_admits_actual_reader_repair_without_replay(self):
+        handoff_path, handoff, root = self.handoff(original=True)
+        baseline = self.original_bytes(handoff["data"])
+        (root / "scripts/build_evidence.py").write_bytes((ROOT / "scripts/build_evidence.py").read_bytes())
+        self.mode("support", root=root)
+        data = self.mode("admit", root=root)
+        self.assert_counters(data)
+        self.assertEqual({path: Path(path).read_bytes() for path in baseline}, baseline)
+        handoff["data"] = data
+        handoff_path.write_text(json.dumps(handoff))
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("JUICER_POLICY_F21_HANDOFF")
+                         and os.environ.get("JUICER_WINDOWS_PYTHON"), "focused actual Windows originals/WSL old-reader consumer")
+    def test_windows_f21_old_reader_fails_foreign_collection_only(self):
+        _, _, root = self.handoff(original=True)
+        self.mode("collect-old", root=root)
+        failure = json.loads((root / "out/f21-failed-collection.json").read_text())
+        self.assertIn("registration_files", failure["traceback"])
+        self.assertEqual(failure["status"], "failed-as-expected")
+        self.assertFalse((root / "out/f21-current-collection.json").exists())
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("JUICER_POLICY_F21_HANDOFF")
+                         and os.environ.get("JUICER_WINDOWS_PYTHON"), "focused actual Windows originals/WSL repaired-reader consumer")
+    def test_windows_f21_repaired_reader_collects_without_replay(self):
+        from pathlib import PureWindowsPath
+        _, handoff, root = self.handoff()
+        def local(path):
+            return qualification.mapped_windows_path(path) if PureWindowsPath(path).is_absolute() else Path(path)
+        counters = {path: local(path).read_bytes() for path in handoff["data"]["counters"]}
+        failure_before = (root / "out/f21-failed-collection.json").read_bytes()
+        self.mode("collect-current", root=root)
+        aggregate = json.loads((root / "out/f21-current-collection.json").read_text())
+        self.assertEqual(aggregate["status"], "passed")
+        records = [json.loads(local(path).read_text()) for path in handoff["data"]["admitted_paths"]]
+        # Select a genuine alias from sealed admitted facts, independently of
+        # both the partition generator and the native reader's response.
+        alias = None
+        for wrapper in records:
+            for stage in wrapper["stages"].values():
+                if not stage.get("reuse_admission"):
+                    continue
+                admitted = json.loads(local(stage["reuse_admission"]["path"]).read_text())
+                subject = admitted["current"]["subject"]
+                runtime = {PureWindowsPath(path) for path in subject["runtime"].values()}
+                for path, row in subject["dependencies"]["files"].items():
+                    target = row["resolved"]
+                    if path != target and PureWindowsPath(path) == PureWindowsPath(target) and PureWindowsPath(path) not in runtime:
+                        alias = path, target, {"resolved": target, "sha256": row["sha256"]}
+                        break
+                if alias is not None:
+                    break
+            if alias is not None:
+                break
+        self.assertIsNotNone(alias, "the real Windows cohort must include a nonruntime lexical case alias")
+        lexical, target, binding = alias
+        extra = qualification.policy_native_collection_bindings(root, records, local)
+        lexical_proofs = {key for key, groups in extra.items() if groups["files"].get(lexical) == binding}
+        target_proofs = {key for key, groups in extra.items() if groups["files"].get(target) == binding}
+        self.assertTrue(lexical_proofs)
+        self.assertTrue(target_proofs)
+        self.assertFalse(lexical_proofs & target_proofs)
+        for groups in extra.values():
+            self.assertEqual(len(groups["files"]), len({PureWindowsPath(path) for path in groups["files"]}))
+        entries = aggregate["native_identities"]
+        self.assertEqual([entry["phase"] for entry in entries], ["entry", "terminal"])
+        native_bytes = {path: Path(path).read_bytes() for entry in entries for path in entry["payloads"]}
+        proof = sorted(lexical_proofs)[0]
+        for entry in entries:
+            raw = json.loads(Path(entry["receipt"]).read_text())
+            native = raw["identity"]["windows_identity"]
+            request = qualification.read_identity_request(root / native["request"], native["request_sha256"])
+            response = json.loads((root / raw["output"]).read_text())
+            # Preserve request ordering for the already validated preparation
+            # maps; recompute every additional policy map from sealed facts.
+            expected = {key: {group: {path: response["proofs"][key][group][path] for path in paths}
+                              for group, paths in groups.items()} for key, groups in request["proofs"].items()}
+            for key, groups in extra.items():
+                self.assertEqual(expected[key], groups)
+                expected[key] = groups
+            self.assertEqual(qualification.native_identity_result(root, entry, expected), response)
+            # These cloned expectations test request/response consumer integrity;
+            # they do not represent filesystem mutations or new native reads.
+            for mutation in ("missing-alias", "hash", "target"):
+                damaged = json.loads(json.dumps(expected))
+                row = damaged[proof]["files"][lexical]
+                if mutation == "missing-alias":
+                    del damaged[proof]["files"][lexical]
+                    diagnostic = "command/request does not bind"
+                elif mutation == "hash":
+                    row["sha256"] = "0" * 64
+                    diagnostic = "result does not match original proof maps"
+                else:
+                    row["resolved"] = str(PureWindowsPath(target).with_name("wrong-" + PureWindowsPath(target).name))
+                    diagnostic = "result does not match original proof maps"
+                with self.subTest(native_phase=entry["phase"], consumer_integrity=mutation), \
+                        self.assertRaisesRegex(ValueError, diagnostic):
+                    qualification.native_identity_result(root, entry, damaged)
+        self.assertEqual({path: Path(path).read_bytes() for path in native_bytes}, native_bytes)
+        self.assertEqual({path: local(path).read_bytes() for path in counters}, counters)
+        self.assertEqual((root / "out/f21-failed-collection.json").read_bytes(), failure_before)
+        review_closure = self.original_bytes(handoff["data"])
+        release_fixture_hold(root.parent, "policy-f21-downstream", self.id(), resolve=local)
+        fixture_outcome = read_fixture_marker(root.parent / MARKER)
+        if fixture_outcome.get("holds") != ["policy-f21-review"]:
+            raise ValueError("F21 review hold did not preserve the original cohort")
+        if {path: Path(path).read_bytes() for path in review_closure} != review_closure:
+            raise ValueError("F21 review-held original evidence changed after foreign consumption")
+
+
+class BoundedExecutionTests(unittest.TestCase):
+    def setUp(self):
+        import shutil
+        self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset))
+        parent = parent / "checkpoint-controls"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(prefix="bounded-", dir=parent, delete=False)
+        self.folder = Path(self.temporary.name).resolve()
+        self.root = self.folder / "project"
+        self.root.mkdir()
+        self.build = self.root / "out/build" / self.preset
+        self.build.mkdir(parents=True)
+        self.environment = dict(os.environ)
+        self.campaign = Campaign(self.root, self.preset, "bounded-original", ["prepare", "product"])
+        self.state_path = self.build / "verification-checkpoint.json"
+        self.state = {}
+        self.lease = OutputLease(self.root, self.build)
+        self.lease.__enter__()
+        record_fixture(self.folder, self, "running", owner_root=self.root)
+
+        def finish():
+            self.lease.__exit__(None, None, None)
+            outcome = record_fixture(self.folder, self, owner_root=self.root)
+            if outcome == "passed" and not os.environ.get("JUICER_TEST_RETAIN_FIXTURES"):
+                try:
+                    self.temporary.cleanup()
+                except BaseException:
+                    record_fixture(self.folder, self, "failed", owner_root=self.root)
+                    raise
+            else:
+                print("Retained bounded evidence fixture:", self.folder, file=sys.stderr, flush=True)
+        self.addCleanup(finish)
+        for name in ("CMakeLists.txt", "src/evidence_child.c", "input.txt"):
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / "tests/quality/evidence" / name, self.root / name)
+        (self.root / "scripts").mkdir()
+        self.controller = self.root / "scripts/qualification.py"
+        self.controller.write_text("# original outer controller\n")
+        (self.root / ".gitignore").write_text("out/\n__pycache__/\n")
+        cc = shutil.which("clang-cl.exe") if os.name == "nt" else "/usr/bin/gcc-13"
+        self.assertIsNotNone(cc, "qualified native C compiler is missing")
+        write_json(self.root / "CMakePresets.json", qualification._bounded_presets(self.root, self.preset, cc))
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True, capture_output=True)
+        subprocess.run(["git", "-c", "core.autocrlf=false", "add", "."], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "-c", "user.name=Control", "-c", "user.email=control@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-qm", "bounded fixture original"],
+                       cwd=self.root, check=True, capture_output=True)
+        self.inputs = sorted([".gitignore", "CMakeLists.txt", "CMakePresets.json", "src/evidence_child.c", "input.txt",
+                              "scripts/qualification.py"])
+        self.build_inputs = ["CMakeLists.txt", "CMakePresets.json", "src/evidence_child.c"]
+        self.build_tools = [str(Path(shutil.which(name)).resolve()) for name in ("cmake", "ninja")]
+        self.build_tools.append(str(Path(cc).resolve()))
+        self.counter = self.build / "assertion-count.txt"
+        self.junit = self.campaign.directory / "product-host.xml"
+        self.command = [*qualification.ctest_command(self.root, self.build), "-R", "^(Bounded\\.Read)$", "-LE", "gpu",
+                        "--no-tests=error", "--output-on-failure", "--output-junit", str(self.junit)]
+        self.prepare()
+        binary = self.build / ("BoundedEvidenceChild.exe" if os.name == "nt" else "BoundedEvidenceChild")
+        self.tools = sorted(set([*self.build_tools, str(Path(shutil.which("ctest")).resolve()), str(binary),
+                                  sys.executable, sys._base_executable,
+                                  str(ROOT / "scripts/execution.py"), str(ROOT / "scripts/process_tree.py")]))
+
+    def prepare(self):
+        from build_evidence import prepare_build, check_scoped_preparation
+        outputs = []
+        def validate(path):
+            proof = check_scoped_preparation(self.campaign, self.build, path, self.environment)["scoped_preparation"]
+            outputs[:] = proof["outputs"]
+        return qualification.run_stage(self.campaign, self.state_path, self.state, "prepare",
+            ["cmake", "--build", str(self.build)], inputs=self.inputs, tools=self.build_tools,
+            environment=self.environment, timeout=None,
+            action=lambda: prepare_build(self.campaign, "prepare", source=self.root, build=self.build,
+                inputs=self.build_inputs, timeout=None, targets=["all"], configure_args=["-DBUILD_TESTING=ON"],
+                env=self.environment, checkpoint=True)[1], validate=validate, payloads=outputs)
+
+    def execute(self, *, capture=True, action=None, repeat_reason=""):
+        dependency = qualification.preparation_identity(self.build, self.state["prepare"])
+        def run():
+            return qualification.run_ctest_parts(self.campaign, "product", [self.command], {"host": ["Bounded.Read"]},
+                build=self.build, inputs=self.inputs, tools=self.tools, environment=self.environment, timeout=None,
+                repeat_reason=repeat_reason, state=self.state, state_path=self.state_path, payloads=[self.junit])
+        return qualification.run_stage(self.campaign, self.state_path, self.state, "product", self.command,
+            inputs=self.inputs, tools=self.tools, environment=self.environment, timeout=None,
+            semantic_command=[qualification.ctest_identity(self.command)], action=action or run,
+            validate=lambda paths: qualification.validate_ctest_stage(paths, {"host": ["Bounded.Read"]},
+                ["Bounded.Read"], [qualification.ctest_identity(self.command)]),
+            payloads=[self.junit, self.counter], dependencies=[dependency], ctest=True,
+            repeat_reason=repeat_reason,
+            bounded_capture="native-c11-miniature-v1" if capture else None)
+
+    def current(self):
+        return qualification.capture_execution_subject(self.campaign, self.state, self.command,
+            inputs=self.inputs, tools=self.tools, environment=self.environment)
+
+    def declaration(self, original, current):
+        document = original["contract"]
+        old, new = document["candidate"]["files"], current["candidate"]["files"]
+        refs = []
+        for name in ("tooling", "review", "owner"):
+            path = self.campaign.directory / (name + ".json")
+            if not path.exists():
+                path.write_text(json.dumps({"scope": "fixture integrity reference, not authenticated approval", "name": name}))
+            refs.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        changes = [{"path": name, "old_sha256": old[name], "new_sha256": new[name], "groups": ["product"]}
+                   for name in sorted(old) if old[name] != new[name]]
+        return {"protocol": "tooling-evidence-transition-bounded-v1", "original_candidate": document["candidate"],
+                "current_candidate": current["candidate"], "changes": changes,
+                "originals": [{"preset": self.preset, "group": "product", "contract": original["reference"]}],
+                "compatibility": [{"path": row["path"], "group": "product", "role": "controller-only",
+                                    "outcome_integrity": "preserved"} for row in changes],
+                "fresh_evidence": {"tooling": [refs[0]], "quality": [], "quality_base": "fixture"},
+                "review": refs[1], "owner_decision": refs[2]}
+
+    def test_native_original_and_comparison_preserve_immutable_execution(self):
+        result = self.execute()
+        self.assertIn("execution_contract", result, result.get("bounded_ineligible"))
+        original = qualification.read_execution_contract(result["execution_contract"])
+        document = original["contract"]
+        self.assertEqual(document["assurance"], "declared-dependencies-v1")
+        self.assertEqual(document["stage"]["result"]["identity"]["dependencies"],
+                         [document["preparation"]["identity"]])
+        self.assertEqual(self.counter.read_bytes(), b"1\n")
+        source = self.root / "input.txt"
+        self.assertEqual(document["subject"]["dependencies"]["files"][str(source)]["sha256"],
+                         hashlib.sha256(b"value=7\n").hexdigest())
+        original_bytes = {path: path.read_bytes() for path in Path(result["receipt"]).parent.iterdir() if path.is_file()}
+        source_stamp = source.stat()
+        os.utime(source, ns=(source_stamp.st_atime_ns + 10_000_000, source_stamp.st_mtime_ns))
+        self.controller.write_text("# reviewed controller change\n")
+        current = self.current()
+        declaration = self.declaration(original, current)
+        declaration_path = self.campaign.directory / "transition.json"
+        declaration_path.write_text(json.dumps(declaration))
+        declaration_ref = {"path": str(declaration_path), "sha256": hashlib.sha256(declaration_path.read_bytes()).hexdigest()}
+        self.assertEqual(qualification.read_reuse_declaration(declaration_ref), declaration)
+        state_before = self.state_path.read_bytes()
+        with patch.object(Campaign, "run", side_effect=AssertionError("comparison executed a command")), \
+                patch.object(qualification, "write_json", side_effect=AssertionError("comparison changed state")), \
+                patch.object(qualification, "digest", side_effect=AssertionError("comparison read a file")):
+            compared = qualification.compare_execution_subject(original, current, declaration)
+        self.assertEqual(compared["status"], "compatible")
+        self.assertEqual(compared["scope"], "comparison-only")
+        self.assertFalse(compared["review_authenticated"])
+        with patch.dict(self.environment, {"LD_PRELOAD": str(self.root / "unqualified-project-library.so")}):
+            with self.assertRaisesRegex(ValueError, "runtime injection"):
+                self.current()
+        presets = self.root / "CMakePresets.json"
+        original_presets = presets.read_bytes()
+        injected = json.loads(original_presets)
+        injected["configurePresets"][0]["cacheVariables"]["CMAKE_C_FLAGS"] = "-include project-hook.h"
+        presets.write_text(json.dumps(injected))
+        try:
+            with self.assertRaisesRegex(ValueError, "configuration injection"):
+                self.current()
+        finally:
+            presets.write_bytes(original_presets)
+        self.assertEqual(self.state_path.read_bytes(), state_before)
+        self.assertEqual(self.counter.read_bytes(), b"1\n")
+        self.assertTrue(all(path.read_bytes() == raw for path, raw in original_bytes.items()))
+        for change in (lambda value: value["context"].update(runtime="all"),
+                       lambda value: value["subject"]["dependencies"]["files"].pop(str(source)),
+                       lambda value: value["stage_identity"].update(environment="0" * 64),
+                       lambda value: value["policy"].update(complete=True)):
+            changed = json.loads(json.dumps(current))
+            change(changed)
+            with self.subTest(changed=change), self.assertRaises(ValueError):
+                qualification.compare_execution_subject(original, changed, self.declaration(original, changed))
+        bad_review = json.loads(json.dumps(declaration))
+        bad_review["compatibility"][0]["outcome_integrity"] = "false-historical-pass"
+        with self.assertRaisesRegex(ValueError, "trustworthiness"):
+            qualification.compare_execution_subject(original, current, bad_review)
+        old_dependency = document["preparation"]["identity"]
+        self.prepare()
+        fresh = self.current()
+        self.assertNotEqual(old_dependency, fresh["preparation"]["identity"])
+        # Historical reader does not require the superseded producer to be current.
+        self.assertEqual(qualification.read_execution_contract(original["reference"]), original)
+        compared = qualification.compare_execution_subject(original, fresh, self.declaration(original, fresh))
+        self.assertEqual(compared["original_preparation_identity"], old_dependency)
+        self.assertEqual(compared["current_preparation_identity"], fresh["preparation"]["identity"])
+        self.assertEqual(document["stage"]["result"]["identity"]["dependencies"], [old_dependency])
+        contract_path = Path(original["reference"]["path"])
+        contract_bytes = contract_path.read_bytes()
+        forged = json.loads(contract_bytes)
+        forged["preparation"]["identity"] = "0" * 64
+        forged["stage"]["result"]["identity"]["dependencies"] = ["0" * 64]
+        facts = {key: forged[key] for key in ("policy", "candidate", "context", "controller_paths", "subject", "preparation")}
+        facts["stage_identity"] = forged["stage"]["result"]["identity"]
+        seal = qualification._bounded_hash({"facts": facts, "producer": forged["producer"], "launch": forged["launch"]})
+        forged["seals"] = {"entry": seal, "terminal": seal}
+        contract_path.write_bytes(qualification._bounded_bytes(forged))
+        try:
+            with self.assertRaisesRegex(ValueError, "preparation dependency"):
+                qualification.read_execution_contract(qualification._bounded_reference(contract_path))
+        finally:
+            contract_path.write_bytes(contract_bytes)
+        for change in (lambda value: value["subject"]["dependencies"]["files"].pop(str(source)),
+                       lambda value: value["subject"].update(registration=None)):
+            forged = json.loads(contract_bytes)
+            change(forged)
+            facts = {key: forged[key] for key in ("policy", "candidate", "context", "controller_paths", "subject", "preparation")}
+            facts["stage_identity"] = forged["stage"]["result"]["identity"]
+            seal = qualification._bounded_hash({"facts": facts, "producer": forged["producer"], "launch": forged["launch"]})
+            forged["seals"] = {"entry": seal, "terminal": seal}
+            contract_path.write_bytes(qualification._bounded_bytes(forged))
+            try:
+                with self.subTest(malformed=change), self.assertRaises(ValueError):
+                    qualification.read_execution_contract(qualification._bounded_reference(contract_path))
+            finally:
+                contract_path.write_bytes(contract_bytes)
+        for key in ("process", "junit", "last_test"):
+            reference = document["execution"][key]
+            path = Path(reference["path"])
+            raw = path.read_bytes()
+            path.write_bytes(raw + b"tampered")
+            try:
+                with self.subTest(payload=key), self.assertRaises(ValueError):
+                    qualification.read_execution_contract(original["reference"])
+            finally:
+                path.write_bytes(raw)
+
+    def test_exact_legacy_reuse_cannot_backfill_an_original(self):
+        first = self.execute(capture=False)
+        raw = Path(first["receipt"]).read_bytes()
+        with patch.object(Campaign, "run", side_effect=AssertionError("exact reuse reran CTest")):
+            reused = self.execute()
+        self.assertEqual(reused["reused_from"], first["receipt"])
+        self.assertNotIn("execution_contract", reused)
+        self.assertEqual(Path(first["receipt"]).read_bytes(), raw)
+        self.assertEqual(self.counter.read_bytes(), b"1\n")
+        self.controller.write_text("# another original controller\n")
+        subprocess.run(["git", "-c", "core.autocrlf=false", "add", "scripts/qualification.py"],
+                       cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "-c", "user.name=Control", "-c", "user.email=control@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-qm", "another fixture original"],
+                       cwd=self.root, check=True, capture_output=True)
+        self.counter.unlink()
+        def stale():
+            self.counter.write_bytes(b"1\n")
+            return Path(first["receipt"])
+        replayed = self.execute(action=stale)
+        self.assertIn("fresh whole", replayed["bounded_ineligible"])
+        self.assertNotIn("execution_contract", replayed)
+        self.assertEqual(Path(first["receipt"]).read_bytes(), raw)
+
+    def test_expected_stdout_with_failure_creates_no_contract(self):
+        def fail():
+            self.counter.mkdir()
+            return qualification.run_ctest_parts(self.campaign, "product", [self.command], {"host": ["Bounded.Read"]},
+                build=self.build, inputs=self.inputs, tools=self.tools, environment=self.environment, timeout=None,
+                repeat_reason="", state=self.state, state_path=self.state_path, payloads=[self.junit])
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.execute(action=fail)
+        self.assertEqual(self.state["product"]["status"], "failed")
+        raw = self.campaign.attempts("product")[-1]
+        self.assertEqual(raw["returncode"], 8)
+        self.assertIn("result=14", (self.root / raw["output"]).read_text())
+        self.assertFalse(list(self.campaign.directory.glob("attempts/*/execution-contract.json")))
+        self.counter.rmdir()
+        self.junit = self.campaign.directory / "retry-junit.xml"
+        self.command[-1] = str(self.junit)
+        completed = self.execute(repeat_reason="fixture counter destination repaired")
+        self.assertEqual(completed["status"], "passed")
+        self.assertIn("fresh whole", completed["bounded_ineligible"])
+        self.assertNotIn("execution_contract", completed)
+        self.assertEqual(self.counter.read_bytes(), b"1\n")
+
+    def test_terminal_capture_change_preserves_only_the_ordinary_pass(self):
+        capture = qualification.capture_execution_subject
+        count = 0
+        def changed(*args, **kwargs):
+            nonlocal count
+            count += 1
+            if count == 2:
+                (self.root / "input.txt").write_bytes(b"value=8\n")
+            return capture(*args, **kwargs)
+        with patch.object(qualification, "capture_execution_subject", side_effect=changed):
+            result = self.execute()
+        self.assertEqual(result["status"], "passed")
+        self.assertIn("terminal", result["bounded_ineligible"])
+        self.assertNotIn("execution_contract", result)
+        self.assertEqual(self.campaign.attempts("product")[-1]["status"], "passed")
+        self.assertFalse(list(self.campaign.directory.glob("attempts/*/execution-contract.json")))
+
+    def test_action_with_different_launch_environment_creates_no_contract(self):
+        def changed():
+            return qualification.run_ctest_parts(self.campaign, "product", [self.command], {"host": ["Bounded.Read"]},
+                build=self.build, inputs=self.inputs, tools=self.tools,
+                environment={**self.environment, "BOUNDED_ACTION_ENVIRONMENT": "different"}, timeout=None,
+                repeat_reason="", state=self.state, state_path=self.state_path, payloads=[self.junit])
+        result = self.execute(action=changed)
+        self.assertEqual(result["status"], "passed")
+        self.assertIn("provenance", result["bounded_ineligible"])
+        self.assertNotIn("execution_contract", result)
+        self.assertFalse(list(self.campaign.directory.glob("attempts/*/execution-contract.json")))
+
+
+class BoundedAdmissionTests(unittest.TestCase):
+    recipe = "native-c11-cli-miniature-v1"
+
+    def setUp(self):
+        import shutil
+        self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset)) / "checkpoint-controls"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(prefix="admit-", dir=parent, delete=False)
+        self.folder = Path(self.temporary.name).resolve()
+        self.root = self.folder / "project"
+        self.root.mkdir()
+        self.build = self.root / "out/build" / self.preset
+        self.build.mkdir(parents=True)
+        self.state_path = self.build / "verification-checkpoint.json"
+        self.environment = dict(os.environ)
+        self.counter = self.build / "assertion-count.txt"
+        self.controller = self.root / "scripts/qualification.py"
+        record_fixture(self.folder, self, "running", owner_root=self.root)
+
+        def finish():
+            outcome = record_fixture(self.folder, self, owner_root=self.root)
+            if outcome == "passed" and not os.environ.get("JUICER_TEST_RETAIN_FIXTURES"):
+                try:
+                    self.temporary.cleanup()
+                except BaseException:
+                    record_fixture(self.folder, self, "failed", owner_root=self.root)
+                    raise
+            else:
+                print("Retained bounded admission fixture:", self.folder, file=sys.stderr, flush=True)
+        self.addCleanup(finish)
+        templates = ROOT / "tests/quality/evidence"
+        files = {"CMakeLists.txt": templates / "cli/CMakeLists.txt",
+                 "src/evidence_child.c": templates / "cli/evidence_child.c", "input.txt": templates / "input.txt",
+                 "scripts/check-quality.py": templates / "cli/check_quality.py",
+                 "tests/quality/test_miniature.py": templates / "cli/test_miniature.py"}
+        for name, source in files.items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, self.root / name)
+        self.controller.write_bytes(b"# original synthetic outer controller\n")
+        (self.root / ".gitignore").write_text("out/\n__pycache__/\n")
+        compiler = shutil.which("clang-cl.exe") if os.name == "nt" else "/usr/bin/gcc-13"
+        self.assertIsNotNone(compiler, "qualified native C compiler is missing")
+        write_json(self.root / "CMakePresets.json",
+                   qualification._bounded_presets(self.root, self.preset, compiler, recipe=self.recipe))
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True, capture_output=True)
+        subprocess.run(["git", "-c", "core.autocrlf=false", "add", "."], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "-c", "user.name=Control", "-c", "user.email=control@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-qm", "synthetic CLI original"],
+                       cwd=self.root, check=True, capture_output=True)
+        self.base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        self.original_campaign = Campaign(self.root, self.preset, "cli-original", ["prepare", "quality", "product"])
+        state = {}
+        with OutputLease(self.root, self.build):
+            bootstrap = Campaign(self.root, self.preset, "cli-bootstrap", ["configure"])
+            bootstrap.run("configure", ["cmake", "--preset", self.preset],
+                inputs=["CMakeLists.txt", "CMakePresets.json", "src/evidence_child.c"],
+                tools=[str(Path(shutil.which(name)).resolve()) for name in ("cmake", "ninja")] + [compiler],
+                env=self.environment, timeout=None)
+            prepared = qualification.prepare_checkpoint(self.original_campaign, self.build, self.state_path, state,
+                self.environment, allow_build=True)
+            dependency = qualification.preparation_identity(self.build, prepared)
+            inputs = qualification.checkpoint_inputs(self.root, self.build, "product")
+            qualification.run_stage(self.original_campaign, self.state_path, state, "quality",
+                [sys.executable, "-B", "scripts/check-quality.py", "--preset", self.preset,
+                 "--qualification", "--base", self.base],
+                inputs=inputs, tools=qualification.checkpoint_tools(self.build, self.environment, "product"),
+                environment=self.environment, timeout=None, dependencies=[dependency], synthetic_quality_base=self.base)
+            self.junit = self.original_campaign.directory / "product-host.xml"
+            self.command = [*qualification.ctest_command(self.root, self.build), "-R", "^(Bounded\\.Read)$",
+                            "-LE", "gpu", "--no-tests=error", "--output-on-failure", "--output-junit", str(self.junit)]
+            tools = qualification._bounded_cli_tools(self.build, self.environment)
+            payloads = [self.junit]
+            original = qualification.run_stage(self.original_campaign, self.state_path, state, "product", self.command,
+                inputs=inputs, tools=tools, environment=self.environment, timeout=None,
+                semantic_command=[qualification.ctest_identity(self.command)],
+                action=lambda: qualification.run_ctest_parts(self.original_campaign, "product", [self.command],
+                    {"host": ["Bounded.Read"]}, build=self.build, inputs=inputs, tools=tools,
+                    environment=self.environment, timeout=None, repeat_reason="", state=state,
+                    state_path=self.state_path, payloads=payloads),
+                validate=lambda paths: qualification.validate_ctest_stage(paths, {"host": ["Bounded.Read"]},
+                    ["Bounded.Read"], [qualification.ctest_identity(self.command)]),
+                payloads=payloads, dependencies=[dependency], ctest=True, bounded_capture=self.recipe)
+        self.assertIn("execution_contract", original, original.get("bounded_ineligible"))
+        self.original = qualification.read_execution_contract(original["execution_contract"])
+        self.original_stage = json.loads(json.dumps(original))
+        self.original_bytes = {Path(reference["path"]): Path(reference["path"]).read_bytes()
+                               for reference in self.original["contract"]["execution"].values()
+                               if isinstance(reference, dict) and set(reference) == {"path", "sha256"}}
+        self.original_bytes[Path(original["execution_contract"]["path"])] = Path(original["execution_contract"]["path"]).read_bytes()
+        self.original_bytes[Path(prepared["receipt"])] = Path(prepared["receipt"]).read_bytes()
+        self.assertEqual(self.counter.read_bytes(), b"1\n")
+
+    @staticmethod
+    def canonical(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
+
+    @staticmethod
+    def reference(path):
+        path = Path(path).resolve(strict=True)
+        return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+    def args(self, campaign, declaration=None, **changes):
+        values = dict(reason="synthetic CLI admission control", selection=["product"], preset=self.preset,
+                      runtime="host", campaign=campaign, repeat_reason="", base=self.base,
+                      prepare=False, reuse_declaration=declaration)
+        values.update(changes)
+        return SimpleNamespace(**values)
+
+    def cli(self, campaign, *, declaration=None, selection="product", runtime="host", success=True):
+        code = ("import pathlib,sys,subprocess; sys.path.insert(0,sys.argv.pop(1)); import verify; "
+                "verify.ROOT=pathlib.Path(sys.argv.pop(1)); sys.argv[0]='verify.py'; "
+                "raise SystemExit(verify.main())")
+        command = [sys.executable, "-B", "-c", code, str(ROOT / "scripts"), str(self.root), "qualification",
+                   "--preset", self.preset, "--reason", "synthetic actual parser and dispatcher",
+                   "--selection", selection, "--runtime", runtime, "--campaign", campaign]
+        if selection == "product":
+            command += ["--base", self.base]
+        if declaration is not None:
+            command += ["--reuse-declaration", str(declaration)]
+        completed = subprocess.run(command, cwd=self.root, env=self.environment, capture_output=True, text=True)
+        (self.folder / (campaign + ".stdout")).write_text(completed.stdout)
+        (self.folder / (campaign + ".stderr")).write_text(completed.stderr)
+        if success:
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            path = self.root / "out/validation" / self.preset / campaign / "qualification.json"
+            return path, json.loads(path.read_text())
+        self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        return completed
+
+    def transition(self):
+        self.controller.write_bytes(b"# reviewed synthetic controller change\n")
+        tooling_path, _ = self.cli("current-tooling", selection="tooling")
+        state = json.loads(self.state_path.read_text())
+        preparation = Campaign(self.root, self.preset, "current-preparation", ["prepare"])
+        with OutputLease(self.root, self.build):
+            current_preparation = qualification.prepare_checkpoint(preparation, self.build, self.state_path, state,
+                self.environment, allow_build=True)
+            self.current_preparation_identity = qualification.preparation_identity(self.build, current_preparation)
+        self.assertNotEqual(self.current_preparation_identity, self.original["contract"]["preparation"]["identity"])
+        old = self.original["contract"]["candidate"]
+        current = qualification._bounded_candidate(self.root, recipe=self.recipe)
+        changes = [{"path": name, "old_sha256": old["files"][name], "new_sha256": current["files"][name],
+                    "groups": ["product"]} for name in sorted(old["files"]) if old["files"][name] != current["files"][name]]
+        declaration = {
+            "protocol": "tooling-evidence-transition-bounded-v1", "original_candidate": old,
+            "current_candidate": current, "changes": changes,
+            "originals": [{"preset": self.preset, "group": "product", "contract": self.original["reference"]}],
+            "compatibility": [{"path": row["path"], "group": "product", "role": "controller-only",
+                               "outcome_integrity": "preserved"} for row in changes],
+            "fresh_evidence": {"tooling": [self.reference(tooling_path)], "quality": [], "quality_base": self.base},
+        }
+        folder = self.root / "out/validation" / self.preset / "transition"
+        folder.mkdir()
+        core = hashlib.sha256(self.canonical(declaration)).hexdigest()
+        for key, protocol, decision in (("review", "tooling-evidence-review-bounded-v1", "compatible"),
+                                         ("owner_decision", "tooling-evidence-owner-bounded-v1", "approve")):
+            proof = {"protocol": protocol, "transition_sha256": core,
+                     "original_candidate_sha256": hashlib.sha256(self.canonical(old)).hexdigest(),
+                     "current_candidate_sha256": hashlib.sha256(self.canonical(current)).hexdigest(),
+                     "originals": declaration["originals"], "scope": {"preset": self.preset, "groups": ["product"]},
+                     "decision": decision}
+            path = folder / (key + ".json")
+            path.write_bytes(self.canonical(proof))
+            declaration[key] = self.reference(path)
+        path = folder / "declaration.json"
+        path.write_bytes(self.canonical(declaration))
+        self.declaration = declaration
+        self.declaration_path = path
+        return path
+
+    def seal_declaration(self, declaration, suffix):
+        folder = self.declaration_path.parent / suffix
+        folder.mkdir()
+        core = {key: value for key, value in declaration.items() if key not in {"review", "owner_decision"}}
+        checksum = hashlib.sha256(self.canonical(core)).hexdigest()
+        for key in ("review", "owner_decision"):
+            proof = json.loads(Path(self.declaration[key]["path"]).read_text())
+            proof["transition_sha256"] = checksum
+            proof["original_candidate_sha256"] = hashlib.sha256(self.canonical(declaration["original_candidate"])).hexdigest()
+            proof["current_candidate_sha256"] = hashlib.sha256(self.canonical(declaration["current_candidate"])).hexdigest()
+            proof["originals"] = declaration["originals"]
+            path = folder / (key + ".json")
+            path.write_bytes(self.canonical(proof))
+            declaration[key] = self.reference(path)
+        path = folder / "declaration.json"
+        path.write_bytes(self.canonical(declaration))
+        return path
+
+    def assert_original_preserved(self):
+        self.assertEqual(self.counter.read_bytes(), b"1\n")
+        self.assertTrue(all(path.read_bytes() == raw for path, raw in self.original_bytes.items()))
+        stage = json.loads(self.state_path.read_text())["product"]
+        self.assertEqual({key: value for key, value in stage.items() if key != "reuse_admission"}, self.original_stage)
+
+    def admission_records(self):
+        return sorted((self.build / "verification-admissions").glob("*/admission.json"))
+
+    def test_cli_admits_controller_change_and_recovers_without_execution(self):
+        declaration = self.transition()
+        path, record = self.cli("admitted", declaration=declaration)
+        self.assertEqual(record["stage_provenance"]["product"], "admitted")
+        self.assertEqual(record["assurance"], "synthetic-c11-cli-quality")
+        self.assertEqual(record["stages"]["product"]["identity"]["dependencies"],
+                         [self.original["contract"]["preparation"]["identity"]])
+        self.assertNotEqual(record["stages"]["quality"]["identity"]["dependencies"],
+                            record["stages"]["product"]["identity"]["dependencies"])
+        first = record["stages"]["product"]["reuse_admission"]
+        self.assertEqual(len(self.admission_records()), 1)
+        admission_bytes = Path(first["path"]).read_bytes()
+        for campaign in ("recovered", "recovered-again"):
+            _, recovered = self.cli(campaign, declaration=declaration)
+            self.assertEqual(recovered["stages"]["product"]["reuse_admission"], first)
+            self.assertEqual(recovered["stage_provenance"]["product"], "admitted")
+            self.assertEqual(len(self.admission_records()), 1)
+            self.assertEqual(Path(first["path"]).read_bytes(), admission_bytes)
+        self.assertTrue(path.is_file())
+        self.assert_original_preserved()
+
+        # Admission cannot become a new original, even with new integrity records.
+        chained = json.loads(json.dumps(self.declaration))
+        chained["originals"][0]["contract"] = first
+        chained_path = self.seal_declaration(chained, "transitive")
+        self.cli("transitive-original", declaration=chained_path, success=False)
+        self.assertEqual(len(self.admission_records()), 1)
+        self.assert_original_preserved()
+
+        baseline = self.state_path.read_bytes()
+        forged = json.loads(admission_bytes)
+        forged["current_candidate"]["files"]["input.txt"] = "f" * 64
+        forged_path = self.declaration_path.parent / "malformed-prior-admission.json"
+        forged_path.write_bytes(self.canonical(forged))
+        state = json.loads(baseline)
+        state["product"]["reuse_admission"] = self.reference(forged_path)
+        write_json(self.state_path, state)
+        try:
+            self.cli("malformed-committed-pointer", declaration=declaration, success=False)
+            self.assertEqual(json.loads(self.state_path.read_text())["product"], state["product"])
+            self.assertEqual(len(self.admission_records()), 1)
+        finally:
+            self.state_path.write_bytes(baseline)
+        self.assert_original_preserved()
+
+        completion = Path(first["path"]).with_name("completion.json")
+        completion_bytes = completion.read_bytes()
+        completed = json.loads(completion_bytes)
+        wrong_wrapper = json.loads(json.dumps(record))
+        wrong_wrapper["stages"]["product"].pop("reuse_admission")
+        wrong_path = self.declaration_path.parent / "wrong-completion-wrapper.json"
+        wrong_path.write_bytes(self.canonical(wrong_wrapper))
+        status_only = json.loads(json.dumps(record))
+        status_only["stages"] = {"prepare": {"status": "passed"}, "quality": {"status": "passed"},
+                                 "product": {"status": "passed", "reuse_admission": first}}
+        status_path = self.declaration_path.parent / "status-only-completion-wrapper.json"
+        status_path.write_bytes(self.canonical(status_only))
+        for name, wrong in (("extra-field", {**completed, "unknown": True}),
+                            ("wrong-wrapper", {**completed, "wrapper": self.reference(wrong_path)}),
+                            ("status-only-stages", {**completed, "wrapper": self.reference(status_path)})):
+            with self.subTest(completion=name):
+                completion.write_bytes(self.canonical(wrong))
+                try:
+                    self.cli("completion-" + name, declaration=declaration, success=False)
+                    attempted = self.root / "out/validation" / self.preset / ("completion-" + name) / "qualification.json"
+                    if attempted.exists():
+                        self.assertNotEqual(json.loads(attempted.read_text())["status"], "passed")
+                    self.assertEqual(json.loads(self.state_path.read_text())["product"], json.loads(baseline)["product"])
+                    self.assertEqual(Path(first["path"]).read_bytes(), admission_bytes)
+                    self.assertEqual(len(self.admission_records()), 1)
+                finally:
+                    completion.write_bytes(completion_bytes)
+        if os.name == "posix":
+            target = completion.with_name("identical-completion.json")
+            completion.rename(target)
+            completion.symlink_to(target.name)
+            try:
+                self.cli("completion-retarget", declaration=declaration, success=False)
+                self.assertTrue(completion.is_symlink())
+                attempted = self.root / "out/validation" / self.preset / "completion-retarget/qualification.json"
+                if attempted.exists():
+                    self.assertNotEqual(json.loads(attempted.read_text())["status"], "passed")
+                self.assertEqual(json.loads(self.state_path.read_text())["product"], json.loads(baseline)["product"])
+                self.assertEqual(Path(first["path"]).read_bytes(), admission_bytes)
+                self.assertEqual(len(self.admission_records()), 1)
+            finally:
+                if completion.is_symlink():
+                    completion.unlink()
+                    target.rename(completion)
+        self.assert_original_preserved()
+
+        quality = json.loads(self.state_path.read_text())["quality"]
+        reports = [Path(name) for name in quality["payloads"] if Path(name).name == "quality.json"]
+        self.assertEqual(len(reports), 1, "quality completion must seal its report before admission")
+        report_bytes = reports[0].read_bytes()
+        reports[0].write_bytes(report_bytes + b"tampered")
+        try:
+            self.cli("tampered-quality-recovery", declaration=declaration, success=False)
+            self.assertEqual(len(self.admission_records()), 1)
+            self.assertNotEqual(json.loads(self.state_path.read_text())["quality"]["status"], "passed")
+        finally:
+            reports[0].write_bytes(report_bytes)
+        self.assert_original_preserved()
+
+    def test_changed_subject_artifact_and_context_reject_without_owner_replacement(self):
+        declaration = self.transition()
+        source = self.root / "input.txt"
+        binary = self.build / ("BoundedEvidenceChild.exe" if os.name == "nt" else "BoundedEvidenceChild")
+        for name, target, replacement in (("subject", source, b"value=8\n"),
+                                           ("artifact", binary, binary.read_bytes() + b"changed")):
+            with self.subTest(name=name):
+                raw, stamp = target.read_bytes(), target.stat()
+                try:
+                    target.write_bytes(replacement)
+                    os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                    self.cli("changed-" + name, declaration=declaration, success=False)
+                finally:
+                    target.write_bytes(raw)
+                    os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                self.assert_original_preserved()
+        self.cli("changed-runtime", declaration=declaration, runtime="all", success=False)
+        extra = self.root / "unlisted.txt"
+        extra.write_text("undeclared member\n")
+        try:
+            self.cli("added-source-member", declaration=declaration, success=False)
+        finally:
+            extra.unlink()
+        moved = source.with_name("input-renamed.txt")
+        source.rename(moved)
+        try:
+            self.cli("renamed-source-member", declaration=declaration, success=False)
+        finally:
+            moved.rename(source)
+        shadow = self.root / "scripts/json.py"
+        exclude = self.root / ".git/info/exclude"
+        exclude_bytes = exclude.read_bytes()
+        shadow.write_text("raise RuntimeError('undeclared project module must never execute')\n")
+        exclude.write_bytes(exclude_bytes + b"\nscripts/json.py\n")
+        try:
+            self.assertEqual(subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "--",
+                             "scripts/json.py"], cwd=self.root), b"")
+            with patch.object(Campaign, "run", side_effect=AssertionError("ignored project shadow executed work")):
+                with self.assertRaises(ValueError):
+                    qualification.qualify(self.root, self.args("ignored-project-shadow", declaration))
+        finally:
+            shadow.unlink()
+            exclude.write_bytes(exclude_bytes)
+        with patch.dict(os.environ, {"CPATH": str(self.root / "unsupported-project-include")}):
+            with self.assertRaises(ValueError):
+                qualification.qualify(self.root, self.args("changed-tool-context", declaration))
+        import shutil
+        native_ctest = Path(shutil.which("ctest", path=self.environment.get("PATH"))).resolve(strict=True)
+        copied_tool = self.folder / "tool-copy" / native_ctest.name
+        copied_tool.parent.mkdir()
+        shutil.copyfile(native_ctest, copied_tool)
+        if os.name == "posix":
+            copied_tool.chmod(native_ctest.stat().st_mode & 0o777)
+        self.assertEqual(hashlib.sha256(copied_tool.read_bytes()).hexdigest(),
+                         hashlib.sha256(native_ctest.read_bytes()).hexdigest())
+        import runpy
+        checker = runpy.run_path(str(ROOT / "tests/quality/evidence/cli/check_quality.py"),
+                                run_name="synthetic_executable_control")
+        if os.name == "posix":
+            mode = copied_tool.stat().st_mode & 0o777
+            before = checker["executable_identity"](copied_tool)
+            self.assertEqual(before["execute_mask"], mode & 0o111)
+            self.assertTrue(before["launch_access"])
+            self.assertEqual(before["sha256"], hashlib.sha256(copied_tool.read_bytes()).hexdigest())
+            copied_tool.chmod(mode & ~0o111)
+            try:
+                self.assertEqual(hashlib.sha256(copied_tool.read_bytes()).hexdigest(), before["sha256"])
+                with self.assertRaisesRegex(ValueError, "launch access"):
+                    checker["executable_identity"](copied_tool)
+            finally:
+                copied_tool.chmod(mode)
+        with patch.dict(os.environ, {"PATH": str(copied_tool.parent) + os.pathsep + os.environ["PATH"]}):
+            with patch.object(Campaign, "run", side_effect=AssertionError("changed tool target executed work")):
+                with self.assertRaises(ValueError):
+                    qualification.qualify(self.root, self.args("changed-native-tool-target", declaration))
+        self.assert_original_preserved()
+        self.assertEqual(self.admission_records(), [])
+
+    def test_malformed_and_stale_declarations_run_no_commands(self):
+        declaration = self.transition()
+        original = declaration.read_bytes()
+        corruptions = [b'{"protocol":"x","protocol":"y"}',
+                       self.canonical({**self.declaration, "unknown": True}),
+                       self.canonical({**self.declaration, "current_candidate": {}})]
+        stale = json.loads(original)
+        stale["review"]["sha256"] = "0" * 64
+        corruptions.append(self.canonical(stale))
+        for number, raw in enumerate(corruptions):
+            with self.subTest(number=number):
+                declaration.write_bytes(raw)
+                try:
+                    with patch.object(Campaign, "run", side_effect=AssertionError("ineligible declaration executed work")):
+                        with self.assertRaises((ValueError, OSError)):
+                            qualification.qualify(self.root, self.args("malformed-" + str(number), declaration))
+                finally:
+                    declaration.write_bytes(original)
+                self.assert_original_preserved()
+
+        for name, mutate in (
+                ("unlisted", lambda value: value["changes"].append({"path": "scripts/unlisted.py", "old_sha256": "a" * 64,
+                     "new_sha256": "b" * 64, "groups": ["product"]})),
+                ("wrong-pair", lambda value: value["original_candidate"]["files"].update({"input.txt": "f" * 64})),
+                ("unsupported-production", lambda value: value["originals"][0].update(group="production")),
+                ("missing-contract", lambda value: value["originals"][0].update(contract={"path": str(self.root / "missing.json"), "sha256": "f" * 64})),
+                ("circular-support", lambda value: value["fresh_evidence"].update(tooling=[self.original["reference"]]))):
+            with self.subTest(name=name):
+                value = json.loads(original)
+                mutate(value)
+                path = self.seal_declaration(value, name)
+                with patch.object(Campaign, "run", side_effect=AssertionError("invalid scope executed work")):
+                    with self.assertRaises((ValueError, OSError)):
+                        qualification.qualify(self.root, self.args(name, path))
+                self.assert_original_preserved()
+
+    def test_current_stage_and_preparation_owners_win(self):
+        declaration = self.transition()
+        baseline = self.state_path.read_bytes()
+        for name in ("product", "prepare"):
+            for status in ("pending", "failed", "blocked"):
+                with self.subTest(name=name, status=status):
+                    state = json.loads(baseline)
+                    state[name]["status"] = status
+                    write_json(self.state_path, state)
+                    try:
+                        with patch.object(Campaign, "run", side_effect=AssertionError("owner conflict executed work")):
+                            with self.assertRaises(ValueError):
+                                qualification.qualify(self.root, self.args(name + "-" + status, declaration))
+                        self.assertEqual(json.loads(self.state_path.read_text())[name], state[name])
+                        self.assertEqual(self.counter.read_bytes(), b"1\n")
+                    finally:
+                        self.state_path.write_bytes(baseline)
+        state = json.loads(baseline)
+        state["product"]["sha256"] = "f" * 64
+        write_json(self.state_path, state)
+        try:
+            with self.assertRaises(ValueError):
+                qualification.qualify(self.root, self.args("newer-product", declaration))
+            self.assertEqual(json.loads(self.state_path.read_text())["product"], state["product"])
+        finally:
+            self.state_path.write_bytes(baseline)
+        self.assert_original_preserved()
+
+        from build_evidence import preparation_paths
+        _, pending = preparation_paths(self.build, ["all"])
+        self.assertFalse(pending.exists())
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text('{"synthetic_pending_owner":true}')
+        try:
+            with patch.object(Campaign, "run", side_effect=AssertionError("pending preparation executed work")):
+                with self.assertRaises(ValueError):
+                    qualification.qualify(self.root, self.args("pending-preparation-owner", declaration))
+            self.assertTrue(pending.exists())
+        finally:
+            pending.unlink()
+        self.assert_original_preserved()
+
+    def test_raw_original_and_support_tampering_reject(self):
+        declaration = self.transition()
+        original = self.original["contract"]
+        paths = [Path(original["execution"][name]["path"]) for name in ("process", "junit", "last_test")]
+        paths.append(Path(self.declaration["fresh_evidence"]["tooling"][0]["path"]))
+        for number, path in enumerate(paths):
+            with self.subTest(path=path):
+                raw = path.read_bytes()
+                path.write_bytes(raw + b"tampered")
+                try:
+                    with patch.object(Campaign, "run", side_effect=AssertionError("tampered evidence executed work")):
+                        with self.assertRaises((ValueError, OSError)):
+                            qualification.qualify(self.root, self.args("tampered-" + str(number), declaration))
+                finally:
+                    path.write_bytes(raw)
+                self.assert_original_preserved()
+
+        # Missing and partial raw proof cannot be repaired during explicit reuse.
+        raw_reference = Path(original["execution"]["receipt"]["path"])
+        raw = raw_reference.read_bytes()
+        partial = json.loads(raw)
+        partial.update(status="failed", returncode=8)
+        raw_reference.write_bytes(self.canonical(partial))
+        try:
+            with patch.object(Campaign, "run", side_effect=AssertionError("partial original executed work")):
+                with self.assertRaises(ValueError):
+                    qualification.qualify(self.root, self.args("partial-original", declaration))
+        finally:
+            raw_reference.write_bytes(raw)
+        self.assert_original_preserved()
+
+        # A custom action must not claim the declared stage's launch environment.
+        state = json.loads(self.state_path.read_text())
+        campaign = Campaign(self.root, self.preset, "wrong-action-launch", ["tooling"])
+        command = [sys.executable, "-B", "-c", "print('independent launch control')"]
+        inputs = qualification.checkpoint_inputs(self.root, self.build, "tooling")
+        with OutputLease(self.root, self.build):
+            try:
+                stage = qualification.run_stage(campaign, self.state_path, state, "tooling", command,
+                    inputs=inputs, tools=[sys.executable], environment=self.environment, timeout=None,
+                    action=lambda: campaign.run("tooling", command, inputs=inputs, tools=[sys.executable],
+                        env={**self.environment, "SYNTHETIC_ACTION_ENVIRONMENT": "different"}, timeout=None))
+            except ValueError:
+                self.assertNotEqual(json.loads(self.state_path.read_text())["tooling"]["status"], "passed")
+            else:
+                with self.assertRaisesRegex(ValueError, "launch|environment|independent"):
+                    qualification._check_stage_evidence(self.root, stage)
+        self.assert_original_preserved()
+
+    def test_terminal_mutations_do_not_publish(self):
+        declaration = self.transition()
+        original_write = qualification._write_admission_record
+        source = self.root / "input.txt"
+        raw = source.read_bytes()
+        def changed(*args, **kwargs):
+            result = original_write(*args, **kwargs)
+            source.write_bytes(b"value=8\n")
+            return result
+        try:
+            with patch.object(qualification, "_write_admission_record", side_effect=changed):
+                with self.assertRaises(ValueError):
+                    qualification.qualify(self.root, self.args("terminal-source", declaration))
+            self.assertNotIn("reuse_admission", json.loads(self.state_path.read_text())["product"])
+            wrapper = self.root / "out/validation" / self.preset / "terminal-source/qualification.json"
+            self.assertNotEqual(json.loads(wrapper.read_text())["status"], "passed")
+        finally:
+            source.write_bytes(raw)
+        self.assert_original_preserved()
+
+        stage_before = json.loads(self.state_path.read_text())["product"]
+        owner_declaration = self.seal_declaration(json.loads(declaration.read_bytes()), "terminal-owner")
+        owner_mutations = []
+        def changed_owner(*args, **kwargs):
+            result = original_write(*args, **kwargs)
+            state = json.loads(self.state_path.read_text())
+            state["product"]["status"] = "pending"
+            write_json(self.state_path, state)
+            owner_mutations.append(str(args[0]))
+            return result
+        try:
+            with patch.object(qualification, "_write_admission_record", side_effect=changed_owner):
+                with self.assertRaises(ValueError):
+                    qualification.qualify(self.root, self.args("terminal-owner", owner_declaration))
+            self.assertEqual(len(owner_mutations), 1)
+            self.assertEqual(json.loads(self.state_path.read_text())["product"]["status"], "pending")
+        finally:
+            state = json.loads(self.state_path.read_text())
+            state["product"] = stage_before
+            write_json(self.state_path, state)
+        self.assert_original_preserved()
+
+        record_declaration = self.seal_declaration(json.loads(declaration.read_bytes()), "terminal-record")
+        record_mutations = []
+        def changed_record(*args, **kwargs):
+            result = original_write(*args, **kwargs)
+            path = Path(args[0])
+            path.write_bytes(path.read_bytes() + b"tampered")
+            record_mutations.append(str(path))
+            return result
+        with patch.object(qualification, "_write_admission_record", side_effect=changed_record):
+            with self.assertRaises(ValueError):
+                qualification.qualify(self.root, self.args("terminal-admission", record_declaration))
+        self.assertEqual(len(record_mutations), 1)
+        self.assertNotIn("reuse_admission", json.loads(self.state_path.read_text())["product"])
+        self.assert_original_preserved()
+
+        if os.name == "posix":
+            alias_declaration = self.seal_declaration(json.loads(declaration.read_bytes()), "terminal-retarget")
+            retargets = []
+            def retarget_record(*args, **kwargs):
+                result = original_write(*args, **kwargs)
+                path = Path(args[0])
+                target = path.with_name("identical-record.json")
+                path.rename(target)
+                path.symlink_to(target.name)
+                retargets.append(str(path))
+                return result
+            with patch.object(qualification, "_write_admission_record", side_effect=retarget_record):
+                with self.assertRaises(ValueError):
+                    qualification.qualify(self.root, self.args("terminal-retarget", alias_declaration))
+            self.assertEqual(len(retargets), 1)
+            self.assertNotIn("reuse_admission", json.loads(self.state_path.read_text())["product"])
+            self.assert_original_preserved()
+
+    def test_cancellation_and_publication_recovery(self):
+        declaration = self.transition()
+        baseline = self.state_path.read_bytes()
+        with patch.object(qualification, "_write_admission_record", side_effect=KeyboardInterrupt("before record")):
+            with self.assertRaises(KeyboardInterrupt):
+                qualification.qualify(self.root, self.args("cancel-before-record", declaration))
+        self.assertEqual(self.admission_records(), [])
+        self.assertNotIn("reuse_admission", json.loads(self.state_path.read_text())["product"])
+        original_write = qualification.write_json
+        def before_pointer(path, record):
+            if Path(path) == self.state_path and record.get("product", {}).get("reuse_admission"):
+                raise KeyboardInterrupt("between record and pointer")
+            return original_write(path, record)
+        with patch.object(qualification, "write_json", side_effect=before_pointer):
+            with self.assertRaises(KeyboardInterrupt):
+                qualification.qualify(self.root, self.args("cancel-before-pointer", declaration))
+        self.assertEqual(len(self.admission_records()), 1)
+        self.assertNotIn("reuse_admission", json.loads(self.state_path.read_text())["product"])
+        capture = qualification.capture_execution_subject
+        owner_races = []
+        def final_owner_race(*args, **kwargs):
+            facts = capture(*args, **kwargs)
+            current = json.loads(self.state_path.read_text())
+            if current["product"].get("reuse_admission") and not owner_races:
+                current["product"]["status"] = "pending"
+                write_json(self.state_path, current)
+                owner_races.append(current["product"]["reuse_admission"])
+            return facts
+        with patch.object(qualification, "capture_execution_subject", side_effect=final_owner_race):
+            with self.assertRaises(ValueError):
+                qualification.qualify(self.root, self.args("final-wrapper-owner-race", declaration))
+        self.assertEqual(len(owner_races), 1)
+        current = json.loads(self.state_path.read_text())
+        self.assertEqual(current["product"]["status"], "pending")
+        self.assertFalse(any(path.with_name("completion.json").exists() for path in self.admission_records()))
+        current["product"]["status"] = "passed"
+        write_json(self.state_path, current)
+        quality_reports = [Path(name) for name in current["quality"]["payloads"] if Path(name).name == "quality.json"]
+        self.assertEqual(len(quality_reports), 1)
+        final_targets = [
+            ("original", Path(self.original["contract"]["execution"]["process"]["path"])),
+            ("tooling", Path(self.declaration["fresh_evidence"]["tooling"][0]["path"])),
+            ("quality", quality_reports[0]),
+            ("admission", self.admission_records()[0]),
+            ("declaration", declaration),
+        ]
+        for name, target in final_targets:
+            with self.subTest(final_capture=name):
+                current = json.loads(self.state_path.read_text())
+                current["product"] = json.loads(json.dumps(self.original_stage))
+                write_json(self.state_path, current)
+                original_bytes = target.read_bytes()
+                mutations = []
+                def final_file_race(*args, **kwargs):
+                    facts = capture(*args, **kwargs)
+                    if json.loads(self.state_path.read_text())["product"].get("reuse_admission") and not mutations:
+                        target.write_bytes(original_bytes + b"tampered")
+                        mutations.append(str(target))
+                    return facts
+                try:
+                    with patch.object(qualification, "capture_execution_subject", side_effect=final_file_race):
+                        with self.assertRaises(ValueError):
+                            qualification.qualify(self.root, self.args("final-capture-" + name, declaration))
+                    self.assertEqual(len(mutations), 1)
+                    failed = self.root / "out/validation" / self.preset / ("final-capture-" + name) / "qualification.json"
+                    self.assertNotEqual(json.loads(failed.read_text())["status"], "passed")
+                    self.assertEqual(len(self.admission_records()), 1)
+                    self.assertFalse(any(path.with_name("completion.json").exists() for path in self.admission_records()))
+                finally:
+                    target.write_bytes(original_bytes)
+                self.assert_original_preserved()
+        def before_wrapper(path, record):
+            if Path(path).name == "qualification.json" and record.get("scope_status") == "passed":
+                raise KeyboardInterrupt("after pointer before wrapper")
+            return original_write(path, record)
+        with patch.object(qualification, "write_json", side_effect=before_wrapper):
+            with self.assertRaises(KeyboardInterrupt):
+                qualification.qualify(self.root, self.args("cancel-before-wrapper", declaration))
+        self.assertIn("reuse_admission", json.loads(self.state_path.read_text())["product"])
+        self.assertFalse((self.root / "out/validation" / self.preset / "cancel-before-wrapper/qualification.json").exists())
+        self.assertEqual(len(self.admission_records()), 1)
+        self.assertFalse(any(path.with_name("completion.json").exists() for path in self.admission_records()))
+        for campaign in ("recover-wrapper", "recover-wrapper-again"):
+            _, record = self.cli(campaign, declaration=declaration)
+            self.assertEqual(record["stage_provenance"]["product"], "admitted")
+            self.assertEqual(len(self.admission_records()), 1)
+        self.assert_original_preserved()
+        self.assertNotEqual(self.state_path.read_bytes(), baseline)
+
+    def test_no_option_preserves_exact_reuse_and_failure_precedence(self):
+        _, executed = self.cli("ordinary-first")
+        self.assertEqual(self.counter.read_bytes(), b"1\n1\n")
+        self.assertNotIn("reuse_admission", executed["stages"]["product"])
+        _, reused = self.cli("ordinary-exact")
+        self.assertEqual(reused["stages"]["product"]["reused_from"], executed["stages"]["product"]["receipt"])
+        self.assertEqual(self.counter.read_bytes(), b"1\n1\n")
+        state = json.loads(self.state_path.read_text())
+        state["product"]["status"] = "failed"
+        write_json(self.state_path, state)
+        self.cli("ordinary-failed-owner", success=False)
+        self.assertEqual(json.loads(self.state_path.read_text())["product"]["status"], "failed")
+        self.assertEqual(self.counter.read_bytes(), b"1\n1\n")
+
+    def test_collector_validates_admission_but_requires_complete_aggregate(self):
+        declaration = self.transition()
+        path, record = self.cli("admitted-collection-guard", declaration=declaration)
+        with self.assertRaisesRegex(ValueError, "full checkpoint membership"):
+            qualification.collect_qualification(self.root, [path])
+        promoted = json.loads(json.dumps(record))
+        promoted["runtime"] = "all"
+        target = path.with_name("host-promoted-to-all.json")
+        write_json(target, promoted)
+        with self.assertRaisesRegex(ValueError, "wrapper does not bind"):
+            qualification.collect_qualification(self.root, [target])
+        self.assert_original_preserved()
+
+
 class CheckpointTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "foreign tool correspondence belongs to Linux collection")
+    def test_foreign_tool_keys_preserve_ordinary_and_native_targets(self):
+        lexical, canonical = r"C:\Tools\tool.EXE", r"C:\Tools\tool.exe"
+        other, unsealed, absent = r"C:\Other\tool.exe", r"C:\Unsealed\tool.exe", r"C:\Tools\absent.toml"
+        paths = {name: self.root / ("tool-binding-" + str(index))
+                 for index, name in enumerate((lexical, canonical, other, unsealed, absent))}
+        for name in (lexical, canonical, other, unsealed):
+            paths[name].write_bytes(b"same tool bytes\n")
+        bindings = {str(path): str(path.resolve()) for name, path in paths.items() if name != unsealed}
+        tools = {target: digest(Path(target)) if Path(target).is_file() else None for target in bindings.values()}
+        binding = {"resolved": canonical, "sha256": digest(paths[canonical])}
+        native = {"lexical": {"files": {lexical: dict(binding)}},
+                  "canonical": {"files": {canonical: dict(binding)}}}
+        def key(path, maps=native, *, expected_target=None):
+            return qualification._collection_tool_key(path, resolve=paths.__getitem__, native_maps=maps,
+                bindings=bindings, tools=tools, expected_target=expected_target)
+        # Metadata boundary controls; the actual F21 native phases independently
+        # supply the unmocked Windows tool correspondence.
+        self.assertEqual(key(lexical), bindings[str(paths[canonical])])
+        self.assertEqual(key(canonical, expected_target=canonical), key(lexical))
+        self.assertEqual(key(absent, {}, expected_target=absent), bindings[str(paths[absent])])
+        self.assertEqual(key(canonical, {}, expected_target=canonical), bindings[str(paths[canonical])])
+        self.assertNotEqual({key(lexical, {}): binding["sha256"]},
+                            {key(canonical, {}, expected_target=canonical): binding["sha256"]})
+        missing = {"canonical": native["canonical"]}
+        self.assertNotEqual({key(lexical, missing): binding["sha256"]},
+                            {key(canonical, missing, expected_target=canonical): binding["sha256"]})
+        with self.assertRaisesRegex(ValueError, "lacks matching fresh native identity"):
+            qualification._policy_live_file(lexical, binding, resolve=paths.__getitem__, native_maps=missing)
+        for mutation in ("disagreeing", "hash", "unsealed-target", "already-sealed-target"):
+            damaged = json.loads(json.dumps(native))
+            if mutation == "disagreeing":
+                damaged["other"] = {"files": {lexical: {**binding, "resolved": other}}}
+            elif mutation == "hash":
+                damaged["lexical"]["files"][lexical]["sha256"] = "0" * 64
+            elif mutation == "unsealed-target":
+                damaged["lexical"]["files"][lexical]["resolved"] = unsealed
+            else:
+                for groups in damaged.values():
+                    for row in groups["files"].values():
+                        row["resolved"] = other
+            with self.subTest(native_tool_binding=mutation), self.assertRaisesRegex(ValueError, "Windows tool"):
+                if mutation == "already-sealed-target":
+                    key(canonical, damaged, expected_target=canonical)
+                else:
+                    key(lexical, damaged)
+
     def test_native_runtime_binding_rejects_missing_and_same_byte_other_target(self):
         name = r"C:\Python\python.exe"
         binding = {"resolved": name, "sha256": "a" * 64}
@@ -2839,7 +5285,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertIn(str(target.resolve()), proof["context"]["files"])
         original_bytes, original_stat = target.read_bytes(), target.stat()
         original_identity = qualification.preparation_identity
-
         calls = 0
 
         def mutate_before_validation(build, candidate, **kwargs):
@@ -3325,6 +5770,105 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
     def test_collection_rechecks_tool_bytes_at_completion(self):
         self.assert_collection_tool_seal("bytes")
 
+    def test_collection_rejects_unbacked_stage_provenance(self):
+        stage = self.run_stage("corpus")
+        path = self.retained_record(stage)
+        record = json.loads(path.read_text())
+        for provenance in ({"corpus": "admitted"}, {"corpus": "unsupported"},
+                           {"corpus": "exact-reused", "product": "admitted"}):
+            write_json(path, {**record, "stage_provenance": provenance})
+            with self.subTest(provenance=provenance), \
+                    patch.object(qualification, "checkpoint_inputs", return_value=["input.txt"]), \
+                    self.assertRaisesRegex(ValueError, "provenance"):
+                qualification.collect_qualification(self.root, [path])
+
+    def test_native_collection_phases_seal_ordinary_evidence_and_owners(self):
+        # Inject at the native-reader boundary; actual native supervision and
+        # path-reader controls remain in WindowsIdentityInteropTests.
+        resource = self.root / "Resources/ignored.txt"
+        resource.parent.mkdir()
+        resource.write_bytes(b"authored\n")
+        tool = self.root / "out/owned-tool"
+        tool.write_bytes(b"tool\n")
+        runtime = self.root / "out/runtime"
+        runtime.mkdir()
+        (runtime / "member").write_bytes(b"runtime\n")
+        inputs = ["input.txt", "Resources/ignored.txt"]
+        stage = self.run_stage("corpus", inputs=inputs, tools=[self.python, str(tool)],
+                               artifact_directories=[str(runtime)])
+        path = self.retained_record(stage)
+        original = {target: target.read_bytes() for target in (resource, tool, self.state_path, path)}
+        raw = Path(stage["receipt"])
+        original[raw] = raw.read_bytes()
+        for fault in ("entry-wrapper", "terminal-tool", "terminal-input", "terminal-artifact", "terminal-owner", "terminal-raw"):
+            phases = []
+
+            def phase(root, native, name):
+                phases.append(name)
+                if fault == "entry-wrapper" and name == "entry":
+                    changed = json.loads(original[path])
+                    changed["reason"] = "changed after the wrapper was parsed"
+                    path.write_text(json.dumps(changed))
+                if name == "terminal":
+                    if fault == "terminal-tool":
+                        tool.write_bytes(b"other\n")
+                    elif fault == "terminal-input":
+                        resource.write_bytes(b"modified\n")
+                    elif fault == "terminal-artifact":
+                        (runtime / "added").write_bytes(b"new member\n")
+                    elif fault == "terminal-owner":
+                        changed = json.loads(original[self.state_path])
+                        changed["corpus"]["status"] = "failed"
+                        write_json(self.state_path, changed)
+                    elif fault == "terminal-raw":
+                        raw.write_bytes(original[raw] + b"changed\n")
+                return {}
+
+            messages = {"entry-wrapper": "immutable evidence", "terminal-tool": "toolchain/configuration changed during",
+                "terminal-input": "source/data inputs changed during", "terminal-artifact": "artifact membership changed during",
+                "terminal-owner": "ownership prevents terminal", "terminal-raw": "immutable evidence"}
+            try:
+                with self.subTest(fault=fault), patch.object(qualification, "checkpoint_inputs", return_value=inputs), \
+                        patch.object(qualification, "prepare_native_collection", return_value={"stages": [], "expected": {}}), \
+                        patch.object(qualification, "run_native_identity_phase", side_effect=phase), \
+                        patch.object(qualification, "check_native_identity_evidence"), \
+                        self.assertRaisesRegex(ValueError, messages[fault]):
+                    qualification.collect_qualification(self.root, [path])
+                self.assertEqual(phases, ["entry", "terminal"])
+            finally:
+                for target, content in original.items():
+                    target.write_bytes(content)
+                (runtime / "added").unlink(missing_ok=True)
+
+    @unittest.skipUnless(os.name == "posix", "owned owner-file symlink control uses POSIX links")
+    def test_collection_rejects_same_bytes_at_a_retargeted_owner(self):
+        stage = self.run_stage("corpus")
+        path = self.retained_record(stage)
+        original = self.state_path.read_bytes()
+        alternate = self.state_path.with_name("identical-owner.json")
+        phases = []
+
+        def phase(root, native, name):
+            phases.append(name)
+            if name == "terminal":
+                alternate.write_bytes(original)
+                self.state_path.unlink()
+                self.state_path.symlink_to(alternate.name)
+            return {}
+
+        try:
+            with patch.object(qualification, "checkpoint_inputs", return_value=["input.txt"]), \
+                    patch.object(qualification, "prepare_native_collection", return_value={"stages": [], "expected": {}}), \
+                    patch.object(qualification, "run_native_identity_phase", side_effect=phase), \
+                    patch.object(qualification, "check_native_identity_evidence"), \
+                    self.assertRaisesRegex(ValueError, "immutable evidence"):
+                qualification.collect_qualification(self.root, [path])
+            self.assertEqual(phases, ["entry", "terminal"])
+        finally:
+            if self.state_path.is_symlink():
+                self.state_path.unlink()
+            self.state_path.write_bytes(original)
+
     def test_collection_rechecks_source_data_at_completion(self):
         data = self.root / "Resources/data.txt"
         data.parent.mkdir()
@@ -3541,6 +6085,204 @@ class FixtureLifetimeTests(unittest.TestCase):
         self.assertFalse(case.directory.exists())
         self.assertTrue(case.directory.is_relative_to(artifact_root))
 
+    def test_named_downstream_hold_survives_outer_pass_until_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact_root = Path(temporary).resolve()
+            case = PolicyCollectionTests("test_policy_reader_source_is_one_immutable_blob_per_owner_hash")
+            case.test_policy_reader_source_is_one_immutable_blob_per_owner_hash = lambda: case.fixture_holds.add(
+                "policy-f21-downstream")
+            with patch.dict(os.environ, {"JUICER_TEST_ARTIFACT_DIR": str(artifact_root),
+                                         "JUICER_TEST_RETAIN_FIXTURES": ""}):
+                result = case.run(unittest.TestResult())
+            self.assertTrue(result.wasSuccessful())
+            marker = json.loads((case.folder / MARKER).read_text())
+            self.assertEqual(marker["outcome"], "passed")
+            self.assertEqual(marker["holds"], ["policy-f21-downstream"])
+            self.assertEqual(selected_paths(artifact_root), [case.folder])
+            self.assertTrue(release_fixture_hold(case.folder, "policy-f21-downstream", "final-consumer"))
+            self.assertFalse(case.folder.exists())
+            self.assertEqual(selected_paths(artifact_root), [])
+
+    def test_review_hold_preserves_fixture_after_downstream_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact_root = Path(temporary).resolve()
+            case = PolicyCollectionTests("test_policy_reader_source_is_one_immutable_blob_per_owner_hash")
+            case.test_policy_reader_source_is_one_immutable_blob_per_owner_hash = lambda: case.fixture_holds.update(
+                {"policy-f21-downstream", "policy-f21-review"})
+            with patch.dict(os.environ, {"JUICER_TEST_ARTIFACT_DIR": str(artifact_root),
+                                         "JUICER_TEST_RETAIN_FIXTURES": ""}):
+                result = case.run(unittest.TestResult())
+            self.assertTrue(result.wasSuccessful())
+            marker = read_fixture_marker(case.folder / MARKER)
+            self.assertEqual(marker["holds"], ["policy-f21-downstream", "policy-f21-review"])
+            self.assertFalse(release_fixture_hold(case.folder, "policy-f21-downstream", "foreign-consumer"))
+            self.assertEqual(read_fixture_marker(case.folder / MARKER)["holds"], ["policy-f21-review"])
+            self.assertTrue(case.folder.exists())
+            self.assertIn(case.folder, selected_paths(artifact_root))
+            self.assertTrue(release_fixture_hold(case.folder, "policy-f21-review",
+                                                 "r4-independent-review-owner-acceptance"))
+            self.assertFalse(case.folder.exists())
+            self.assertEqual(selected_paths(artifact_root), [])
+
+    def test_hold_release_rechecks_live_owner_and_running_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact_root = Path(temporary).resolve()
+            for blocker in ("owner-directory", "campaign-running-lock"):
+                with self.subTest(blocker=blocker):
+                    folder = artifact_root / "checkpoint-controls" / blocker
+                    owner_root = folder / "project"
+                    owner_root.mkdir(parents=True)
+                    case = unittest.FunctionTestCase(lambda: None)
+                    case.fixture_holds = {"consumer-proof"}
+                    with patch.dict(os.environ, {"JUICER_TEST_RETAIN_FIXTURES": ""}):
+                        record_fixture(folder, case, "passed", owner_root=owner_root)
+                    if blocker == "owner-directory":
+                        (owner_root / "out/verification-locks/owner-created-after-pass").mkdir(parents=True)
+                    else:
+                        running = owner_root / "out/validation/linux-debug/late-campaign/running.lock"
+                        running.parent.mkdir(parents=True)
+                        running.write_text("still running\n", encoding="utf-8")
+                    before = read_json(folder / MARKER)
+                    with patch.dict(os.environ, {"JUICER_TEST_RETAIN_FIXTURES": ""}), self.assertRaisesRegex(
+                            ValueError, "current owner records or campaign work remain"):
+                        release_fixture_hold(folder, "consumer-proof", "final-consumer")
+                    after = read_json(folder / MARKER)
+                    self.assertEqual(after["holds"], before["holds"])
+                    self.assertEqual(after.get("hold_releases", []), [])
+                    self.assertIn(folder, selected_paths(artifact_root))
+
+    def test_producer_opt_in_survives_empty_consumer_environment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact_root = Path(temporary).resolve()
+            folder = artifact_root / "checkpoint-controls/opted-in producer"
+            owner_root = folder / "project"
+            owner_root.mkdir(parents=True)
+            case = unittest.FunctionTestCase(lambda: None)
+            case.fixture_holds = {"consumer-proof"}
+            with patch.dict(os.environ, {"JUICER_TEST_RETAIN_FIXTURES": "1"}):
+                record_fixture(folder, case, "passed", owner_root=owner_root)
+            with patch.dict(os.environ, {"JUICER_TEST_RETAIN_FIXTURES": ""}):
+                self.assertFalse(release_fixture_hold(folder, "consumer-proof", "final-consumer"))
+            record = read_json(folder / MARKER)
+            self.assertTrue(record["diagnostic_retain"])
+            self.assertEqual(record["holds"], [])
+            self.assertTrue(folder.exists())
+            # Passed opt-in output remains local-only rather than CI failure evidence.
+            self.assertEqual(selected_paths(artifact_root), [])
+
+    def test_release_rejects_duplicate_keys_and_empty_release_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact_root = Path(temporary).resolve()
+            folder = artifact_root / "checkpoint-controls/strict marker"
+            folder.mkdir(parents=True)
+            marker = folder / MARKER
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text('{"outcome":"passed","outcome":"failed"}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate fixture marker key"):
+                release_fixture_hold(folder, "hold", "consumer")
+
+            owner_root = folder / "project"
+            owner_root.mkdir()
+            case = unittest.FunctionTestCase(lambda: None)
+            case.fixture_holds = {"hold"}
+            record_fixture(folder, case, "passed", owner_root=owner_root)
+            for name, consumer in (("", "consumer"), ("hold", " ")):
+                with self.subTest(name=name, consumer=consumer), self.assertRaisesRegex(ValueError, "fixed policy-control owner"):
+                    release_fixture_hold(folder, name, consumer)
+            self.assertEqual(read_json(marker)["holds"], ["hold"])
+
+    def test_foreign_owner_root_uses_explicit_release_resolver(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary).resolve() / "checkpoint-controls/foreign spelling"
+            owner_root = folder / "project"
+            owner_root.mkdir(parents=True)
+            case = unittest.FunctionTestCase(lambda: None)
+            case.fixture_holds = {"consumer-proof"}
+            record_fixture(folder, case, "passed", owner_root=owner_root)
+            marker = read_json(folder / MARKER)
+            marker["fixture"] = r"C:\fixture\foreign spelling"
+            marker["owner_root"] = r"C:\fixture\foreign spelling\project"
+            write_json(folder / MARKER, marker)
+            mapped = {
+                r"C:\fixture\foreign spelling": folder,
+                r"C:\fixture\foreign spelling\project": owner_root,
+            }
+            late_owner = owner_root / "out/verification-locks/late-owner"
+            late_owner.mkdir(parents=True)
+            def resolver(value):
+                return mapped.get(str(value), value)
+
+            with self.assertRaisesRegex(ValueError, "current owner records or campaign work remain"):
+                release_fixture_hold(folder, "consumer-proof", "final-consumer", resolve=resolver)
+            self.assertEqual(read_json(folder / MARKER)["holds"], ["consumer-proof"])
+            late_owner.rmdir()
+            self.assertTrue(release_fixture_hold(folder, "consumer-proof", "final-consumer",
+                                                 resolve=resolver))
+            self.assertFalse(folder.exists())
+
+    def test_legacy_hold_missing_release_metadata_fails_closed(self):
+        for field in ("diagnostic_retain", "owner_root"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary).resolve() / "checkpoint-controls/legacy hold"
+                owner_root = folder / "project"
+                owner_root.mkdir(parents=True)
+                case = unittest.FunctionTestCase(lambda: None)
+                case.fixture_holds = {"downstream"}
+                record_fixture(folder, case, "passed", owner_root=owner_root)
+                marker = read_json(folder / MARKER)
+                del marker[field]
+                write_json(folder / MARKER, marker)
+                with self.assertRaisesRegex(ValueError, "explicit owner-root or diagnostic-retention"):
+                    release_fixture_hold(folder, "downstream", "final-consumer")
+                self.assertEqual(read_json(folder / MARKER)["holds"], ["downstream"])
+                self.assertTrue(folder.exists())
+
+    def test_release_rejects_redirected_owner_root_with_live_project_owner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact_root = Path(temporary).resolve()
+            folder = artifact_root / "checkpoint-controls/redirected owner"
+            owner_root = folder / "project"
+            owner_root.mkdir(parents=True)
+            ignored_root = folder / "ignore-me"
+            ignored_root.mkdir()
+            case = unittest.FunctionTestCase(lambda: None)
+            case.fixture_holds = {"downstream"}
+            record_fixture(folder, case, "passed", owner_root=owner_root)
+            lock = owner_root / "out/verification-locks/live-owner/owner.json"
+            lock.parent.mkdir(parents=True)
+            lock.write_text('{"status":"running"}', encoding="utf-8")
+            marker = read_json(folder / MARKER)
+            marker["owner_root"] = str(ignored_root)
+            write_json(folder / MARKER, marker)
+            with self.assertRaisesRegex(ValueError, "owner root is malformed or outside its fixture"):
+                release_fixture_hold(folder, "downstream", "final-consumer")
+            self.assertEqual(read_json(folder / MARKER)["holds"], ["downstream"])
+            self.assertTrue(lock.exists())
+            self.assertTrue(folder.exists())
+            self.assertEqual(selected_paths(artifact_root), [folder])
+
+    def test_policy_fixture_cleanup_retains_new_live_owner_or_running_lock(self):
+        for blocker in ("owner-directory", "campaign-running-lock"):
+            with self.subTest(blocker=blocker), tempfile.TemporaryDirectory() as temporary:
+                artifact_root = Path(temporary).resolve()
+                case = PolicyCollectionTests("test_policy_reader_source_is_one_immutable_blob_per_owner_hash")
+                def leave_work():
+                    if blocker == "owner-directory":
+                        (case.root / "out/verification-locks/new-owner").mkdir(parents=True)
+                    else:
+                        running = case.root / "out/validation/linux-debug/late-campaign/running.lock"
+                        running.parent.mkdir(parents=True)
+                        running.write_text("still running\n", encoding="utf-8")
+                case.test_policy_reader_source_is_one_immutable_blob_per_owner_hash = leave_work
+                with patch.dict(os.environ, {"JUICER_TEST_ARTIFACT_DIR": str(artifact_root),
+                                             "JUICER_TEST_RETAIN_FIXTURES": ""}):
+                    result = case.run(unittest.TestResult())
+                self.assertTrue(result.wasSuccessful())
+                self.addCleanup(case.temporary.cleanup)
+                self.assertTrue(case.folder.exists())
+                self.assertTrue(read_json(case.folder / MARKER)["blocked_owners"])
+                self.assertEqual(selected_paths(artifact_root), [case.folder])
+
     def test_external_inputs_follow_checkpoint_fixture_outcome(self):
         with tempfile.TemporaryDirectory() as temporary:
             artifact_root = Path(temporary).resolve()
@@ -3639,13 +6381,19 @@ class FixtureLifetimeTests(unittest.TestCase):
                 receipt = next((case.root / "out/validation").glob("*/first/attempts/*/result.json"))
                 record = read_json(receipt)
                 owner = case.lease.path / "owner.json"
+                running_lock = case.root / "out/validation" / case.preset / "first/running.lock"
                 self.assertEqual(record["process_tree"]["drained"], drained)
                 self.assertTrue(owner.exists())
                 self.assertEqual(read_json(owner)["status"], "blocked")
                 self.assertEqual((case.directory / "external/consumer.cmake").read_bytes(), b"# interrupted external input\n")
                 marker = read_json(case.directory / MARKER)
                 self.assertEqual(marker["outcome"], "interrupted")
-                self.assertEqual(marker["blocked_owners"], [str(owner)])
+                expected_blockers = {str(owner)}
+                if not drained:
+                    self.assertTrue(running_lock.exists())
+                    expected_blockers.add(str(running_lock))
+                self.assertEqual(set(marker["blocked_owners"]), expected_blockers)
+                self.assertEqual(len(marker["blocked_owners"]), len(expected_blockers))
                 self.assertIn(case.directory, selected_paths(case.directory.parent.parent))
                 if drained:
                     self.assertEqual(record["status"], "passed")
@@ -3654,7 +6402,7 @@ class FixtureLifetimeTests(unittest.TestCase):
                     self.assertEqual(process["status"], "completed")
                 else:
                     self.assertEqual(record["status"], "blocked")
-                    self.assertTrue((case.root / "out/validation" / case.preset / "first/running.lock").exists())
+                    self.assertTrue(running_lock.exists())
                 write_json(case.root / "out/validation" / case.preset / "cancellation.json",
                            {"scope": "cancelled fixture remains blocked; unproved branch launches no child",
                             "command_drained": drained, "receipt": str(receipt), "sha256": digest(receipt),
@@ -3662,6 +6410,75 @@ class FixtureLifetimeTests(unittest.TestCase):
 
 
 class MembershipTests(unittest.TestCase):
+    def test_complete_policy_requires_thirteen_roles_in_six_contexts(self):
+        # Policy-only controls; native execution validity belongs to collector
+        # fixtures, not these deliberately minimal role records.
+        records = [
+            {"preset": "linux-debug", "runtime": "all", "selection": ["product", "boundary", "tooling", "corpus"]},
+            {"preset": "windows-clang-debug", "runtime": "all", "selection": ["product", "boundary", "tooling"]},
+            {"preset": "linux-release", "runtime": "all", "selection": ["product", "boundary"]},
+            {"preset": "windows-clang-release", "runtime": "all", "selection": ["product", "boundary"]},
+            {"preset": "linux-release", "runtime": "all", "selection": ["production"]},
+            {"preset": "windows-clang-release", "runtime": "all", "selection": ["production"]},
+        ]
+        qualification.validate_qualification_membership(records)
+        for index, record in enumerate(records):
+            for group in record["selection"]:
+                for mutation in ("remove", "duplicate"):
+                    changed = json.loads(json.dumps(records))
+                    selection = changed[index]["selection"]
+                    selection.remove(group) if mutation == "remove" else selection.append(group)
+                    with self.subTest(preset=record["preset"], group=group, mutation=mutation), self.assertRaises(ValueError):
+                        qualification.validate_qualification_membership(changed)
+            for mutation in ("remove-context", "duplicate-context"):
+                changed = records[:index] + records[index + 1:] if mutation == "remove-context" else [*records, record]
+                with self.subTest(context=index, mutation=mutation), self.assertRaises(ValueError):
+                    qualification.validate_qualification_membership(changed)
+        for index in (1, 2, 3):
+            changed = json.loads(json.dumps(records))
+            changed[0]["selection"].remove("corpus")
+            changed[index]["selection"].append("corpus")
+            self.assertEqual(sum("corpus" in record["selection"] for record in changed), 1)
+            with self.subTest(wrong_corpus=changed[index]["preset"]), self.assertRaisesRegex(ValueError, "corpus"):
+                qualification.validate_qualification_membership(changed)
+        for index in range(4):
+            changed = json.loads(json.dumps(records))
+            changed[index]["runtime"] = "host"
+            with self.subTest(host_only=index), self.assertRaisesRegex(ValueError, "host-only"):
+                qualification.validate_qualification_membership(changed)
+        changed = json.loads(json.dumps(records))
+        changed[2]["selection"].append("tooling")
+        with self.assertRaises(ValueError):
+            qualification.validate_qualification_membership(changed)
+        # These finite path examples check metadata partitioning only. Native
+        # reads and their consumers are exercised by the focused F21 fixture.
+        from pathlib import PureWindowsPath
+        runtime = {r"C:\Runtime\python.exe": {"resolved": r"C:\Runtime\python.exe", "sha256": "a" * 64},
+                   r"C:\Base\python.exe": {"resolved": r"C:\Base\python.exe", "sha256": "b" * 64}}
+        lexical, target = r"C:\SDK\include\header.h", r"C:\SDK\Include\header.h"
+        binding = {"resolved": target, "sha256": "c" * 64}
+        files = json.loads(json.dumps(runtime))
+        files.update({lexical: dict(binding), target: dict(binding)})
+        partitions = qualification._policy_native_partitions(files, runtime)
+        self.assertEqual(len(partitions), 2)
+        self.assertEqual({path: row for partition in partitions for path, row in partition.items()}, files)
+        self.assertEqual(partitions, qualification._policy_native_partitions(dict(reversed(list(files.items()))), runtime))
+        for partition in partitions:
+            self.assertEqual(len(partition), len({PureWindowsPath(path) for path in partition}))
+            self.assertEqual({path: partition[path] for path in runtime}, runtime)
+            self.assertEqual(sum(path in partition for path in (lexical, target)), 1)
+        for mutation in ("hash", "target", "runtime-alias"):
+            damaged = json.loads(json.dumps(files))
+            if mutation == "hash":
+                damaged[lexical]["sha256"] = "0" * 64
+            elif mutation == "target":
+                damaged[lexical]["resolved"] = r"C:\Other\header.h"
+            else:
+                damaged[r"C:\Runtime\PYTHON.exe"] = dict(runtime[r"C:\Runtime\python.exe"])
+            with self.subTest(native_partition_metadata=mutation), \
+                    self.assertRaisesRegex(ValueError, "conflicting bindings|runtime paths have conflicting aliases"):
+                qualification._policy_native_partitions(damaged, runtime)
+
     @staticmethod
     def inventory(*rows):
         return {"tests": [{"name": name, "properties": [{"name": "LABELS", "value": labels}]} for name, labels in rows]}
@@ -3724,25 +6541,6 @@ class MembershipTests(unittest.TestCase):
                     qualification.validate_ctest_report(report, ["required"])
             report.write_text('<testsuite><testcase name="required" status="run"/></testsuite>')
             qualification.validate_ctest_report(report, ["required"])
-
-    def test_ctest_report_hash_and_both_readers_share_one_observation(self):
-        from execution import FileObservations
-        with tempfile.TemporaryDirectory() as directory:
-            report = Path(directory) / "tests.xml"
-            report.write_text('<testsuite><testcase name="required" status="run"/></testsuite>')
-            receipt = Path(directory) / "result.json"
-            command = ["ctest", "-R", "^(required)$", "-LE", "gpu", "--output-junit", str(report)]
-            write_json(receipt, {"stage": "test", "identity": {"command": command, "inputs": {}, "tools": {}},
-                "status": "passed", "returncode": 0, "process_tree": {"drained": True}})
-            with FileObservations() as observations:
-                digest(report)
-                role, passed, actual_report = qualification.ctest_chunk(
-                    receipt, {"host": ["required"]}, [qualification.ctest_identity(command)])
-                qualification.validate_ctest_report(report, ["required"])
-                self.assertEqual((role, passed, actual_report), ("host", {"required"}, report))
-                self.assertEqual(observations.counts(), {"content_reads": 2,
-                    "content_bytes": report.stat().st_size + receipt.stat().st_size,
-                    "transcript_decoded_bytes": 0})
 
     def ci_jobs(self, native):
         text = (ROOT / f".github/workflows/tests-{native}-host.yml").read_text()

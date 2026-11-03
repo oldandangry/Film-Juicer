@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import py_compile
 import shutil
 import subprocess
 import sys
@@ -23,6 +25,303 @@ from execution import Campaign, OutputLease, digest, tool_snapshot, write_json
 from execution import read_json
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class _BoundedFixture:
+    def setUp(self):
+        preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / preset)) / "build-evidence-controls"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(prefix="bounded-", dir=parent, delete=False)
+        self.root = Path(self.temporary.name).resolve()
+        record_fixture(self.root, self, "running", owner_root=self.root)
+
+        def finish():
+            outcome = record_fixture(self.root, self, owner_root=self.root)
+            if outcome == "passed" and not os.environ.get("JUICER_TEST_RETAIN_FIXTURES"):
+                try:
+                    self.temporary.cleanup()
+                except BaseException:
+                    record_fixture(self.root, self, "failed", owner_root=self.root)
+                    raise
+        self.addCleanup(finish)
+
+    def capture(self, **declarations):
+        return build_evidence.capture_bounded_dependencies(self.root, **declarations)
+
+    def check(self, expected, **declarations):
+        return build_evidence.check_bounded_dependencies(self.root, expected, **declarations)
+
+
+class BoundedDependencyTests(_BoundedFixture, unittest.TestCase):
+    def test_incidental_timestamps_do_not_hide_restored_time_content_changes(self):
+        source = self.root / "input.txt"
+        source.write_bytes(b"value=7\n")
+        facts = self.capture(files=[source])
+        self.assertEqual(facts["files"][str(source)], {"kind": "file", "resolved": str(source),
+                         "sha256": hashlib.sha256(b"value=7\n").hexdigest(), "executable": False})
+        stamp = source.stat()
+        os.utime(source, ns=(stamp.st_atime_ns + 10_000_000_000, stamp.st_mtime_ns))
+        self.assertEqual(self.check(facts, files=[source]), facts)
+        source.write_bytes(b"value=8\n")
+        os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, "contents, paths, membership or semantic metadata"):
+            self.check(facts, files=[source])
+
+    def test_namespace_and_absence_are_independent_of_file_bytes(self):
+        namespace = self.root / "resources"
+        namespace.mkdir()
+        source, missing = namespace / "input.txt", namespace / "missing.txt"
+        source.write_bytes(b"")
+        facts = self.capture(files=[source], directories=[namespace], absent=[missing])
+        self.assertEqual(facts["directories"][str(namespace)], {"scope": "immediate", "resolved": str(namespace),
+                         "members": [{"name": "input.txt", "kind": "file", "resolved": str(source)}]})
+        self.assertEqual(facts["absent"], {str(missing): {"resolved": str(missing)}})
+        (namespace / "shadow.txt").write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "membership"):
+            self.check(facts, files=[source], directories=[namespace], absent=[missing])
+        (namespace / "shadow.txt").unlink()
+        missing.write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "no longer absent"):
+            self.check(facts, files=[source], directories=[namespace], absent=[missing])
+
+    def test_recorded_key_omission_does_not_reduce_authoritative_recipe(self):
+        first, second = self.root / "first.txt", self.root / "second.txt"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        facts = self.capture(files=[first, second])
+        facts["files"].pop(str(second))
+        with self.assertRaisesRegex(ValueError, "contents, paths, membership"):
+            self.check(facts, files=[first, second])
+        second.unlink()
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            self.capture(files=[first, second])
+
+    def test_same_bytes_at_another_native_target_reject(self):
+        first, second, alias = [self.root / name for name in ("first", "second", "alias")]
+        for directory in (first, second):
+            directory.mkdir()
+            (directory / "input.txt").write_bytes(b"same")
+
+        def link_to(target):
+            if os.name == "nt":
+                subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(alias), str(target)],
+                               check=True, capture_output=True, timeout=10)
+            else:
+                alias.symlink_to(target, target_is_directory=True)
+
+        link_to(first)
+        def unlink():
+            os.rmdir(alias) if os.name == "nt" else alias.unlink()
+        self.addCleanup(unlink)
+        source = alias / "input.txt"
+        facts = self.capture(files=[source])
+        self.assertEqual(facts["files"][str(source)]["resolved"], str(first / "input.txt"))
+        unlink()
+        link_to(second)
+        with self.assertRaisesRegex(ValueError, "paths"):
+            self.check(facts, files=[source])
+
+    def test_executable_role_and_access_are_not_inferred_from_content(self):
+        source = self.root / "child"
+        source.write_bytes(b"declared executable")
+        if os.name == "posix":
+            source.chmod(0o755)
+        facts = self.capture(files=[source], executables=[source])
+        self.assertIs(facts["files"][str(source)]["executable"], True)
+        data = self.capture(files=[source])
+        self.assertIs(data["files"][str(source)]["executable"], False)
+        self.assertNotIn("execute_bits", data["files"][str(source)])
+        if os.name == "posix":
+            self.assertEqual(facts["files"][str(source)]["execute_bits"], 0o111)
+            source.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "not launch-accessible"):
+                self.check(facts, files=[source], executables=[source])
+            self.assertEqual(self.check(data, files=[source]), data)
+        else:
+            self.assertNotIn("execute_bits", facts["files"][str(source)])
+
+    def test_conflicting_or_unbound_roles_and_paths_reject(self):
+        source = self.root / "input.txt"
+        source.write_bytes(b"input")
+        for declarations in ({"files": [source], "absent": [source]},
+                             {"files": [source], "executables": [self.root / "unbound"]},
+                             {"files": [self.root / ".." / "outside"]},
+                             {"files": [source, source]}):
+            with self.subTest(declarations=declarations), self.assertRaises(ValueError):
+                self.capture(**declarations)
+
+
+class BoundedPythonDependencyTests(_BoundedFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.source = self.root / "helper.py"
+        self.source.write_bytes(b"VALUE = 14\n")
+        self.script = self.root / "check.py"
+        self.script.write_text(
+            "import _imp,json,sys,helper\n"
+            "assert helper.VALUE == int(sys.argv[1])\n"
+            "print(json.dumps({'value': helper.VALUE, 'source': helper.__file__, 'cache': helper.__cached__, "
+            "'loader': type(helper.__spec__.loader).__name__, 'cache_tag': sys.implementation.cache_tag, "
+            "'optimization': sys.flags.optimize, 'prefix': sys.pycache_prefix, "
+            "'hash_check': _imp.check_hash_based_pycs, 'executable': sys.executable}))\n",
+            encoding="utf-8")
+
+    def facts(self):
+        return self.capture(files=[self.script], python_modules=[self.source])
+
+    def check_facts(self, facts):
+        return self.check(facts, files=[self.script], python_modules=[self.source])
+
+    def compile_cache(self, mode):
+        path = Path(importlib.util.cache_from_source(str(self.source)))
+        py_compile.compile(str(self.source), cfile=str(path), doraise=True, invalidation_mode=mode)
+        return path
+
+    def import_helper(self, *options, expected=14):
+        result = subprocess.run([sys.executable, "-B", *options, str(self.script), str(expected)],
+                                cwd=self.root, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value["value"], expected)
+        self.assertEqual(value["loader"], "SourceFileLoader")
+        self.assertEqual(value["source"], str(self.source))
+        return value
+
+    def test_actual_flat_imports_cover_absent_timestamp_and_both_hash_caches(self):
+        cache = Path(importlib.util.cache_from_source(str(self.source)))
+        cases = [(None, "absent"), (py_compile.PycInvalidationMode.TIMESTAMP, "timestamp"),
+                 (py_compile.PycInvalidationMode.CHECKED_HASH, "checked-hash"),
+                 (py_compile.PycInvalidationMode.UNCHECKED_HASH, "unchecked-hash")]
+        for mode, kind in cases:
+            with self.subTest(cache=kind):
+                if cache.exists():
+                    cache.unlink()
+                if mode is not None:
+                    self.compile_cache(mode)
+                original_cache = cache.read_bytes() if cache.is_file() else None
+                facts = self.facts()
+                row = facts["python"]["modules"][str(self.source)]
+                self.assertEqual(row["format"], kind)
+                self.assertEqual(row["cache"], str(cache))
+                value = self.import_helper()
+                for key in ("cache_tag", "optimization", "hash_check"):
+                    self.assertEqual(value[key], facts["python"][key])
+                self.assertEqual(value["prefix"], facts["python"]["pycache_prefix"])
+                self.assertEqual(value["executable"], facts["python"]["interpreter"]["path"])
+                if mode is None:
+                    self.assertIn(str(cache), facts["absent"])
+                    self.assertFalse(cache.exists(), "-B must preserve the absent synthetic cache")
+                else:
+                    self.assertEqual(facts["files"][str(cache)]["sha256"], hashlib.sha256(original_cache).hexdigest())
+                    self.assertEqual(cache.read_bytes(), original_cache)
+                self.assertEqual(self.check_facts(facts), facts)
+
+    def test_actual_cache_invalidation_distinguishes_source_and_cached_values(self):
+        cache = Path(importlib.util.cache_from_source(str(self.source)))
+        cases = [(None, 21), (py_compile.PycInvalidationMode.TIMESTAMP, 14),
+                 (py_compile.PycInvalidationMode.CHECKED_HASH, 21),
+                 (py_compile.PycInvalidationMode.UNCHECKED_HASH, 14)]
+        for mode, expected in cases:
+            with self.subTest(cache=mode):
+                if cache.exists():
+                    cache.unlink()
+                self.source.write_bytes(b"VALUE = 14\n")
+                stamp = self.source.stat()
+                if mode is not None:
+                    self.compile_cache(mode)
+                original_cache = cache.read_bytes() if cache.is_file() else None
+                self.source.write_bytes(b"VALUE = 21\n")
+                os.utime(self.source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                facts = self.facts()
+                self.assertEqual(facts["files"][str(self.source)]["sha256"], hashlib.sha256(b"VALUE = 21\n").hexdigest())
+                self.import_helper(expected=expected)
+                self.assertEqual(cache.read_bytes() if cache.is_file() else None, original_cache)
+                self.assertEqual(self.check_facts(facts), facts)
+                overrides = {py_compile.PycInvalidationMode.CHECKED_HASH: ("never", 14),
+                             py_compile.PycInvalidationMode.UNCHECKED_HASH: ("always", 21)}
+                if mode in overrides:
+                    policy, selected = overrides[mode]
+                    with patch.object(build_evidence._imp, "check_hash_based_pycs", policy):
+                        changed = self.facts()
+                        value = self.import_helper("--check-hash-based-pycs", policy, expected=selected)
+                        self.assertEqual(value["hash_check"], changed["python"]["hash_check"])
+                        with self.assertRaisesRegex(ValueError, "semantic metadata"):
+                            self.check_facts(facts)
+                    self.assertEqual(cache.read_bytes(), original_cache)
+
+    def test_only_timestamp_cache_selection_protects_source_mtime(self):
+        cache = self.compile_cache(py_compile.PycInvalidationMode.TIMESTAMP)
+        facts = self.facts()
+        stamp = self.source.stat()
+        self.assertEqual(facts["python"]["modules"][str(self.source)]["source_mtime"], int(stamp.st_mtime) & 0xFFFFFFFF)
+        self.assertEqual(facts["files"][str(cache)]["sha256"], hashlib.sha256(cache.read_bytes()).hexdigest())
+        os.utime(self.source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
+        with self.assertRaisesRegex(ValueError, "semantic metadata"):
+            self.check_facts(facts)
+        self.import_helper()
+        self.compile_cache(py_compile.PycInvalidationMode.CHECKED_HASH)
+        facts = self.facts()
+        self.assertNotIn("source_mtime", facts["python"]["modules"][str(self.source)])
+        stamp = self.source.stat()
+        os.utime(self.source, ns=(stamp.st_atime_ns + 10_000_000_000, stamp.st_mtime_ns + 2_000_000_000))
+        self.assertEqual(self.check_facts(facts), facts)
+        self.import_helper()
+
+    def test_changed_cache_bytes_and_missing_source_cannot_reuse_facts(self):
+        cache = self.compile_cache(py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        facts = self.facts()
+        original = cache.read_bytes()
+        cache.write_bytes(original + b"extra bytes")
+        with self.assertRaisesRegex(ValueError, "contents, paths, membership"):
+            self.check_facts(facts)
+        self.import_helper()
+        cache.write_bytes(original)
+        stamp = self.source.stat()
+        self.source.write_bytes(b"VALUE = 21\n")
+        os.utime(self.source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, "contents, paths, membership"):
+            self.check_facts(facts)
+        self.import_helper()
+        self.source.write_bytes(b"VALUE = 14\n")
+        os.utime(self.source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.source.unlink()
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            self.check_facts(facts)
+
+    def test_configured_cache_prefix_matches_the_actual_import(self):
+        prefix = self.root / "cache-prefix"
+        with patch.object(sys, "pycache_prefix", str(prefix)):
+            cache = self.compile_cache(py_compile.PycInvalidationMode.CHECKED_HASH)
+            facts = self.facts()
+            self.assertEqual(facts["python"]["pycache_prefix"], str(prefix))
+            self.assertTrue(cache.is_relative_to(prefix))
+            value = self.import_helper("-X", "pycache_prefix=" + str(prefix))
+            self.assertEqual(value["cache"], str(cache))
+            self.assertEqual(value["prefix"], str(prefix))
+            self.assertEqual(self.check_facts(facts), facts)
+
+    def test_unknown_machinery_cache_flags_and_shadow_package_reject(self):
+        with patch.object(sys, "meta_path", [object(), *sys.meta_path]):
+            with self.assertRaisesRegex(ValueError, "import machinery"):
+                self.facts()
+        with patch.object(sys, "pycache_prefix", "relative"):
+            with self.assertRaisesRegex(ValueError, "cache prefix"):
+                self.facts()
+        cache = self.compile_cache(py_compile.PycInvalidationMode.TIMESTAMP)
+        raw = cache.read_bytes()
+        cache.write_bytes(raw[:4] + (2).to_bytes(4, "little") + raw[8:])
+        with self.assertRaisesRegex(ValueError, "cache flags"):
+            self.facts()
+        cache.write_bytes(raw[:16] + b"corrupt marshal body")
+        with self.assertRaisesRegex(ValueError, "cache body"):
+            self.facts()
+        cache.write_bytes(raw)
+        package = self.root / "helper"
+        package.mkdir()
+        (package / "__init__.py").write_text("VALUE = 14\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "source loader"):
+            self.facts()
 
 
 class CompilationInputsTests(unittest.TestCase):
@@ -2071,7 +2370,7 @@ class BuildEvidenceTests(unittest.TestCase):
                 process_before = {}
 
                 def corrupt(path, document):
-                    write_result(path, document)
+                    write(path, document)
                     if "scoped_preparation" in document and document.get("status") == "passed":
                         if fault == "process":
                             process = Path(document["process_tree"]["receipt"])
@@ -2301,6 +2600,286 @@ class FixtureLifetimeTests(unittest.TestCase):
             self.assertEqual(marker["outcome"], "passed")
 
 
+class RegistrationInputsTests(_BoundedFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.build = self.root / "build"
+        self.build.mkdir()
+
+    def registration_chain(self, *, foreign=False, backslashes=False):
+        windows_root = PureWindowsPath("C:/registration-fixture")
+
+        def spelling(path):
+            name = (windows_root / path.relative_to(self.root).as_posix()).as_posix() if foreign else path.as_posix()
+            return name.replace("/", "\\") if backslashes and (foreign or os.name == "nt") else name
+
+        def resolve(name):
+            if PureWindowsPath(name).is_absolute():
+                return self.root.joinpath(*PureWindowsPath(name).relative_to(windows_root).parts)
+            return Path(name)
+
+        def relative(name):
+            return name.replace("/", "\\") if backslashes and (foreign or os.name == "nt") else name
+
+        entry, include, recursive, tests, absolute, subdir = [self.build / name for name in (
+            "CTestTestfile.cmake", "generated/miniature[1]_include.cmake",
+            "generated/recursive/next.cmake", "generated/miniature[1]_tests.cmake",
+            "absolute/CTestTestfile.cmake", "relative/CTestTestfile.cmake")]
+        contents = {
+            entry: f'include("{spelling(include)}")\nsubdirs("{spelling(absolute.parent)}")\nsubdirs("relative")\n',
+            include: f'include("{relative("recursive/next.cmake")}")\n',
+            recursive: f'include("{relative("../miniature[1]_tests.cmake")}")\n',
+            tests: 'include("miniature[1]_include.cmake")\n# Recursive generated include terminates.\n',
+            absolute: f'subdirs("{relative("../relative")}")\n',
+            subdir: f'include("{relative("../generated/miniature[1]_tests.cmake")}")\n',
+        }
+        for path, content in contents.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        return sorted(contents), resolve if foreign else Path, spelling
+
+    def preparation_stage(self, registrations, spelling):
+        # This unit proof exercises the public preparation reader, not native
+        # execution qualification or the collector's raw process checks.
+        for name in ("CMakeCache.txt", "build.ninja", "CMakeFiles/rules.ninja"):
+            path = self.build / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# registration reader unit configuration\n", encoding="utf-8")
+        dependency, artifact = self.root / "dependency.h", self.build / "product.bin"
+        dependency.write_bytes(b"unit dependency\n")
+        artifact.write_bytes(b"unit artifact\n")
+        configuration = {
+            "inputs": build_evidence.snapshot(self.root, [p.relative_to(self.root).as_posix()
+                                                          for p in build_evidence.configuration_files(self.build)]),
+            "tools": {}, "regeneration_mtimes": {},
+            "registrations": {spelling(p): digest(p) for p in registrations},
+        }
+        producer = self.root / "preparation.json"
+        files = {spelling(dependency): {"resolved": spelling(dependency), "sha256": digest(dependency)}}
+        proof = {
+            "protocol": build_evidence.SCOPED_PROTOCOL, "source": spelling(self.root),
+            "build": spelling(self.build), "producer": spelling(producer), "targets": ["all"],
+            "outputs": [spelling(artifact)], "context": {
+                "files": files, "rust_configuration": {}, "include_membership": {}, "configuration": configuration},
+        }
+        record = {"status": "passed", "returncode": 0, "process_tree": {"drained": True}, "scoped_preparation": proof}
+        write_json(producer, record)
+        baseline, _ = build_evidence.preparation_paths(self.build, ["all"])
+        write_json(baseline, {**proof, "producer_sha256": digest(producer)})
+        stage = {"receipt": spelling(producer), "sha256": digest(producer),
+                 "identity": {"scope": "registration-reader-unit"}, "payloads": {spelling(artifact): digest(artifact)}}
+        native = {"files": json.loads(json.dumps(files)), "rust_configuration": {}}
+        return stage, native
+
+    def test_native_default_chain_reaches_preparation_identity(self):
+        import qualification
+
+        for backslashes in (False, True):
+            with self.subTest(backslashes=backslashes):
+                registrations, resolve, spelling = self.registration_chain(backslashes=backslashes)
+                self.assertIs(resolve, Path)
+                self.assertEqual(build_evidence.registration_files(self.build), registrations)
+                stage, _ = self.preparation_stage(registrations, spelling)
+                identity = qualification.preparation_identity(self.build, stage)
+                self.assertRegex(identity, r"^[0-9a-f]{64}$")
+
+    @unittest.skipUnless(os.name == "posix", "foreign Windows registration is consumed on Linux")
+    def test_windows_absolute_operands_map_before_parent_join(self):
+        import qualification
+
+        for backslashes in (False, True):
+            with self.subTest(backslashes=backslashes):
+                registrations, resolve, spelling = self.registration_chain(foreign=True, backslashes=backslashes)
+                self.assertEqual(build_evidence.registration_files(self.build, resolve=resolve), registrations)
+                stage, native = self.preparation_stage(registrations, spelling)
+                identity = qualification.preparation_identity(self.build, stage, resolve=resolve,
+                                                              native_file_identities=native)
+                self.assertRegex(identity, r"^[0-9a-f]{64}$")
+                altered = json.loads(json.dumps(native))
+                altered["files"][spelling(self.root / "dependency.h")]["resolved"] = r"C:\Other\dependency.h"
+                with self.assertRaisesRegex(ValueError, "native target"):
+                    qualification.preparation_identity(self.build, stage, resolve=resolve,
+                                                       native_file_identities=altered)
+
+    def test_missing_registration_preserves_strict_and_allow_missing_modes(self):
+        entry = self.build / "CTestTestfile.cmake"
+        with self.assertRaisesRegex(ValueError, "missing"):
+            build_evidence.registration_files(self.build)
+        self.assertEqual(build_evidence.registration_files(self.build, allow_missing=True), [entry])
+        registrations, resolve, _ = self.registration_chain()
+        missing = self.build / "generated/recursive/next.cmake"
+        missing.unlink()
+        with self.assertRaisesRegex(ValueError, "missing"):
+            build_evidence.registration_files(self.build, resolve=resolve)
+        # The independent subdirectory also reaches the include cycle, so all
+        # authored members, including the missing target, remain in membership.
+        self.assertEqual(build_evidence.registration_files(self.build, allow_missing=True), registrations)
+
+    def test_unsupported_include_syntax_rejects_even_when_missing_is_allowed(self):
+        entry = self.build / "CTestTestfile.cmake"
+        for line in ('include(unquoted.cmake)', 'include("${dynamic}.cmake")',
+                     'include("optional.cmake" OPTIONAL)', 'subdirs("one" "two")'):
+            entry.write_text(line + "\n", encoding="utf-8")
+            for allow_missing in (False, True):
+                with self.subTest(line=line, allow_missing=allow_missing), self.assertRaisesRegex(ValueError, "unsupported"):
+                    build_evidence.registration_files(self.build, allow_missing=allow_missing)
+
+    def registration_mutations(self, *, foreign=False):
+        import qualification
+
+        registrations, resolve, spelling = self.registration_chain(foreign=foreign, backslashes=foreign)
+        stage, native = self.preparation_stage(registrations, spelling)
+        options = {"resolve": resolve, **({"native_file_identities": native} if foreign else {})}
+        qualification.preparation_identity(self.build, stage, **options)
+        original = {p: p.read_bytes() for p in registrations}
+        entry = self.build / "CTestTestfile.cmake"
+        leaf = self.build / "generated/recursive/next.cmake"
+        added = self.build / "added.cmake"
+        added.write_bytes(b"# newly registered member\n")
+        for mutation in ("add", "remove", "bytes", "missing"):
+            for path, content in original.items():
+                path.write_bytes(content)
+            if mutation == "add":
+                entry.write_bytes(original[entry] + b'include("added.cmake")\n')
+            elif mutation == "remove":
+                entry.write_bytes(b'subdirs("relative")\n')
+            elif mutation == "bytes":
+                stamp = leaf.stat()
+                leaf.write_bytes(original[leaf] + b"# terminal byte change\n")
+                os.utime(leaf, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            else:
+                leaf.unlink()
+            with self.subTest(foreign=foreign, mutation=mutation), self.assertRaisesRegex(ValueError, "registration|missing"):
+                qualification.preparation_identity(self.build, stage, **options)
+
+    def test_native_preparation_rejects_registration_membership_and_bytes(self):
+        self.registration_mutations()
+
+    @unittest.skipUnless(os.name == "posix", "foreign Windows registration is consumed on Linux")
+    def test_windows_preparation_rejects_registration_membership_and_bytes(self):
+        self.registration_mutations(foreign=True)
+
+    def consumer_inputs(self, *, foreign=False, backslashes=False):
+        registrations, resolve, spelling = self.registration_chain(foreign=foreign, backslashes=backslashes)
+        self.assertEqual(len(registrations), 6)
+        sources = [self.root / name for name in (
+            "CMakeLists.txt", "CMakePresets.json", "tests/CMakeLists.txt",
+            "scripts/qualification.py", "scripts/execution.py", "scripts/process_tree.py")]
+        runtime, protected = self.root / "tests/runtime.py", self.root / "tests/compiled.py"
+        cache = self.build / "CMakeCache.txt"
+        for path in [*sources, runtime, protected, cache]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"# registration consumer unit input\n")
+        tests = self.build / "generated/miniature[1]_tests.cmake"
+        runtime_name = spelling(runtime).replace("\\", "/")
+        protected_name = spelling(protected).replace("\\", "/")
+        with tests.open("a", encoding="utf-8") as stream:
+            stream.write(f'add_test("miniature" "{runtime_name}" "{protected_name}")\n')
+        expected = {path.relative_to(self.root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in [*sources, *registrations, cache, runtime, protected]}
+        context = {
+            "files": {spelling(protected): {"resolved": spelling(protected), "sha256": digest(protected)}},
+            "commands": "unit compile command", "configuration": {
+                "inputs": {path.relative_to(self.root).as_posix(): digest(path) for path in sources},
+                "regeneration_mtimes": {}},
+        }
+        return registrations, resolve, context, expected
+
+    def consumer_snapshots(self, resolve, context):
+        import qualification
+
+        options = {} if resolve is Path else {"resolve": resolve}
+        names = qualification.checkpoint_inputs(self.root, self.build, "product", source_files=[], **options)
+        preparation = qualification.preparation_inputs(self.root, self.build, {self.root / name for name in names},
+                                                        context=context, **options)
+        return (build_evidence.snapshot(self.root, names),
+                {path.relative_to(self.root).as_posix(): digest(path) for path in preparation})
+
+    def test_native_checkpoint_and_preparation_inputs_read_registration_chain(self):
+        for backslashes in (False, True):
+            with self.subTest(backslashes=backslashes):
+                _, resolve, context, expected = self.consumer_inputs(backslashes=backslashes)
+                checkpoint, preparation = self.consumer_snapshots(resolve, context)
+                self.assertEqual(checkpoint, expected)
+                self.assertEqual(preparation, {name: checksum for name, checksum in expected.items()
+                                               if name != "tests/runtime.py"})
+
+    @unittest.skipUnless(os.name == "posix", "foreign Windows registration is consumed on Linux")
+    def test_windows_checkpoint_and_preparation_inputs_read_registration_chain(self):
+        for backslashes in (False, True):
+            with self.subTest(backslashes=backslashes):
+                _, resolve, context, expected = self.consumer_inputs(foreign=True, backslashes=backslashes)
+                checkpoint, preparation = self.consumer_snapshots(resolve, context)
+                self.assertEqual(checkpoint, expected)
+                self.assertEqual(preparation, {name: checksum for name, checksum in expected.items()
+                                               if name != "tests/runtime.py"})
+
+    def consumer_mutations(self, *, foreign=False):
+        import qualification
+
+        registrations, resolve, context, expected = self.consumer_inputs(foreign=foreign, backslashes=foreign)
+        prepared = {name: checksum for name, checksum in expected.items() if name != "tests/runtime.py"}
+        self.assertEqual(self.consumer_snapshots(resolve, context), (expected, prepared))
+        original = {path: path.read_bytes() for path in registrations}
+        entry = self.build / "CTestTestfile.cmake"
+        leaf = self.build / "generated/recursive/next.cmake"
+        added = self.build / "added.cmake"
+        added.write_bytes(b"# extra generated registration\n")
+        options = {} if resolve is Path else {"resolve": resolve}
+        for mutation in ("add", "remove", "bytes", "missing", "syntax"):
+            for path, content in original.items():
+                path.write_bytes(content)
+            if mutation == "add":
+                entry.write_bytes(original[entry] + b'include("added.cmake")\n')
+            elif mutation == "remove":
+                entry.write_bytes(b'subdirs("relative")\n')
+            elif mutation == "bytes":
+                stamp = leaf.stat()
+                leaf.write_bytes(original[leaf] + b"# changed terminal bytes\n")
+                os.utime(leaf, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            elif mutation == "missing":
+                leaf.unlink()
+            else:
+                entry.write_bytes(b'include("${unsupported}.cmake")\n')
+            with self.subTest(foreign=foreign, mutation=mutation):
+                if mutation == "syntax":
+                    with self.assertRaisesRegex(ValueError, "unsupported"):
+                        qualification.checkpoint_inputs(self.root, self.build, "product", source_files=[], **options)
+                    with self.assertRaisesRegex(ValueError, "unsupported"):
+                        qualification.preparation_inputs(self.root, self.build, {self.root / name for name in expected},
+                                                         context=context, **options)
+                elif mutation == "missing":
+                    names = qualification.checkpoint_inputs(self.root, self.build, "product", source_files=[], **options)
+                    observed = build_evidence.snapshot(self.root, names)
+                    self.assertEqual(observed, {name: checksum for name, checksum in expected.items()
+                                               if self.root / name != leaf})
+                    with self.assertRaisesRegex(ValueError, "missing"):
+                        qualification.preparation_inputs(self.root, self.build, {self.root / name for name in names},
+                                                         context=context, **options)
+                else:
+                    checkpoint, preparation = self.consumer_snapshots(resolve, context)
+                    changed = dict(expected)
+                    if mutation == "add":
+                        changed[added.relative_to(self.root).as_posix()] = hashlib.sha256(added.read_bytes()).hexdigest()
+                    elif mutation == "remove":
+                        changed.pop("build/absolute/CTestTestfile.cmake")
+                    else:
+                        changed[leaf.relative_to(self.root).as_posix()] = hashlib.sha256(leaf.read_bytes()).hexdigest()
+                    changed[entry.relative_to(self.root).as_posix()] = hashlib.sha256(entry.read_bytes()).hexdigest()
+                    self.assertNotEqual(checkpoint, expected)
+                    self.assertEqual(checkpoint, changed)
+                    self.assertNotEqual(preparation, prepared)
+                    self.assertEqual(preparation, {name: checksum for name, checksum in changed.items()
+                                                   if name != "tests/runtime.py"})
+
+    def test_native_checkpoint_and_preparation_inputs_observe_registration_mutations(self):
+        self.consumer_mutations()
+
+    @unittest.skipUnless(os.name == "posix", "foreign Windows registration is consumed on Linux")
+    def test_windows_checkpoint_and_preparation_inputs_observe_registration_mutations(self):
+        self.consumer_mutations(foreign=True)
+
+
 class FileEvidenceTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -2390,14 +2969,21 @@ class FileEvidenceTests(unittest.TestCase):
         for path in (local, canonical):
             path.write_text("first")
         files = {lexical: {"resolved": target, "sha256": digest(local)}}
+        self.build.mkdir()
+        entry, nested = self.build / "CTestTestfile.cmake", self.build / "registered.cmake"
+        entry.write_text('include("C:/build/registered.cmake")\n', encoding="utf-8")
+        nested.write_text("# generated registration\n", encoding="utf-8")
+        registrations = {r"C:\build\CTestTestfile.cmake": digest(entry), r"C:\build\registered.cmake": digest(nested)}
         proof = {"source": r"C:\source", "outputs": [], "context": {
             "files": files, "rust_configuration": {}, "include_membership": {},
-            "configuration": {"inputs": {}, "tools": {}, "regeneration_mtimes": {}, "registrations": {}}}}
+            "configuration": {"inputs": {}, "tools": {}, "regeneration_mtimes": {}, "registrations": registrations}}}
         def resolve(name):
-            return {lexical: local, target: canonical, r"C:\source": self.root}[name]
+            paths = {lexical: local, target: canonical, r"C:\source": self.root,
+                     r"C:\build\CTestTestfile.cmake": entry, r"C:\build\registered.cmake": nested,
+                     "C:/build/registered.cmake": nested}
+            return paths.get(name, Path(name))
         native = {"files": json.loads(json.dumps(files)), "rust_configuration": {}}
-        with patch.object(build_evidence, "configuration_files", return_value=[]), \
-                patch.object(build_evidence, "registration_files", return_value=[]):
+        with patch.object(build_evidence, "configuration_files", return_value=[]):
             with self.assertRaisesRegex(ValueError, "dependency contents or paths"):
                 build_evidence.check_preparation_inputs(self.build, proof, resolve=resolve)
             build_evidence.check_preparation_inputs(self.build, proof, resolve=resolve,
@@ -2560,6 +3146,14 @@ class FileEvidenceTests(unittest.TestCase):
                                 for path in native_runtime.values()}
             bindings = {**expected, **runtime_bindings}
             native_proofs = proofs
+            from qualification import _policy_native_partitions
+
+            partitions = _policy_native_partitions(bindings, runtime_bindings)
+            self.assertEqual(len(partitions), 2)
+            self.assertEqual([set(partition) & set(expected) for partition in partitions],
+                             [{str(first)}, {str(second)}])
+            native_proofs = {f"{index:064x}": {"files": sorted(partition), "rust_configuration": []}
+                             for index, partition in enumerate(partitions)}
             request = self.root / "case-request.json"
             for protocol in ("windows-file-identities-v1", "windows-file-identities-v2"):
                 for phase in ("entry", "terminal"):

@@ -50,7 +50,7 @@ function(juicer_register_tooling_tests)
                 COMMAND "${ARG_PYTHON}" -B -m unittest discover
                     -s "${test_source}/quality" -p "${verification_pattern}" -f -v --durations 10)
             set_tests_properties("Quality.${verification_group}" PROPERTIES LABELS "host" TIMEOUT 0
-                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;JUICER_TEST_ARTIFACT_DIR=${ARG_ARTIFACT_ROOT}/verification-controls")
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;JUICER_TEST_ARTIFACT_DIR=${ARG_ARTIFACT_ROOT}")
             if(ARG_HOST_WINDOWS AND (verification_group STREQUAL "Checkpoint" OR verification_group STREQUAL "PreparationRenewal"))
                 # Full tool-byte validation is I/O heavy; avoid overlap at the four-worker preset limit.
                 set_tests_properties("Quality.${verification_group}" PROPERTIES PROCESSORS 4)

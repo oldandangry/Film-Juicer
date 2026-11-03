@@ -98,6 +98,12 @@ Debug tooling members. Artifacts still route to the native Debug preset's
 default working directory; commands and fixture roots use explicit checkout paths.
 Linux also needs LLD for the compiler-selected-linker freshness control.
 
+Verification fixtures append their owning `checkpoint-controls`,
+`build-evidence-controls` or other control-family directory directly below that
+artifact root. Avoid an extra `verification-controls` level: Windows SDK resource
+compilation can fail on the resulting long manifest paths. Failed-fixture
+selection also recognizes older output at that extra level; keep it in place.
+
 Hosted Windows tooling uses four independent runners labelled `tooling-core`,
 `tooling-BuildEvidence`, `tooling-Checkpoint` and `tooling-PreparationRenewal`.
 These disjoint selections cover the complete tooling membership once. Every
@@ -563,6 +569,64 @@ before execution. Successful stages reuse original records across campaign names
 failed or incomplete gates remain pending. Legacy sealed-build adapters are
 unsupported. `collect-qualification` accepts only the complete explicit native,
 profile, runtime, corpus and production gate set described in CONTRIBUTING.md.
+
+`qualification --reuse-declaration <path>` opts into bounded, direct-original
+evidence admission. The fixed synthetic
+`native-c11-cli-miniature-v1` fixture in `tests/quality/evidence/cli/` and separate
+`native-c11-policy-miniature-v2` collection fixture exercise bounded tooling;
+real product, boundary, corpus and production/OFF evidence remain ineligible. Their finite synthetic
+quality checker exercises the integrated CLI path without qualifying Film-Juicer
+quality. The original six-file miniature remains a separate capture/comparison
+recipe, with no conversion or backfill. Policy recipe v2 omits generic Windows
+PDB generation; strict v1 policy readers and its original flags remain supported.
+The dedicated PDB identity/mutation controls remain part of validation.
+
+Policy original contract v2 stores the complete stage identity once in its facts
+and restores an independent result-identity copy when reading. Admission v2 stores
+common candidate, producer and support facts once per creating campaign under
+`policy-facts/<sha256>.json`, referenced by exact path and hash. Current ON
+preparation can share the support preparation value; retained production OFF
+preparation uses an explicit separate value. Completion v2 binds the shared facts
+to their creating wrapper. Reuse preserves that original campaign owner. Readers
+retain legacy v1 support without rewriting historical records, and validate new
+schemas, hashes, logical ownership and physical files before using the same
+semantic facts. Shared payloads remain in retained and freshly checked closures.
+The original reader source is stored once per fixture owner and content digest;
+old and repaired source versions have distinct payloads.
+
+A request requires strict transition/review/owner integrity references, independently
+completed current tooling, unchanged current preparation admission and integrated
+quality against the declared immutable base. It never builds, replays a product
+stage or starts OFF work, including when `--prepare` is also supplied. A mismatch
+leaves ordinary preparation/rerun as a separate operator choice. Current wrappers
+distinguish executed, exact-reused and admitted stages while retaining the original
+execution identity, dates, dependencies and raw evidence. Explicit recovery
+revalidates the exact committed admission before completing a new wrapper; a
+pointer alone supplies no completed checkpoint. Collection revalidates the current
+wrapper, immutable direct original, admission and completion, declaration, unchanged
+subject, current independent support and original/current preparation correspondence.
+It retains the original preparation dependency and rejects pending, failed, blocked
+or newer owners. Commands without the option
+retain ordinary exact reuse, partial retries and failure precedence.
+
+Aggregate membership is exactly thirteen roles in six contexts: product/boundary
+on all four presets, tooling on both native Debug presets, corpus only on Linux
+Debug, and production on both native Release OFF contexts. Product requires
+`runtime=all`. Missing, duplicate or extra roles/contexts and a corpus stage on
+another preset reject. Collection performs no configure, build, Cargo, probe or
+product execution. It reports executed, exact-reused and admitted scopes and checks
+immutable evidence and latest owners again before success.
+
+The policy miniature distinguishes synthetic preset roles from its actual native
+host and supplies no GPU or product qualification. Its separate retained OFF
+payloads and original both-OFF-before-either-ON chronology cannot be replaced by
+current ON bytes or cache flags. Its registration-repair control binds the actual
+loaded old/current reader source and complete original registration, including a
+native Windows original consumed from Linux; fixture controller notes cannot
+establish compatibility. An omitted historic consumer or false pass rejects reuse.
+All recipes assume their stated qualified external OS/tool/runtime/access policy;
+review/owner JSON establishes integrity, not authenticated human approval. No real
+product reuse adoption is established by these tooling fixtures.
 
 Linux/WSL collection of Windows preparation receipts also requires
 `--windows-python <qualified-Windows-python.exe>`; see the

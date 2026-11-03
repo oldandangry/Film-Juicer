@@ -471,7 +471,9 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: tests/requirements.txt
+          cache-dependency-path: |
+            tests/requirements.txt
+            scripts/quality-requirements.txt
 
       - name: Install native tools, CMake, and test requirements
         shell: bash
@@ -479,12 +481,18 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y gcc-13 g++-13 ninja-build lld
+          wget -qO "$RUNNER_TEMP/llvm.sh" https://apt.llvm.org/llvm.sh
+          sudo bash "$RUNNER_TEMP/llvm.sh" 22
+          sudo apt-get install -y clang-format-22 clang-tidy-22
+          clang-format-22 --version
+          clang-tidy-22 --version
           ld.lld --version
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
-          python -m pip install -r tests/requirements.txt
+          python -m pip install -r tests/requirements.txt -r scripts/quality-requirements.txt
+          ruff --version
           python --version
           cmake --version
           ctest --version

@@ -675,6 +675,70 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(color["rust_packages"], ["film-juicer-core"])
         self.assertEqual(color["rust_test_filters"], ["color::output::"])
 
+    def test_wsl_git_pointer_keeps_distro_and_native_drive_correspondence(self):
+        from pathlib import PureWindowsPath
+        from verify import _wsl_git_path
+
+        root = PureWindowsPath(r"\\wsl.localhost\Ubuntu\home\owner\project")
+        self.assertEqual(_wsl_git_path(root, "/mnt/c/Dev/project/.git/worktrees/isolated"),
+                         PureWindowsPath(r"C:\Dev\project\.git\worktrees\isolated"))
+        self.assertEqual(_wsl_git_path(root, "/home/owner/project/.git"), root / ".git")
+        other = PureWindowsPath(r"\\wsl$\OtherDistro\home\owner\project")
+        self.assertEqual(_wsl_git_path(other, "/home/owner/project/.git"), other / ".git")
+        for source, pointer in ((r"C:\project", "/mnt/c/repository"),
+                                (r"\\server\share\project", "/home/owner/repository"),
+                                (root / ".." / "other", "/home/owner/repository"),
+                                (root, "relative/repository"), (root, "//other/repository"),
+                                (root, "/mnt/c/../other/repository"), (root, "/home/./repository"),
+                                (root, "/mnt/c/repository\\other"), (root, "/mnt/c/repository:stream"),
+                                (root, "/mnt/c/repository./admin"), (root, "/mnt/c/repository /admin"),
+                                (root, "/home/repository\nother")):
+            with self.subTest(root=source, pointer=pointer), self.assertRaises(ValueError):
+                _wsl_git_path(source, pointer)
+
+    def test_wsl_git_metadata_rejects_missing_malformed_or_wrong_worktree_before_lookup(self):
+        import verify
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "worktree"
+            administration = Path(folder) / "administration"
+            root.mkdir()
+            administration.mkdir()
+            pointer = root / ".git"
+            pointer.write_text("gitdir: /mnt/c/administration\n", encoding="utf-8")
+            (administration / "gitdir").write_text("/home/owner/another/.git\n", encoding="utf-8")
+            other = Path(folder) / "other-git-file"
+            other.write_text("not this worktree", encoding="utf-8")
+            name = "rust/film-juicer-core/src/route.rs"
+            with patch.object(verify.sys, "platform", "win32"), \
+                    patch.object(verify.subprocess, "check_output", side_effect=AssertionError("unbound Git lookup")):
+                with patch.object(verify, "_wsl_git_path", side_effect=[administration, other]):
+                    self.assertFalse(verify.rust_body_edit(root, name, "0" * 40))
+                (administration / "gitdir").unlink()
+                with patch.object(verify, "_wsl_git_path", return_value=administration):
+                    self.assertFalse(verify.rust_body_edit(root, name, "0" * 40))
+                pointer.write_text("gitdir: /mnt/c/administration\nextra metadata\n", encoding="utf-8")
+                with patch.object(verify, "_wsl_git_path", side_effect=AssertionError("malformed pointer translated")):
+                    self.assertFalse(verify.rust_body_edit(root, name, "0" * 40))
+
+    def test_native_git_pointers_keep_the_ordinary_blob_lookup(self):
+        import verify
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            pointer = root / ".git"
+            revision, name = "0" * 40, "rust/film-juicer-core/src/route.rs"
+            for contents in ("gitdir: //server/share/administration\n",
+                             "gitdir: \\\\server\\share\\administration\n",
+                             "gitdir: C:/repository/administration\n", "gitdir: ../administration\n"):
+                pointer.write_text(contents, encoding="utf-8")
+                with self.subTest(pointer=contents), patch.object(verify.sys, "platform", "win32"), \
+                        patch.object(verify, "_wsl_git_path", side_effect=AssertionError("native pointer translated")), \
+                        patch.object(verify.subprocess, "check_output", return_value=b"original blob") as lookup:
+                    self.assertEqual(verify._git_blob(root, revision, name), b"original blob")
+                    lookup.assert_called_once_with(["git", "show", revision + ":" + name],
+                                                   cwd=root, stderr=subprocess.DEVNULL)
+
     def test_rust_interface_uncertainty_adds_plugin_checks(self):
         from verify import rust_body_edit
 

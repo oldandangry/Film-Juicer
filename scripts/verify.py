@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import subprocess
@@ -102,13 +102,48 @@ def edit_selection(current, previous, explicit=()):
     return sorted(set(previous.get("pending", ())) | changed)
 
 
+def _wsl_git_path(root, value):
+    """Translate a WSL Git pointer without changing its distro or mounted drive."""
+    native = PureWindowsPath(root)
+    share = native.drive.split("\\")
+    if (len(share) != 4 or share[:2] != ["", ""]
+            or share[2].lower() not in {"wsl.localhost", "wsl$"} or share[3] in {"", ".", ".."}
+            or ".." in native.parts
+            or not isinstance(value, str) or not value.startswith("/") or value.startswith("//")
+            or any(character in value for character in "\\\0\r\n:")
+            or any(part in {".", ".."} or part.endswith((".", " ")) for part in value.split("/"))):
+        raise ValueError("unsupported WSL Git pointer")
+    path = PurePosixPath(value)
+    if len(path.parts) >= 3 and path.parts[1] == "mnt" and re.fullmatch(r"[a-z]", path.parts[2]):
+        return PureWindowsPath(path.parts[2] + ":/", *path.parts[3:])
+    return PureWindowsPath(native.anchor, *path.parts[1:])
+
+
+def _git_blob(root, revision, name):
+    """Read a blob through this worktree's own native-readable Git metadata."""
+    command = ["git"]
+    pointer = root / ".git"
+    if sys.platform == "win32" and pointer.is_file():
+        contents = pointer.read_text(encoding="utf-8")
+        if contents.startswith("gitdir: /") and not contents.startswith("gitdir: //"):
+            match = re.fullmatch(r"gitdir: (/[^\r\n]*)\n?", contents)
+            if match is None:
+                raise ValueError("malformed WSL Git worktree pointer")
+            administration = Path(_wsl_git_path(root, match[1]))
+            backpointer = (administration / "gitdir").read_text(encoding="utf-8").removesuffix("\n")
+            if not Path(_wsl_git_path(root, backpointer)).samefile(pointer):
+                raise ValueError("WSL Git metadata belongs to another worktree")
+            command += ["--git-dir=" + str(administration), "--work-tree=" + str(root)]
+    return subprocess.check_output([*command, "show", revision + ":" + name], cwd=root, stderr=subprocess.DEVNULL)
+
+
 def rust_body_edit(root, name, revision):
     """Prove a narrow existing expression edit; uncertainty broadens package checks."""
     if name not in {"rust/film-juicer-core/src/route.rs", "rust/film-juicer-core/src/color/output.rs"}:
         return False
     try:
-        original = subprocess.check_output(["git", "show", revision + ":" + name], cwd=root, stderr=subprocess.DEVNULL).decode()
-    except subprocess.CalledProcessError:
+        original = _git_blob(root, revision, name).decode()
+    except (subprocess.CalledProcessError, OSError, ValueError):
         return False
     current = read_text(root / name, encoding="utf-8")
     if name.endswith("/color/output.rs"):
@@ -425,6 +460,8 @@ def main():
     checkpoint.add_argument("--repeat-reason", default="")
     checkpoint.add_argument("--prepare", action="store_true",
                             help="explicitly authorize building all testing-ON targets before qualification")
+    checkpoint.add_argument("--reuse-declaration", type=Path,
+                            help="explicit bounded evidence admission; never builds or replays a product stage")
     collection = modes.add_parser("collect-qualification", help="aggregate complete retained native/profile checkpoints")
     collection.add_argument("--receipts", nargs="+", type=Path, required=True)
     collection.add_argument("--output", type=Path, required=True)
