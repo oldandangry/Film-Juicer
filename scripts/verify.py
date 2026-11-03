@@ -428,6 +428,7 @@ def main():
     collection = modes.add_parser("collect-qualification", help="aggregate complete retained native/profile checkpoints")
     collection.add_argument("--receipts", nargs="+", type=Path, required=True)
     collection.add_argument("--output", type=Path, required=True)
+    collection.add_argument("--windows-python", help="qualified native Windows Python for Linux collection")
     args = parser.parse_args()
     if args.mode == "retire-s4c1-pending":
         print("Legacy retirement only; fresh preparation still required:", retire_s4c1_pending(ROOT, args.preset))
@@ -437,7 +438,9 @@ def main():
         return 0
     if args.mode == "collect-qualification":
         from qualification import collect_qualification
-        result = collect_qualification(ROOT, args.receipts)
+        if args.output.exists():
+            raise ValueError("retain the existing aggregate and use a new output path")
+        result = collect_qualification(ROOT, args.receipts, windows_python=args.windows_python)
         if args.output.exists():
             raise ValueError("retain the existing aggregate and use a new output path")
         write_json(args.output, result)

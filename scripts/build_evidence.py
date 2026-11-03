@@ -6,7 +6,7 @@ from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shlex
 import shutil
@@ -14,7 +14,7 @@ import subprocess
 import time
 import uuid
 
-from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json
+from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json, windows_runtime_paths
 from build_dependencies import (
     CompilationInputs,
     NinjaGraph,
@@ -441,6 +441,8 @@ def scoped_context(root, source, build, graph, inputs, environment, compilation=
     """Relevant source/dependency content and configuration; outputs are local cache."""
     configuration = verify_dependency_selection(source, build, graph, environment)
     paths = set(graph.source_files()) | {root / name for name in inputs}
+    if os.name == "nt":
+        paths.update(p for p in windows_runtime_paths().values() if p is not None)
     # Missing depfiles are supplemented by the existing ordered include traversal.
     import importlib.util
     import sys
@@ -526,15 +528,27 @@ def check_scoped_preparation(campaign, build, prepared, env=None, *, compilation
     return _check_preparation_result(campaign, build, prepared, env, compilation=compilation)
 
 
-def check_preparation_inputs(build, proof, *, resolve=Path):
-    """Recheck recorded native facts without executing another lane's tools."""
+def check_preparation_inputs(build, proof, *, resolve=Path, native_file_identities=None):
+    """Recheck local facts or the collector's admitted native target maps."""
     source = resolve(proof["source"])
     context = proof["context"]
     configuration = context["configuration"]
-    for files in (context["files"], context["rust_configuration"]):
+    if native_file_identities is not None:
+        if (os.name != "posix" or not PureWindowsPath(proof["source"]).is_absolute()
+                or set(native_file_identities) != {"files", "rust_configuration"}):
+            raise ValueError("unexpected foreign preparation identity maps")
+    for group in ("files", "rust_configuration"):
+        files = context[group]
         expected = {str(resolve(name)): {**identity, "resolved": str(resolve(identity["resolved"]))}
                     for name, identity in files.items()}
-        if file_identities([resolve(name) for name in files]) != expected:
+        actual = file_identities([resolve(name) for name in files])
+        if native_file_identities is not None:
+            if native_file_identities[group] != files:
+                raise ValueError("Windows preparation native target identities changed")
+            if (set(actual) != set(expected)
+                    or any(actual[name]["sha256"] != value["sha256"] for name, value in expected.items())):
+                raise ValueError("mapped Windows preparation content or membership changed")
+        elif actual != expected:
             raise ValueError("preparation dependency contents or paths changed")
     if snapshot(source, list(configuration["inputs"])) != configuration["inputs"]:
         raise ValueError("preparation configuration inputs changed")

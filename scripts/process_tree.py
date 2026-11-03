@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import signal
@@ -200,6 +201,7 @@ class WindowsJob:
                     self.check(self.api.AssignProcessToJobObject(self.job, handle))
                 finally:
                     self.check(self.api.CloseHandle(handle))
+            self.gated_pid = pid
             check_gate_waiting()
             self.process.stdin.write(b"g")
             self.process.stdin.close()
@@ -289,8 +291,22 @@ class WindowsJob:
 def main():
     receipt = Path(sys.argv[1])
     timeout = None if sys.argv[2] == "None" else float(sys.argv[2])
-    cleanup = json.loads(sys.argv[4]) if sys.argv[3] == "--vctip-cleanup" else None
-    command = sys.argv[5:] if cleanup else sys.argv[3:]
+    position = 3
+    identity = None
+    if sys.argv[position] == "--identity-request":
+        from build_dependencies import read_identity_request
+
+        if os.name != "nt":
+            raise ValueError("Windows identity supervision requires WindowsJob")
+        checksum = sys.argv[position + 2]
+        request = read_identity_request(Path(sys.argv[position + 1]), checksum)
+        identity = {"collection_id": request["collection_id"], "phase": request["phase"],
+                    "request_sha256": checksum}
+        position += 3
+    cleanup = json.loads(sys.argv[position + 1]) if sys.argv[position] == "--vctip-cleanup" else None
+    command = sys.argv[position + 2:] if cleanup else sys.argv[position:]
+    if identity is not None and cleanup is not None:
+        raise ValueError("Windows identity reader cannot request compiler cleanup")
     interrupted = threading.Event()
 
     def watch_owner():
@@ -325,6 +341,8 @@ def main():
     }
     if cleanup:
         record.update(vctip_cleanup=cleanup, vctip_terminated=[])
+    if identity is not None:
+        record.update(identity_request=identity, command=command)
 
     def save():
         temporary = receipt.with_suffix(".tmp")
@@ -336,6 +354,8 @@ def main():
         started = time.monotonic()
         owner.start(command, receipt.with_suffix(".gate.json"))
         record["command_pid"] = owner.process.pid
+        if identity is not None:
+            record["gated_pid"] = owner.gated_pid
         save()
         deadline = None if timeout is None else time.monotonic() + timeout
         stopping = None
@@ -410,6 +430,11 @@ def main():
     finally:
         owner.close()
         save()
+        if identity is not None:
+            seal = {"receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(),
+                    "identity_request": identity}
+            with receipt.with_suffix(".seal.json").open("x", encoding="utf-8") as stream:
+                stream.write(json.dumps(seal) + "\n")
 
 
 if __name__ == "__main__":

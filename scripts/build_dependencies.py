@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import subprocess
 import time
 
-from execution import digest
+from execution import digest, windows_runtime_paths
 
 
 class NinjaGraph:
@@ -201,6 +201,66 @@ def file_identities(paths, timings=None):
         timings["path_resolution_seconds"] = timings.get("path_resolution_seconds", 0) + resolved_seconds
         timings["content_hash_seconds"] = timings.get("content_hash_seconds", 0) + hash_seconds
     return result
+
+
+def identity_json(text):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate identity field: " + key)
+            result[key] = value
+        return result
+    return json.loads(text, object_pairs_hook=unique)
+
+
+def read_identity_request(path, checksum):
+    if digest(path) != checksum:
+        raise ValueError("Windows identity request identity changed")
+    request = identity_json(path.read_text(encoding="utf-8"))
+    if (not isinstance(request, dict)
+            or set(request) != {"protocol", "collection_id", "phase", "proofs"}
+            or request["protocol"] != "windows-file-identities-v1"
+            or not isinstance(request["collection_id"], str)
+            or not re.fullmatch(r"[0-9a-f]{32}", request["collection_id"])
+            or not isinstance(request["phase"], str) or request["phase"] not in {"entry", "terminal"}
+            or not isinstance(request["proofs"], dict) or not request["proofs"]):
+        raise ValueError("malformed Windows identity request")
+    for proof, groups in request["proofs"].items():
+        if (not re.fullmatch(r"[0-9a-f]{64}", proof) or not isinstance(groups, dict)
+                or set(groups) != {"files", "rust_configuration"}):
+            raise ValueError("malformed Windows identity proof groups")
+        for names in groups.values():
+            if (not isinstance(names, list) or any(not isinstance(n, str) or "\0" in n
+                    or not PureWindowsPath(n).is_absolute() for n in names)
+                    or len(names) != len(set(names))):
+                raise ValueError("malformed Windows identity lexical paths")
+    return request
+
+
+def read_windows_identities(path, checksum):
+    request = read_identity_request(path, checksum)
+    if os.name != "nt":
+        raise ValueError("Windows file identities require native Windows Python")
+    proofs = {}
+    for proof, groups in request["proofs"].items():
+        proofs[proof] = {}
+        for group, names in groups.items():
+            observed = file_identities([Path(n) for n in names])
+            if set(observed) != set(names):
+                raise ValueError("Windows identity lexical membership changed")
+            proofs[proof][group] = observed
+    runtime = {}
+    paths = windows_runtime_paths()
+    for role in ("python", "base_python"):
+        executable = paths[role]
+        runtime[role] = {"path": str(executable), "resolved": str(executable.resolve(strict=True)),
+                         "sha256": digest(executable)}
+    if read_identity_request(path, checksum) != request:
+        raise ValueError("Windows identity request changed during reading")
+    return {"protocol": request["protocol"], "collection_id": request["collection_id"],
+            "phase": request["phase"], "request_sha256": checksum,
+            "runtime": runtime, "proofs": proofs}
 
 
 class CompilationInputs:
@@ -433,3 +493,13 @@ def header_consumers(root, build, headers, *, require_compiled=True, compilation
     if not targets or require_compiled and found != wanted:
         raise ValueError("unresolved shared header without configured consumers")
     return sorted(targets), sorted(sources)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Read exact Windows preparation file identities")
+    parser.add_argument("--file-identities", type=Path, required=True)
+    parser.add_argument("--request-sha256", required=True)
+    arguments = parser.parse_args()
+    print(json.dumps(read_windows_identities(arguments.file_identities, arguments.request_sha256)))

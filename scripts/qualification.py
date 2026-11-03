@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import struct
@@ -16,7 +16,8 @@ import tomllib
 import uuid
 
 from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, ctest_command, linker_tools, preparation_inventory, preparation_paths, prepare_build, registration_files
-from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json
+from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json, prepare_windows_identity_launch, mapped_windows_path, windows_runtime_paths, windows_identity_interpreter, windows_path
+from build_dependencies import identity_json, read_identity_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/ffi"))
 from grain_probe_contract import GRAIN_FRAME_CASE_COUNT, GRAIN_FRAME_CASE_IDS
@@ -198,8 +199,8 @@ def validate_ctest_stage(paths, parts, names, commands, resolve=Path):
         raise ValueError("checkpoint CTest membership did not execute completely")
 
 
-def run_ctest_parts(campaign, group, commands, roles, *, inputs, tools, environment,
-                    timeout, repeat_reason, state=None, state_path=None, reports=None):
+def run_ctest_parts(campaign, group, commands, roles, *, build, inputs, tools, environment,
+                    timeout, repeat_reason, state=None, state_path=None, payloads=None):
     # Normal qualification has no elapsed deadline. A finite timeout is only
     # supplied by deliberate failure controls.
     deadline = None if timeout is None else time.monotonic() + timeout
@@ -208,11 +209,13 @@ def run_ctest_parts(campaign, group, commands, roles, *, inputs, tools, environm
     expected_tools = tool_snapshot(present_tools)
     chunks = state[group].setdefault("ctest_chunks", []) if state is not None else []
     identities = [ctest_identity(command) for command in commands]
-    paths, complete, retained_reports = [], set(), []
+    paths, complete, retained_payloads = [], set(), []
     from verify import check_receipt_payloads
     for chunk in chunks:
         path = Path(chunk["receipt"])
-        if digest(path) != chunk["sha256"] or digest(Path(chunk["report"])) != chunk["report_sha256"]:
+        log = path.with_name("LastTest.log")
+        if (digest(path) != chunk["sha256"] or digest(Path(chunk["report"])) != chunk["report_sha256"]
+                or not log.is_file() or digest(log) != chunk.get("last_test_log_sha256")):
             raise ValueError("checkpoint partial result payload changed")
         raw = check_receipt_payloads(campaign.root, path, allow_ctest_failure=True)
         if (raw["identity"]["inputs"] != expected_inputs or raw["identity"]["tools"] != expected_tools):
@@ -224,7 +227,7 @@ def run_ctest_parts(campaign, group, commands, roles, *, inputs, tools, environm
             raise ValueError("checkpoint partial success is duplicated")
         complete.update(passed)
         paths.append(path)
-        retained_reports.append(report)
+        retained_payloads.extend((report, log))
     for role, command in zip(roles, commands, strict=True):
         remaining = sorted(set(roles[role]) - complete)
         if not remaining:
@@ -251,21 +254,25 @@ def run_ctest_parts(campaign, group, commands, roles, *, inputs, tools, environm
             failure = error
             raw = campaign.attempts(group)[-1]
             path = (campaign.root / raw["output"]).with_name("result.json")
+        # The next CTest partition replaces this build-local log.
+        log = path.with_name("LastTest.log")
+        shutil.copyfile(build / "Testing/Temporary/LastTest.log", log)
         check_receipt_payloads(campaign.root, path, allow_ctest_failure=True)
         if snapshot(campaign.root, inputs) != expected_inputs or tool_snapshot(present_tools) != expected_tools:
             raise ValueError("checkpoint inputs changed during CTest")
         _, passed, report = ctest_chunk(path, roles, identities)
         complete.update(passed)
         paths.append(path)
-        retained_reports.append(report)
+        retained_payloads.extend((report, log))
         chunks.append({"receipt": str(path), "sha256": digest(path),
-                       "report": str(report), "report_sha256": digest(report)})
+                       "report": str(report), "report_sha256": digest(report),
+                       "last_test_log_sha256": digest(log)})
         if state_path is not None:
             write_json(state_path, state)
         if failure is not None:
             raise failure
-    if reports is not None:
-        reports[:] = retained_reports
+    if payloads is not None:
+        payloads[:] = retained_payloads
     return paths
 
 
@@ -1088,6 +1095,15 @@ def preparation_inputs(root, build, paths, *, context=None, resolve=Path):
 
 def checkpoint_tools(build, environment, group=None):
     tools = {Path(sys.executable)}
+    if os.name == "nt":
+        tools.update(p.resolve(strict=True) for p in windows_runtime_paths().values() if p is not None)
+    elif group == "tooling" and environment.get("JUICER_WINDOWS_PYTHON"):
+        runtime = windows_identity_interpreter(environment["JUICER_WINDOWS_PYTHON"])
+        tools.update((runtime["executable"], mapped_windows_path(runtime["base_python"])))
+        if runtime["config"] is not None:
+            tools.add(runtime["config"])
+        if environment.get("JUICER_WINDOWS_IDENTITY_PROOF"):
+            tools.add(Path(environment["JUICER_WINDOWS_IDENTITY_PROOF"]))
     cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
     tools.update(linker_tools(build, cache, environment))
     tools.update(Path(value) for value in re.findall(r"^(?:CMAKE_(?:(?:C|CXX|CUDA|CUDA_HOST)_COMPILER|LINKER|AR|RANLIB)|JUICER_CARGO_EXECUTABLE):[^=]+=(.+)$", cache, re.M))
@@ -1240,7 +1256,7 @@ def prepare_checkpoint(campaign, build, state_path, state, environment, *, repea
         validate=validate, payloads=outputs)
 
 
-def preparation_identity(build, stage, *, resolve=Path):
+def preparation_identity(build, stage, *, resolve=Path, native_file_identities=None):
     """Bind admitted artifact facts; producer provenance remains in the original receipt.
 
     Callers validate raw command/process evidence through run_stage or collection.
@@ -1253,7 +1269,7 @@ def preparation_identity(build, stage, *, resolve=Path):
     if record.get("status") != "passed" or record.get("returncode") != 0 or not record.get("process_tree", {}).get("drained"):
         raise ValueError("checkpoint preparation lacks successful process completion")
     proof = record["scoped_preparation"]
-    check_preparation_inputs(build, proof, resolve=resolve)
+    check_preparation_inputs(build, proof, resolve=resolve, native_file_identities=native_file_identities)
     artifacts = stage.get("payloads", {})
     if not artifacts or set(artifacts) != set(proof["outputs"]):
         raise ValueError("checkpoint preparation lacks exact artifact identities; repeat preparation")
@@ -1324,14 +1340,14 @@ def _qualify_owned(root, build, args):
                          for role in ("host", "gpu")}
                 parts = {role: members for role, members in parts.items() if members}
                 record["runtime_membership"][group] = parts
-                commands, reports = [], []
+                commands, payloads = [], []
                 for role, members in parts.items():
                     junit = campaign.directory / (group + "-" + role + ".xml")
                     pattern = "^(" + "|".join(re.escape(n) for n in members) + ")$"
                     commands.append([*ctest_command(root, build), "-R", pattern,
                         "-LE" if role == "host" else "-L", "gpu", "--no-tests=error",
                         "--output-on-failure", "--output-junit", str(junit)])
-                    reports.append(junit)
+                    payloads.append(junit)
                 identities = [ctest_identity(command) for command in commands]
                 def validate(paths, parts=parts, names=names, identities=identities, group=group):
                     validate_ctest_stage(paths, parts, names, identities)
@@ -1343,10 +1359,10 @@ def _qualify_owned(root, build, args):
                 tools = sorted(set(tools) | set(artifacts))
                 run(group, commands[0], inputs, tools=tools, semantic_command=identities,
                     action=lambda group=group, commands=commands, parts=parts, inputs=inputs, tools=tools:
-                        run_ctest_parts(campaign, group, commands, parts, inputs=inputs, tools=tools,
+                        run_ctest_parts(campaign, group, commands, parts, build=build, inputs=inputs, tools=tools,
                             environment=environment, timeout=None, repeat_reason=args.repeat_reason,
-                            state=state, state_path=state_path, reports=reports),
-                    validate=validate, payloads=reports,
+                            state=state, state_path=state_path, payloads=payloads),
+                    validate=validate, payloads=payloads,
                     ctest=True, artifact_directories=directories,
                     dependencies=[prepared_identity] if built and group == "product" else [])
         else:
@@ -1397,7 +1413,173 @@ def _qualify_owned(root, build, args):
     return receipt
 
 
-def collect_qualification(root, paths):
+def native_runtime_binding(expected, name):
+    bindings = [groups["files"].get(name) for groups in expected.values()]
+    if not bindings or any(value is None or value != bindings[0] for value in bindings):
+        raise ValueError("Windows runtime tool is not bound by every preparation proof")
+    return bindings[0]
+
+
+def native_identity_result(root, entry, expected):
+    if (set(entry) != {"phase", "preparations", "receipt", "sha256", "payloads"}
+            or entry["phase"] not in {"entry", "terminal"}
+            or entry["preparations"] != sorted(expected)):
+        raise ValueError("malformed native identity evidence")
+    path = Path(entry["receipt"])
+    if digest(path) != entry["sha256"]:
+        raise ValueError("native identity command receipt changed")
+    record = json.loads(path.read_text())
+    native = record["identity"]["windows_identity"]
+    request_path = root / native["request"]
+    request = read_identity_request(request_path, native["request_sha256"])
+    base = native_runtime_binding(expected, native["base_python"])
+    launch = prepare_windows_identity_launch(root, native["python"], request_path, base_python=base["resolved"])
+    phase = entry["phase"]
+    if (request["phase"] != phase or record["stage"] != "windows-" + phase
+            or request["proofs"] != {p: {g: list(v) for g, v in groups.items()}
+                                       for p, groups in expected.items()}
+            or native != launch or record["identity"]["command"] != launch["command"]
+            or record.get("status") != "passed" or record.get("returncode") != 0):
+        raise ValueError("native identity command/request does not bind the collection")
+    tree = record["process_tree"]
+    process_path = Path(tree["receipt"])
+    process = json.loads(process_path.read_text())
+    correlation = {"collection_id": request["collection_id"], "phase": phase,
+                   "request_sha256": native["request_sha256"]}
+    if (tree.get("drained") is not True or process.get("drained") is not True
+            or process.get("status") != "completed" or process.get("returncode") != 0
+            or process.get("identity_request") != correlation
+            or process.get("command") != launch["command"]
+            or set(process.get("creation", {})) != {"windows_creation_time_100ns"}
+            or type(process["creation"]["windows_creation_time_100ns"]) is not int
+            or process["creation"]["windows_creation_time_100ns"] <= 0
+            or any(type(process.get(k)) is not int or process[k] <= 0
+                   for k in ("supervisor_pid", "command_pid", "gated_pid"))
+            or type(tree.get("interop_pid")) is not int or tree["interop_pid"] <= 0
+            or any(tree.get(k) != v for k, v in process.items())):
+        raise ValueError("native identity process completion is invalid")
+    output = root / record["output"]
+    required = {str(path), str(output), str(process_path),
+                str(process_path.with_suffix(".gate.json")),
+                str(process_path.with_suffix(".seal.json")), str(request_path)}
+    if set(entry["payloads"]) != required:
+        raise ValueError("native identity payload membership changed")
+    if any(digest(Path(p)) != value for p, value in entry["payloads"].items()):
+        raise ValueError("native identity payload changed")
+    if int(process_path.with_suffix(".gate.json").read_text()) != process["gated_pid"]:
+        raise ValueError("native identity gated process changed")
+    if json.loads(process_path.with_suffix(".seal.json").read_text()) != {
+            "receipt_sha256": digest(process_path), "identity_request": correlation}:
+        raise ValueError("native identity terminal process seal changed")
+    if (digest(output) != record["output_sha256"]
+            or snapshot(root, list(record["identity"]["inputs"])) != record["identity"]["inputs"]
+            or tool_snapshot(list(record["identity"]["tools"])) != record["identity"]["tools"]
+            or digest(Path(launch["executable"])) != record["identity"]["executable_sha256"]
+            or digest(root / "scripts/process_tree.py") != record["identity"]["supervisor_sha256"]):
+        raise ValueError("native identity input/tool evidence changed")
+    response = identity_json(output.read_text())
+    if (not isinstance(response, dict)
+            or set(response) != {"protocol", "collection_id", "phase", "request_sha256", "runtime", "proofs"}
+            or any(response[k] != request[k] for k in ("protocol", "collection_id", "phase"))
+            or response["request_sha256"] != native["request_sha256"]
+            or response["proofs"] != expected
+            or not isinstance(response["runtime"], dict)
+            or set(response["runtime"]) != {"python", "base_python"}):
+        raise ValueError("native identity result does not match original proof maps")
+    for role, runtime in response["runtime"].items():
+        binding = native_runtime_binding(expected, launch[role])
+        if (not isinstance(runtime, dict) or set(runtime) != {"path", "resolved", "sha256"}
+                or runtime["path"] != launch[role]
+                or runtime["resolved"] != binding["resolved"] or runtime["sha256"] != binding["sha256"]
+                or digest(mapped_windows_path(runtime["path"])) != runtime["sha256"]
+                or digest(mapped_windows_path(runtime["resolved"])) != runtime["sha256"]):
+            raise ValueError("native identity interpreter binding changed")
+    return response
+
+
+def check_native_identity_evidence(root, entries, expected):
+    if not isinstance(entries, list) or [e.get("phase") for e in entries] != ["entry", "terminal"]:
+        raise ValueError("native identity entry/terminal evidence is incomplete")
+    first, last = [native_identity_result(root, entry, expected) for entry in entries]
+    if (first["collection_id"] != last["collection_id"] or first["proofs"] != last["proofs"]
+            or first["runtime"] != last["runtime"]):
+        raise ValueError("native identity terminal target/tool facts changed")
+
+
+def run_native_identity_phase(root, native, phase):
+    campaign = native["campaign"]
+    request = {"protocol": "windows-file-identities-v1", "collection_id": native["collection_id"],
+               "phase": phase, "proofs": {p: {g: list(v) for g, v in groups.items()}
+                                         for p, groups in native["expected"].items()}}
+    request_path = campaign.directory / ("windows-" + phase + "-request.json")
+    with request_path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(request) + "\n")
+    launch = prepare_windows_identity_launch(root, native["python"], request_path)
+    base = native_runtime_binding(native["expected"], launch["base_python"])
+    launch = prepare_windows_identity_launch(root, native["python"], request_path, base_python=base["resolved"])
+    inputs = [request_path.relative_to(root).as_posix(), "scripts/execution.py",
+              "scripts/process_tree.py", "scripts/build_dependencies.py", *native["receipts"]]
+    path = campaign.run("windows-" + phase, launch["command"], inputs=inputs,
+        tools=launch["tools"], windows_python=native["python"], identity_request=request_path,
+        windows_base_python=base["resolved"], expected_inputs=native["receipts"])
+    raw = json.loads(path.read_text())
+    process = Path(raw["process_tree"]["receipt"])
+    payloads = [path, root / raw["output"], process, process.with_suffix(".gate.json"),
+                process.with_suffix(".seal.json"), request_path]
+    entry = {"phase": phase, "preparations": sorted(native["expected"]), "receipt": str(path),
+             "sha256": digest(path), "payloads": {str(p): digest(p) for p in payloads}}
+    response = native_identity_result(root, entry, native["expected"])
+    native["stages"].append(entry)
+    return response["proofs"]
+
+
+def prepare_native_collection(root, records, windows_python, resolve):
+    expected, receipts, interpreters = {}, {}, []
+    for record in records:
+        if "product" not in record["selection"]:
+            continue
+        stage = record["stages"]["prepare"]
+        path = resolve(stage["receipt"])
+        if digest(path) != stage["sha256"]:
+            raise ValueError("checkpoint preparation receipt changed")
+        proof = json.loads(path.read_text()).get("scoped_preparation")
+        if not proof or not PureWindowsPath(proof["source"]).is_absolute():
+            continue
+        if os.name != "posix":
+            continue
+        if not windows_python:
+            raise ValueError("Windows preparation collection requires explicit --windows-python")
+        selected = str(PureWindowsPath(windows_python))
+        qualified = record["stages"]["quality"]["identity"]
+        declared = qualified["tools"]
+        if selected not in qualified["tool_paths"]:
+            raise ValueError("Windows identity interpreter does not match qualified tool identities")
+        runtime = windows_identity_interpreter(selected)
+        roles = [runtime["python"], runtime["base_python"]]
+        if runtime["config"] is not None:
+            roles.append(windows_path(runtime["config"]))
+        for name in roles:
+            binding = proof["context"]["files"].get(name)
+            if (binding is None or declared.get(binding["resolved"]) != binding["sha256"]
+                    or digest(mapped_windows_path(name)) != binding["sha256"]):
+                raise ValueError("Windows runtime tool/config is not bound by qualified native proof")
+        interpreters.append(selected)
+        expected[stage["sha256"]] = {group: proof["context"][group] for group in ("files", "rust_configuration")}
+        receipts[path.relative_to(root).as_posix()] = stage["sha256"]
+    if not expected:
+        if windows_python is not None:
+            raise ValueError("Windows identity operand has no foreign preparation consumer")
+        return None
+    if len(set(interpreters)) != 1:
+        raise ValueError("Windows preparation interpreters differ")
+    collection_id = uuid.uuid4().hex
+    return {"collection_id": collection_id, "python": interpreters[0], "expected": expected,
+            "receipts": receipts, "stages": [],
+            "campaign": Campaign(root, "linux-debug", "collection-" + collection_id,
+                                 ["windows-entry", "windows-terminal"])}
+
+
+def collect_qualification(root, paths, *, windows_python=None):
     """Full phase/release aggregation is explicit; scoped passes cannot stand in."""
     if not paths:
         raise ValueError("all native/profile checkpoint receipts are required")
@@ -1405,10 +1587,10 @@ def collect_qualification(root, paths):
     with ExitStack() as leases:
         for preset in PRESETS:
             leases.enter_context(OutputLease(root, root / "out/build" / preset))
-        return _collect_owned(root, paths)
+        return _collect_owned(root, paths, windows_python=windows_python)
 
 
-def _collect_owned(root, paths):
+def _collect_owned(root, paths, *, windows_python=None):
     def local(name):
         normalized = str(name).replace("\\", "/")
         if Path(name).is_absolute():
@@ -1425,6 +1607,12 @@ def _collect_owned(root, paths):
     observed_source = source_snapshot(root) if all("source" in record for record in records) else None
     if observed_source is not None and any(record["source"] != observed_source for record in records):
         raise ValueError("checkpoint records do not bind one current candidate")
+    for record in records:
+        state = json.loads((root / "out/build" / record["preset"] / "verification-checkpoint.json").read_text())
+        if any(value.get("status") != "passed" for value in state.values()):
+            raise ValueError("pending checkpoint work prevents aggregate collection")
+    native = prepare_native_collection(root, records, windows_python, local)
+    native_maps = run_native_identity_phase(root, native, "entry") if native else {}
     stages = [stage for record in records for stage in record["stages"].values()]
     source_paths = sorted({p for stage in stages for p in stage["identity"]["inputs"]
                            if not p.startswith("out/build/")})
@@ -1486,7 +1674,8 @@ def _collect_owned(root, paths):
                 raise ValueError("checkpoint declared source/data inputs changed")
             group = name if name in GROUPS | {"prepare"} else "product"
             if name == "prepare":
-                preparation_identity(root / "out/build" / record["preset"], result, resolve=local)
+                preparation_identity(root / "out/build" / record["preset"], result, resolve=local,
+                                     native_file_identities=native_maps.get(result["sha256"]))
                 preparations[record["preset"]] = json.loads(raw_paths[0].read_text())["scoped_preparation"]["context"]
             expected_members = {path for path in declared if not path.startswith("out/build/")}
             key = record["preset"], group
@@ -1507,7 +1696,8 @@ def _collect_owned(root, paths):
                 raise ValueError("checkpoint toolchain/configuration changed")
 
         if "product" in record["selection"]:
-            identity = preparation_identity(root / "out/build" / record["preset"], record["stages"]["prepare"], resolve=local)
+            identity = preparation_identity(root / "out/build" / record["preset"], record["stages"]["prepare"], resolve=local,
+                                           native_file_identities=native_maps.get(record["stages"]["prepare"]["sha256"]))
             if any(record["stages"][name]["identity"]["dependencies"] != [identity] for name in ("quality", "product")):
                 raise ValueError("checkpoint stages do not bind the current preparation artifacts")
     if observe_tools() != (bindings, tools):
@@ -1542,5 +1732,10 @@ def _collect_owned(root, paths):
         current = source_snapshot(root)
     if any(r["source"] != current for r in records):
         raise ValueError("checkpoint records do not bind one current candidate")
-    return {"mode": "qualification", "status": "passed", "source": current,
-            "receipts": {str(p): digest(Path(p)) for p in paths}, "scope": "explicit complete retained checkpoint; independent review and host acceptance remain separate"}
+    result = {"mode": "qualification", "status": "passed", "source": current,
+              "receipts": {str(p): digest(Path(p)) for p in paths}, "scope": "explicit complete retained checkpoint; independent review and host acceptance remain separate"}
+    if native:
+        run_native_identity_phase(root, native, "terminal")
+        check_native_identity_evidence(root, native["stages"], native["expected"])
+        result["native_identities"] = native["stages"]
+    return result

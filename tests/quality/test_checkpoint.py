@@ -26,6 +26,55 @@ SUITE_STARTED = time.monotonic()
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_native_runtime_binding_rejects_missing_and_same_byte_other_target(self):
+        name = r"C:\Python\python.exe"
+        binding = {"resolved": name, "sha256": "a" * 64}
+        groups = {"first": {"files": {name: binding}}, "second": {"files": {name: dict(binding)}}}
+        self.assertEqual(qualification.native_runtime_binding(groups, name), binding)
+        del groups["second"]["files"][name]
+        with self.assertRaisesRegex(ValueError, "not bound"):
+            qualification.native_runtime_binding(groups, name)
+        groups["second"]["files"][name] = {**binding, "resolved": r"C:\Other\python.exe"}
+        with self.assertRaisesRegex(ValueError, "not bound"):
+            qualification.native_runtime_binding(groups, name)
+
+    @unittest.skipUnless(os.name == "posix", "foreign interpreter admission belongs to Linux collection")
+    def test_foreign_collection_rejects_unqualified_runtime_before_campaign(self):
+        selected = r"C:\Qualified\python.exe"
+        path = self.root / "native-preparation.json"
+        write_json(path, {"scoped_preparation": {"source": r"C:\source", "context": {
+            "files": {}, "rust_configuration": {}}}})
+        record = {"selection": ["product"], "stages": {
+            "prepare": {"receipt": str(path), "sha256": digest(path)},
+            "quality": {"identity": {"tools": {selected: digest(self.source)}, "tool_paths": [selected]}}}}
+        with patch.object(qualification, "Campaign", side_effect=AssertionError("unqualified native work")):
+            with self.assertRaisesRegex(ValueError, "explicit --windows-python"):
+                qualification.prepare_native_collection(self.root, [record], None, Path)
+            with patch.object(qualification, "mapped_windows_path", return_value=self.source), \
+                    patch.object(qualification, "windows_identity_interpreter", return_value={
+                        "python": selected, "base_python": r"C:\Base\python.exe", "config": None}):
+                with self.assertRaisesRegex(ValueError, "not bound by qualified native proof"):
+                    qualification.prepare_native_collection(self.root, [record], selected, Path)
+
+    @unittest.skipUnless(os.name == "posix", "foreign interpreter admission belongs to Linux collection")
+    def test_foreign_collection_preserves_qualified_interpreter_alias_binding(self):
+        selected, base = r"C:\Alias\python.exe", r"C:\BaseAlias\python.exe"
+        bindings = {selected: {"resolved": r"C:\Real\python.exe", "sha256": digest(self.source)},
+                    base: {"resolved": r"C:\RealBase\python.exe", "sha256": digest(self.source)}}
+        path = self.root / "native-preparation.json"
+        write_json(path, {"scoped_preparation": {"source": r"C:\source", "context": {
+            "files": bindings, "rust_configuration": {}}}})
+        record = {"selection": ["product"], "stages": {
+            "prepare": {"receipt": str(path), "sha256": digest(path)}, "quality": {"identity": {
+                "tools": {b["resolved"]: b["sha256"] for b in bindings.values()},
+                "tool_paths": [selected, base]}}}}
+        with patch.object(qualification, "Campaign"), \
+                patch.object(qualification, "mapped_windows_path", return_value=self.source), \
+                patch.object(qualification, "windows_identity_interpreter", return_value={
+                    "python": selected, "base_python": base, "config": None}):
+            native = qualification.prepare_native_collection(self.root, [record], selected, Path)
+        self.assertEqual(native["python"], selected)
+        self.assertEqual(native["expected"][digest(path)]["files"], bindings)
     def run(self, result=None):
         started = time.monotonic()
         print(f"Checkpoint begin {self.id()} suite_seconds={started - SUITE_STARTED:.3f}", file=sys.stderr, flush=True)
@@ -287,6 +336,10 @@ class CheckpointTests(unittest.TestCase):
         paths = qualification.stage_receipts(stage)
         raw = [json.loads(p.read_text()) for p in paths]
         self.assertEqual([r["returncode"] for r in raw], [8, 0, 0])
+        for receipt, chunk in zip(paths, stage["ctest_chunks"], strict=True):
+            log = receipt.with_name("LastTest.log")
+            self.assertEqual(chunk["last_test_log_sha256"], digest(log))
+            self.assertEqual(stage["payloads"][str(log)], digest(log))
         self.assertEqual(raw[1]["identity"]["command"][3:5], ["-R", "^(host)$"])
         self.assertEqual(record["scope_status"], "passed")
         args.campaign = "reuse-composed"
@@ -302,12 +355,55 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             qualification.qualify(self.root, args)
         state = json.loads(self.state_path.read_text())
-        report = Path(state["boundary"]["ctest_chunks"][0]["report"])
-        report.write_bytes(report.read_bytes() + b" ")
-        args.campaign = "tampered-partial"
+        chunk = state["boundary"]["ctest_chunks"][0]
+        report = Path(chunk["report"])
+        log = Path(chunk["receipt"]).with_name("LastTest.log")
         args.repeat_reason = "retry GPU"
-        with patch.object(Campaign, "run", side_effect=AssertionError("tampered partial result executed")):
-            with self.assertRaisesRegex(ValueError, "partial result payload changed"):
+        for name, path in (("report", report), ("log", log)):
+            with self.subTest(payload=path.name):
+                original = path.read_bytes()
+                path.write_bytes(original + b" ")
+                args.campaign = "tampered-partial-" + name
+                with patch.object(Campaign, "run", side_effect=AssertionError("tampered partial result executed")):
+                    with self.assertRaisesRegex(ValueError, "partial result payload changed"):
+                        qualification.qualify(self.root, args)
+                path.write_bytes(original)
+
+    def test_missing_partition_log_stops_before_gpu(self):
+        args = self.mixed_project()
+        actual = Campaign.run
+        def missing_log(campaign, stage, command, **kwargs):
+            path = actual(campaign, stage, command, **kwargs)
+            (self.build / "Testing/Temporary/LastTest.log").unlink()
+            return path
+        with patch.object(Campaign, "run", autospec=True, side_effect=missing_log):
+            with self.assertRaises(FileNotFoundError):
+                qualification.qualify(self.root, args)
+        self.assertEqual((self.root / "out/order.txt").read_text().splitlines(), ["host"])
+        self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "failed")
+
+    def test_partition_logs_survive_overwrite_and_are_checked_on_reuse(self):
+        args = self.mixed_project()
+        record = json.loads(qualification.qualify(self.root, args).read_text())
+        stage = record["stages"]["boundary"]
+        logs = [path.with_name("LastTest.log") for path in qualification.stage_receipts(stage)]
+        self.assertEqual(len(logs), 2)
+        for log in logs:
+            self.assertTrue(log.is_file(), str(log))
+            self.assertEqual(stage["payloads"][str(log)], digest(log))
+        self.assertIn('"host"', logs[0].read_text())
+        self.assertNotIn('"gpu"', logs[0].read_text())
+        self.assertIn('"gpu"', logs[1].read_text())
+        self.assertNotEqual(logs[0].read_bytes(), logs[1].read_bytes())
+        self.assertEqual(logs[1].read_bytes(), (self.build / "Testing/Temporary/LastTest.log").read_bytes())
+        args.campaign = "reused-partition-logs"
+        with patch.object(Campaign, "run", side_effect=AssertionError("completed partition reran")):
+            reused = json.loads(qualification.qualify(self.root, args).read_text())
+        self.assertEqual(reused["stages"]["boundary"]["payloads"], stage["payloads"])
+        logs[0].write_bytes(logs[0].read_bytes() + b"changed")
+        args.campaign = "changed-partition-log"
+        with patch.object(Campaign, "run", side_effect=AssertionError("changed log launched a command")):
+            with self.assertRaisesRegex(ValueError, "result payload changed"):
                 qualification.qualify(self.root, args)
 
     def test_nonzero_ctest_without_reported_case_failure_cannot_be_composed(self):
@@ -2613,7 +2709,36 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             stable = checkpoint(self.preset, "stable", selection)
             paths = [stable if p == initial else p for p in paths]
             initial = stable
-            initial_collection = record_phase("collect.initial", qualification.collect_qualification, self.root, paths)
+            # Assembly uses simulated foreign facts; real WindowsJob/identity
+            # controls live in test_execution.WindowsIdentityInteropTests.
+            foreign = {r["stages"]["prepare"]["sha256"]: {"files": {}, "rust_configuration": {}}
+                       for p in paths for r in [json.loads(p.read_text())]
+                       if r["preset"].startswith("windows-") and "product" in r["selection"]}
+            native = {"expected": foreign, "stages": []}
+            phases, native_consumers = [], []
+            original_identity = qualification.preparation_identity
+            def assembled_identity(build, stage, **kwargs):
+                facts = kwargs.pop("native_file_identities", None)
+                if facts is not None:
+                    self.assertEqual(facts, foreign[stage["sha256"]])
+                    native_consumers.append(stage["sha256"])
+                return original_identity(build, stage, **kwargs)
+            def native_phase(root, state, phase):
+                if phase == "entry":
+                    self.assertFalse(native_consumers)
+                else:
+                    self.assertEqual(len(native_consumers), 4)
+                phases.append(phase)
+                state["stages"].append({"phase": phase})
+                return foreign
+            with patch.object(qualification, "prepare_native_collection", return_value=native), \
+                    patch.object(qualification, "run_native_identity_phase", side_effect=native_phase), \
+                    patch.object(qualification, "preparation_identity", side_effect=assembled_identity), \
+                    patch.object(qualification, "check_native_identity_evidence") as native_seal:
+                initial_collection = record_phase("collect.initial", qualification.collect_qualification, self.root, paths)
+                self.assertEqual(phases, ["entry", "terminal"])
+                native_seal.assert_called_once_with(self.root, native["stages"], foreign)
+                self.assertEqual(initial_collection["native_identities"], native["stages"])
             self.assertEqual(initial_collection["status"], "passed")
             first = json.loads(initial.read_text())
             proof = json.loads(Path(first["stages"]["prepare"]["receipt"]).read_text())["scoped_preparation"]

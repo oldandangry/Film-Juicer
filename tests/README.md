@@ -553,6 +553,17 @@ before execution. Successful stages reuse original records across campaign names
 failed or incomplete gates remain pending. Legacy sealed-build adapters are
 unsupported. `collect-qualification` accepts only the complete explicit native,
 profile, runtime, corpus and production gate set described in CONTRIBUTING.md.
+
+Linux/WSL collection of Windows preparation receipts also requires
+`--windows-python <qualified-Windows-python.exe>`; see the
+[collection contract](../CONTRIBUTING.md#required-checks). The collector retains
+supervised entry/terminal Windows identity evidence under
+`out/validation/linux-debug/collection-<id>/`. Preserve that complete campaign on
+failure. To exercise the actual WSL/Windows identity controls, set
+`JUICER_WINDOWS_PYTHON` to the qualified native Windows venv interpreter and
+`JUICER_WINDOWS_IDENTITY_PROOF` to a retained Windows preparation receipt containing
+compiler dependency aliases. The proof operand supplies alias fixture provenance.
+
 Product admission never builds implicitly. First use `verify.py prepare --preset
 <preset> --targets all --testing ON`, or explicitly authorize preparation with the
 qualification command's `--prepare` flag. A mismatch preserves existing outputs.
