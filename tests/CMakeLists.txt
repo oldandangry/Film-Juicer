@@ -627,10 +627,42 @@ set_target_properties(JuicerPreparedStateTests PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_dependencies(JuicerPreparedStateTests juicer_test_resources)
-add_test(NAME Ffi.Host.PreparedState COMMAND JuicerPreparedStateTests "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/s4-e-integration-replacement" --gtest_filter=PreparedStateAbi.*)
-add_test(NAME Prepare.Host.StateProducts COMMAND JuicerPreparedStateTests "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/s4-e-integration-replacement" --gtest_filter=PreparedStateProducts.*)
-set_tests_properties(Ffi.Host.PreparedState Prepare.Host.StateProducts PROPERTIES LABELS "host" TIMEOUT 0)
-set_tests_properties(Ffi.Host.PreparedState Prepare.Host.StateProducts PROPERTIES
+set(JUICER_PREPARED_STATE_TEST_COMMAND
+    JuicerPreparedStateTests
+    "${JUICER_TEST_RESOURCE_DIR}"
+    "${JUICER_TEST_ARTIFACT_ROOT}/s4-e-integration-replacement")
+add_test(NAME Ffi.Host.PreparedState COMMAND ${JUICER_PREPARED_STATE_TEST_COMMAND}
+    --gtest_filter=PreparedStateAbi.* --expect-projection-oracle=unused)
+add_test(NAME Prepare.Host.StateProducts COMMAND ${JUICER_PREPARED_STATE_TEST_COMMAND}
+    --gtest_filter=PreparedStateProducts.* --expect-projection-oracle=loaded)
+add_test(NAME Ffi.Host.PreparedStateProjectionCase COMMAND ${JUICER_PREPARED_STATE_TEST_COMMAND}
+    --gtest_filter=PreparedStateProducts.NegativeDirectHanatos --expect-projection-oracle=loaded)
+add_test(NAME Ffi.Host.PreparedStateOracleReader COMMAND ${JUICER_PREPARED_STATE_TEST_COMMAND}
+    --gtest_filter=PreparedStateProducts.OracleReaderRejectsFieldShapeWidthTagAndBackingMutations
+    --expect-projection-oracle=loaded)
+add_test(NAME Ffi.Host.PreparedStateProjectionWildcard COMMAND ${JUICER_PREPARED_STATE_TEST_COMMAND}
+    --gtest_filter=PreparedStateProducts.NegativeDirect* --expect-projection-oracle=loaded)
+add_test(NAME Ffi.Host.PreparedStateProjectionColonList COMMAND ${JUICER_PREPARED_STATE_TEST_COMMAND}
+    --gtest_filter=PreparedStateProducts.NegativeDirectHanatos:PreparedStateProducts.NegativePrintMallett
+    --expect-projection-oracle=loaded)
+add_test(NAME Ffi.Host.PreparedStateAbiNoProjection COMMAND ${JUICER_PREPARED_STATE_TEST_COMMAND}
+    --gtest_filter=*-PreparedStateProducts.* --expect-projection-oracle=unused)
+add_test(NAME Ffi.Host.PreparedStateProjectionWildcardExclusion COMMAND ${JUICER_PREPARED_STATE_TEST_COMMAND}
+    --gtest_filter=PreparedStateProducts.*-PreparedStateProducts.EarlyAndLatePanicsReturnNoOwner
+    --expect-projection-oracle=loaded)
+add_test(NAME Ffi.Host.PreparedStateProjectionListTests COMMAND ${JUICER_PREPARED_STATE_TEST_COMMAND}
+    --gtest_filter=PreparedStateProducts.NegativeDirect* --gtest_list_tests
+    --expect-projection-oracle=unused)
+set_tests_properties(Ffi.Host.PreparedState Prepare.Host.StateProducts
+    Ffi.Host.PreparedStateProjectionCase Ffi.Host.PreparedStateOracleReader
+    Ffi.Host.PreparedStateProjectionWildcard Ffi.Host.PreparedStateProjectionColonList
+    Ffi.Host.PreparedStateAbiNoProjection Ffi.Host.PreparedStateProjectionWildcardExclusion
+    Ffi.Host.PreparedStateProjectionListTests PROPERTIES LABELS "host" TIMEOUT 0)
+set_tests_properties(Ffi.Host.PreparedState Prepare.Host.StateProducts
+    Ffi.Host.PreparedStateProjectionCase Ffi.Host.PreparedStateOracleReader
+    Ffi.Host.PreparedStateProjectionWildcard Ffi.Host.PreparedStateProjectionColonList
+    Ffi.Host.PreparedStateAbiNoProjection Ffi.Host.PreparedStateProjectionWildcardExclusion
+    Ffi.Host.PreparedStateProjectionListTests PROPERTIES
     ENVIRONMENT "JUICER_TEST_PRESET_NAME=${JUICER_TEST_PRESET_NAME}")
 include(ffi/prepared_sanitizers.cmake)
 add_test(NAME Ffi.Host.SanitizerRunner
@@ -1377,7 +1409,12 @@ add_test(NAME Ffi.Host.BuildArtifacts
 set_tests_properties(Ffi.Host.BuildArtifacts PROPERTIES LABELS "host" TIMEOUT 0)
 
 # Relevance and runtime prerequisites are independent. Every group has one owner.
-set(juicer_boundary_tests Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
+set(juicer_boundary_tests Ffi.Host.BuildArtifacts Ffi.Host.PreparedState
+    Ffi.Host.PreparedStateProjectionCase Ffi.Host.PreparedStateOracleReader
+    Ffi.Host.PreparedStateProjectionWildcard Ffi.Host.PreparedStateProjectionColonList
+    Ffi.Host.PreparedStateAbiNoProjection Ffi.Host.PreparedStateProjectionWildcardExclusion
+    Ffi.Host.PreparedStateProjectionListTests
+    Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat

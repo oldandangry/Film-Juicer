@@ -16,7 +16,8 @@ import tomllib
 import uuid
 
 from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, ctest_command, linker_tools, preparation_inventory, preparation_paths, prepare_build, registration_files
-from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json, prepare_windows_identity_launch, mapped_windows_path, windows_runtime_paths, windows_identity_interpreter, windows_path
+from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json, prepare_windows_identity_launch, mapped_windows_path, windows_runtime_paths, windows_identity_interpreter, windows_path, read_bytes, read_text
+from execution import COMMAND_TRANSCRIPT_PROTOCOL, FileObservations, command_result_payloads, read_json, read_transcript
 from build_dependencies import identity_json, read_identity_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/ffi"))
@@ -61,7 +62,7 @@ def require_checkpoint(record):
 
 def validate_ctest_report(report, names):
     import xml.etree.ElementTree as ET
-    cases = list(ET.parse(report).getroot().iter("testcase"))
+    cases = list(ET.fromstring(read_bytes(report)).iter("testcase"))
     if sorted(c.get("name") for c in cases) != sorted(names) or any(
             c.get("status") != "run" or any(c.find(n) is not None for n in ("failure", "error", "skipped"))
             for c in cases):
@@ -154,13 +155,13 @@ def stage_receipts(result, resolve=Path):
 def ctest_chunk(path, parts, commands, resolve=Path):
     """Read an exact invocation; a failed invocation can still contain passed cases."""
     import xml.etree.ElementTree as ET
-    raw = json.loads(resolve(str(path)).read_text())
+    raw = read_json(str(path), resolve=resolve)
     command = raw["identity"]["command"]
     role = "host" if "-LE" in command else "gpu"
     if role not in parts:
         raise ValueError("checkpoint runtime partition is unexpected")
     report = resolve(command[command.index("--output-junit") + 1])
-    cases = list(ET.parse(report).getroot().iter("testcase"))
+    cases = list(ET.fromstring(read_bytes(report)).iter("testcase"))
     members = sorted(c.get("name") for c in cases)
     if not members or len(members) != len(set(members)) or set(members) - set(parts[role]):
         raise ValueError("checkpoint CTest partition membership is incomplete or duplicated")
@@ -278,15 +279,39 @@ def run_ctest_parts(campaign, group, commands, roles, *, build, inputs, tools, e
 
 def production_manifest_identity(receipt, *, root, resolve=Path):
     """Read the identity emitted by the successful production process."""
-    record = json.loads(resolve(str(receipt)).read_text())
+    record = read_json(str(receipt), resolve=resolve)
     command = record["identity"]["command"]
     if command.count("--artifacts") != 1:
         raise ValueError("production command does not declare retained execution evidence")
     output = resolve(str(root / record["output"]))
-    identities = re.findall(r"^PRODUCTION_MANIFEST_SHA256 ([0-9a-f]{64})$", output.read_text(), re.M)
+    identities = re.findall(r"^PRODUCTION_MANIFEST_SHA256 ([0-9a-f]{64})$", read_text(output), re.M)
     if len(identities) != 1:
         raise ValueError("production manifest lacks its execution-time identity; fresh execution required")
     return resolve(command[command.index("--artifacts") + 1]) / "production.json", identities[0]
+
+
+def production_transcript(row, role, directory, *, protocol=None, resolve=Path):
+    """Validate one complete production command stream in its declared encoding."""
+    path = directory / (row["name"] + "." + role)
+    if protocol is None:
+        try:
+            payload = read_bytes(resolve(str(path)))
+        except OSError as error:
+            raise ValueError("production execution payload missing or changed: " + str(path)) from error
+        if hashlib.sha256(payload).hexdigest() != row[role + "_sha256"]:
+            raise ValueError("production execution payload missing or changed: " + str(path))
+        return payload, str(path), row[role + "_sha256"]
+    if protocol != COMMAND_TRANSCRIPT_PROTOCOL:
+        raise ValueError("unsupported production transcript protocol")
+    streams = row.get("streams")
+    if not isinstance(streams, dict) or set(streams) != {"stdout", "stderr"}:
+        raise ValueError("production command stream membership changed")
+    reference = streams[role]
+    if (not isinstance(reference, dict) or resolve(reference.get("path", "")) != resolve(str(path))
+            or reference.get("decoded_sha256") != row[role + "_sha256"]):
+        raise ValueError("production command stream path or decoded identity changed")
+    payload = read_transcript(reference, resolve=resolve)
+    return payload, str(path), reference["encoded_sha256"]
 
 
 def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, resolve=Path, retained=None):
@@ -294,7 +319,10 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     manifest = resolve(str(manifest))
     if not manifest.is_file() or digest(manifest) != expected_manifest_sha256:
         raise ValueError("production manifest execution identity changed")
-    document = json.loads(manifest.read_text())
+    document = json.loads(read_text(manifest))
+    transcript_protocol = document.get("transcript_protocol")
+    if transcript_protocol not in (None, COMMAND_TRANSCRIPT_PROTOCOL):
+        raise ValueError("unsupported production transcript protocol")
     for field in (
         "scanner_lut_results", "scanner_lut_fixture", "gaussian_results", "gaussian_fixture",
         "optics_results", "optics_fixture", "print_illuminant_results",
@@ -318,6 +346,34 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
             raise ValueError("production execution payload missing or changed: " + key)
         expected[key] = checksum
 
+    command_rows = None
+    decoded_streams = {}
+
+    def commands_for_run():
+        nonlocal command_rows
+        if command_rows is None:
+            reference = document["commands"]
+            if resolve(reference["file"]) != manifest.parent / "commands.json":
+                raise ValueError("production retained command record is not the declared run")
+            admit(reference["file"], reference["sha256"])
+            command_rows = identity_json(read_text(resolve(reference["file"])))
+            names = [row["name"] for row in command_rows]
+            if len(names) != len(set(names)):
+                raise ValueError("production retained command membership is incomplete or duplicated")
+        return command_rows
+
+    def command_stream(name, role):
+        key = name, role
+        if key not in decoded_streams:
+            rows = [row for row in commands_for_run() if row["name"] == name]
+            if len(rows) != 1:
+                raise ValueError("production retained command membership is incomplete or duplicated")
+            payload, path, checksum = production_transcript(
+                rows[0], role, manifest.parent, protocol=transcript_protocol, resolve=resolve)
+            admit(path, checksum)
+            decoded_streams[key] = payload
+        return decoded_streams[key]
+
     build = root / "out/build" / document["preset"]
     declared = {str(resolve(str(root / name))): checksum for name, checksum in inputs.items()
                 if name.startswith("out/build/")}
@@ -333,7 +389,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
             raise ValueError("production retained build-input execution identities disagree")
         admit(row["file"], checksum)
     cache = manifest.parent / "build/CMakeCache.txt"
-    if document.get("build_testing") != "OFF" or not re.search(r"^BUILD_TESTING:BOOL=OFF$", cache.read_text(), re.M):
+    if document.get("build_testing") != "OFF" or not re.search(r"^BUILD_TESTING:BOOL=OFF$", read_text(cache), re.M):
         raise ValueError("production retained configuration is not testing-OFF")
 
     prepared_render = document.get("prepared_render")
@@ -378,13 +434,13 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         if (checksum is None or digest(path) != checksum
                 or reference_consumed.get(str(path.resolve())) != checksum):
             raise ValueError("production prepared-render consumed input identity changed")
-    fixture_spec = json.loads(fixture_manifest.read_text())
+    fixture_spec = json.loads(read_text(fixture_manifest))
     if (fixture_spec.get("files", {}).get(fixture.name) != prepared_render["fixture_sha256"]
             or digest(fixture) != prepared_render["fixture_sha256"]):
         raise ValueError("production prepared-render fixture identity changed")
-    overlay_spec = json.loads(overlay.read_text(encoding="utf-8"))
+    overlay_spec = json.loads(read_text(overlay, encoding="utf-8"))
     fixture_values = {}
-    tokens = fixture.read_text(encoding="utf-8").split()
+    tokens = read_text(fixture, encoding="utf-8").split()
     position = 0
     while position < len(tokens):
         name = tokens[position]
@@ -432,6 +488,11 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     stderr = manifest.parent / "prepared-render.stderr"
     for path, checksum in ((stdout, prepared_render["stdout_sha256"]),
                            (stderr, prepared_render["stderr_sha256"])):
+        if transcript_protocol:
+            payload = command_stream("prepared-render", path.suffix.removeprefix("."))
+            if hashlib.sha256(payload).hexdigest() != checksum:
+                raise ValueError("production prepared-render retained output missing or changed")
+            continue
         if not path.is_file() or digest(path) != checksum:
             raise ValueError("production prepared-render retained output missing or changed")
         admit(str(path), checksum)
@@ -449,9 +510,10 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     expected_ids = ("negative-direct/cold", "negative-direct/warm",
                     "negative-print/cold", "negative-print/warm")
     expected_rows = prepared_render["rows"]
+    prepared_stdout = command_stream("prepared-render", "stdout")
     try:
-        raw_document = json.loads(stdout.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as error:
+        raw_document = json.loads(prepared_stdout.decode("utf-8"))
+    except (UnicodeError, ValueError) as error:
         raise ValueError("production prepared-render stdout is not its declared JSON result") from error
     raw_rows = raw_document.get("rows") if isinstance(raw_document, dict) and set(raw_document) == {"rows"} else None
     if (not isinstance(expected_rows, list) or len(expected_rows) != 4
@@ -526,7 +588,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     if resolve(command_record["file"]) != manifest.parent / "commands.json":
         raise ValueError("production retained command record is not the declared run")
     admit(command_record["file"], command_record["sha256"])
-    commands = json.loads(resolve(command_record["file"]).read_text())
+    commands = commands_for_run()
     names = [row["name"] for row in commands]
     if len(names) != len(set(names)) or names.count("prepared-render") != 1:
         raise ValueError("production retained command membership is incomplete or duplicated")
@@ -558,7 +620,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
             raise ValueError("production grain C11 assertion input identity changed")
     reference = document.get("reference_fixture", {})
     reference_manifest = root / "tests/film/reference-fixtures/manifest.json"
-    spec = json.loads(reference_manifest.read_text())
+    spec = json.loads(read_text(reference_manifest))
     reference_payload = reference_manifest.parent / spec["presets"][document["preset"]]
     if (reference.get("logical_preset") != document["preset"]
             or resolve(reference.get("manifest", "")) != reference_manifest
@@ -571,7 +633,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     if digest(reference_payload) != spec["payload_sha256"][reference_payload.name]:
         raise ValueError("production film-reference frozen payload changed")
     expected_reference = []
-    for row in json.loads(reference_payload.read_text())["products"]:
+    for row in json.loads(read_text(reference_payload))["products"]:
         if "input" not in row:
             continue
         for case in range(8 if row["method"] == 1 else 7):
@@ -587,7 +649,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     if len(expected_reference) != 15 or document.get("reference_results") != expected_reference:
         raise ValueError("production film-reference value/failure results are incomplete")
     descriptor_manifest = root / "tests/scanner/descriptor-fixtures/manifest.json"
-    descriptor_spec = json.loads(descriptor_manifest.read_bytes())
+    descriptor_spec = json.loads(read_bytes(descriptor_manifest))
     logical = descriptor_spec["presets"][document["preset"]]["native"]
     descriptor_payload = descriptor_manifest.parent / descriptor_spec["payloads"][logical]
     descriptor_context = descriptor_manifest.parent / descriptor_spec["contexts"][logical]
@@ -606,7 +668,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     if len(expected_descriptors) != 41 or document.get("scanner_descriptor_results") != expected_descriptors:
         raise ValueError("production scanner descriptor value/failure results are incomplete")
     post_manifest = root / "tests/scanner/post-effects-fixtures/manifest.json"
-    post_spec = json.loads(post_manifest.read_bytes())
+    post_spec = json.loads(read_bytes(post_manifest))
     logical = post_spec["presets"][document["preset"]]["native"]
     post_payload = post_manifest.parent / post_spec["payloads"][logical]
     post_context = post_manifest.parent / post_spec["contexts"][logical]
@@ -625,7 +687,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     if len(expected_post) != 410 or document.get("scanner_post_results") != expected_post:
         raise ValueError("production scanner post-effects value/failure results are incomplete")
     frame_manifest = root / "tests/frame/geometry-fixtures/manifest.json"
-    frame_spec = json.loads(frame_manifest.read_bytes())
+    frame_spec = json.loads(read_bytes(frame_manifest))
     frame_logical = frame_spec["presets"][document["preset"]]["native"]
     frame_payload = frame_manifest.parent / frame_spec["payloads"][frame_logical]
     frame_context = frame_manifest.parent / frame_spec["contexts"][frame_logical]
@@ -645,7 +707,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         raise ValueError("production frame geometry full fields/words/failure results are incomplete")
 
     halation_manifest = root / "tests/scatter_halation/frame-fixtures/manifest.json"
-    halation_spec = json.loads(halation_manifest.read_bytes())
+    halation_spec = json.loads(read_bytes(halation_manifest))
     halation_logical = halation_spec["presets"][document["preset"]]["native"]
     halation_paths = {
         "manifest": halation_manifest,
@@ -670,7 +732,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         raise ValueError("production halation frame full fields/words/failure results are incomplete")
 
     diffusion_manifest = root / "tests/diffusion/frame-fixtures/manifest.json"
-    diffusion_spec = json.loads(diffusion_manifest.read_bytes())
+    diffusion_spec = json.loads(read_bytes(diffusion_manifest))
     diffusion_logical = diffusion_spec["presets"][document["preset"]]["native"]
     diffusion_paths = {
         "manifest": diffusion_manifest,
@@ -698,7 +760,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         raise ValueError("production diffusion frame full fields/words/failure results are incomplete")
 
     dir_manifest = root / "tests/dir/frame-fixtures/manifest.json"
-    dir_spec = json.loads(dir_manifest.read_bytes())
+    dir_spec = json.loads(read_bytes(dir_manifest))
     dir_logical = dir_spec["presets"][document["preset"]]["native"]
     dir_paths = {
         "manifest": dir_manifest,
@@ -722,7 +784,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         raise ValueError("production DIR frame full fields/words/failure trace results are incomplete")
 
     effects_manifest = root / "tests/film/effects-frame-fixtures/manifest.json"
-    effects_spec = json.loads(effects_manifest.read_bytes())
+    effects_spec = json.loads(read_bytes(effects_manifest))
     effects_logical = effects_spec["presets"][document["preset"]]["native"]
     effects_paths = {
         "manifest": effects_manifest,
@@ -749,7 +811,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         raise ValueError("production effects frame full values/failure/diagnostic results are incomplete")
 
     grain_manifest = root / "tests/grain/frame-fixtures/manifest.json"
-    grain_spec = json.loads(grain_manifest.read_bytes())
+    grain_spec = json.loads(read_bytes(grain_manifest))
     grain_paths = {
         "manifest": grain_manifest,
         "payload": grain_manifest.parent / grain_spec["presets"][document["preset"]]["native"],
@@ -774,7 +836,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         raise ValueError("production grain frame full values/metadata/failure/diagnostic results are incomplete")
 
     boundary_manifest = root / "tests/dir/boundary-fixtures/manifest.json"
-    boundary_spec = json.loads(boundary_manifest.read_bytes())
+    boundary_spec = json.loads(read_bytes(boundary_manifest))
     boundary_logical = boundary_spec["presets"][document["preset"]]["native"]
     boundary_paths = {
         "manifest": boundary_manifest,
@@ -811,7 +873,9 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
             raise ValueError("production retained command did not succeed")
         for extension in ("stdout", "stderr"):
             name = str(manifest.parent / (row["name"] + "." + extension))
-            outputs[name] = row[extension + "_sha256"]
+            command_stream(row["name"], extension)
+            outputs[name] = (row["streams"][extension]["encoded_sha256"] if transcript_protocol
+                             else row[extension + "_sha256"])
         if row["name"] in {name + "-values" for name in expected_names}:
             name = row["name"].removesuffix("-values")
             if resolve(row["command"][0]) != manifest.parent / (name + suffix):
@@ -821,27 +885,27 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         raise ValueError("production retained detailed output membership is incomplete")
     for name, checksum in outputs.items():
         admit(name, checksum)
-    film_stdout = manifest.parent / "film-values.stdout"
+    film_stdout = command_stream("film-values", "stdout").decode("utf-8")
     effects_rows = [json.loads(line.removeprefix("EFFECTS_FRAME_RESULT "))
-                    for line in film_stdout.read_text(encoding="utf-8").splitlines()
+                    for line in film_stdout.splitlines()
                     if line.startswith("EFFECTS_FRAME_RESULT ")]
     if effects_rows != effects_expected:
         raise ValueError("production effects frame executed stdout results disagree")
     boundary_rows = [json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
-                     for line in film_stdout.read_text(encoding="utf-8").splitlines()
+                     for line in film_stdout.splitlines()
                      if line.startswith("DIR_BOUNDARY_RESULT ")]
     if boundary_rows != boundary_expected:
         raise ValueError("production DIR boundary executed stdout does not match frozen full results")
     grain_rows = [json.loads(line.removeprefix("GRAIN_FRAME_RESULT "))
-                  for line in film_stdout.read_text(encoding="utf-8").splitlines() if line.startswith("GRAIN_FRAME_RESULT ")]
+                  for line in film_stdout.splitlines() if line.startswith("GRAIN_FRAME_RESULT ")]
     if grain_rows != grain_expected:
         raise ValueError("production grain frame executed stdout results disagree")
     dir_rows = [json.loads(line.removeprefix("DIR_FRAME_RESULT "))
-                for line in film_stdout.read_text().splitlines() if line.startswith("DIR_FRAME_RESULT ")]
+                for line in film_stdout.splitlines() if line.startswith("DIR_FRAME_RESULT ")]
     if dir_rows != dir_expected:
         raise ValueError("production DIR frame executed stdout results disagree")
     diffusion_rows = [json.loads(line.removeprefix("DIFFUSION_FRAME_RESULT "))
-                      for line in film_stdout.read_text().splitlines() if line.startswith("DIFFUSION_FRAME_RESULT ")]
+                      for line in film_stdout.splitlines() if line.startswith("DIFFUSION_FRAME_RESULT ")]
     if diffusion_rows != diffusion_expected:
         raise ValueError("production diffusion frame executed stdout results disagree")
     if retained is not None and {str(resolve(name)): checksum for name, checksum in retained.items()} != expected:
@@ -1015,7 +1079,7 @@ def has_opaque_configure_commands(paths, *, build=None, configuration=None, reso
     sources = {path for path in paths if path.name == "CMakeLists.txt" or path.suffix == ".cmake"}
     paths, bootstrap = set(sources), {}
     if configuration is not None:
-        cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+        cache = read_text(build / "CMakeCache.txt", encoding="utf-8")
         match = re.search(r"^CMAKE_ROOT:INTERNAL=(.+)$", cache, re.M)
         if match:
             cmake_root = resolve(match[1].strip()).resolve()
@@ -1024,7 +1088,7 @@ def has_opaque_configure_commands(paths, *, build=None, configuration=None, reso
         # be read safely as CMake text also keeps the preparation scope broad.
         paths.update(resolve(name) for name in configuration["regeneration_mtimes"])
     for path in paths:
-        content = path.read_bytes()
+        content = read_bytes(path)
         if path not in sources and hashlib.sha256(content).hexdigest() in bootstrap.get(path, ()):
             continue
         try:
@@ -1049,7 +1113,7 @@ def preparation_inputs(root, build, paths, *, context=None, resolve=Path):
         return paths
     runtime = set()
     for registration in registration_files(build):
-        for line in registration.read_text(encoding="utf-8").splitlines():
+        for line in read_text(registration, encoding="utf-8").splitlines():
             # Generated CTest command operands are explicit runtime owners. Do
             # not infer directory contents, manifest payloads or Python imports.
             if not line.startswith("add_test("):
@@ -1077,15 +1141,15 @@ def preparation_inputs(root, build, paths, *, context=None, resolve=Path):
     # can escape Ninja's dependency graph. Unresolved consumers keep broad scope.
     for path in paths:
         if path.suffix == ".rs":
-            if path.name == "build.rs" or re.search(r"\binclude(?:_str|_bytes)?\s*!", path.read_text(encoding="utf-8")):
+            if path.name == "build.rs" or re.search(r"\binclude(?:_str|_bytes)?\s*!", read_text(path, encoding="utf-8")):
                 return paths
             runtime.discard(path)
         if path.name == "Cargo.toml":
-            if tomllib.loads(path.read_text(encoding="utf-8")).get("package", {}).get("build"):
+            if tomllib.loads(read_text(path, encoding="utf-8")).get("package", {}).get("build"):
                 return paths
         if path.name != "CMakeLists.txt" and path.suffix != ".cmake":
             continue
-        content = path.read_text(encoding="utf-8")
+        content = read_text(path, encoding="utf-8")
         # A source-side configure/tool operand may be absent from Ninja. Only
         # recognize ordinary add_test syntax; anything else stays conservative.
         consumers = re.sub(r'\badd_test\s*\((?:"(?:[^"\\]|\\.)*"|[^()"])*\)', "", content, flags=re.I)
@@ -1104,7 +1168,7 @@ def checkpoint_tools(build, environment, group=None):
             tools.add(runtime["config"])
         if environment.get("JUICER_WINDOWS_IDENTITY_PROOF"):
             tools.add(Path(environment["JUICER_WINDOWS_IDENTITY_PROOF"]))
-    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    cache = read_text(build / "CMakeCache.txt", encoding="utf-8")
     tools.update(linker_tools(build, cache, environment))
     tools.update(Path(value) for value in re.findall(r"^(?:CMAKE_(?:(?:C|CXX|CUDA|CUDA_HOST)_COMPILER|LINKER|AR|RANLIB)|JUICER_CARGO_EXECUTABLE):[^=]+=(.+)$", cache, re.M))
     for name in ("cmake", "ctest", "cargo", "rustc"):
@@ -1147,7 +1211,7 @@ def checkpoint_tools(build, environment, group=None):
     for path in configs:
         if not path.is_file() or path.name == "settings.toml":
             continue
-        config = tomllib.loads(path.read_text())
+        config = tomllib.loads(read_text(path))
         for name in ("rustc", "rustc-wrapper", "rustc-workspace-wrapper", "rustdoc"):
             bind(config.get("build", {}).get(name), path.parent.parent)
         for target in config.get("target", {}).values():
@@ -1179,7 +1243,7 @@ def prepare_checkpoint(campaign, build, state_path, state, environment, *, repea
         baseline, pending = preparation_paths(build, ["all"])
         if pending.exists():
             raise ValueError("pending preparation still owns the build outputs")
-        owner = json.loads(baseline.read_text())
+        owner = read_json(baseline)
         admitted = Path(owner["producer"])
         proof = check_scoped_preparation(campaign, build, admitted, environment)["scoped_preparation"]
         from build_dependencies import file_identities
@@ -1265,7 +1329,7 @@ def preparation_identity(build, stage, *, resolve=Path, native_file_identities=N
     path = resolve(stage["receipt"])
     if digest(path) != stage["sha256"]:
         raise ValueError("checkpoint preparation receipt changed")
-    record = check_preparation_owner(build, path, resolve=resolve)
+    record = check_preparation_owner(build, stage["receipt"], resolve=resolve)
     if record.get("status") != "passed" or record.get("returncode") != 0 or not record.get("process_tree", {}).get("drained"):
         raise ValueError("checkpoint preparation lacks successful process completion")
     proof = record["scoped_preparation"]
@@ -1283,7 +1347,7 @@ def preparation_identity(build, stage, *, resolve=Path, native_file_identities=N
 
 def _qualify_owned(root, build, args):
     from verify import source_snapshot
-    cache = (build / "CMakeCache.txt").read_text()
+    cache = read_text(build / "CMakeCache.txt")
     home = re.search(r"^CMAKE_HOME_DIRECTORY:[^=]+=(.+)$", cache, re.M)
     if not home or Path(home[1]).resolve() != root.resolve():
         raise ValueError("configured checkpoint tree belongs to another source directory")
@@ -1297,7 +1361,7 @@ def _qualify_owned(root, build, args):
                       "required_stages": required, "scope": "explicit preset checkpoint; full phase/release acceptance requires all retained native/profile and production gates"}, indent=2), flush=True)
     campaign = Campaign(root, args.preset, args.campaign or "qualification-" + uuid.uuid4().hex, required)
     state_path = build / "verification-checkpoint.json"
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    state = read_json(state_path) if state_path.exists() else {}
     current = source_snapshot(root)
     record = {"mode": "checkpoint", "status": "running", "scope_status": "running", "reason": args.reason,
               "preset": args.preset, "runtime": args.runtime, "selection": sorted(groups), "required": required,
@@ -1366,7 +1430,7 @@ def _qualify_owned(root, build, args):
                     ctest=True, artifact_directories=directories,
                     dependencies=[prepared_identity] if built and group == "product" else [])
         else:
-            cache = (build / "CMakeCache.txt").read_text()
+            cache = read_text(build / "CMakeCache.txt")
             if not re.search(r"^BUILD_TESTING:BOOL=OFF$", cache, re.M):
                 raise ValueError("production isolation requires a separately prepared testing-OFF Release tree")
             from build_dependencies import NinjaGraph
@@ -1428,7 +1492,7 @@ def native_identity_result(root, entry, expected):
     path = Path(entry["receipt"])
     if digest(path) != entry["sha256"]:
         raise ValueError("native identity command receipt changed")
-    record = json.loads(path.read_text())
+    record = read_json(path)
     native = record["identity"]["windows_identity"]
     request_path = root / native["request"]
     request = read_identity_request(request_path, native["request_sha256"])
@@ -1443,7 +1507,7 @@ def native_identity_result(root, entry, expected):
         raise ValueError("native identity command/request does not bind the collection")
     tree = record["process_tree"]
     process_path = Path(tree["receipt"])
-    process = json.loads(process_path.read_text())
+    process = read_json(process_path)
     correlation = {"collection_id": request["collection_id"], "phase": phase,
                    "request_sha256": native["request_sha256"]}
     if (tree.get("drained") is not True or process.get("drained") is not True
@@ -1462,13 +1526,14 @@ def native_identity_result(root, entry, expected):
     required = {str(path), str(output), str(process_path),
                 str(process_path.with_suffix(".gate.json")),
                 str(process_path.with_suffix(".seal.json")), str(request_path)}
+    required.update(command_result_payloads(path))
     if set(entry["payloads"]) != required:
         raise ValueError("native identity payload membership changed")
     if any(digest(Path(p)) != value for p, value in entry["payloads"].items()):
         raise ValueError("native identity payload changed")
-    if int(process_path.with_suffix(".gate.json").read_text()) != process["gated_pid"]:
+    if int(read_text(process_path.with_suffix(".gate.json"))) != process["gated_pid"]:
         raise ValueError("native identity gated process changed")
-    if json.loads(process_path.with_suffix(".seal.json").read_text()) != {
+    if read_json(process_path.with_suffix(".seal.json")) != {
             "receipt_sha256": digest(process_path), "identity_request": correlation}:
         raise ValueError("native identity terminal process seal changed")
     if (digest(output) != record["output_sha256"]
@@ -1477,15 +1542,24 @@ def native_identity_result(root, entry, expected):
             or digest(Path(launch["executable"])) != record["identity"]["executable_sha256"]
             or digest(root / "scripts/process_tree.py") != record["identity"]["supervisor_sha256"]):
         raise ValueError("native identity input/tool evidence changed")
-    response = identity_json(output.read_text())
+    response = identity_json(read_text(output))
+    response_keys = {"protocol", "collection_id", "phase", "request_sha256", "runtime", "proofs"}
+    if request["protocol"] == "windows-file-identities-v2":
+        response_keys.add("file_observations")
     if (not isinstance(response, dict)
-            or set(response) != {"protocol", "collection_id", "phase", "request_sha256", "runtime", "proofs"}
+            or set(response) != response_keys
             or any(response[k] != request[k] for k in ("protocol", "collection_id", "phase"))
             or response["request_sha256"] != native["request_sha256"]
             or response["proofs"] != expected
             or not isinstance(response["runtime"], dict)
             or set(response["runtime"]) != {"python", "base_python"}):
         raise ValueError("native identity result does not match original proof maps")
+    if "file_observations" in response:
+        counts = response["file_observations"]
+        if (not isinstance(counts, dict) or set(counts) != {
+                "content_bytes", "content_reads", "transcript_decoded_bytes"}
+                or any(type(value) is not int or value < 0 for value in counts.values())):
+            raise ValueError("native identity read observations are malformed")
     for role, runtime in response["runtime"].items():
         binding = native_runtime_binding(expected, launch[role])
         if (not isinstance(runtime, dict) or set(runtime) != {"path", "resolved", "sha256"}
@@ -1508,7 +1582,7 @@ def check_native_identity_evidence(root, entries, expected):
 
 def run_native_identity_phase(root, native, phase):
     campaign = native["campaign"]
-    request = {"protocol": "windows-file-identities-v1", "collection_id": native["collection_id"],
+    request = {"protocol": "windows-file-identities-v2", "collection_id": native["collection_id"],
                "phase": phase, "proofs": {p: {g: list(v) for g, v in groups.items()}
                                          for p, groups in native["expected"].items()}}
     request_path = campaign.directory / ("windows-" + phase + "-request.json")
@@ -1522,12 +1596,13 @@ def run_native_identity_phase(root, native, phase):
     path = campaign.run("windows-" + phase, launch["command"], inputs=inputs,
         tools=launch["tools"], windows_python=native["python"], identity_request=request_path,
         windows_base_python=base["resolved"], expected_inputs=native["receipts"])
-    raw = json.loads(path.read_text())
+    raw = read_json(path)
     process = Path(raw["process_tree"]["receipt"])
     payloads = [path, root / raw["output"], process, process.with_suffix(".gate.json"),
                 process.with_suffix(".seal.json"), request_path]
     entry = {"phase": phase, "preparations": sorted(native["expected"]), "receipt": str(path),
-             "sha256": digest(path), "payloads": {str(p): digest(p) for p in payloads}}
+             "sha256": digest(path), "payloads": {
+                 **{str(p): digest(p) for p in payloads}, **command_result_payloads(path)}}
     response = native_identity_result(root, entry, native["expected"])
     native["stages"].append(entry)
     return response["proofs"]
@@ -1542,7 +1617,7 @@ def prepare_native_collection(root, records, windows_python, resolve):
         path = resolve(stage["receipt"])
         if digest(path) != stage["sha256"]:
             raise ValueError("checkpoint preparation receipt changed")
-        proof = json.loads(path.read_text()).get("scoped_preparation")
+        proof = read_json(stage["receipt"], resolve=resolve).get("scoped_preparation")
         if not proof or not PureWindowsPath(proof["source"]).is_absolute():
             continue
         if os.name != "posix":
@@ -1600,7 +1675,7 @@ def _collect_owned(root, paths, *, windows_python=None):
         if os.name != "nt" and re.match(r"^[A-Za-z]:/", normalized):
             return Path(subprocess.check_output(["wslpath", "-u", normalized], text=True).strip())
         return Path(normalized)
-    records = [json.loads(Path(p).read_text()) for p in paths]
+    records = [read_json(Path(p)) for p in paths]
     for record in records:
         require_checkpoint(record)
     from verify import source_snapshot
@@ -1608,134 +1683,161 @@ def _collect_owned(root, paths, *, windows_python=None):
     if observed_source is not None and any(record["source"] != observed_source for record in records):
         raise ValueError("checkpoint records do not bind one current candidate")
     for record in records:
-        state = json.loads((root / "out/build" / record["preset"] / "verification-checkpoint.json").read_text())
+        state = read_json(root / "out/build" / record["preset"] / "verification-checkpoint.json")
         if any(value.get("status") != "passed" for value in state.values()):
             raise ValueError("pending checkpoint work prevents aggregate collection")
     native = prepare_native_collection(root, records, windows_python, local)
     native_maps = run_native_identity_phase(root, native, "entry") if native else {}
-    stages = [stage for record in records for stage in record["stages"].values()]
-    source_paths = sorted({p for stage in stages for p in stage["identity"]["inputs"]
-                           if not p.startswith("out/build/")})
-    tool_paths = sorted({str(local(p)) for stage in stages
-                         for p in [*stage["identity"]["tool_paths"], *stage["identity"]["tools"]]})
-    def observe_tools():
-        bindings = {p: str(Path(p).resolve()) for p in tool_paths}
-        values = tool_snapshot(tool_paths, allow_missing=True)
-        if (set(values) != set(bindings.values())
-                or bindings != {p: str(Path(p).resolve()) for p in tool_paths}):
-            raise ValueError("checkpoint tool paths changed during collection")
-        return bindings, values
-    # One read-only operation shares reads, never facts from an earlier attempt.
-    # The terminal scan seals content and lexical-to-resolved path bindings.
-    bindings, tools = observe_tools()
-    inputs = snapshot(root, source_paths)
-    members, preparations, artifact_seals = {}, {}, []
-    for record in records:
-        owner = root / "out/build" / record["preset"] / "verification-checkpoint.json"
-        state = json.loads(owner.read_text())
-        if any(value.get("status") != "passed" for value in state.values()):
-            raise ValueError("pending checkpoint work prevents aggregate collection")
-        for name, result in record["stages"].items():
-            current = state.get(name, {})
-            if current.get("status") != "passed" or any(current.get(key) != result.get(key)
-                    for key in ("sha256", "identity", "additional_receipts", "payloads")):
-                raise ValueError("pending or newer checkpoint ownership prevents collection: " + name)
-            directories = result["identity"].get("artifact_directories", {})
-            expected_directories = {str(local(directory)): sorted(str(local(path)) for path in paths) if paths is not None else None
-                                    for directory, paths in directories.items()}
-            if artifact_membership(expected_directories) != expected_directories:
-                raise ValueError("checkpoint runtime artifact membership changed")
-            artifact_seals.append(expected_directories)
-            raw_paths = stage_receipts(result, local)
-            for path, expected in zip(raw_paths, [result["sha256"], *result.get("additional_receipts", {}).values()], strict=True):
-                if digest(path) != expected:
-                    raise ValueError("checkpoint command receipt changed")
-                command = json.loads(path.read_text())
-                process = json.loads(local(command["process_tree"]["receipt"]).read_text())
-                ctest_failure = (name in record.get("membership", {}) and command.get("status") == "failed"
-                                 and command.get("returncode") == 8 and process.get("status") == "completed")
-                if (not ctest_failure and (command.get("status") != "passed" or command.get("returncode") != 0)
-                        or not process.get("drained") or any(command["process_tree"].get(k) != v for k, v in process.items())
-                        or digest(root / command["output"]) != command["output_sha256"]):
-                    raise ValueError("checkpoint terminal evidence is invalid")
-            if name == "production":
-                production_payloads(*production_manifest_identity(raw_paths[0], root=root, resolve=local),
-                                    root=root, inputs=result["identity"]["inputs"],
-                                    resolve=local, retained=result.get("payloads", {}))
-            for path, expected in result.get("payloads", {}).items():
-                if digest(local(path)) != expected:
-                    raise ValueError("checkpoint result payload changed")
-            if name in record.get("membership", {}):
-                validate_ctest_stage(raw_paths, record.get("runtime_membership", {}).get(name, {}),
-                    record["membership"][name], result["identity"]["command"], local)
-            declared = result["identity"]["inputs"]
-            source_inputs = {path: checksum for path, checksum in declared.items() if not path.startswith("out/build/")}
-            if {p: inputs[p] for p in source_inputs} != source_inputs:
-                raise ValueError("checkpoint declared source/data inputs changed")
-            group = name if name in GROUPS | {"prepare"} else "product"
-            if name == "prepare":
-                preparation_identity(root / "out/build" / record["preset"], result, resolve=local,
-                                     native_file_identities=native_maps.get(result["sha256"]))
-                preparations[record["preset"]] = json.loads(raw_paths[0].read_text())["scoped_preparation"]["context"]
-            expected_members = {path for path in declared if not path.startswith("out/build/")}
-            key = record["preset"], group
-            if key not in members:
-                discovery = {"source_files": observed_source}
-                if group == "prepare":
-                    discovery.update(preparation=preparations[record["preset"]], resolve=local)
-                members[key] = {path for path in checkpoint_inputs(root, root / "out/build" / record["preset"], group,
-                                                                  **discovery)
-                                if not path.startswith("out/build/")}
-            actual_members = members[key]
-            if expected_members != actual_members:
-                raise ValueError("checkpoint source/data membership changed")
-            expected_tools = {bindings[str(local(path))]: value for path, value in result["identity"]["tools"].items()}
-            actual_tools = {bindings[str(local(p))]: tools[bindings[str(local(p))]]
-                            for p in result["identity"]["tool_paths"]}
-            if actual_tools != expected_tools:
-                raise ValueError("checkpoint toolchain/configuration changed")
+    with FileObservations() as initial_reads:
+        stages = [stage for record in records for stage in record["stages"].values()]
+        source_paths = sorted({p for stage in stages for p in stage["identity"]["inputs"]
+                               if not p.startswith("out/build/")})
+        tool_paths = sorted({str(local(p)) for stage in stages
+                             for p in [*stage["identity"]["tool_paths"], *stage["identity"]["tools"]]})
+        def observe_tools():
+            bindings = {p: str(Path(p).resolve()) for p in tool_paths}
+            values = tool_snapshot(tool_paths, allow_missing=True)
+            if (set(values) != set(bindings.values())
+                    or bindings != {p: str(Path(p).resolve()) for p in tool_paths}):
+                raise ValueError("checkpoint tool paths changed during collection")
+            return bindings, values
+        # One read-only operation shares reads, never facts from an earlier attempt.
+        # The terminal scan seals content and lexical-to-resolved path bindings.
+        bindings, tools = observe_tools()
+        inputs = snapshot(root, source_paths)
+        members, preparations, artifact_seals = {}, {}, []
+        preparation_ids, owner_states = {}, {}
+        for record in records:
+            owner = root / "out/build" / record["preset"] / "verification-checkpoint.json"
+            state = read_json(owner)
+            owner_states[owner] = state
+            if any(value.get("status") != "passed" for value in state.values()):
+                raise ValueError("pending checkpoint work prevents aggregate collection")
+            for name, result in record["stages"].items():
+                current = state.get(name, {})
+                if current.get("status") != "passed" or any(current.get(key) != result.get(key)
+                        for key in ("sha256", "identity", "additional_receipts", "payloads")):
+                    raise ValueError("pending or newer checkpoint ownership prevents collection: " + name)
+                directories = result["identity"].get("artifact_directories", {})
+                expected_directories = {str(local(directory)): sorted(str(local(path)) for path in paths) if paths is not None else None
+                                        for directory, paths in directories.items()}
+                if artifact_membership(expected_directories) != expected_directories:
+                    raise ValueError("checkpoint runtime artifact membership changed")
+                artifact_seals.append(expected_directories)
+                raw_paths = stage_receipts(result, local)
+                for path, expected in zip(raw_paths, [result["sha256"], *result.get("additional_receipts", {}).values()], strict=True):
+                    if digest(path) != expected:
+                        raise ValueError("checkpoint command receipt changed")
+                    command = read_json(path)
+                    process = read_json(local(command["process_tree"]["receipt"]))
+                    ctest_failure = (name in record.get("membership", {}) and command.get("status") == "failed"
+                                     and command.get("returncode") == 8 and process.get("status") == "completed")
+                    if (not ctest_failure and (command.get("status") != "passed" or command.get("returncode") != 0)
+                            or not process.get("drained") or any(command["process_tree"].get(k) != v for k, v in process.items())
+                            or digest(root / command["output"]) != command["output_sha256"]):
+                        raise ValueError("checkpoint terminal evidence is invalid")
+                if name == "production":
+                    production_payloads(*production_manifest_identity(raw_paths[0], root=root, resolve=local),
+                                        root=root, inputs=result["identity"]["inputs"],
+                                        resolve=local, retained=result.get("payloads", {}))
+                for path, expected in result.get("payloads", {}).items():
+                    if digest(local(path)) != expected:
+                        raise ValueError("checkpoint result payload changed")
+                if name in record.get("membership", {}):
+                    validate_ctest_stage(raw_paths, record.get("runtime_membership", {}).get(name, {}),
+                        record["membership"][name], result["identity"]["command"], local)
+                declared = result["identity"]["inputs"]
+                source_inputs = {path: checksum for path, checksum in declared.items() if not path.startswith("out/build/")}
+                if {p: inputs[p] for p in source_inputs} != source_inputs:
+                    raise ValueError("checkpoint declared source/data inputs changed")
+                group = name if name in GROUPS | {"prepare"} else "product"
+                if name == "prepare":
+                    preparation_ids[record["preset"]] = preparation_identity(
+                        root / "out/build" / record["preset"], result, resolve=local,
+                        native_file_identities=native_maps.get(result["sha256"]))
+                    preparations[record["preset"]] = read_json(raw_paths[0])["scoped_preparation"]["context"]
+                expected_members = {path for path in declared if not path.startswith("out/build/")}
+                key = record["preset"], group
+                if key not in members:
+                    discovery = {"source_files": observed_source}
+                    if group == "prepare":
+                        discovery.update(preparation=preparations[record["preset"]], resolve=local)
+                    members[key] = {path for path in checkpoint_inputs(root, root / "out/build" / record["preset"], group,
+                                                                      **discovery)
+                                    if not path.startswith("out/build/")}
+                actual_members = members[key]
+                if expected_members != actual_members:
+                    raise ValueError("checkpoint source/data membership changed")
+                expected_tools = {bindings[str(local(path))]: value for path, value in result["identity"]["tools"].items()}
+                actual_tools = {bindings[str(local(p))]: tools[bindings[str(local(p))]]
+                                for p in result["identity"]["tool_paths"]}
+                if actual_tools != expected_tools:
+                    raise ValueError("checkpoint toolchain/configuration changed")
 
-        if "product" in record["selection"]:
-            identity = preparation_identity(root / "out/build" / record["preset"], record["stages"]["prepare"], resolve=local,
-                                           native_file_identities=native_maps.get(record["stages"]["prepare"]["sha256"]))
-            if any(record["stages"][name]["identity"]["dependencies"] != [identity] for name in ("quality", "product")):
-                raise ValueError("checkpoint stages do not bind the current preparation artifacts")
-    if observe_tools() != (bindings, tools):
-        raise ValueError("checkpoint toolchain/configuration changed during collection")
-    if any(artifact_membership(expected) != expected for expected in artifact_seals):
-        raise ValueError("checkpoint runtime artifact membership changed during collection")
-    if snapshot(root, source_paths) != inputs:
-        raise ValueError("checkpoint declared source/data inputs changed during collection")
-    current = source_snapshot(root) if observed_source is not None else None
-    if observed_source is not None and current != observed_source:
-        raise ValueError("checkpoint source/data membership changed during collection")
-    # Git selection omits ignored test/resource inputs that checkpoint_inputs owns.
-    # Seal each shared membership observation independently of that selection.
-    for (preset, group), expected in members.items():
-        discovery = {"source_files": current}
-        if group == "prepare":
-            discovery.update(preparation=preparations[preset], resolve=local)
-        actual_members = {path for path in checkpoint_inputs(root, root / "out/build" / preset, group,
-                                                            **discovery)
-                          if not path.startswith("out/build/")}
-        if actual_members != expected:
+            if "product" in record["selection"]:
+                identity = preparation_ids[record["preset"]]
+                if any(record["stages"][name]["identity"]["dependencies"] != [identity] for name in ("quality", "product")):
+                    raise ValueError("checkpoint stages do not bind the current preparation artifacts")
+    terminal_native_maps = run_native_identity_phase(root, native, "terminal") if native else {}
+    with FileObservations() as terminal_preparation_reads:
+        if native:
+            check_native_identity_evidence(root, native["stages"], native["expected"])
+        for record in records:
+            preset = record["preset"]
+            if "product" in record["selection"] and preset in preparation_ids:
+                stage = record["stages"]["prepare"]
+                current_preparation = preparation_identity(root / "out/build" / preset, stage, resolve=local,
+                    native_file_identities=terminal_native_maps.get(stage["sha256"]))
+                if current_preparation != preparation_ids[preset]:
+                    raise ValueError("checkpoint preparation changed during collection")
+    with FileObservations() as final_reads:
+        if native:
+            check_native_identity_evidence(root, native["stages"], native["expected"])
+        if observe_tools() != (bindings, tools):
+            raise ValueError("checkpoint toolchain/configuration changed during collection")
+        if any(artifact_membership(expected) != expected for expected in artifact_seals):
+            raise ValueError("checkpoint runtime artifact membership changed during collection")
+        if snapshot(root, source_paths) != inputs:
+            raise ValueError("checkpoint declared source/data inputs changed during collection")
+        current = source_snapshot(root) if observed_source is not None else None
+        if observed_source is not None and current != observed_source:
             raise ValueError("checkpoint source/data membership changed during collection")
-    required = {(p, group) for p in PRESETS for group in ("product", "boundary")}
-    required |= {(p, "tooling") for p in ("linux-debug", "windows-clang-debug")}
-    required |= {(p, "production") for p in ("linux-release", "windows-clang-release")}
-    actual = [(r["preset"], g) for r in records for g in r["selection"] if g != "corpus"]
-    if len(actual) != len(set(actual)) or set(actual) != required or sum("corpus" in r["selection"] for r in records) != 1:
-        raise ValueError("full checkpoint membership is incomplete or duplicated")
-    if any(r["runtime"] != "all" for r in records if "product" in r["selection"]):
-        raise ValueError("host-only product checks do not establish full qualification")
-    if current is None:
-        current = source_snapshot(root)
-    if any(r["source"] != current for r in records):
-        raise ValueError("checkpoint records do not bind one current candidate")
-    result = {"mode": "qualification", "status": "passed", "source": current,
-              "receipts": {str(p): digest(Path(p)) for p in paths}, "scope": "explicit complete retained checkpoint; independent review and host acceptance remain separate"}
-    if native:
-        run_native_identity_phase(root, native, "terminal")
-        check_native_identity_evidence(root, native["stages"], native["expected"])
-        result["native_identities"] = native["stages"]
-    return result
+        # Git selection omits ignored test/resource inputs that checkpoint_inputs owns.
+        # Seal each shared membership observation independently of that selection.
+        for (preset, group), expected in members.items():
+            discovery = {"source_files": current}
+            if group == "prepare":
+                discovery.update(preparation=preparations[preset], resolve=local)
+            actual_members = {path for path in checkpoint_inputs(root, root / "out/build" / preset, group,
+                                                                **discovery)
+                              if not path.startswith("out/build/")}
+            if actual_members != expected:
+                raise ValueError("checkpoint source/data membership changed during collection")
+        for observations in (initial_reads, terminal_preparation_reads):
+            if any(str(Path(name).resolve(strict=True)) != target
+                   for name, target in observations.bindings.items()):
+                raise ValueError("checkpoint evidence path changed during collection")
+            if any(digest(Path(name)) != checksum for name, checksum in observations.digests.items()):
+                raise ValueError("checkpoint immutable evidence changed during collection")
+        if any(read_json(path) != state for path, state in owner_states.items()):
+            raise ValueError("pending or newer checkpoint ownership prevents terminal collection")
+        required = {(p, group) for p in PRESETS for group in ("product", "boundary")}
+        required |= {(p, "tooling") for p in ("linux-debug", "windows-clang-debug")}
+        required |= {(p, "production") for p in ("linux-release", "windows-clang-release")}
+        actual = [(r["preset"], g) for r in records for g in r["selection"] if g != "corpus"]
+        if len(actual) != len(set(actual)) or set(actual) != required or sum("corpus" in r["selection"] for r in records) != 1:
+            raise ValueError("full checkpoint membership is incomplete or duplicated")
+        if any(r["runtime"] != "all" for r in records if "product" in r["selection"]):
+            raise ValueError("host-only product checks do not establish full qualification")
+        if current is None:
+            current = source_snapshot(root)
+        if any(r["source"] != current for r in records):
+            raise ValueError("checkpoint records do not bind one current candidate")
+        result = {"mode": "qualification", "status": "passed", "source": current,
+                  "receipts": {str(p): digest(Path(p)) for p in paths}, "scope": "explicit complete retained checkpoint; independent review and host acceptance remain separate"}
+        if native:
+            result["native_identities"] = native["stages"]
+        result["file_observations"] = {"entry": initial_reads.counts(),
+                                        "terminal_preparation": terminal_preparation_reads.counts(),
+                                        "terminal": final_reads.counts()}
+        return result

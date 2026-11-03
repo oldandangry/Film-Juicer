@@ -320,10 +320,15 @@ class ArtifactSelectionTests(unittest.TestCase):
             case = unittest.FunctionTestCase(lambda: None)
             record_fixture(failed, case, "failed")
             record_fixture(unproved, case, "running")
-            record_fixture(passed, case, "passed")
             blocked = passed / "out/verification-locks/control/owner.json"
             blocked.parent.mkdir(parents=True)
             blocked.write_text('{"status":"blocked"}')
+            record_fixture(passed, case, "passed")
+            malformed_owners = debug / "registration-controls/malformed owner metadata"
+            record_fixture(malformed_owners, case, "passed")
+            owner_record = json.loads((malformed_owners / MARKER).read_text())
+            owner_record["blocked_owners"] = "not-a-list"
+            (malformed_owners / MARKER).write_text(json.dumps(owner_record), encoding="utf-8")
             sample = workspace / "out/validation" / (family + "-release") / "rust-core/npy-0081-0000.npy"
             sample.parent.mkdir(parents=True)
             sample.write_bytes(b"tiny sample")
@@ -336,7 +341,8 @@ class ArtifactSelectionTests(unittest.TestCase):
             lines = output.read_text(encoding="utf-8").splitlines()
             self.assertEqual(lines[0], "paths<<" + lines[-1])
             self.assertEqual(set(lines[1:-1]), {p.as_posix() + "/**" for p in
-                                              (failed, unproved, missing, malformed)} | {sample.as_posix()})
+                                              (failed, unproved, missing, malformed, passed, malformed_owners)}
+                             | {sample.as_posix()})
 
     def test_native_workflows_upload_selected_paths_and_keep_reports(self):
         for native in ("linux", "windows"):

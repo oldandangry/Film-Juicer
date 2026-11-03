@@ -9,13 +9,13 @@ import re
 import subprocess
 import time
 
-from execution import digest, windows_runtime_paths
+from execution import FileObservations, digest, windows_runtime_paths, read_json, read_text
 
 
 class NinjaGraph:
     def __init__(self, build: Path, targets=(), env=None):
         self.build = build.resolve()
-        cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+        cache = read_text(build / "CMakeCache.txt", encoding="utf-8")
         match = re.search(r"^CMAKE_MAKE_PROGRAM:[^=]+=(.+)$", cache, re.M)
         if not match:
             raise ValueError("Ninja configuration is required")
@@ -168,28 +168,31 @@ class NinjaGraph:
 
 def file_identities(paths, timings=None):
     """Freshly resolve and read each file; do not retain identities across calls."""
-    paths = sorted(set(paths))
+    # WindowsPath equality folds case; each requested spelling owns a binding.
+    paths = sorted({str(path): path for path in paths}.items())
 
     def resolve_paths():
         parents = {}
 
         def resolve(path):
-            if path not in parents:
+            name = str(path)
+            if name not in parents:
                 # Windows resolution owns junctions and canonical name casing.
                 # On POSIX, share common parent traversal within this read only.
                 if os.name == "nt" or path.parent == path or path.name == ".." or path.is_symlink():
-                    parents[path] = path.resolve(strict=True)
+                    parents[name] = path.resolve(strict=True)
                 else:
-                    parents[path] = resolve(path.parent) / path.name
-            return parents[path]
+                    parents[name] = resolve(path.parent) / path.name
+            return parents[name]
 
-        return {path: resolve(path) for path in paths if path.is_file()}
+        return {name: str(resolve(path)) for name, path in paths if path.is_file()}
 
     started = time.perf_counter()
     before = resolve_paths()
     resolved_seconds = time.perf_counter() - started
     started = time.perf_counter()
-    result = {str(path): {"resolved": str(resolved), "sha256": digest(path)} for path, resolved in before.items()}
+    result = {name: {"resolved": before[name], "sha256": digest(path)}
+              for name, path in paths if name in before}
     hash_seconds = time.perf_counter() - started
     started = time.perf_counter()
     # This is a new traversal: a directory/file symlink retargeted while reading
@@ -217,10 +220,10 @@ def identity_json(text):
 def read_identity_request(path, checksum):
     if digest(path) != checksum:
         raise ValueError("Windows identity request identity changed")
-    request = identity_json(path.read_text(encoding="utf-8"))
+    request = identity_json(read_text(path, encoding="utf-8"))
     if (not isinstance(request, dict)
             or set(request) != {"protocol", "collection_id", "phase", "proofs"}
-            or request["protocol"] != "windows-file-identities-v1"
+            or request["protocol"] not in {"windows-file-identities-v1", "windows-file-identities-v2"}
             or not isinstance(request["collection_id"], str)
             or not re.fullmatch(r"[0-9a-f]{32}", request["collection_id"])
             or not isinstance(request["phase"], str) or request["phase"] not in {"entry", "terminal"}
@@ -238,29 +241,76 @@ def read_identity_request(path, checksum):
     return request
 
 
-def read_windows_identities(path, checksum):
-    request = read_identity_request(path, checksum)
-    if os.name != "nt":
-        raise ValueError("Windows file identities require native Windows Python")
-    proofs = {}
-    for proof, groups in request["proofs"].items():
-        proofs[proof] = {}
+def capture_windows_identity_maps(proofs, runtime_paths, *, counts=None):
+    lexical_paths = {}
+    normalized_proofs = {}
+    for proof, groups in proofs.items():
+        normalized_proofs[proof] = {}
         for group, names in groups.items():
-            observed = file_identities([Path(n) for n in names])
-            if set(observed) != set(names):
+            normalized_names = [str(Path(name)) for name in names]
+            if len(normalized_names) != len(set(normalized_names)):
                 raise ValueError("Windows identity lexical membership changed")
-            proofs[proof][group] = observed
-    runtime = {}
-    paths = windows_runtime_paths()
-    for role in ("python", "base_python"):
-        executable = paths[role]
-        runtime[role] = {"path": str(executable), "resolved": str(executable.resolve(strict=True)),
-                         "sha256": digest(executable)}
-    if read_identity_request(path, checksum) != request:
-        raise ValueError("Windows identity request changed during reading")
-    return {"protocol": request["protocol"], "collection_id": request["collection_id"],
+            normalized_proofs[proof][group] = normalized_names
+            for name in names:
+                path = Path(name)
+                lexical_paths.setdefault(str(path), path)
+    runtime_paths = {role: Path(path) for role, path in runtime_paths.items()}
+    runtime_names = {role: str(path) for role, path in runtime_paths.items()}
+    for path in runtime_paths.values():
+        lexical_paths.setdefault(str(path), path)
+
+    with FileObservations() as observations:
+        observed = file_identities(list(lexical_paths.values()))
+    if counts is not None:
+        counts.update(observations.counts())
+    proof_paths = {
+        name for groups in normalized_proofs.values() for names in groups.values() for name in names
+    }
+    if not proof_paths.issubset(observed):
+        raise ValueError("Windows identity lexical membership changed")
+    for role, name in runtime_names.items():
+        if name not in observed:
+            executable = runtime_paths[role]
+            executable.resolve(strict=True)
+            digest(executable)
+            raise ValueError("Windows identity lexical membership changed")
+    if set(observed) != set(lexical_paths):
+        raise ValueError("Windows identity lexical membership changed")
+
+    projected_proofs = {}
+    for proof, groups in normalized_proofs.items():
+        projected_proofs[proof] = {
+            group: {name: observed[name] for name in sorted(names)}
+            for group, names in groups.items()
+        }
+    runtime = {
+        role: {"path": name, **observed[name]}
+        for role, name in runtime_names.items()
+    }
+    return projected_proofs, runtime
+
+
+def read_windows_identities(path, checksum):
+    with FileObservations() as entry_reads:
+        request = read_identity_request(path, checksum)
+        if os.name != "nt":
+            raise ValueError("Windows file identities require native Windows Python")
+        paths = windows_runtime_paths()
+    counts = {}
+    proofs, runtime = capture_windows_identity_maps(
+        request["proofs"], {role: paths[role] for role in ("python", "base_python")}, counts=counts
+    )
+    with FileObservations() as terminal_reads:
+        if read_identity_request(path, checksum) != request:
+            raise ValueError("Windows identity request changed during reading")
+    response = {"protocol": request["protocol"], "collection_id": request["collection_id"],
             "phase": request["phase"], "request_sha256": checksum,
             "runtime": runtime, "proofs": proofs}
+    if request["protocol"] == "windows-file-identities-v2":
+        response["file_observations"] = {
+            name: counts[name] + entry_reads.counts()[name] + terminal_reads.counts()[name]
+            for name in ("content_bytes", "content_reads", "transcript_decoded_bytes")}
+    return response
 
 
 class CompilationInputs:
@@ -277,7 +327,7 @@ class CompilationInputs:
         self.quality = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = self.quality
         spec.loader.exec_module(self.quality)
-        self.rows = json.loads((build / "compile_commands.json").read_text(encoding="utf-8"))
+        self.rows = json.loads(read_text(build / "compile_commands.json", encoding="utf-8"))
         self.resolved = {}
         self.includes, self.edges, self.discovered = {}, {}, {}
         self.entries, self.searches = {}, {}
@@ -378,7 +428,7 @@ def include_membership(build, graph, source_root, compilation=None):
 
 def configuration_outputs(build, environment=None):
     """CMake declares every generated configuration file as a RERUN_CMAKE output."""
-    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    cache = read_text(build / "CMakeCache.txt", encoding="utf-8")
     ninja = re.search(r"^CMAKE_MAKE_PROGRAM:[^=]+=(.+)$", cache, re.M)[1]
     payload = subprocess.check_output(
         [ninja, "-C", str(build), "-t", "targets", "all"],
@@ -397,13 +447,13 @@ def configuration_outputs(build, environment=None):
     outputs = {Path(os.path.abspath(build / name)) for name in names}
     manifest = build / "verification-config-outputs.json"
     if manifest.is_file():
-        document = json.loads(manifest.read_text(encoding="utf-8"))
+        document = json.loads(read_text(manifest, encoding="utf-8"))
         if not isinstance(document, dict):
             raise ValueError("configuration producer evidence changed; configure again")
         if document.get("protocol") != "scoped-development-v1":
             return sorted(outputs)
         producer = Path(document["producer"])
-        record = json.loads(producer.read_text(encoding="utf-8"))
+        record = read_json(producer)
         if not isinstance(record, dict) or digest(producer) != document["producer_sha256"]:
             raise ValueError("configuration producer evidence changed; configure again")
         tree = record.get("process_tree")
@@ -412,7 +462,7 @@ def configuration_outputs(build, environment=None):
         evidence = record.get("configuration_evidence")
         expected = {key: document[key] for key in ("outputs", "trace", "trace_sha256")}
         process = json.loads(
-            Path(tree["receipt"]).read_text(encoding="utf-8")
+            read_text(Path(tree["receipt"]), encoding="utf-8")
         )
         if (
             evidence != expected
@@ -435,7 +485,7 @@ def configuration_outputs(build, environment=None):
 
 def rust_product_sources(build):
     """Cargo's compiler-produced depfile distinguishes product inputs from test-only stamp inputs."""
-    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    cache = read_text(build / "CMakeCache.txt", encoding="utf-8")
     profile = (
         "release"
         if re.search(r"^CMAKE_BUILD_TYPE:STRING=Release$", cache, re.M)
@@ -446,7 +496,7 @@ def rust_product_sources(build):
     path = build / "cargo" / target / profile / name
     if not path.is_file():
         return None
-    lines = path.read_text(encoding="utf-8").replace("\\\n", "").splitlines()
+    lines = read_text(path, encoding="utf-8").replace("\\\n", "").splitlines()
     first = lines[0] if lines else ""
     parts = re.split(r":\s+", first, maxsplit=1)
     if len(parts) != 2 or "\\ " in parts[1] or "\\#" in parts[1]:
@@ -479,7 +529,7 @@ def header_consumers(root, build, headers, *, require_compiled=True, compilation
                 candidate = Path(name)
                 macros[name] = (
                     candidate.is_relative_to(root) and candidate.is_file()
-                    and bool(re.search(r"^\s*#\s*include\s+[^<\"\s]", candidate.read_text(encoding="utf-8"), re.M))
+                    and bool(re.search(r"^\s*#\s*include\s+[^<\"\s]", read_text(candidate, encoding="utf-8"), re.M))
                 )
             opaque |= macros[name]
         # Opaque includes remain conservative compile candidates even with warm

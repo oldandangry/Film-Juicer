@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from verify import edit_selection, source_snapshot
 from qualification import require_checkpoint
 
+from execution import read_json
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -28,7 +30,7 @@ class SelectionTests(unittest.TestCase):
                     patch("qualification.collect_qualification", return_value={"status": "passed"}) as collect:
                 self.assertEqual(verify.main(), 0)
             collect.assert_called_once_with(verify.ROOT, [Path("receipt.json")], windows_python=python)
-            self.assertEqual(json.loads(output.read_text()), {"status": "passed"})
+            self.assertEqual(read_json(output), {"status": "passed"})
             with patch.object(sys, "argv", ["verify.py", "collect-qualification", "--receipts", "receipt.json",
                                            "--output", str(output), "--windows-python", python]), \
                     patch("qualification.collect_qualification", side_effect=AssertionError("existing output scheduled native work")):
@@ -579,7 +581,7 @@ class SelectionTests(unittest.TestCase):
                 verify.main()
             self.assertEqual(state.read_bytes(), saved)
             self.assertEqual(
-                json.loads(prior.read_text())["pending"], ["src/ScanRoute.cpp"]
+                read_json(prior)["pending"], ["src/ScanRoute.cpp"]
             )
 
     def test_missing_receipts_initialize_observation_with_all_dirty_paths_pending(self):
@@ -716,7 +718,7 @@ class SelectionTests(unittest.TestCase):
             with patch.object(verify, "ROOT", root), patch.object(verify, "load_development_state", return_value=previous), patch.object(verify, "source_snapshot", return_value={}), patch.object(verify, "select_consumers", return_value=selection), patch.object(verify, "Campaign") as campaign, patch.object(verify, "verify_development_receipt") as consume, patch.object(verify, "check_scoped_preparation"), patch.object(verify, "prepare_build") as prepare:
                 campaign.return_value.directory = directory
                 result = verify._development_owned(argparse.Namespace(preset="linux-debug", previous=None, files=["src/ScanRoute.cpp"]))
-            record = json.loads(result.read_text())
+            record = read_json(result)
             consume.assert_called_once()
             prepare.assert_not_called()
             self.assertEqual(record["pending"], ["unrelated.rs"])
@@ -729,7 +731,7 @@ class SelectionTests(unittest.TestCase):
                 campaign.return_value.directory = directory
                 with self.assertRaisesRegex(ValueError, "source membership or contents changed"):
                     verify._development_owned(argparse.Namespace(preset="linux-debug", previous=None, files=["src/ScanRoute.cpp"]))
-            failed = json.loads(result.read_text())
+            failed = read_json(result)
             self.assertEqual(failed["scope_status"], "failed")
             self.assertIn("unrelated.rs", failed["pending"])
             self.assertEqual(digest(receipt), previous["successful_scopes"][verify.scope_key(selection)]["sha256"])
@@ -742,7 +744,7 @@ class SelectionTests(unittest.TestCase):
                     verify._development_owned(argparse.Namespace(preset="linux-debug", previous=None, files=["src/ScanRoute.cpp"]))
             consume.assert_not_called()
             prepare.assert_called_once()
-            self.assertIn("src/ScanRoute.cpp", json.loads(result.read_text())["pending"])
+            self.assertIn("src/ScanRoute.cpp", read_json(result)["pending"])
 
     def test_qualification_rejects_development_partial_and_incomplete_receipts(self):
         for record in [

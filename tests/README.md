@@ -107,6 +107,16 @@ I/O on the same machine. Local unfiltered tooling still runs all eleven groups.
 Passed output retains up to 64 KiB with middle truncation, preserving both the
 initial diagnostics and final duration summaries.
 
+Large production command streams use deterministic gzip under the explicit
+`command-transcript-v1` protocol. The `.stdout` and `.stderr` paths retain their
+names; `commands.json` records the encoding, encoded and decoded byte counts, and
+both hashes. `execution.read_transcript` validates and returns every original byte.
+Small streams remain raw. Full symbol/value predicates still inspect the decoded
+contents, and legacy raw evidence remains readable. Preserve the referenced stream
+files, command receipts and shared identity maps together. JUnit previews can be
+truncated; the complete invocation transcript and immediately preserved LastTest
+remain the evidence for internal rows. Size and read figures are advisory targets.
+
 Windows verification controls require Win32 long-path support for nested
 preparation receipts. An administrator can enable `LongPathsEnabled` under
 `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`; restart test processes after
@@ -1257,7 +1267,11 @@ These are product contracts and need no device at runtime.
 consume-once ownership and retained cache backing. `Prepare.Host.StateProducts`
 compares complete Rust preparation with 31 ordered frozen expectations across
 all twelve route/reconstruction combinations, perturbations and
-competing failures. `Ffi.Gpu.PreparedStateLifetime` consumes held direct/print
+competing failures. ABI-only selections avoid loading the projection oracle.
+The prepared-state selection controls exercise individual, wildcard, colon-list,
+exclusion, oracle-reader and list-only filters against actual GoogleTest selection;
+the full product group retains its exact ordered 31-case check.
+`Ffi.Gpu.PreparedStateLifetime` consumes held direct/print
 states after enqueue with active spatial DIR and verifies native staging survives
 borrow expiry. The fixture keeps optics, grain and physical effects disabled.
 These groups add preparation/ownership evidence; production callback publication

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/ctest"))
 from control_artifacts import MARKER, record_fixture
 import build_evidence
 from execution import Campaign, OutputLease, digest, tool_snapshot, write_json
+
+from execution import read_json
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -114,7 +117,7 @@ class S4eOwnerRetirementTests(unittest.TestCase):
         artifact = self.build / "libfilm_juicer_plugin.a"
         artifact.write_bytes(b"unqualified archive")
         retired = build_evidence.retire_s4e_aborted_owner(self.root, self.preset)
-        record = json.loads(retired.read_bytes())
+        record = read_json(retired)
         self.assertFalse(self.owner.exists())
         self.assertEqual(Path(record["original"]["file"]).read_bytes(), self.original)
         self.assertEqual(record["original"]["sha256"], self.expected["sha256"])
@@ -180,7 +183,7 @@ class S4eOwnerRetirementTests(unittest.TestCase):
         pending.write_bytes(original)
         result = build_evidence.retire_s4e_aborted_owner(self.root, self.preset)
         self.assertEqual(pending.read_bytes(), original)
-        record = json.loads(result.read_bytes())
+        record = read_json(result)
         self.assertEqual(record["pending_owners_unchanged"], {str(pending): digest(pending)})
 
 
@@ -336,7 +339,7 @@ class BuildEvidenceTests(unittest.TestCase):
         # Save only this fixture's owned inputs, artifacts and provenance at its
         # configured path. Each fault still traverses real build publication.
         producer = self.prepared
-        record = json.loads(producer.read_text())
+        record = read_json(producer)
         proof = record["scoped_preparation"]
         paths = {producer, Path(record["process_tree"]["receipt"]), self.root / record["output"]}
         paths.update(Path(name) for name in proof["outputs"])
@@ -397,11 +400,11 @@ class BuildEvidenceTests(unittest.TestCase):
         # The first refresh retires CMake's cold compiler-detection inputs.
         # Establish the post-discovery configuration before proof-only renewal.
         first = self.prepare(reconfigure=True)
-        proof = json.loads(first.read_text())["scoped_preparation"]
+        proof = read_json(first)["scoped_preparation"]
         registry = self.build / "verification-config-outputs.json"
         original = registry.read_bytes()
         self.prepare(reconfigure=True)
-        renewed = json.loads(self.prepared.read_text())
+        renewed = read_json(self.prepared)
         self.assertEqual(registry.read_bytes(), original)
         self.assertEqual(renewed["scoped_preparation"]["context"], proof["context"])
         self.assertEqual(renewed["scoped_preparation"]["output_identities"], proof["output_identities"])
@@ -417,16 +420,26 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertEqual(renewed["scoped_preparation"]["outputs"], proof["outputs"])
         self.assertIn(self.build / "generated/binding.h", build_evidence.configuration_outputs(self.build))
 
+    def test_configuration_outputs_rejects_mutated_shared_configure_identity_map(self):
+        self.prepare()
+        manifest = json.loads((self.build / "verification-config-outputs.json").read_text())
+        producer = Path(manifest["producer"])
+        raw = json.loads(producer.read_text())
+        blob = producer.parents[2] / raw["identity"]["inputs_ref"]["path"]
+        blob.write_bytes(b"{}")
+        with self.assertRaisesRegex(ValueError, "identity-map content hash changed"):
+            build_evidence.configuration_outputs(self.build)
+
     def test_call_id_and_worker_changes_preserve_native_and_rust_artifacts(self):
         self.enable_rust()
         with patch.dict(os.environ, {"CODEX_TOOL_CALL_ID": "first", "CMAKE_BUILD_PARALLEL_LEVEL": "2"}):
             self.prepare()
             self.prepare(reconfigure=True)
-            first = json.loads(self.prepared.read_text())["scoped_preparation"]
+            first = read_json(self.prepared)["scoped_preparation"]
             stamps = {name: Path(name).stat().st_mtime_ns for name in first["outputs"]}
             with patch.dict(os.environ, {"CODEX_TOOL_CALL_ID": "second", "CMAKE_BUILD_PARALLEL_LEVEL": "3"}):
                 self.prepare(reconfigure=True)
-                record = json.loads(self.prepared.read_text())
+                record = read_json(self.prepared)
                 proof = record["scoped_preparation"]
                 self.assertEqual(proof["invalidated"], [])
                 self.assertEqual(proof["rust_invalidated_packages"], [])
@@ -468,13 +481,13 @@ class BuildEvidenceTests(unittest.TestCase):
         self.args.append("-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -B" + linkers.as_posix() + "/")
         self.prepare()
         self.prepare(reconfigure=True)
-        first = json.loads(self.prepared.read_text())["scoped_preparation"]
+        first = read_json(self.prepared)["scoped_preparation"]
         cache = (self.build / "CMakeCache.txt").read_text()
         self.assertRegex(cache, r"(?m)^CMAKE_LINKER:[^=]+=/usr/bin/ld$")
         self.assertEqual(first["context"]["configuration"]["tools"][str(selected.resolve())], digest(selected))
         build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
         self.prepare(reconfigure=True)
-        unchanged = json.loads(self.prepared.read_text())["scoped_preparation"]
+        unchanged = read_json(self.prepared)["scoped_preparation"]
         self.assertEqual(unchanged["invalidated"], [])
         self.assertEqual(unchanged["output_identities"], first["output_identities"])
 
@@ -504,7 +517,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertNotIn("reused_from", changed)
         self.assertNotEqual(changed["identity"]["tools"], checked["identity"]["tools"])
         self.prepare()
-        rebound = json.loads(self.prepared.read_text())["scoped_preparation"]
+        rebound = read_json(self.prepared)["scoped_preparation"]
         self.assertIn(str(self.build / "behavior"), rebound["invalidated"])
         self.assertEqual(rebound["context"]["configuration"]["tools"][str(owned)], digest(owned))
 
@@ -516,7 +529,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertNotIn("reused_from", retargeted)
         self.assertNotEqual(retargeted["identity"]["tools"], changed["identity"]["tools"])
         self.prepare()
-        final = json.loads(self.prepared.read_text())["scoped_preparation"]
+        final = read_json(self.prepared)["scoped_preparation"]
         self.assertIn(str(self.build / "behavior"), final["invalidated"])
         self.assertIn(str(selected.resolve()), final["context"]["configuration"]["tools"])
         build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
@@ -532,10 +545,10 @@ class BuildEvidenceTests(unittest.TestCase):
         with patch.dict(os.environ, {"CMAKE_BUILD_PARALLEL_LEVEL": "2"}):
             self.prepare()
             self.prepare(reconfigure=True)
-            first = json.loads(self.prepared.read_text())["scoped_preparation"]
+            first = read_json(self.prepared)["scoped_preparation"]
             with patch.dict(os.environ, {"CMAKE_BUILD_PARALLEL_LEVEL": "3"}):
                 self.prepare()
-                record = json.loads(self.prepared.read_text())
+                record = read_json(self.prepared)
                 proof = record["scoped_preparation"]
                 self.assertFalse(record["preparation_admission"]["configured"])
                 self.assertEqual(proof["build_jobs"], 3)
@@ -549,13 +562,13 @@ class BuildEvidenceTests(unittest.TestCase):
     def test_reconfigure_replaces_unproved_registry(self):
         self.prepare()
         registry = self.build / "verification-config-outputs.json"
-        previous = json.loads(registry.read_text())
+        previous = read_json(registry)
         trace = Path(previous["trace"])
         trace.write_bytes(trace.read_bytes() + b"\n")
         with self.assertRaisesRegex(ValueError, "configuration producer evidence changed"):
             build_evidence.configuration_outputs(self.build)
         self.prepare(reconfigure=True)
-        current = json.loads(registry.read_text())
+        current = read_json(registry)
         self.assertNotEqual(current["producer"], previous["producer"])
         self.assertEqual(current["outputs"], previous["outputs"])
         self.assertIn(self.build / "generated/binding.h", build_evidence.configuration_outputs(self.build))
@@ -578,7 +591,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.prepare()
         self.prepare(reconfigure=True)
         registry = self.build / "verification-config-outputs.json"
-        previous = json.loads(registry.read_text())
+        previous = read_json(registry)
         producer = Path(previous["producer"])
         original_producer = producer.read_bytes()
         process = Path(json.loads(original_producer)["process_tree"]["receipt"])
@@ -590,7 +603,7 @@ class BuildEvidenceTests(unittest.TestCase):
             build_evidence.configuration_outputs(self.build)
 
         self.prepare(reconfigure=True)
-        current = json.loads(registry.read_text())
+        current = read_json(registry)
         self.assertNotEqual(current["producer"], previous["producer"])
         self.assertEqual(current["outputs"], previous["outputs"])
         self.assertEqual(current["trace_sha256"], previous["trace_sha256"])
@@ -603,9 +616,9 @@ class BuildEvidenceTests(unittest.TestCase):
 
         # Intact replacement evidence must support the ordinary no-work renewal.
         original_registry = registry.read_bytes()
-        proof = json.loads(self.prepared.read_text())["scoped_preparation"]
+        proof = read_json(self.prepared)["scoped_preparation"]
         self.prepare(reconfigure=True)
-        renewed = json.loads(self.prepared.read_text())
+        renewed = read_json(self.prepared)
         self.assertEqual(registry.read_bytes(), original_registry)
         self.assertEqual(renewed["scoped_preparation"]["output_identities"], proof["output_identities"])
         self.assertEqual(renewed["scoped_preparation"]["invalidated"], [])
@@ -617,14 +630,14 @@ class BuildEvidenceTests(unittest.TestCase):
         cmake = self.source / "CMakeLists.txt"
         for change in ("trace", "outputs"):
             with self.subTest(change=change):
-                previous = json.loads(registry.read_text())
+                previous = read_json(registry)
                 if change == "trace":
                     cmake.write_text(cmake.read_text().replace("COPYONLY", "@ONLY"))
                 else:
                     cmake.write_text(cmake.read_text() +
                         "configure_file(binding.h.in generated/second.h COPYONLY)\n")
                 self.prepare(reconfigure=True)
-                current = json.loads(registry.read_text())
+                current = read_json(registry)
                 self.assertNotEqual(current["producer"], previous["producer"])
                 self.assertNotEqual(current["trace_sha256"], previous["trace_sha256"])
                 if change == "trace":
@@ -678,14 +691,14 @@ class BuildEvidenceTests(unittest.TestCase):
         for targets, testing in ((["juicer"], "ON"), (["juicer"], "OFF"),
                                  (["JuicerPreparedStateTests", "JuicerPreparedProjectionTests"], "ON")):
             prepared = build_evidence.prepare_targets(root, preset, targets, testing)
-            record = json.loads(prepared.read_text())
+            record = read_json(prepared)
             effective = sorted(set(targets) | ({build_evidence.PRODUCTION_PREPARED_RENDER_TARGET} if testing == "OFF" else set()))
             self.assertEqual(record["scoped_preparation"]["targets"], effective)
             self.assertEqual(record["scoped_preparation"]["configure_args"], ["-DBUILD_TESTING=" + testing])
             self.assertTrue(record["process_tree"]["drained"])
             self.assertFalse((build / "runtime-ran").exists())
             self.assertEqual(development.read_bytes(), saved)
-            self.assertTrue(all(json.loads(p.read_text())["stage"] == "prepare"
+            self.assertTrue(all(read_json(p)["stage"] == "prepare"
                                 for p in prepared.parents[2].glob("attempts/*/result.json")))
         campaign = Campaign(root, preset, "freshness-reader", ["prepare"])
         build_evidence.check_scoped_preparation(campaign, build, prepared)
@@ -736,7 +749,7 @@ class BuildEvidenceTests(unittest.TestCase):
                 elif fault == "changed-evidence":
                     attempt.write_bytes(protected[attempt] + b" ")
                 elif fault in {"undrained", "active-supervisor"}:
-                    tree = json.loads(attempt.read_text())
+                    tree = read_json(attempt)
                     if fault == "undrained":
                         tree["drained"] = False
                     else:
@@ -744,7 +757,7 @@ class BuildEvidenceTests(unittest.TestCase):
                         tree["creation"]["linux_start_ticks"] = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19]
                     write_json(attempt, tree)
                     result = attempt.with_name("result.json")
-                    record = json.loads(result.read_text())
+                    record = read_json(result)
                     record["process_tree"] = {**tree, "receipt": str(attempt)}
                     write_json(result, record)
                     for path in (attempt, result):
@@ -789,7 +802,7 @@ class BuildEvidenceTests(unittest.TestCase):
             retired = build_evidence.retire_s4c1_pending(self.root, preset)
             self.assertFalse(marker.exists())
             self.assertFalse(baseline.exists())
-            record = json.loads(retired.read_text())
+            record = read_json(retired)
             self.assertEqual(record["disposition"], "retired-unqualified")
             self.assertTrue(record["fresh_preparation_required"])
             self.assertEqual(Path(record["original"]["file"]).read_bytes(), original)
@@ -808,7 +821,7 @@ class BuildEvidenceTests(unittest.TestCase):
             timeout=30,
             **{"tests": ["behavior"], **kwargs},
         )
-        output = (self.root / json.loads(receipt.read_text())["output"]).read_text()
+        output = (self.root / read_json(receipt)["output"]).read_text()
         self.assertIn("100% tests passed", output)
         return receipt
 
@@ -865,7 +878,7 @@ class BuildEvidenceTests(unittest.TestCase):
     def test_undeclared_preparation_preserves_reusable_results(self):
         first = self.prepare()
         baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
-        record = json.loads(first.read_text())
+        record = read_json(first)
         paths = {
             baseline, first, Path(record["process_tree"]["receipt"]),
             self.root / record["output"],
@@ -950,7 +963,7 @@ class BuildEvidenceTests(unittest.TestCase):
         path.write_bytes(original.replace(b"{3}", b"{8}"))
         os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         self.prepare()
-        proof = json.loads(self.prepared.read_text())["scoped_preparation"]
+        proof = read_json(self.prepared)["scoped_preparation"]
         self.assertEqual(proof["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
         clean = [row["identity"]["command"] for row in self.campaign.attempts("prepare") if Path(row["identity"]["command"][0]).name in {"cargo", "cargo.exe"} and row["identity"]["command"][1] == "clean"]
         self.assertEqual(len(clean), 1)
@@ -998,7 +1011,7 @@ class BuildEvidenceTests(unittest.TestCase):
         path.write_bytes(original)
         os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         self.prepare(targets=["overlap"])
-        self.assertEqual(json.loads(self.prepared.read_text())["scoped_preparation"]["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
+        self.assertEqual(read_json(self.prepared)["scoped_preparation"]["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
         self.execute()
 
     def test_header_selection_keeps_cold_configured_variants(self):
@@ -1043,7 +1056,7 @@ class BuildEvidenceTests(unittest.TestCase):
         with OutputLease(self.root, self.build), self.assertRaisesRegex(ValueError, "dependency contents"):
             build_evidence.check_scoped_preparation(self.campaign, self.build, first)
         self.prepare()
-        self.assertEqual(json.loads(self.prepared.read_text())["scoped_preparation"]["rust_invalidated_packages"], [])
+        self.assertEqual(read_json(self.prepared)["scoped_preparation"]["rust_invalidated_packages"], [])
         self.execute()
 
     def test_cargo_configuration_change_invalidates_reuse_and_active_packages(self):
@@ -1055,7 +1068,7 @@ class BuildEvidenceTests(unittest.TestCase):
         with OutputLease(self.root, self.build), self.assertRaisesRegex(ValueError, "dependency contents"):
             build_evidence.check_scoped_preparation(self.campaign, self.build, first)
         self.prepare()
-        self.assertEqual(json.loads(self.prepared.read_text())["scoped_preparation"]["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
+        self.assertEqual(read_json(self.prepared)["scoped_preparation"]["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
         self.execute()
 
     def test_macro_candidates_compile_before_consumer_publication(self):
@@ -1091,7 +1104,7 @@ class BuildEvidenceTests(unittest.TestCase):
         config.parent.mkdir()
         config.write_text("[build]\nrustflags = []\n")
         self.prepare(targets=["overlap"])
-        self.assertEqual(json.loads(self.prepared.read_text())["scoped_preparation"]["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
+        self.assertEqual(read_json(self.prepared)["scoped_preparation"]["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
         self.execute()
 
     def test_rust_tool_identity_change_invalidates_active_packages(self):
@@ -1106,7 +1119,7 @@ class BuildEvidenceTests(unittest.TestCase):
             return value
         with patch.object(build_evidence, "preparation_inventory", side_effect=changed_tools):
             self.prepare()
-            self.assertEqual(json.loads(self.prepared.read_text())["scoped_preparation"]["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
+            self.assertEqual(read_json(self.prepared)["scoped_preparation"]["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
             self.execute()
 
     def test_normal_timestamp_rust_edit_uses_incremental_cargo(self):
@@ -1116,7 +1129,7 @@ class BuildEvidenceTests(unittest.TestCase):
         original = path.read_bytes()
         path.write_bytes(original.replace(b"{3}", b"{8}"))
         self.prepare()
-        self.assertEqual(json.loads(self.prepared.read_text())["scoped_preparation"]["rust_invalidated_packages"], [])
+        self.assertEqual(read_json(self.prepared)["scoped_preparation"]["rust_invalidated_packages"], [])
         with self.assertRaises(subprocess.CalledProcessError):
             self.execute()
         path.write_bytes(original)
@@ -1126,14 +1139,14 @@ class BuildEvidenceTests(unittest.TestCase):
     def test_unchanged_repeat_reuses_objects_and_archive_without_touching(self):
         self.enable_rust()
         self.prepare()
-        record = json.loads(self.prepared.read_text())
+        record = read_json(self.prepared)
         paths = [Path(name) for name in record["scoped_preparation"]["outputs"]]
         before = {str(path): (digest(path), path.stat().st_mtime_ns) for path in paths}
         self.prepare()
         after = {str(path): (digest(path), path.stat().st_mtime_ns) for path in paths}
         self.assertEqual(before, after)
         self.assertEqual(
-            json.loads(self.prepared.read_text())["scoped_preparation"]["invalidated"], []
+            read_json(self.prepared)["scoped_preparation"]["invalidated"], []
         )
         # A missing successful-Cargo stamp must preserve the unchanged archive
         # and native consumers; order-only prerequisites do not carry data.
@@ -1193,10 +1206,10 @@ class BuildEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "stop before fresh build"):
                     self.prepare(targets=targets)
             _, pending = build_evidence.preparation_paths(self.build, targets)
-            failed = json.loads(pending.read_text())["failure_proof"]
-            self.assertEqual(json.loads(Path(failed["file"]).read_text())["completion"], "commands-drained")
+            failed = read_json(pending)["failure_proof"]
+            self.assertEqual(read_json(Path(failed["file"]))["completion"], "commands-drained")
         self.prepare(targets=targets)
-        record = json.loads(self.prepared.read_text())
+        record = read_json(self.prepared)
         self.assertEqual(record["preparation_admission"]["archive_owners"], {})
         self.assertEqual(record["preparation_admission"]["artifact_owners"], {})
         self.assertEqual(record["preparation_admission"]["superseded_producers"], {str(producer): digest(producer)})
@@ -1231,7 +1244,7 @@ class BuildEvidenceTests(unittest.TestCase):
         binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
         binary.write_bytes(b"unusable intervening executable")
         self.prepare()
-        record = json.loads(self.prepared.read_text())
+        record = read_json(self.prepared)
         self.assertEqual(record["preparation_admission"]["superseded_producers"], {str(producer): digest(producer)})
         self.assertIn(str(binary), record["scoped_preparation"]["invalidated"])
         self.execute(tests=["selected"], junit=self.campaign.directory / "fresh-native.xml")
@@ -1249,7 +1262,7 @@ class BuildEvidenceTests(unittest.TestCase):
         baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
         original_owner = baseline.read_bytes()
         (self.campaign.directory / "prior-baseline.json").write_bytes(original_owner)
-        proof = json.loads(producer.read_text())["scoped_preparation"]
+        proof = read_json(producer)["scoped_preparation"]
         originals = {Path(name): (Path(name).read_bytes(), Path(name).stat()) for name in proof["outputs"]}
         if artifact_kind == "executable":
             artifact = binary
@@ -1283,7 +1296,7 @@ class BuildEvidenceTests(unittest.TestCase):
             legacy.pop("producer_sha256")
             build_evidence.write_json(baseline, legacy)
             self.prepare(targets=["overlap"] if new_scope else ["behavior"])
-            repaired = json.loads(self.prepared.read_text())["scoped_preparation"]
+            repaired = read_json(self.prepared)["scoped_preparation"]
             self.assertEqual(repaired["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
             with OutputLease(self.root, self.build):
                 build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
@@ -1321,7 +1334,7 @@ class BuildEvidenceTests(unittest.TestCase):
         cmake = self.source / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
         producer = self.prepare()
-        record = json.loads(producer.read_text())
+        record = read_json(producer)
         process = Path(record["process_tree"]["receipt"])
         original, stamp = process.read_bytes(), process.stat()
         complete = json.loads(original)
@@ -1355,7 +1368,7 @@ class BuildEvidenceTests(unittest.TestCase):
             with self.subTest(fault=fault):
                 if index:
                     self.restore_preparation(snapshot)
-                record = json.loads(producer.read_text())
+                record = read_json(producer)
                 if fault == "process":
                     payload = Path(record["process_tree"]["receipt"])
                 elif fault == "log":
@@ -1416,7 +1429,7 @@ class BuildEvidenceTests(unittest.TestCase):
             with self.subTest(fault=fault):
                 if index:
                     self.restore_preparation(snapshot)
-                record = json.loads(producer.read_text())
+                record = read_json(producer)
                 proof = record["scoped_preparation"]
                 baseline, old_pending = build_evidence.preparation_paths(self.build, ["behavior"])
                 original_owner = baseline.read_bytes()
@@ -1494,7 +1507,7 @@ class BuildEvidenceTests(unittest.TestCase):
                     self.assertTrue(pending.exists())
                     self.assertEqual(self.campaign.attempts("prepare")[-1]["status"], "failed")
                     continue
-                current = json.loads(self.prepared.read_text())
+                current = read_json(self.prepared)
                 self.assertEqual(current["preparation_admission"]["artifact_owners"], {})
                 self.assertEqual(current["preparation_admission"]["archive_owners"], {str(producer): digest(producer)})
                 self.assertEqual(current["scoped_preparation"]["rust_invalidated_packages"], [])
@@ -1527,7 +1540,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertEqual(subprocess.check_output([str(binary), "10"], text=True, timeout=10).strip(), "value=10")
         warm_baseline, _ = build_evidence.preparation_paths(self.build, ["behavior", "unrelated"])
         warm_owner = warm_baseline.read_bytes()
-        proof = json.loads(warm.read_text())["scoped_preparation"]
+        proof = read_json(warm)["scoped_preparation"]
         artifacts = {name: (digest(Path(name)), Path(name).stat().st_mtime_ns) for name in proof["outputs"]}
         self.assertEqual(set(proof["output_identities"]), set(artifacts))
         for i in range(3):
@@ -1537,11 +1550,11 @@ class BuildEvidenceTests(unittest.TestCase):
             self.assertFalse(pending.exists())
             start = len(self.campaign.attempts("prepare"))
             self.prepare(targets=targets)
-            record = json.loads(self.prepared.read_text())
+            record = read_json(self.prepared)
             selected = record["scoped_preparation"]
             self.assertTrue(record["preparation_admission"]["artifact_owners"])
             self.assertEqual(selected["targets"], targets)
-            current = json.loads(baseline.read_text())
+            current = read_json(baseline)
             self.assertEqual(current.pop("producer_sha256"), digest(self.prepared))
             self.assertEqual(current, selected)
             self.assertFalse(pending.exists())
@@ -1571,7 +1584,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.prepare()
         baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
         selected, _ = build_evidence.preparation_paths(self.build, ["overlap"])
-        record = json.loads(self.prepared.read_text())
+        record = read_json(self.prepared)
         proof = record["scoped_preparation"]
         process = Path(record["process_tree"]["receipt"])
         log = self.root / record["output"]
@@ -1607,7 +1620,7 @@ class BuildEvidenceTests(unittest.TestCase):
                                 changed["producer"] = "superseded"
                             build_evidence.write_json(baseline, changed)
                         elif fault in {"raw_receipt", "raw_timing"}:
-                            modified = json.loads(self.prepared.read_text())
+                            modified = read_json(self.prepared)
                             if fault == "raw_receipt":
                                 name = next(iter(modified["identity"]["inputs"]))
                                 modified["identity"]["inputs"][name] = "mutated raw input receipt"
@@ -1662,7 +1675,7 @@ class BuildEvidenceTests(unittest.TestCase):
         cmake = self.source / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
         self.prepare()
-        proof = json.loads(self.prepared.read_text())["scoped_preparation"]
+        proof = read_json(self.prepared)["scoped_preparation"]
         artifacts = [Path(name) for name in proof["outputs"]
                      if Path(name).name in {"cargo-build.stamp", "libfilm_juicer_plugin.a", "film_juicer_plugin.lib"}]
         self.assertEqual(len(artifacts), 2)
@@ -1733,7 +1746,7 @@ class BuildEvidenceTests(unittest.TestCase):
 
     def test_complete_proof_preserves_unrelated_objects_for_selected_target(self):
         self.prepare()
-        record = json.loads(self.prepared.read_text())
+        record = read_json(self.prepared)
         objects = {
             Path(name): (digest(Path(name)), Path(name).stat().st_mtime_ns)
             for name in record["scoped_preparation"]["outputs"]
@@ -1847,7 +1860,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.prepare()
         self.assertFalse(pending.exists())
         self.assertNotEqual(baseline.read_bytes(), original_baseline)
-        recovery = json.loads(self.prepared.read_text())["preparation_admission"]["recovered_pending"]
+        recovery = read_json(self.prepared)["preparation_admission"]["recovered_pending"]
         self.assertEqual(Path(recovery["file"]).read_bytes(), original_pending)
         self.assertEqual(digest(Path(recovery["file"])), recovery["sha256"])
         self.assertTrue(all(path.read_bytes() == content for path, content in retained.items()))
@@ -1864,33 +1877,33 @@ class BuildEvidenceTests(unittest.TestCase):
             self.prepare()
         no_command = pending.read_bytes()
         no_command_record = json.loads(no_command)
-        proof = json.loads(Path(no_command_record["failure_proof"]["file"]).read_text())
+        proof = read_json(Path(no_command_record["failure_proof"]["file"]))
         self.assertEqual(proof["completion"], "no-command-started")
         self.assertEqual(proof["attempts"], [])
         self.assertEqual(len(self.campaign.attempts("prepare")), attempts_before)
         self.prepare()
-        recovered = json.loads(self.prepared.read_text())["preparation_admission"]["recovered_pending"]
+        recovered = read_json(self.prepared)["preparation_admission"]["recovered_pending"]
         self.assertEqual(Path(recovered["file"]).read_bytes(), no_command)
         self.assertEqual(digest(Path(recovered["file"])), recovered["sha256"])
-        earlier = json.loads(self.prepared.read_text())
+        earlier = read_json(self.prepared)
         earlier_process = Path(earlier["process_tree"]["receipt"]).read_bytes()
         baseline_before = baseline.read_bytes()
         self.args.append("-DRECOVERY_PROBE=ON")
         with patch.object(build_evidence, "_check_preparation_result", side_effect=ValueError("controlled publication failure")), \
                 self.assertRaisesRegex(ValueError, "controlled publication failure"):
             self.prepare()
-        marker = json.loads(pending.read_text())
+        marker = read_json(pending)
         proof_path = Path(marker["failure_proof"]["file"])
-        proof = json.loads(proof_path.read_text())
+        proof = read_json(proof_path)
         self.assertEqual(proof["completion"], "commands-drained")
         self.assertEqual(len(proof["attempts"]), 2)
         configure_attempt, build_attempt = [Path(item["directory"]) for item in proof["attempts"]]
-        self.assertIn("-S", json.loads((configure_attempt / "result.json").read_text())["identity"]["command"])
-        self.assertIn("--build", json.loads((build_attempt / "result.json").read_text())["identity"]["command"])
+        self.assertIn("-S", read_json(configure_attempt / "result.json")["identity"]["command"])
+        self.assertIn("--build", read_json(build_attempt / "result.json")["identity"]["command"])
         configure_process = (configure_attempt / "process.json").read_bytes()
         attempt = build_attempt
         process = attempt / "process.json"
-        self.assertEqual(json.loads(process.read_text())["status"], "completed")
+        self.assertEqual(read_json(process)["status"], "completed")
         protected = [baseline, self.build / "material.txt", *self.campaign.directory.glob("attempts/*/*")]
         protected = {path: path.read_bytes() for path in protected if path.is_file()}
         originals = {path: path.read_bytes() for path in (pending, proof_path, process)}
@@ -1935,7 +1948,7 @@ class BuildEvidenceTests(unittest.TestCase):
         # command cannot establish drainage for this additional writer.
         later = self.campaign.directory / "attempts/prepare-unproved"
         later.mkdir()
-        record = json.loads((attempt / "result.json").read_text())
+        record = read_json(attempt / "result.json")
         record.update(status="running", attempt_number=record["attempt_number"] + 1)
         (later / "result.json").write_text(json.dumps(record), encoding="utf-8")
         with patch.object(self.campaign, "run", side_effect=AssertionError("later unproved attempt launched recovery")), \
@@ -1961,7 +1974,7 @@ class BuildEvidenceTests(unittest.TestCase):
         marker.write_text("warm setup")
         targets = ["fail_once"]
         self.prepare(targets=targets)
-        record = json.loads(self.prepared.read_text())
+        record = read_json(self.prepared)
         outputs = {
             Path(name): (digest(Path(name)), Path(name).stat().st_mtime_ns)
             for name in record["scoped_preparation"]["outputs"]
@@ -2049,6 +2062,7 @@ class BuildEvidenceTests(unittest.TestCase):
     def test_preparation_publication_rejects_changed_process_proof_or_missing_output(self):
         self.write_interruptible_preparation()
         write = build_evidence.write_json
+        write_result = build_evidence.write_command_result
         for fault in ("process", "output"):
             with self.subTest(fault=fault):
                 self.prepare()
@@ -2057,7 +2071,7 @@ class BuildEvidenceTests(unittest.TestCase):
                 process_before = {}
 
                 def corrupt(path, document):
-                    write(path, document)
+                    write_result(path, document)
                     if "scoped_preparation" in document and document.get("status") == "passed":
                         if fault == "process":
                             process = Path(document["process_tree"]["receipt"])
@@ -2066,7 +2080,7 @@ class BuildEvidenceTests(unittest.TestCase):
                         else:
                             (self.build / "material.txt").unlink()
 
-                with patch.object(build_evidence, "write_json", side_effect=corrupt), self.assertRaises(ValueError):
+                with patch.object(build_evidence, "write_command_result", side_effect=corrupt), self.assertRaises(ValueError):
                     self.prepare()
                 self.assertEqual(baseline.read_bytes(), original)
                 self.assertTrue(list(self.build.glob("verification-build-*.pending.json")))
@@ -2090,14 +2104,14 @@ class BuildEvidenceTests(unittest.TestCase):
         baseline_before = baseline.read_bytes()
 
         def unproved_publication(path, document):
-            write(path, document)
+            write_result(path, document)
             if "scoped_preparation" in document and document.get("status") == "passed":
                 write(Path(document["process_tree"]["receipt"]), {"drained": False})
 
-        with patch.object(build_evidence, "write_json", side_effect=unproved_publication), self.assertRaises(ValueError):
+        with patch.object(build_evidence, "write_command_result", side_effect=unproved_publication), self.assertRaises(ValueError):
             self.prepare()
         self.assertEqual(baseline.read_bytes(), baseline_before)
-        self.assertEqual(json.loads(pending.read_text())["state"], "running")
+        self.assertEqual(read_json(pending)["state"], "running")
         pending_before = pending.read_bytes()
         attempts = len(self.campaign.attempts("prepare"))
         with patch.object(self.campaign, "run", side_effect=AssertionError("unproved publication launched a retry")), \
@@ -2115,7 +2129,7 @@ class BuildEvidenceTests(unittest.TestCase):
                          'DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/native.cpp" '
                          'BYPRODUCTS "${CMAKE_BINARY_DIR}/stage-data")\nadd_dependencies(behavior stage)\n')
         self.prepare()
-        proof = json.loads(self.prepared.read_text())["scoped_preparation"]
+        proof = read_json(self.prepared)["scoped_preparation"]
         symbolic = self.build / "CMakeFiles/stage"
         self.assertFalse(symbolic.exists())
         self.assertNotIn(str(symbolic), proof["outputs"])
@@ -2175,7 +2189,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertIn(str(generated), consumed)
         self.args.append("-DRECONFIGURE_CHECK=ON")
         self.prepare()
-        proof = json.loads(self.prepared.read_text())["scoped_preparation"]
+        proof = read_json(self.prepared)["scoped_preparation"]
         self.assertTrue(generated.is_file())
         self.assertNotIn(str(generated), proof["context"]["files"])
         unowned = self.build / "generated/unowned.h"
@@ -2245,7 +2259,7 @@ class FixtureLifetimeTests(unittest.TestCase):
             case, result = self.run_fixture(artifact_root, True, lambda case: None)
             self.assertTrue(result.wasSuccessful())
             self.assertTrue((case.root / MARKER).is_file())
-            self.assertEqual(json.loads((case.root / MARKER).read_text())["outcome"], "passed")
+            self.assertEqual(read_json(case.root / MARKER)["outcome"], "passed")
 
     def test_missing_result_retains_build_fixture(self):
         case = BuildEvidenceTests("test_unchanged_reconfigure_preserves_registry_and_artifacts")
@@ -2261,7 +2275,7 @@ class FixtureLifetimeTests(unittest.TestCase):
 
             failed_case, result = self.run_fixture(artifact_root, False, fail_test)
             self.assertEqual(len(result.failures), 1)
-            failure_marker = json.loads((failed_case.root / MARKER).read_text())
+            failure_marker = read_json(failed_case.root / MARKER)
             self.assertEqual(failure_marker["test"], failed_case.id())
             self.assertEqual(failure_marker["outcome"], "failed")
 
@@ -2271,7 +2285,7 @@ class FixtureLifetimeTests(unittest.TestCase):
 
             failed_case, result = self.run_fixture(artifact_root, False, fail_subtest)
             self.assertEqual(len(result.failures), 1)
-            failure_marker = json.loads((failed_case.root / MARKER).read_text())
+            failure_marker = read_json(failed_case.root / MARKER)
             self.assertEqual(failure_marker["test"], failed_case.id())
 
             def leave_blocked_owner(case):
@@ -2281,7 +2295,7 @@ class FixtureLifetimeTests(unittest.TestCase):
 
             blocked_case, result = self.run_fixture(artifact_root, False, leave_blocked_owner)
             self.assertTrue(result.wasSuccessful())
-            marker = json.loads((blocked_case.root / MARKER).read_text())
+            marker = read_json(blocked_case.root / MARKER)
             owner = blocked_case.root / "out/verification-locks/control/owner.json"
             self.assertEqual(marker["blocked_owners"], [str(owner)])
             self.assertEqual(marker["outcome"], "passed")
@@ -2327,6 +2341,45 @@ class FileEvidenceTests(unittest.TestCase):
         request.write_text('{"protocol": 1, "protocol": 2}')
         with self.assertRaisesRegex(ValueError, "duplicate"):
             read_identity_request(request, digest(request))
+
+    @unittest.skipUnless(os.name == "nt", "forward-slash Windows identity path normalization")
+    def test_native_windows_identity_accepts_forwardslash_paths_and_preserves_lexical_map(self):
+        import build_dependencies
+
+        source = self.root / "forward-slash.txt"
+        source.write_bytes(b"native Windows lexical path")
+        forwardslash = str(source).replace("\\", "/")
+        proof = "c" * 64
+        request = self.root / "request.json"
+        value = {"protocol": "windows-file-identities-v1", "collection_id": "d" * 32,
+                 "phase": "entry", "proofs": {proof: {
+                     "files": [forwardslash], "rust_configuration": []}}}
+        write_json(request, value)
+        runtime = Path(sys.executable)
+        with (
+            patch.object(build_dependencies, "windows_runtime_paths", return_value={
+                "python": runtime, "base_python": runtime,
+            }),
+            patch.object(
+                build_dependencies,
+                "file_identities",
+                wraps=build_dependencies.file_identities,
+            ) as scan,
+        ):
+            observed = build_dependencies.read_windows_identities(request, digest(request))
+            self.assertEqual(scan.call_count, 1)
+        normalized = str(Path(forwardslash))
+        self.assertEqual(observed["proofs"][proof]["files"], {
+            normalized: {"resolved": str(source.resolve()), "sha256": digest(source)},
+        })
+        self.assertEqual(observed["request_sha256"], digest(request))
+
+        value["proofs"][proof]["files"].append(str(source))
+        write_json(request, value)
+        with patch.object(build_dependencies, "windows_runtime_paths", return_value={
+            "python": runtime, "base_python": runtime,
+        }), self.assertRaisesRegex(ValueError, "lexical membership"):
+            build_dependencies.read_windows_identities(request, digest(request))
 
     @unittest.skipUnless(os.name == "posix", "foreign Windows preparation is consumed on Linux")
     def test_foreign_native_maps_preserve_targets_and_recheck_mapped_bytes(self):
@@ -2408,6 +2461,126 @@ class FileEvidenceTests(unittest.TestCase):
         with patch("build_dependencies.digest", side_effect=retarget), self.assertRaisesRegex(ValueError, "input path changed"):
             file_identities([path])
         self.assertEqual(file_identities([path])[str(path)]["resolved"], str((second / "input.txt").resolve()))
+
+    def test_windows_identity_maps_share_one_union_and_refresh_each_invocation(self):
+        from build_dependencies import capture_windows_identity_maps, file_identities
+
+        first, second, alias = [self.root / name for name in ("first", "second", "alias")]
+        for directory in (first, second):
+            directory.mkdir()
+            (directory / "shared.txt").write_text("original")
+
+        def link_to(target):
+            if os.name == "nt":
+                subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(alias), str(target)], check=True, capture_output=True, timeout=10)
+            else:
+                alias.symlink_to(os.path.relpath(target, alias.parent), target_is_directory=True)
+
+        def unlink():
+            os.rmdir(alias) if os.name == "nt" else alias.unlink()
+
+        link_to(first)
+        self.addCleanup(lambda: unlink() if alias.exists() or alias.is_symlink() else None)
+
+        alias_path = str(alias / "shared.txt")
+        first_path = str(first / "shared.txt")
+        second_path = str(second / "shared.txt")
+        proofs = {
+            "a" * 64: {"files": [alias_path, first_path], "rust_configuration": [alias_path]},
+            "b" * 64: {"files": [alias_path, second_path], "rust_configuration": [first_path]},
+        }
+        runtime_paths = {"python": first / "shared.txt", "base_python": second / "shared.txt"}
+        expected_paths = {alias_path, first_path, second_path}
+
+        with patch("build_dependencies.file_identities", wraps=file_identities) as observe:
+            observed, runtime = capture_windows_identity_maps(proofs, runtime_paths)
+            self.assertEqual(observe.call_count, 1)
+            self.assertEqual({str(path) for path in observe.call_args.args[0]}, expected_paths)
+            self.assertEqual(set(observed["a" * 64]["files"]), {alias_path, first_path})
+            self.assertEqual(observed["a" * 64]["files"][alias_path]["resolved"], first_path)
+            self.assertEqual(observed["a" * 64]["files"][first_path]["resolved"], first_path)
+            self.assertEqual(runtime["python"]["resolved"], first_path)
+            self.assertEqual(observed["a" * 64]["files"][alias_path], observed["b" * 64]["files"][alias_path])
+
+            first_file = first / "shared.txt"
+            stamp = first_file.stat()
+            first_file.write_text("mutated!")
+            os.utime(first_file, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            changed, _ = capture_windows_identity_maps(proofs, runtime_paths)
+            self.assertEqual(observe.call_count, 2)
+            self.assertNotEqual(changed["a" * 64]["files"][alias_path]["sha256"],
+                                observed["a" * 64]["files"][alias_path]["sha256"])
+
+            unlink()
+            link_to(second)
+            retargeted, _ = capture_windows_identity_maps(proofs, runtime_paths)
+            self.assertEqual(observe.call_count, 3)
+            self.assertEqual(retargeted["a" * 64]["files"][alias_path]["resolved"], second_path)
+            self.assertEqual(retargeted["a" * 64]["files"][alias_path],
+                             retargeted["b" * 64]["files"][second_path])
+
+    def test_windows_identity_maps_preserve_case_spellings(self):
+        import build_dependencies
+
+        first = self.root / "MixedCase.txt"
+        second = self.root / "mIXEDcASE.TXT"
+        payload = b"case alias payload"
+        first.write_bytes(payload)
+        if not second.exists():
+            second.write_bytes(payload)
+        runtime_file = self.root / "runtime.bin"
+        runtime_file.write_bytes(b"runtime identity")
+        aliases = [first, second]
+        checksum = hashlib.sha256(payload).hexdigest()
+        expected = {str(path): {"resolved": str(path.resolve(strict=True)), "sha256": checksum}
+                    for path in aliases}
+        self.assertEqual(len(expected), 2)
+        proofs = {
+            "a" * 64: {"files": [str(first)], "rust_configuration": [str(second)]},
+            "b" * 64: {"files": [str(second)], "rust_configuration": [str(first)]},
+        }
+        counts = {}
+        with patch.object(build_dependencies, "file_identities", wraps=build_dependencies.file_identities) as scan:
+            observed, runtime = build_dependencies.capture_windows_identity_maps(
+                proofs, {"python": runtime_file, "base_python": runtime_file}, counts=counts)
+            self.assertEqual(scan.call_count, 1)
+        for proof, groups in proofs.items():
+            for group, names in groups.items():
+                self.assertEqual(observed[proof][group], {name: expected[name] for name in names})
+        self.assertEqual(runtime["python"]["resolved"], str(runtime_file.resolve(strict=True)))
+        targets = {str(path.resolve(strict=True)): path for path in [*aliases, runtime_file]}
+        self.assertEqual(counts, {"content_reads": len(targets),
+                                 "content_bytes": sum(path.stat().st_size for path in targets.values()),
+                                 "transcript_decoded_bytes": 0})
+
+        if os.name == "nt":
+            runtime_paths = build_dependencies.windows_runtime_paths()
+            native_runtime = {role: runtime_paths[role] for role in ("python", "base_python")}
+            runtime_bindings = {str(path): {"resolved": str(path.resolve(strict=True)), "sha256": digest(path)}
+                                for path in native_runtime.values()}
+            bindings = {**expected, **runtime_bindings}
+            native_proofs = proofs
+            request = self.root / "case-request.json"
+            for protocol in ("windows-file-identities-v1", "windows-file-identities-v2"):
+                for phase in ("entry", "terminal"):
+                    value = {"protocol": protocol, "collection_id": "c" * 32,
+                             "phase": phase, "proofs": native_proofs}
+                    write_json(request, value)
+                    request_hash = digest(request)
+                    with self.subTest(protocol=protocol, phase=phase):
+                        response = build_dependencies.read_windows_identities(request, request_hash)
+                        self.assertEqual(response["protocol"], protocol)
+                        self.assertEqual(response["phase"], phase)
+                        self.assertEqual(response["request_sha256"], request_hash)
+                        self.assertEqual(response["proofs"], {
+                            proof: {group: {name: bindings[name] for name in names}
+                                    for group, names in groups.items()}
+                            for proof, groups in native_proofs.items()})
+                        self.assertEqual(response["runtime"], {
+                            role: {"path": str(path), **runtime_bindings[str(path)]}
+                            for role, path in native_runtime.items()})
+                        self.assertEqual("file_observations" in response,
+                                         protocol == "windows-file-identities-v2")
 
     def test_output_lease_spans_readers_and_conflicting_callers(self):
         with OutputLease(self.root, self.build):

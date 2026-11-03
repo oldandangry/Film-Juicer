@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from execution import read_bytes, read_text
 
 EXECUTION_SOURCE = Path(__file__).with_name("execution.py")
 
@@ -118,8 +120,8 @@ def supervised_run(command, *, cwd, env, stdout, stderr, check, process_prefix, 
         with stdout_path.open("wb") as output, stderr_path.open("wb") as errors:
             status = run_process_tree(command, cwd, env, output, None, receipt, lock, tree,
                                       errors if stderr == subprocess.PIPE else None)
-        payload = stdout_path.read_bytes()
-        error_payload = stderr_path.read_bytes()
+        payload = read_bytes(stdout_path)
+        error_payload = read_bytes(stderr_path)
         if options.get("text"):
             payload = payload.decode("utf-8", errors="replace").replace("\r\n", "\n")
             error_payload = error_payload.decode("utf-8", errors="replace").replace("\r\n", "\n")
@@ -185,7 +187,7 @@ class Runner:
             detail = f"{label}: could not start command: executable is unavailable: {command[0]}"
             log_path.write_text(detail + "\n", encoding="utf-8")
             record.update(seconds=time.perf_counter() - start, returncode=None, error=detail)
-            log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+            log_path.with_suffix(".command.json").write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
             raise QualityError(detail)
         if executable:
             self.bind_inputs([Path(executable)])
@@ -206,10 +208,10 @@ class Runner:
             )
         except BaseException as exc:
             process_receipt = log_path.with_suffix(".process.json")
-            self.blocked |= not process_receipt.is_file() or not json.loads(process_receipt.read_text())["drained"]
+            self.blocked |= not process_receipt.is_file() or not json.loads(read_text(process_receipt))["drained"]
             log_path.write_text(f"{label}: could not start command: {exc}\n", encoding="utf-8")
             record.update(seconds=time.perf_counter() - start, returncode=None, error=str(exc))
-            log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+            log_path.with_suffix(".command.json").write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
             raise QualityError(f"{label}: could not start command: {exc}; see {log_path}") from exc
         record.update(seconds=time.perf_counter() - start, returncode=completed.returncode)
         if stdout_only:
@@ -225,7 +227,7 @@ class Runner:
             output = stdout + completed.stderr.decode("utf-8", errors="replace")
         else:
             stdout = output = completed.stdout
-        log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        log_path.with_suffix(".command.json").write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
         log_path.write_text(output, encoding="utf-8")
         if output and display_output:
             with self.output_lock:
@@ -359,7 +361,7 @@ def run_git(root: Path, arguments: Sequence[str]) -> bytes:
 def load_policy(root: Path) -> SourcePolicy:
     path = root / "scripts/source_file_policy.json"
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_text(path, encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise QualityError(f"invalid source policy: {path}: {exc}") from exc
     if raw.get("schemaVersion") != 1:
@@ -478,7 +480,7 @@ def check_source_hygiene(
             continue
         checked += 1
         try:
-            source = (root / path).read_text(encoding="utf-8")
+            source = read_text(root / path, encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             diagnostics.append(f"{path}: cannot read source for hygiene checks: {exc}")
             continue
@@ -597,12 +599,12 @@ def check_workspace_contract(root: Path) -> None:
         root / "rust/film-juicer-plugin/Cargo.toml",
     ):
         try:
-            parsed = tomllib.loads(manifest.read_text(encoding="utf-8"))
+            parsed = tomllib.loads(read_text(manifest, encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as exc:
             raise QualityError(f"invalid member manifest: {manifest}: {exc}") from exc
         if parsed.get("lints", {}).get("workspace") is not True:
             raise QualityError(f"member manifest does not inherit workspace lints: {manifest}")
-    core = (root / "rust/film-juicer-core/src/lib.rs").read_text(encoding="utf-8")
+    core = read_text(root / "rust/film-juicer-core/src/lib.rs", encoding="utf-8")
     if "#![forbid(unsafe_code)]" not in core:
         raise QualityError("film-juicer-core must retain #![forbid(unsafe_code)]")
 
@@ -773,7 +775,7 @@ def split_compiler_command(command: str) -> tuple[str, ...]:
 def compilation_entries(root: Path, preset: str) -> list[CompilationEntry]:
     path = root / "out/build" / preset / "compile_commands.json"
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
+        parsed = json.loads(read_text(path, encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise QualityError(f"missing or invalid compilation database: {path}: {exc}") from exc
     entries: list[CompilationEntry] = []
@@ -860,7 +862,7 @@ def included_paths(root: Path, entry: CompilationEntry,
         children: list[str] = []
         if current not in includes:
             try:
-                includes[current] = tuple(INCLUDE_PATTERN.findall(current_path.read_text(encoding="utf-8")))
+                includes[current] = tuple(INCLUDE_PATTERN.findall(read_text(current_path, encoding="utf-8")))
             except (OSError, UnicodeDecodeError) as exc:
                 raise QualityError(f"cannot read include input {current}: {exc}") from exc
         directives = includes[current]
@@ -1022,7 +1024,7 @@ def prepare_cuda_overlay(root: Path, log_dir: Path) -> Path:
     )
     vendor = root / "third_party/openrand/util.h"
     try:
-        text = vendor.read_text(encoding="utf-8")
+        text = read_text(vendor, encoding="utf-8")
     except OSError as exc:
         raise QualityError(f"cannot read CUDA analysis input: {vendor}: {exc}") from exc
     condition = "#ifdef __CUDA_ARCH__\n"
@@ -1166,7 +1168,7 @@ def check_build_path(root: Path, preset: str) -> None:
     cache = root / "out/build" / preset / "CMakeCache.txt"
     if not cache.is_file():
         return
-    for line in cache.read_text(encoding="utf-8").splitlines():
+    for line in read_text(cache, encoding="utf-8").splitlines():
         if line.startswith("CMAKE_HOME_DIRECTORY:INTERNAL="):
             configured = Path(line.split("=", 1)[1])
             if str(configured) != str(root):
@@ -1332,16 +1334,16 @@ def quality_main(root, arguments):
         "preset": arguments.preset, "selected": selected, "excluded": excluded,
         "mode": "development" if getattr(arguments, "development", False) else "qualification",
         "started_at": datetime.now(timezone.utc).isoformat(), "status": "running",
-        "selected_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+        "selected_sha256": {name: hashlib.sha256(read_bytes(root / name)).hexdigest()
                             for name in selected if (root / name).is_file()},
     }
     receipt = log_dir / "run.json"
-    receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    receipt.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
     print(f"Quality run: {log_dir}", flush=True)
     start = time.perf_counter()
     try:
         record["inputs"] = quality_inputs(root, arguments.preset, selected, policy, getattr(arguments, "development", False))
-        receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        receipt.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
         result = run_checks(root, arguments, policy, selected, excluded, runner)
         if result != 0:
             raise QualityError(f"quality checks returned {result}")
@@ -1357,9 +1359,9 @@ def quality_main(root, arguments):
     finally:
         record["consumed_inputs"] = runner.inputs if isinstance(runner.inputs, dict) else {}
         record.update(seconds=time.perf_counter() - start, finished_at=datetime.now(timezone.utc).isoformat())
-        record["files"] = {} if runner.blocked else {path.relative_to(log_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        record["files"] = {} if runner.blocked else {path.relative_to(log_dir).as_posix(): hashlib.sha256(read_bytes(path)).hexdigest()
                            for path in sorted(log_dir.rglob("*")) if path.is_file() and path != receipt}
-        receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        receipt.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 

@@ -55,6 +55,16 @@ def selected_paths(preset_root):
                     continue
                 if not isinstance(record, dict) or record.get("outcome") != "passed":
                     paths.add(fixture)
+                    continue
+                # A passed outer control can still have an unproved downstream
+                # owner. Its workspace is retained for diagnosis and must remain
+                # visible to CI selection. Treat malformed owner metadata as
+                # unproved too; older or partial receipts cannot authorize loss.
+                blocked_owners = record.get("blocked_owners")
+                if (not isinstance(blocked_owners, list)
+                        or any(not isinstance(owner, str) or not owner for owner in blocked_owners)
+                        or blocked_owners):
+                    paths.add(fixture)
     npy_root = preset_root / "rust-core"
     paths.update(p for p in npy_root.glob("npy-*.npy")
                  if p.is_file() and p.resolve().is_relative_to(npy_root.resolve()))

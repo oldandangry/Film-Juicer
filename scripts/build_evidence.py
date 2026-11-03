@@ -14,7 +14,8 @@ import subprocess
 import time
 import uuid
 
-from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json, windows_runtime_paths
+from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json, windows_runtime_paths, read_bytes, read_text
+from execution import read_json, write_command_result
 from build_dependencies import (
     CompilationInputs,
     NinjaGraph,
@@ -54,7 +55,7 @@ def registration_files(build: Path, *, allow_missing=False) -> list[Path]:
             raise ValueError(
                 f"build registered tests before qualification: missing {path}"
             )
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in read_text(path, encoding="utf-8").splitlines():
             if re.match(r"\s*(include|subdirs)\s*\(", line, re.IGNORECASE):
                 match = re.fullmatch(
                     r'\s*(include|subdirs)\("([^"$]+)"\)\s*', line, re.IGNORECASE
@@ -189,7 +190,7 @@ def linker_tools(build: Path, cache: str, environment) -> list[Path]:
 def preparation_inventory(root: Path, build: Path, environment) -> dict:
     """Bind Ninja's regeneration dependencies, including external CMake modules."""
     paths = configuration_files(build)
-    cache = paths[0].read_text(encoding="utf-8")
+    cache = read_text(paths[0], encoding="utf-8")
     if not re.search(r"^CMAKE_GENERATOR:INTERNAL=Ninja\s*$", cache, re.MULTILINE):
         raise ValueError("build preparation requires the project Ninja generator")
     match = re.search(r"^CMAKE_MAKE_PROGRAM:[^=]+=(.+)$", cache, re.MULTILINE)
@@ -249,7 +250,7 @@ def preparation_inventory(root: Path, build: Path, environment) -> dict:
 
 def redact_configure_trace(trace, source, build):
     facts, outputs = [], set()
-    for line in trace.read_text(encoding="utf-8").splitlines():
+    for line in read_text(trace, encoding="utf-8").splitlines():
         row = json.loads(line)
         arguments = row.get("args", [])
         output = None
@@ -354,17 +355,17 @@ def configure_with_evidence(
                     {"error": str(trace_error), "trace_sha256": digest(trace)},
                 )
                 trace.unlink()
-    record = json.loads(configured.read_text(encoding="utf-8"))
+    record = read_json(configured)
     record["configuration_evidence"] = {
         "outputs": sorted(outputs),
         "trace": str(redacted),
         "trace_sha256": digest(redacted),
     }
-    write_json(configured, record)
+    write_command_result(configured, record)
     registry = build / "verification-config-outputs.json"
     if registry.is_file():
         try:
-            previous = json.loads(registry.read_text(encoding="utf-8"))
+            previous = read_json(registry)
             if (isinstance(previous, dict)
                     and previous.get("protocol") == SCOPED_PROTOCOL
                     and previous.get("outputs") == record["configuration_evidence"]["outputs"]
@@ -428,7 +429,7 @@ def environment_digest(environment):
 
 def verify_dependency_selection(root, build, graph, env=None):
     """A usable configured owning closure needs no complete-build receipt."""
-    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    cache = read_text(build / "CMakeCache.txt", encoding="utf-8")
     match = re.search(r"^CMAKE_HOME_DIRECTORY:[^=]+=(.+)$", cache, re.M)
     if not match or Path(match[1]).resolve() != root.resolve():
         raise ValueError("configured build tree belongs to another source directory")
@@ -501,8 +502,8 @@ def preparation_paths(build, targets):
 
 def check_preparation_owner(build, prepared, *, resolve=Path):
     """Check the current producer, including when collecting another native lane."""
+    record = read_json(str(prepared), resolve=resolve)
     prepared = resolve(str(prepared))
-    record = json.loads(prepared.read_text(encoding="utf-8"))
     proof = record.get("scoped_preparation")
     if not proof or proof.get("protocol") != SCOPED_PROTOCOL:
         raise ValueError(LEGACY_ADMISSION_UNSUPPORTED)
@@ -510,7 +511,7 @@ def check_preparation_owner(build, prepared, *, resolve=Path):
     if pending.exists():
         raise ValueError("pending preparation invalidates the prior scoped pass")
     try:
-        current = json.loads(baseline.read_text(encoding="utf-8"))
+        current = read_json(baseline)
     except (OSError, ValueError) as error:
         raise ValueError("latest completed preparation is unavailable; repeat preparation") from error
     producer_sha256 = current.pop("producer_sha256", None)
@@ -585,13 +586,13 @@ def check_preparation_inputs(build, proof, *, resolve=Path, native_file_identiti
 
 
 def _check_preparation_command(campaign, build, prepared):
-    record = json.loads(Path(prepared).read_text(encoding="utf-8"))
+    record = read_json(Path(prepared))
     proof = record.get("scoped_preparation")
     if not proof or proof.get("protocol") != SCOPED_PROTOCOL:
         raise ValueError(LEGACY_ADMISSION_UNSUPPORTED)
     if record.get("status") != "passed" or record.get("returncode") != 0 or not record.get("process_tree", {}).get("drained"):
         raise ValueError("scoped preparation did not pass with proved process completion")
-    process = json.loads(Path(record["process_tree"]["receipt"]).read_text(encoding="utf-8"))
+    process = read_json(Path(record["process_tree"]["receipt"]))
     expected_process = {key: value for key, value in record["process_tree"].items() if key != "receipt"}
     if process != expected_process or digest(campaign.root / record["output"]) != record["output_sha256"]:
         raise ValueError("scoped preparation command evidence changed")
@@ -634,7 +635,7 @@ def invalidate_preparation_owners(build, baseline, outputs):
         if path == baseline or path.name.endswith(".pending.json"):
             continue
         try:
-            proof = json.loads(path.read_text(encoding="utf-8"))
+            proof = read_json(path)
         except (OSError, ValueError):
             continue  # An unreadable owner is already unusable by every reader.
         if proof.get("protocol") == SCOPED_PROTOCOL and outputs & set(proof["outputs"]):
@@ -666,7 +667,7 @@ def invalidate_rust(campaign, stage, source, build, changed, old, environment, t
         affected = expanded
     if not affected:
         raise ValueError("unresolved package ownership for restored-time Rust inputs")
-    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    cache = read_text(build / "CMakeCache.txt", encoding="utf-8")
     profile = "release" if re.search(r"^CMAKE_BUILD_TYPE:STRING=Release$", cache, re.M) else "dev"
     target = "x86_64-pc-windows-msvc" if os.name == "nt" else "x86_64-unknown-linux-gnu"
     cargo = re.search(r"^JUICER_CARGO_EXECUTABLE:[^=]+=(.+)$", cache, re.M)
@@ -720,7 +721,7 @@ def _admit_missing_scope(campaign, source, build, baseline, targets, inputs, con
         if path.name.endswith(".pending.json"):
             return None  # Pending writers remain outside missing-scope admission.
         try:
-            proof = json.loads(path.read_text(encoding="utf-8"))
+            proof = read_json(path)
             owners.append((path, proof, proof.pop("producer_sha256", None)))
         except (OSError, ValueError):
             return None
@@ -787,7 +788,7 @@ def _read_recovery_file(binding, expected):
             or expected.is_symlink() or not expected.is_file()
             or digest(expected) != binding.get("sha256")):
         raise ValueError("pending preparation recovery evidence is missing or changed")
-    return json.loads(expected.read_text(encoding="utf-8"))
+    return read_json(expected)
 
 
 def _write_recovery_file(path, value):
@@ -807,8 +808,8 @@ def _drained_preparation_attempt(root, directory, stage, path, number):
     result, process, output = (path / name for name in ("result.json", "process.json", "output.log"))
     if any(item.is_symlink() or not item.is_file() for item in (result, process, output)):
         raise ValueError("pending preparation attempt has incomplete process evidence")
-    record = json.loads(result.read_text(encoding="utf-8"))
-    tree = json.loads(process.read_text(encoding="utf-8"))
+    record = read_json(result)
+    tree = read_json(process)
     output_sha256 = digest(output)
     if (not isinstance(record, dict) or not isinstance(tree, dict)
             or record.get("stage") != stage or record.get("directory") != str(root)
@@ -838,7 +839,7 @@ def _check_pending_preparation(campaign, source, build, targets, pending):
         stage = pending["stage"]
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", stage):
             raise ValueError("invalid pending preparation stage")
-        contract = json.loads((directory / "campaign.json").read_text(encoding="utf-8"))
+        contract = read_json(directory / "campaign.json")
         if contract["root"] != str(campaign.root) or stage not in contract["required"]:
             raise ValueError("pending preparation campaign changed")
         started = _read_recovery_file(pending["invocation_record"], directory / "preparation" / (invocation + ".started.json"))
@@ -872,7 +873,7 @@ def _pending_preparation(campaign, stage, source, build, targets, pending_path, 
     if pending_path.exists() or pending_path.is_symlink():
         if pending_path.is_symlink() or not pending_path.is_file():
             raise ValueError("cannot recover malformed pending preparation")
-        content = pending_path.read_bytes()
+        content = read_bytes(pending_path)
         previous = json.loads(content)
         _check_pending_preparation(campaign, source, build, targets, previous)
         recovered = _write_recovery_file(
@@ -901,17 +902,17 @@ def _pending_preparation(campaign, stage, source, build, targets, pending_path, 
             created = _preparation_attempts(campaign.directory, stage) - before
             records = []
             for name in created:
-                record = json.loads((Path(name) / "result.json").read_text(encoding="utf-8"))
+                record = read_json(Path(name) / "result.json")
                 records.append((record["attempt_number"], Path(name), record))
             records.sort(key=lambda item: item[0])
             if records:
                 _, directory, record = records[-1]
                 if record["status"] == "passed" and "--build" in record["identity"]["command"]:
                     record.update(status="failed", error="build provenance failed: " + str(error))
-                    write_json(directory / "result.json", record)
+                    write_command_result(directory / "result.json", record)
             attempts = [_drained_preparation_attempt(campaign.root, campaign.directory, stage, path, number)
                         for number, (_, path, _) in enumerate(records, started["next_attempt"])]
-            if json.loads(pending_path.read_text(encoding="utf-8")) != pending:
+            if read_json(pending_path) != pending:
                 raise ValueError("pending preparation changed while owned")
             sealed = {**pending, "state": "retryable"}
             proof = {"pending": sealed, "completion": "commands-drained" if attempts else "no-command-started",
@@ -994,23 +995,23 @@ def retire_s4c1_pending(root, preset):
             raise ValueError("legacy command still has an active or unproved owner")
         proofs = []
         for attempt in attempts:
-            record = json.loads((attempt / "result.json").read_text(encoding="utf-8"))
+            record = read_json(attempt / "result.json")
             proofs.append(_drained_preparation_attempt(root, directory, "prepare", attempt, record["attempt_number"]))
         # The Debug marker predates these commands and has no invocation binding.
         # The previous boot's retained drainage plus this boot boundary is required.
-        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        boot = read_text(Path("/proc/sys/kernel/random/boot_id")).strip()
         for attempt in attempts:
-            tree = json.loads((attempt / "process.json").read_text(encoding="utf-8"))
+            tree = read_json(attempt / "process.json")
             if preset == "linux-debug" and tree["creation"]["boot_id"] == boot:
                 raise ValueError("Debug legacy disposition requires the verified later boot")
             if tree["creation"]["boot_id"] == boot:
                 stat = Path("/proc") / str(tree["supervisor_pid"]) / "stat"
-                if stat.exists() and stat.read_text().rsplit(")", 1)[1].split()[19] == tree["creation"]["linux_start_ticks"]:
+                if stat.exists() and read_text(stat).rsplit(")", 1)[1].split()[19] == tree["creation"]["linux_start_ticks"]:
                     raise ValueError("legacy supervisor is still active")
         campaign = Campaign(root, preset, "legacy-retirement-" + uuid.uuid4().hex, ["retire"])
-        original = _write_recovery_file(campaign.directory / marker.name, marker.read_bytes())
+        original = _write_recovery_file(campaign.directory / marker.name, read_bytes(marker))
         baseline = marker.with_name(marker.name.replace(".pending.json", ".json"))
-        retained_baseline = (_write_recovery_file(campaign.directory / baseline.name, baseline.read_bytes())
+        retained_baseline = (_write_recovery_file(campaign.directory / baseline.name, read_bytes(baseline))
                              if baseline.is_file() else None)
         record = {"disposition": "retired-unqualified", "marker": str(marker), "original": original,
                   "baseline": retained_baseline, "evidence": expected["evidence"], "campaign": str(directory),
@@ -1060,7 +1061,7 @@ def retire_s4e_aborted_owner(root, preset):
     with OutputLease(root, build) as lease:
         if baseline.is_symlink() or not baseline.is_file() or digest(baseline) != expected["sha256"]:
             raise ValueError("S4E completed owner is unknown, changed or already retired")
-        content = baseline.read_bytes()
+        content = read_bytes(baseline)
         proof = json.loads(content)
         if (proof.get("protocol") != SCOPED_PROTOCOL or proof.get("targets") != ["juicer"]
                 or proof.get("source") != str(root) or proof.get("build") != str(build)
@@ -1077,7 +1078,7 @@ def retire_s4e_aborted_owner(root, preset):
         for pending in build.glob("*.pending.json"):
             if preset != "linux-debug" or pending != allowed_pending or pending.is_symlink():
                 raise ValueError("another pending preparation blocks S4E disposition")
-            value = json.loads(pending.read_text(encoding="utf-8"))
+            value = read_json(pending)
             _check_pending_preparation(campaign, root, build, ["juicer_analysis_inputs"], value)
             pending_bindings[str(pending)] = digest(pending)
         original = _write_recovery_file(campaign.directory / baseline.name, content)
@@ -1148,7 +1149,7 @@ def prepare_targets(root, preset, targets, testing="ON"):
     build = root / "out/build" / preset
     cache = build / "CMakeCache.txt"
     if cache.is_file():
-        home = re.search(r"^CMAKE_HOME_DIRECTORY:[^=]+=(.+)$", cache.read_text(encoding="utf-8"), re.M)
+        home = re.search(r"^CMAKE_HOME_DIRECTORY:[^=]+=(.+)$", read_text(cache, encoding="utf-8"), re.M)
         if not home or str(Path(home[1].strip())) != str(root):
             raise ValueError("use the configured source path spelling for preparation")
     with OutputLease(root, build):
@@ -1198,7 +1199,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
         interrupted = pending_path.exists() or pending_path.is_symlink()
         old = None
         if baseline.is_file():
-            candidate = json.loads(baseline.read_text(encoding="utf-8"))
+            candidate = read_json(baseline)
             if candidate.get("protocol") == SCOPED_PROTOCOL:
                 old = candidate
         previous_outputs = {}
@@ -1272,7 +1273,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
                 if owner.name.endswith(".pending.json") or owner == baseline:
                     continue
                 try:
-                    proof = json.loads(owner.read_text(encoding="utf-8"))
+                    proof = read_json(owner)
                 except (OSError, ValueError):
                     continue
                 owner_pending = owner.with_suffix(".pending.json")
@@ -1329,7 +1330,8 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
             if before == after:
                 break
             if attempt or any(before[name] != after[name] for name in before if name != "files"):
-                raise ValueError("unresolved dependency/configuration change during preparation")
+                fields = ", ".join(name for name in before if before[name] != after[name])
+                raise ValueError("unresolved dependency/configuration change during preparation: " + fields)
             discovered = set(after["files"]) ^ before["files"].keys()
             discovered_outputs = fresh_graph.affected(discovered)
             retained_outputs = {name: identity for name, identity in retained_outputs.items() if name not in discovered_outputs}
@@ -1340,7 +1342,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
             raise ValueError("retained artifact bytes changed during preparation")
         if retained_outputs:
             if (digest(Path(old["producer"])) != old["producer_sha256"]
-                    or json.loads(baseline.read_text(encoding="utf-8")) != old):
+                    or read_json(baseline) != old):
                 raise ValueError("retained preparation owner changed during renewal")
             _check_preparation_command(campaign, build, old["producer"])
         if admission and output_identities != admitted_outputs:
@@ -1363,7 +1365,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
             if potential & set(previous["outputs"]):
                 if owner.exists() or owner.is_symlink():
                     raise ValueError("retained shared Rust preparation owner changed")
-            elif not owner.is_file() or json.loads(owner.read_text(encoding="utf-8")) != previous:
+            elif not owner.is_file() or read_json(owner) != previous:
                 raise ValueError("retained shared Rust preparation owner changed")
             _check_preparation_command(campaign, build, previous["producer"])
         for producer, checksum in superseded_producers.items():
@@ -1374,7 +1376,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
                  "targets": targets, "build_jobs": jobs, "inputs": inputs, "configure_args": list(configure_args), "context": after,
                  "output_identities": output_identities,
                  "outputs": sorted(fresh_graph.outputs), "invalidated": invalidated, "rust_invalidated_packages": rust_invalidated}
-        record = json.loads(built.read_text(encoding="utf-8"))
+        record = read_json(built)
         record["preparation_admission"] = {"scope_missing": old is None, "artifact_owners": admission[2] if admission else {},
                                            "archive_owners": {proof["producer"]: proof["producer_sha256"] for _, proof, _ in archive_owners},
                                            "superseded_artifacts": superseded_artifacts,
@@ -1382,7 +1384,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
                                            "configured": configured is not None, "seconds": admission_seconds,
                                            "recovered_pending": pending["recovered_pending"]}
         record["scoped_preparation"] = proof
-        write_json(built, record)
+        write_command_result(built, record)
         # The writer just established this post-build context. Only its owned
         # result was written since; independent readers always rediscover it.
         _check_preparation_result(campaign, build, built, environment, fresh_context=after)
@@ -1425,7 +1427,7 @@ def run_ctest(campaign, stage, *, build, prepared, inputs, timeout, env=None,
                               tools=tools, env=env, timeout=timeout, repeat_reason="execute exact owning CTest groups")
         import xml.etree.ElementTree as ET
 
-        cases = ET.parse(junit).getroot().findall(".//testcase")
+        cases = ET.fromstring(read_bytes(junit)).findall(".//testcase")
         if sorted(case.get("name") for case in cases) != sorted(tests) or any(case.find(name) is not None for case in cases for name in ("failure", "error", "skipped")):
             raise ValueError("selected CTest did not execute a nonempty successful result")
         check_scoped_preparation(campaign, build, prepared, env)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
+import io
 import json
 import math
 import os
@@ -12,21 +14,285 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
+from contextvars import ContextVar
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Mapping, Sequence
+
+
+COMMAND_TRANSCRIPT_PROTOCOL = "command-transcript-v1"
+COMMAND_TRANSCRIPT_GZIP_THRESHOLD = 256 * 1024
+COMMAND_RECEIPT_PROTOCOL = "command-receipt-v2"
+COMMAND_IDENTITY_MAP_PROTOCOL = "command-identity-map-v1"
+_TRANSCRIPT_REFERENCE_FIELDS = frozenset({
+    "protocol", "path", "encoding", "encoded_bytes", "encoded_sha256",
+    "decoded_bytes", "decoded_sha256",
+})
+_FILE_OBSERVATIONS = ContextVar("verification_file_observations", default=None)
 
 
 class UnresolvedScope(ValueError):
     """The requested verification scope has no complete supported selection."""
 
 
-def digest(path: Path) -> str:
+def _file_digest(path: Path) -> str:
     value = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             value.update(block)
     return value.hexdigest()
+
+
+class FileObservations:
+    """Share file reads only within one explicitly owned freshness boundary."""
+
+    def __init__(self):
+        self.bindings = {}
+        self.digests = {}
+        self.payloads = {}
+        self.documents = {}
+        self.content_bytes = 0
+        self.content_reads = 0
+        self.transcript_decoded_bytes = 0
+        self.used = False
+
+    def __enter__(self):
+        if self.used:
+            raise ValueError("file observations cannot cross freshness boundaries")
+        self.used = True
+        self.token = _FILE_OBSERVATIONS.set(self)
+        return self
+
+    def __exit__(self, kind, value, traceback):
+        _FILE_OBSERVATIONS.reset(self.token)
+        self.payloads.clear()
+        self.documents.clear()
+
+    def _binding(self, path):
+        if _FILE_OBSERVATIONS.get() is not self:
+            raise ValueError("file observations are outside their freshness boundary")
+        path = Path(path)
+        lexical = str(path.absolute())
+        resolved = str(path.resolve(strict=True))
+        if self.bindings.setdefault(lexical, resolved) != resolved:
+            raise ValueError("input path changed during file observation")
+        return path, resolved
+
+    def digest(self, path):
+        path, resolved = self._binding(path)
+        if resolved not in self.digests:
+            checksum = hashlib.sha256()
+            parts = []
+            size = 0
+            self.content_reads += 1
+            with path.open("rb") as stream:
+                while block := stream.read(1024 * 1024):
+                    checksum.update(block)
+                    size += len(block)
+                    self.content_bytes += len(block)
+                    if parts is not None:
+                        if size <= 1024 * 1024:
+                            parts.append(block)
+                        else:
+                            parts = None
+            if self._binding(path)[1] != resolved:
+                raise ValueError("input path changed while reading")
+            self.digests[resolved] = checksum.hexdigest()
+            if parts is not None:
+                self.payloads[resolved] = b"".join(parts)
+        return self.digests[resolved]
+
+    def read_bytes(self, path):
+        path, resolved = self._binding(path)
+        if resolved not in self.payloads:
+            payload = path.read_bytes()
+            self.content_reads += 1
+            self.content_bytes += len(payload)
+            checksum = hashlib.sha256(payload).hexdigest()
+            if (self._binding(path)[1] != resolved
+                    or self.digests.get(resolved, checksum) != checksum):
+                raise ValueError("input changed while reading file observation")
+            self.digests[resolved] = checksum
+            self.payloads[resolved] = payload
+        return self.payloads[resolved]
+
+    def read_json(self, path):
+        _, resolved = self._binding(path)
+        if resolved not in self.documents:
+            from build_dependencies import identity_json
+            self.documents[resolved] = identity_json(self.read_bytes(path).decode("utf-8"))
+        return deepcopy(self.documents[resolved])
+
+    def counts(self):
+        return {"content_bytes": self.content_bytes, "content_reads": self.content_reads,
+                "transcript_decoded_bytes": self.transcript_decoded_bytes}
+
+
+def digest(path: Path) -> str:
+    observations = _FILE_OBSERVATIONS.get()
+    return observations.digest(path) if observations is not None else _file_digest(path)
+
+
+def read_json(path: Path, *, resolve=Path):
+    """Read metadata, resolving command references from its original logical path."""
+    logical_path = path
+    path = resolve(path)
+    observations = _FILE_OBSERVATIONS.get()
+    if observations is not None:
+        document = observations.read_json(path)
+        return _decode_command_receipt(document, logical_path, resolve=resolve, physical_receipt=path)
+    from build_dependencies import identity_json
+    path = Path(path)
+    document = identity_json(read_text(path, encoding="utf-8"))
+    return _decode_command_receipt(document, logical_path, resolve=resolve, physical_receipt=path)
+
+
+def read_bytes(path: Path) -> bytes:
+    observations = _FILE_OBSERVATIONS.get()
+    return observations.read_bytes(path) if observations is not None else Path(path).read_bytes()
+
+
+def read_text(path: Path, encoding=None, errors=None, newline=None) -> str:
+    observations = _FILE_OBSERVATIONS.get()
+    if observations is None:
+        return Path(path).read_text(encoding=encoding, errors=errors, newline=newline)
+    with io.TextIOWrapper(io.BytesIO(observations.read_bytes(path)), encoding=encoding,
+                          errors=errors, newline=newline) as stream:
+        return stream.read()
+
+
+def write_transcript(path: Path, payload: bytes) -> dict:
+    """Write one immutable command stream, compressing only large payloads."""
+    if not isinstance(payload, bytes):
+        raise TypeError("command transcript payload must be bytes")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    decoded_hash = hashlib.sha256(payload).hexdigest()
+    encoded_hash = hashlib.sha256()
+    encoded_bytes = 0
+    encoding = "gzip" if len(payload) > COMMAND_TRANSCRIPT_GZIP_THRESHOLD else "identity"
+
+    class EncodedSink:
+        def write(self, block):
+            nonlocal encoded_bytes
+            written = stream.write(block)
+            if written != len(block):
+                raise OSError("short write while saving command transcript")
+            encoded_hash.update(block)
+            encoded_bytes += written
+            return written
+
+        def flush(self):
+            return stream.flush()
+
+    with path.open("wb") as stream:
+        if encoding == "identity":
+            EncodedSink().write(payload)
+        else:
+            sink = EncodedSink()
+            with gzip.GzipFile(filename="", mode="wb", fileobj=sink, compresslevel=9, mtime=0) as compressed:
+                for offset in range(0, len(payload), 64 * 1024):
+                    compressed.write(payload[offset:offset + 64 * 1024])
+
+    return {
+        "protocol": COMMAND_TRANSCRIPT_PROTOCOL,
+        "path": str(path),
+        "encoding": encoding,
+        "encoded_bytes": encoded_bytes,
+        "encoded_sha256": encoded_hash.hexdigest(),
+        "decoded_bytes": len(payload),
+        "decoded_sha256": decoded_hash,
+    }
+
+
+def read_transcript(reference: Mapping, resolve=Path) -> bytes:
+    """Read a transcript only after checking its strict encoded and decoded identity."""
+    if not isinstance(reference, Mapping) or set(reference) != _TRANSCRIPT_REFERENCE_FIELDS:
+        raise ValueError("invalid command transcript reference fields")
+    if reference["protocol"] != COMMAND_TRANSCRIPT_PROTOCOL:
+        raise ValueError("unsupported command transcript protocol")
+    if reference["encoding"] not in {"identity", "gzip"}:
+        raise ValueError("unsupported command transcript encoding")
+    if not isinstance(reference["path"], str) or not reference["path"]:
+        raise ValueError("invalid command transcript path")
+    for field in ("encoded_bytes", "decoded_bytes"):
+        if type(reference[field]) is not int or reference[field] < 0:
+            raise ValueError("invalid command transcript byte count: " + field)
+    for field in ("encoded_sha256", "decoded_sha256"):
+        if not isinstance(reference[field], str) or not re.fullmatch(r"[0-9a-f]{64}", reference[field]):
+            raise ValueError("invalid command transcript digest: " + field)
+
+    path = resolve(reference["path"])
+    encoded_hash = hashlib.sha256()
+    decoded_hash = hashlib.sha256()
+    encoded_bytes = 0
+    decoded_bytes = 0
+    decoded_parts = []
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS) if reference["encoding"] == "gzip" else None
+
+    def retain_decoded(decoded):
+        nonlocal decoded_bytes
+        observations = _FILE_OBSERVATIONS.get()
+        if observations is not None:
+            observations.transcript_decoded_bytes += len(decoded)
+        if decoded_bytes + len(decoded) > reference["decoded_bytes"]:
+            raise ValueError("command transcript decoded byte count exceeds reference")
+        if decoded:
+            decoded_parts.append(decoded)
+            decoded_hash.update(decoded)
+            decoded_bytes += len(decoded)
+
+    try:
+        observations = _FILE_OBSERVATIONS.get()
+        source = io.BytesIO(observations.read_bytes(path)) if observations is not None else path.open("rb")
+        with source as stream:
+            while block := stream.read(64 * 1024):
+                encoded_hash.update(block)
+                encoded_bytes += len(block)
+                if decompressor is None:
+                    retain_decoded(block)
+                else:
+                    pending = block
+                    while pending:
+                        remaining = reference["decoded_bytes"] - decoded_bytes
+                        output_limit = min(64 * 1024, remaining + 1)
+                        decoded = decompressor.decompress(pending, output_limit)
+                        retain_decoded(decoded)
+                        if decompressor.unused_data:
+                            raise ValueError("trailing data in command transcript gzip stream")
+                        next_pending = decompressor.unconsumed_tail
+                        if next_pending == pending and not decoded:
+                            raise ValueError("command transcript gzip decoder made no progress")
+                        pending = next_pending
+            if decompressor is not None:
+                while True:
+                    remaining = reference["decoded_bytes"] - decoded_bytes
+                    output_limit = min(64 * 1024, remaining + 1)
+                    decoded = decompressor.decompress(b"", output_limit)
+                    retain_decoded(decoded)
+                    if decompressor.unused_data:
+                        raise ValueError("trailing data in command transcript gzip stream")
+                    if not decoded:
+                        break
+                retain_decoded(decompressor.flush(64 * 1024))
+                if not decompressor.eof:
+                    raise ValueError("truncated command transcript gzip stream")
+                if decompressor.unused_data or decompressor.unconsumed_tail:
+                    raise ValueError("incomplete command transcript gzip stream")
+    except zlib.error as error:
+        raise ValueError("corrupt command transcript gzip stream") from error
+
+    if encoded_bytes != reference["encoded_bytes"]:
+        raise ValueError("command transcript encoded byte count mismatch")
+    if encoded_hash.hexdigest() != reference["encoded_sha256"]:
+        raise ValueError("command transcript encoded digest mismatch")
+    if decoded_bytes != reference["decoded_bytes"]:
+        raise ValueError("command transcript decoded byte count mismatch")
+    if decoded_hash.hexdigest() != reference["decoded_sha256"]:
+        raise ValueError("command transcript decoded digest mismatch")
+    return b"".join(decoded_parts)
 
 
 def command_environment(environment: Mapping[str, str]) -> dict[str, str]:
@@ -54,8 +320,183 @@ def snapshot(root: Path, paths: Sequence[str]) -> dict[str, str]:
 
 def write_json(path: Path, value: object) -> None:
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(value, separators=(",", ":")) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def _command_logical_owner(receipt):
+    name = str(receipt)
+    receipt = PureWindowsPath(name) if PureWindowsPath(name).is_absolute() else Path(name).absolute()
+    if (receipt.name != "result.json" or receipt.parent.parent.name != "attempts"
+            or ".." in receipt.parts):
+        raise ValueError("command receipt is outside its owning campaign attempts")
+    return receipt.parent.parent.parent
+
+
+def _command_campaign_root(receipt: Path, *, reading: bool) -> Path:
+    _command_logical_owner(receipt)
+    receipt = Path(receipt).absolute()
+    if (receipt.name != "result.json" or receipt.parent.parent.name != "attempts"
+            or receipt.parent.is_symlink() or receipt.parent.parent.is_symlink()
+            or reading and receipt.is_symlink()):
+        raise ValueError("command receipt is outside its owning campaign attempts")
+    try:
+        return receipt.parent.parent.parent.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("command receipt campaign owner is unavailable") from error
+
+
+def _identity_map_bytes(values: Mapping) -> bytes:
+    if not isinstance(values, Mapping) or any(
+        not isinstance(name, str) or not isinstance(checksum, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", checksum)
+        for name, checksum in values.items()
+    ):
+        raise ValueError("command receipt identity map is malformed")
+    document = {"protocol": COMMAND_IDENTITY_MAP_PROTOCOL, "values": dict(values)}
+    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _decode_command_receipt(document, receipt, *, resolve=Path, physical_receipt=None):
+    if not isinstance(document, dict):
+        return document
+    protocol = document.get("protocol")
+    command_envelope = "stage" in document and "identity" in document
+    if protocol != COMMAND_RECEIPT_PROTOCOL and not command_envelope:
+        return document
+    if protocol not in (None, COMMAND_RECEIPT_PROTOCOL):
+        raise ValueError("unsupported command receipt protocol")
+    if protocol is None:
+        identity = document.get("identity")
+        if isinstance(identity, dict) and any(name.endswith("_ref") for name in identity):
+            raise ValueError("command receipt references require an explicit storage protocol")
+        if not isinstance(identity, dict) or not {"inputs", "tools"} <= set(identity):
+            raise ValueError("legacy command receipt identity maps are incomplete")
+        for name in ("inputs", "tools"):
+            _identity_map_bytes(identity[name])
+        return document
+
+    decoded = deepcopy(document)
+    identity = decoded.get("identity")
+    if (not isinstance(identity, dict) or "inputs" in identity or "tools" in identity
+            or not {"inputs_ref", "tools_ref"} <= set(identity)):
+        raise ValueError("command receipt identity-map references are incomplete")
+    if any(name.endswith("_ref") and name not in {"inputs_ref", "tools_ref"} for name in identity):
+        raise ValueError("command receipt contains an unknown identity-map reference")
+    owner = _command_logical_owner(receipt)
+    physical_receipt = Path(receipt if physical_receipt is None else physical_receipt).absolute()
+    if (physical_receipt.is_symlink() or not physical_receipt.is_file()
+            or physical_receipt.resolve(strict=True) != physical_receipt):
+        raise ValueError("command receipt must be a regular nonsymlink file")
+    if resolve is Path:
+        owner = _command_campaign_root(receipt, reading=True)
+        identity_directory = owner / "identities"
+        if identity_directory.is_symlink() or not identity_directory.is_dir():
+            raise ValueError("command receipt identity-map directory is unavailable or unsafe")
+
+    parsed_maps = {}
+
+    def read_map(reference):
+        if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+            raise ValueError("command receipt identity-map reference fields changed")
+        checksum = reference["sha256"]
+        expected_path = f"identities/{checksum}.json"
+        if (not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum)
+                or reference["path"] != expected_path):
+            raise ValueError("command receipt identity-map reference path changed")
+        logical_path = owner / "identities" / (checksum + ".json")
+        cache_key = str(logical_path)
+        if cache_key in parsed_maps:
+            return parsed_maps[cache_key]
+        path = Path(resolve(str(logical_path))).absolute()
+        if path.is_symlink():
+            raise ValueError("command receipt identity-map blob cannot be a symlink")
+        try:
+            resolved = path.resolve(strict=True)
+            if resolve is Path:
+                resolved.relative_to(owner)
+        except (OSError, ValueError) as error:
+            raise ValueError("command receipt identity-map blob is missing or escapes its campaign") from error
+        if resolved != path:
+            raise ValueError("command receipt identity-map blob path changed")
+        raw = read_bytes(path)
+        if hashlib.sha256(raw).hexdigest() != checksum:
+            raise ValueError("command receipt identity-map content hash changed")
+        observations = _FILE_OBSERVATIONS.get()
+        if observations is not None:
+            blob = observations.read_json(path)
+        else:
+            from build_dependencies import identity_json
+            blob = identity_json(raw.decode("utf-8"))
+        if (not isinstance(blob, dict) or set(blob) != {"protocol", "values"}
+                or blob["protocol"] != COMMAND_IDENTITY_MAP_PROTOCOL
+                or not isinstance(blob["values"], dict)
+                or _identity_map_bytes(blob["values"]) != raw):
+            raise ValueError("command receipt identity-map schema or canonical encoding changed")
+        parsed_maps[cache_key] = blob["values"]
+        return blob["values"]
+
+    for name in ("inputs", "tools"):
+        identity[name] = deepcopy(read_map(identity.pop(name + "_ref")))
+    decoded.pop("protocol")
+    return decoded
+
+
+def command_result_payloads(receipt, *, resolve=Path):
+    """Validate and enumerate the immutable maps needed by a retained receipt."""
+    from build_dependencies import identity_json
+    physical_receipt = resolve(receipt)
+    document = identity_json(read_text(physical_receipt, encoding="utf-8"))
+    _decode_command_receipt(document, receipt, resolve=resolve, physical_receipt=physical_receipt)
+    if not isinstance(document, dict) or document.get("protocol") != COMMAND_RECEIPT_PROTOCOL:
+        return {}
+    owner = _command_logical_owner(receipt)
+    return {str(owner / reference["path"]): reference["sha256"]
+            for name in ("inputs_ref", "tools_ref")
+            for reference in (document["identity"][name],)}
+
+
+def write_command_result(path: Path, record: Mapping) -> None:
+    """Publish a compact receipt backed by immutable campaign-owned identity maps."""
+    if not isinstance(record, Mapping) or not isinstance(record.get("identity"), Mapping):
+        raise ValueError("command result identity is malformed")
+    if "protocol" in record:
+        raise ValueError("command result already has a storage protocol")
+    receipt = Path(path)
+    owner = _command_campaign_root(receipt, reading=False)
+    stored = deepcopy(dict(record))
+    identity = stored["identity"]
+    if any(name.endswith("_ref") for name in identity):
+        raise ValueError("command result contains an unknown identity-map reference")
+    identity_directory = owner / "identities"
+    if identity_directory.is_symlink():
+        raise ValueError("command result identity-map directory cannot be a symlink")
+    identity_directory.mkdir(exist_ok=True)
+    identity_directory_resolved = identity_directory.resolve(strict=True)
+    try:
+        identity_directory_resolved.relative_to(owner.resolve(strict=True))
+    except ValueError as error:
+        raise ValueError("command result identity-map directory escapes its campaign") from error
+
+    for name in ("inputs", "tools"):
+        if name not in identity or name + "_ref" in identity:
+            raise ValueError("command result identity maps are incomplete")
+        blob = _identity_map_bytes(identity.pop(name))
+        checksum = hashlib.sha256(blob).hexdigest()
+        blob_path = identity_directory / (checksum + ".json")
+        if blob_path.is_symlink():
+            raise ValueError("command result identity-map blob cannot be a symlink")
+        try:
+            with blob_path.open("xb") as stream:
+                if stream.write(blob) != len(blob):
+                    raise OSError("short write while publishing command identity map")
+        except FileExistsError:
+            existing = read_bytes(blob_path)
+            if (hashlib.sha256(existing).hexdigest() != checksum or existing != blob):
+                raise ValueError("existing command identity-map blob changed")
+        identity[name + "_ref"] = {"path": f"identities/{checksum}.json", "sha256": checksum}
+    stored["protocol"] = COMMAND_RECEIPT_PROTOCOL
+    write_json(receipt, stored)
 
 
 def name_component(value: str) -> str:
@@ -71,7 +512,7 @@ def check_windows_launcher(executable: Path) -> None:
         for directory in (executable.parent, executable.parent.parent):
             config = directory / "pyvenv.cfg"
             if config.is_file():
-                for line in config.read_text(encoding="utf-8").splitlines():
+                for line in read_text(config, encoding="utf-8").splitlines():
                     key, separator, value = line.partition("=")
                     if separator and key.strip() == "home":
                         paths.append(Path(value.strip()) / "python.exe")
@@ -144,7 +585,7 @@ def mapped_windows_path(path):
 
 
 def windows_venv_home(config):
-    homes = [line.partition("=")[2].strip() for line in config.read_text().splitlines()
+    homes = [line.partition("=")[2].strip() for line in read_text(config).splitlines()
              if line.partition("=")[0].strip() == "home"]
     if len(homes) != 1 or not PureWindowsPath(homes[0]).is_absolute():
         raise ValueError("Windows identity venv has no explicit base interpreter")
@@ -239,13 +680,13 @@ def run_process_tree(
     finally:
         process.stdin.close()
         if receipt.is_file():
-            observed = json.loads(receipt.read_text(encoding="utf-8"))
+            observed = json.loads(read_text(receipt, encoding="utf-8"))
             if windows_identity is not None:
                 expected = {"collection_id": windows_identity["collection_id"],
                             "phase": windows_identity["phase"],
                             "request_sha256": windows_identity["request_sha256"]}
                 seal_path = receipt.with_suffix(".seal.json")
-                seal = json.loads(seal_path.read_text()) if seal_path.is_file() else None
+                seal = json.loads(read_text(seal_path)) if seal_path.is_file() else None
                 if (observed.get("identity_request") != expected or observed.get("command") != command
                         or seal != {"receipt_sha256": digest(receipt), "identity_request": expected}
                         or set(observed.get("creation", {})) != {"windows_creation_time_100ns"}
@@ -296,7 +737,7 @@ class Campaign:
             with path.open("x", encoding="utf-8") as stream:
                 stream.write(json.dumps(contract, indent=2) + "\n")
         except FileExistsError:
-            if json.loads(path.read_text(encoding="utf-8")) != contract:
+            if json.loads(read_text(path, encoding="utf-8")) != contract:
                 raise ValueError(
                     "existing campaign has a different root, preset or required gate list"
                 )
@@ -304,7 +745,7 @@ class Campaign:
     def attempts(self, stage: str) -> list[dict]:
         name_component(stage)
         paths = list((self.directory / "attempts").glob(f"{stage}-*/result.json"))
-        records = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+        records = [read_json(path) for path in paths]
         return sorted(
             (record for record in records if record["stage"] == stage),
             key=lambda record: (record.get("attempt_number", 0), record["started_at"]),
@@ -387,17 +828,18 @@ class Campaign:
             raise ValueError("VCTIP drain policy requires a VCTIP executable")
         preparation_start = time.perf_counter()
         selected_tools = [*tools, *([str(vctip_path)] if vctip_cleanup else []), *(native["tools"] if native else [])]
-        identity = {
-            "command": list(command),
-            "inputs": snapshot(self.root, inputs),
-            "tools": tool_snapshot(selected_tools),
-            "supervisor_sha256": digest(self.root / "scripts/process_tree.py" if native
-                                         else Path(__file__).with_name("process_tree.py")),
-            "executable_sha256": digest(Path(executable)),
-            "environment_sha256": hashlib.sha256(
-                json.dumps(environment, sort_keys=True).encode()
-            ).hexdigest(),
-        }
+        with FileObservations() as initial_reads:
+            identity = {
+                "command": list(command),
+                "inputs": snapshot(self.root, inputs),
+                "tools": tool_snapshot(selected_tools),
+                "supervisor_sha256": digest(self.root / "scripts/process_tree.py" if native
+                                             else Path(__file__).with_name("process_tree.py")),
+                "executable_sha256": digest(Path(executable)),
+                "environment_sha256": hashlib.sha256(
+                    json.dumps(environment, sort_keys=True).encode()
+                ).hexdigest(),
+            }
         if vctip_cleanup:
             identity["vctip_cleanup"] = vctip_cleanup
         if native is not None:
@@ -446,11 +888,12 @@ class Campaign:
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "directory": str(self.root),
                 "timeout": timeout,
-                "timings": {"initial_hash_seconds": preparation_seconds},
+                "timings": {"initial_hash_seconds": preparation_seconds,
+                            "initial_reads": initial_reads.counts()},
                 "output": (directory / "output.log").relative_to(self.root).as_posix(),
             }
             receipt = directory / "result.json"
-            write_json(receipt, record)
+            write_command_result(receipt, record)
             start = time.perf_counter()
             try:
                 with (directory / "output.log").open("xb") as output:
@@ -470,10 +913,12 @@ class Campaign:
                     raise subprocess.CalledProcessError(record["returncode"], command)
                 OutputLease.check_held()
                 verification_start = time.perf_counter()
-                unchanged = (
-                    snapshot(self.root, inputs) == identity["inputs"]
-                    and tool_snapshot(selected_tools) == identity["tools"]
-                )
+                with FileObservations() as final_reads:
+                    unchanged = (
+                        snapshot(self.root, inputs) == identity["inputs"]
+                        and tool_snapshot(selected_tools) == identity["tools"]
+                    )
+                record["timings"]["final_reads"] = final_reads.counts()
                 record["timings"]["final_input_hash_seconds"] = (
                     time.perf_counter() - verification_start
                 )
@@ -499,7 +944,7 @@ class Campaign:
                     record["timings"]["output_hash_seconds"] = (
                         time.perf_counter() - output_start
                     )
-                write_json(receipt, record)
+                write_command_result(receipt, record)
             return receipt
         finally:
             if tree["drained"]:
@@ -529,35 +974,38 @@ class Campaign:
             stages[stage] = records[-1]["status"] if records else "outstanding"
 
         def read_files(records):
-            local = set()
-            tools = set()
-            for record in records.values():
-                local.update(record["identity"]["inputs"])
-                local.add(record["output"])
-                local.add(Path(record["output"]).with_name("result.json").as_posix())
-                tools.update(record["identity"].get("tools", {}))
-            try:
-                resolved_root = self.root.resolve()
-            except (OSError, ValueError):
-                resolved_root = None
-            values = {}
-            for is_tool, names in ((False, local), (True, tools)):
-                for name in sorted(names):
-                    path = Path(name) if is_tool else self.root / name
-                    try:
-                        resolved = path.resolve(strict=is_tool)
-                        if not is_tool:
-                            if resolved_root is None:
-                                raise ValueError("campaign root is unavailable")
-                            resolved.relative_to(resolved_root)
-                            if not path.is_file():
-                                raise ValueError(
-                                    f"declared input is not a file: {name}"
-                                )
-                        values[is_tool, name] = (str(resolved), digest(path))
-                    except (OSError, ValueError):
-                        values[is_tool, name] = None
-            return values
+            with FileObservations():
+                local = set()
+                tools = set()
+                for record in records.values():
+                    local.update(record["identity"]["inputs"])
+                    local.add(record["output"])
+                    local.add(Path(record["output"]).with_name("result.json").as_posix())
+                    tools.update(record["identity"].get("tools", {}))
+                try:
+                    resolved_root = self.root.resolve()
+                except (OSError, ValueError):
+                    resolved_root = None
+                values = {}
+                for is_tool, names in ((False, local), (True, tools)):
+                    for name in sorted(names):
+                        path = Path(name) if is_tool else self.root / name
+                        try:
+                            resolved = path.resolve(strict=is_tool)
+                            if not is_tool:
+                                if resolved_root is None:
+                                    raise ValueError("campaign root is unavailable")
+                                resolved.relative_to(resolved_root)
+                                if not path.is_file():
+                                    raise ValueError(
+                                        f"declared input is not a file: {name}"
+                                    )
+                                if path.name == "result.json":
+                                    read_json(path)
+                            values[is_tool, name] = (str(resolved), digest(path))
+                        except (OSError, ValueError):
+                            values[is_tool, name] = None
+                return values
 
         def status(record, values, previous=None):
             # Preserve stage-specific expectations and input/tool/output precedence.
@@ -653,7 +1101,7 @@ class OutputLease:
 
     def check_admission(self):
         try:
-            owner = json.loads((self.path / "owner.json").read_text(encoding="utf-8"))
+            owner = json.loads(read_text(self.path / "owner.json", encoding="utf-8"))
             if (
                 self.blocked
                 or owner["status"] != "owned"
@@ -683,7 +1131,7 @@ class OutputLease:
             self.role = "nested"
             return self.held[self.path]
         if key in inherited:
-            owner = json.loads((self.path / "owner.json").read_text(encoding="utf-8"))
+            owner = json.loads(read_text(self.path / "owner.json", encoding="utf-8"))
             if owner["token"] != inherited[key]:
                 raise ValueError("output lease delegation changed")
             self.token = inherited[key]
@@ -698,7 +1146,7 @@ class OutputLease:
                 break
             except FileExistsError:
                 try:
-                    owner = json.loads((self.path / "owner.json").read_text(encoding="utf-8"))
+                    owner = json.loads(read_text(self.path / "owner.json", encoding="utf-8"))
                 except (FileNotFoundError, json.JSONDecodeError):
                     owner = {}
                 if owner.get("status") == "blocked":
@@ -730,7 +1178,7 @@ class OutputLease:
         if self.role == "nested":
             return
         self.held.pop(self.path)
-        owner = json.loads((self.path / "owner.json").read_text(encoding="utf-8"))
+        owner = json.loads(read_text(self.path / "owner.json", encoding="utf-8"))
         self.blocked |= owner["status"] == "blocked"
         if self.role == "delegated":
             if self.blocked:
@@ -741,7 +1189,7 @@ class OutputLease:
         else:
             os.environ["JUICER_OUTPUT_LEASES"] = self.previous
         if self.blocked:
-            owner = json.loads((self.path / "owner.json").read_text(encoding="utf-8"))
+            owner = json.loads(read_text(self.path / "owner.json", encoding="utf-8"))
             write_json(self.path / "owner.json", {**owner, "status": "blocked"})
         else:
             (self.path / "owner.json").unlink()

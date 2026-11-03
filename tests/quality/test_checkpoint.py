@@ -21,6 +21,8 @@ from control_artifacts import MARKER, record_fixture, selected_paths
 import qualification
 from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 
+from execution import read_json
+
 ROOT = Path(__file__).resolve().parents[2]
 SUITE_STARTED = time.monotonic()
 
@@ -198,7 +200,7 @@ class CheckpointTests(unittest.TestCase):
         self.configure_fixture(self.preset, True, "fixture-parallel")
         args = SimpleNamespace(reason="real checkpoint scheduling and lock witnesses", selection=["boundary"],
                                preset=self.preset, runtime="host", campaign="parallel", repeat_reason="", base=None, prepare=True)
-        result = json.loads(qualification.qualify(self.root, args).read_text())
+        result = read_json(qualification.qualify(self.root, args))
         self.assertEqual(result["status"], "passed")
         self.assertEqual(len(result["membership"]["boundary"]), 5)
 
@@ -223,7 +225,7 @@ class CheckpointTests(unittest.TestCase):
             compiler = shutil.which("clang-cl.exe")
             self.assertIsNotNone(compiler, "qualified Windows compiler is missing")
             presets_path = self.root / "CMakePresets.json"
-            presets = json.loads(presets_path.read_text())
+            presets = read_json(presets_path)
             for preset in presets["configurePresets"]:
                 preset["cacheVariables"].update(CMAKE_C_COMPILER=compiler, CMAKE_CXX_COMPILER=compiler)
             write_json(presets_path, presets)
@@ -315,7 +317,7 @@ class CheckpointTests(unittest.TestCase):
         fault.unlink()
         args.campaign = "retry-gpu-only"
         args.repeat_reason = "diagnosed GPU fault removed"
-        result = json.loads(qualification.qualify(self.root, args).read_text())
+        result = read_json(qualification.qualify(self.root, args))
         self.assertEqual((self.root / "out/order.txt").read_text().splitlines(), ["host", "gpu", "gpu"])
         self.assertEqual(result["scope_status"], "passed")
         self.assertTrue(all(p.read_bytes() == content for p, content in original.items()))
@@ -330,11 +332,11 @@ class CheckpointTests(unittest.TestCase):
         args.campaign = "retry-one-host-case"
         args.repeat_reason = "diagnosed host fault removed"
         path = qualification.qualify(self.root, args)
-        record = json.loads(path.read_text())
+        record = read_json(path)
         stage = record["stages"]["boundary"]
         self.assertEqual(len(stage["additional_receipts"]), 2)
         paths = qualification.stage_receipts(stage)
-        raw = [json.loads(p.read_text()) for p in paths]
+        raw = [read_json(p) for p in paths]
         self.assertEqual([r["returncode"] for r in raw], [8, 0, 0])
         for receipt, chunk in zip(paths, stage["ctest_chunks"], strict=True):
             log = receipt.with_name("LastTest.log")
@@ -344,7 +346,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(record["scope_status"], "passed")
         args.campaign = "reuse-composed"
         with patch.object(Campaign, "run", side_effect=AssertionError("completed cases reran")):
-            reused = json.loads(qualification.qualify(self.root, args).read_text())
+            reused = read_json(qualification.qualify(self.root, args))
         self.assertEqual(reused["stages"]["boundary"]["reused_from"], stage["receipt"])
         with self.assertRaisesRegex(ValueError, "full checkpoint membership"):
             qualification.collect_qualification(self.root, [path])
@@ -354,7 +356,7 @@ class CheckpointTests(unittest.TestCase):
         (self.root / "failure.txt").write_text("gpu")
         with self.assertRaises(subprocess.CalledProcessError):
             qualification.qualify(self.root, args)
-        state = json.loads(self.state_path.read_text())
+        state = read_json(self.state_path)
         chunk = state["boundary"]["ctest_chunks"][0]
         report = Path(chunk["report"])
         log = Path(chunk["receipt"]).with_name("LastTest.log")
@@ -380,11 +382,11 @@ class CheckpointTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 qualification.qualify(self.root, args)
         self.assertEqual((self.root / "out/order.txt").read_text().splitlines(), ["host"])
-        self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "failed")
+        self.assertEqual(read_json(self.state_path)["boundary"]["status"], "failed")
 
     def test_partition_logs_survive_overwrite_and_are_checked_on_reuse(self):
         args = self.mixed_project()
-        record = json.loads(qualification.qualify(self.root, args).read_text())
+        record = read_json(qualification.qualify(self.root, args))
         stage = record["stages"]["boundary"]
         logs = [path.with_name("LastTest.log") for path in qualification.stage_receipts(stage)]
         self.assertEqual(len(logs), 2)
@@ -398,7 +400,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(logs[1].read_bytes(), (self.build / "Testing/Temporary/LastTest.log").read_bytes())
         args.campaign = "reused-partition-logs"
         with patch.object(Campaign, "run", side_effect=AssertionError("completed partition reran")):
-            reused = json.loads(qualification.qualify(self.root, args).read_text())
+            reused = read_json(qualification.qualify(self.root, args))
         self.assertEqual(reused["stages"]["boundary"]["payloads"], stage["payloads"])
         logs[0].write_bytes(logs[0].read_bytes() + b"changed")
         args.campaign = "changed-partition-log"
@@ -408,9 +410,9 @@ class CheckpointTests(unittest.TestCase):
 
     def test_nonzero_ctest_without_reported_case_failure_cannot_be_composed(self):
         args = self.mixed_project()
-        record = json.loads(qualification.qualify(self.root, args).read_text())
+        record = read_json(qualification.qualify(self.root, args))
         stage = record["stages"]["boundary"]
-        raw = json.loads(Path(stage["receipt"]).read_text())
+        raw = read_json(Path(stage["receipt"]))
         raw.update(status="failed", returncode=8)
         unproved = self.root / "nonzero-ctest.json"
         unproved.write_text(json.dumps(raw))
@@ -439,7 +441,7 @@ class CheckpointTests(unittest.TestCase):
         self.configure_fixture(self.preset, True, "generated-consumers")
         with self.assertRaises(subprocess.CalledProcessError):
             qualification.qualify(self.root, args)
-        state = json.loads(self.state_path.read_text())
+        state = read_json(self.state_path)
         before = snapshot(self.root, list(state["boundary"]["identity"]["inputs"]))
         if directory:
             mode.write_text("host")
@@ -451,7 +453,7 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             qualification.qualify(self.root, args)
         self.assertEqual((self.root / "out/order.txt").read_text().splitlines(), ["host", "gpu", "host"])
-        self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "failed")
+        self.assertEqual(read_json(self.state_path)["boundary"]["status"], "failed")
 
     def test_partial_retry_rechecks_changed_generated_runtime_file(self):
         self.assert_runtime_artifact_change_invalidates_partial(directory=False)
@@ -561,7 +563,7 @@ class CheckpointTests(unittest.TestCase):
         self.other.write_text("repair")
         result = self.run_stage("boundary", campaign="new-caller")
         self.assertEqual(result["reused_from"], first["receipt"])
-        self.assertEqual(json.loads(self.state_path.read_text())["tooling"]["status"], "failed")
+        self.assertEqual(read_json(self.state_path)["tooling"]["status"], "failed")
         self.run_stage("prepare", campaign="preparation", inputs=["other.txt"])
         self.assertEqual(self.state["tooling"]["status"], "failed")
 
@@ -758,9 +760,9 @@ class CheckpointTests(unittest.TestCase):
                 "--selection", "boundary", "--runtime", "host", "--campaign", args.campaign]
         with patch.object(verify, "ROOT", self.root), patch.object(sys, "argv", argv):
             self.assertEqual(verify.main(), 0)
-        first = json.loads((self.root / "out/validation" / self.preset / "caller-one/qualification.json").read_text())
+        first = read_json(self.root / "out/validation" / self.preset / "caller-one/qualification.json")
         args.campaign = "caller-two"
-        second = json.loads(qualification.qualify(self.root, args).read_text())
+        second = read_json(qualification.qualify(self.root, args))
         self.assertEqual(first["membership"], {"boundary": ["boundary"]})
         self.assertEqual(second["status"], "passed")
         self.assertEqual(second["stages"]["boundary"]["reused_from"], first["stages"]["boundary"]["receipt"])
@@ -791,7 +793,7 @@ class CheckpointTests(unittest.TestCase):
         args = SimpleNamespace(reason="documentation discovery and retained native evidence", selection=["corpus"],
                                preset=self.preset, runtime="host", campaign="documentation-baseline", repeat_reason="", base=None, prepare=True)
         baseline = qualification.qualify(self.root, args)
-        record = json.loads(baseline.read_text())
+        record = read_json(baseline)
         stage = record["stages"]["corpus"]
         self.assertEqual(record["membership"], {"corpus": ["boundary"]})
         protected = {path: digest(path) for path in (baseline, Path(prepared["receipt"]), Path(stage["receipt"]))}
@@ -817,12 +819,12 @@ class CheckpointTests(unittest.TestCase):
                 self.assertEqual(source_snapshot(self.root), source)
                 with patch.object(Campaign, "run", side_effect=AssertionError("documentation reran a gate")), \
                         patch.object(qualification, "prepare_build", side_effect=AssertionError("documentation rebuilt the fixture")):
-                    current_state = json.loads(self.state_path.read_text())
+                    current_state = read_json(self.state_path)
                     reused = qualification.prepare_checkpoint(self.campaign("documentation-prepare-" + operation),
                         self.build, self.state_path, current_state, self.environment, timeout=60, allow_build=True)
                     self.assertEqual(reused["reused_from"], prepared["receipt"])
                     args.campaign = "documentation-" + operation
-                    current = json.loads(qualification.qualify(self.root, args).read_text())
+                    current = read_json(qualification.qualify(self.root, args))
                     self.assertEqual(current["stages"]["corpus"]["reused_from"], stage["receipt"])
                     with self.assertRaisesRegex(ValueError, "full checkpoint membership is incomplete"):
                         qualification.collect_qualification(self.root, [baseline])
@@ -861,7 +863,7 @@ class CheckpointTests(unittest.TestCase):
             self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         args = SimpleNamespace(reason="runtime preparation boundary", selection=["corpus"], preset=self.preset,
                                runtime="host", campaign="runtime-first", repeat_reason="", base=None, prepare=True)
-        original = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["corpus"]
+        original = read_json(qualification.qualify(self.root, args))["stages"]["corpus"]
         observed = self.build / "observed.txt"
         self.assertEqual(observed.read_text(), "1")
         inventory = json.loads(subprocess.check_output(
@@ -880,12 +882,12 @@ class CheckpointTests(unittest.TestCase):
                 with patch.object(qualification, "prepare_build", side_effect=AssertionError("preparation redispatched")), \
                         patch.object(Campaign, "run", side_effect=AssertionError("configure/build/clean dispatched")):
                     reused = qualification.prepare_checkpoint(self.campaign("runtime-reuse-" + str(index)), self.build,
-                        self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60, allow_build=True)
+                        self.state_path, read_json(self.state_path), self.environment, timeout=60, allow_build=True)
                 self.assertEqual(reused["reused_from"], first["receipt"])
                 self.assertTrue(all(p.read_bytes() == value for p, value in protected.items()))
                 args.campaign = "runtime-changed-" + str(index)
                 record_path = qualification.qualify(self.root, args)
-                current = json.loads(record_path.read_text())["stages"]["corpus"]
+                current = read_json(record_path)["stages"]["corpus"]
                 self.assertNotIn("reused_from", current)
                 self.assertNotEqual(current["receipt"], original["receipt"])
                 self.assertNotIn(str(observed), current["identity"]["tools"])
@@ -1000,15 +1002,15 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(self.state["prepare"]["status"], "failed")
         write_json(campaign.directory / "failed-checkpoint.json", self.state)
         for name in ("configured.json", "staged.json"):
-            self.assertEqual(json.loads((self.build / name).read_text())["value"], 1)
+            self.assertEqual(read_json(self.build / name)["value"], 1)
         baseline = build_evidence.preparation_paths(self.build, ["all"])[0]
-        original = Path(json.loads(baseline.read_text())["producer"])
+        original = Path(read_json(baseline)["producer"])
         original_receipt = original.read_bytes()
         renewed = qualification.prepare_checkpoint(self.campaign("new-membership-repaired"), self.build,
             self.state_path, self.state, self.environment, timeout=60, allow_build=True)
         self.assertNotIn("reused_from", renewed)
         for name in ("configured.json", "staged.json"):
-            self.assertEqual(json.loads((self.build / name).read_text())["value"], 2)
+            self.assertEqual(read_json(self.build / name)["value"], 2)
         self.assertEqual(original.read_bytes(), original_receipt)
 
     def assert_configure_copy_reprepared(self, configure_commands, *, module=None, bundled_module=None):
@@ -1049,7 +1051,7 @@ class CheckpointTests(unittest.TestCase):
             original_module = module.read_bytes()
         self.assertIn("tests/fixtures/runtime.json", first["identity"]["inputs"])
         configured, staged = (self.build / name for name in ("configured.json", "staged.json"))
-        self.assertEqual(json.loads(staged.read_text())["value"], 1)
+        self.assertEqual(read_json(staged)["value"], 1)
         self.assertIn(str(staged), first["payloads"])
         (producer.parent / "original-staged.json").write_bytes(staged.read_bytes())
         progress("unchanged-admission")
@@ -1074,10 +1076,10 @@ class CheckpointTests(unittest.TestCase):
         progress("changed-preparation-complete")
         write_json(self.build / "variable-copy-control.json", {
             "first_receipt": first["receipt"], "second_receipt": second["receipt"],
-            "commands": commands, "runtime": json.loads(fixture.read_text()),
-            "configured": json.loads(configured.read_text()), "staged": json.loads(staged.read_text())})
-        self.assertEqual(json.loads(configured.read_text())["value"], 2)
-        self.assertEqual(json.loads(staged.read_text())["value"], 2)
+            "commands": commands, "runtime": read_json(fixture),
+            "configured": read_json(configured), "staged": read_json(staged)})
+        self.assertEqual(read_json(configured)["value"], 2)
+        self.assertEqual(read_json(staged)["value"], 2)
         if module:
             self.assertEqual(module.read_bytes(), original_module)
         self.assertNotIn("reused_from", second)
@@ -1199,7 +1201,7 @@ class CheckpointTests(unittest.TestCase):
                 with patch.object(Campaign, "run", side_effect=AssertionError("unsafe owner dispatched")):
                     with self.assertRaises((ValueError, FileNotFoundError)):
                         qualification.prepare_checkpoint(self.campaign("rejected-" + fault), self.build,
-                            self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60, allow_build=True)
+                            self.state_path, read_json(self.state_path), self.environment, timeout=60, allow_build=True)
                 self.assertEqual(Path(first["receipt"]).read_bytes(), original_receipt)
                 # Faults are isolated in this miniature, never shared owners.
                 artifact.write_bytes(original_artifact)
@@ -1230,7 +1232,7 @@ class CheckpointTests(unittest.TestCase):
         args = SimpleNamespace(reason="miniature preparation collection", selection=["product"], preset=self.preset,
                                runtime="all", campaign="collection-first", repeat_reason="", base="fixture", prepare=True)
         path = qualification.qualify(self.root, args)
-        record = json.loads(path.read_text())
+        record = read_json(path)
         self.assertEqual("tests/fixtures/runtime.json" in record["stages"]["prepare"]["identity"]["inputs"], bool(module))
         self.assertIn("tests/fixtures/runtime.json", record["stages"]["product"]["identity"]["inputs"])
         original = path.read_bytes()
@@ -1244,10 +1246,10 @@ class CheckpointTests(unittest.TestCase):
                     qualification.collect_qualification(self.root, [path])
         args.campaign = "collection-changed"
         refreshed = qualification.qualify(self.root, args)
-        result = json.loads(refreshed.read_text())
+        result = read_json(refreshed)
         if module:
             self.assertNotIn("reused_from", result["stages"]["prepare"])
-            self.assertEqual(json.loads((self.build / "configured.json").read_text())["value"], 2)
+            self.assertEqual(read_json(self.build / "configured.json")["value"], 2)
         else:
             self.assertEqual(result["stages"]["prepare"]["reused_from"], record["stages"]["prepare"]["receipt"])
         self.assertNotIn("reused_from", result["stages"]["product"])
@@ -1266,7 +1268,7 @@ class CheckpointTests(unittest.TestCase):
             'add_test(NAME runtime COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_SOURCE_DIR}/tests/runtime.txt")\n')
         first = qualification.prepare_checkpoint(self.campaign("cold-discovery"), self.build,
             self.state_path, self.state, self.environment, timeout=60, allow_build=True)
-        proof = json.loads(Path(first["receipt"]).read_text())["scoped_preparation"]
+        proof = read_json(Path(first["receipt"]))["scoped_preparation"]
         declared = {name for name in first["identity"]["inputs"] if not name.startswith("out/build/")}
         self.assertEqual(declared, set(proof["inputs"]))
         self.assertIn("tests/runtime.txt", declared)
@@ -1654,12 +1656,12 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def production_protected(self, stage):
         receipt = Path(stage["receipt"])
-        command = json.loads(receipt.read_text())
+        command = read_json(receipt)
         manifest = qualification.production_manifest_identity(receipt, root=self.root)[0]
         paths = [receipt, self.root / command["output"], Path(command["process_tree"]["receipt"]), manifest]
         paths += [self.root / name for name in stage["identity"]["inputs"]
                   if Path(name).suffix.lower() in {".a", ".lib", ".ofx", ".pdb", ".exe"}]
-        prepared = json.loads(manifest.read_text())["prepared_render"]
+        prepared = read_json(manifest)["prepared_render"]
         paths.extend((Path(prepared["executable"]), manifest.parent / "prepared-render.stdout",
                       manifest.parent / "prepared-render.stderr"))
         return {str(path): digest(path) for path in paths}
@@ -1859,7 +1861,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def production_mutations(self, stage):
         manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
-        document = json.loads(manifest.read_text())
+        document = read_json(manifest)
         artifact = next(Path(row["file"]) for name, row in document["build_inputs"].items()
                         if Path(name).suffix.lower() in {".a", ".lib", ".ofx"})
         prepared = document["prepared_render"]
@@ -1869,18 +1871,18 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             manifest.parent / "film-values.stdout", artifact]
 
     def assert_production_reuse_controls(self, path, checkpoint, calls):
-        record = json.loads(path.read_text())
+        record = read_json(path)
         stage = record["stages"]["production"]
         owner = self.root / "out/build" / record["preset"] / "verification-checkpoint.json"
         owner_bytes = owner.read_bytes()
         protected = self.production_protected(stage)
         before = len(calls)
-        reused = json.loads(checkpoint("retained-unchanged").read_text())["stages"]["production"]
+        reused = read_json(checkpoint("retained-unchanged"))["stages"]["production"]
         self.assertEqual(reused["reused_from"], stage["receipt"])
         self.assertEqual(len(calls), before, "unchanged retained evidence executed probes again")
         outcomes = [{"operation": "reuse", "case": "unchanged", "status": "passed", "commands": 0}]
-        reused = json.loads(checkpoint("retained-retry-reason",
-            "retry another failed check").read_text())["stages"]["production"]
+        reused = read_json(checkpoint("retained-retry-reason",
+            "retry another failed check"))["stages"]["production"]
         self.assertEqual(reused["reused_from"], stage["receipt"])
         self.assertEqual(len(calls), before, "retry reason reran completed production probes")
         outcomes.append({"operation": "reuse", "case": "retry-reason", "status": "passed", "commands": 0})
@@ -1895,7 +1897,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                         target.write_bytes(b"changed after execution") if mutation == "replace" else target.unlink()
                         with self.assertRaisesRegex(ValueError, message):
                             checkpoint("retained-" + target.name.replace(".", "-").lower() + "-" + mutation)
-                        self.assertEqual(json.loads(owner.read_text())["production"]["status"], "failed")
+                        self.assertEqual(read_json(owner)["production"]["status"], "failed")
                         self.assertEqual(len(calls), before, "rejected reuse executed probes")
                         untouched = {name: checksum for name, checksum in protected.items() if Path(name) != target}
                         self.assertEqual(untouched, {name: digest(Path(name)) for name in untouched})
@@ -1926,10 +1928,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             def drift(campaign, name, command, **kwargs):
                 receipt = prior(campaign, name, command, **kwargs)
                 if name == "production":
-                    raw = json.loads(receipt.read_text())
+                    raw = read_json(receipt)
                     self.assertTrue(raw["process_tree"]["drained"])
                     manifest = qualification.production_manifest_identity(receipt, root=self.root)[0]
-                    document = json.loads(manifest.read_text())
+                    document = read_json(manifest)
                     if target_kind == "probe":
                         Path(document["probes"][0]["executable"]).write_bytes(b"drift after drained execution")
                     else:
@@ -1948,7 +1950,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                         checkpoint("retained-registration-drift-" + target_kind)
                 self.assertEqual([call["stage"] for call in calls[registration_start:]], ["production"],
                                  "registration control must execute one probe run without rebuilding")
-                self.assertEqual(json.loads(owner.read_text())["production"]["status"], "failed")
+                self.assertEqual(read_json(owner)["production"]["status"], "failed")
                 self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
                 outcomes.append({"operation": "registration", "case": "post-drain-drift-" + target_kind,
                                  "rejected": cause})
@@ -1958,9 +1960,9 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def assert_production_collection_controls(self, paths):
         preset = "windows-clang-release" if os.name == "nt" else "linux-release"
-        path = next(path for path in paths if json.loads(path.read_text())["preset"] == preset
-                    and json.loads(path.read_text())["selection"] == ["production"])
-        record = json.loads(path.read_text())
+        path = next(path for path in paths if read_json(path)["preset"] == preset
+                    and read_json(path)["selection"] == ["production"])
+        record = read_json(path)
         stage = record["stages"]["production"]
         owner = self.root / "out/build" / preset / "verification-checkpoint.json"
         owner_bytes = owner.read_bytes()
@@ -2060,7 +2062,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                         "tests/print/illuminant-fixtures/product-updates.json"}), timeout=60,
                     targets=["all", "JuicerProductionPreparedRenderProbe"],
                     configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
-                self.assertEqual(json.loads(prepared.read_text())["scoped_preparation"]["targets"],
+                self.assertEqual(read_json(prepared)["scoped_preparation"]["targets"],
                                  sorted(["all", "JuicerProductionPreparedRenderProbe"]))
                 path = checkpoint(preset, "retained-off")
                 paths.append(path)
@@ -2074,7 +2076,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 build = self.root / "out/build" / preset
                 self.configure_fixture(preset, True, "retained-prerequisite-on", timeout=60)
                 state_path = build / "verification-checkpoint.json"
-                state = json.loads(state_path.read_text()) if state_path.exists() else {}
+                state = read_json(state_path) if state_path.exists() else {}
                 groups = ["boundary", "product"]
                 if preset.endswith("debug"):
                     groups.append("tooling")
@@ -2136,7 +2138,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertEqual(record["pending"], ["boundary"])
         stage = record["stages"]["production"]
         manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
-        document = json.loads(manifest.read_text())
+        document = read_json(manifest)
         self.assertEqual(len(document["reference_results"]), 15)
         self.assertEqual(len(document["scanner_post_results"]), 410)
         for field in (
@@ -2512,7 +2514,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                     qualification.collect_qualification(self.root, [path])
 
         rejected_collection("pending checkpoint work")
-        state = json.loads(state_path.read_text())
+        state = read_json(state_path)
         with OutputLease(self.root, build):
             qualification.run_stage(Campaign(self.root, preset, "unrelated-repair", ["boundary"]),
                 state_path, state, "boundary", [self.python, "-c", "print('repaired')"],
@@ -2540,7 +2542,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                     state_path, state, "production", [self.python, "-c", "raise SystemExit(9)"],
                     inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
         rejected_collection("pending checkpoint work")
-        self.assertEqual(json.loads(state_path.read_text())["production"]["status"], "failed")
+        self.assertEqual(read_json(state_path)["production"]["status"], "failed")
         self.assertEqual(path.read_bytes(), original_record)
         self.assertEqual(evidence, {name: digest(Path(name)) for name in evidence})
 
@@ -2703,7 +2705,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                     groups += ["corpus"]
                 paths.append(checkpoint(preset, "initial", groups))
             initial = self.root / "out/validation" / self.preset / "initial/qualification.json"
-            selection = json.loads(initial.read_text())["selection"]
+            selection = read_json(initial)["selection"]
             # CMake may resolve preset compiler spellings during cold setup.
             # Admit the resulting tool inventory before the proof-only comparison.
             stable = checkpoint(self.preset, "stable", selection)
@@ -2712,42 +2714,46 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             # Assembly uses simulated foreign facts; real WindowsJob/identity
             # controls live in test_execution.WindowsIdentityInteropTests.
             foreign = {r["stages"]["prepare"]["sha256"]: {"files": {}, "rust_configuration": {}}
-                       for p in paths for r in [json.loads(p.read_text())]
+                       for p in paths for r in [read_json(p)]
                        if r["preset"].startswith("windows-") and "product" in r["selection"]}
             native = {"expected": foreign, "stages": []}
             phases, native_consumers = [], []
+            from copy import deepcopy
+            phase_maps = {phase: deepcopy(foreign) for phase in ("entry", "terminal")}
             original_identity = qualification.preparation_identity
             def assembled_identity(build, stage, **kwargs):
                 facts = kwargs.pop("native_file_identities", None)
                 if facts is not None:
                     self.assertEqual(facts, foreign[stage["sha256"]])
+                    self.assertIs(facts, phase_maps[phases[-1]][stage["sha256"]])
                     native_consumers.append(stage["sha256"])
                 return original_identity(build, stage, **kwargs)
             def native_phase(root, state, phase):
                 if phase == "entry":
                     self.assertFalse(native_consumers)
                 else:
-                    self.assertEqual(len(native_consumers), 4)
+                    self.assertCountEqual(native_consumers, foreign)
                 phases.append(phase)
                 state["stages"].append({"phase": phase})
-                return foreign
+                return phase_maps[phase]
             with patch.object(qualification, "prepare_native_collection", return_value=native), \
                     patch.object(qualification, "run_native_identity_phase", side_effect=native_phase), \
                     patch.object(qualification, "preparation_identity", side_effect=assembled_identity), \
                     patch.object(qualification, "check_native_identity_evidence") as native_seal:
                 initial_collection = record_phase("collect.initial", qualification.collect_qualification, self.root, paths)
                 self.assertEqual(phases, ["entry", "terminal"])
+                self.assertCountEqual(native_consumers, [*foreign, *foreign])
                 native_seal.assert_called_once_with(self.root, native["stages"], foreign)
                 self.assertEqual(initial_collection["native_identities"], native["stages"])
             self.assertEqual(initial_collection["status"], "passed")
-            first = json.loads(initial.read_text())
-            proof = json.loads(Path(first["stages"]["prepare"]["receipt"]).read_text())["scoped_preparation"]
+            first = read_json(initial)
+            proof = read_json(Path(first["stages"]["prepare"]["receipt"]))["scoped_preparation"]
             artifacts = {p: digest(Path(p)) for p in proof["outputs"]}
             before_source = snapshot(self.root, list(files))
             originals = {str(p): digest(p) for p in (self.root / "out/validation").rglob("*")
                          if p.is_file() and p != progress_path}
             for path in paths:
-                artifact_paths.update(Path(p).resolve() for p in json.loads(path.read_text())["stages"].get("prepare", {}).get("payloads", {}))
+                artifact_paths.update(Path(p).resolve() for p in read_json(path)["stages"].get("prepare", {}).get("payloads", {}))
             warm = []
             for trial in range(3):
                 start = time.monotonic()
@@ -2760,7 +2766,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 with self.assertRaisesRegex(ValueError, "pending checkpoint work"):
                     qualification.collect_qualification(self.root, paths)
                 self.assertEqual(artifacts, {p: digest(Path(p)) for p in artifacts})
-                state = json.loads(self.state_path.read_text())
+                state = read_json(self.state_path)
                 repair = self.campaign(f"repair-{trial}")
                 repair_start = time.monotonic()
                 renewed = record_phase(f"prepare.repair-{trial}", qualification.prepare_checkpoint,
@@ -2778,7 +2784,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 self.assertEqual(artifacts, {p: digest(Path(p)) for p in artifacts})
                 value = subprocess.check_output([str(self.build / ("behavior.exe" if os.name == "nt" else "behavior")), "10"], text=True, timeout=10)
                 self.assertIn("value=10 abi=8 offset=4", value)
-                logs = [self.root / json.loads(p.read_text())["output"] for p in repair.directory.glob("attempts/*/result.json")]
+                logs = [self.root / read_json(p)["output"] for p in repair.directory.glob("attempts/*/result.json")]
                 self.assertFalse(logs, "proof-only renewal executed build commands")
                 warm.append({"seconds": time.monotonic() - start, "commands": calls[call_start:], "deleted": deletions[delete_start:],
                              "repair_seconds": repair_seconds, "collection_seconds": collection_seconds,
@@ -2819,6 +2825,40 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             ("generated/new-shadow.h", lambda b: b"#define SHADOW 1\n", "include membership"),
         ])
 
+    def test_terminal_preparation_callback_mutation_is_read_freshly(self):
+        self.prepare_compiled_project()
+        args = SimpleNamespace(reason="terminal preparation freshness witness", selection=["product"],
+                               preset=self.preset, runtime="all", campaign="admitted", repeat_reason="",
+                               base="fixture-baseline", prepare=True)
+        path = qualification.qualify(self.root, args)
+        record = read_json(path)
+        stage = record["stages"]["prepare"]
+        target = self.root / "src/native.cpp"
+        proof = read_json(Path(stage["receipt"]))["scoped_preparation"]
+        self.assertIn("src/native.cpp", stage["identity"]["inputs"])
+        self.assertIn(str(target.resolve()), proof["context"]["files"])
+        original_bytes, original_stat = target.read_bytes(), target.stat()
+        original_identity = qualification.preparation_identity
+
+        calls = 0
+
+        def mutate_before_validation(build, candidate, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                target.write_bytes(original_bytes + b"\n# terminal freshness witness\n")
+                os.utime(target, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            return original_identity(build, candidate, **kwargs)
+
+        try:
+            with patch.object(qualification, "preparation_identity", side_effect=mutate_before_validation), \
+                    self.assertRaisesRegex(ValueError, "preparation dependency contents or paths changed"):
+                qualification.collect_qualification(self.root, [path])
+            self.assertEqual(calls, 2, "the mutation must occur inside the terminal validation call")
+        finally:
+            target.write_bytes(original_bytes)
+            os.utime(target, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
     def test_collection_rechecks_changed_cache(self):
         # Retain this mutation in its own fixture. DrvFS can round timestamps
         # when restoring them, so it cannot be another case's fresh baseline.
@@ -2831,7 +2871,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         args = SimpleNamespace(reason="collection input drift control", selection=["product"], preset=self.preset,
                                runtime="all", campaign="admitted", repeat_reason="", base="fixture-baseline", prepare=True)
         path = qualification.qualify(self.root, args)
-        record = json.loads(path.read_text())
+        record = read_json(path)
         stage = record["stages"]["prepare"]
         identity = qualification.preparation_identity(self.build, stage)
         # Other fixture lanes are deliberately absent; the complete replay owns
@@ -2899,7 +2939,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             self.assertEqual(source, snapshot(self.root, list(source)))
             args.campaign = "environment-restored"
             current = qualification.qualify(self.root, args)
-            self.assertEqual(json.loads(current.read_text())["status"], "passed")
+            self.assertEqual(read_json(current)["status"], "passed")
             outcomes.update(baseline=str(first), restored=str(current), status="changed environment executed quality and failed real product; restored environment passed")
             write_json(current.parent / "environment-control.json", outcomes)
 
@@ -2927,7 +2967,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def test_preparation_receipt_and_owner_permutations_preserve_one_baseline(self):
         first = self.prepare_compiled_project()
-        record = json.loads(Path(first["receipt"]).read_text())
+        record = read_json(Path(first["receipt"]))
         process = Path(record["process_tree"]["receipt"])
         original_process = process.read_bytes()
         document = json.loads(original_process)
@@ -3015,10 +3055,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         def bounded_lease(root, build=None, **kwargs):
             if build is None:
                 self.assertIsNone(kwargs["timeout"], "ordinary GPU queueing has no elapsed deadline")
-                self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "pending")
+                self.assertEqual(read_json(self.state_path)["boundary"]["status"], "pending")
             return actual_lease(root, build, **kwargs)
         with patch.object(qualification, "OutputLease", side_effect=bounded_lease):
-            first = json.loads(qualification.qualify(self.root, args).read_text())
+            first = read_json(qualification.qualify(self.root, args))
         self.assertEqual((self.root / "out/order.txt").read_text().splitlines(), ["host", "gpu"])
         stage = first["stages"]["boundary"]
         self.assertEqual(len(stage["additional_receipts"]), 1)
@@ -3031,7 +3071,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             return actual_lease(root, build, **kwargs)
         with patch.object(qualification, "run_ctest_parts", side_effect=AssertionError("executed reused stage")), \
                 patch.object(qualification, "OutputLease", side_effect=build_lease):
-            reused = json.loads(qualification.qualify(self.root, args).read_text())
+            reused = read_json(qualification.qualify(self.root, args))
         self.assertEqual(reused["stages"]["boundary"]["reused_from"], stage["receipt"])
         self.assertEqual((self.root / "out/order.txt").read_text().splitlines(), ["host", "gpu"])
         secondary = Path(next(iter(stage["additional_receipts"])))
@@ -3040,7 +3080,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         args.campaign = "changed-secondary"
         with self.assertRaisesRegex(ValueError, "receipt changed"):
             qualification.qualify(self.root, args)
-        self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "failed")
+        self.assertEqual(read_json(self.state_path)["boundary"]["status"], "failed")
         secondary.write_bytes(original)
         args.campaign = "cannot-hide-failure"
         with self.assertRaisesRegex(ValueError, "pending checkpoint"):
@@ -3057,7 +3097,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 qualification.qualify(self.root, args)
             self.assertEqual((self.root / "out/order.txt").read_text().splitlines(),
                              ["host"] if role == "host" else ["host", "gpu"])
-            self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "failed")
+            self.assertEqual(read_json(self.state_path)["boundary"]["status"], "failed")
             self.assertFalse((OutputLease(self.root).path / "owner.json").exists())
             args.campaign = "new-caller-" + role
             args.repeat_reason = ""
@@ -3080,7 +3120,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             with self.assertRaisesRegex(ValueError, "did not execute"):
                 qualification.qualify(self.root, args)
         self.assertEqual((self.root / "out/order.txt").read_text().splitlines(), ["host"])
-        self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "failed")
+        self.assertEqual(read_json(self.state_path)["boundary"]["status"], "failed")
         self.assertEqual(len(Campaign(self.root, self.preset, "mixed", ["boundary"]).attempts("boundary")), 1)
 
     def test_mixed_ctest_timeout_drains_gpu_and_keeps_whole_stage_failed(self):
@@ -3093,7 +3133,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         with patch.object(qualification, "run_ctest_parts", side_effect=bounded):
             with self.assertRaises(subprocess.TimeoutExpired):
                 qualification.qualify(self.root, args)
-        self.assertEqual(json.loads(self.state_path.read_text())["boundary"]["status"], "failed")
+        self.assertEqual(read_json(self.state_path)["boundary"]["status"], "failed")
         raw = Campaign(self.root, self.preset, "mixed", ["boundary"]).attempts("boundary")
         self.assertEqual([r["status"] for r in raw], ["passed", "failed"])
         self.assertTrue(all(r["process_tree"]["drained"] for r in raw))
@@ -3102,7 +3142,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
     def test_collection_binds_all_partition_receipts_and_aggregate_membership(self):
         args = self.mixed_project()
         path = qualification.qualify(self.root, args)
-        record = json.loads(path.read_text())
+        record = read_json(path)
         # The valid partial checkpoint reaches only the final full-matrix gate.
         with self.assertRaisesRegex(ValueError, "membership is incomplete"):
             qualification.collect_qualification(self.root, [path])
@@ -3189,17 +3229,17 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         with patch("build_dependencies.NinjaGraph", return_value=SimpleNamespace(
                 outputs={str(module.resolve()), str(render_executable.resolve())})), \
                 patch.object(qualification, "checkpoint_tools", return_value=[self.python]):
-            first = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["production"]
+            first = read_json(qualification.qualify(self.root, args))["stages"]["production"]
             self.assertEqual(first["identity"]["inputs"][pdb.relative_to(self.root).as_posix()], digest(pdb))
             args.campaign = "unchanged"
-            reused = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["production"]
+            reused = read_json(qualification.qualify(self.root, args))["stages"]["production"]
             self.assertEqual(reused["reused_from"], first["receipt"])
             self.assertEqual(count.read_text(), "1")
             stamp = pdb.stat()
             pdb.write_text("other")
             os.utime(pdb, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             args.campaign = "pdb-changed"
-            changed = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["production"]
+            changed = read_json(qualification.qualify(self.root, args))["stages"]["production"]
             self.assertNotIn("reused_from", changed)
             self.assertEqual(count.read_text(), "2")
             pdb.unlink()
@@ -3207,7 +3247,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             with self.assertRaises(subprocess.CalledProcessError):
                 qualification.qualify(self.root, args)
             state = self.build / "verification-checkpoint.json"
-            self.assertEqual(json.loads(state.read_text())["production"]["status"], "failed")
+            self.assertEqual(read_json(state)["production"]["status"], "failed")
             self.assertEqual(count.read_text(), "3")
             args.campaign = "missing-still-pending"
             with self.assertRaisesRegex(ValueError, "pending checkpoint"):
@@ -3215,7 +3255,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             self.assertEqual(count.read_text(), "3")
             pdb.write_text("other")
             args.campaign = "pdb-repaired"
-            repaired = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["production"]
+            repaired = read_json(qualification.qualify(self.root, args))["stages"]["production"]
             self.assertNotIn("reused_from", repaired)
             self.assertEqual(count.read_text(), "4")
 
@@ -3311,7 +3351,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         inputs = qualification.checkpoint_inputs(self.root, self.build, "corpus")
         stage = self.run_stage("corpus", inputs=inputs)
         path = self.retained_record(stage)
-        record = json.loads(path.read_text())
+        record = read_json(path)
         target = self.root / "out/validation" / self.preset / "corpus-record.json"
         path.rename(target)
         record["source"] = verify.source_snapshot(self.root)
@@ -3337,7 +3377,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         inputs = qualification.checkpoint_inputs(self.root, self.build, "corpus")
         stage = self.run_stage("corpus", inputs=inputs)
         path = self.retained_record(stage)
-        record = json.loads(path.read_text())
+        record = read_json(path)
         target = self.root / "out/validation" / self.preset / "ignored-membership-record.json"
         path.rename(target)
         record["source"] = verify.source_snapshot(self.root)
@@ -3394,7 +3434,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         tools = [self.python, str(first / "tool"), str(second / "tool"), str(alias / "tool"), str(config)]
         stages = {name: self.run_stage(name, tools=tools) for name in ("boundary", "corpus", "tooling")}
         path = self.retained_record(stages["corpus"])
-        record = json.loads(path.read_text())
+        record = read_json(path)
         record.update(selection=list(stages), required=list(stages), stages=stages)
         path.write_text(json.dumps(record))
         originals = {stage["receipt"]: digest(Path(stage["receipt"])) for stage in stages.values()}
@@ -3522,7 +3562,7 @@ class FixtureLifetimeTests(unittest.TestCase):
                     self.assertEqual(selected_paths(artifact_root), [case.directory] if outcome == "failed" else [])
                     if outcome != "passed":
                         self.assertEqual((case.directory / "external/consumer.cmake").read_bytes(), b"# original external input\n")
-                        record = json.loads((case.directory / MARKER).read_text())
+                        record = read_json(case.directory / MARKER)
                         self.assertEqual(record["outcome"], "failed" if outcome == "failed" else "passed")
                         self.assertEqual(record["blocked_owners"], [])
                     case.temporary.cleanup()
@@ -3535,7 +3575,7 @@ class FixtureLifetimeTests(unittest.TestCase):
             }, lambda case: None)
             self.assertTrue(result.wasSuccessful())
             self.assertTrue(case.root.exists())
-            self.assertEqual(json.loads((case.directory / MARKER).read_text())["outcome"], "passed")
+            self.assertEqual(read_json(case.directory / MARKER)["outcome"], "passed")
             self.assertFalse((case.lease.path / "owner.json").exists())
             case.temporary.cleanup()
 
@@ -3548,7 +3588,7 @@ class FixtureLifetimeTests(unittest.TestCase):
             }, fail_test)
             self.assertEqual(len(failed_result.failures), 1)
             self.assertTrue(failed_case.root.exists())
-            self.assertEqual(json.loads((failed_case.directory / MARKER).read_text())["outcome"], "failed")
+            self.assertEqual(read_json(failed_case.directory / MARKER)["outcome"], "failed")
             failed_case.temporary.cleanup()
 
             def fail_subtest(case):
@@ -3597,19 +3637,19 @@ class FixtureLifetimeTests(unittest.TestCase):
                 self.assertNotIn(case.lease.path, OutputLease.held)
                 self.assertEqual(os.environ.get("JUICER_OUTPUT_LEASES"), previous)
                 receipt = next((case.root / "out/validation").glob("*/first/attempts/*/result.json"))
-                record = json.loads(receipt.read_text())
+                record = read_json(receipt)
                 owner = case.lease.path / "owner.json"
                 self.assertEqual(record["process_tree"]["drained"], drained)
                 self.assertTrue(owner.exists())
-                self.assertEqual(json.loads(owner.read_text())["status"], "blocked")
+                self.assertEqual(read_json(owner)["status"], "blocked")
                 self.assertEqual((case.directory / "external/consumer.cmake").read_bytes(), b"# interrupted external input\n")
-                marker = json.loads((case.directory / MARKER).read_text())
+                marker = read_json(case.directory / MARKER)
                 self.assertEqual(marker["outcome"], "interrupted")
                 self.assertEqual(marker["blocked_owners"], [str(owner)])
                 self.assertIn(case.directory, selected_paths(case.directory.parent.parent))
                 if drained:
                     self.assertEqual(record["status"], "passed")
-                    process = json.loads(Path(record["process_tree"]["receipt"]).read_text())
+                    process = read_json(Path(record["process_tree"]["receipt"]))
                     self.assertTrue(process["drained"])
                     self.assertEqual(process["status"], "completed")
                 else:
@@ -3684,6 +3724,25 @@ class MembershipTests(unittest.TestCase):
                     qualification.validate_ctest_report(report, ["required"])
             report.write_text('<testsuite><testcase name="required" status="run"/></testsuite>')
             qualification.validate_ctest_report(report, ["required"])
+
+    def test_ctest_report_hash_and_both_readers_share_one_observation(self):
+        from execution import FileObservations
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "tests.xml"
+            report.write_text('<testsuite><testcase name="required" status="run"/></testsuite>')
+            receipt = Path(directory) / "result.json"
+            command = ["ctest", "-R", "^(required)$", "-LE", "gpu", "--output-junit", str(report)]
+            write_json(receipt, {"stage": "test", "identity": {"command": command, "inputs": {}, "tools": {}},
+                "status": "passed", "returncode": 0, "process_tree": {"drained": True}})
+            with FileObservations() as observations:
+                digest(report)
+                role, passed, actual_report = qualification.ctest_chunk(
+                    receipt, {"host": ["required"]}, [qualification.ctest_identity(command)])
+                qualification.validate_ctest_report(report, ["required"])
+                self.assertEqual((role, passed, actual_report), ("host", {"required"}, report))
+                self.assertEqual(observations.counts(), {"content_reads": 2,
+                    "content_bytes": report.stat().st_size + receipt.stat().st_size,
+                    "transcript_decoded_bytes": 0})
 
     def ci_jobs(self, native):
         text = (ROOT / f".github/workflows/tests-{native}-host.yml").read_text()
@@ -3856,6 +3915,96 @@ class MembershipTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 qualification.require_checkpoint(record)
 
+
+class ProductionTranscriptTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name).resolve()
+
+    def streams_row(self, directory, stdout):
+        import execution
+
+        stderr = b""
+        stdout_ref = execution.write_transcript(directory / "command.stdout", stdout)
+        stderr_ref = execution.write_transcript(directory / "command.stderr", stderr)
+        return {
+            "name": "command",
+            "stdout_sha256": stdout_ref["decoded_sha256"],
+            "stderr_sha256": stderr_ref["decoded_sha256"],
+            "streams": {"stdout": stdout_ref, "stderr": stderr_ref},
+        }
+
+    def test_legacy_raw_and_gzip_decode_to_same_complete_command_bytes(self):
+        import execution
+
+        payload = (b"production command transcript\n"
+                   * (execution.COMMAND_TRANSCRIPT_GZIP_THRESHOLD // 29 + 1))
+        payload += b"\xffFORBIDDEN_SYMBOL_AT_FINAL_BYTE"
+        legacy_directory = self.root / "legacy"
+        legacy_directory.mkdir()
+        legacy_path = legacy_directory / "command.stdout"
+        legacy_path.write_bytes(payload)
+        legacy_row = {"name": "command", "stdout_sha256": hashlib.sha256(payload).hexdigest()}
+        legacy = qualification.production_transcript(legacy_row, "stdout", legacy_directory)
+
+        current_directory = self.root / "current"
+        current_directory.mkdir()
+        current_row = self.streams_row(current_directory, payload)
+        current = qualification.production_transcript(
+            current_row, "stdout", current_directory,
+            protocol=execution.COMMAND_TRANSCRIPT_PROTOCOL,
+        )
+        self.assertEqual(legacy[0], current[0])
+        self.assertEqual(current[0], payload)
+        self.assertIn(b"\xff", current[0])
+        self.assertTrue(current[0].endswith(b"FORBIDDEN_SYMBOL_AT_FINAL_BYTE"))
+        self.assertEqual(legacy[1], str(legacy_path))
+        self.assertEqual(current[1], str(current_directory / "command.stdout"))
+        self.assertEqual(current[2], current_row["streams"]["stdout"]["encoded_sha256"])
+
+    def test_new_reference_path_identity_protocol_and_stream_membership_are_strict(self):
+        import execution
+
+        directory = self.root / "current"
+        directory.mkdir()
+        row = self.streams_row(directory, b"output")
+        protocol = execution.COMMAND_TRANSCRIPT_PROTOCOL
+        reference = row["streams"]["stdout"]
+
+        for replacement, message in (
+            ({**reference, "path": str(self.root / "outside.stdout")}, "path or decoded identity"),
+            ({**reference, "path": str(directory / "other.stdout")}, "path or decoded identity"),
+            ({**reference, "decoded_sha256": "0" * 64}, "path or decoded identity"),
+        ):
+            malformed = {**row, "streams": {**row["streams"], "stdout": replacement}}
+            with self.subTest(reference=replacement), self.assertRaisesRegex(ValueError, message):
+                qualification.production_transcript(malformed, "stdout", directory, protocol=protocol)
+
+        with self.assertRaisesRegex(ValueError, "unsupported production transcript protocol"):
+            qualification.production_transcript(row, "stdout", directory, protocol="future-transcript-v9")
+        missing = {**row, "streams": {"stdout": reference}}
+        with self.assertRaisesRegex(ValueError, "stream membership"):
+            qualification.production_transcript(missing, "stdout", directory, protocol=protocol)
+
+    def test_transcript_reader_rejects_truncated_and_bitflipped_gzip(self):
+        directory = self.root / "current"
+        directory.mkdir()
+        payload = b"compressed production output\n" * 10000
+        row = self.streams_row(directory, payload)
+        reference = row["streams"]["stdout"]
+        path = Path(reference["path"])
+        encoded = path.read_bytes()
+
+        path.write_bytes(encoded[:-4])
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            qualification.read_transcript(reference)
+
+        changed = bytearray(encoded)
+        changed[4] ^= 1  # Gzip timestamp metadata changes without altering decoded bytes.
+        path.write_bytes(changed)
+        with self.assertRaisesRegex(ValueError, "encoded digest mismatch"):
+            qualification.read_transcript(reference)
 
 if __name__ == "__main__":
     unittest.main()

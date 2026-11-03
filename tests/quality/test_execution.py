@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import importlib.util
 import json
 import os
@@ -11,7 +12,7 @@ import tempfile
 import time
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
@@ -43,7 +44,7 @@ class CampaignTests(unittest.TestCase):
                 " print(i, flush=True);time.sleep(.04)\n"
                 "time.sleep(.2)\nprint('finished', flush=True)\n")
         result = self.campaign.run("quality", self.command(code), inputs=["source.txt"])
-        raw = json.loads(result.read_text())
+        raw = campaign.read_json(result)
         self.assertIsNone(raw["timeout"])
         self.assertEqual(raw["process_tree"]["status"], "completed")
         self.assertTrue(raw["process_tree"]["drained"])
@@ -55,7 +56,7 @@ class CampaignTests(unittest.TestCase):
         code = "import subprocess,sys;subprocess.Popen([sys.executable,'-u','-c'," + repr(child) + "])"
         result = self.campaign.run("quality", self.command(code), inputs=["source.txt"],
             vctip_executable=str(self.vctip_fixture()), vctip_grace_seconds=.1, vctip_drain_cap_seconds=.3)
-        raw = json.loads(result.read_text())
+        raw = campaign.read_json(result)
         self.assertEqual(raw["process_tree"]["status"], "completed")
         self.assertIsNone(raw["identity"]["vctip_cleanup"]["drain_cap_seconds"])
         self.assertIn("child done", (self.root / raw["output"]).read_text())
@@ -128,7 +129,7 @@ class CampaignTests(unittest.TestCase):
             "print('pass')", repeat_reason="fresh-process determinism"
         )
         self.assertEqual(
-            json.loads(second.read_text())["repeat_reason"], "fresh-process determinism"
+            campaign.read_json(second)["repeat_reason"], "fresh-process determinism"
         )
         self.assertEqual(len(self.campaign.attempts("quality")), 2)
 
@@ -156,7 +157,7 @@ class CampaignTests(unittest.TestCase):
             result = self.campaign.run("quality", self.command(
                 "import os; assert 'CODEX_TOOL_CALL_ID' not in os.environ; print('checked')"
             ), inputs=["source.txt"])
-        self.assertEqual(json.loads(result.read_text())["status"], "passed")
+        self.assertEqual(campaign.read_json(result)["status"], "passed")
 
     def test_source_changes_invalidate_report_and_allow_fresh_execution(self):
         self.execute("print('pass')")
@@ -341,7 +342,7 @@ class CampaignTests(unittest.TestCase):
         self.assertIn(
             "last descendant output", (receipt.parent / "output.log").read_text()
         )
-        self.assertTrue(json.loads(receipt.read_text())["process_tree"]["drained"])
+        self.assertTrue(campaign.read_json(receipt)["process_tree"]["drained"])
 
     @unittest.skipUnless(os.name == "nt", "Windows Job policy")
     def test_vctip_alone_finishes_without_reaching_drain_cap(self):
@@ -351,7 +352,7 @@ class CampaignTests(unittest.TestCase):
             "quality", self.command(code), inputs=["source.txt"],
             timeout=3, vctip_executable=str(vctip), vctip_grace_seconds=0.1,
         )
-        result = json.loads(receipt.read_text())
+        result = campaign.read_json(receipt)
         tree = result["process_tree"]
         self.assertEqual(result["status"], "passed")
         self.assertTrue(tree["drained"])
@@ -372,7 +373,7 @@ class CampaignTests(unittest.TestCase):
             "quality", self.command(code), inputs=["source.txt"],
             timeout=5, vctip_executable=str(vctip), vctip_grace_seconds=0.1,
         )
-        result = json.loads(receipt.read_text())
+        result = campaign.read_json(receipt)
         tree = result["process_tree"]
         self.assertEqual(result["status"], "passed")
         self.assertEqual(tree["status"], "completed")
@@ -730,7 +731,7 @@ class WindowsIdentityInteropTests(unittest.TestCase):
         self.reader_prefix("subprocess.Popen([sys.executable, '-B', '-c', " + repr(child) + "])")
         with campaign.OutputLease(self.root, self.root / "build"):
             path = self.execute()
-        record = json.loads(path.read_text())
+        record = campaign.read_json(path)
         tree = record["process_tree"]
         self.assertEqual(tree["status"], "completed")
         self.assertTrue(tree["drained"])
@@ -1029,6 +1030,135 @@ class WindowsIdentityInteropTests(unittest.TestCase):
         self.assertTrue(list((self.root / "out/verification-locks").glob("*/owner.json")))
 
 
+class FileObservationTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def test_alias_and_reference_share_one_content_read(self):
+        source = self.root / "source.txt"
+        source.write_bytes(b"small observed payload")
+        alias = self.root / "alias"
+        link_directory(alias, self.root)
+        self.addCleanup(unlink_directory, alias)
+
+        with campaign.FileObservations() as observations:
+            self.assertEqual(campaign.digest(source), campaign.digest(alias / "source.txt"))
+            self.assertEqual(campaign.digest(source), campaign.digest(source))
+            self.assertEqual(observations.counts(), {
+                "content_bytes": source.stat().st_size,
+                "content_reads": 1,
+                "transcript_decoded_bytes": 0,
+            })
+            self.assertEqual(observations.bindings[str(source)], str(source.resolve()))
+            self.assertEqual(
+                observations.bindings[str(alias / "source.txt")], str(source.resolve())
+            )
+
+    def test_json_is_parsed_once_and_each_call_returns_an_independent_value(self):
+        import build_dependencies
+
+        source = self.root / "record.json"
+        payload = b'{"items":[1,2]}'
+        source.write_bytes(payload)
+        expected = {"items": [1, 2]}
+        with campaign.FileObservations() as observations, patch.object(
+            build_dependencies, "identity_json", wraps=build_dependencies.identity_json
+        ) as parse:
+            first = campaign.read_json(source)
+            first["items"].append(3)
+            second = campaign.read_json(source)
+            self.assertEqual(parse.call_count, 1)
+            self.assertEqual(first, {"items": [1, 2, 3]})
+            self.assertEqual(second, expected)
+            self.assertEqual(observations.counts(), {
+                "content_bytes": len(payload),
+                "content_reads": 1,
+                "transcript_decoded_bytes": 0,
+            })
+
+    def test_fresh_context_observes_restored_timestamp_byte_edit(self):
+        source = self.root / "source.txt"
+        source.write_bytes(b"first!")
+        os.utime(source, ns=(source.stat().st_atime_ns, 1_700_000_000_000_000_000))
+        stamp = source.stat()
+        first_context = campaign.FileObservations()
+        with first_context:
+            first = campaign.digest(source)
+        source.write_bytes(b"other!")
+        os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertEqual(source.stat().st_size, stamp.st_size)
+        self.assertEqual(source.stat().st_mtime_ns, stamp.st_mtime_ns)
+
+        with campaign.FileObservations() as terminal:
+            second = campaign.digest(source)
+            self.assertEqual(terminal.counts(), {
+                "content_bytes": source.stat().st_size,
+                "content_reads": 1,
+                "transcript_decoded_bytes": 0,
+            })
+        self.assertNotEqual(first, second)
+        self.assertEqual(first_context.counts()["content_reads"], 1)
+
+    def test_retarget_during_read_is_rejected(self):
+        first, second, alias = [self.root / name for name in ("first", "second", "alias")]
+        for directory, content in ((first, b"first"), (second, b"other")):
+            directory.mkdir()
+            (directory / "source.txt").write_bytes(content)
+        link_directory(alias, first)
+        self.addCleanup(
+            lambda: unlink_directory(alias)
+            if alias.exists() or alias.is_symlink()
+            else None
+        )
+        source = alias / "source.txt"
+        original_open = Path.open
+        retargeted = False
+
+        def open_then_retarget(path, *args, **kwargs):
+            nonlocal retargeted
+            stream = original_open(path, *args, **kwargs)
+            if path == source and not retargeted:
+                retargeted = True
+                unlink_directory(alias)
+                link_directory(alias, second)
+            return stream
+
+        with (
+            campaign.FileObservations() as observations,
+            patch.object(Path, "open", open_then_retarget),
+        ):
+            with self.assertRaisesRegex(ValueError, "input path changed"):
+                observations.digest(source)
+        self.assertTrue(retargeted)
+
+    def test_context_object_cannot_be_reentered_or_used_outside_its_boundary(self):
+        source = self.root / "source.txt"
+        source.write_bytes(b"payload")
+        observations = campaign.FileObservations()
+        with observations:
+            observations.digest(source)
+        with self.assertRaisesRegex(ValueError, "cannot cross freshness boundaries"):
+            observations.__enter__()
+        for observe in (
+            lambda: observations.digest(source),
+            lambda: observations.read_bytes(source),
+            lambda: observations.read_json(source),
+        ):
+            with self.subTest(observe=observe), self.assertRaisesRegex(
+                ValueError, "outside their freshness boundary"
+            ):
+                observe()
+
+    def test_duplicate_json_fields_remain_rejected(self):
+        source = self.root / "duplicate.json"
+        source.write_text('{"value":1,"value":2}', encoding="utf-8")
+        with campaign.FileObservations():
+            with self.assertRaisesRegex(ValueError, "duplicate identity field: value"):
+                campaign.read_json(source)
+
+
 class ReportTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -1038,6 +1168,8 @@ class ReportTests(unittest.TestCase):
         self.root.mkdir()
         self.source = self.root / "source.txt"
         self.source.write_text("first", encoding="utf-8")
+        stamp = self.source.stat()
+        os.utime(self.source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns // 1_000_000_000 * 1_000_000_000))
         self.owner = campaign.Campaign(
             self.root, "linux-debug", "report", ["one", "two"]
         )
@@ -1076,6 +1208,16 @@ class ReportTests(unittest.TestCase):
         os.utime(self.source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         self.assertEqual(self.source.stat().st_size, stamp.st_size)
         self.assertEqual(self.source.stat().st_mtime_ns, stamp.st_mtime_ns)
+
+    def test_shared_identity_map_mutation_between_report_boundaries_cannot_pass(self):
+        receipt = self.prepare("one")
+        raw = json.loads(receipt.read_text())
+        reference = raw["identity"]["inputs_ref"]
+        payload = self.owner.directory / reference["path"]
+        with self.change_after_read(self.source, lambda: payload.write_bytes(b"changed")):
+            report = self.owner.report()
+        self.assertFalse(report["all_recorded_gates_passed"])
+        self.assertNotEqual(report["stages"]["one"], "passed")
 
     def test_overlapping_stages_keep_different_expected_identities(self):
         self.prepare("one")
@@ -1205,14 +1347,14 @@ class ReportTests(unittest.TestCase):
                 receipt.write_bytes(original)
 
                 def change_membership():
-                    record = json.loads(receipt.read_text())
+                    record = campaign.read_json(receipt)
                     if addition:
                         record["identity"]["inputs"]["extra.txt"] = campaign.digest(
                             extra
                         )
                     else:
                         del record["identity"]["inputs"]["source.txt"]
-                    campaign.write_json(receipt, record)
+                    campaign.write_command_result(receipt, record)
 
                 with self.change_after_read(self.source, change_membership):
                     self.assertEqual(
@@ -1537,6 +1679,323 @@ class WindowsJobTests(unittest.TestCase):
         self.process.wait.assert_called_once()
         sleep.assert_not_called()
 
+
+class CommandTranscriptTests(unittest.TestCase):
+    def test_observed_transcript_and_hash_share_one_physical_read(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "stream.log"
+            payload = b"row\n" * (campaign.COMMAND_TRANSCRIPT_GZIP_THRESHOLD // 4 + 1)
+            reference = campaign.write_transcript(path, payload)
+            original_open = Path.open
+            reads = []
+
+            def observed_open(candidate, *args, **kwargs):
+                if candidate == path and kwargs.get("mode", args[0] if args else "r") == "rb":
+                    reads.append(candidate)
+                return original_open(candidate, *args, **kwargs)
+
+            with campaign.FileObservations() as observations, patch.object(Path, "open", observed_open):
+                self.assertEqual(campaign.read_transcript(reference), payload)
+                self.assertEqual(campaign.digest(path), reference["encoded_sha256"])
+                self.assertEqual(observations.counts(),
+                                 {"content_bytes": reference["encoded_bytes"], "content_reads": 1,
+                                  "transcript_decoded_bytes": len(payload)})
+            self.assertEqual(reads, [path])
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name).resolve()
+
+    def test_identity_and_gzip_preserve_exact_bytes_and_gzip_is_deterministic(self):
+        small = b"\x00diagnostic\xff\n"
+        identity = campaign.write_transcript(self.root / "small.log", small)
+        self.assertEqual(identity["encoding"], "identity")
+        self.assertEqual(campaign.read_transcript(identity), small)
+        empty = campaign.write_transcript(self.root / "empty.log", b"")
+        self.assertEqual(campaign.read_transcript(empty), b"")
+
+        payload = (b"large transcript row\n" * (campaign.COMMAND_TRANSCRIPT_GZIP_THRESHOLD // 20)) + b"last\xffchunk"
+        first = campaign.write_transcript(self.root / "first.log", payload)
+        second = campaign.write_transcript(self.root / "second.log", payload)
+        self.assertEqual(first["encoding"], "gzip")
+        self.assertEqual(first["encoded_sha256"], second["encoded_sha256"])
+        self.assertEqual((self.root / "first.log").read_bytes(), (self.root / "second.log").read_bytes())
+        self.assertEqual(campaign.read_transcript(first), payload)
+        self.assertTrue(payload.endswith(b"last\xffchunk"))
+        self.assertLess(first["encoded_bytes"], first["decoded_bytes"])
+
+    def test_threshold_and_reference_metadata_are_strict(self):
+        boundary = b"x" * campaign.COMMAND_TRANSCRIPT_GZIP_THRESHOLD
+        reference = campaign.write_transcript(self.root / "boundary.log", boundary)
+        self.assertEqual(reference["encoding"], "identity")
+        self.assertEqual(campaign.read_transcript(reference), boundary)
+
+        tiny = b"tiny\xffgzip"
+        tiny_encoded = campaign.gzip.compress(tiny, compresslevel=9, mtime=0)
+        tiny_reference = self.reference(self.root / "tiny.gz", tiny_encoded, tiny, "gzip")
+        self.assertEqual(campaign.read_transcript(tiny_reference), tiny)
+
+        large = b"large identity transcript\n" * (campaign.COMMAND_TRANSCRIPT_GZIP_THRESHOLD // 20 + 1)
+        large_reference = self.reference(self.root / "large.identity", large, large, "identity")
+        self.assertGreater(len(large), campaign.COMMAND_TRANSCRIPT_GZIP_THRESHOLD)
+        self.assertEqual(campaign.read_transcript(large_reference), large)
+
+        for key, value in (("protocol", "unknown"), ("encoding", "brotli"),
+                           ("decoded_bytes", len(boundary) + 1), ("decoded_sha256", "0" * 64)):
+            with self.subTest(field=key):
+                invalid = dict(reference)
+                invalid[key] = value
+                with self.assertRaises(ValueError):
+                    campaign.read_transcript(invalid)
+        extra = dict(reference, unexpected=True)
+        with self.assertRaisesRegex(ValueError, "reference fields"):
+            campaign.read_transcript(extra)
+
+        with self.subTest(metadata="decoded size exceeds actual"):
+            wrong_size = dict(reference, decoded_bytes=len(boundary) + 1)
+            with self.assertRaisesRegex(ValueError, "decoded byte count"):
+                campaign.read_transcript(wrong_size)
+
+    def test_unchanged_reference_rejects_encoded_bitflip_and_decoded_overrun(self):
+        identity = campaign.write_transcript(self.root / "identity.log", b"original bytes")
+        identity_path = Path(identity["path"])
+        identity_path.write_bytes(b"Original bytes")
+        with self.assertRaisesRegex(ValueError, "encoded digest mismatch"):
+            campaign.read_transcript(identity)
+
+        payload = b"z" * (4 * 1024 * 1024)
+        compressed = campaign.write_transcript(self.root / "bounded.gz", payload)
+        short_declaration = dict(compressed, decoded_bytes=1024)
+        with self.assertRaisesRegex(ValueError, "decoded byte count exceeds"):
+            campaign.read_transcript(short_declaration)
+
+    def reference(self, path, encoded, decoded, encoding):
+        path.write_bytes(encoded)
+        return {
+            "protocol": campaign.COMMAND_TRANSCRIPT_PROTOCOL,
+            "path": str(path),
+            "encoding": encoding,
+            "encoded_bytes": len(encoded),
+            "encoded_sha256": hashlib.sha256(encoded).hexdigest(),
+            "decoded_bytes": len(decoded),
+            "decoded_sha256": hashlib.sha256(decoded).hexdigest(),
+        }
+
+    def test_gzip_corruption_truncation_trailing_data_and_missing_file_fail(self):
+        payload = b"row\n" * (campaign.COMMAND_TRANSCRIPT_GZIP_THRESHOLD // 4 + 1)
+        reference = campaign.write_transcript(self.root / "stream.log", payload)
+
+        def seal_bytes(value):
+            path = Path(reference["path"])
+            path.write_bytes(value)
+            changed = dict(reference)
+            changed["encoded_bytes"] = len(value)
+            changed["encoded_sha256"] = hashlib.sha256(value).hexdigest()
+            return changed
+
+        original = Path(reference["path"]).read_bytes()
+        with self.subTest(kind="corrupt"):
+            with self.assertRaisesRegex(ValueError, "corrupt"):
+                campaign.read_transcript(seal_bytes(b"not a gzip stream"))
+        with self.subTest(kind="truncated"):
+            with self.assertRaisesRegex(ValueError, "truncated"):
+                campaign.read_transcript(seal_bytes(original[:-4]))
+        with self.subTest(kind="trailing"):
+            with self.assertRaisesRegex(ValueError, "trailing"):
+                campaign.read_transcript(seal_bytes(original + b"extra"))
+        Path(reference["path"]).unlink()
+        with self.assertRaises(FileNotFoundError):
+            campaign.read_transcript(reference)
+
+
+class CommandReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name).resolve()
+        self.owner = self.root / "out/validation/linux-debug/receipt-control"
+        (self.owner / "attempts").mkdir(parents=True)
+
+    def record(self):
+        return {
+            "stage": "quality",
+            "identity": {
+                "command": ["tool", "--flag"],
+                "inputs": {"source.cpp": "a" * 64, "header.h": "b" * 64},
+                "tools": {"/usr/bin/tool": "c" * 64},
+                "supervisor_sha256": "d" * 64,
+                "executable_sha256": "e" * 64,
+            },
+            "status": "passed",
+            "returncode": 0,
+        }
+
+    def receipt(self, attempt):
+        directory = self.owner / "attempts" / attempt
+        directory.mkdir()
+        return directory / "result.json"
+
+    def test_legacy_and_v2_receipts_have_the_same_decoded_identity(self):
+        legacy_path = self.receipt("legacy-1")
+        semantic = self.record()
+        campaign.write_json(legacy_path, semantic)
+        legacy = campaign.read_json(legacy_path)
+
+        domain_path = self.root / "scoped-preparation.json"
+        domain_record = {"protocol": "scoped-preparation-v4", "scope": "preparation", "values": {}}
+        campaign.write_json(domain_path, domain_record)
+        self.assertEqual(campaign.read_json(domain_path), domain_record)
+
+        current_path = self.receipt("current-1")
+        campaign.write_command_result(current_path, semantic)
+        current = campaign.read_json(current_path)
+        raw = json.loads(current_path.read_text(encoding="utf-8"))
+        self.assertEqual(legacy, semantic)
+        self.assertEqual(current, semantic)
+        self.assertEqual(raw["protocol"], campaign.COMMAND_RECEIPT_PROTOCOL)
+        self.assertEqual(set(raw["identity"]["inputs_ref"]), {"path", "sha256"})
+        self.assertNotIn("inputs", raw["identity"])
+        self.assertNotIn("tools", raw["identity"])
+
+    def test_repeated_maps_share_one_immutable_blob_across_receipts(self):
+        first_path = self.receipt("quality-1")
+        second_path = self.receipt("quality-2")
+        record = self.record()
+        campaign.write_command_result(first_path, record)
+        campaign.write_command_result(second_path, record)
+        first = json.loads(first_path.read_text(encoding="utf-8"))["identity"]
+        second = json.loads(second_path.read_text(encoding="utf-8"))["identity"]
+        self.assertEqual(first["inputs_ref"], second["inputs_ref"])
+        self.assertEqual(first["tools_ref"], second["tools_ref"])
+        self.assertEqual(len(list((self.owner / "identities").glob("*.json"))), 2)
+        self.assertEqual(campaign.read_json(first_path), record)
+        self.assertEqual(campaign.read_json(second_path), record)
+
+    def test_equal_stored_maps_decode_to_independent_values(self):
+        receipt = self.receipt("equal-maps")
+        record = self.record()
+        record["identity"]["tools"] = dict(record["identity"]["inputs"])
+        campaign.write_command_result(receipt, record)
+        self.assertEqual(len(list((self.owner / "identities").glob("*.json"))), 1)
+        decoded = campaign.read_json(receipt)
+        decoded["identity"]["inputs"].clear()
+        self.assertEqual(decoded["identity"]["tools"], record["identity"]["tools"])
+
+    def test_flat_retained_copy_requires_explicit_original_and_complete_map_closure(self):
+        receipt = self.receipt("retained-1")
+        expected = self.record()
+        campaign.write_command_result(receipt, expected)
+        payloads = campaign.command_result_payloads(receipt)
+        self.assertEqual(len(payloads), 2)
+        retained = self.root / "retained"
+        retained.mkdir()
+        copied = retained / "0-result.json"
+        shutil.copyfile(receipt, copied)
+        logical = "C:\\original\\campaign\\attempts\\retained-1\\result.json"
+        logical_owner = PureWindowsPath(logical).parent.parent.parent
+        mapping = {logical: copied}
+        for index, (name, checksum) in enumerate(payloads.items(), 1):
+            path = retained / f"{index}-map.json"
+            shutil.copyfile(name, path)
+            self.assertEqual(campaign.digest(path), checksum)
+            mapping[str(logical_owner / "identities" / Path(name).name)] = path
+        with self.assertRaisesRegex(ValueError, "outside its owning campaign"):
+            campaign.read_json(copied)
+        def resolve(name):
+            return mapping[str(name)]
+        self.assertEqual(campaign.read_json(logical, resolve=resolve), expected)
+        logical_payloads = campaign.command_result_payloads(logical, resolve=resolve)
+        self.assertEqual(set(logical_payloads), set(mapping) - {logical})
+        one_map = next(iter(logical_payloads))
+        missing = dict(mapping)
+        del missing[one_map]
+        with self.assertRaises(KeyError):
+            campaign.read_json(logical, resolve=lambda name: missing[str(name)])
+        mapping[one_map].write_bytes(b"{}")
+        with self.assertRaisesRegex(ValueError, "content hash changed"):
+            campaign.read_json(logical, resolve=resolve)
+
+    def test_unknown_protocol_reference_shape_escape_and_unknown_refs_fail_closed(self):
+        def strip_protocol_and_references(raw):
+            raw.pop("protocol")
+            raw["identity"].pop("inputs_ref")
+            raw["identity"].pop("tools_ref")
+
+        mutations = (
+            ("missing protocol", lambda raw: raw.pop("protocol"), "require an explicit storage protocol"),
+            ("missing protocol and maps", strip_protocol_and_references, "identity maps are incomplete"),
+            ("protocol", lambda raw: raw.update(protocol="command-receipt-v99"), "unsupported command receipt protocol"),
+            ("reference key", lambda raw: raw["identity"]["inputs_ref"].update(extra="ignored"),
+             "identity-map reference fields"),
+            ("owner escape", lambda raw: raw["identity"]["inputs_ref"].update(path="../outside.json"),
+             "identity-map reference path"),
+            ("unknown ref", lambda raw: raw["identity"].update(future_ref={"path": "x", "sha256": "0" * 64}),
+             "unknown identity-map reference"),
+        )
+        for name, mutate, message in mutations:
+            with self.subTest(kind=name):
+                receipt = self.receipt("malformed-" + name.replace(" ", "-"))
+                campaign.write_command_result(receipt, self.record())
+                raw = json.loads(receipt.read_text(encoding="utf-8"))
+                mutate(raw)
+                receipt.write_text(json.dumps(raw), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    campaign.read_json(receipt)
+
+    def test_missing_mutated_and_symlinked_identity_blobs_fail_closed(self):
+        missing = self.receipt("missing-1")
+        campaign.write_command_result(missing, self.record())
+        missing_raw = json.loads(missing.read_text(encoding="utf-8"))
+        missing_blob = self.owner / missing_raw["identity"]["inputs_ref"]["path"]
+        missing_blob.unlink()
+        with self.assertRaisesRegex(ValueError, "blob is missing"):
+            campaign.read_json(missing)
+
+        mutated = self.receipt("mutated-1")
+        campaign.write_command_result(mutated, self.record())
+        mutated_raw = json.loads(mutated.read_text(encoding="utf-8"))
+        mutated_blob = self.owner / mutated_raw["identity"]["inputs_ref"]["path"]
+        mutated_blob.write_bytes(mutated_blob.read_bytes() + b" ")
+        with self.assertRaisesRegex(ValueError, "content hash changed"):
+            campaign.read_json(mutated)
+
+        with self.subTest(kind="existing blob cannot be overwritten"), self.assertRaisesRegex(
+                ValueError, "existing command identity-map blob changed"):
+            campaign.write_command_result(self.receipt("write-over-tamper-1"), self.record())
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink escape control")
+    def test_identity_directory_symlink_escape_is_rejected(self):
+        receipt = self.receipt("symlink-1")
+        campaign.write_command_result(receipt, self.record())
+        identity_directory = self.owner / "identities"
+        outside = self.root / "outside-identities"
+        identity_directory.rename(outside)
+        identity_directory.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "directory is unavailable or unsafe"):
+            campaign.read_json(receipt)
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink control")
+    def test_mapped_receipt_symlink_is_rejected(self):
+        receipt = self.receipt("mapped-symlink")
+        campaign.write_command_result(receipt, self.record())
+        link = self.root / "copied-result.json"
+        link.symlink_to(receipt)
+        def resolve(name):
+            return link if Path(name) == receipt else Path(name)
+        with self.assertRaisesRegex(ValueError, "regular nonsymlink file"):
+            campaign.read_json(receipt, resolve=resolve)
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink control")
+    def test_mapped_receipt_parent_symlink_is_rejected(self):
+        receipt = self.receipt("mapped-parent-symlink")
+        campaign.write_command_result(receipt, self.record())
+        link = self.root / "linked-attempt"
+        link.symlink_to(receipt.parent, target_is_directory=True)
+        def resolve(name):
+            return link / receipt.name if Path(name) == receipt else Path(name)
+        with self.assertRaisesRegex(ValueError, "regular nonsymlink file"):
+            campaign.read_json(receipt, resolve=resolve)
 
 if __name__ == "__main__":
     unittest.main()

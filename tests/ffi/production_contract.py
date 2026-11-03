@@ -29,7 +29,7 @@ from grain_probe_contract import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from execution import digest
+from execution import digest, write_transcript
 
 root = Path(__file__).resolve().parents[2]
 fixtures = Path(__file__).resolve().parent
@@ -56,18 +56,19 @@ def execute(arguments):
 
     def run(name, command, timeout=None):
         result = subprocess.run(command, cwd=root, capture_output=True, timeout=timeout)
-        (out / (name + ".stdout")).write_bytes(result.stdout)
-        (out / (name + ".stderr")).write_bytes(result.stderr)
+        stdout = write_transcript(out / (name + ".stdout"), result.stdout)
+        stderr = write_transcript(out / (name + ".stderr"), result.stderr)
         commands.append(
             {
                 "name": name,
                 "command": command,
                 "returncode": result.returncode,
-                "stdout_sha256": digest(out / (name + ".stdout")),
-                "stderr_sha256": digest(out / (name + ".stderr")),
+                "stdout_sha256": stdout["decoded_sha256"],
+                "stderr_sha256": stderr["decoded_sha256"],
+                "streams": {"stdout": stdout, "stderr": stderr},
             }
         )
-        (out / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+        (out / "commands.json").write_text(json.dumps(commands, separators=(",", ":")) + "\n")
         result.check_returncode()
         return result.stdout.decode("utf-8", errors="replace")
 
@@ -604,12 +605,13 @@ def execute(arguments):
         assert row["accepted_fixture_match"] is True and row["diagnostic"] == ""
         prepared_rows.append(row)
     retained_prepared = out / "build" / prepared_executable.relative_to(build)
+    prepared_streams = next(row["streams"] for row in commands if row["name"] == "prepared-render")
     prepared_render = {
         "executable": str(retained_prepared), "executable_sha256_before": prepared_before,
         "executable_sha256_after": prepared_after, "command": prepared_command,
         "fixture": str(processor_fixture), "fixture_sha256": digest(processor_fixture),
-        "stdout_sha256": digest(out / "prepared-render.stdout"),
-        "stderr_sha256": digest(out / "prepared-render.stderr"), "rows": prepared_rows,
+        "stdout_sha256": prepared_streams["stdout"]["decoded_sha256"],
+        "stderr_sha256": prepared_streams["stderr"]["decoded_sha256"], "rows": prepared_rows,
     }
     check_build_inputs()
     check_consumed()
@@ -642,6 +644,7 @@ def execute(arguments):
     check_consumed()
     check_build_inputs()
     report = {
+        "transcript_protocol": "command-transcript-v1",
         "preset": arguments.preset,
         "build_testing": "OFF",
         "test_support": "OFF",
@@ -693,8 +696,10 @@ def execute(arguments):
         "effects_fixture": {"manifest": str(effects_manifest), "payload": str(effects_payload),
                             "logical_preset": arguments.preset},
         "commands": {"file": str(out / "commands.json"), "sha256": digest(out / "commands.json")},
-        "command_outputs": {str(out / (row["name"] + suffix)): digest(out / (row["name"] + suffix))
-                            for row in commands for suffix in [".stdout", ".stderr"]},
+        "command_outputs": {
+            stream["path"]: stream["encoded_sha256"]
+            for row in commands for stream in row["streams"].values()
+        },
         "loaded_module": {"file": str(module), "sha256": build_hashes[str(module)]},
         "exports": sorted(module_export_names),
         "hidden_device_load": True,
@@ -706,7 +711,7 @@ def execute(arguments):
         "print_illuminant_fixture", "preflash_results", "preflash_fixture",
     ):
         assert field not in report, "production retired mathematical owner field remains: " + field
-    (out / "production.json").write_text(json.dumps(report, indent=2) + "\n")
+    (out / "production.json").write_text(json.dumps(report, separators=(",", ":")) + "\n")
     print("PRODUCTION_MANIFEST_SHA256", digest(out / "production.json"), flush=True)
     print(
         "PASS complete OFF film and retained output-color gate, archive/module/PDB isolation, two exports and hidden-device loading",

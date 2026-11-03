@@ -275,6 +275,90 @@ namespace {
         return filter;
     }
 
+    std::optional<bool> consume_projection_oracle_expectation(int& argc, char** argv) {
+        constexpr std::string_view prefix = "--expect-projection-oracle=";
+        std::optional<bool> expected;
+        int retained = 1;
+        for (int index = 1; index < argc; ++index) {
+            const std::string_view argument(argv[index]);
+            if (!argument.starts_with(prefix)) {
+                argv[retained++] = argv[index];
+                continue;
+            }
+            if (expected.has_value())
+                throw std::runtime_error("duplicate prepared-state oracle expectation");
+            const auto value = argument.substr(prefix.size());
+            if (value == "loaded")
+                expected = true;
+            else if (value == "unused")
+                expected = false;
+            else
+                throw std::runtime_error("invalid prepared-state oracle expectation");
+        }
+        argc = retained;
+        argv[argc] = nullptr;
+        return expected;
+    }
+
+    bool projection_case_test(std::string_view testName) {
+        return std::any_of(kProjectionCases.begin(), kProjectionCases.end(), [testName](std::string_view name) {
+            return name.substr(0, name.find('[')) == testName;
+        });
+    }
+
+    bool consumes_projection_oracle(const testing::TestInfo& test) {
+        if (test.test_suite_name() != std::string_view("PreparedStateProducts"))
+            return false;
+        return projection_case_test(test.name()) || test.name() == std::string_view("OracleReaderRejectsFieldShapeWidthTagAndBackingMutations");
+    }
+
+    bool selected_tests_consume_projection_oracle() {
+        const auto* const unit = testing::UnitTest::GetInstance();
+        for (int suiteIndex = 0; suiteIndex < unit->total_test_suite_count(); ++suiteIndex) {
+            const auto* const suite = unit->GetTestSuite(suiteIndex);
+            for (int testIndex = 0; testIndex < suite->total_test_count(); ++testIndex) {
+                const auto* const test = suite->GetTestInfo(testIndex);
+                if (test->should_run() && consumes_projection_oracle(*test))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    bool all_projection_case_tests_selected() {
+        std::set<std::string_view> selectedNames;
+        const auto* const unit = testing::UnitTest::GetInstance();
+        for (int suiteIndex = 0; suiteIndex < unit->total_test_suite_count(); ++suiteIndex) {
+            const auto* const suite = unit->GetTestSuite(suiteIndex);
+            if (suite->name() != std::string_view("PreparedStateProducts"))
+                continue;
+            for (int testIndex = 0; testIndex < suite->total_test_count(); ++testIndex) {
+                const auto* const test = suite->GetTestInfo(testIndex);
+                if (test->should_run())
+                    selectedNames.insert(test->name());
+            }
+        }
+        return std::all_of(kProjectionCases.begin(), kProjectionCases.end(), [&selectedNames](std::string_view name) {
+            return selectedNames.contains(name.substr(0, name.find('[')));
+        });
+    }
+
+    class ProjectionOracleEnvironment final : public testing::Environment {
+    public:
+        ProjectionOracleEnvironment(std::filesystem::path path, std::string preset, bool checkProjection)
+            : path_(std::move(path)), preset_(std::move(preset)), checkProjection_(checkProjection) {}
+
+        void SetUp() override {
+            if (checkProjection_ || selected_tests_consume_projection_oracle())
+                projectionOracle = read_projection(path_, preset_);
+        }
+
+    private:
+        std::filesystem::path path_;
+        std::string preset_;
+        bool checkProjection_;
+    };
+
     FjAssets* assets() {
         return JuicerProcess::root().assets().borrow_rust_assets();
     }
@@ -1034,6 +1118,20 @@ namespace {
         }
     }
 
+    TEST(PreparedStateAbi, ProjectionOracleExpectationRejectsInvalidAndDuplicateFlags) {
+        char program[] = "prepared-state-tests";
+        char invalid[] = "--expect-projection-oracle=present";
+        char* invalidArguments[]{program, invalid, nullptr};
+        int invalidCount = 2;
+        EXPECT_THROW(consume_projection_oracle_expectation(invalidCount, invalidArguments), std::runtime_error);
+
+        char loaded[] = "--expect-projection-oracle=loaded";
+        char unused[] = "--expect-projection-oracle=unused";
+        char* duplicateArguments[]{program, loaded, unused, nullptr};
+        int duplicateCount = 3;
+        EXPECT_THROW(consume_projection_oracle_expectation(duplicateCount, duplicateArguments), std::runtime_error);
+    }
+
     TEST(PreparedStateAbi, FailureClearsEveryDefinedFieldAndReleaseConsumes) {
         const auto baseline = fj_test_prepared_live_states();
         auto params = print_params();
@@ -1356,16 +1454,18 @@ namespace {
 int main(int argc, char** argv) {
     try {
         ::testing::InitGoogleTest(&argc, argv);
+        const auto expectedOracleLoad = consume_projection_oracle_expectation(argc, argv);
         if (argc != 3 && argc != 6)
             return 2;
         artifactRoot = argv[2];
         std::string preset;
         bool checkProjection = false;
+        std::filesystem::path oraclePath;
         if (argc == 6) {
             preset = argv[5];
             const std::string mode = argv[3];
             if (mode == "--check-state-projection") {
-                projectionOracle = read_projection(argv[4], preset);
+                oraclePath = argv[4];
                 checkProjection = true;
             } else {
                 return 2;
@@ -1376,8 +1476,7 @@ int main(int argc, char** argv) {
             if (configuredPreset == nullptr)
                 throw std::runtime_error("prepared-state tests require the configured native preset");
             preset = configuredPreset;
-            const auto fixture = std::filesystem::path(__FILE__).parent_path() / "fixtures/prepared-state-projection" / (preset + ".json");
-            projectionOracle = read_projection(fixture, preset);
+            oraclePath = std::filesystem::path(__FILE__).parent_path() / "fixtures/prepared-state-projection" / (preset + ".json");
         }
         if (preset != FJ_PREPARED_STATE_PRESET)
             throw std::runtime_error("prepared-state preset does not match its compiled native profile");
@@ -1387,10 +1486,14 @@ int main(int argc, char** argv) {
             throw std::runtime_error("prepared-state resources do not match the declared native preset");
         JuicerCuda::Owner owner;
         owner.create(std::filesystem::path(argv[1]));
+        ::testing::AddGlobalTestEnvironment(new ProjectionOracleEnvironment(std::move(oraclePath), preset, checkProjection));
         const int result = RUN_ALL_TESTS();
+        if (expectedOracleLoad.has_value() && projectionOracle.has_value() != *expectedOracleLoad)
+            throw std::runtime_error("prepared-state projection oracle load expectation mismatch");
         if (result != 0)
             return result;
-        if (checkProjection || (::testing::GTEST_FLAG(filter) == "PreparedStateProducts.*" && projectionOracle)) {
+        const bool requestedFullProductFilter = ::testing::GTEST_FLAG(filter) == "PreparedStateProducts.*";
+        if (!::testing::GTEST_FLAG(list_tests) && (checkProjection || requestedFullProductFilter || all_projection_case_tests_selected())) {
             if (observedProjectionCases.size() != kProjectionCases.size())
                 throw std::runtime_error("prepared-state projection did not execute all 31 rows");
             for (std::size_t i = 0; i < kProjectionCases.size(); ++i)

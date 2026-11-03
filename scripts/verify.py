@@ -25,7 +25,7 @@ from build_evidence import (
     retire_s4e_aborted_owner,
     run_ctest,
 )
-from execution import Campaign, OutputLease, UnresolvedScope, digest, write_json
+from execution import Campaign, OutputLease, UnresolvedScope, digest, read_json, write_json, read_text
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED = {"src/ScanRoute.cpp", "src/ScanRoute.h", "rust/film-juicer-core/src/route.rs", "rust/film-juicer-core/src/color/output.rs"}
@@ -110,7 +110,7 @@ def rust_body_edit(root, name, revision):
         original = subprocess.check_output(["git", "show", revision + ":" + name], cwd=root, stderr=subprocess.DEVNULL).decode()
     except subprocess.CalledProcessError:
         return False
-    current = (root / name).read_text(encoding="utf-8")
+    current = read_text(root / name, encoding="utf-8")
     if name.endswith("/color/output.rs"):
         def normalize(text):
             start = text.find("const SOURCE: Literal = Literal {")
@@ -140,7 +140,7 @@ def select_consumers(root, build, selected, *, require_compiled=False, compilati
     compiler = {name for name in selected if name.endswith(".cpp")}
     body_only = {}
     for owner_path in OWNERS:
-        owner = json.loads((root / owner_path).read_text(encoding="utf-8"))
+        owner = read_json(root / owner_path)
         owned = set(owner.get("sources", [owner.get("source")])) & set(selected)
         if not owned:
             continue
@@ -174,7 +174,7 @@ def select_consumers(root, build, selected, *, require_compiled=False, compilati
 
 
 def check_receipt_payloads(root, receipt, *, allow_ctest_failure=False):
-    record = json.loads(Path(receipt).read_text(encoding="utf-8"))
+    record = read_json(Path(receipt))
     ctest_failure = (allow_ctest_failure and record.get("status") == "failed" and record.get("returncode") == 8
                      and record.get("process_tree", {}).get("status") == "completed"
                      and Path(record["identity"]["command"][0]).stem == "ctest"
@@ -187,7 +187,7 @@ def check_receipt_payloads(root, receipt, *, allow_ctest_failure=False):
     executable = shutil.which(record["identity"]["command"][0])
     if executable is None or digest(Path(executable)) != record["identity"]["executable_sha256"]:
         raise ValueError("consumed command executable changed")
-    process = json.loads(Path(record["process_tree"]["receipt"]).read_text(encoding="utf-8"))
+    process = read_json(Path(record["process_tree"]["receipt"]))
     if any(record["process_tree"].get(key) != value for key, value in process.items()):
         raise ValueError("process evidence payload changed")
     return record
@@ -195,7 +195,7 @@ def check_receipt_payloads(root, receipt, *, allow_ctest_failure=False):
 
 def load_development_state(root, build, previous_path, explicit):
     state = build / "verification-development.json"
-    latest = json.loads(state.read_text(encoding="utf-8")) if state.is_file() else None
+    latest = read_json(state) if state.is_file() else None
     if latest:
         path = Path(latest["receipt"])
         if digest(path) != latest["sha256"]:
@@ -209,7 +209,7 @@ def load_development_state(root, build, previous_path, explicit):
         return {"observed": current,
                 "pending": sorted(name for name in dirty_paths(root) if not is_documentation(name)),
                 "established": True}
-    previous = json.loads(Path(previous_path).read_text(encoding="utf-8"))
+    previous = read_json(Path(previous_path))
     if previous.get("preset") != build.name or previous.get("mode") not in {"development", "preparation", "qualification"}:
         raise ValueError("previous receipt must be development evidence for this preset")
     if previous.get("protocol") != SCOPED_PROTOCOL:
@@ -269,7 +269,7 @@ def _development_owned(args, *, started=None, lease_seconds=0.0):
     scopes = dict(previous.get("successful_scopes", {}))
     pointer = build / "verification-development.json"
     if previous.get("scope_status") == "passed" and pointer.is_file():
-        scopes[scope_key(previous["selection"])] = json.loads(pointer.read_text())
+        scopes[scope_key(previous["selection"])] = read_json(pointer)
     explicit = set(args.files or previous.get("selection", {}).get("files", ()))
     selected = sorted(explicit & SUPPORTED)
     if not selected:
@@ -298,7 +298,7 @@ def _development_owned(args, *, started=None, lease_seconds=0.0):
         if saved:
             if digest(Path(saved["receipt"])) != saved["sha256"]:
                 raise ValueError("successful scoped record changed")
-            candidate = json.loads(Path(saved["receipt"]).read_text())
+            candidate = read_json(Path(saved["receipt"]))
         reusable = (candidate.get("scope_status") == "passed" and not set(selected) & pending
                     and candidate.get("selection", {}).get("files") == selected)
         if reusable:
@@ -315,7 +315,7 @@ def _development_owned(args, *, started=None, lease_seconds=0.0):
             selection = candidate["selection"]
             record["selection"] = selection
             record.update({name: candidate[name] for name in ("build", "quality_command", "tests_command", "quality", "junit", "evidence")})
-            record["reused_from"] = str(saved["receipt"] if saved else args.previous or json.loads(pointer.read_text())["receipt"])
+            record["reused_from"] = str(saved["receipt"] if saved else args.previous or read_json(pointer)["receipt"])
             print("Reused previous scoped pass; no build, analyzer or tests executed.", flush=True)
         else:
             phase = time.monotonic()
@@ -344,9 +344,9 @@ def _development_owned(args, *, started=None, lease_seconds=0.0):
             for receipt in (built, quality, tests):
                 stage = check_receipt_payloads(ROOT, receipt)
                 payloads += [ROOT / stage["output"], Path(stage["process_tree"]["receipt"])]
-            output = (ROOT / check_receipt_payloads(ROOT, quality)["output"]).read_text(encoding="utf-8")
+            output = read_text(ROOT / check_receipt_payloads(ROOT, quality)["output"], encoding="utf-8")
             qpath = Path(re.search(r"^Quality run: (.+)$", output, re.M)[1]) / "run.json"
-            q = json.loads(qpath.read_text(encoding="utf-8"))
+            q = read_json(qpath)
             if q.get("status") != "passed" or q.get("mode") != "development" or q["selected"] != selected:
                 raise ValueError("development quality did not complete its declared scope")
             payloads += [qpath, *(qpath.parent / name for name in q["files"]), *(Path(name) for name in q["consumed_inputs"]),
@@ -449,7 +449,7 @@ def main():
     if args.mode == "qualification":
         from qualification import qualify
         result = qualify(ROOT, args)
-        return 2 if json.loads(result.read_text())["status"] == "incomplete" else 0
+        return 2 if read_json(result)["status"] == "incomplete" else 0
     if args.mode == "prepare":
         if args.targets:
             print("Target preparation only; no runtime qualification:",
@@ -470,7 +470,7 @@ def main():
     else:
         result = development(args)
         print(result)
-        if json.loads(result.read_text())["status"] == "incomplete":
+        if read_json(result)["status"] == "incomplete":
             return 2
     return 0
 

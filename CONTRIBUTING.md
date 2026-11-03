@@ -158,6 +158,12 @@ tools or compiler/lint failures as incomplete work. Each fresh directory has a
 of that invocation's evidence. Keep the printed run path in a handoff; do not copy
 the shared quality tree or use an older log as evidence of the current pass.
 Historical logs remain untouched. CI uploads the run receipts and command sidecars.
+New Campaign receipts use `command-receipt-v2`: immutable input/tool maps live
+under the owning campaign's `identities/` directory and each reference binds its
+exact path and content hash. Use `scripts/execution.py`'s `read_json` reader when
+consuming command identities; it also supports complete legacy inline receipts.
+A retained copy must include the referenced maps and supply an explicit mapping
+from the original logical paths. Copying a raw receipt alone is incomplete.
 With `--base`, a valid diff with no owned files still runs the diff and boundary
 checks and completes receipt validation; the receipt records its empty selection
 and exclusion reasons. This includes clean and deletion-only diffs. Empty
@@ -168,6 +174,10 @@ generated inputs), policies, compilation database/build configuration and consum
 tools, dependency sources and project headers. These identities are checked again
 before success; a changed or missing input fails qualification. Environment values
 are hashed rather than printed. This inventory excludes historical output trees.
+File observations share bytes only within one freshness boundary. Terminal checks
+read afresh, including native tool and alias identities. Read counters distinguish
+file bytes from decoded transcript bytes; they do not waive a check or impose a
+size limit.
 Formatting and lints do
 not replace review of ownership, names, numerical parity, GPU lifetime, or
 installed Resolve behavior.

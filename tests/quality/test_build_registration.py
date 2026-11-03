@@ -258,7 +258,7 @@ class BuildTests(unittest.TestCase):
     def test_selected_membership_executes_without_recursive_runtime_inventory(self):
         self.prepare()
         path = self.execute()
-        record = json.loads(path.read_text())
+        record = execution.read_json(path)
         self.assertEqual(record["status"], "passed")
         self.assertTrue(record["process_tree"]["drained"])
         self.assertIn("1/1 Test", (path.parent / "output.log").read_text())
