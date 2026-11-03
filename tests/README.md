@@ -581,6 +581,34 @@ recipe, with no conversion or backfill. Policy recipe v2 omits generic Windows
 PDB generation; strict v1 policy readers and its original flags remain supported.
 The dedicated PDB identity/mutation controls remain part of validation.
 
+### Bounded tooling checkpoint status
+
+The 3 November 2026 tooling checkpoint completed the fresh policy-v2 F21 chain:
+genuine native Windows originals with the old reader, an actual Linux/WSL
+registration-reader failure, the reader-body-only repair with fresh support and
+admission, and successful foreign collection without replay. All fourteen original
+counters remained one. The complete `Quality.Checkpoint` module passed 153 methods
+on each native host, with seven existing Linux skips and eight existing Windows
+skips. The four handoff-gated F21 methods ran separately without skips; the
+production PDB mutation/missing/repair, symbol-tool and policy-v2 no-PDB/v1-reader
+witnesses ran on Windows. Independent correctness, contextual naming/design and
+evidence review found no remaining findings in that bounded functional scope.
+
+**Validation read cost remains unresolved.** One Windows Checkpoint CPython process
+reported 642,556,553,289 cumulative logical read bytes at a partial sample about
+65 minutes after launch, excluding child processes. This is a severe advisory
+target miss. The counter does not establish physical disk traffic or total campaign
+I/O and overlaps the earlier sample from that same process; do not sum them.
+Operation-local deduplication did not establish acceptable suite-wide read cost.
+
+The fresh retained F21 project measured 17,311,957 apparent bytes. That snapshot
+does not establish cumulative generated text, total cache/output footprint, peak
+scratch or all-process I/O. Functional validation is not acceptance of the
+read/output-reduction objective. Owner acceptance is not recorded; the separate
+`policy-f21-review` hold remains pending acceptance, rollback/reproduction closeout
+and explicit named release. Publication does not release it. R5, real-product
+reuse and the stopped I8 aggregate remain outside this tooling checkpoint.
+
 Policy original contract v2 stores the complete stage identity once in its facts
 and restores an independent result-identity copy when reading. Admission v2 stores
 common candidate, producer and support facts once per creating campaign under

@@ -824,13 +824,41 @@ class PolicyCollectionTests(unittest.TestCase):
             raise ValueError("retained F21 fixed source candidate drifted before fixture access")
         return path, record, root
 
-    def original_bytes(self, data):
+    def original_bytes(self, data, *, resolve=Path):
         paths = []
         for reference in data["originals"].values():
-            document = json.loads(Path(reference["path"]).read_text())
-            paths += [Path(reference["path"]), Path(document["producer_source"]["path"]),
-                      *[Path(row["path"]) for row in document["execution"].values()]]
+            document = json.loads(resolve(reference["path"]).read_text())
+            paths += [resolve(reference["path"]), resolve(document["producer_source"]["path"]),
+                      *[resolve(row["path"]) for row in document["execution"].values()]]
         return {str(p): p.read_bytes() for p in paths}
+
+    def test_original_closure_uses_explicit_foreign_paths_and_fresh_bytes(self):
+        from pathlib import PureWindowsPath
+
+        retained = self.root / "retained"
+        retained.mkdir()
+        logical = PureWindowsPath("C:/retained")
+        payloads = {"reader.py": b"original reader\n", "command.json": b'{"status":"passed"}\n',
+                    "process.json": b'{"drained":true}\n'}
+        for name, payload in payloads.items():
+            (retained / name).write_bytes(payload)
+        def document(path):
+            return {"producer_source": {"path": str(path / "reader.py")},
+                    "execution": {"receipt": {"path": str(path / "command.json")},
+                                  "process": {"path": str(path / "process.json")}}}
+        original = retained / "original.json"
+        original.write_text(json.dumps(document(retained)))
+        data = {"originals": {"product": {"path": str(original)}}}
+        expected = {str(retained / name): payload for name, payload in payloads.items()}
+        self.assertEqual(self.original_bytes(data), {**expected, str(original): original.read_bytes()})
+        original.write_text(json.dumps(document(logical)))
+        data["originals"]["product"]["path"] = str(logical / "original.json")
+        def local(path):
+            return retained / PureWindowsPath(path).relative_to(logical).as_posix()
+        expected[str(original)] = original.read_bytes()
+        self.assertEqual(self.original_bytes(data, resolve=local), expected)
+        (retained / "process.json").write_bytes(b'{"drained":false}\n')
+        self.assertNotEqual(self.original_bytes(data, resolve=local), expected)
 
     def assert_counters(self, data):
         self.assertEqual({path: Path(path).read_bytes().hex() for path in data["counters"]}, data["counters"])
@@ -1420,7 +1448,7 @@ class PolicyCollectionTests(unittest.TestCase):
         self.assertEqual({path: Path(path).read_bytes() for path in native_bytes}, native_bytes)
         self.assertEqual({path: local(path).read_bytes() for path in counters}, counters)
         self.assertEqual((root / "out/f21-failed-collection.json").read_bytes(), failure_before)
-        review_closure = self.original_bytes(handoff["data"])
+        review_closure = self.original_bytes(handoff["data"], resolve=local)
         release_fixture_hold(root.parent, "policy-f21-downstream", self.id(), resolve=local)
         fixture_outcome = read_fixture_marker(root.parent / MARKER)
         if fixture_outcome.get("holds") != ["policy-f21-review"]:

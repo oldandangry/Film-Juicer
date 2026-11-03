@@ -178,6 +178,13 @@ File observations share bytes only within one freshness boundary. Terminal check
 read afresh, including native tool and alias identities. Read counters distinguish
 file bytes from decoded transcript bytes; they do not waive a check or impose a
 size limit.
+Operation-local read sharing does not bound cumulative suite I/O: repeated
+collector or preparation validation calls can reread the same large tool files.
+Passing correctness checks does not establish acceptable validation cost or an
+overall read reduction. Report observed costs with their process/operation scope,
+including target misses and unmeasured totals; cached or logical reads still
+count as work. The current tooling checkpoint and unresolved read-cost failure
+are recorded in the [test guide](tests/README.md#bounded-tooling-checkpoint-status).
 Formatting and lints do
 not replace review of ownership, names, numerical parity, GPU lifetime, or
 installed Resolve behavior.
