@@ -639,7 +639,7 @@ def native_tests(args):
         run = NativeRun(ROOT, directory)
         initial, patch = capture()
         candidate = {**initial, "preset": args.preset, "configuration": {},
-                     "features": {"native_archive": "test-support (interim)"},
+                     "features": {},
                      "environment": {k: os.environ[k] for k in ("CARGO_HOME", "RUSTUP_HOME", "CUDACXX", "CUDAToolkit_ROOT", "CMAKE_BUILD_PARALLEL_LEVEL") if k in os.environ}}
         (directory / "candidate.patch").write_bytes(patch)
         contracts = {}
@@ -685,6 +685,12 @@ def native_tests(args):
             run.command("configuration", [*build_command, "--target", "help"], vctip_executable=windows_vctip(os.environ))
             cache = cache_values(build)
             candidate["configuration"] = {k: cache.get(k) for k in ("BUILD_TESTING", "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")}
+            if not standalone:
+                artifact_data = (build / "tests/rust-artifacts.json").read_bytes()
+                costs["report_read_bytes"] += len(artifact_data)
+                (directory / "rust-artifacts.json").write_bytes(artifact_data)
+                candidate["features"]["rust_artifacts"] = "rust-artifacts.json"
+                result["rust_artifacts"] = True
             data = run.command("registration", [ctest, "--test-dir", str(build), "--show-only=json-v1"], stdout_only=True).read_bytes()
             costs["report_read_bytes"] += len(data)
             (directory / "registration.json").write_bytes(data)

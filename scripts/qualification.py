@@ -689,6 +689,8 @@ def tests_result_members(result):
     required = {"candidate.json", "candidate.patch", "registration.json", "target-discovery.json"}
     for runtime in ("host", "gpu", "python"):
         required.update({runtime + "-contracts.json", runtime + "-targets.json"})
+    if result.get("rust_artifacts"):
+        required.add("rust-artifacts.json")
     selected = result["selection"]
     if (result.get("build_kind") not in {"product", "tooling"} or not set(result["groups"]) <= GROUPS
             or len(selected) != len(set(selected)) or result["status"] == "passed" and not selected):
@@ -793,6 +795,17 @@ def _native_cases(result, payloads, entries, contract, selected):
 def validate_tests_result(result, payloads):
     tests_result_members(result)
     candidate = _payloads(result, payloads)
+    if bool(candidate.get("features", {}).get("rust_artifacts")) != bool(result.get("rust_artifacts")):
+        raise ValueError("missing separate Rust artifact description")
+    if result.get("rust_artifacts"):
+        artifacts = json.loads(payloads["rust-artifacts.json"])
+        variants = artifacts["variants"]
+        if (artifacts["schema"] != "rust-artifacts-v1" or set(variants) != {"production", "test-support"}
+                or variants["production"]["archive"] == variants["test-support"]["archive"]
+                or variants["production"]["target_dir"] == variants["test-support"]["target_dir"]
+                or variants["production"]["features"] != [] or variants["test-support"]["features"] != ["test-support"]
+                or candidate["features"].get("rust_artifacts") != "rust-artifacts.json"):
+            raise ValueError("invalid separate Rust artifact description")
     if result["status"] == "failed":
         return {"status": "failed", "preset": result["preset"], "scope": result["scope"],
                 "groups": result["groups"], "runtime": result["runtime"], "ctest_cases": 0,

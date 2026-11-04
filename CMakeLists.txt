@@ -106,7 +106,7 @@ target_link_libraries(juicer_adapter PRIVATE juicer_settings juicer_ofx_headers)
 # the configured database retains every test-hook variant.
 add_custom_target(juicer_analysis_inputs)
 add_dependencies(juicer_analysis_inputs
-    juicer_native juicer_host juicer_adapter juicer_rust_build)
+    juicer_native juicer_host juicer_adapter juicer_rust_production_build)
 
 # Preserve one aggregate archive for current product/test links and isolated
 # test-hook object replacement, without compiling a second CUDA implementation.
@@ -114,11 +114,11 @@ add_library(juicer_core STATIC
     $<TARGET_OBJECTS:juicer_native>
     $<TARGET_OBJECTS:juicer_host>
     $<TARGET_OBJECTS:juicer_adapter>)
-target_link_libraries(juicer_core PUBLIC juicer_settings juicer_ofx_headers film_juicer_rust)
+target_link_libraries(juicer_core PUBLIC juicer_settings juicer_ofx_headers)
 set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 
 add_library(juicer MODULE src/main.cpp)
-target_link_libraries(juicer PRIVATE juicer_core juicer_ofxs juicer_dependencies)
+target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_ofxs juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
@@ -134,7 +134,7 @@ endif()
 add_executable(JuicerProductionPreparedRenderProbe EXCLUDE_FROM_ALL
     tests/ffi/production-prepared-render.cpp src/main.cpp)
 target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE
-    juicer_core juicer_ofxs juicer_dependencies CUDA::cuda_driver)
+    juicer_core film_juicer_rust juicer_ofxs juicer_dependencies CUDA::cuda_driver)
 set_target_properties(JuicerProductionPreparedRenderProbe PROPERTIES
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
 if(UNIX)
@@ -148,3 +148,5 @@ include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
+
+juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe ${JUICER_RUST_TEST_CONSUMERS})

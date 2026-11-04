@@ -20,6 +20,7 @@
 
 #include "juicer_cuda_call_scope.h"
 #include "juicer_cuda_owner.h"
+#include "case_results.h"
 #include "JuicerState.h"
 #include "PreparedState.h"
 #include "ProcessRoot.h"
@@ -150,6 +151,8 @@ namespace {
 
     constexpr std::array<Case, 2> kCases{{{"negative-direct", "negative-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3},
                                           {"negative-print", "negative-print", Spektrafilm::ScanRoute::NegativePrintScan, 1, 4}}};
+    constexpr std::array<std::string_view, 4> kCaseIds{
+        "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"};
 
     ParamSnapshot parameters_for(const Case& test) {
         ParamSnapshot parameters;
@@ -438,7 +441,20 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
+        if (JuicerTests::list_requested(argc, argv)) {
+            for (const auto id : kCaseIds) {
+                JuicerTests::list_case("production-prepared-render", id);
+            }
+            return std::fflush(stdout) == 0 ? 0 : 1;
+        }
         require(argc == 5, "usage: JuicerProductionPreparedRenderProbe Resources processor-${preset}.dat preset product-updates.json");
+        JuicerTests::CaseLog cases;
+        std::vector<std::string> intended;
+        intended.reserve(kCaseIds.size());
+        for (const auto id : kCaseIds) {
+            intended.emplace_back(id);
+        }
+        cases.membership("production-prepared-render", intended);
         const std::filesystem::path resources(argv[1]);
         const std::filesystem::path fixture(argv[2]);
         const std::string preset(argv[3]);
@@ -476,7 +492,9 @@ int main(int argc, char** argv) {
             std::vector<std::uint32_t> coldWords;
             std::uint64_t coldRecipeHash = 0;
             const PassPixels pixels{.source = source, .expected = expected[caseIndex]};
+            cases.event("production-prepared-render", std::string(test.id) + "/cold", "start");
             rows.push_back(run_pass(test, "cold", pixels, &coldWords, &coldRecipeHash, device));
+            cases.event("production-prepared-render", std::string(test.id) + "/warm", "start");
             rows.push_back(run_pass(test, "warm", pixels, &coldWords, &coldRecipeHash, device));
 
             require_cuda(cudaFree(device.destination), "free destination buffer");
@@ -493,10 +511,15 @@ int main(int argc, char** argv) {
         for (auto& row : rows) {
             row["context_restored"] = contextRestore.restored;
         }
-        const std::string output = Json{{"rows", std::move(rows)}}.dump();
-        if (std::fwrite(output.data(), 1, output.size(), stdout) != output.size() || std::fputc('\n', stdout) == EOF) {
+        const Json report{{"rows", std::move(rows)}};
+        const std::string output = report.dump();
+        if (std::fwrite(output.data(), 1, output.size(), stdout) != output.size() || std::fputc('\n', stdout) == EOF || std::fflush(stdout) != 0) {
             return 1;
         }
+        for (const auto& row : report.at("rows")) {
+            cases.event("production-prepared-render", row.at("case_id").get<std::string>(), "terminal", "passed");
+        }
+        cases.finish();
         return 0;
     } catch (const std::exception& error) {
         (void)std::fputs(error.what(), stderr);

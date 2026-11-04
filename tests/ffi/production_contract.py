@@ -33,21 +33,116 @@ from execution import digest
 
 root = Path(__file__).resolve().parents[2]
 fixtures = Path(__file__).resolve().parent
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument(
-    "--preset", choices=["linux-release", "windows-clang-release"], required=True
-)
-parser.add_argument("--artifacts", type=Path, required=True)
-arguments = parser.parse_args()
+arguments = None
 windows = os.name == "nt"
 suffix = ".exe" if windows else ""
-build = root / "out/build" / arguments.preset
+build = None
 llvm = (
     Path("C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin")
     if windows
     else Path("/usr/lib/llvm-22/bin")
 )
 
+
+PRODUCTION_FORBIDDEN_SYMBOLS = re.compile(
+    "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
+)
+PRODUCTION_FORBIDDEN_SYMBOLS = re.compile(
+    PRODUCTION_FORBIDDEN_SYMBOLS.pattern
+    + r"|reconstruction::testing::|film::reference::testing::"
+    + r"|SpectralAllocationProbe::|gaussian_faults::|halation_frame_faults::|diffusion_frame_faults::|dir_frame_faults::|DirFrameObservation|rejectNativeAllocation|rejectedNativeBytes"
+    + r"|WorkspaceTransitionObservation|WorkspaceCandidateObservation|WorkspaceRejection"
+)
+PRODUCTION_FORBIDDEN_STRINGS = [
+    b"workspace candidate capacity rejection",
+    b"workspace candidate invalid-value rejection",
+    b"workspace candidate context-loss rejection",
+    b"--workspace-transitions",
+    b"spatial DIR boundary fixture panic",
+    b"spatial DIR boundary candidate rendezvous canceled",
+    b"JUICER_DIR_BOUNDARY_TEST_HOOK",
+    b"DirBoundaryTest::",
+    b"fj_test_dir_boundary",
+    b"capture-dir-boundaries",
+    b"visual grain frame fixture entry panic",
+    b"visual grain frame fixture layer panic",
+    b"JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK",
+    b"JuicerGrainCapture",
+    b"GrainFrameObservation",
+    b"EffectsFrameObservation",
+    b"physical effects frame fixture entry panic",
+    b"fj_test_effects_frame",
+    b"capture-effects-frames",
+    b"JUICER_EFFECTS_FRAME_CAPTURE_TEST_HOOK",
+    b"--effects-frame",
+    b"fj_test_grain_frame",
+    b"capture-grain-frames",
+    b"--grain-frame",
+    b"spatial DIR frame fixture panic",
+    b"DirFrameObservation",
+    b"fj_test_dir_frame",
+    b"capture-dir-frames",
+    b"--dir-frame",
+    b"scatter/halation frame fixture panic",
+    b"HalationObservation",
+    b"DiffusionObservation",
+    b"diffusion construction fixture panic",
+    b"fj_test_diffusion_",
+    b"capture-diffusion-frames",
+    b"fj_test_scatter_halation_frame",
+    b"capture-halation-frames",
+    b"frame geometry fixture panic",
+    b"FrameGeometryTest",
+    b"--capture-frame-geometry",
+    b"--frame-geometry",
+    b"film input boundary fixture panic",
+    b"film development acquire fixture panic",
+    b"film development view fixture panic",
+    b"film development release fixture panic",
+    b"film development retain fixture panic",
+    b"visual grain fixture panic",
+    b"physical effects fixture panic",
+    b"spatial optics fixture panic",
+    b"print illuminant fixture panic",
+    b"print preflash fixture panic",
+    b"print balance fixture panic",
+    b"scanner correction fixture panic",
+    b"scanner LUT fixture panic",
+    b"scanner LUT descriptor fixture panic",
+    b"scanner post-effects fixture panic",
+    b"Gaussian kernel fixture panic",
+    b"Gaussian kernel fixture rendezvous canceled",
+    b"film DIR acquire fixture panic",
+    b"film DIR view fixture panic",
+    b"film DIR release fixture panic",
+    b"film density bounds fixture panic",
+    b"film recipe diagnostic fixture panic",
+    b"film reference dependency boundary fault",
+    b"film reference dependency allocation failed",
+    b"output gamut boundary fault",
+    b"closed operation-specific output gamut fault",
+    b"input hull boundary fault",
+    b"closed input hull fault",
+    b"fixed spectrum fixture fault",
+    b"fixed exposure preparation category fault",
+    b"direct color facade fault",
+    b"exposure production boundary fault",
+    b"CAT16 production boundary fault",
+    b"color production boundary fault",
+    b"illuminant injected panic",
+    b"illuminant fixture-only fault",
+    b"spectral injected panic",
+    b"spectral fixture-only fault",
+    b"TC production boundary fault",
+    b"TC fixture-only fault",
+]
+PRODUCTION_MODULE_EXPORTS = ("OfxGetNumberOfPlugins", "OfxGetPlugin")
+
+
+def production_module_export_names(output, windows):
+    if windows:
+        return re.findall(r"^\s*Name: (.+)$", output, re.MULTILINE)
+    return [line.split()[-1] for line in output.splitlines() if line.strip()]
 
 def execute(arguments):
     out = arguments.artifacts.resolve()
@@ -73,14 +168,18 @@ def execute(arguments):
 
     build_hashes = {
         str(build / name): digest(build / name)
-        for name in ["CMakeCache.txt", "build.ninja", "compile_commands.json", "cargo-features.txt"]
+        for name in ["CMakeCache.txt", "build.ninja", "compile_commands.json"]
     }
 
     def check_build_inputs():
         assert {path: digest(Path(path)) for path in build_hashes} == build_hashes, "production build input changed"
 
     assert "BUILD_TESTING:BOOL=OFF" in (build / "CMakeCache.txt").read_text()
-    assert (build / "cargo-features.txt").read_text().strip() == "test-support=OFF"
+    production_features = build / "cargo" / "production" / "features.txt"
+    production_stamp = build / "cargo" / "production" / "build.stamp"
+    assert production_features.is_file()
+    assert production_features.read_text().splitlines()[0] == "features=none"
+    assert production_stamp.is_file()
     compdb = json.loads((build / "compile_commands.json").read_text())
     assert not any(
         (re.search("JUICER_\\w*TEST_HOOK", row["command"]) for row in compdb)
@@ -91,12 +190,14 @@ def execute(arguments):
         if "--package film-juicer-plugin" in line
     ]
     assert cargo and all(
-        ("--no-default-features" in line and "--features" not in line for line in cargo)
+        ("--no-default-features" in line and "--features" not in line
+         and "/cargo/production" in line.replace("\\", "/") for line in cargo)
     )
     check_build_inputs()
     archive = (
         build
         / "cargo"
+        / "production"
         / (
             "x86_64-pc-windows-msvc/release/film_juicer_plugin.lib"
             if windows
@@ -108,98 +209,9 @@ def execute(arguments):
     prepared_executable = build / "tests/bin" / ("JuicerProductionPreparedRenderProbe" + suffix)
     build_hashes.update({
         str(path): digest(path)
-        for path in [native, archive, module, prepared_executable,
+        for path in [production_features, production_stamp, native, archive, module, prepared_executable,
                      *([build / "juicer.pdb"] if windows else [])]
     })
-    forbidden = re.compile(
-        "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
-    )
-    forbidden = re.compile(forbidden.pattern + r"|reconstruction::testing::|film::reference::testing::")
-    forbidden = re.compile(forbidden.pattern + r"|SpectralAllocationProbe::|gaussian_faults::|halation_frame_faults::|diffusion_frame_faults::|dir_frame_faults::|DirFrameObservation|rejectNativeAllocation|rejectedNativeBytes")
-    forbidden = re.compile(forbidden.pattern + r"|WorkspaceTransitionObservation|WorkspaceCandidateObservation|WorkspaceRejection")
-    strings = [
-        b"workspace candidate capacity rejection",
-        b"workspace candidate invalid-value rejection",
-        b"workspace candidate context-loss rejection",
-        b"--workspace-transitions",
-        b"spatial DIR boundary fixture panic",
-        b"spatial DIR boundary candidate rendezvous canceled",
-        b"JUICER_DIR_BOUNDARY_TEST_HOOK",
-        b"DirBoundaryTest::",
-        b"fj_test_dir_boundary",
-        b"capture-dir-boundaries",
-        b"visual grain frame fixture entry panic",
-        b"visual grain frame fixture layer panic",
-        b"JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK",
-        b"JuicerGrainCapture",
-        b"GrainFrameObservation",
-        b"EffectsFrameObservation",
-        b"physical effects frame fixture entry panic",
-        b"fj_test_effects_frame",
-        b"capture-effects-frames",
-        b"JUICER_EFFECTS_FRAME_CAPTURE_TEST_HOOK",
-        b"--effects-frame",
-        b"fj_test_grain_frame",
-        b"capture-grain-frames",
-        b"--grain-frame",
-        b"spatial DIR frame fixture panic",
-        b"DirFrameObservation",
-        b"fj_test_dir_frame",
-        b"capture-dir-frames",
-        b"--dir-frame",
-        b"scatter/halation frame fixture panic",
-        b"HalationObservation",
-        b"DiffusionObservation",
-        b"diffusion construction fixture panic",
-        b"fj_test_diffusion_",
-        b"capture-diffusion-frames",
-        b"fj_test_scatter_halation_frame",
-        b"capture-halation-frames",
-        b"frame geometry fixture panic",
-        b"FrameGeometryTest",
-        b"--capture-frame-geometry",
-        b"--frame-geometry",
-        b"film input boundary fixture panic",
-        b"film development acquire fixture panic",
-        b"film development view fixture panic",
-        b"film development release fixture panic",
-        b"film development retain fixture panic",
-        b"visual grain fixture panic",
-        b"physical effects fixture panic",
-        b"spatial optics fixture panic",
-        b"print illuminant fixture panic",
-        b"print preflash fixture panic",
-        b"print balance fixture panic",
-        b"scanner correction fixture panic",
-        b"scanner LUT fixture panic",
-        b"scanner LUT descriptor fixture panic",
-        b"scanner post-effects fixture panic",
-        b"Gaussian kernel fixture panic",
-        b"Gaussian kernel fixture rendezvous canceled",
-        b"film DIR acquire fixture panic",
-        b"film DIR view fixture panic",
-        b"film DIR release fixture panic",
-        b"film density bounds fixture panic",
-        b"film recipe diagnostic fixture panic",
-        b"film reference dependency boundary fault",
-        b"film reference dependency allocation failed",
-        b"output gamut boundary fault",
-        b"closed operation-specific output gamut fault",
-        b"input hull boundary fault",
-        b"closed input hull fault",
-        b"fixed spectrum fixture fault",
-        b"fixed exposure preparation category fault",
-        b"direct color facade fault",
-        b"exposure production boundary fault",
-        b"CAT16 production boundary fault",
-        b"color production boundary fault",
-        b"illuminant injected panic",
-        b"illuminant fixture-only fault",
-        b"spectral injected panic",
-        b"spectral fixture-only fault",
-        b"TC production boundary fault",
-        b"TC fixture-only fault",
-    ]
     processor_fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{arguments.preset}.dat"
     print_updates = root / "tests/print/illuminant-fixtures/product-updates.json"
     consumed_paths = [root / "native/juicer_legacy_api.h", root / "native/juicer_cuda_call_scope.h",
@@ -268,10 +280,10 @@ def execute(arguments):
 
     def scan(path, name, tool, flags):
         text = run(name, [str(llvm / (tool + suffix)), *flags, str(path)])
-        match = forbidden.search(text)
+        match = PRODUCTION_FORBIDDEN_SYMBOLS.search(text)
         assert match is None, (name, match.group(0) if match else None)
         raw = path.read_bytes()
-        assert not any((value in raw for value in strings)), name
+        assert not any((value in raw for value in PRODUCTION_FORBIDDEN_STRINGS)), name
         assert digest(path) == build_hashes[str(path)], "production build input changed during scan"
         scanned.append(
             {
@@ -333,7 +345,7 @@ def execute(arguments):
         assert re.search(r"\b" + name + r"\b", symbols) is None, name
     if windows:
         exports = scan(module, "module-exports", "llvm-readobj", ["--coff-exports"])
-        module_export_names = re.findall("^\\s*Name: (.+)$", exports, re.M)
+        module_export_names = production_module_export_names(exports, windows)
         scan(
             build / "juicer.pdb",
             "pdb-symbols",
@@ -344,9 +356,9 @@ def execute(arguments):
         exports = scan(
             module, "module-exports", "llvm-nm", ["--dynamic", "--defined-only"]
         )
-        module_export_names = [line.split()[-1] for line in exports.splitlines() if line.strip()]
+        module_export_names = production_module_export_names(exports, windows)
         scan(module, "module-symbols", "llvm-nm", ["--defined-only", "--demangle"])
-    assert sorted(module_export_names) == ["OfxGetNumberOfPlugins", "OfxGetPlugin"], module_export_names
+    assert sorted(module_export_names) == sorted(PRODUCTION_MODULE_EXPORTS), module_export_names
     probes = [
         ("film", fixtures / "production-film.c.in"),
         ("accepted-output-color", fixtures / "production-output-color.c.in"),
@@ -1467,7 +1479,15 @@ def expected_scanner_correction_header(out):
                          ",".join("UINT64_C(" + str(word) + ")" for word in data) + "};\n")
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--preset", choices=["linux-release", "windows-clang-release"], required=True
+    )
+    parser.add_argument("--artifacts", type=Path, required=True)
+    global arguments, build
+    arguments = parser.parse_args(argv)
+    build = root / "out/build" / arguments.preset
     arguments.artifacts.mkdir(parents=True, exist_ok=True)
     expected_film_header(arguments.artifacts)
     expected_balance_header(arguments.artifacts)
@@ -1483,3 +1503,7 @@ if __name__ == "__main__":
     expected_dir_frame_header(arguments.artifacts)
     expected_dir_boundary_header(arguments.artifacts)
     execute(arguments)
+
+
+if __name__ == "__main__":
+    main()

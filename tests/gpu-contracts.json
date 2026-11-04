@@ -12,7 +12,8 @@
     "ScatterHalation.Gpu.ZeroWork",
     "ScatterHalation.Gpu.Lifecycle",
     "Ffi.Gpu.CudaInspect",
-    "Ffi.Gpu.CudaInspect.MultiDevice"
+    "Ffi.Gpu.CudaInspect.MultiDevice",
+    "Ffi.Gpu.ProductionPreparedRender"
   ],
   "targets": {
     "JuicerFilmRecipeTests": {
@@ -82,6 +83,10 @@
     "JuicerColorPreparationTests": {
       "protocol": "custom",
       "registrations": 1
+    },
+    "JuicerProductionPreparedRenderProbe": {
+      "protocol": "custom",
+      "registrations": 1
     }
   },
   "native_cohorts": {
@@ -125,7 +130,8 @@
     "Ffi.Gpu.PreparedBoundary.arctic-print": 4,
     "Ffi.Gpu.CudaRender.negative-direct": 20,
     "Ffi.Gpu.CudaRender.negative-print": 20,
-    "Ffi.Gpu.PreparedStateLifetime": 52
+    "Ffi.Gpu.PreparedStateLifetime": 52,
+    "Ffi.Gpu.ProductionPreparedRender": 1
   },
   "gtest_cohorts": {
     "InspectGpu.AllocationCoverageIncludesFullSourceAndDestinationBounds": 1,

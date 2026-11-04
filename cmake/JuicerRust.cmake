@@ -180,16 +180,11 @@ else()
     set(JUICER_RUST_PROFILE_ARGUMENT)
 endif()
 set(JUICER_RUST_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo")
-# This dedicated directory is owned by CMake/Cargo; Cargo requires its cache
-# signature before package-scoped cleanup can safely recover restored inputs.
-file(CONFIGURE OUTPUT "${JUICER_RUST_TARGET_DIR}/CACHEDIR.TAG"
-    CONTENT "Signature: 8a477f597d28d172789f06886806bc55\n" @ONLY)
-set(JUICER_RUST_ARCHIVE
-    "${JUICER_RUST_TARGET_DIR}/${JUICER_RUST_TARGET}/${JUICER_RUST_CARGO_PROFILE}/${JUICER_RUST_ARCHIVE_NAME}")
-set(JUICER_RUST_BUILD_STAMP "${CMAKE_BINARY_DIR}/cargo-build.stamp")
+set(JUICER_RUST_PRODUCTION_TARGET_DIR "${JUICER_RUST_TARGET_DIR}/production")
+set(JUICER_RUST_TEST_SUPPORT_TARGET_DIR "${JUICER_RUST_TARGET_DIR}/test-support")
 
 if(BUILD_TESTING AND JUICER_NEXTEST_EXECUTABLE)
-    set(JUICER_RUST_TESTS_TARGET_DIR "${JUICER_RUST_TARGET_DIR}/test-support")
+    set(JUICER_RUST_TESTS_TARGET_DIR "${JUICER_RUST_TEST_SUPPORT_TARGET_DIR}")
     set(JUICER_RUST_TESTS_METADATA_DIR "${JUICER_RUST_TESTS_TARGET_DIR}/metadata")
     set(JUICER_RUST_TESTS_BINARIES_METADATA
         "${JUICER_RUST_TESTS_METADATA_DIR}/binaries.json")
@@ -215,19 +210,9 @@ if(BUILD_TESTING AND JUICER_NEXTEST_EXECUTABLE)
         USES_TERMINAL)
 endif()
 
-set(JUICER_RUST_FEATURE_ARGUMENT)
-if(BUILD_TESTING)
-    set(JUICER_RUST_FEATURE_ARGUMENT --features test-support)
-endif()
-# Changing BUILD_TESTING must rebuild even when Rust source timestamps did not change.
-file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/cargo-features.txt"
-    CONTENT "test-support=@BUILD_TESTING@\n" @ONLY)
-
 file(GLOB_RECURSE JUICER_RUST_SOURCES CONFIGURE_DEPENDS
-    LIST_DIRECTORIES FALSE
-    "${PROJECT_SOURCE_DIR}/rust/*.rs")
+    LIST_DIRECTORIES FALSE "${PROJECT_SOURCE_DIR}/rust/*.rs")
 set(JUICER_RUST_BUILD_INPUTS
-    "${CMAKE_BINARY_DIR}/cargo-features.txt"
     "${PROJECT_SOURCE_DIR}/Cargo.toml"
     "${PROJECT_SOURCE_DIR}/Cargo.lock"
     "${PROJECT_SOURCE_DIR}/clippy.toml"
@@ -237,36 +222,59 @@ set(JUICER_RUST_BUILD_INPUTS
     "${PROJECT_SOURCE_DIR}/rust/film-juicer-plugin/Cargo.toml"
     ${JUICER_RUST_SOURCES})
 
-add_custom_command(
-    OUTPUT "${JUICER_RUST_BUILD_STAMP}"
-    BYPRODUCTS "${JUICER_RUST_ARCHIVE}"
-    COMMAND "${CMAKE_COMMAND}" -E env
-        "RUSTFLAGS="
-        "CARGO_BUILD_RUSTFLAGS="
-        "CARGO_ENCODED_RUSTFLAGS="
-        "${JUICER_CARGO_EXECUTABLE}" build
-            --locked
-            --package film-juicer-plugin
-            --no-default-features
-            ${JUICER_RUST_FEATURE_ARGUMENT}
-            --target "${JUICER_RUST_TARGET}"
-            --target-dir "${JUICER_RUST_TARGET_DIR}"
-            ${JUICER_RUST_PROFILE_ARGUMENT}
-    # Cargo may return fresh without rewriting the archive. Record successful
-    # preparation separately so unchanged archives do not relink native consumers.
-    COMMAND "${CMAKE_COMMAND}" -E touch "${JUICER_RUST_BUILD_STAMP}"
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    DEPENDS ${JUICER_RUST_BUILD_INPUTS}
-    COMMENT
-        "Building Film-Juicer Rust static library (${JUICER_RUST_TARGET}, ${JUICER_RUST_CARGO_PROFILE})"
-    VERBATIM
-    USES_TERMINAL)
-add_custom_target(juicer_rust_build DEPENDS "${JUICER_RUST_BUILD_STAMP}")
+function(juicer_add_rust_artifact variant rust_target)
+    set(directory "${JUICER_RUST_TARGET_DIR}/${variant}")
+    set(features none)
+    set(feature_argument)
+    if(variant STREQUAL "test-support")
+        set(features test-support)
+        set(feature_argument --features test-support)
+    elseif(NOT variant STREQUAL "production")
+        message(FATAL_ERROR "Unsupported Rust artifact: ${variant}")
+    endif()
+    string(REPLACE "-" "_" build_variant "${variant}")
+    set(build_target "juicer_rust_${build_variant}_build")
+    set(archive "${directory}/${JUICER_RUST_TARGET}/${JUICER_RUST_CARGO_PROFILE}/${JUICER_RUST_ARCHIVE_NAME}")
+    set(stamp "${directory}/build.stamp")
+    set(feature_input "${directory}/features.txt")
+    file(CONFIGURE OUTPUT "${directory}/CACHEDIR.TAG"
+        CONTENT "Signature: 8a477f597d28d172789f06886806bc55\n" @ONLY)
+    file(CONFIGURE OUTPUT "${feature_input}"
+        CONTENT "features=@features@\ntarget=@JUICER_RUST_TARGET@\nprofile=@JUICER_RUST_CARGO_PROFILE@\ncargo=@JUICER_CARGO_EXECUTABLE@\n" @ONLY)
+    add_custom_command(
+        OUTPUT "${stamp}"
+        BYPRODUCTS "${archive}"
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "RUSTFLAGS=" "CARGO_BUILD_RUSTFLAGS=" "CARGO_ENCODED_RUSTFLAGS="
+            "${JUICER_CARGO_EXECUTABLE}" build
+                --locked --package film-juicer-plugin --no-default-features
+                ${feature_argument}
+                --target "${JUICER_RUST_TARGET}" --target-dir "${directory}"
+                ${JUICER_RUST_PROFILE_ARGUMENT}
+        # A fresh Cargo result can keep the archive unchanged. Only successful
+        # preparation advances this variant's stamp; consumers track the archive.
+        COMMAND "${CMAKE_COMMAND}" -E touch "${stamp}"
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        DEPENDS ${JUICER_RUST_BUILD_INPUTS} "${feature_input}"
+        COMMENT "Building Film-Juicer Rust ${variant} (${JUICER_RUST_TARGET}, ${JUICER_RUST_CARGO_PROFILE})"
+        VERBATIM USES_TERMINAL)
+    add_custom_target(${build_target} DEPENDS "${stamp}")
+    add_library(${rust_target} STATIC IMPORTED GLOBAL)
+    set_target_properties(${rust_target} PROPERTIES
+        IMPORTED_LOCATION "${archive}"
+        JUICER_RUST_VARIANT "${variant}"
+        INTERFACE_JUICER_RUST_VARIANT "${variant}"
+        JUICER_RUST_FEATURE_INPUT "${feature_input}"
+        JUICER_RUST_BUILD_STAMP "${stamp}"
+        JUICER_RUST_TARGET_DIR "${directory}")
+    set_property(TARGET ${rust_target} APPEND PROPERTY COMPATIBLE_INTERFACE_STRING JUICER_RUST_VARIANT)
+    add_dependencies(${rust_target} ${build_target})
+endfunction()
 
-add_library(film_juicer_rust STATIC IMPORTED GLOBAL)
-set_target_properties(film_juicer_rust PROPERTIES
-    IMPORTED_LOCATION "${JUICER_RUST_ARCHIVE}")
-add_dependencies(film_juicer_rust juicer_rust_build)
+juicer_add_rust_artifact(production film_juicer_rust)
+if(BUILD_TESTING)
+    juicer_add_rust_artifact(test-support film_juicer_rust_test_support)
+endif()
 
 set(JUICER_RUST_PROBE_SOURCE "${CMAKE_BINARY_DIR}/cargo-native-link-probe.rs")
 set(JUICER_RUST_PROBE_TEXT "pub extern \"C\" fn cargo_native_link_probe() {}\n")
@@ -330,12 +338,73 @@ endforeach()
 if(NOT JUICER_RUST_NATIVE_LIBRARIES)
     message(FATAL_ERROR "rustc reported no native static-library requirements")
 endif()
-target_link_libraries(film_juicer_rust INTERFACE ${JUICER_RUST_NATIVE_LIBRARIES})
-if(JUICER_RUST_NATIVE_LINK_OPTIONS)
-    target_link_options(film_juicer_rust INTERFACE ${JUICER_RUST_NATIVE_LINK_OPTIONS})
-endif()
+foreach(rust_target IN ITEMS film_juicer_rust film_juicer_rust_test_support)
+    if(TARGET ${rust_target})
+        target_link_libraries(${rust_target} INTERFACE ${JUICER_RUST_NATIVE_LIBRARIES})
+        if(JUICER_RUST_NATIVE_LINK_OPTIONS)
+            target_link_options(${rust_target} INTERFACE ${JUICER_RUST_NATIVE_LINK_OPTIONS})
+        endif()
+    endif()
+endforeach()
 
-message(STATUS
-    "Rust ${JUICER_RUST_VERSION}: target=${JUICER_RUST_TARGET}, "
-    "profile=${JUICER_RUST_CARGO_PROFILE}, archive=${JUICER_RUST_ARCHIVE}")
+# This is final-link metadata, not a second artifact selector. Final consumers
+# must name their archive directly; neutral native cores carry neither variant.
+function(juicer_write_rust_artifacts)
+    foreach(core IN ITEMS juicer_core juicer_test_core)
+        if(TARGET ${core})
+            get_target_property(interface ${core} INTERFACE_LINK_LIBRARIES)
+            foreach(rust_target IN ITEMS film_juicer_rust film_juicer_rust_test_support)
+                if(rust_target IN_LIST interface)
+                    message(FATAL_ERROR "${core} must remain Rust-neutral")
+                endif()
+            endforeach()
+        endif()
+    endforeach()
+    set(json "{\n\"schema\":\"rust-artifacts-v1\",\n\"build\":\"${CMAKE_BINARY_DIR}\",\n\"variants\":{")
+    set(separator "")
+    foreach(rust_target IN ITEMS film_juicer_rust film_juicer_rust_test_support)
+        if(NOT TARGET ${rust_target})
+            continue()
+        endif()
+        get_target_property(variant ${rust_target} JUICER_RUST_VARIANT)
+        set(features "")
+        if(variant STREQUAL "test-support")
+            set(features "\"test-support\"")
+        endif()
+        string(APPEND json "${separator}\"${variant}\":{\"archive\":\"$<TARGET_FILE:${rust_target}>\",\"features\":[${features}],"
+            "\"feature_input\":\"$<TARGET_PROPERTY:${rust_target},JUICER_RUST_FEATURE_INPUT>\","
+            "\"stamp\":\"$<TARGET_PROPERTY:${rust_target},JUICER_RUST_BUILD_STAMP>\","
+            "\"target_dir\":\"$<TARGET_PROPERTY:${rust_target},JUICER_RUST_TARGET_DIR>\"}")
+        set(separator ",")
+    endforeach()
+    string(APPEND json "},\n\"native_archive\":\"$<TARGET_FILE:juicer_core>\",\n\"consumers\":{")
+    set(separator "")
+    foreach(target IN LISTS ARGN)
+        get_target_property(libraries ${target} LINK_LIBRARIES)
+        set(selected)
+        foreach(rust_target IN ITEMS film_juicer_rust film_juicer_rust_test_support)
+            if(rust_target IN_LIST libraries)
+                list(APPEND selected ${rust_target})
+            endif()
+        endforeach()
+        list(LENGTH selected count)
+        if(count EQUAL 1)
+            list(GET selected 0 rust_target)
+            get_target_property(variant ${rust_target} JUICER_RUST_VARIANT)
+        elseif(count EQUAL 0)
+            get_target_property(variant ${target} JUICER_RUST_VARIANT)
+            if(NOT variant STREQUAL "none")
+                message(FATAL_ERROR "${target} must explicitly select one Rust artifact or declare none")
+            endif()
+        else()
+            message(FATAL_ERROR "${target} mixes production and test-support Rust artifacts")
+        endif()
+        string(APPEND json "${separator}\"${target}\":{\"binary\":\"$<TARGET_FILE:${target}>\",\"variant\":\"${variant}\"}")
+        set(separator ",")
+    endforeach()
+    string(APPEND json "}\n}\n")
+    file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/tests/rust-artifacts.json" CONTENT "${json}")
+endfunction()
+
+message(STATUS "Rust ${JUICER_RUST_VERSION}: target=${JUICER_RUST_TARGET}, profile=${JUICER_RUST_CARGO_PROFILE}, separate production/test-support artifacts")
 message(STATUS "Rust toolchain-only native static libraries: ${JUICER_RUST_NATIVE_LINE}")

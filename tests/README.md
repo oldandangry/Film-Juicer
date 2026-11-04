@@ -299,6 +299,18 @@ ctest --preset linux-debug
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
+CMake always links `juicer` and the production prepared-render probe to
+`film_juicer_rust`, built without default features in
+`out/build/<preset>/cargo/production`. Facade and fault consumers select
+`film_juicer_rust_test_support`, built separately with `test-support` in
+`cargo/test-support`. Native object libraries and their neutral archive are shared;
+each final consumer selects its Rust archive explicitly. Each variant has its own
+`features.txt`, build stamp and archive byproduct. Enabling tests does not replace
+the production archive. `Ffi.Host.BuildArtifacts` inspects the final link commands,
+production symbols and strings, and native archive neutrality;
+`Ffi.Gpu.ProductionPreparedRender` exercises cold and warm direct/print rendering
+through production APIs.
+
 With `BUILD_TESTING=ON`, CMake's `juicer_rust_tests` target prepares both
 `Rust.Core` and `Rust.Bridge` in the preset's single `cargo/test-support`
 directory, saving nextest binaries-only and Cargo metadata. Cargo owns source

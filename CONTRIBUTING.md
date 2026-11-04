@@ -169,6 +169,14 @@ build/test orchestrator. With `BUILD_TESTING=ON`, CMake builds `Rust.Core` and
 quality commands do not invoke nested `cargo test` builds. Compiler boundary
 probes run from their existing CTest registrations.
 
+The shipping Rust archive always uses production features under the preset's
+`cargo/production`; facade and fault consumers link the separate `cargo/test-support`
+archive. Native objects remain shared. Ordinary test runs do not switch the
+shipping feature set. Inspect both final link assignments and production symbols
+with `Ffi.Host.BuildArtifacts`, and execute the production prepared-render probe
+with its GPU registration. The complete native Release OFF closures and installed
+production checks remain required at their designated qualification checkpoints.
+
 The native quality entry is `scripts/check-quality.py`. For example:
 
 ```sh

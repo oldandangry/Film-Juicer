@@ -275,6 +275,41 @@ class MembershipTests(unittest.TestCase):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_rust_artifact_description_requires_separate_variants(self):
+        cases = ("valid", "missing-member", "archive-alias", "directory-alias",
+                 "production-feature", "dropped-description-flag")
+        self.subtest_cases = cases
+        for case in cases:
+            with self.subTest(case=case):
+                artifacts = {"schema": "rust-artifacts-v1", "variants": {
+                    variant: {"archive": f"/unavailable/{variant}/plugin.a",
+                              "target_dir": f"/unavailable/{variant}", "features": features}
+                    for variant, features in (("production", []), ("test-support", ["test-support"]))}}
+                if case == "archive-alias":
+                    artifacts["variants"]["test-support"]["archive"] = artifacts["variants"]["production"]["archive"]
+                elif case == "directory-alias":
+                    artifacts["variants"]["test-support"]["target_dir"] = artifacts["variants"]["production"]["target_dir"]
+                elif case == "production-feature":
+                    artifacts["variants"]["production"]["features"] = ["test-support"]
+                payloads = {name: b"{}" for name in (
+                    "registration.json", "target-discovery.json", "host-contracts.json", "host-targets.json",
+                    "gpu-contracts.json", "gpu-targets.json", "python-contracts.json", "python-targets.json")}
+                payloads.update({"candidate.json": json.dumps({
+                    "head": "source", "preset": "linux-debug", "features": {"rust_artifacts": "rust-artifacts.json"}}).encode(),
+                    "candidate.patch": b"source patch", "rust-artifacts.json": json.dumps(artifacts).encode()})
+                if case == "missing-member":
+                    del payloads["rust-artifacts.json"]
+                result = {"status": "failed", "preset": "linux-debug", "scope": "focused", "runtime": "host",
+                          "groups": [], "selection": [], "build_kind": "product", "candidate_head": "source",
+                          "shipping_isolation": False, "rust_artifacts": case != "dropped-description-flag",
+                          "members": {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                      for name, data in payloads.items()}}
+                if case == "valid":
+                    self.assertEqual(qualification.validate_tests_result(result, payloads)["status"], "failed")
+                else:
+                    with self.assertRaises(ValueError):
+                        qualification.validate_tests_result(result, payloads)
+
     def test_quality_omitted_operation_and_undrained_command_are_rejected(self):
         checks = {"schema": "native-quality-checks-v1", "status": "passed",
                   "expected_checks": ["rust-quality", "native-boundary-enforcement"],
@@ -363,3 +398,6 @@ class CollectionTests(unittest.TestCase):
             report = json.loads((root / "report.json").read_bytes())
             self.assertEqual(report["status"], "passed")
             self.assertEqual(report["scope"], "reported-runs")
+
+
+CollectionTests.test_rust_artifact_description_requires_separate_variants.required_subtests = True
