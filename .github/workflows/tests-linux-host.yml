@@ -18,11 +18,15 @@ jobs:
   linux-product-debug:
     name: Linux Product Debug
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 120
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       CUDACXX: /usr/local/cuda-13.2/bin/nvcc
       CUDAToolkit_ROOT: /usr/local/cuda-13.2
+      CC: /usr/bin/gcc-13
+      CXX: /usr/bin/g++-13
+      JUICER_CLANG_FORMAT: clang-format-22
+      JUICER_CLANG_TIDY: clang-tidy-22
 
     steps:
       - name: Check out source
@@ -56,9 +60,11 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/llvm-22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | \
             sudo tee /etc/apt/sources.list.d/llvm-22.list > /dev/null
           sudo apt-get update
-          sudo apt-get install -y llvm-22 lld-22
+          sudo apt-get install -y llvm-22 clang-22 clang-format-22 clang-tidy-22 lld-22
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
           llvm-nm-22 --version
+          clang-format-22 --version
+          clang-tidy-22 --version
           for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
             test -f "$CUDAToolkit_ROOT/include/$header" || {
               echo "::error::CUDA header missing: $CUDAToolkit_ROOT/include/$header"
@@ -86,16 +92,16 @@ jobs:
         shell: bash
         run: test ! -e /dev/nvidiactl
 
-      - name: Configure and build all Debug product and test targets
+      - name: Prepare Debug analysis dependencies
         shell: bash
         run: |
           set -euo pipefail
           df -h / "$GITHUB_WORKSPACE"
           df -i / "$GITHUB_WORKSPACE"
-          cmake --preset linux-debug -DBUILD_TESTING=ON
-          cmake --build --preset linux-debug
-          df -h / "$GITHUB_WORKSPACE"
-          df -i / "$GITHUB_WORKSPACE"
+          python -B scripts/verify.py prepare \
+            --preset linux-debug \
+            --targets juicer_analysis_inputs \
+            --run-id "ci-linux-debug-inputs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Qualify Debug product, boundary, and corpus tests
         shell: bash
@@ -107,6 +113,19 @@ jobs:
             --selection product boundary corpus \
             --runtime host \
             --run-id "ci-linux-debug-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: Run cumulative Debug native, CUDA, and Rust quality
+        shell: bash
+        env:
+          QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$QUALITY_BASE" && ! "$QUALITY_BASE" =~ ^0+$ ]] \
+            && git cat-file -e "${QUALITY_BASE}^{commit}" 2>/dev/null; then
+            python -u scripts/check-quality.py --base "$QUALITY_BASE" --preset linux-debug
+          else
+            python -u scripts/check-quality.py --all-owned --preset linux-debug
+          fi
 
       - name: Report Debug storage usage
         if: always()
@@ -143,6 +162,8 @@ jobs:
           name: linux-debug-host-results
           path: |
             out/validation/linux-debug/results/ci-linux-debug-${{ github.run_id }}-${{ github.run_attempt }}/**
+            out/validation/linux-debug/results/ci-linux-debug-inputs-${{ github.run_id }}-${{ github.run_attempt }}/**
+            out/validation/linux-debug/results/quality-*/**
             out/build/linux-debug/Testing/Temporary/LastTest.log
             out/build/linux-debug/compile_commands.json
           if-no-files-found: warn
@@ -155,6 +176,8 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       CUDACXX: /usr/local/cuda-13.2/bin/nvcc
       CUDAToolkit_ROOT: /usr/local/cuda-13.2
+      CC: /usr/bin/gcc-13
+      CXX: /usr/bin/g++-13
 
     steps:
       - name: Check out source
@@ -218,17 +241,6 @@ jobs:
         shell: bash
         run: test ! -e /dev/nvidiactl
 
-      - name: Configure and build all Release product and test targets
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h / "$GITHUB_WORKSPACE"
-          df -i / "$GITHUB_WORKSPACE"
-          cmake --preset linux-release -DBUILD_TESTING=ON
-          cmake --build --preset linux-release
-          df -h / "$GITHUB_WORKSPACE"
-          df -i / "$GITHUB_WORKSPACE"
-
       - name: Qualify Release product and boundary tests
         shell: bash
         run: |
@@ -239,6 +251,12 @@ jobs:
             --selection product boundary \
             --runtime host \
             --run-id "ci-linux-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: Run matching Release Rust quality
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u scripts/check-quality.py --files Cargo.toml --preset linux-release
 
       - name: Report Release storage usage
         if: always()
@@ -275,180 +293,8 @@ jobs:
           name: linux-release-host-results
           path: |
             out/validation/linux-release/results/ci-linux-release-${{ github.run_id }}-${{ github.run_attempt }}/**
-            out/build/linux-release/Testing/Temporary/LastTest.log
-            out/build/linux-release/compile_commands.json
-          if-no-files-found: warn
-
-  linux-analysis:
-    name: Linux Native, CUDA, and Rust Analysis
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    env:
-      PYTHONDONTWRITEBYTECODE: "1"
-      CUDACXX: /usr/local/cuda-13.2/bin/nvcc
-      CUDAToolkit_ROOT: /usr/local/cuda-13.2
-      JUICER_CLANG_FORMAT: clang-format-22
-      JUICER_CLANG_TIDY: clang-tidy-22
-      CC: /usr/bin/gcc-13
-      CXX: /usr/bin/g++-13
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: tests/requirements.txt
-
-      - name: Install GCC 13, Ninja, CUDA 13.2 compiler and libraries, and LLVM 22
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h / "$GITHUB_WORKSPACE"
-          df -i / "$GITHUB_WORKSPACE"
-          wget -qO "$RUNNER_TEMP/cuda-keyring.deb" \
-            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-13 g++-13 ninja-build \
-            cuda-compiler-13-2 cuda-cudart-dev-13-2 cuda-cccl-13-2 \
-            cuda-driver-dev-13-2 libcufft-dev-13-2 libcurand-dev-13-2
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 22
-          sudo apt-get install -y clang-format-22 clang-tidy-22 lld-22
-          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
-          for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
-            test -f "$CUDAToolkit_ROOT/include/$header" || {
-              echo "::error::CUDA analysis header missing: $CUDAToolkit_ROOT/include/$header"
-              exit 1
-            }
-          done
-          clang-format-22 --version
-          clang-tidy-22 --version
-          "$CUDACXX" --version
-
-      - name: Install pinned Rust quality tools and Python requirements
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup set profile minimal
-          rustup toolchain install 1.98.1 --component clippy --component rustfmt
-          cargo install cargo-nextest --version 0.9.143 --locked
-          python -m pip install --upgrade pip
-          python -m pip install cmake==4.3.1
-          python -m pip install -r tests/requirements.txt
-          rustc --version --verbose
-          cargo --version
-          rustfmt --version
-          cargo clippy --version
-
-      - name: Configure Debug analysis inputs
-        shell: bash
-        run: cmake --preset linux-debug -DBUILD_TESTING=ON
-
-      - name: Report storage before Debug analysis build
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h / "$GITHUB_WORKSPACE"
-          df -i / "$GITHUB_WORKSPACE"
-
-      - name: Build Debug analysis inputs
-        shell: bash
-        run: cmake --build --preset linux-debug --target juicer_analysis_inputs
-
-      - name: Report storage after Debug analysis build
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h / "$GITHUB_WORKSPACE"
-          df -i / "$GITHUB_WORKSPACE"
-
-      - name: Configure Release Rust inputs
-        shell: bash
-        run: cmake --preset linux-release -DBUILD_TESTING=ON
-
-      - name: Report storage before Release Rust build
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h / "$GITHUB_WORKSPACE"
-          df -i / "$GITHUB_WORKSPACE"
-
-      - name: Build Release Rust archive
-        shell: bash
-        run: cmake --build --preset linux-release --target juicer_rust_build
-
-      - name: Report storage after Release Rust build
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h / "$GITHUB_WORKSPACE"
-          df -i / "$GITHUB_WORKSPACE"
-
-      - name: Run cumulative Debug native, CUDA, and Rust quality
-        shell: bash
-        env:
-          QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          if [[ -n "$QUALITY_BASE" && ! "$QUALITY_BASE" =~ ^0+$ ]] \
-            && git cat-file -e "${QUALITY_BASE}^{commit}" 2>/dev/null; then
-            python -u scripts/check-quality.py --base "$QUALITY_BASE" --preset linux-debug
-          else
-            python -u scripts/check-quality.py --all-owned --preset linux-debug
-          fi
-
-      - name: Run matching Release Rust quality
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -u scripts/check-quality.py --files Cargo.toml --preset linux-release
-
-      - name: Report analysis storage usage
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h / "$GITHUB_WORKSPACE"
-          df -i / "$GITHUB_WORKSPACE"
-          for directory in "$CUDAToolkit_ROOT" out/build/linux-debug out/build/linux-release; do
-            if [[ -d "$directory" ]]; then
-              du -sh "$directory"
-            fi
-          done
-
-      - name: Select failed analysis control evidence
-        if: always()
-        id: failed-controls
-        shell: bash
-        run: python -B tests/ctest/control_artifacts.py --preset linux-debug linux-release --github-output "$GITHUB_OUTPUT"
-
-      - name: Upload failed analysis controls and NPY samples
-        if: always() && steps.failed-controls.outputs.paths != ''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: linux-analysis-failed-controls
-          path: ${{ steps.failed-controls.outputs.paths }}
-          include-hidden-files: true
-          if-no-files-found: warn
-
-      - name: Upload native quality results and compile databases
-        if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: linux-analysis-quality
-          path: |
-            out/validation/linux-debug/results/quality-*/**
-            out/validation/linux-debug/results/verifier-scope-${{ github.run_id }}-${{ github.run_attempt }}.json
-            out/build/linux-debug/compile_commands.json
             out/validation/linux-release/results/quality-*/**
+            out/build/linux-release/Testing/Temporary/LastTest.log
             out/build/linux-release/compile_commands.json
           if-no-files-found: warn
 
@@ -573,7 +419,6 @@ jobs:
     needs:
       - linux-product-debug
       - linux-product-release
-      - linux-analysis
       - linux-tooling
     runs-on: ubuntu-24.04
     steps:
@@ -593,7 +438,6 @@ jobs:
           expected = {
               "linux-product-debug",
               "linux-product-release",
-              "linux-analysis",
               "linux-tooling",
           }
           try:
@@ -611,4 +455,4 @@ jobs:
           if failures or unexpected:
               print(f"Required child failures: {failures}; unexpected children: {sorted(unexpected)}", file=sys.stderr)
               raise SystemExit(1)
-          print("All required Linux Debug, Release, analysis, and tooling children succeeded.")
+          print("All required Linux Debug, Release, and tooling children (including native quality) succeeded.")

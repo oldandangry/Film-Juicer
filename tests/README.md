@@ -122,14 +122,19 @@ must succeed. A naturally occurring candidate report and a separately reviewed
 activation change are required before any skips. Missing/failed decisions never
 mean a test passed.
 
-Hosted Debug product, Release product, analysis and tooling jobs run independently
-on each OS. Product jobs compile every configured target, including GPU-only tests,
-then execute the host selection; Linux Debug also runs corpus checks. Analysis
-prepares `juicer_analysis_inputs`, preserving ordinary-object isolation and all
-configured compiler variants while avoiding product/test executable links. It
-also generates the diffusion reference header needed by its compiler consumer. It
-owns cumulative PR Debug quality and matching Release Rust quality. The original
-required check names aggregate all four child results and accept only success.
+Hosted Debug and Release product jobs prepare their selected host test closures
+on each OS; Linux Debug also runs corpus checks. Each Debug job first prepares
+`juicer_analysis_inputs` through the verifier, including ordinary objects,
+production Rust and the generated diffusion header. Cumulative Debug native,
+CUDA and Rust analysis then uses that job's compilation database; matching Rust
+Release quality runs in the Release product job. Required artifact inspection can
+still build GPU-linked test binaries without executing GPU tests. No separate
+analysis job rebuilds either configuration, and no whole build cache is uploaded.
+Tooling stays independent, including all Windows shards. The established required
+host statuses aggregate the three surviving child jobs and accept only success,
+including each product job's moved quality gate. Checkout still tests the event
+ref; a PR base selects the cumulative quality diff rather than the checked-out
+test candidate.
 
 Linux product and production-probe links retain static cuFFT. Test executables
 that exercise the native execution owner share the selected cuFFT runtime instead

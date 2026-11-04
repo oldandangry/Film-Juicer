@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import hashlib
 import math
@@ -12,8 +14,10 @@ import shutil
 import sys
 import subprocess
 import tempfile
+import textwrap
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/ctest"))
@@ -319,6 +323,68 @@ RegistrationTests.test_resource_staging_updates_only_selected_members.subtest_ca
 )
 
 
+class WorkflowResultTests(unittest.TestCase):
+    """Execute the actual required-status Python guards against child results."""
+
+    PLATFORMS = ("linux", "windows")
+    ROLES = ("product-debug", "product-release", "tooling")
+    CASES = ("layout", "success", "unexpected", "malformed") + tuple(
+        role + ":" + outcome for role in ROLES
+        for outcome in ("failure", "cancelled", "skipped", "missing")
+    )
+
+    def guard(self, platform):
+        path = ROOT / f".github/workflows/tests-{platform}-host.yml"
+        source = path.read_text(encoding="utf-8")
+        # Only extract this source-owned Python step; actionlint validates YAML.
+        job = re.search(rf"(?ms)^  {platform}-debug-host:\n(.*?)(?=^  [\w-]+:|\Z)", source)
+        self.assertIsNotNone(job, "the established required host status must remain")
+        body = job.group(1)
+        needs = re.search(r"(?m)^    needs:\n((?:      - [\w-]+\n)+)", body)
+        self.assertIsNotNone(needs)
+        script = re.search(r"(?m)^        run: \|\n((?:          [^\n]*\n|\n)+)", body)
+        self.assertIsNotNone(script)
+        self.assertRegex(body, r"(?m)^    if: always\(\)$")
+        self.assertIn("${{ toJSON(needs) }}", body)
+        return path, {line.strip()[2:] for line in needs.group(1).splitlines()}, textwrap.dedent(script.group(1))
+
+    def test_required_host_status_propagates_every_child_outcome(self):
+        self.subtest_cases = self.test_required_host_status_propagates_every_child_outcome.subtest_cases
+        for platform in self.PLATFORMS:
+            path, needs, script = self.guard(platform)
+            expected = {f"{platform}-{role}" for role in self.ROLES}
+            code = compile(script, str(path), "exec")
+            for case in self.CASES:
+                with self.subTest(case=platform + ":" + case):
+                    if case == "layout":
+                        self.assertEqual(needs, expected)
+                        continue
+                    results = {name: {"result": "success"} for name in expected}
+                    if case == "unexpected":
+                        results[f"{platform}-analysis"] = {"result": "success"}
+                    elif ":" in case:
+                        role, outcome = case.split(":")
+                        if outcome == "missing":
+                            del results[f"{platform}-{role}"]
+                        else:
+                            results[f"{platform}-{role}"]["result"] = outcome
+                    value = "{" if case == "malformed" else json.dumps(results)
+                    status = 0
+                    with patch.dict(os.environ, {"REQUIRED_RESULTS": value}), \
+                            contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        try:
+                            exec(code, {"__name__": "__main__"})
+                        except SystemExit as error:
+                            status = error.code
+                    self.assertEqual(status, 0 if case == "success" else 1)
+
+
+WorkflowResultTests.test_required_host_status_propagates_every_child_outcome.required_subtests = True
+WorkflowResultTests.test_required_host_status_propagates_every_child_outcome.subtest_cases = tuple(
+    platform + ":" + case for platform in WorkflowResultTests.PLATFORMS for case in WorkflowResultTests.CASES
+)
+
+
 class MembershipRecordTests(unittest.TestCase):
     def test_required_group_and_runtime_membership_are_checked_as_values(self):
         inventory = {"tests": [
@@ -591,6 +657,18 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
                        "route_bridge_test.cpp", "hash_contract_test.cpp", "render_assertions_test.cpp"):
             self.assertNotIn(source, all_commands)
         self.assert_no_test_metadata(all_commands)
+
+    @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_BUILD"),
+                         "requires an explicitly configured testing-ON product graph")
+    def test_product_analysis_inputs_have_their_ordinary_producers(self):
+        commands = self.query_commands("product-analysis-commands", self.preset_build, "juicer_analysis_inputs")
+        for source in ("JuicerCudaResources.cpp", "JuicerState.cpp", "JuicerEffect.cpp", "JuicerCudaFilmPipeline.cu"):
+            self.assertIn(source, commands)
+        self.assertIn("/cargo/production", commands)
+        self.assertNotIn("/cargo/test-support", commands)
+        self.assertIn("generate_host_cases.py", commands)
+        self.assertNotIn("profile_owner_test.cpp", commands)
+        self.assert_no_test_metadata(commands)
 
     @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_BUILD"),
                          "requires an explicitly configured testing-ON product graph")

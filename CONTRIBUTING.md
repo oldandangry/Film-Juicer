@@ -217,9 +217,13 @@ The native result groups have 120-second deadlines; the other tooling tests use
 label-selected shards. Each shard must succeed; a focused label result does not
 establish full tooling membership.
 
-CI preserves independent product, analysis, tooling and Linux Debug corpus jobs.
-Product/boundary host selections run in Debug and Release on each OS. The shared
-host result does not establish GPU acceptance, the Release testing-OFF artifact
+CI runs cumulative Debug native/CUDA/Rust analysis and matching Release Rust quality
+inside their native product jobs, using their prepared dependencies and compiler
+databases. Product/boundary host selections run in Debug and Release on each OS;
+Linux Debug also runs corpus checks. Tooling and supporting-code lint stay
+independent. Required host statuses demand success from both product/quality jobs
+and tooling; no duplicate analysis preparation job or whole-cache upload is used.
+The shared host result does not establish GPU acceptance, the Release testing-OFF artifact
 contract, shipping-feature isolation, or installed Resolve behavior. No OFF probes
 or full platform matrix are part of this workflow cutover. The contributor guide
 does not change scientific fixtures, numerical expectations, external-reference

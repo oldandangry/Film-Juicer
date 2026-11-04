@@ -18,7 +18,7 @@ jobs:
   windows-product-debug:
     name: Windows Product Debug
     runs-on: windows-2025-vs2026
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       CUDA_PATH: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2
@@ -54,9 +54,15 @@ jobs:
             if ($line -match "^([^=][^=]*)=(.*)$") { "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV }
           }
           $llvmBin = Join-Path $vsPath "VC\Tools\Llvm\x64\bin"
+          $clangFormat = Join-Path $llvmBin "clang-format.exe"
+          $clangTidy = Join-Path $llvmBin "clang-tidy.exe"
           $llvmBin >> $env:GITHUB_PATH
           $rustLinker = Join-Path $llvmBin "lld-link.exe"
-          if (!(Test-Path $rustLinker -PathType Leaf)) { throw "VS 18 lld-link was not found" }
+          foreach ($tool in @($clangFormat, $clangTidy, $rustLinker)) {
+            if (!(Test-Path $tool -PathType Leaf)) { throw "Required VS 18 LLVM tool missing: $tool" }
+          }
+          "JUICER_CLANG_FORMAT=$clangFormat" >> $env:GITHUB_ENV
+          "JUICER_CLANG_TIDY=$clangTidy" >> $env:GITHUB_ENV
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$rustLinker" >> $env:GITHUB_ENV
 
       - name: Install CUDA Toolkit 13.2
@@ -97,6 +103,8 @@ jobs:
           rustc --version --verbose
           cargo --version
           clang-cl --version
+          & $env:JUICER_CLANG_FORMAT --version
+          & $env:JUICER_CLANG_TIDY --version
           cmake --version
           python --version
           & "$env:CUDA_PATH_V13_2\bin\nvcc.exe" --version
@@ -107,14 +115,15 @@ jobs:
           $nvidiaAdapters = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "NVIDIA" }
           if ($nvidiaAdapters) { throw "The standard Windows host lane unexpectedly exposes an NVIDIA device" }
 
-      - name: Configure and build all Debug product and test targets
+      - name: Prepare Debug analysis inputs
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cmake --preset windows-clang-debug -DBUILD_TESTING=ON
-          if ($LASTEXITCODE -ne 0) { throw "Debug configuration failed" }
-          cmake --build --preset windows-clang-debug
-          if ($LASTEXITCODE -ne 0) { throw "Debug build failed" }
+          python -B scripts/verify.py prepare `
+            --preset windows-clang-debug `
+            --targets juicer_analysis_inputs `
+            --run-id "ci-windows-debug-inputs-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ($LASTEXITCODE -ne 0) { throw "Debug analysis input preparation failed" }
 
       - name: Qualify Debug product and boundary tests
         shell: pwsh
@@ -127,6 +136,25 @@ jobs:
             --runtime host `
             --run-id "ci-windows-debug-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           if ($LASTEXITCODE -ne 0) { throw "Debug qualification failed" }
+
+      - name: Run cumulative Debug native, CUDA, and Rust quality
+        shell: pwsh
+        env:
+          QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $qualityBase = $env:QUALITY_BASE
+          $hasBase = $false
+          if (![string]::IsNullOrWhiteSpace($qualityBase) -and $qualityBase -notmatch "^0+$") {
+            git cat-file -e "$qualityBase^{commit}" 2>$null
+            $hasBase = ($LASTEXITCODE -eq 0)
+          }
+          if ($hasBase) {
+            python -u scripts/check-quality.py --base $qualityBase --preset windows-clang-debug
+          } else {
+            python -u scripts/check-quality.py --all-owned --preset windows-clang-debug
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Debug quality gate failed" }
 
       - name: Load Debug module and verify OFX discovery exports
         shell: pwsh
@@ -166,6 +194,8 @@ jobs:
           name: windows-debug-host-results
           path: |
             out/validation/windows-clang-debug/results/ci-windows-debug-${{ github.run_id }}-${{ github.run_attempt }}/**
+            out/validation/windows-clang-debug/results/ci-windows-debug-inputs-${{ github.run_id }}-${{ github.run_attempt }}/**
+            out/validation/windows-clang-debug/results/quality-*/**
             out/build/windows-clang-debug/Testing/Temporary/LastTest.log
             out/build/windows-clang-debug/compile_commands.json
           if-no-files-found: warn
@@ -262,15 +292,6 @@ jobs:
           $nvidiaAdapters = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "NVIDIA" }
           if ($nvidiaAdapters) { throw "The standard Windows host lane unexpectedly exposes an NVIDIA device" }
 
-      - name: Configure and build all Release product and test targets
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          cmake --preset windows-clang-release -DBUILD_TESTING=ON
-          if ($LASTEXITCODE -ne 0) { throw "Release configuration failed" }
-          cmake --build --preset windows-clang-release
-          if ($LASTEXITCODE -ne 0) { throw "Release build failed" }
-
       - name: Qualify Release product and boundary tests
         shell: pwsh
         run: |
@@ -282,6 +303,13 @@ jobs:
             --runtime host `
             --run-id "ci-windows-release-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           if ($LASTEXITCODE -ne 0) { throw "Release qualification failed" }
+
+      - name: Run matching Release Rust quality
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -u scripts/check-quality.py --files Cargo.toml --preset windows-clang-release
+          if ($LASTEXITCODE -ne 0) { throw "Release Rust quality gate failed" }
 
       - name: Load Release module and verify OFX discovery exports
         shell: pwsh
@@ -321,171 +349,8 @@ jobs:
           name: windows-release-host-results
           path: |
             out/validation/windows-clang-release/results/ci-windows-release-${{ github.run_id }}-${{ github.run_attempt }}/**
-            out/build/windows-clang-release/Testing/Temporary/LastTest.log
-            out/build/windows-clang-release/compile_commands.json
-          if-no-files-found: warn
-
-  windows-analysis:
-    name: Windows Native, CUDA, and Rust Analysis
-    runs-on: windows-2025-vs2026
-    timeout-minutes: 90
-    env:
-      PYTHONDONTWRITEBYTECODE: "1"
-      CUDA_PATH: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2
-      CUDA_PATH_V13_2: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: tests/requirements.txt
-
-      - name: Enter VS 18 x64 analysis environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -version "[18.0,19.0)" `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath
-          if (!$vsPath) { throw "Visual Studio 18 with the x64 C++ tools was not found" }
-          $devCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
-          $developerEnvironment = & $env:ComSpec /d /s /c `
-            "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 && set"
-          if ($LASTEXITCODE -ne 0) { throw "VS 18 x64 developer environment setup failed" }
-          foreach ($line in $developerEnvironment) {
-            if ($line -match "^([^=][^=]*)=(.*)$") { "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV }
-          }
-          $llvmBin = Join-Path $vsPath "VC\Tools\Llvm\x64\bin"
-          $clangFormat = Join-Path $llvmBin "clang-format.exe"
-          $clangTidy = Join-Path $llvmBin "clang-tidy.exe"
-          $rustLinker = Join-Path $llvmBin "lld-link.exe"
-          foreach ($tool in @($clangFormat, $clangTidy, $rustLinker)) {
-            if (!(Test-Path $tool -PathType Leaf)) { throw "Required VS 18 LLVM tool missing: $tool" }
-          }
-          $llvmBin >> $env:GITHUB_PATH
-          "JUICER_CLANG_FORMAT=$clangFormat" >> $env:GITHUB_ENV
-          "JUICER_CLANG_TIDY=$clangTidy" >> $env:GITHUB_ENV
-          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$rustLinker" >> $env:GITHUB_ENV
-
-      - name: Install CUDA Toolkit 13.2
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $installer = Join-Path $env:RUNNER_TEMP "cuda_13.2.0_windows_network.exe"
-          $uri = "https://developer.download.nvidia.com/compute/cuda/13.2.0/network_installers/cuda_13.2.0_windows_network.exe"
-          Invoke-WebRequest -Uri $uri -OutFile $installer
-          $actualHash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
-          if ($actualHash -ne "e30673c80fd9736b74370d6cc0efcccd42d74e8071cf43c785aeeeb96139975c") {
-            throw "CUDA installer SHA-256 mismatch: $actualHash"
-          }
-          $components = @("-s", "crt_13.2", "cudart_13.2", "cufft_13.2", "cufft_dev_13.2",
-            "curand_13.2", "curand_dev_13.2", "nvcc_13.2", "nvdisasm_13.2", "nvfatbin_13.2",
-            "nvjitlink_13.2", "nvprune_13.2", "nvptxcompiler_13.2", "nvvm_13.2", "thrust_13.2")
-          $install = Start-Process -FilePath $installer -ArgumentList $components -NoNewWindow -PassThru -Wait
-          Remove-Item $installer -Force
-          if ($install.ExitCode -ne 0) { throw "CUDA Toolkit 13.2 installation failed: $($install.ExitCode)" }
-          $requiredFiles = @("$env:CUDA_PATH_V13_2\bin\nvcc.exe", "$env:CUDA_PATH_V13_2\include\cuda_runtime.h",
-            "$env:CUDA_PATH_V13_2\include\curand_mtgp32_kernel.h", "$env:CUDA_PATH_V13_2\include\cccl\nv\target",
-            "$env:CUDA_PATH_V13_2\lib\x64\cuda.lib", "$env:CUDA_PATH_V13_2\lib\x64\cudart.lib",
-            "$env:CUDA_PATH_V13_2\lib\x64\cufft.lib")
-          foreach ($path in $requiredFiles) { if (!(Test-Path $path)) { throw "CUDA component is missing: $path" } }
-          "$env:CUDA_PATH_V13_2\bin" >> $env:GITHUB_PATH
-          "$env:CUDA_PATH_V13_2\bin\x64" >> $env:GITHUB_PATH
-
-      - name: Install pinned Rust quality tools and Python requirements
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          rustup set profile minimal
-          rustup toolchain install 1.98.1 --component clippy --component rustfmt
-          cargo install cargo-nextest --version 0.9.143 --locked
-          python -m pip install --upgrade pip
-          python -m pip install cmake==4.3.1
-          python -m pip install -r tests/requirements.txt
-          rustc --version --verbose
-          cargo --version
-          rustfmt --version
-          cargo clippy --version
-          & $env:JUICER_CLANG_FORMAT --version
-          & $env:JUICER_CLANG_TIDY --version
-          cmake --version
-          python --version
-          & "$env:CUDA_PATH_V13_2\bin\nvcc.exe" --version
-
-      - name: Configure Debug analysis inputs
-        shell: pwsh
-        run: cmake --preset windows-clang-debug -DBUILD_TESTING=ON
-
-      - name: Build Debug analysis inputs
-        shell: pwsh
-        run: cmake --build --preset windows-clang-debug --target juicer_analysis_inputs
-
-      - name: Configure Release Rust inputs
-        shell: pwsh
-        run: cmake --preset windows-clang-release -DBUILD_TESTING=ON
-
-      - name: Build Release Rust archive
-        shell: pwsh
-        run: cmake --build --preset windows-clang-release --target juicer_rust_build
-
-      - name: Run cumulative Debug native, CUDA, and Rust quality
-        shell: pwsh
-        env:
-          QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $qualityBase = $env:QUALITY_BASE
-          $hasBase = $false
-          if (![string]::IsNullOrWhiteSpace($qualityBase) -and $qualityBase -notmatch "^0+$") {
-            git cat-file -e "$qualityBase^{commit}" 2>$null
-            $hasBase = ($LASTEXITCODE -eq 0)
-          }
-          if ($hasBase) {
-            python -u scripts/check-quality.py --base $qualityBase --preset windows-clang-debug
-          } else {
-            python -u scripts/check-quality.py --all-owned --preset windows-clang-debug
-          }
-          if ($LASTEXITCODE -ne 0) { throw "Debug quality gate failed" }
-
-      - name: Run matching Release Rust quality
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python -u scripts/check-quality.py --files Cargo.toml --preset windows-clang-release
-          if ($LASTEXITCODE -ne 0) { throw "Release Rust quality gate failed" }
-
-      - name: Select failed analysis control evidence
-        if: always()
-        id: failed-controls
-        shell: pwsh
-        run: python -B tests/ctest/control_artifacts.py --preset windows-clang-debug windows-clang-release --github-output "$env:GITHUB_OUTPUT"
-
-      - name: Upload failed analysis controls and NPY samples
-        if: always() && steps.failed-controls.outputs.paths != ''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: windows-analysis-failed-controls
-          path: ${{ steps.failed-controls.outputs.paths }}
-          include-hidden-files: true
-          if-no-files-found: warn
-
-      - name: Upload analysis results and compile databases
-        if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: windows-analysis-quality
-          path: |
-            out/validation/windows-clang-debug/results/quality-*/**
-            out/build/windows-clang-debug/compile_commands.json
             out/validation/windows-clang-release/results/quality-*/**
+            out/build/windows-clang-release/Testing/Temporary/LastTest.log
             out/build/windows-clang-release/compile_commands.json
           if-no-files-found: warn
 
@@ -644,7 +509,6 @@ jobs:
     needs:
       - windows-product-debug
       - windows-product-release
-      - windows-analysis
       - windows-tooling
     runs-on: windows-2025-vs2026
     steps:
@@ -664,7 +528,6 @@ jobs:
           expected = {
               "windows-product-debug",
               "windows-product-release",
-              "windows-analysis",
               "windows-tooling",
           }
           try:
@@ -682,4 +545,4 @@ jobs:
           if failures or unexpected:
               print(f"Required child failures: {failures}; unexpected children: {sorted(unexpected)}", file=sys.stderr)
               raise SystemExit(1)
-          print("All required Windows Debug, Release, analysis, and tooling children succeeded.")
+          print("All required Windows Debug, Release, and tooling children succeeded.")
