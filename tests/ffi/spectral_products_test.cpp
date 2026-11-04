@@ -356,7 +356,7 @@ namespace {
     }
     fs::path scaled_cmf_root(const fs::path& resources, const fs::path& scratch, int route) {
         const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / ("spectral-inverse-suppression-route-" + std::to_string(route)));
-        JuicerTestSupport::copy_consumer_assets(resources, root);
+        JuicerTestSupport::copy_positive_print_preparation_assets(resources, root);
         const auto sourcePath = resources / "cie1931_2deg.csv";
         const auto targetPath = root / "cie1931_2deg.csv";
         std::ifstream input(sourcePath);
@@ -905,7 +905,7 @@ namespace {
 void fj_test_spectral_products(const nlohmann::json& fixture, const JuicerTestSupport::SpectralFixturePaths& paths, bool faults) {
     const auto workspace = JuicerTestSupport::test_asset_workspaces.create(paths.scratch / "spectral-products");
     const auto resourceRoot = workspace / "Resources";
-    JuicerTestSupport::copy_consumer_assets(paths.resources, resourceRoot);
+    JuicerTestSupport::copy_positive_print_preparation_assets(paths.resources, resourceRoot);
     const auto artifactRoot = workspace / "cases";
     std::filesystem::create_directories(artifactRoot);
     JuicerCuda::Owner owner;

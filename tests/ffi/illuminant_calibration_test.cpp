@@ -232,7 +232,7 @@ namespace {
     }
     fs::path full_root(const char* name) {
         const auto root = empty_root(name);
-        JuicerTestSupport::copy_consumer_assets(resources, root);
+        JuicerTestSupport::copy_print_preparation_assets(resources, root);
         return root;
     }
     void write(const fs::path& path, const std::string& bytes) {

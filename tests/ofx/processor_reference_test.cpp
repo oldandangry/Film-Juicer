@@ -5,6 +5,7 @@
 #include "../ffi/prepared_product_fixture.h"
 #include "../ffi/prepared_frame_fixture.h"
 #include "../ffi/case_results.h"
+#include "../ffi/test_asset_workspace.h"
 #include "juicer_cuda_call_scope.h"
 #include "juicer_cuda_api.h"
 #include <algorithm>
@@ -3529,11 +3530,11 @@ namespace {
             if (std::filesystem::exists(root)) {
                 throw std::runtime_error("noise scratch directory collision under test artifacts");
             }
-            std::filesystem::copy(
-                JuicerProcess::data_directory(),
-                root,
-                std::filesystem::copy_options::recursive |
-                    std::filesystem::copy_options::overwrite_existing);
+            const auto source = JuicerProcess::data_directory();
+            JuicerTestSupport::copy_print_preparation_assets(source, root);
+            // The held noise bundle consumes STBN and both Wang inputs even
+            // though this case mutates only its STBN backing.
+            JuicerTestSupport::copy_resource_files(source, root, std::array<std::string_view, 3>{"Noise/stbn_scalar_512x512x256_u8.bin", "Noise/Wang/tiles.json", "Noise/Wang/wang_tiles_256x256x16_u8.bin"});
             stbn = root / "Noise/stbn_scalar_512x512x256_u8.bin";
         }
 

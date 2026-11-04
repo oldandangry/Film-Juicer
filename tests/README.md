@@ -327,8 +327,9 @@ entry checks that ownership at configure/build time; invoke it through
 Select explicit tests or targets: file-driven product quality and full checkpoint
 selection stay on the product entry. Results identify `build_kind: cuda-free`
 and remain focused. The existing standalone `tests/tooling` entry remains a
-tooling-only configuration. Resource staging keeps its current copy behavior
-and shares the parent preset's staged tree; per-file staging is deferred.
+tooling-only configuration. Explicit immutable resource roots use canonical
+`Resources/` directly. Module-relative lookup and package checks share the parent
+preset's staged tree; selected immutable-only targets do not prepare that tree.
 
 CMake always links `juicer` and the production prepared-render probe to
 `film_juicer_rust`, built without default features in
@@ -770,6 +771,14 @@ Generated binaries live under `out/build/<preset>/tests/bin/`. CMake stages one
 read-only runtime tree at `out/build/<preset>/tests/Resources/`. Test scratch
 and failure artifacts go below `out/validation/<preset>/`. Checked-in fixtures
 are read-only during an ordinary run.
+
+`juicer_test_resources` tracks each runtime file separately. Membership changes
+remove obsolete staged files; a changed input copies only its own member, and
+unchanged staging copies no payloads. `Quality.BuildRegistration` checks those
+operations, missing inputs/outputs and the shared preset owner. Mutation fixtures
+copy their explicit consumed inputs into private scratch, preserving canonical
+files and avoiding writable links to them. Resource membership and scientific
+fixture values are unchanged by staging.
 
 ## Diagnosing a failure
 

@@ -46,12 +46,8 @@ namespace {
         return root;
     }
     fs::path consumer_root(const std::string& name) {
-        const auto root = source_root(name);
-        for (const char* directory : {"profiles", "illuminants", "filters"}) {
-            if (fs::exists(resources / directory)) {
-                fs::copy(resources / directory, root / directory, fs::copy_options::recursive);
-            }
-        }
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / name);
+        JuicerTestSupport::copy_direct_preparation_assets(resources, root);
         return root;
     }
     void expect_no_cuda() {

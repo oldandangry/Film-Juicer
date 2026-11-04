@@ -557,7 +557,7 @@ namespace IlluminantConstruction {
     TEST(IlluminantConstruction, PublishedCallerProductsMatchFrozenNativeParent) {
         const auto& f = fixture();
         const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "construction-products");
-        JuicerTestSupport::copy_consumer_assets(resources, root);
+        JuicerTestSupport::copy_positive_print_preparation_assets(resources, root);
         JuicerCuda::Owner owner;
         owner.create(root);
         auto& assets = JuicerProcess::root().assets();
@@ -657,7 +657,7 @@ namespace IlluminantConstruction {
 
     TEST(IlluminantConstruction, ConstructionAdmissionAndEqualPreflashPublication) {
         const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "construction-failures");
-        JuicerTestSupport::copy_consumer_assets(resources, root);
+        JuicerTestSupport::copy_positive_print_preparation_assets(resources, root);
         JuicerCuda::Owner owner;
         owner.create(root);
         auto& assets = JuicerProcess::root().assets();

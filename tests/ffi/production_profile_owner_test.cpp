@@ -553,7 +553,7 @@ namespace {
     }
     fs::path consumer_resources(const char* name) {
         const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / name);
-        JuicerTestSupport::copy_consumer_assets(resources, root);
+        JuicerTestSupport::copy_print_preparation_assets(resources, root);
         return root;
     }
     void save_film(const fs::path& root, const Json& document) {
@@ -726,6 +726,7 @@ namespace {
     TEST(ProductionProfileConsumer, CanonicalAxesIgnoreAuthoredLabelsWhileIdentityRetainsThem) {
         const auto root = consumer_resources("canonical-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
+        const auto canonicalProfile = read_json(resources / "profiles/kodak_portra_400.json");
         JuicerCuda::Owner owner;
         owner.create(root);
         auto controls = direct_controls();
@@ -769,6 +770,7 @@ namespace {
         expect_span_bits(preparedState.exposure_tables.lambda_nm, baselineExposureLambda);
         expect_span_bits(preparedState.scanner_tables.lambda_nm, baselineScannerLambda);
         expect_span_bits(preparedState.scanner_tables.dyes_cmy[0], baselineScannerEpsC);
+        EXPECT_EQ(read_json(resources / "profiles/kodak_portra_400.json"), canonicalProfile);
     }
 
     TEST(ProductionProfileConsumer, HanatosWindowBroaderValuesReachAcceptedFormula) {

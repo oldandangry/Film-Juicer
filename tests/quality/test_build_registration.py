@@ -12,6 +12,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
@@ -182,6 +183,140 @@ class RegistrationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.assertCountEqual(names, TOOLING_TESTS)
         self.assertNotIn("Ctest.Host.Report", names)
+
+    def resource_fixture(self):
+        source = self.checkout / "resource staging ü"
+        source.mkdir()
+        inputs = source / "inputs"
+        payloads = {
+            "profiles/film.json": b'{"film": "original"}\n',
+            "spectral/table.bin": bytes(range(256)),
+            "obsolete.txt": b"removed runtime member\n",
+        }
+        for name, data in payloads.items():
+            path = inputs / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        membership = source / "membership.txt"
+        membership.write_text("\n".join(payloads) + "\n", encoding="utf-8")
+        stage = self.build / "Resources"
+        (source / "CMakeLists.txt").write_text(
+            'cmake_minimum_required(VERSION 4.3)\nproject(ResourceStaging NONE)\n'
+            f'include("{(ROOT / "tests/ResourceStaging.cmake").as_posix()}")\n'
+            'set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS '
+            '"${CMAKE_CURRENT_SOURCE_DIR}/membership.txt")\n'
+            'file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/membership.txt" JUICER_RUNTIME_RESOURCES ENCODING UTF-8)\n'
+            'juicer_stage_test_resources("${CMAKE_CURRENT_SOURCE_DIR}/inputs" '
+            '"${CMAKE_BINARY_DIR}/Resources" "${CMAKE_BINARY_DIR}/resources.stamp")\n',
+            encoding="utf-8",
+        )
+        ninja = shutil.which("ninja")
+        self.assertTrue(self.cmake and ninja, "resource staging requires CMake and Ninja")
+        self.native_run.command("resource-configure", [self.cmake, "-S", source, "-B", self.build,
+                                "-G", "Ninja", "-DCMAKE_MAKE_PROGRAM=" + ninja], timeout=60)
+        return source, inputs, membership, stage, payloads
+
+    def resource_snapshot(self, stage):
+        return {path.relative_to(stage).as_posix():
+                (path.read_bytes(), path.stat().st_size, path.stat().st_mtime_ns)
+                for path in stage.rglob("*") if path.is_file()}
+
+    def resource_build(self, name):
+        started = time.perf_counter()
+        log = self.native_run.command(name, [self.cmake, "--build", self.build,
+                                      "--target", "juicer_test_resources"], timeout=60)
+        return log.read_text(encoding="utf-8"), time.perf_counter() - started
+
+    def test_resource_staging_updates_only_selected_members(self):
+        self.subtest_cases = self.test_resource_staging_updates_only_selected_members.subtest_cases
+        source, inputs, membership, stage, payloads = self.resource_fixture()
+        observations = {}
+        with self.subTest(case="initial"):
+            _, seconds = self.resource_build("resource-initial")
+            before = self.resource_snapshot(stage)
+            self.assertEqual({name: data[0] for name, data in before.items()}, payloads)
+            observations["initial"] = {"payload_files": len(before),
+                                       "payload_bytes": sum(len(data) for data in payloads.values()),
+                                       "seconds": seconds}
+        with self.subTest(case="noop"):
+            log, seconds = self.resource_build("resource-noop")
+            self.assertEqual(self.resource_snapshot(stage), before)
+            self.assertNotIn("Copying runtime test resource", log)
+            observations["noop"] = {"payload_files": 0, "payload_bytes": 0, "seconds": seconds}
+        with self.subTest(case="changed"):
+            payloads["profiles/film.json"] = b'{"film": "changed"}\n'
+            (inputs / "profiles/film.json").write_bytes(payloads["profiles/film.json"])
+            self.assertGreater((inputs / "profiles/film.json").stat().st_mtime_ns,
+                               before["profiles/film.json"][2])
+            log, seconds = self.resource_build("resource-changed")
+            after = self.resource_snapshot(stage)
+            self.assertEqual([name for name in before if before[name] != after[name]], ["profiles/film.json"])
+            self.assertEqual(after["profiles/film.json"][0], payloads["profiles/film.json"])
+            self.assertEqual(log.count("Copying runtime test resource"), 1)
+            observations["changed"] = {"payload_files": 1, "payload_bytes": len(payloads["profiles/film.json"]),
+                                       "seconds": seconds}
+            before = after
+        with self.subTest(case="removed"):
+            (inputs / "obsolete.txt").unlink()
+            del payloads["obsolete.txt"]
+            membership.write_text("\n".join(payloads) + "\n", encoding="utf-8")
+            log, seconds = self.resource_build("resource-removed")
+            self.assertFalse((stage / "obsolete.txt").exists())
+            self.assertEqual(self.resource_snapshot(stage), {name: before[name] for name in payloads})
+            self.assertNotIn("Copying runtime test resource", log)
+            observations["removed"] = {"payload_files": 0, "payload_bytes": 0, "seconds": seconds}
+            before = self.resource_snapshot(stage)
+        with self.subTest(case="added"):
+            payloads["filters/new.bin"] = b"new selected member\n"
+            (inputs / "filters").mkdir()
+            (inputs / "filters/new.bin").write_bytes(payloads["filters/new.bin"])
+            membership.write_text("\n".join(payloads) + "\n", encoding="utf-8")
+            log, seconds = self.resource_build("resource-added")
+            after = self.resource_snapshot(stage)
+            self.assertEqual({name: after[name] for name in before}, before)
+            self.assertEqual(after["filters/new.bin"][0], payloads["filters/new.bin"])
+            self.assertEqual(log.count("Copying runtime test resource"), 1)
+            observations["added"] = {"payload_files": 1, "payload_bytes": len(payloads["filters/new.bin"]),
+                                     "seconds": seconds}
+            before = after
+        with self.subTest(case="configuration"):
+            with (source / "CMakeLists.txt").open("a", encoding="utf-8") as stream:
+                stream.write("# A configuration change does not invalidate resource payloads.\n")
+            log, seconds = self.resource_build("resource-configuration")
+            self.assertEqual(self.resource_snapshot(stage), before)
+            self.assertNotIn("Copying runtime test resource", log)
+            observations["configuration"] = {"payload_files": 0, "payload_bytes": 0, "seconds": seconds}
+        with self.subTest(case="mutation"):
+            original = (inputs / "profiles/film.json").read_bytes()
+            self.assertFalse((stage / "profiles/film.json").samefile(inputs / "profiles/film.json"))
+            (stage / "profiles/film.json").write_bytes(b"mutated isolated package fixture\n")
+            self.assertEqual((inputs / "profiles/film.json").read_bytes(), original)
+            self.assertEqual((inputs / "spectral/table.bin").read_bytes(), payloads["spectral/table.bin"])
+        with self.subTest(case="missing-output"):
+            (stage / "profiles/film.json").unlink()
+            log, seconds = self.resource_build("resource-recreate")
+            after = self.resource_snapshot(stage)
+            self.assertEqual({name: value[0] for name, value in after.items()}, payloads)
+            self.assertEqual({name: after[name] for name in before if name != "profiles/film.json"},
+                             {name: value for name, value in before.items() if name != "profiles/film.json"})
+            self.assertEqual(log.count("Copying runtime test resource"), 1)
+            observations["missing-output"] = {"payload_files": 1, "payload_bytes": len(original), "seconds": seconds}
+        print("Resource staging observations (logical payload changes):", json.dumps(observations, sort_keys=True))
+
+    def test_resource_staging_missing_input_preserves_existing_payloads(self):
+        _, inputs, _, stage, _ = self.resource_fixture()
+        self.resource_build("resource-prepare-failure")
+        before = self.resource_snapshot(stage)
+        (inputs / "profiles/film.json").unlink()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.resource_build("resource-missing-input")
+        self.assertEqual(self.resource_snapshot(stage), before)
+
+
+RegistrationTests.test_resource_staging_updates_only_selected_members.required_subtests = True
+RegistrationTests.test_resource_staging_updates_only_selected_members.subtest_cases = (
+    "initial", "noop", "changed", "removed", "added", "configuration", "mutation", "missing-output"
+)
 
 
 class MembershipRecordTests(unittest.TestCase):
@@ -383,21 +518,40 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         command = [self.cmake, "--build", str(self.host_build), "--target", "juicer_test_resources"]
         self.native_run.command("resource-stage-prepare", command, timeout=120)
         stage = self.preset_build / "tests/Resources"
-        paths = [self.preset_build / "tests/resources.stamp", stage]
+        stamp = self.preset_build / "tests/resources.stamp"
+        members = (self.host_build / "tests/resource-members.txt").read_text(encoding="utf-8").splitlines()
+        self.assertCountEqual([path.relative_to(stage).as_posix() for path in stage.rglob("*") if path.is_file()],
+                              members)
 
         def identities():
-            return {str(path): (path.stat().st_size, path.stat().st_mtime_ns) for path in paths}
+            return {str(path): (path.stat().st_size, path.stat().st_mtime_ns)
+                    for path in (stamp, *stage.rglob("*")) if path.is_file()}
 
         before = identities()
         environment = dict(os.environ)
         environment.pop("JUICER_OUTPUT_LEASES", None)
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.native_run.command("resource-stage-unowned", command, env=environment, timeout=30)
-        self.assertEqual(identities(), before)
+        # Force both shared producers to need work. A warm rejected target alone
+        # would not prove that membership pruning and payload copies are guarded.
+        missing = stage / "illuminants/D50.csv"
+        missing.unlink()
+        stamp.unlink()
+        try:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.native_run.command("resource-stage-unowned", command, env=environment, timeout=30)
+            self.assertFalse(missing.exists())
+            self.assertFalse(stamp.exists())
+            self.assertEqual(identities(), {name: value for name, value in before.items()
+                                           if name not in {str(missing), str(stamp)}})
+        finally:
+            self.native_run.command("resource-stage-restore", command, timeout=60)
+        self.assertEqual(missing.read_bytes(), (ROOT / "Resources/illuminants/D50.csv").read_bytes())
+        before = identities()
         self.native_run.command("resource-stage-noop", command, timeout=60)
         self.assertEqual(identities(), before, "owner checks must not force resource payload writes")
+        self.assertNotIn("Copying runtime test resource", (self.logs / "resource-stage-noop.log").read_text())
         commands = self.query_commands("resource-stage-commands", self.host_build, "juicer_test_resources")
         self.assertIn("check-owner", commands)
+        print("Shared resource stage no-op: zero payload commands and writes; files=", len(before) - 1)
 
     def test_host_configuration_and_selected_six_target_closure_are_cuda_free(self):
         cache_path = self.host_build / "CMakeCache.txt"
@@ -427,6 +581,8 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.assertNotIn("nvcc", selected.casefold())
         self.assertNotIn("cufft", selected.casefold())
         self.assertNotIn("/src/Cuda/", selected)
+        self.assertNotIn("ResourceStaging.cmake", selected,
+                         "immutable explicit-root consumers must not prepare the staged package tree")
         self.assert_no_test_metadata(selected)
 
         all_commands = self.query_commands("host-all-commands", self.host_build)

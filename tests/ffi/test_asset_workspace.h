@@ -1,13 +1,16 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -90,17 +93,52 @@ namespace JuicerTestSupport {
 
     inline TestAssetWorkspaces test_asset_workspaces;
 
-    inline void copy_reconstruction_assets(const fs::path& source, const fs::path& destination) {
-        fs::create_directories(destination / "luts/spectral_upsampling");
-        fs::copy_file(source / "cie1931_2deg.csv", destination / "cie1931_2deg.csv");
-        for (const auto* file : {"irradiance_xy_tc.npy", "arctic2026beta04_reflectance_xy_tc.npy", "mallett2019_basis.npy"})
-            fs::copy_file(source / "luts/spectral_upsampling" / file, destination / "luts/spectral_upsampling" / file);
+    inline void copy_resource_files(
+        const fs::path& source,
+        const fs::path& destination,
+        std::span<const std::string_view> resources) {
+        for (const auto resource : resources) {
+            const auto relative = fs::path(resource);
+            const auto target = destination / relative;
+            fs::create_directories(target.parent_path());
+            fs::copy_file(source / relative, target, fs::copy_options::overwrite_existing);
+        }
     }
 
-    inline void copy_consumer_assets(const fs::path& source, const fs::path& destination) {
+    inline void copy_reconstruction_assets(const fs::path& source, const fs::path& destination) {
+        constexpr std::array<std::string_view, 4> resources{
+            "cie1931_2deg.csv",
+            "luts/spectral_upsampling/irradiance_xy_tc.npy",
+            "luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy",
+            "luts/spectral_upsampling/mallett2019_basis.npy"};
+        copy_resource_files(source, destination, resources);
+    }
+
+    inline void copy_direct_preparation_assets(const fs::path& source, const fs::path& destination) {
+        // These consumers select the negative defaults and build the complete
+        // illuminant table, which reads both filter source files as well.
+        constexpr std::array<std::string_view, 9> resources{
+            "profiles/kodak_portra_400.json",
+            "profiles/kodak_portra_endura.json",
+            "illuminants/D50.csv",
+            "illuminants/D55.csv",
+            "illuminants/D65.csv",
+            "illuminants/K75P.csv",
+            "illuminants/T.csv",
+            "filters/heat_absorbing/schott/KG3.csv",
+            "filters/lens_transmission/canon/canon_24_f28_is.csv"};
+        copy_resource_files(source, destination, resources);
         copy_reconstruction_assets(source, destination);
-        for (const auto* directory : {"profiles", "illuminants", "filters"})
-            fs::copy(source / directory, destination / directory, fs::copy_options::recursive);
+    }
+
+    inline void copy_print_preparation_assets(const fs::path& source, const fs::path& destination) {
+        copy_direct_preparation_assets(source, destination);
+        copy_resource_files(source, destination, std::array<std::string_view, 1>{"filters/neutral_print_filters.json"});
+    }
+
+    inline void copy_positive_print_preparation_assets(const fs::path& source, const fs::path& destination) {
+        copy_print_preparation_assets(source, destination);
+        copy_resource_files(source, destination, std::array<std::string_view, 1>{"profiles/fujifilm_provia_100f.json"});
     }
 
 } // namespace JuicerTestSupport
