@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include "../ffi/gtest_cases.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaResources.h"
@@ -566,7 +567,11 @@ namespace {
     };
 
     TEST_F(ScannerLut, ColdWarmAndCallbackFault) {
+        JuicerTests::GtestCohort operation("operation", std::vector<std::string>{"ColdWarmAndCallbackFault"});
+        auto operationCase = operation.case_event("ColdWarmAndCallbackFault");
+        JuicerTests::GtestCohort firstRoutes("initial-route", 4);
         for (int route = 0; route < 4; ++route) {
+            auto routeCase = firstRoutes.case_event(std::to_string(route));
             ContextFixture routeFixture;
             Failure routeFailure;
             const auto& routeRow = product(route);
@@ -627,10 +632,13 @@ namespace {
                 expect_words(pointers(*routeFixture.resources, route), routeRow.at("native"), routeRow.at("descriptor_hash").get<std::uint64_t>(), routeFixture.stream);
             }
             routeFixture.close();
+            routeCase.passed();
         }
 
         // Earlier film/reconstruction allocations stay warm for this device-ownership check.
+        JuicerTests::GtestCohort changedKeyRoutes("changed-key-route", 4);
         for (int route = 0; route < 4; ++route) {
+            auto routeCase = changedKeyRoutes.case_event(std::to_string(route));
             ContextFixture warmed;
             Failure failure;
             const auto& row = product(route);
@@ -687,6 +695,7 @@ namespace {
                         "valid changed-key recovery restores matching route metadata");
             }
             warmed.close();
+            routeCase.passed();
         }
 
         ContextFixture fixture;
@@ -695,7 +704,14 @@ namespace {
         PreparedInput seed(row);
         require(prepare_with_owner(fixture, row, seed, failure), "seed route zero before callback fault transitions");
         const auto previous = pointers(*fixture.resources, 0);
+        std::vector<std::string> callbackFaultIds;
+        callbackFaultIds.reserve(11);
+        for (unsigned fault = 2; fault <= 11; ++fault)
+            callbackFaultIds.push_back("fault-" + std::to_string(fault));
+        callbackFaultIds.push_back("view-panic");
+        JuicerTests::GtestCohort callbackFaults("callback-fault", callbackFaultIds);
         for (unsigned fault = 2; fault <= 11; ++fault) {
+            auto faultCase = callbackFaults.case_event("fault-" + std::to_string(fault));
             auto faultInput = PreparedInput(row);
             faultInput.input.scannerLutDescriptor.hash ^= 0x0200000000000000ull + fault;
             faultInput.input.densityBounds.hash = faultInput.input.scannerLutDescriptor.hash;
@@ -708,7 +724,9 @@ namespace {
                     "scanner reservation fault retains old serving LUT");
             require_route_metadata_cleared(*fixture.resources);
             require(fj_test_scanner_lut_live_owners() == 0, "scanner reservation fault drops candidate owner");
+            faultCase.passed();
         }
+        auto viewPanicCase = callbackFaults.case_event("view-panic");
         auto viewPanic = PreparedInput(row);
         viewPanic.input.scannerLutDescriptor.hash ^= 0x0200000000000010ull;
         viewPanic.input.densityBounds.hash = viewPanic.input.scannerLutDescriptor.hash;
@@ -724,11 +742,17 @@ namespace {
         require(prepare_with_owner(fixture, row, seed, failure), "retry after scanner callback faults");
         expect_words(pointers(*fixture.resources, 0), row.at("native"), row.at("descriptor_hash").get<std::uint64_t>(), fixture.stream);
         fixture.close();
+        viewPanicCase.passed();
+        operationCase.passed();
     }
 
     TEST_F(ScannerLut, BothOwnerRechecks) {
+        JuicerTests::GtestCohort operation("operation", std::vector<std::string>{"BothOwnerRechecks"});
+        auto operationCase = operation.case_event("BothOwnerRechecks");
         const auto& row = product(0);
+        JuicerTests::GtestCohort cases("owner-recheck-phase", std::vector<std::string>{"after-prepare", "after-upload"});
         for (const auto phase : {Phase::AfterPrepare, Phase::AfterUpload}) {
+            auto rowCase = cases.case_event(phase == Phase::AfterPrepare ? "after-prepare" : "after-upload");
             ContextFixture fixture;
             Failure failure;
             PreparedInput first(row);
@@ -754,11 +778,17 @@ namespace {
                     "owner recheck frees candidate allocations and reservations");
             require(prepare_with_owner(fixture, row, changed, failure), "retry after owner recheck restore");
             fixture.close();
+            rowCase.passed();
         }
+        operationCase.passed();
     }
 
     TEST_F(ScannerLut, SixUploadFailures) {
+        JuicerTests::GtestCohort operation("operation", std::vector<std::string>{"SixUploadFailures"});
+        auto operationCase = operation.case_event("SixUploadFailures");
+        JuicerTests::GtestCohort cases("upload-slot", 6);
         for (int slot = 0; slot < 6; ++slot) {
+            auto rowCase = cases.case_event(std::to_string(slot));
             ContextFixture fixture;
             Failure failure;
             const auto& row = product(0);
@@ -787,12 +817,18 @@ namespace {
             require(prepare_with_owner(fixture, row, changed, failure), "upload recovery after one-shot failure");
             expect_words(pointers(*fixture.resources, 0), row.at("native"), changed.input.scannerLutDescriptor.hash, fixture.stream);
             fixture.close();
+            rowCase.passed();
         }
+        operationCase.passed();
     }
 
     TEST_F(ScannerLut, OrderedRetirementFailures) {
+        JuicerTests::GtestCohort operation("operation", std::vector<std::string>{"OrderedRetirementFailures"});
+        auto operationCase = operation.case_event("OrderedRetirementFailures");
         const auto& row = product(0);
+        JuicerTests::GtestCohort cases("retirement-slot", 6);
         for (int slot = 0; slot < 6; ++slot) {
+            auto rowCase = cases.case_event(std::to_string(slot));
             ContextFixture fixture;
             Failure failure;
             PreparedInput first(row);
@@ -827,10 +863,14 @@ namespace {
             require(prepare_with_owner(fixture, row, changed, failure), "scanner LUT retry after clearing retirement fault");
             expect_words(pointers(*fixture.resources, 0), row.at("native"), changed.input.scannerLutDescriptor.hash, fixture.stream);
             fixture.close();
+            rowCase.passed();
         }
+        operationCase.passed();
     }
 
     TEST_F(ScannerLut, LaterGamutFailure) {
+        JuicerTests::GtestCohort operation("operation", std::vector<std::string>{"LaterGamutFailure"});
+        auto operationCase = operation.case_event("LaterGamutFailure");
         const auto& row = product(0);
         ContextFixture fixture;
         Failure failure;
@@ -858,9 +898,12 @@ namespace {
         require(prepare_with_owner(fixture, row, changed, failure), "gamut and scanner retry after one-shot failure");
         expect_words(pointers(*fixture.resources, 0), row.at("native"), changed.input.scannerLutDescriptor.hash, fixture.stream);
         fixture.close();
+        operationCase.passed();
     }
 
     TEST_F(ScannerLut, AsyncBackingAndTeardown) {
+        JuicerTests::GtestCohort operation("operation", std::vector<std::string>{"AsyncBackingAndTeardown"});
+        auto operationCase = operation.case_event("AsyncBackingAndTeardown");
         ContextFixture fixture;
         Failure failure;
         const int route = 1;
@@ -893,10 +936,20 @@ namespace {
         const auto completed = PinnedUploadTest::snapshot(fixture.key);
         require(completed.inFlight == 0 && completed.reserved == 0, "completed staging is reusable before owner teardown");
         fixture.close();
+        operationCase.passed();
     }
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
+    static constexpr std::array<const char*, 6> operations{
+        "ColdWarmAndCallbackFault", "BothOwnerRechecks", "SixUploadFailures", "OrderedRetirementFailures", "LaterGamutFailure", "AsyncBackingAndTeardown"};
+    for (int index = 1; index < argc; ++index) {
+        if (std::string_view(argv[index]) == "--list-cases") {
+            for (const auto* operation : operations)
+                JuicerTests::list_case("ScannerLut", operation);
+            return 0;
+        }
+    }
     if (argc < 2) {
         std::fprintf(stderr, "FAIL Scanner LUT: expected one logical fixture path before GoogleTest options\n");
         return 2;
@@ -913,5 +966,12 @@ int main(int argc, char** argv) {
     --argc;
     argv[argc] = nullptr;
     ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    if (::testing::GTEST_FLAG(list_tests))
+        return RUN_ALL_TESTS();
+    JuicerTests::CaseLog log;
+    const int result = RUN_ALL_TESTS();
+    log.finish();
+    return result;
+} catch (...) {
+    return 1;
 }

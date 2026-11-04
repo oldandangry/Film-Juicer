@@ -275,6 +275,7 @@ impl HalationFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
 
     #[test]
@@ -312,13 +313,26 @@ mod tests {
 
     #[test]
     fn gaussian_identity_has_only_positive_zero_fields() {
-        for sigma in [-1.0, -0.0, 0.0, 1.0e-6] {
+        let sigmas = [
+            ("negative", -1.0),
+            ("negative-zero", -0.0),
+            ("positive-zero", 0.0),
+            ("small-positive", 1.0e-6),
+        ];
+        let mut cases = RowCases::new(
+            "halation-gaussian-identity",
+            sigmas.iter().map(|(id, _)| *id),
+        );
+        for (id, sigma) in sigmas {
+            let case = cases.case(id);
             let g = HalationGaussian::new(sigma, HalationFrameField::ScatterCore, 0, None).unwrap();
             assert_eq!(g.kind(), HalationGaussianKind::Identity);
             assert_eq!(g.radius(), 0);
             assert_eq!(g.fir_weights().map(f32::to_bits), [0; 19]);
             assert_eq!(g.yvv().map(f32::to_bits), [0; 4]);
+            case.passed();
         }
+        cases.finish();
     }
 
     fn capture() -> Value {
@@ -374,6 +388,7 @@ mod tests {
     #[test]
     fn complete_native_capture() {
         let captured = capture();
+        let case_count = captured["cases"].as_array().unwrap().len();
         let mut rows = captured["cases"].as_array().unwrap().clone();
         assert_eq!(rows.len(), 52);
         let products = captured["products"].as_array().unwrap();
@@ -388,7 +403,30 @@ mod tests {
         )
         .unwrap();
         let mut mismatches = Vec::new();
-        for row in &rows {
+        let expected_ids = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let group = if index < case_count {
+                    "case"
+                } else {
+                    "product"
+                };
+                format!("{group}/{}", row["input"]["name"].as_str().unwrap())
+            })
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new("halation-frame", expected_ids);
+        for (index, row) in rows.iter().enumerate() {
+            let group = if index < case_count {
+                "case"
+            } else {
+                "product"
+            };
+            let row_case = cases.case(format!(
+                "{group}/{}",
+                row["input"]["name"].as_str().unwrap()
+            ));
+            let mismatch_count = mismatches.len();
             let result = HalationFrame::new(
                 input(&row["input"]),
                 f32::from_bits(row["input"]["pixel_size_um"].as_u64().unwrap() as u32),
@@ -429,18 +467,26 @@ mod tests {
             {
                 mismatches.push(json!({"case":row["input"]["name"],"actual":actual,"expected":row["descriptor"]}));
             }
+            if mismatches.len() == mismatch_count {
+                row_case.passed();
+            }
         }
-        let primitive_differences = captured["primitives"]
-            .as_array()
-            .unwrap()
+        let primitives = captured["primitives"].as_array().unwrap();
+        let mut primitive_cases = RowCases::new("halation-primitives", ["exp-sweep"]);
+        let primitive_case = primitive_cases.case("exp-sweep");
+        let mut primitive_count = 0;
+        let primitive_differences = primitives
             .iter()
             .filter(|p| {
+                primitive_count += 1;
                 f64::from_bits(p["argument"].as_u64().unwrap())
                     .exp()
                     .to_bits()
                     != p["exp"].as_u64().unwrap()
             })
             .count();
+        assert_eq!(primitive_count, primitives.len());
+        primitive_case.passed();
         println!(
             "Halation: {} complete records; {primitive_differences} f64 exp differences; {} full-record mismatches",
             rows.len(),
@@ -453,5 +499,7 @@ mod tests {
             mismatches.is_empty(),
             "exact whole halation schedule gate failed"
         );
+        cases.finish();
+        primitive_cases.finish();
     }
 }

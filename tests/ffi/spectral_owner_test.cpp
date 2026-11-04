@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include "gtest_cases.h"
 #include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
 
@@ -283,7 +284,10 @@ namespace {
 
     TEST(SpectralOwner, ClearedOutputsDiagnosticsAndConsumingRelease) {
         const Assets assets(resources);
+        JuicerTests::GtestCohort capacities_cases("capacities", 4u);
+        std::size_t capacities_index = 0;
         for (std::size_t capacity : {0u, 1u, 9u, 256u}) {
+            auto capacities_case = capacities_cases.case_event(std::to_string(capacities_index++));
             std::array<char, 256> message{};
             FjErrorBuffer error{message.data(), capacity, 999};
             FjSpectraLut* lut = nullptr;
@@ -293,24 +297,39 @@ namespace {
             if (capacity > 0) {
                 EXPECT_EQ(message[error.length], '\0');
             }
+
+            capacities_case.passed();
         }
+        JuicerTests::GtestCohort lut_families_cases("lut-families", 2u);
+        std::size_t lut_families_index = 0;
+        JuicerTests::GtestCohort lut_acquire_faults_cases("lut-acquire-faults", 4u);
+        std::size_t lut_acquire_faults_index = 0;
+        JuicerTests::GtestCohort lut_view_faults_cases("lut-view-faults", 4u);
+        std::size_t lut_view_faults_index = 0;
         for (auto acquire : {fj_legacy_hanatos_acquire, fj_legacy_arctic_acquire}) {
+            auto lut_families_case = lut_families_cases.case_event(std::to_string(lut_families_index++));
             expect_status(acquire(assets.owner, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             for (unsigned fault : {1u, 2u}) {
+                auto lut_acquire_faults_case = lut_acquire_faults_cases.case_event(std::to_string(lut_acquire_faults_index++));
                 FjSpectraLut* lut = nullptr;
                 fj_test_spectral_fault(fault);
                 expect_status(acquire(assets.owner, &lut, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
                 EXPECT_EQ(lut, nullptr);
+
+                lut_acquire_faults_case.passed();
             }
             const auto before = fj_test_spectral_live_owners();
             FjSpectraLut* lut = nullptr;
             expect_status(acquire(assets.owner, &lut, nullptr), FJ_STATUS_SUCCESS);
             for (unsigned fault : {1u, 2u}) {
+                auto lut_view_faults_case = lut_view_faults_cases.case_event(std::to_string(lut_view_faults_index++));
                 FjSpectraLutView view{{nullptr, 999}, 999};
                 fj_test_spectral_fault(fault);
                 expect_status(fj_legacy_spectra_lut_view(lut, &view, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
                 expect_empty(view.samples);
                 EXPECT_EQ(view.asset_hash, 0u);
+
+                lut_view_faults_case.passed();
             }
             FjErrorBuffer malformed{nullptr, 1, 999};
             FjSpectraLutView view{{nullptr, 999}, 999};
@@ -319,6 +338,8 @@ namespace {
             EXPECT_EQ(view.asset_hash, 0u);
             expect_status(fj_legacy_spectra_lut_release(std::exchange(lut, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(fj_test_spectral_live_owners(), before);
+
+            lut_families_case.passed();
         }
         FjSpectraLutView view{{nullptr, 999}, 999};
         expect_status(fj_legacy_spectra_lut_view(nullptr, &view, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -336,7 +357,10 @@ namespace {
         expect_status(fj_legacy_cmf_acquire(nullptr, &cmf, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         expect_status(fj_legacy_mallett_acquire(assets.owner, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         expect_status(fj_legacy_cmf_acquire(assets.owner, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        JuicerTests::GtestCohort mallett_cmf_acquire_cases("mallett-cmf-acquire", 2u);
+        std::size_t mallett_cmf_acquire_index = 0;
         for (unsigned fault : {1u, 2u}) {
+            auto mallett_cmf_acquire_case = mallett_cmf_acquire_cases.case_event(std::to_string(mallett_cmf_acquire_index++));
             const auto expected = fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE;
             fj_test_spectral_fault(fault);
             expect_status(fj_legacy_mallett_acquire(assets.owner, &basis, nullptr), expected);
@@ -344,10 +368,15 @@ namespace {
             fj_test_spectral_fault(fault);
             expect_status(fj_legacy_cmf_acquire(assets.owner, &cmf, nullptr), expected);
             EXPECT_EQ(cmf, nullptr);
+
+            mallett_cmf_acquire_case.passed();
         }
         expect_status(fj_legacy_mallett_acquire(assets.owner, &basis, nullptr), FJ_STATUS_SUCCESS);
         expect_status(fj_legacy_cmf_acquire(assets.owner, &cmf, nullptr), FJ_STATUS_SUCCESS);
+        JuicerTests::GtestCohort mallett_cmf_view_cases("mallett-cmf-view", 2u);
+        std::size_t mallett_cmf_view_index = 0;
         for (unsigned fault : {1u, 2u}) {
+            auto mallett_cmf_view_case = mallett_cmf_view_cases.case_event(std::to_string(mallett_cmf_view_index++));
             const auto expected = fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE;
             FjFloatSpan span{nullptr, 999};
             fj_test_spectral_fault(fault);
@@ -357,6 +386,8 @@ namespace {
             span.count = 999;
             expect_status(fj_legacy_cmf_view(cmf, &span, nullptr), expected);
             expect_empty(span);
+
+            mallett_cmf_view_case.passed();
         }
         FjErrorBuffer malformed{nullptr, 1, 999};
         expect_status(fj_legacy_mallett_release(std::exchange(basis, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -375,6 +406,9 @@ namespace {
 
 int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
+    if (::testing::GTEST_FLAG(list_tests))
+        return RUN_ALL_TESTS();
+    JuicerTests::CaseLog case_log;
     if (argc != 3) {
         return 2;
     }
@@ -382,6 +416,7 @@ int main(int argc, char** argv) try {
     scratch = fs::absolute(argv[2]);
     fs::create_directories(scratch);
     const int result = RUN_ALL_TESTS();
+    case_log.finish();
     const bool ownersDrained = fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0;
     return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
 } catch (const std::exception& error) {

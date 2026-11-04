@@ -78,11 +78,14 @@ class RustNamingTests(unittest.TestCase):
     def test_current_code_and_valid_names_pass(self) -> None:
         for package in PACKAGES:
             self.add_probe(package, "accepted")
-        for package in PACKAGES:
-            for release in self.profiles:
-                with self.subTest(package=package, release=release):
-                    status, diagnostics = self.clippy(package, release)
-                    self.assertEqual(status, 0, diagnostics)
+        cases = tuple((package, release) for package in PACKAGES for release in self.profiles)
+        self.subtest_cases = tuple(
+            f"{package}:{'release' if release else 'debug'}" for package, release in cases
+        )
+        for case_id, (package, release) in zip(self.subtest_cases, cases):
+            with self.subTest(case=case_id):
+                status, diagnostics = self.clippy(package, release)
+                self.assertEqual(status, 0, diagnostics)
 
     def test_each_invalid_name_is_a_blocking_diagnostic(self) -> None:
         expected = {
@@ -98,41 +101,51 @@ class RustNamingTests(unittest.TestCase):
             ),
             "unfulfilled_lint_expectations": ("non_snake_case",),
         }
+        cases = tuple((package, release) for package in PACKAGES for release in self.profiles)
+        self.subtest_cases = tuple(
+            f"{package}:{'release' if release else 'debug'}" for package, release in cases
+        )
         for package in PACKAGES:
-            with self.subTest(package=package):
-                self.add_probe(package, "rejected")
-                for release in self.profiles:
-                    with self.subTest(release=release):
-                        status, diagnostics = self.clippy(package, release)
-                        self.assertNotEqual(status, 0)
-                        for lint, names in expected.items():
-                            spans = [
-                                span
-                                for diagnostic in diagnostics
-                                if (diagnostic.get("code") or {}).get("code") == lint
-                                and diagnostic["level"] == "error"
-                                for span in diagnostic["spans"]
-                                if span["is_primary"]
-                                and span["file_name"].endswith("naming_probe.rs")
-                            ]
-                            identifiers = [
-                                text["text"][text["highlight_start"] - 1:text["highlight_end"] - 1]
-                                for span in spans for text in span["text"]
-                            ]
-                            for name in names:
-                                self.assertIn(
-                                    name, identifiers,
-                                    f"missing blocking {lint} for {name}: {diagnostics}",
-                                )
-                # The plug-in's dependency must be clean when testing its own lints.
-                shutil.copy2(FIXTURES / "accepted.rs", self.workspace / "rust" / package / "src/naming_probe.rs")
+            self.add_probe(package, "rejected")
+        for case_id, (package, release) in zip(self.subtest_cases, cases):
+            with self.subTest(case=case_id):
+                status, diagnostics = self.clippy(package, release)
+                self.assertNotEqual(status, 0)
+                for lint, names in expected.items():
+                    spans = [
+                        span
+                        for diagnostic in diagnostics
+                        if (diagnostic.get("code") or {}).get("code") == lint
+                        and diagnostic["level"] == "error"
+                        for span in diagnostic["spans"]
+                        if span["is_primary"]
+                        and span["file_name"].endswith("naming_probe.rs")
+                    ]
+                    identifiers = [
+                        text["text"][text["highlight_start"] - 1:text["highlight_end"] - 1]
+                        for span in spans for text in span["text"]
+                    ]
+                    for name in names:
+                        self.assertIn(
+                            name, identifiers,
+                            f"missing blocking {lint} for {name}: {diagnostics}",
+                        )
+                if release == self.profiles[-1]:
+                    # The plug-in's dependency must be clean when testing its own lints.
+                    shutil.copy2(FIXTURES / "accepted.rs", self.workspace / "rust" / package / "src/naming_probe.rs")
 
     def test_narrow_foreign_boundary_exception_passes(self) -> None:
         self.add_probe("film-juicer-plugin", "boundary")
-        for release in self.profiles:
-            with self.subTest(release=release):
+        self.subtest_cases = tuple(f"plugin:{'release' if release else 'debug'}" for release in self.profiles)
+        for case_id, release in zip(self.subtest_cases, self.profiles):
+            with self.subTest(case=case_id):
                 status, diagnostics = self.clippy("film-juicer-plugin", release)
                 self.assertEqual(status, 0, diagnostics)
+
+
+RustNamingTests.test_current_code_and_valid_names_pass.required_subtests = True
+RustNamingTests.test_each_invalid_name_is_a_blocking_diagnostic.required_subtests = True
+RustNamingTests.test_narrow_foreign_boundary_exception_passes.required_subtests = True
 
 
 if __name__ == "__main__":

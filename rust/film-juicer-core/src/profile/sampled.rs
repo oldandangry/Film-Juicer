@@ -624,6 +624,7 @@ fn finish_asset_token(token: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use crate::test_cases::RowCases;
 
     use super::*;
 
@@ -647,18 +648,22 @@ mod tests {
 
     #[test]
     fn checked_lengths_precede_reservations() {
+        let mut cases = RowCases::new(
+            "profile-table-size-boundaries",
+            [
+                "empty-axis",
+                "one-entry",
+                "maximum-supported-count",
+                "usize-maximum-overflow",
+                "usize-div-13-overflow",
+                "isize-bound-overflow",
+            ],
+        );
+        let empty_case = cases.case("empty-axis");
         assert_eq!(
             check_table_size(0),
             Err(ProfileCompletionErrorKind::EmptyAxis)
         );
-        assert!(check_table_size(1).is_ok());
-        assert!(check_table_size(i32::MAX as usize).is_ok());
-        for count in [usize::MAX, usize::MAX / 13, isize::MAX as usize / 52 + 1] {
-            assert_eq!(
-                check_table_size(count),
-                Err(ProfileCompletionErrorKind::Size)
-            );
-        }
         let mut source = source(Role::Film);
         source.samples.log_exposure.clear();
         let error = complete(
@@ -669,14 +674,45 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind, ProfileCompletionErrorKind::EmptyAxis);
+        empty_case.passed();
+        let case = cases.case("one-entry");
+        assert!(check_table_size(1).is_ok());
+        case.passed();
+        let max_case = cases.case("maximum-supported-count");
+        assert!(check_table_size(i32::MAX as usize).is_ok());
+        max_case.passed();
+        for (id, count) in [
+            ("usize-maximum-overflow", usize::MAX),
+            ("usize-div-13-overflow", usize::MAX / 13),
+            ("isize-bound-overflow", isize::MAX as usize / 52 + 1),
+        ] {
+            let case = cases.case(id);
+            assert_eq!(
+                check_table_size(count),
+                Err(ProfileCompletionErrorKind::Size)
+            );
+            case.passed();
+        }
+        cases.finish();
     }
 
     #[test]
     fn reservation_failures_return_no_completed_owner() {
+        let mut ids = Vec::new();
         for role in [Role::Film, Role::Print] {
+            let role_id = if role == Role::Film { "film" } else { "print" };
+            for fail_at in 0..10 {
+                ids.push(format!("{role_id}/reservation/{fail_at}"));
+            }
+            ids.push(format!("{role_id}/total-reservation"));
+        }
+        let mut cases = RowCases::new("profile-reservation-failures", ids);
+        for role in [Role::Film, Role::Print] {
+            let role_id = if role == Role::Film { "film" } else { "print" };
             // Axis first, then all nine layer/channel buffers; fail each actual
             // reservation with a bounded capacity error, including the last one.
             for fail_at in 0..10 {
+                let case = cases.case(format!("{role_id}/reservation/{fail_at}"));
                 let mut call = 0;
                 let error = complete(
                     source(role),
@@ -695,7 +731,9 @@ mod tests {
                 assert_eq!(error.stock, "capacity-case");
                 assert_eq!(error.role, role);
                 assert_eq!(call, fail_at + 1);
+                case.passed();
             }
+            let case = cases.case(format!("{role_id}/total-reservation"));
             let error = complete(
                 source(role),
                 role,
@@ -707,7 +745,9 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error.kind, ProfileCompletionErrorKind::Capacity);
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -741,7 +781,14 @@ mod tests {
                 .unwrap()
                 .map(|row| row.map(f64::from_bits))
         };
-        for captured in gamma["captured"].as_array().unwrap() {
+        let rows = gamma["captured"].as_array().unwrap();
+        let mut cases = RowCases::new(
+            "print-gamma-independent-captures",
+            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        );
+        for captured in rows {
+            let id = captured["id"].as_str().unwrap();
+            let case_row = cases.case(id);
             let case = density["cases"]
                 .as_array()
                 .unwrap()
@@ -773,7 +820,9 @@ mod tests {
                     case["id"]
                 );
             }
+            case_row.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -821,15 +870,36 @@ mod tests {
 
     #[test]
     fn print_gamma_size_and_capacity_failures_return_no_owner() {
+        let mut cases = RowCases::new(
+            "print-gamma-size-capacity",
+            [
+                "minimum-valid-size",
+                "usize-maximum-overflow",
+                "isize-bound-overflow",
+                "allocation-capacity-failure",
+                "invalid-gamma-skips-reservation",
+            ],
+        );
+        let case = cases.case("minimum-valid-size");
         assert!(check_print_density_size(1).is_ok());
-        for count in [usize::MAX, isize::MAX as usize / size_of::<[f32; 3]>() + 1] {
+        case.passed();
+        for (id, count) in [
+            ("usize-maximum-overflow", usize::MAX),
+            (
+                "isize-bound-overflow",
+                isize::MAX as usize / size_of::<[f32; 3]>() + 1,
+            ),
+        ] {
+            let case = cases.case(id);
             assert_eq!(
                 check_print_density_size(count),
                 Err(PrintDensityError::Size)
             );
+            case.passed();
         }
         let profile = PrintProfile::new(source(Role::Print)).unwrap();
         let before = profile.tables().density_curves.as_ptr();
+        let capacity_case = cases.case("allocation-capacity-failure");
         let error = sample_print_density(&profile, 1.1, |buffer, count| {
             assert!(buffer.is_empty());
             assert_eq!(count, 3);
@@ -839,6 +909,8 @@ mod tests {
         assert_eq!(error, PrintDensityError::Capacity);
         assert_eq!(profile.tables().density_curves.as_ptr(), before);
         assert!(profile.sample_density_curves(1.1).is_ok());
+        capacity_case.passed();
+        let invalid_gamma_case = cases.case("invalid-gamma-skips-reservation");
         assert_eq!(
             sample_print_density(&profile, 0.0, |_, _| panic!(
                 "invalid gamma must not reserve"
@@ -846,18 +918,34 @@ mod tests {
             .unwrap_err(),
             PrintDensityError::InvalidGamma
         );
+        invalid_gamma_case.passed();
+        cases.finish();
     }
     #[test]
     fn bundled_payload_memory_reports_logical_and_capacity_bytes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources");
         let catalog = super::super::load_catalog(&root).unwrap();
+        let ids = catalog
+            .films()
+            .iter()
+            .map(|entry| format!("film/{}", entry.key()))
+            .chain(
+                catalog
+                    .prints()
+                    .iter()
+                    .map(|entry| format!("print/{}", entry.key())),
+            )
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new("bundled-profile-memory", ids);
         for role in [Role::Film, Role::Print] {
+            let role_id = if role == Role::Film { "film" } else { "print" };
             let entries = if role == Role::Film {
                 catalog.films()
             } else {
                 catalog.prints()
             };
             for entry in entries {
+                let case = cases.case(format!("{role_id}/{}", entry.key()));
                 let source = super::super::load_source(entry.source_path(), role).unwrap();
                 let profile =
                     complete(source, role, Vec::try_reserve_exact, Vec::try_reserve_exact).unwrap();
@@ -911,7 +999,9 @@ mod tests {
                         curves.totals.capacity() * 12
                     );
                 }
+                case.passed();
             }
         }
+        cases.finish();
     }
 }

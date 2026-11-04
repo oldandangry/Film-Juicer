@@ -1020,6 +1020,7 @@ impl Frame {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::{Value, json};
     fn scalar(v: &Value) -> f32 {
@@ -1199,11 +1200,29 @@ mod tests {
             json!(rows.iter().map(|r| &r["input"]["id"]).collect::<Vec<_>>()),
             checked["case_ids"]
         );
-        for row in rows.iter().chain(captured["products"].as_array().unwrap()) {
+        let products = captured["products"].as_array().unwrap();
+        let expected_ids = rows
+            .iter()
+            .filter(|row| row["input"]["missing_recipe"] != true)
+            .map(|row| format!("case/{}", row["input"]["id"].as_str().unwrap()))
+            .chain(
+                products
+                    .iter()
+                    .filter(|row| row["input"]["missing_recipe"] != true)
+                    .map(|row| format!("product/{}", row["input"]["id"].as_str().unwrap())),
+            )
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new("effects-frame-values", expected_ids);
+        for (group, row) in rows
+            .iter()
+            .map(|row| ("case", row))
+            .chain(products.iter().map(|row| ("product", row)))
+        {
             let v = &row["input"];
             if v["missing_recipe"] == true {
                 continue;
             }
+            let case = cases.case(format!("{group}/{}", v["id"].as_str().unwrap()));
             let result = Frame::new(input(v));
             assert_eq!(
                 result.is_ok(),
@@ -1244,7 +1263,9 @@ mod tests {
                     );
                 }
             }
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn independently_characterized_primitives() {
@@ -1256,8 +1277,13 @@ mod tests {
             json!(rows.iter().map(|r| &r["input"]["id"]).collect::<Vec<_>>()),
             checked["primitive_ids"]
         );
+        let mut cases = RowCases::new(
+            "effects-frame-primitives",
+            rows.iter().map(|row| row["input"]["id"].as_str().unwrap()),
+        );
         for row in rows {
             let v = &row["input"];
+            let case = cases.case(v["id"].as_str().unwrap());
             let args = [
                 wide(&v["args"][0]),
                 wide(&v["args"][1]),
@@ -1293,6 +1319,8 @@ mod tests {
             } else {
                 assert_eq!(json!(words), row["words"], "{}", v["id"]);
             }
+            case.passed();
         }
+        cases.finish();
     }
 }

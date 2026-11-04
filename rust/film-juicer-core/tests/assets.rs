@@ -13,6 +13,9 @@ use film_juicer_core::assets::{AssetError, Assets, CsvSource};
 use film_juicer_core::data_io::calibration::{ErrorKind as CalibrationErrorKind, Field};
 use film_juicer_core::data_io::noise::ErrorKind as NoiseErrorKind;
 use film_juicer_core::profile::{CatalogError, ProfileCompletionErrorKind, ProfileErrorKind, Role};
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -159,7 +162,12 @@ fn source_owners_preserve_independent_bundled_csv_bits() {
         0xc0ea4ea30d5fd861
     );
     assert!(Arc::ptr_eq(&cmf, &assets.cmf().unwrap()));
+    let mut cases = RowCases::new(
+        "bundled-csv-source-owners",
+        CSV_SOURCES.iter().map(|(_, path, _, _)| *path),
+    );
     for &(source, path, count, hash) in CSV_SOURCES {
+        let row = cases.case(path);
         let rows = assets.csv_source(source).unwrap();
         assert_eq!(rows.rows().len(), count, "{path}");
         assert_eq!(
@@ -170,14 +178,21 @@ fn source_owners_preserve_independent_bundled_csv_bits() {
         let reused = assets.csv_source(source).unwrap();
         assert!(Arc::ptr_eq(&rows, &reused));
         assert_eq!(rows.rows().as_ptr(), reused.rows().as_ptr());
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
 fn closed_csv_sources_retry_failures_and_preserve_raw_rows() {
     let directory = Directory::new();
     let assets = Assets::new(directory.0.clone());
+    let mut cases = RowCases::new(
+        "csv-source-failure-retry",
+        CSV_SOURCES.iter().map(|(_, path, _, _)| *path),
+    );
     for &(source, path, _, _) in CSV_SOURCES {
+        let row = cases.case(path);
         let error = assets.csv_source(source).unwrap_err();
         let AssetError::CsvSource {
             source: selected,
@@ -211,7 +226,9 @@ fn closed_csv_sources_retry_failures_and_preserve_raw_rows() {
             Err(AssetError::CsvSource { .. })
         ));
         assert_eq!(decoded.rows().len(), 4);
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
@@ -285,23 +302,39 @@ fn calibration_owner_preserves_selected_lookup_and_cmy_cc_order() {
         cmy.map(f32::to_bits),
         [0x8000_0000, 2.25f32.to_bits(), f32::INFINITY.to_bits()]
     );
-    for selection in [
+    let selections = [
         ("absent", "D65", "film"),
         ("paper", "absent", "film"),
         ("paper", "D65", "absent"),
-    ] {
+    ];
+    let ids: Vec<String> = selections
+        .iter()
+        .map(|(p, i, f)| format!("{p}/{i}/{f}"))
+        .collect();
+    let mut rows = RowCases::new("calibration-absent-selections", &ids);
+    for (selection, id) in selections.into_iter().zip(&ids) {
+        let row = rows.case(id);
         assert_eq!(
             calibration
                 .lookup(selection.0, selection.1, selection.2)
                 .unwrap(),
             None
         );
+        row.passed();
     }
-    for (selection, field) in [
+    rows.finish();
+    let malformed = [
         (("bad_print", "D65", "film"), Field::PrintProfile),
         (("bad_illuminant", "D65", "film"), Field::PrintIlluminant),
         (("paper", "D65", "bad"), Field::CmyCc),
-    ] {
+    ];
+    let ids: Vec<String> = malformed
+        .iter()
+        .map(|((p, i, f), _)| format!("{p}/{i}/{f}"))
+        .collect();
+    let mut rows = RowCases::new("calibration-malformed-selections", &ids);
+    for ((selection, field), id) in malformed.into_iter().zip(&ids) {
+        let row = rows.case(id);
         let error = calibration
             .lookup(selection.0, selection.1, selection.2)
             .unwrap_err();
@@ -312,7 +345,9 @@ fn calibration_owner_preserves_selected_lookup_and_cmy_cc_order() {
         );
         assert_eq!(error.path(), directory.0.join(path));
         assert!(calibration.lookup("paper", "D65", "film").is_ok());
+        row.passed();
     }
+    rows.finish();
     fs::remove_file(directory.0.join(path)).unwrap();
     assert!(Arc::ptr_eq(
         &calibration,
@@ -322,7 +357,10 @@ fn calibration_owner_preserves_selected_lookup_and_cmy_cc_order() {
 
 #[test]
 fn calibration_load_errors_remain_snapshots_until_release() {
-    for case in ["missing", "read", "root"] {
+    let ids = ["missing", "read", "root"];
+    let mut rows = RowCases::new("calibration-load-error-recovery", ids);
+    for case in ids {
+        let row = rows.case(case);
         let directory = Directory::new();
         let path = directory.0.join("filters/neutral_print_filters.json");
         match case {
@@ -358,7 +396,9 @@ fn calibration_load_errors_remain_snapshots_until_release() {
         drop(assets);
         assert_eq!(loaded.lookup("p", "i", "f").unwrap(), Some([1.0, 2.0, 3.0]));
         assert_eq!(error.path(), path);
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
@@ -394,14 +434,17 @@ fn complete_noise_owner_preserves_independent_bundled_bytes() {
 
 #[test]
 fn ordinary_noise_errors_are_cached_until_release() {
-    for case in [
+    let ids = [
         "missing_stbn",
         "malformed_stbn",
         "missing_wang",
         "malformed_wang",
         "malformed_json",
         "malformed_metadata",
-    ] {
+    ];
+    let mut rows = RowCases::new("noise-load-error-recovery", ids);
+    for case in ids {
+        let row = rows.case(case);
         let directory = Directory::new();
         write_noise(&directory);
         let stbn = directory.0.join("Noise/stbn_scalar_512x512x256_u8.bin");
@@ -456,12 +499,20 @@ fn ordinary_noise_errors_are_cached_until_release() {
         assert_eq!(bundle.stbn().bytes().len(), 67_108_864);
         assert_eq!(bundle.wang().tiles().len(), 1_048_576);
         assert_eq!(error.path(), path);
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
 fn release_detaches_new_families_even_with_absent_or_failed_catalog() {
-    for failed_catalog in [false, true] {
+    let catalog_states = [(false, "catalog-valid"), (true, "catalog-failed")];
+    let mut rows = RowCases::new(
+        "cache-release-catalog-states",
+        catalog_states.iter().map(|(_, id)| *id),
+    );
+    for (failed_catalog, id) in catalog_states {
+        let row = rows.case(id);
         let directory = Directory::new();
         write_noise(&directory);
         write_resource(
@@ -500,11 +551,18 @@ fn release_detaches_new_families_even_with_absent_or_failed_catalog() {
         let new_noise = assets.noise().unwrap();
         assert!(!Arc::ptr_eq(&calibration, &new_calibration));
         assert!(!Arc::ptr_eq(&noise, &new_noise));
-        for (&(source, _, _, _), old) in CSV_SOURCES.iter().zip(&sources) {
+        let mut source_rows = RowCases::new(
+            format!("released-csv-sources/{}/identity-and-reload", id),
+            CSV_SOURCES.iter().map(|(_, path, _, _)| *path),
+        );
+        for (&(source, path, _, _), old) in CSV_SOURCES.iter().zip(&sources) {
+            let source_row = source_rows.case(path);
             let new = assets.csv_source(source).unwrap();
             assert!(!Arc::ptr_eq(old, &new));
             assert_eq!(new.rows(), &[[3.0, 4.0]]);
+            source_row.passed();
         }
+        source_rows.finish();
         drop(assets);
         assert_eq!(cmf.rows(), &[[1.0, 2.0, 3.0, 4.0]]);
         assert_eq!(
@@ -522,7 +580,9 @@ fn release_detaches_new_families_even_with_absent_or_failed_catalog() {
         }
         drop(sources);
         assert!(reclaimed.upgrade().is_none());
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
@@ -573,12 +633,25 @@ fn role_and_authored_key_select_the_resolved_path() {
     let print = assets.print("shared").unwrap();
     assert_eq!(film.info().stock(), "shared");
     assert_eq!(print.info().stock(), "shared");
-    for (role, key) in [
+    let selections = [
         (Role::Film, "kodak_portra_endura"),
         (Role::Print, "kodak_portra_400"),
         (Role::Film, "film"),
         (Role::Print, "SHARED"),
-    ] {
+    ];
+    let ids: Vec<String> = selections
+        .iter()
+        .map(|(role, key)| {
+            format!(
+                "{}/{}",
+                if *role == Role::Film { "film" } else { "print" },
+                key
+            )
+        })
+        .collect();
+    let mut cases = RowCases::new("profile-role-and-authored-key-errors", &ids);
+    for ((role, key), id) in selections.into_iter().zip(&ids) {
+        let row = cases.case(id);
         let error = match role {
             Role::Film => assets.film(key).unwrap_err(),
             Role::Print => assets.print(key).unwrap_err(),
@@ -586,7 +659,9 @@ fn role_and_authored_key_select_the_resolved_path() {
         assert!(
             matches!(error, AssetError::MissingProfile { role: actual_role, key: actual_key } if actual_role == role && actual_key == key)
         );
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
@@ -690,13 +765,26 @@ fn catalog_error_is_shared_and_survives_repair_and_release() {
     assert!(matches!(first.as_ref(), CatalogError::Directory { .. }));
     directory.defaults();
     assets.release_cached_payloads().unwrap();
-    for error in [
-        assets.catalog().unwrap_err(),
-        assets.film("kodak_portra_400").unwrap_err(),
-        assets.print("kodak_portra_endura").unwrap_err(),
-    ] {
-        assert!(matches!(error, AssetError::Catalog(error) if Arc::ptr_eq(&first, &error)));
-    }
+    let mut cases = RowCases::new(
+        "sticky-catalog-error-consumers",
+        ["catalog", "film", "print"],
+    );
+    let row = cases.case("catalog");
+    assert!(
+        matches!(assets.catalog().unwrap_err(), AssetError::Catalog(error) if Arc::ptr_eq(&first, &error))
+    );
+    row.passed();
+    let row = cases.case("film");
+    assert!(
+        matches!(assets.film("kodak_portra_400").unwrap_err(), AssetError::Catalog(error) if Arc::ptr_eq(&first, &error))
+    );
+    row.passed();
+    let row = cases.case("print");
+    assert!(
+        matches!(assets.print("kodak_portra_endura").unwrap_err(), AssetError::Catalog(error) if Arc::ptr_eq(&first, &error))
+    );
+    row.passed();
+    cases.finish();
     assert!(Assets::new(directory.0.clone()).catalog().is_ok());
     drop(assets);
     assert!(!first.to_string().is_empty());
@@ -750,7 +838,12 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
     let assets = Assets::new(repository().join("Resources"));
     let catalog = assets.catalog().unwrap();
     let completed = fixture("completed.json");
+    let mut film_cases = RowCases::new(
+        "bundled-film-handle-identities",
+        catalog.films().iter().map(|entry| entry.key()),
+    );
     for entry in catalog.films() {
+        let row = film_cases.case(entry.key());
         let film = assets.film(entry.key()).unwrap();
         let expected = &completed["profiles"][entry.key()];
         assert_eq!(
@@ -759,7 +852,9 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
             "{}",
             entry.key()
         );
+        row.passed();
     }
+    film_cases.finish();
     let prints: Vec<_> = catalog
         .prints()
         .iter()
@@ -772,18 +867,25 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
     let samples =
         fs::read(repository().join("tests/profile/fixtures/density-samples.bin")).unwrap();
     let mut cases = 0;
-    for captured in gamma["captured"].as_array().unwrap() {
+    let captured_rows = gamma["captured"].as_array().unwrap();
+    let density_cases = density["cases"].as_array().unwrap();
+    let ids: Vec<String> = captured_rows
+        .iter()
+        .filter_map(|captured| {
+            let id = captured["id"].as_str()?;
+            let case = density_cases.iter().find(|case| case["id"] == id)?;
+            (!case["profile"].as_str()?.is_empty()).then(|| id.to_owned())
+        })
+        .collect();
+    let mut gamma_cases = RowCases::new("bundled-print-gamma-samples", &ids);
+    for captured in captured_rows {
         let id = captured["id"].as_str().unwrap();
-        let case = density["cases"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["id"] == id)
-            .unwrap();
+        let case = density_cases.iter().find(|c| c["id"] == id).unwrap();
         let key = case["profile"].as_str().unwrap();
         if key.is_empty() {
             continue;
         }
+        let row_case = gamma_cases.case(id);
         let print = prints.iter().find(|p| p.info().stock() == key).unwrap();
         assert_eq!(
             print.asset_token(),
@@ -807,7 +909,9 @@ fn bundled_handles_preserve_c4_tokens_and_c5_samples_after_release_and_drop() {
             assert_eq!(total.map(f32::to_bits), expected, "{id} row {i}");
         }
         cases += 1;
+        row_case.passed();
     }
+    gamma_cases.finish();
     assert_eq!(cases, 48);
 }
 
@@ -911,12 +1015,20 @@ fn reconstruction_handles_and_buffers_survive_profile_release_and_owner_drop() {
         )
     );
     drop(assets);
+    let mut rows = RowCases::new("reconstruction-handle-results", [HANATOS, ARCTIC, MALLETT]);
+    let row = rows.case(HANATOS);
     assert_eq!(hanatos.samples().len(), LUT_COUNT);
     assert_eq!(hanatos.samples()[0].to_bits(), 0x40bb0000);
     assert_eq!(hanatos.asset_hash(), 0x81ebefd4e4cc9926);
+    row.passed();
+    let row = rows.case(ARCTIC);
     assert_eq!(arctic.samples().len(), LUT_COUNT);
     assert_eq!(arctic.asset_hash(), 0x9262ffb765e3289e);
+    row.passed();
+    let row = rows.case(MALLETT);
     assert_eq!(mallett[80][2].to_bits(), 0x3eaa8d89);
+    row.passed();
+    rows.finish();
 }
 
 #[test]
@@ -927,14 +1039,22 @@ fn reconstruction_failures_remain_fixed_across_release_and_file_repair() {
     let hanatos = reconstruction_error(assets.hanatos().unwrap_err());
     let arctic = reconstruction_error(assets.arctic().unwrap_err());
     let mallett = reconstruction_error(assets.mallett().unwrap_err());
-    for (name, error) in [(HANATOS, &hanatos), (ARCTIC, &arctic), (MALLETT, &mallett)] {
+    let failures = [(HANATOS, &hanatos), (ARCTIC, &arctic), (MALLETT, &mallett)];
+    let mut rows = RowCases::new(
+        "reconstruction-open-failure-snapshots",
+        failures.iter().map(|(name, _)| *name),
+    );
+    for (name, error) in failures {
+        let row = rows.case(name);
         assert_eq!(error.path, lut_path(&directory, name));
         assert_eq!(
             error.kind,
             ReadErrorKind::Open(std::io::ErrorKind::NotFound)
         );
         copy_reconstruction(&directory, name);
+        row.passed();
     }
+    rows.finish();
     assets.release_cached_payloads().unwrap();
     assert!(Arc::ptr_eq(
         &hanatos,
@@ -973,7 +1093,15 @@ fn supported_npy_headers_and_widths_share_identities_and_preserve_sample_bits() 
         .map(|bits| u32::try_from(bits.as_u64().unwrap()).unwrap())
         .collect();
     let halves: [u16; 8] = [0, 0x8000, 0x3c00, 0xc000, 0x7c00, 0xfc00, 0x7e23, 0xfe35];
-    for width in [2, 4, 8] {
+    let widths = [2, 4, 8];
+    let ids: Vec<String> = widths
+        .iter()
+        .flat_map(|width| {
+            ["compact", "spaced"].map(move |header| format!("width/{width}/{header}"))
+        })
+        .collect();
+    let mut rows = RowCases::new("npy-supported-width-header-combinations", &ids);
+    for width in widths {
         let pattern: Vec<u8> = match width {
             2 => halves.iter().flat_map(|bits| bits.to_le_bytes()).collect(),
             4 => bits.iter().flat_map(|bits| bits.to_le_bytes()).collect(),
@@ -983,12 +1111,23 @@ fn supported_npy_headers_and_widths_share_identities_and_preserve_sample_bits() 
                 .collect(),
             _ => unreachable!(),
         };
-        for header in [
+        for (header_index, header) in [
             format!("{{'descr':'<f{width}','fortran_order':False,'shape':(192,192,81)}}\n"),
             format!(
                 " {{\"shape\":(192,192,81,),\"descr\":\"<f{width}\",\"fortran_order\":False,}}   \n"
             ),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row = rows.case(format!(
+                "width/{width}/{}",
+                if header_index == 0 {
+                    "compact"
+                } else {
+                    "spaced"
+                }
+            ));
             let directory = Directory::new();
             npy(
                 &directory,
@@ -1012,8 +1151,10 @@ fn supported_npy_headers_and_widths_share_identities_and_preserve_sample_bits() 
                     assert_eq!(sample.to_bits(), bits[i % bits.len()], "sample {i}");
                 }
             }
+            row.passed();
         }
     }
+    rows.finish();
 }
 
 #[test]
@@ -1070,10 +1211,18 @@ fn truncated_reconstruction_outcomes_do_not_publish_partial_assets_or_retry_afte
     let hanatos = reconstruction_error(assets.hanatos().unwrap_err());
     let arctic = reconstruction_error(assets.arctic().unwrap_err());
     let mallett = reconstruction_error(assets.mallett().unwrap_err());
-    for (name, error) in [(HANATOS, &hanatos), (ARCTIC, &arctic), (MALLETT, &mallett)] {
+    let failures = [(HANATOS, &hanatos), (ARCTIC, &arctic), (MALLETT, &mallett)];
+    let mut rows = RowCases::new(
+        "truncated-reconstruction-error-snapshots",
+        failures.iter().map(|(name, _)| *name),
+    );
+    for (name, error) in failures {
+        let row = rows.case(name);
         assert_eq!(error.kind, ReadErrorKind::ShortRead(ReadPart::Header));
         copy_reconstruction(&directory, name);
+        row.passed();
     }
+    rows.finish();
     assets.release_cached_payloads().unwrap();
     assert!(Arc::ptr_eq(
         &hanatos,

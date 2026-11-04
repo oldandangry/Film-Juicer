@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "gaussian_kernel_test_hooks.h"
+#include "../ffi/case_results.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/host_preparation_fixture.h"
 #include "../ffi/juicer_test_api.h"
@@ -189,12 +190,17 @@ namespace {
                     r.scannerLensBlurKernel.weights == old.weights && fj_test_gaussian_kernel_live_owners() == 0,
                 "armed Gaussian panic survives hit and releases failed miss backing");
         equal(snapshot(r), initial);
+        const std::vector<std::string> faultIds{"acquire-panic", "acquire-null", "view-panic", "view-null", "view-short", "view-invalid"};
+        JuicerTests::Cohort faultCases("Gaussian.preparation-faults", faultIds);
+        std::size_t faultIndex = 0;
         for (auto fault : {std::array<unsigned, 2>{0, 1}, {0, 2}, {1, 1}, {1, 2}, {1, 3}, {1, 4}}) {
+            auto faultCase = faultCases.case_event(faultIds[faultIndex++]);
             require(fj_test_gaussian_kernel_fault(fault[0], fault[1]).category == 0, "arm owning Rust failure");
             require(!ensure_prepared_gaussian(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "actual cache miss propagates Rust preparation/projection failure");
             require(r.scannerLensBlurKernel.weights == old.weights, "failed Rust preparation keeps old slot");
             equal(snapshot(r), initial);
             require(fj_test_gaussian_kernel_live_owners() == 0, "failed Rust cache miss releases owner");
+            faultCase.passed();
         }
         download(old, expected);
         require(ensure_prepared_gaussian(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "Gaussian callback retries after individual preparation faults");
@@ -331,14 +337,33 @@ namespace {
     }
 } // namespace
 int main(int argc, char** argv) try {
+    static constexpr std::array<const char*, 5> operations{
+        "preparation-keys-contexts", "seeded-copy-failure", "seeded-insertion-failure", "collision-winner", "collision-cancellation"};
+    if (JuicerTests::list_requested(argc, argv)) {
+        for (const auto* operation : operations)
+            JuicerTests::list_case("Gaussian", operation);
+        return 0;
+    }
     require(argc == 2, "Gaussian logical fixture argument");
     const auto expected = load_shared_fixture(argv[1], "manifest.json");
+    JuicerTests::CaseLog log;
+    auto preparation = JuicerTests::CaseEvent("Gaussian", operations[0]);
     preparation_keys_and_contexts(expected);
+    preparation.passed();
+    auto copy = JuicerTests::CaseEvent("Gaussian", operations[1]);
     seeded_failure(expected, true);
+    copy.passed();
+    auto insertion = JuicerTests::CaseEvent("Gaussian", operations[2]);
     seeded_failure(expected, false);
+    insertion.passed();
+    auto winner = JuicerTests::CaseEvent("Gaussian", operations[3]);
     collision(expected, false);
+    winner.passed();
+    auto cancellation = JuicerTests::CaseEvent("Gaussian", operations[4]);
     collision(expected, true);
     require(fj_test_gaussian_kernel_live_owners() == 0, "no escaped Gaussian owners");
+    cancellation.passed();
+    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "FAIL Gaussian: %s\n", error.what());

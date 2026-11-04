@@ -784,6 +784,7 @@ fn load_print(path: &Path) -> Result<Arc<PrintProfile>, AssetError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_cases::RowCases;
     use std::path::Path;
     use std::sync::{Arc, mpsc};
     use std::thread;
@@ -859,7 +860,13 @@ mod tests {
 
     #[test]
     fn cmf_first_outcome_wins_including_capacity() {
+        let mut cases = RowCases::new("assets-cmf-race-order", ["success-first", "error-first"]);
         for error_first in [false, true] {
+            let case = cases.case(if error_first {
+                "error-first"
+            } else {
+                "success-first"
+            });
             let assets = assets();
             let (ready_tx, ready_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
@@ -902,12 +909,16 @@ mod tests {
                     assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
                 }
             });
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
     fn csv_cold_success_and_failure_return_same_source_winner() {
+        let mut cases = RowCases::new("assets-csv-race-result", ["success", "capacity-error"]);
         for fail in [false, true] {
+            let case = cases.case(if fail { "capacity-error" } else { "success" });
             let assets = assets();
             let (ready_tx, ready_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
@@ -939,7 +950,9 @@ mod tests {
                     assert!(loser.upgrade().is_none());
                 }
             });
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -976,7 +989,16 @@ mod tests {
 
     #[test]
     fn calibration_success_and_error_races_use_first_snapshot() {
+        let mut cases = RowCases::new(
+            "assets-calibration-race-order",
+            ["success-first", "error-first"],
+        );
         for error_first in [false, true] {
+            let case = cases.case(if error_first {
+                "error-first"
+            } else {
+                "success-first"
+            });
             let assets = assets();
             let (ready_tx, ready_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
@@ -1017,7 +1039,9 @@ mod tests {
                     assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
                 }
             });
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -1076,7 +1100,9 @@ mod tests {
 
     #[test]
     fn reported_noise_io_oom_is_an_ordinary_error_snapshot() {
+        let mut cases = RowCases::new("assets-noise-io-oom", ["read-oom", "open-oom"]);
         for open in [false, true] {
+            let case = cases.case(if open { "open-oom" } else { "read-oom" });
             let assets = assets();
             let Err(AssetError::Noise(first)) =
                 assets.noise_with(|root| Err(noise::test_support::io_oom_error(root, open)))
@@ -1091,7 +1117,9 @@ mod tests {
             assert!(Arc::ptr_eq(&first, &second));
             assets.release_cached_payloads().unwrap();
             assert!(assets.noise().is_ok());
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -1122,7 +1150,16 @@ mod tests {
 
     #[test]
     fn wang_failures_reclaim_completed_stbn_before_publication() {
+        let mut cases = RowCases::new(
+            "assets-wang-failure-reclamation",
+            ["read-error", "capacity-error"],
+        );
         for capacity in [false, true] {
+            let case = cases.case(if capacity {
+                "capacity-error"
+            } else {
+                "read-error"
+            });
             let assets = assets();
             let result = assets.noise_with(|root| {
                 let mut probe = None;
@@ -1148,12 +1185,23 @@ mod tests {
             });
             assert!(matches!(result, Err(AssetError::Noise(_))));
             assert_eq!(assets.noise.lock().unwrap().is_none(), capacity);
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
     fn noise_capacity_attempt_returns_concurrent_success_or_error() {
+        let mut cases = RowCases::new(
+            "assets-noise-capacity-race",
+            ["success-wins", "ordinary-error-wins"],
+        );
         for ordinary_error in [false, true] {
+            let case = cases.case(if ordinary_error {
+                "ordinary-error-wins"
+            } else {
+                "success-wins"
+            });
             let assets = assets();
             let (ready_tx, ready_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
@@ -1190,7 +1238,9 @@ mod tests {
                     assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
                 }
             });
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -1287,18 +1337,28 @@ mod tests {
     #[test]
     fn final_asset_zero_normalization_is_local() {
         assert_eq!(nonzero_asset_hash(0), 1);
-        for hash in [1, 0x81ebefd4e4cc9926, 0x9262ffb765e3289e, u64::MAX] {
+        let hashes = [1, 0x81ebefd4e4cc9926, 0x9262ffb765e3289e, u64::MAX];
+        let ids = ["one", "hanatos", "arctic", "max"];
+        let mut cases = RowCases::new("assets-nonzero-hash-preservation", ids);
+        for (hash, id) in hashes.into_iter().zip(ids) {
+            let case = cases.case(id);
             assert_eq!(nonzero_asset_hash(hash), hash);
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
     fn spectral_source_capacity_receipt() {
         let assets = assets();
-        for (name, lut) in [
+        let luts = [
             ("hanatos", assets.hanatos().unwrap()),
             ("arctic", assets.arctic().unwrap()),
-        ] {
+        ];
+        let ids = ["hanatos", "arctic"];
+        let mut cases = RowCases::new("assets-spectral-lut-capacity", ids);
+        for ((name, lut), id) in luts.into_iter().zip(ids) {
+            let case = cases.case(id);
             assert_eq!(lut.samples.len(), 192 * 192 * 81);
             assert_eq!(lut.samples.capacity(), lut.samples.len());
             println!(
@@ -1310,7 +1370,9 @@ mod tests {
                 size_of::<Arc<SpectraLut>>(),
                 Arc::strong_count(&lut)
             );
+            case.passed();
         }
+        cases.finish();
         let mallett = assets.mallett().unwrap();
         println!(
             "source mallett: fixed_rows={} fixed_sample_bytes={} Arc_handle_bytes={} live_strong_holds={}",

@@ -1,7 +1,12 @@
 #include "host_preparation_fixture.h"
 
 namespace GaussianTest {
+    inline const Json* product_expected = nullptr;
+    std::string product_context_id(unsigned route, float pixel_size_um) {
+        return "route-" + std::to_string(route) + "/pixel-bits-" + std::to_string(std::bit_cast<std::uint32_t>(pixel_size_um));
+    }
     Json kernel_case(const std::string& name, int radius, float sigma) {
+        JuicerTests::CaseEvent case_event("cpp", name + (product_expected ? "/product" : ""));
         Json weights = Json::array();
         if (radius > 0 && std::isfinite(sigma) && sigma > 0.0f) {
             weights = JuicerTestSupport::with_host_preparation([&](const FjHostPreparation* preparation) {
@@ -13,14 +18,31 @@ namespace GaussianTest {
                 return words(view.weights.data, view.weights.count);
             });
         }
-        return {{"name", name}, {"radius", radius}, {"sigma_bits", std::bit_cast<std::uint32_t>(sigma)}, {"count", weights.size()}, {"weights", weights}};
+        Json row{{"name", name}, {"radius", radius}, {"sigma_bits", std::bit_cast<std::uint32_t>(sigma)}, {"count", weights.size()}, {"weights", weights}};
+        if (product_expected) {
+            const auto expected = std::find_if(product_expected->begin(), product_expected->end(), [&](const Json& value) {
+                return value.at("name") == name;
+            });
+            require(expected != product_expected->end() && row == *expected, "per-case complete Gaussian product");
+        }
+        case_event.passed();
+        return row;
     }
 
-    Json products(const std::filesystem::path& resources, const Json& cohort) {
+    Json products(const std::filesystem::path& resources, const Json& cohort, const Json& expected) {
+        Json productRows = expected;
+        for (auto& row : productRows)
+            row.erase("primitives");
+        product_expected = &productRows;
+        std::vector<std::string> context_ids;
+        const auto pixel_sizes = cohort.at("products").at("pixel_size_um").get<std::vector<float>>();
+        for (unsigned route = 0; route < 4; ++route)
+            for (const auto pixel_size_um : pixel_sizes)
+                context_ids.push_back(product_context_id(route, pixel_size_um));
+        JuicerTests::Cohort product_contexts("gaussian.product_context", context_ids);
         Json rows = Json::array();
         for (const auto& input : cohort.at("cases"))
             rows.push_back(kernel_case(input.at("name"), input.at("radius"), std::bit_cast<float>(input.at("sigma_bits").get<std::uint32_t>())));
-
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         for (unsigned route = 0; route < 4; ++route) {
@@ -43,7 +65,8 @@ namespace GaussianTest {
             rows.push_back(kernel_case(prefix + "scanner-lens", post.lens_blur_radius, post.lens_blur_sigma_px));
             rows.push_back(kernel_case(prefix + "scanner-unsharp", post.unsharp_radius, post.unsharp_sigma_px));
             rows.push_back(kernel_case(prefix + "scanner-glare", post.glare_blur_radius, post.glare_blur_sigma_px));
-            for (float pixelSize : cohort.at("products").at("pixel_size_um").get<std::vector<float>>()) {
+            for (const float pixelSize : pixel_sizes) {
+                auto context_event = product_contexts.case_event(product_context_id(route, pixelSize));
                 const auto scale = prefix + std::to_string(pixelSize) + "/";
                 FjGrainFrameInput grainFrame{};
                 grainFrame.render_extent = {0, 0, 64, 48};
@@ -79,18 +102,24 @@ namespace GaussianTest {
                     if (component.reference_operator == FJ_DIR_OPERATOR_FIR_REFLECT)
                         rows.push_back(kernel_case(scale + "fir-dir/" + std::to_string(c), component.radius, component.sigma_px));
                 }
+                context_event.passed();
             }
         }
+        product_expected = nullptr;
         return rows;
     }
     void values(const Json& rows) {
         require(rows.size() == 188, "complete Gaussian fixture membership");
         for (const auto& row : rows) {
+            const auto& name = row.at("name").get_ref<const std::string&>();
+            JuicerTests::CaseEvent case_event("cpp", name + std::string("/values"));
             const int radius = row.at("radius");
             const auto bits = row.at("sigma_bits").get<std::uint32_t>();
             const float sigma = std::bit_cast<float>(bits);
-            if (radius <= 0 || !std::isfinite(sigma) || sigma <= 0.0f)
+            if (radius <= 0 || !std::isfinite(sigma) || sigma <= 0.0f) {
+                case_event.passed();
                 continue;
+            }
             const FjGaussianKernelInput input{radius, sigma};
             FjGaussianKernelOwner* owner = nullptr;
             FjGaussianKernelFailure failure{99};
@@ -115,7 +144,9 @@ namespace GaussianTest {
                 return true;
             });
             const auto expected = row.at("weights").get<std::vector<std::uint32_t>>();
+            JuicerTests::CaseEvent c11_event("c11", name);
             require(fj_test_gaussian_c_call(&input, expected.data(), expected.size()) != 0, "compiled C11 full Gaussian arrays and metadata");
+            c11_event.passed();
             if (radius == 2048 || (radius == 3 && sigma == 1.0f)) {
                 auto changed = expected;
                 for (std::size_t index : {std::size_t{0}, expected.size() / 2, expected.size() - 1}) {
@@ -124,6 +155,7 @@ namespace GaussianTest {
                     changed[index] ^= 1;
                 }
             }
+            case_event.passed();
         }
         require(fj_test_gaussian_kernel_live_owners() == 0, "Gaussian values release every owner");
     }
@@ -148,33 +180,52 @@ namespace GaussianTest {
                 return {reply.success ? FJ_STATUS_SUCCESS : FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0};
             }};
         const FjGaussianKernelInput input{3, 1.0f};
+        FjGaussianKernelView view{};
+        JuicerCuda::Failure failure;
+        JuicerTests::Cohort callback_diagnostics("gaussian.callback_diagnostic", {"allocation-failed", "candidate-allocation-failed", "storage-unavailable", "empty-failure", "nonempty-success", "empty-success"});
+        unsigned diagnostic_index = 0;
         for (const char* diagnostic : {"Gaussian kernel allocation failed", "Gaussian kernel candidate storage allocation failed", "Gaussian coefficient storage is unavailable", ""}) {
+            static const char* const ids[] = {"allocation-failed", "candidate-allocation-failed", "storage-unavailable", "empty-failure"};
+            auto row_event = callback_diagnostics.case_event(ids[diagnostic_index++]);
             reply.diagnostic = diagnostic;
-            FjGaussianKernelView view{};
-            JuicerCuda::Failure failure;
+            view = {};
+            failure = {};
             require(!JuicerCuda::prepare_gaussian_kernel(preparation, input, view, failure), "typed Gaussian allocation callback rejects preparation");
             status(failure.status, FJ_STATUS_ALLOCATION_FAILURE);
             require(failure.diagnostic == diagnostic, "Gaussian allocation category is independent of forwarded diagnostic wording");
             require(view.radius == 0 && std::bit_cast<std::uint32_t>(view.sigma_px) == 0 && !view.weights.data && !view.weights.count, "Gaussian callback failure leaves no published view");
+            row_event.passed();
         }
-        reply.success = true;
-        reply.diagnostic = "unexpected success diagnostic";
-        FjGaussianKernelView view{};
-        JuicerCuda::Failure failure;
-        require(!JuicerCuda::prepare_gaussian_kernel(preparation, input, view, failure), "successful Gaussian transport still requires an empty diagnostic");
-        status(failure.status, FJ_STATUS_PREPARATION_FAILURE);
-        require(failure.diagnostic == "Gaussian kernel projection invalid", "nonempty Gaussian success retains transport rejection");
-        reply.diagnostic = "";
-        require(JuicerCuda::prepare_gaussian_kernel(preparation, input, view, failure), "empty Gaussian success diagnostic is admitted");
-        require(failure.diagnostic.empty(), "successful Gaussian transport clears the previous rejection diagnostic");
-        require(view.weights.data == reply.weights.data() && view.weights.count == reply.weights.size(), "Gaussian transport preserves the literal borrowed span");
+        {
+            auto row_event = callback_diagnostics.case_event("nonempty-success");
+            reply.success = true;
+            reply.diagnostic = "unexpected success diagnostic";
+            view = {};
+            failure = {};
+            require(!JuicerCuda::prepare_gaussian_kernel(preparation, input, view, failure), "successful Gaussian transport still requires an empty diagnostic");
+            status(failure.status, FJ_STATUS_PREPARATION_FAILURE);
+            require(failure.diagnostic == "Gaussian kernel projection invalid", "nonempty Gaussian success retains transport rejection");
+            row_event.passed();
+        }
+        {
+            auto row_event = callback_diagnostics.case_event("empty-success");
+            reply.diagnostic = "";
+            require(JuicerCuda::prepare_gaussian_kernel(preparation, input, view, failure), "empty Gaussian success diagnostic is admitted");
+            require(failure.diagnostic.empty(), "successful Gaussian transport clears the previous rejection diagnostic");
+            require(view.weights.data == reply.weights.data() && view.weights.count == reply.weights.size(), "Gaussian transport preserves the literal borrowed span");
+            row_event.passed();
+        }
     }
     void boundary() {
+        JuicerTests::CaseEvent boundary_event("cpp", "gaussian/boundary");
         callback_failure_diagnostics();
         const FjGaussianKernelInput input{3, 1.0f};
         FjGaussianKernelFailure failure{99};
         FjGaussianKernelOwner* owner = nullptr;
+        JuicerTests::Cohort domain_probes("gaussian.domain_probe", {"0", "1", "2", "3", "4", "5", "6", "7"});
+        unsigned probe_index = 0;
         for (auto probe : {FjGaussianKernelInput{0, 0}, FjGaussianKernelInput{2049, 1}, FjGaussianKernelInput{-1, NAN}, FjGaussianKernelInput{1, 0}, FjGaussianKernelInput{1, -0.0f}, FjGaussianKernelInput{1, -1}, FjGaussianKernelInput{1, INFINITY}, FjGaussianKernelInput{1, NAN}}) {
+            auto row_event = domain_probes.case_event(std::to_string(probe_index++));
             const auto reason = probe.radius < 1 || probe.radius > 2048 ? 2u : 3u;
             owner = reinterpret_cast<FjGaussianKernelOwner*>(std::uintptr_t{1});
             char text[128] = "seed";
@@ -182,8 +233,12 @@ namespace GaussianTest {
             status(fj_test_gaussian_kernel_acquire(&probe, &owner, &failure, &error), 3);
             require(!owner && failure.reason == reason, "ordered Gaussian domain rejection");
             require(std::string_view(text) == (reason == 2 ? "Gaussian kernel radius outside supported range" : "invalid Gaussian kernel sigma"), "exact Gaussian domain diagnostic");
+            row_event.passed();
         }
+        static const char* const missing_ids[] = {"null-input", "null-owner", "null-failure", "malformed-error", "invalid-input"};
+        JuicerTests::Cohort missing_peers("gaussian.missing_peer", {"null-input", "null-owner", "null-failure", "malformed-error", "invalid-input"});
         for (unsigned missing = 0; missing < 5; ++missing) {
+            auto row_event = missing_peers.case_event(missing_ids[missing]);
             owner = reinterpret_cast<FjGaussianKernelOwner*>(std::uintptr_t{1});
             failure.reason = 99;
             FjErrorBuffer malformed{nullptr, 1, 99};
@@ -196,6 +251,7 @@ namespace GaussianTest {
             status(fj_test_gaussian_kernel_acquire(in, out, fail, error), 2);
             require(!out || !owner, "Gaussian valid owner peer clears independently");
             require(!fail || failure.reason == 1, "Gaussian valid failure peer clears independently");
+            row_event.passed();
         }
         FjErrorBuffer zero{reinterpret_cast<char*>(std::uintptr_t{1}), 0, 99};
         status(fj_test_gaussian_kernel_acquire(&input, &owner, &failure, &zero));
@@ -206,7 +262,9 @@ namespace GaussianTest {
         FjErrorBuffer malformed{nullptr, 1, 99};
         status(fj_test_gaussian_kernel_release(owner, &malformed), 2);
         require(fj_test_gaussian_kernel_live_owners() == 0, "malformed release diagnostics consume actual owner");
+        JuicerTests::Cohort boundary_operations("gaussian.boundary_operation", 3);
         for (unsigned operation = 0; operation < 3; ++operation) {
+            auto row_event = boundary_operations.case_event(std::to_string(operation));
             if (operation != 0)
                 status(fj_test_gaussian_kernel_acquire(&input, &owner, &failure, nullptr));
             status(fj_test_gaussian_kernel_fault(operation, 1));
@@ -223,6 +281,7 @@ namespace GaussianTest {
                 status(fj_test_gaussian_kernel_release(owner, &error), 8);
             require(std::string_view(text) == (operation == 2 ? "Gaussian kernel release panicked" : "Gaussian kernel preparation panicked"), "Gaussian panic diagnostic");
             require(fj_test_gaussian_kernel_live_owners() == 0, "panic consumes provisional/owned holds");
+            row_event.passed();
         }
         std::array<char, 128> diagnosticText{};
         FjErrorBuffer diagnosticError{diagnosticText.data(), diagnosticText.size(), 0};
@@ -232,7 +291,9 @@ namespace GaussianTest {
         status(fj_test_gaussian_kernel_acquire(&input, &owner, &failure, &diagnosticError), 4);
         require(std::string_view(diagnosticText.data()) == "Gaussian kernel allocation failed", "exact Gaussian reservation failure diagnostic");
         require(!owner && failure.reason == 4, "actual coefficient reservation failure");
+        JuicerTests::Cohort projection_faults("gaussian.projection_fault", 4);
         for (unsigned fault = 1; fault <= 4; ++fault) {
+            auto row_event = projection_faults.case_event(std::to_string(fault - 1));
             status(fj_test_gaussian_kernel_fault(1, fault));
             JuicerTestSupport::with_host_preparation([&](const FjHostPreparation* preparation) {
                 JuicerCuda::Failure rejected;
@@ -243,8 +304,11 @@ namespace GaussianTest {
                 return true;
             });
             require(fj_test_gaussian_kernel_live_owners() == 0, "callback rejection releases its backing after the synchronous body");
+            row_event.passed();
         }
+        JuicerTests::Cohort diagnostic_capacities("gaussian.diagnostic_capacity", {"0", "1", "5", "128"});
         for (std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{5}, std::size_t{128}}) {
+            auto row_event = diagnostic_capacities.case_event(std::to_string(capacity));
             std::array<char, 128> text{};
             text.fill('Q');
             FjErrorBuffer error{capacity ? text.data() : reinterpret_cast<char*>(std::uintptr_t{1}), capacity, 99};
@@ -256,6 +320,7 @@ namespace GaussianTest {
                 require(text[expected] == '\0', "bounded Gaussian diagnostic terminator");
             for (std::size_t i = capacity; i < text.size(); ++i)
                 require(text[i] == 'Q', "diagnostic cannot overwrite capacity");
+            row_event.passed();
         }
         status(fj_test_gaussian_kernel_acquire(&input, &owner, &failure, nullptr));
         std::array<std::exception_ptr, 2> errors{};
@@ -293,5 +358,6 @@ namespace GaussianTest {
             return true;
         });
         require(fj_test_gaussian_kernel_live_owners() == 0, "Gaussian boundary owner balance");
+        boundary_event.passed();
     }
 } // namespace GaussianTest

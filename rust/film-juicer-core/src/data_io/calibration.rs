@@ -220,13 +220,14 @@ impl NeutralCalibration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     #[test]
     fn allocation_precedes_existence_and_ordinary_policy_is_preserved() {
         assert_eq!(
             classify_read_error(io::ErrorKind::OutOfMemory, || panic!("must not probe")),
             ErrorKind::Read(io::ErrorKind::OutOfMemory)
         );
-        for (probe, expected) in [
+        let rows = [
             (Ok(true), ErrorKind::Read(io::ErrorKind::PermissionDenied)),
             (Ok(false), ErrorKind::MissingFile),
             (Err(io::ErrorKind::PermissionDenied), ErrorKind::MissingFile),
@@ -234,20 +235,30 @@ mod tests {
                 Err(io::ErrorKind::OutOfMemory),
                 ErrorKind::Read(io::ErrorKind::OutOfMemory),
             ),
-        ] {
+        ];
+        let ids = ["present", "missing", "probe-denied", "probe-oom"];
+        let mut cases = RowCases::new("calibration-read-classification", ids);
+        for ((probe, expected), id) in rows.into_iter().zip(ids) {
+            let case = cases.case(id);
             assert_eq!(
                 classify_read_error(io::ErrorKind::PermissionDenied, || probe
                     .map_err(io::Error::from)),
                 expected
             );
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn assets_cache_allocation_until_release() {
         let assets = crate::assets::Assets::new(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"),
         );
-        for probe in [Ok(true), Ok(false), Err(io::ErrorKind::PermissionDenied)] {
+        let probes = [Ok(true), Ok(false), Err(io::ErrorKind::PermissionDenied)];
+        let ids = ["exists", "missing", "permission-error"];
+        let mut cases = RowCases::new("calibration-cache-read-faults", ids);
+        for (probe, id) in probes.into_iter().zip(ids) {
+            let case = cases.case(id);
             test_support::set_read_fault(io::ErrorKind::OutOfMemory, probe);
             for _ in 0..2 {
                 let Err(crate::assets::AssetError::Calibration(error)) =
@@ -263,7 +274,9 @@ mod tests {
             assets.release_cached_payloads().unwrap();
             assert!(assets.neutral_calibration().is_ok());
             assets.release_cached_payloads().unwrap();
+            case.passed();
         }
+        cases.finish();
         test_support::set_read_fault(
             io::ErrorKind::PermissionDenied,
             Err(io::ErrorKind::OutOfMemory),

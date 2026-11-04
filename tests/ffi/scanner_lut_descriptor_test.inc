@@ -87,11 +87,12 @@ namespace ScannerDescriptorTest {
                 "raw descriptor product has a complete success envelope");
         return result;
     }
-    Json products(const std::filesystem::path& resources) {
+    Json products(const std::filesystem::path& resources, const Json& expected) {
         JuicerCuda::Owner owner;
         owner.create(resources);
         Json rows = Json::array();
         for (unsigned r = 0; r < 4; ++r) {
+            JuicerTests::CaseEvent product_event("cpp", "scanner-descriptor/product/" + std::to_string(r));
             auto params = FilmReferenceTest::controls(1, static_cast<Spektrafilm::ScanRoute>(r), 0);
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
@@ -103,6 +104,8 @@ namespace ScannerDescriptorTest {
             const auto value = prepared_input(view, "CIE1931_2deg");
             const Json described{{"success", true}, {"exception", false}, {"diagnostic", ""}, {"descriptor", project(describe(value))}};
             rows.push_back({{"route", r}, {"input", value}, {"native", described}, {"snapshot_hash", hash_params(params)}, {"final_hash", view.recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"upload_hash", view.upload_core_hash}});
+            require(rows.back() == expected.at(r), "actual route descriptor product matches its frozen row");
+            product_event.passed();
         }
         return rows;
     }
@@ -132,6 +135,10 @@ namespace ScannerDescriptorTest {
         std::size_t representableRows = 0;
         std::size_t retiredPointerRows = 0;
         for (const auto& row : rows) {
+            const auto id = products
+                                ? "scanner-descriptor/product-row/" + std::to_string(row.at("route").get<unsigned>())
+                                : row.at("id").get<std::string>();
+            JuicerTests::CaseEvent row_event("cpp", id);
             const auto& in = row.at("input");
             if (in.at("missing").get<unsigned>() >= 1 && in.at("missing").get<unsigned>() <= 3) {
                 // These recorded null model-pointer outcomes have no raw ABI equivalent.
@@ -154,9 +161,11 @@ namespace ScannerDescriptorTest {
                 }
                 require(identified, "only the twenty named model-pointer rows retire");
                 ++retiredPointerRows;
+                row_event.passed();
                 continue;
             }
             ++representableRows;
+            std::size_t call_index = 0;
             for (auto call : {fj_legacy_scanner_lut_describe, fj_test_scanner_lut_describe}) {
                 const Borrowed borrowed(in);
                 FjScannerLutDescriptor out;
@@ -170,7 +179,9 @@ namespace ScannerDescriptorTest {
                     status(result);
                     require(failure.reason == 0 && failure.lane == 0 && error.length == 0 && message[0] == 0, "descriptor success envelope");
                     require(project(out) == expected.at("descriptor"), "all descriptor fields exact");
+                    JuicerTests::CaseEvent c11_event("c11", id + "/api-" + std::to_string(call_index));
                     require(fj_test_scanner_descriptor_c_call(&borrowed.wire, &out), "compiled C11 descriptor call");
+                    c11_event.passed();
                 } else {
                     const bool invalidRoute = in.at("route").get<unsigned>() > 3;
                     status(result, invalidRoute ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_PREPARATION_FAILURE);
@@ -178,7 +189,9 @@ namespace ScannerDescriptorTest {
                     require(failure.reason == (invalidRoute ? 1 : reason(expected.at("diagnostic"), in.at("mode") == 1)), "exact descriptor rejection reason");
                     require(std::string(message.data(), error.length) == (invalidRoute ? "invalid scanner LUT descriptor arguments" : expected.at("diagnostic").get<std::string>()), "descriptor diagnostic continuity");
                 }
+                ++call_index;
             }
+            row_event.passed();
         }
         require(representableRows == (products ? 4u : 500u) &&
                     retiredPointerRows == (products ? 0u : 20u),
@@ -190,6 +203,16 @@ namespace ScannerDescriptorTest {
         unsigned lane = 0;
     };
     void boundary(const Json& rows) {
+        JuicerTests::CaseEvent boundary_event("cpp", "scanner-descriptor/boundary");
+        std::vector<std::string> malformed_ids, fault_ids;
+        for (unsigned mode = 0; mode < 2; ++mode) {
+            for (unsigned which = 0; which < 16; ++which)
+                malformed_ids.emplace_back("mode-" + std::to_string(mode) + "/field-" + std::to_string(which));
+            for (unsigned fault = 1; fault <= 6; ++fault)
+                fault_ids.emplace_back("mode-" + std::to_string(mode) + "/fault-" + std::to_string(fault));
+        }
+        JuicerTests::Cohort malformed_rows("scanner_lut_descriptor.malformed_tuple", malformed_ids);
+        JuicerTests::Cohort fault_rows("scanner_lut_descriptor.fault_tuple", fault_ids);
         for (unsigned mode = 0; mode < 2; ++mode) {
             const Borrowed borrowed(rows.at(mode ? rows.size() / 4 : 0).at("input"));
             const auto good = borrowed.wire;
@@ -206,6 +229,7 @@ namespace ScannerDescriptorTest {
             reject(nullptr);
             reject(reinterpret_cast<const FjScannerLutDescriptorInput*>(std::uintptr_t{1}));
             for (unsigned which = 0; which < 16; ++which) {
+                auto row_event = malformed_rows.case_event("mode-" + std::to_string(mode) + "/field-" + std::to_string(which));
                 auto bad = good;
                 switch (which) {
                     case 0:
@@ -260,6 +284,7 @@ namespace ScannerDescriptorTest {
                         break;
                 }
                 reject(&bad);
+                row_event.passed();
             }
             FjScannerLutDescriptor out;
             FjScannerLutDescriptorFailure failure{99, 99};
@@ -305,6 +330,7 @@ namespace ScannerDescriptorTest {
             absent.profile_viewing_illuminant = {nullptr, SIZE_MAX};
             reject(&absent, {FJ_STATUS_PREPARATION_FAILURE, mode ? 7u : 2u});
             for (unsigned fault = 1; fault <= 6; ++fault) {
+                auto row_event = fault_rows.case_event("mode-" + std::to_string(mode) + "/fault-" + std::to_string(fault));
                 status(fj_test_scanner_lut_descriptor_fault(fault));
                 reject(&absent, {FJ_STATUS_PREPARATION_FAILURE, mode ? 7u : 2u});
                 reject(&good, {fault == 6 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_PREPARATION_FAILURE, fault == 6 ? 9u : mode ? 8u
@@ -312,12 +338,15 @@ namespace ScannerDescriptorTest {
                                fault == 6 ? 0u : fault});
                 status(fj_legacy_scanner_lut_describe(&good, &out, &failure, nullptr));
                 require(failure.reason == 0 && failure.lane == 0, "one-shot descriptor fault recovers");
+                row_event.passed();
             }
             status(fj_test_scanner_lut_descriptor_fault(7), FJ_STATUS_UNSUPPORTED_INPUT);
         }
+        boundary_event.passed();
     }
 
     void lifetime(const Json& rows) {
+        JuicerTests::CaseEvent lifetime_event("cpp", "scanner-descriptor/lifetime");
         const Borrowed borrowed(rows[0].at("input"));
         FjScannerLutDescriptor retained{};
         {
@@ -337,6 +366,7 @@ namespace ScannerDescriptorTest {
         FjScannerLutDescriptorFailure failure{};
         status(fj_legacy_scanner_lut_describe(&borrowed.wire, &result, &failure, nullptr), FJ_STATUS_PREPARATION_FAILURE);
         require(failure.reason == 6 && failure.lane == 1, "other thread did not consume local descriptor fault");
+        lifetime_event.passed();
     }
     void callers(const std::filesystem::path& resources) {
         JuicerCuda::Owner owner;
@@ -347,6 +377,7 @@ namespace ScannerDescriptorTest {
             }
         } clearReferenceFault;
         for (unsigned r : {0u, 2u}) {
+            JuicerTests::CaseEvent case_event("cpp", "scanner-descriptor/caller/" + std::to_string(r));
             auto controls = FilmReferenceTest::controls(1, static_cast<Spektrafilm::ScanRoute>(r), 0);
 
             // The accepted construction path is the held Rust state. Arm an
@@ -416,11 +447,15 @@ namespace ScannerDescriptorTest {
                     "held original Rust state keeps its descriptor readable after a distinct profile owner is constructed");
             changed.reset();
             prepared.reset();
+            case_event.passed();
         }
     }
 
     void admitted_token_change_preserves_identity_and_viewing_label_mismatch_is_rejected(const Json& rows) {
+        JuicerTests::CaseEvent token_event("cpp", "scanner-descriptor/token-identity");
+        JuicerTests::Cohort print_token_routes("scanner_lut_descriptor.print_token_route", {"1", "3"});
         for (unsigned route : {1u, 3u}) {
+            auto row_event = print_token_routes.case_event(std::to_string(route));
             const auto prefix = std::to_string(route) + "/";
             const auto find = [&](const char* name) -> const Json& {
                 return *std::find_if(rows.begin(), rows.end(), [&](const Json& row) {
@@ -440,6 +475,8 @@ namespace ScannerDescriptorTest {
             require(failure.reason == FJ_SCANNER_LUT_DESCRIPTOR_PRINT_RECIPE && failure.lane == 0 && cleared(result) &&
                         std::string(message.data(), error.length) == "ResourceDescriptorMismatch phase=4C scanner print recipe",
                     "raw viewing-label mismatch retains typed failure, exact diagnostic and zero output");
+            row_event.passed();
         }
+        token_event.passed();
     }
 } // namespace ScannerDescriptorTest

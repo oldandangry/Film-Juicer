@@ -53,7 +53,8 @@ def selected_paths(preset_root):
                     # Missing/interrupted writes are unproved evidence.
                     paths.add(fixture)
                     continue
-                if not isinstance(record, dict) or record.get("outcome") != "passed":
+                if (not isinstance(record, dict) or record.get("outcome") != "passed"
+                        or record.get("blocked_owners")):
                     paths.add(fixture)
     npy_root = preset_root / "rust-core"
     paths.update(p for p in npy_root.glob("npy-*.npy")

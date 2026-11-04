@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value, json};
 
 use film_juicer_core::data_io::calibration::{ErrorKind, Field, load_neutral_calibration};
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -88,14 +91,26 @@ fn bundled_calibration() {
         load_neutral_calibration(repository().join("Resources/filters/neutral_print_filters.json"))
             .unwrap();
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let ids: Vec<String> = PRINTS
+        .iter()
+        .flat_map(|print| {
+            FILMS
+                .iter()
+                .map(move |film| format!("{print}/{film}/TH-KG3"))
+        })
+        .collect();
+    let mut cases = RowCases::new("bundled-print-film-lookups", &ids);
     for print in PRINTS {
         for film in FILMS {
+            let row = cases.case(format!("{print}/{film}/TH-KG3"));
             let cmy = calibration.lookup(print, "TH-KG3", film).unwrap().unwrap();
             for byte in cmy.into_iter().flat_map(f32::to_le_bytes) {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
             }
+            row.passed();
         }
     }
+    cases.finish();
     assert_eq!(PRINTS.len() * FILMS.len(), 160);
     assert_eq!(hash, 0x3ef4_3845_b118_f2f9);
     let cmy = calibration
@@ -117,20 +132,30 @@ fn missing_file_and_entry() {
     let calibration =
         load_neutral_calibration(directory.json(json!({"paper":{"light":{"film":[1,2,3]}}})))
             .unwrap();
-    for keys in [
+    let selections = [
         ["missing", "light", "film"],
         ["paper", "missing", "film"],
         ["paper", "light", "missing"],
         ["Paper", "light", "film"],
-    ] {
+    ];
+    let ids: Vec<String> = selections
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("missing-selection/{i}"))
+        .collect();
+    let mut rows = RowCases::new("missing-calibration-selection-paths", &ids);
+    for (keys, id) in selections.into_iter().zip(&ids) {
+        let row = rows.case(id);
         assert_eq!(calibration.lookup(keys[0], keys[1], keys[2]).unwrap(), None);
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
 fn selected_branch_errors() {
     let directory = Directory::new();
-    for (root, field) in [
+    let cases = [
         (json!({"paper":[]}), Field::PrintProfile),
         (json!({"paper":{"light":null}}), Field::PrintIlluminant),
         (json!({"paper":{"light":{"film":{}}}}), Field::CmyCc),
@@ -139,7 +164,13 @@ fn selected_branch_errors() {
         (json!({"paper":{"light":{"film":[1,null,3]}}}), Field::CmyCc),
         (json!({"paper":{"light":{"film":[1,true,3]}}}), Field::CmyCc),
         (json!({"paper":{"light":{"film":[1,"2",3]}}}), Field::CmyCc),
-    ] {
+    ];
+    let ids: Vec<String> = (0..cases.len())
+        .map(|i| format!("selected-malformed-branch/{i}"))
+        .collect();
+    let mut rows = RowCases::new("selected-calibration-branch-errors", &ids);
+    for ((root, field), id) in cases.into_iter().zip(&ids) {
+        let row = rows.case(id);
         let path = directory.json(root);
         let calibration = load_neutral_calibration(&path).unwrap();
         let error = calibration.lookup("paper", "light", "film").unwrap_err();
@@ -147,7 +178,9 @@ fn selected_branch_errors() {
         assert_eq!(error.path(), path);
         assert_eq!(error.selection(), Some(["paper", "light", "film"]));
         assert!(error.to_string().contains("paper/light/film"));
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
@@ -158,24 +191,32 @@ fn unused_malformed_branches() {
         "bad":[]
     }));
     let calibration = load_neutral_calibration(path).unwrap();
-    for keys in [
+    let selections = [
         ["bad", "light", "film"],
         ["paper", "bad", "film"],
         ["paper", "light", "bad"],
-    ] {
+    ];
+    let ids: Vec<String> = (0..selections.len())
+        .map(|i| format!("unused-malformed-branch/{i}"))
+        .collect();
+    let mut rows = RowCases::new("unused-malformed-calibration-branches", &ids);
+    for (keys, id) in selections.into_iter().zip(&ids) {
+        let row = rows.case(id);
         assert!(calibration.lookup(keys[0], keys[1], keys[2]).is_err());
         let cmy = calibration
             .lookup("paper", "light", "film")
             .unwrap()
             .unwrap();
         assert_eq!(cmy.map(f32::to_bits), [0, 1118886691, 1121107011]);
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
 fn coefficient_conversion_bits() {
     let directory = Directory::new();
-    for (bytes, expected) in [
+    let cases = [
         // Literal just above the f32 midpoint first rounds to that midpoint in f64.
         (
             b"{\"p\":{\"i\":{\"f\":[-0,-0.0,1.000000059604644775390626]}}}".as_slice(),
@@ -189,7 +230,15 @@ fn coefficient_conversion_bits() {
             b"{\"p\":{\"i\":{\"f\":[-0e0,1e-0,1.000000059604645]}}}",
             [0x80000000, 0x3f800000, 0x3f800001],
         ),
-    ] {
+    ];
+    let ids = [
+        "negative-zero-midpoint",
+        "f64-overflow-underflow",
+        "decimal-midpoint-neighbor",
+    ];
+    let mut rows = RowCases::new("calibration-coefficient-conversion", ids);
+    for ((bytes, expected), id) in cases.into_iter().zip(ids) {
+        let row = rows.case(id);
         let calibration = load_neutral_calibration(directory.write(bytes)).unwrap();
         assert_eq!(
             calibration
@@ -199,13 +248,15 @@ fn coefficient_conversion_bits() {
                 .map(f32::to_bits),
             expected
         );
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
 fn malformed_root() {
     let directory = Directory::new();
-    for bytes in [
+    let documents = [
         b"".as_slice(),
         b"{",
         b"[]",
@@ -213,11 +264,19 @@ fn malformed_root() {
         b"{} trailing",
         b"{\"unused\":1e999}",
         b"{\"unused\":NaN}",
-    ] {
+    ];
+    let ids: Vec<String> = (0..documents.len())
+        .map(|i| format!("malformed-json/{i}"))
+        .collect();
+    let mut rows = RowCases::new("malformed-calibration-root-documents", &ids);
+    for (bytes, id) in documents.into_iter().zip(&ids) {
+        let row = rows.case(id);
         let error = load_neutral_calibration(directory.write(bytes)).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Malformed(Field::Root));
         assert_eq!(error.selection(), None);
+        row.passed();
     }
+    rows.finish();
     let calibration =
         load_neutral_calibration(directory.write(b"\xef\xbb\xbf{\"p\":{\"i\":{\"f\":[1,2,3]}}}"))
             .unwrap();

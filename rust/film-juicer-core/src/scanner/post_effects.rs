@@ -223,6 +223,7 @@ pub fn describe_post_effects(params: PostEffectsParams) -> Result<PostEffects, P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
 
     fn params(route: ScanRoute) -> PostEffectsParams {
@@ -261,8 +262,23 @@ mod tests {
         let context = read(manifest["contexts"][logical].as_str().unwrap());
         assert_eq!(context["preset"], preset);
         assert_eq!(fixture["cases"].as_array().unwrap().len(), 400);
+        let rows = fixture["cases"].as_array().unwrap();
+        let eligible = rows
+            .iter()
+            .filter(|row| row["input"]["route"].as_u64().unwrap() <= 3)
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new(
+            "scanner-post-effects",
+            eligible.iter().map(|row| row["id"].as_str().unwrap()),
+        );
+        let successful_ids = eligible
+            .iter()
+            .filter(|row| row["native"]["success"].as_bool().unwrap())
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let mut retained_cases = RowCases::new("scanner-post-effects-retained", successful_ids);
         let mut held = Vec::new();
-        for row in fixture["cases"].as_array().unwrap() {
+        for row in rows {
             let input = &row["input"];
             let route = match input["route"].as_u64().unwrap() {
                 0 => ScanRoute::NegativeDirect,
@@ -271,6 +287,7 @@ mod tests {
                 3 => ScanRoute::PositivePrint,
                 _ => continue,
             };
+            let case = cases.case(row["id"].as_str().unwrap());
             let v: [f32; 6] =
                 std::array::from_fn(
                     |i| f32::from_bits(input["values"][i].as_u64().unwrap() as u32),
@@ -289,7 +306,11 @@ mod tests {
                 Ok(value) => {
                     assert_eq!(row["native"]["success"], true, "{}", row["id"]);
                     assert_eq!(value.active(), value.hash() != 0);
-                    held.push((value, row["native"]["descriptor"].clone()));
+                    held.push((
+                        row["id"].as_str().unwrap().to_owned(),
+                        value,
+                        row["native"]["descriptor"].clone(),
+                    ));
                 }
                 Err(error) => {
                     assert_eq!(row["native"]["success"], false, "{}", row["id"]);
@@ -313,21 +334,48 @@ mod tests {
                     assert_eq!(error.lane(), first as u32 + 1);
                 }
             }
+            case.passed();
         }
-        for (value, expected) in held {
+        cases.finish();
+        for (id, value, expected) in held {
+            let case = retained_cases.case(id);
             assert_eq!(project(value.fields(), value.hash()), expected);
+            case.passed();
         }
+        retained_cases.finish();
     }
     #[test]
     fn radius_range_order_masking_and_overflow_are_representation_contracts() {
+        let mut cases = RowCases::new(
+            "scanner-post-effect-radius-boundaries",
+            [
+                "below-threshold",
+                "at-threshold",
+                "glare-radius-lane",
+                "lens-radius-lane",
+                "unsharp-radius-lane",
+                "direct-route-mask",
+                "maximum-radius-overflow",
+            ],
+        );
         let threshold = 2147483648.0_f32 / 3.0;
         let lower = f32::from_bits(threshold.to_bits() - 1);
+        let case = cases.case("below-threshold");
         assert_eq!(radius(lower, 1).unwrap(), 75);
+        case.passed();
+        let case = cases.case("at-threshold");
         assert_eq!(
             radius(threshold, 1).unwrap_err().kind(),
             PostEffectsErrorKind::RadiusRange
         );
+        case.passed();
         for lane in 1..=3 {
+            let id = match lane {
+                1 => "glare-radius-lane",
+                2 => "lens-radius-lane",
+                _ => "unsharp-radius-lane",
+            };
+            let case = cases.case(id);
             let mut p = params(ScanRoute::NegativePrint);
             match lane {
                 1 => p.glare_blur_sigma_px = threshold,
@@ -342,10 +390,14 @@ mod tests {
             assert_eq!(error.kind(), PostEffectsErrorKind::RadiusRange);
             assert_eq!(error.lane(), lane);
             assert!(error.rejected_attempt().is_none());
+            case.passed();
         }
+        let case = cases.case("direct-route-mask");
         let mut p = params(ScanRoute::NegativeDirect);
         p.glare_blur_sigma_px = threshold;
         assert!(describe_post_effects(p).is_ok());
+        case.passed();
+        let case = cases.case("maximum-radius-overflow");
         p = params(ScanRoute::NegativePrint);
         p.glare_blur_sigma_px = f32::MAX;
         p.lens_blur_sigma_px = f32::MAX;
@@ -357,5 +409,7 @@ mod tests {
                 .iter()
                 .all(|v| v.to_bits() == 0)
         );
+        case.passed();
+        cases.finish();
     }
 }

@@ -13,6 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value, json};
 
 use film_juicer_core::data_io::noise::{ErrorKind, load_stbn, load_wang};
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -108,7 +111,14 @@ fn stbn_missing_and_wrong_size() {
     assert_eq!(error.kind(), ErrorKind::Missing);
     assert_eq!(error.path(), path);
     assert!(error.to_string().contains("missing.bin"));
-    for actual in [0, 1, 67_108_863, 67_108_865] {
+    let sizes = [0, 1, 67_108_863, 67_108_865];
+    let ids: Vec<String> = sizes
+        .iter()
+        .map(|size| format!("payload-length/{size}"))
+        .collect();
+    let mut cases = RowCases::new("stbn-payload-length-boundaries", &ids);
+    for (actual, id) in sizes.into_iter().zip(&ids) {
+        let row = cases.case(id);
         let error = load_stbn(directory.payload(actual)).unwrap_err();
         assert_eq!(
             error.kind(),
@@ -117,7 +127,9 @@ fn stbn_missing_and_wrong_size() {
                 actual
             }
         );
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
@@ -125,16 +137,29 @@ fn wang_incomplete_assets_and_wrong_size() {
     let directory = Directory::new();
     let absent = directory.0.join("absent");
     let metadata = directory.metadata(&metadata());
-    for (tiles, metadata, missing) in [
+    let incomplete = [
         (absent.clone(), metadata.clone(), absent.clone()),
         (tiles_path(), absent.clone(), absent.clone()),
         (absent.clone(), absent.clone(), absent.clone()),
-    ] {
+    ];
+    let ids = ["missing-tiles", "missing-metadata", "both-missing"];
+    let mut cases = RowCases::new("wang-incomplete-assets", ids);
+    for ((tiles, metadata, missing), id) in incomplete.into_iter().zip(ids) {
+        let row = cases.case(id);
         let error = load_wang(tiles, metadata).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Missing);
         assert_eq!(error.path(), missing);
+        row.passed();
     }
-    for actual in [0, 1_048_575, 1_048_577] {
+    cases.finish();
+    let sizes = [0, 1_048_575, 1_048_577];
+    let ids: Vec<String> = sizes
+        .iter()
+        .map(|size| format!("payload-length/{size}"))
+        .collect();
+    let mut lengths = RowCases::new("wang-payload-length-boundaries", &ids);
+    for (actual, id) in sizes.into_iter().zip(&ids) {
+        let row = lengths.case(id);
         let path = directory.payload(actual);
         let error = load_wang(&path, &metadata).unwrap_err();
         assert_eq!(error.path(), path);
@@ -145,7 +170,9 @@ fn wang_incomplete_assets_and_wrong_size() {
                 actual
             }
         );
+        row.passed();
     }
+    lengths.finish();
 }
 
 #[test]
@@ -167,7 +194,7 @@ fn mapping_order_and_unused_provenance() {
 #[test]
 fn rejects_invalid_metadata_fields() {
     let directory = Directory::new();
-    for (field, value, expected) in [
+    let cases = [
         ("/resolution", json!(true), ErrorKind::Json),
         ("/resolution", json!(256.0), ErrorKind::Json),
         ("/resolution", json!("256"), ErrorKind::Json),
@@ -192,7 +219,15 @@ fn rejects_invalid_metadata_fields() {
             json!({"L":0,"R":0,"T":0}),
             ErrorKind::Json,
         ),
-    ] {
+    ];
+    let ids: Vec<String> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, (field, value, _))| format!("{field}/case-{i}/{}", value))
+        .collect();
+    let mut rows = RowCases::new("wang-invalid-metadata-fields", &ids);
+    for ((field, value, expected), id) in cases.into_iter().zip(&ids) {
+        let row = rows.case(id);
         let mut root = metadata();
         *root.pointer_mut(field).unwrap() = value;
         let path = directory.metadata(&root);
@@ -200,7 +235,9 @@ fn rejects_invalid_metadata_fields() {
         assert_eq!(error.kind(), expected, "{field}");
         assert_eq!(error.path(), path);
         assert!(error.to_string().contains("tiles.json"));
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
@@ -211,7 +248,10 @@ fn requires_object_metadata_records() {
         ("/mapping/0", &["index", "labels"]),
         ("/mapping/0/labels", &["L", "R", "T", "B"]),
     ];
-    for (field, members) in cases {
+    let ids = ["root-object", "mapping-entry-object", "labels-object"];
+    let mut rows = RowCases::new("wang-object-record-requirements", ids);
+    for ((field, members), id) in cases.into_iter().zip(ids) {
+        let row = rows.case(id);
         let mut root = metadata();
         let record = root.pointer_mut(field).unwrap();
         *record = Value::Array(
@@ -226,7 +266,9 @@ fn requires_object_metadata_records() {
         let error = result.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Json, "{field}");
         assert_eq!(error.path(), path);
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
@@ -241,15 +283,26 @@ fn requires_complete_unique_mapping() {
     extra["mapping"].as_array_mut().unwrap().push(entry);
     let mut duplicate = metadata();
     duplicate["mapping"][15]["labels"] = duplicate["mapping"][0]["labels"].clone();
-    for (root, expected) in [
+    let cases = [
         (missing, ErrorKind::Json),
         (incomplete, ErrorKind::Json),
         (extra, ErrorKind::Json),
         (duplicate, ErrorKind::Metadata),
-    ] {
+    ];
+    let ids = [
+        "missing-mapping",
+        "incomplete-mapping",
+        "extra-mapping",
+        "duplicate-mapping",
+    ];
+    let mut rows = RowCases::new("wang-mapping-membership", ids);
+    for ((root, expected), id) in cases.into_iter().zip(ids) {
+        let row = rows.case(id);
         let error = load_wang(tiles_path(), directory.metadata(&root)).unwrap_err();
         assert_eq!(error.kind(), expected);
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
@@ -265,14 +318,20 @@ fn metadata_requires_complete_json() {
         noise.lut(),
         [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]
     );
-    for invalid in [
+    let invalid = [
         "{".to_owned(),
         format!("{text} trailing"),
         format!("{text} {{}}"),
-    ] {
+    ];
+    let ids = ["truncated-json", "trailing-text", "second-document"];
+    let mut rows = RowCases::new("wang-complete-json-requirements", ids);
+    for (invalid, id) in invalid.into_iter().zip(ids) {
+        let row = rows.case(id);
         let path = directory.write(invalid.as_bytes());
         let error = load_wang(tiles_path(), &path).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Json);
         assert_eq!(error.path(), path);
+        row.passed();
     }
+    rows.finish();
 }

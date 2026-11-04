@@ -247,6 +247,7 @@ pub fn describe_lut(input: LutDescriptorInput<'_>) -> Result<LutDescriptor, LutD
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
 
     fn construct(input: &Value) -> Result<LutDescriptor, LutDescriptorError> {
@@ -335,18 +336,32 @@ mod tests {
         assert_eq!(context["preset"], preset);
         assert_eq!(fixture["cases"].as_array().unwrap().len(), 520);
         assert_eq!(fixture["products"].as_array().unwrap().len(), 4);
-        for row in fixture["cases"]
-            .as_array()
-            .unwrap()
+        let input_rows = fixture["cases"].as_array().unwrap();
+        let product_rows = fixture["products"].as_array().unwrap();
+        let eligible = input_rows
             .iter()
-            .chain(fixture["products"].as_array().unwrap())
-        {
+            .map(|row| (format!("case/{}", row["id"].as_str().unwrap()), row))
+            .chain(product_rows.iter().enumerate().map(|(index, row)| {
+                (
+                    format!(
+                        "product/row-{index}/route-{}",
+                        row["input"]["route"].as_u64().unwrap()
+                    ),
+                    row,
+                )
+            }))
+            .filter(|(_, row)| {
+                !matches!(row["input"]["missing"].as_u64().unwrap(), 1..=3)
+                    && row["input"]["route"].as_u64().unwrap() <= 3
+            })
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new(
+            "scanner-descriptor",
+            eligible.iter().map(|(id, _)| id.clone()),
+        );
+        for (id, row) in eligible {
             let input = &row["input"];
-            if matches!(input["missing"].as_u64().unwrap(), 1..=3)
-                || input["route"].as_u64().unwrap() > 3
-            {
-                continue;
-            }
+            let case = cases.case(id.clone());
             // All decoding storage in construct has expired before any field is read.
             match construct(input) {
                 Ok(value) => {
@@ -356,11 +371,7 @@ mod tests {
                         "density_bounds_hash":value.density_bounds_hash(),"channel_density_hash":value.channel_density_hash(),
                         "base_density_hash":value.base_density_hash(),"viewing_illuminant_hash":value.viewing_illuminant_hash(),
                         "observer_hash":value.observer_hash(),"hash":value.hash()});
-                    assert_eq!(
-                        observed, row["native"]["descriptor"],
-                        "{preset} {}",
-                        row["id"]
-                    );
+                    assert_eq!(observed, row["native"]["descriptor"], "{preset} {}", id);
                 }
                 Err(error) => {
                     assert_eq!(row["native"]["success"], false);
@@ -370,6 +381,8 @@ mod tests {
                     );
                 }
             }
+            case.passed();
         }
+        cases.finish();
     }
 }

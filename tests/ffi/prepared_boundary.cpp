@@ -184,9 +184,12 @@ namespace JuicerCudaTest {
             return false;
         }
         const FjSubmission submission{instanceToken, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(frame.time_frames))), 1, state.upload_core_hash, dir.hash, state.scanner_hash, meter.hash};
-        check_frame_bindings(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &state);
+        const auto invocationContext = std::string("held-route-") + std::to_string(state.route) + "-instance-" + std::to_string(instanceToken) +
+                                       "-frame-" + std::to_string(submission.frame_token) + "-contract-" + (contract ? "yes" : "no") +
+                                       "-lifetime-" + (lifetime ? "yes" : "no") + "-case-" + std::to_string(static_cast<unsigned>(lifetimeCase));
+        check_frame_bindings(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &state, nullptr, invocationContext);
         const bool success = (contract || (lifetime && lifetimeCase == StateLifetimeCase::SuppliedStream))
-                                 ? check_render_contract(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &error).category == FJ_STATUS_SUCCESS
+                                 ? check_render_contract(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &error, invocationContext).category == FJ_STATUS_SUCCESS
                                  : render_raw_prepared(JuicerCuda::borrowed_owner(), frame, submission, prepared, {}, &error).status.category == FJ_STATUS_SUCCESS;
         if (!success) {
             diagnostic.assign(message.data(), error.length);
@@ -203,7 +206,8 @@ namespace JuicerCudaTest {
         const PreparedState& owner,
         const FjFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
-        std::string& diagnostic) {
+        std::string& diagnostic,
+        const std::string& invocationPhase) {
         diagnostic.clear();
         std::array<char, 2048> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
@@ -236,7 +240,8 @@ namespace JuicerCudaTest {
             const PreparedState& owner;
             const FjFrame& frame;
             JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;
-        } invocation{owner, frame, snapshot};
+            const std::string& phase;
+        } invocation{owner, frame, snapshot, invocationPhase};
         const auto baseline = fj_test_noise_acquisition_count();
         const bool success = PreparedFrameFixture::with_prepared_frame_inputs(
             owner, facts, &invocation, [](void* user, const PreparedFrameFixture::Inputs& inputs, std::string& diagnostic) {
@@ -285,7 +290,10 @@ namespace JuicerCudaTest {
                 std::array<char, 2048> message{};
                 FjErrorBuffer error{message.data(), message.size(), 0};
                 const auto acquisitions = fj_test_noise_acquisition_count();
-                check_frame_bindings(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &state, inputs.hostPreparation);
+                const auto invocationContext = std::string("boundary-route-") + std::to_string(state.route) + "-instance-" + std::to_string(snapshot.instanceToken.value) +
+                                               "-frame-" + std::to_string(snapshot.frameToken.value) + "-snapshot-" + std::to_string(snapshot.snapshotId) +
+                                               "-time-" + std::to_string(frame.time_frames) + "-phase-" + invocation.phase;
+                check_frame_bindings(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &state, inputs.hostPreparation, invocationContext);
                 const auto result = render_raw_prepared(JuicerCuda::borrowed_owner(), frame, submission, prepared, {}, &error, inputs.hostPreparation);
                 if (result.status.category != FJ_STATUS_SUCCESS) {
                     diagnostic.assign(message.data(), error.length);

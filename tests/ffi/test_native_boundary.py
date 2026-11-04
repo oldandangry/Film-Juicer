@@ -146,7 +146,12 @@ class NativeBoundary(unittest.TestCase):
         self.assertIn("bind_state(state, prepared)", boundary)
         self.assertIn("PreparedFrameFixture::with_prepared_frame_inputs(", boundary)
         self.assertIn("encode_prepared_descriptors(inputs.descriptors, prepared)", boundary)
-        self.assertIn("&state, inputs.hostPreparation)", boundary)
+        binding = r"check_frame_bindings\([^;]*&state,\s*inputs\.hostPreparation(?:,|\))"
+        self.assertRegex(boundary, binding)
+        for invalid in ("check_frame_bindings(cuda, frame, &state, nullptr, caller)",
+                        "check_frame_bindings(cuda, frame, nullptr, inputs.hostPreparation, caller)",
+                        "other_helper(&state, inputs.hostPreparation, caller)"):
+            self.assertNotRegex(invalid, binding)
         self.assertIn("&error, inputs.hostPreparation)", boundary)
         raw = (ROOT / "tests/ffi/prepared_raw_render_fixture.h").read_text(encoding="utf-8")
         self.assertIn("const FjHostPreparation* hostPreparation = nullptr", raw)
@@ -263,7 +268,15 @@ class NativeBoundary(unittest.TestCase):
             self.assertIn("struct " + name, controls)
             self.assertNotIn("struct " + name, values)
         fixture = (ROOT / "tests/ffi/film_reference_test.inc").read_text()
-        self.assertIn("fj_test_film_reference_prepare, fj_test_film_reference_c_prepare", fixture)
+        preparers = (("fj_test_film_reference_prepare", "facade"),
+                     ("fj_test_film_reference_c_prepare", "c11"))
+        self.subtest_cases = tuple(f"caller/{caller}" for _, caller in preparers)
+        for function, caller in preparers:
+            with self.subTest(case=f"caller/{caller}"):
+                self.assertIsNotNone(
+                    re.search(r'\{\s*' + function + r',\s*"' + caller + r'"\s*\}', fixture),
+                    f"film-reference fixture must bind its {caller} consumer")
+        self.assertIn("for (const auto& [prepare, api] : preparers)", fixture)
         self.assertIn("prepare(development.get(), &inputs.wire", fixture)
         self.assertIn('project(out) == row.at("reference")', fixture)
         recipe = (ROOT / "rust/film-juicer-core/src/recipe.rs").read_text()
@@ -976,13 +989,15 @@ class NativeBoundary(unittest.TestCase):
         self.assertIn("IlluminantTest::calibration_result(raw)", bridge)
         self.assertIn("fj_legacy_neutral_calibration_lookup(", bridge)
 
+    test_synthetic_reference_has_one_safe_owner_and_native_completion_only.required_subtests = True
 
 
 class NativeBoundaryControls(unittest.TestCase):
     def test_llvm_nm_uses_active_toolchain_path(self):
         names = ("llvm-nm.exe",) if os.name == "nt" else ("llvm-nm-22", "llvm-nm")
+        self.subtest_cases = tuple(f"tool/{name}" for name in names)
         for name in names:
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(case=f"tool/{name}", name=name), tempfile.TemporaryDirectory() as directory:
                 toolchain = Path(directory) / "Microsoft Visual Studio/18/Enterprise/VC/Tools/Llvm/x64/bin"
                 toolchain.mkdir(parents=True)
                 executable = toolchain / name
@@ -1097,23 +1112,26 @@ class NativeBoundaryControls(unittest.TestCase):
     def test_spectral_deletions_reject_definitions_includes_and_fixture_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.hpp"
-            for text in (
+            controls = (
                 '#include "NpyLoader.h"', "struct NpySpectraLUT {};", "NpyFloat2D basis;",
                 "load_csv_triplets(path);", "load_hanatos_spectra_lut(path);",
                 "load_arctic2026beta04_spectra_lut(path);", "load_mallett2019_basis_npy(path);",
                 "load_npy_float2d(path);", "load_npy_spectra_lut(path);",
                 "sourceElementBytes = 2;", "hanatosAssetHash = 1;", "arcticAssetHash = 2;",
                 "kExpectedDecodedAssetHash = 3;", "data_file_string(root, name);",
-            ):
-                with self.subTest(text=text):
+            )
+            self.subtest_cases = tuple(f"retired-use/{index:02d}" for index in range(len(controls))) + ("retained-control",)
+            for index, text in enumerate(controls):
+                with self.subTest(case=f"retired-use/{index:02d}", text=text):
                     source.write_text(text, encoding="utf-8")
                     self.assertEqual(len(forbidden_uses([source], RETIRED_SPECTRAL)), 1)
-            source.write_text(
-                "ReconstructionLut lut; MallettBasis basis; copy_cmf_triplets(); "
-                "build_film_tc_lut(); build_illuminant_curve(rows, label); set_cie_1931_2deg_cmf(x, y, z);",
-                encoding="utf-8",
-            )
-            self.assertEqual(forbidden_uses([source], RETIRED_SPECTRAL), [])
+            with self.subTest(case="retained-control"):
+                source.write_text(
+                    "ReconstructionLut lut; MallettBasis basis; copy_cmf_triplets(); "
+                    "build_film_tc_lut(); build_illuminant_curve(rows, label); set_cie_1931_2deg_cmf(x, y, z);",
+                    encoding="utf-8",
+                )
+                self.assertEqual(forbidden_uses([source], RETIRED_SPECTRAL), [])
 
             for name in (
                 "SpectralContext", "ReconstructionLut", "MallettBasis", "SpectralTables", "CMFTriplets",
@@ -1205,6 +1223,8 @@ class NativeBoundaryControls(unittest.TestCase):
                               encoding="utf-8")
             self.assertEqual(forbidden_uses([source], RETIRED_NOISE), [])
 
+    test_llvm_nm_uses_active_toolchain_path.required_subtests = True
+    test_spectral_deletions_reject_definitions_includes_and_fixture_dependencies.required_subtests = True
 
 
 if __name__ == "__main__":

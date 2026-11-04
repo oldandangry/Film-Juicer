@@ -282,6 +282,7 @@ pub mod test_support {
 mod tests {
     use super::{curve_hash, normalize_curves};
     use crate::hash;
+    use crate::test_cases::RowCases;
     use serde_json::Value;
     use std::path::PathBuf;
 
@@ -297,7 +298,16 @@ mod tests {
             .join("../../tests/film/fixtures")
             .join(format!("{preset}-primitive.json"));
         let fixture: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        for row in fixture["normalization"].as_array().unwrap() {
+        let normalization = fixture["normalization"].as_array().unwrap();
+        let mut normalization_cases = RowCases::new(
+            "film-primitive-normalization",
+            normalization
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("normalization/{index}")),
+        );
+        for (index, row) in normalization.iter().enumerate() {
+            let case = normalization_cases.case(format!("normalization/{index}"));
             let mut curves: Vec<[f32; 3]> = row["authored"]
                 .as_array()
                 .unwrap()
@@ -324,8 +334,19 @@ mod tests {
                 curve_hash(curves.as_flattened()),
                 row["hash"].as_u64().unwrap()
             );
+            case.passed();
         }
-        for row in fixture["hash"].as_array().unwrap() {
+        normalization_cases.finish();
+        let hashes = fixture["hash"].as_array().unwrap();
+        let mut hash_cases = RowCases::new(
+            "film-primitive-hashes",
+            hashes
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("hash/{index}")),
+        );
+        for (index, row) in hashes.iter().enumerate() {
+            let case = hash_cases.case(format!("hash/{index}"));
             let samples: Vec<f32> = row["values"]
                 .as_array()
                 .unwrap()
@@ -336,6 +357,8 @@ mod tests {
             assert_eq!(pair.values, row["value_hash"].as_u64().unwrap());
             assert_eq!(pair.nan_mask, row["mask_hash"].as_u64().unwrap());
             assert_eq!(curve_hash(&samples), row["hash"].as_u64().unwrap());
+            case.passed();
         }
+        hash_cases.finish();
     }
 }

@@ -50,9 +50,11 @@ juicer_register_tooling_tests(
 # Ffi.Host.RustBuild consumer contract.
 foreach(tooling_test IN LISTS JUICER_TOOLING_TESTS)
     set(tooling_shard core)
-    if(tooling_test MATCHES "^Quality\\.(BuildEvidence|Checkpoint|PreparationRenewal)$")
+    if(tooling_test MATCHES "^Quality\\.(BuildEvidence|Checkpoint)$")
         set(tooling_shard "${CMAKE_MATCH_1}")
     endif()
     set_property(TEST "${tooling_test}" APPEND PROPERTY LABELS
         tooling "tooling-${tooling_shard}")
 endforeach()
+
+juicer_write_python_targets()

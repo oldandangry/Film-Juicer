@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include "../ffi/gtest_cases.h"
+
 TEST(RenderAssertions, RejectsNumericalAndChannelRegressions) {
     const std::array<float, 3> expected{0.1f, 0.3f, 0.7f};
     EXPECT_NO_THROW(RenderAssertions::compare_pixels("unchanged", expected, expected));
@@ -21,12 +23,16 @@ TEST(RenderAssertions, RejectsNumericalAndChannelRegressions) {
 }
 
 TEST(RenderAssertions, RejectsNonFiniteActualAndExpected) {
+    const JuicerTests::GtestCohort invalid_values("invalid-values", 3);
+    unsigned index = 0;
     for (float invalid : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()}) {
+        auto event = invalid_values.case_event(std::to_string(index++));
         const std::array<float, 1> finite{0.3f};
         const std::array<float, 1> corrupt{invalid};
         EXPECT_THROW(RenderAssertions::compare_pixels("actual", corrupt, finite), std::runtime_error);
         EXPECT_THROW(RenderAssertions::compare_pixels("expected", finite, corrupt), std::runtime_error);
         EXPECT_THROW(RenderAssertions::compare_pixels("both", corrupt, corrupt), std::runtime_error);
+        event.passed();
     }
 }
 
@@ -43,9 +49,12 @@ TEST(RenderAssertions, RejectsAlphaPaddingAndPathBitChanges) {
 TEST(RenderAssertions, RejectsEveryHashAndSeedLane) {
     const std::array<std::uint64_t, 4> expected{0x1298, 0x7846, 0x5123, 0x9367};
     EXPECT_TRUE(RenderAssertions::identities_match(expected, expected));
+    const JuicerTests::GtestCohort lanes("hash-lanes", expected.size());
     for (std::size_t lane = 0; lane < expected.size(); ++lane) {
+        auto event = lanes.case_event(std::to_string(lane));
         auto corrupt = expected;
         corrupt[lane] ^= 1u;
         EXPECT_FALSE(RenderAssertions::identities_match(corrupt, expected));
+        event.passed();
     }
 }

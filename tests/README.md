@@ -77,41 +77,33 @@ is invalid. The maintained prospective command
 must be recorded with concrete preset paths and exact expected membership in the
 existing handoff.
 
-The complete Debug tooling selection also has a standalone CMake entry that does
-not configure the product, CUDA or GoogleTest. Supply the same qualified Python
-3.13, native C/C++ tools, Git, Ninja and Rust 1.98.1 environment. For Linux:
+The Debug tooling selection also has a standalone CMake entry that does not
+configure the product, CUDA or GoogleTest. Supply Python 3.13, native C/C++
+tools, Git, Ninja, Rust/Cargo 1.98.1 and cargo-nextest 0.9.143. Configure it
+with the platform's native compiler, then run it through the shared verifier.
+For Linux:
 
 ```sh
 cmake -S tests/tooling -B out/build/tooling-linux -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc-13
-ctest --test-dir out/build/tooling-linux -L tooling --parallel 4 \
-  --no-tests=error --output-on-failure \
-  --test-output-size-passed 65536 --test-output-truncation middle
+python -B scripts/verify.py qualification --preset linux-debug \
+  --build-dir out/build/tooling-linux --reason 'Local tooling checks' \
+  --selection tooling --runtime host --run-id tooling-local
 ```
 
 On Windows use `out/build/tooling-windows` and `-DCMAKE_C_COMPILER=clang-cl.exe`
 inside the qualified VS 18 environment. `Python3_EXECUTABLE` and
-`JUICER_TOOLING_CARGO` can select the qualified executables explicitly. Both entries
-use `tests/ToolingTests.cmake`; ordinary product CTest retains the same eleven
-Debug tooling members. Artifacts still route to the native Debug preset's
-`out/validation/` tree. Each entry uses its own CTest binary directory as the
-default working directory; commands and fixture roots use explicit checkout paths.
-Linux also needs LLD for the compiler-selected-linker freshness control.
+`JUICER_TOOLING_CARGO` can select qualified executables explicitly. Both entries
+use `tests/ToolingTests.cmake` and register the same 13 Debug tooling members as
+the product test suite. The verifier writes results under the native Debug preset's
+`out/validation/<preset>/results/<run-id>/` directory. Linux also needs LLD for
+the compiler-selected-linker freshness control.
 
-Hosted Windows tooling uses four independent runners labelled `tooling-core`,
-`tooling-BuildEvidence`, `tooling-Checkpoint` and `tooling-PreparationRenewal`.
-These disjoint selections cover the complete tooling membership once. Every
-shard must succeed, and a failed shard does not cancel the others. The heavy
-groups retain their local CTest processor reservations to avoid competing for
-I/O on the same machine. Local unfiltered tooling still runs all eleven groups.
-Passed output retains up to 64 KiB with middle truncation, preserving both the
-initial diagnostics and final duration summaries.
-
-Windows verification controls require Win32 long-path support for nested
-preparation receipts. An administrator can enable `LongPathsEnabled` under
-`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`; restart test processes after
-changing that policy. The qualified tool versions alone do not establish this
-filesystem capability.
+Hosted Windows tooling uses three independent runners labelled `tooling-core`,
+`tooling-BuildEvidence` and `tooling-Checkpoint`. The shard labels are selected
+with an explicit CTest label regex; each shard result is focused and cannot be
+combined into complete qualification. Every shard must succeed, and a failed
+shard does not cancel the others. Local unfiltered tooling runs all 13 groups.
 
 For WSL filesystem diagnosis, `JUICER_TOOLING_ARTIFACT_ROOT` can place synthetic
 fixtures under an absolute native Linux `out/validation/linux-debug` root. Both
@@ -165,129 +157,36 @@ operation order, ABI, immutable ownership and asynchronous lifetime obligations.
 No tolerance widening, fixture regeneration during ordinary tests or omission of
 required cases follows from this cadence.
 
-Before a designated broad checkpoint, finish expectation adoption and inspect all
-readers and downstream identity/seed consumers, including their later assertions.
-Unsupported selectors do not justify an automatic `--targets all`; an
-explicit `all` selection needs a stated dependency or checkpoint reason. Freeze
-one candidate identity, then run its required selections once. Each partition
-command must complete under supervision, drain its owned work and admit complete
-exact JUnit membership. The enclosing outer owner must reach terminal completion,
-drain its work and release the shared normal lease in a healthy state once the
-operation ends before another owner is dispatched or a stable receipt is read.
-Passing or reuse requires the applicable results to succeed. Apply existing
-pending/failure admission rules for another owner; preserve failed status, while a
-drained failure may permit a lawful repair or fresh preparation. Retries and
-admission within the existing lease remain with that owner. Partial console output
-or inner build success is not completion. Do not signal a healthy supervisor
-except through its documented cancel path. Link original receipts from one final
-packet and retain intermediate records only for a concrete consumer. Preserve
-owner-required before/after source and tool hashes and completed receipts; do not
-add a per-intermediate proof chain.
-Keep separately required reference captures and transition checks. Do not edit
-public inputs while their checks are running. Quality checks still bind the prose
-they inspect; build leases do not exclude source writers.
+Before a broad checkpoint, identify the exact candidate, affected scientific
+expectations, actual consumers and required platform/profile/feature coverage.
+Keep every approved numerical exception, fixture provenance, operation order,
+ABI, ownership and asynchronous lifetime obligation. Do not widen tolerances,
+regenerate checked-in fixtures during ordinary tests or omit required downstream
+cases. A focused pass supports only the scope it names; complete qualification
+uses the shared verifier and its complete fresh-membership collector, described
+in [Shared native verification](#shared-native-verification).
 
-The development dispatcher's supported inputs remain limited to those documented
-in [CONTRIBUTING.md](../CONTRIBUTING.md#required-checks). For other work, use existing
-explicit CMake targets, named CTest groups, native quality selections and Cargo
-package/profile/feature commands. A nonempty focused pass can support its stated
-handoff scope without manufacturing an aggregate pass. Use the existing wrappers
-and domain capture modes; do not add per-change launchers, retry variants, matrix
-drivers or collectors, including equivalent long inline scripts.
+For implementation work, use `prepare` only to build a declared target/file
+closure. Use `development` for focused files, tests or targets, and
+`qualification` for named CTest groups. These operations use fresh native owners
+and results; a successful build, prior run or focused selection cannot be reused
+to satisfy another qualification. The CLI examples and runtime selection rules
+are collected below. Do not add per-change launchers, retry variants, matrix
+drivers or collectors.
 
-For preparation without a runtime selection, `scripts/verify.py prepare --preset
-<preset> --targets <maintained-targets...> --testing ON|OFF` supports the four
-standard native trees. See [target preparation](../CONTRIBUTING.md#required-checks)
-for the bounded target list and Release OFF restrictions. This uses the existing
-preparation/freshness and process owners; it does not supply product or boundary
-test evidence. Retained interruption proof is still required for normal recovery.
+Use the current Python/CMake/Rust/CUDA versions in the Prerequisites section. Rust
+Core/Bridge test binaries are prepared by CMake and executed through nextest once;
+quality checks do not build or run a second Cargo test copy. The ordinary quality
+entry keeps formatting, Clippy, source hygiene, native/CUDA analysis and compiler
+boundary tests in their owning workflows. Read [CONTRIBUTING.md](../CONTRIBUTING.md)
+for its supported scope and local command choices.
 
-This cadence does not change the current CLI or its admission rules. The separately
-implemented Clippy correction checks only the preset's matching profile, with both
-packages and plugin production/test-support forms retained across all four presets.
-OFF execution now retains its inspected build files and configuration for collection
-after ON restoration. Candidate snapshots and broad checkpoint discovery now omit
-repository prose: root `README.md`/`CONTRIBUTING.md`, Markdown under `docs/` and
-`tests/`, and explanatory `README.md`/`*-README.md` inside fixture directories.
-Other fixture files, including Markdown payloads, stay relevant. Packaged documents
-under `third_party/`, Resources, source/configuration metadata and unknown Markdown
-locations stay relevant too. Documentation edits, additions, deletions and commits
-within that prose scope do not invalidate reusable build/test evidence. Explicit
-inputs and compiler/build-graph dependencies remain bound regardless of filename.
-Quality runs still check and bind their selected prose; build/test reuse does not
-qualify changed documentation. Older receipts retain their original recorded inputs
-and may require fresh evidence; they are never rewritten or projected into this policy.
-
-An explicit build or preparation command covers only its named targets and
-dependencies. It cannot bypass pending owners, lease health, drainage or evidence
-admission, and a successful build is not a qualification receipt.
-
-Checkpoint preparation now separates a bounded set of proven runtime-only test
-files from build inputs. Exact, absolute file operands under `tests/` in generated
-CTest registrations are candidates; directories, manifest children and Python
-imports are not inferred. The existing Ninja/compiler and ordered-include closure,
-configuration inputs and build-command operands take precedence. Configure-time
-copies, unresolved file reads and Cargo build scripts/embeddings retain conservative
-scope. Compiled/embedded fixtures, generated inputs, copied/staged resources, tools
-and artifact freshness remain preparation obligations. No directory or extension
-is broadly excluded. Direct `prepare_build` explicit inputs remain authoritative.
-
-Opaque configure file operations (`file`), subprocesses (`execute_process`) and
-dynamic evaluation (`cmake_language`) keep preparation discovery broad. When that
-scope needs fresh preparation, the checkpoint requests reconfiguration through the existing
-producer and lease, so variable-built configure inputs refresh copied/staged output.
-Literal filenames or subcommands are not proof of these operations' input closure.
-Detection scans every recorded regeneration input regardless of filename suffix,
-including build-tree, external and bundled modules. Non-UTF-8 input stays
-conservative. Four exact `CMAKE_ROOT`-relative paths have reviewed CMake 4.3.1
-LF/CRLF byte identities: `Modules/CMakeGenericSystem.cmake`,
-`Modules/CTestTargets.cmake`, `Modules/Platform/WindowsPaths.cmake`, and the data
-template `Templates/CTestScript.cmake.in`. These exceptions cover only known
-bootstrap path conversions/directory creation and template data. Unknown bytes,
-locations or CMake roots keep the conservative scan; source-discovered CMake
-files and original raw-byte receipt requirements retain their existing treatment.
-Projects without these unresolved consumers retain runtime-only preparation reuse.
-
-Every required configure refresh retains fresh command, trace and process evidence.
-When its generated-output declarations and exact redacted-trace hash match the
-existing registry, the producer validates the original registry evidence and keeps
-its raw bytes. Changed declarations, changed trace facts or unproved evidence
-receive a fresh registry. Receipt-path changes alone therefore do not invalidate
-unchanged artifacts; other configuration and dependency changes remain bound.
-The miniature renewal replay requires exactly one configure refresh and one no-op
-build per warm repair because its compiler/linker modules are opaque. It still
-requires exact artifact bytes, zero invalidation and no repeated downstream work.
-
-The same discovery serves preparation admission, refreshed membership and
-collection. Fresh preparation observes initially excluded candidates before
-commands and checks any newly admitted source input against that observation
-before sealing refreshed identity. A fixture edit during reconfiguration cannot
-be first admitted using its post-command contents. Candidates that remain
-runtime-only stay excluded, and ordinary reuse takes no new admission observation.
-Refresh and collection honor the producer's original dependencies;
-older broad receipts and cold preparation without test registration may need one
-fresh preparation to establish the narrower scope. Original receipts are never
-rewritten or projected. Product, quality and runtime selections still bind runtime
-files and require fresh execution after changes; complete aggregate membership,
-pending-owner rejection and process drainage are unchanged. Avoid claiming native
-recompilation merely because preparation redispatched or invalidated evidence.
-
-General compilation/analysis/runtime separation beyond this boundary remains future
-work, and collection still requires its current owners and artifacts. Do not claim those
-remaining fixes are delivered or bypass rejection,
-pending state or artifact checks. A prose edit requires only the prose checks above,
-but does not make an older rejected receipt current. Record that limitation without
-launching a broad run solely to repair its status. Keep actual ON and OFF execution
-evidence and necessary artifacts distinct from cache restoration; rebuilt ON bytes
-are not evidence that those bytes executed the earlier tests.
-
-On failure, retain the diagnostic, identify its cause category and state the changed
-hypothesis and smallest discriminating check before retrying. One identical retry
-is permitted for an explicitly suspected transient; a second unchanged failure
-requires diagnosis before another broad run. Do not raise deadlines, clean Cargo,
-delete outputs or restart every preset without a concrete cause. Passing a repeat
-establishes non-reproduction, not a root-cause fix. Preserve unrelated successful
-work only through its existing admission rules, and leave unresolved work explicit.
+At failure, retain diagnostic output, identify the cause and choose the smallest
+check that can distinguish the proposed repair. Preserve the first failure while
+working; a repeated result is not a root-cause fix. Do not raise deadlines, clear
+Cargo state, delete outputs or restart presets without a concrete cause. Keep
+unrelated failures unresolved and preserve required reference captures and
+transition evidence.
 
 ## Prerequisites
 
@@ -300,6 +199,7 @@ work only through its existing admission rules, and leave unresolved work explic
 - Rust and Cargo 1.98.1 for the current platform, selected by
   `rust-toolchain.toml`. The tracked quality gate also requires the matching
   rustfmt and Clippy components.
+- cargo-nextest 0.9.143 for CMake-owned Rust test execution.
 - Python 3.13. Ordinary Python execution is intentionally tested on 3.13.
 - A compatible NVIDIA driver and SM 7.5-or-newer GPU only for the `gpu` label.
 
@@ -321,6 +221,7 @@ runs CMake. With that environment's own rustup installation:
 
 ```sh
 rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+cargo install cargo-nextest --version 0.9.143 --locked
 rustc --version --verbose
 cargo --version
 ```
@@ -398,12 +299,12 @@ ctest --preset linux-debug
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
-With `BUILD_TESTING=ON`, the default build prepares the `Rust.Core` test
-executables through `juicer_rust_core_tests` using the same Cargo command and
-profile as CTest, with `--no-run`. Cargo checks source and included-fixture
-freshness on each build. This keeps cold compilation outside the 120-second
-CTest runtime budget. For a focused core-only rebuild, select
-`cmake --build --preset <preset> --target juicer_rust_core_tests` before CTest.
+With `BUILD_TESTING=ON`, CMake's `juicer_rust_tests` target prepares both
+`Rust.Core` and `Rust.Bridge` in the preset's single `cargo/test-support`
+directory, saving nextest binaries-only and Cargo metadata. Cargo owns source
+and included-fixture freshness. CTest discovers/runs these built binaries without
+invoking another build. For a focused Rust rebuild, select
+`cmake --build --preset <preset> --target juicer_rust_tests` before CTest.
 
 The presets use four CTest workers. GPU groups share `juicer_gpu`, the
 product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
@@ -413,15 +314,12 @@ worker count with `--parallel <count>` when the machine needs a smaller limit.
 Checkpoint host/GPU partitions use these same test presets, preserving their
 worker accounting, named locks, exact membership and complete-result checks.
 
-`Rust.Core` uses two libtest workers and reserves two CTest slots. Tests that
+`Rust.Core` and `Rust.Bridge` each use one nextest worker and reserve one CTest slot. Tests that
 spawn threads still exercise their internal concurrent publication and lifetime
-witnesses. On Windows, `Quality.Checkpoint` and `Quality.PreparationRenewal` each
-reserve four slots so their repeated tool-byte validation runs alone at the
-preset's four-worker limit. Their 600-second and 300-second deadlines remain
-unchanged. A larger explicit worker count can allow overlap again. Verification
-control logs include
-the ten slowest unittest cases. These scheduling choices preserve complete test
-membership, tool/input checks and the existing deadlines.
+witnesses. The three native result groups use 120-second deadlines; other
+tooling registrations use 600 seconds. A larger explicit worker count can allow
+overlap again. Verification control logs include the ten slowest unittest cases.
+These scheduling choices preserve complete test membership and deadlines.
 
 Debug's `Optics.Host.DiffusionFrameProducts` also reserves four slots to
 keep its full numerical fixture separate from other host tests at the standard
@@ -477,10 +375,12 @@ spellings and shape overflow. Every case also checks fragmented reads, typed
 errors and owned results after source mutation. NaN, infinity and signed zero
 remain valid authored content; this pilot adds no scientific admission policy.
 
-For a focused replay, use the standard preset Cargo directory and native target:
+For a focused replay, run the Rust core CTest owner through the shared verifier
+and the standard preset CMake/Cargo target:
 
 ```sh
-cargo test --locked -p film-juicer-core --lib --target <native-target> --target-dir out/build/<preset>/cargo data_io::npy_fuzz -- --nocapture
+python -B scripts/verify.py development --preset linux-debug \
+  --tests Rust.Core --runtime host --run-id npy-fuzz-replay
 ```
 
 The explicit failing control sets `JUICER_NPY_FUZZ_CONTROL=nonfinite-clamp` for
@@ -503,185 +403,96 @@ registration and repetition fixtures record their outer outcome in
 `out/control-fixture.json` inside each synthetic workspace. Failed, interrupted
 or unfinished controls retain their reproduction workspace, command receipts and
 process diagnostics. Missing or malformed outcome markers remain unproved and
-are selected within those four family directories. Successful expected-negative controls, blocked simulations
-and explicit successful retention are excluded from automatic uploads. NPY
+are selected within those four family directories. Successful expected-negative
+controls are excluded; a blocked owner remains selected for diagnostics even if
+the test marker says it passed. NPY
 failure samples in each preset's `rust-core/` directory are included separately.
 Each checkpoint fixture encloses its `project/` repository and any sibling
 external inputs in one directory. Its outer outcome governs retention of the
 whole directory, including external modules needed to reproduce a failed check.
 Selected workspaces include hidden reproduction inputs such as Cargo configuration.
-JUnit and `LastTest.log` uploads remain unconditional. Local selection tests do
+The shared result bundle and `LastTest.log` uploads remain unconditional. Local selection tests do
 not establish hosted delivery; verify the uploaded artifact after download from
 an authorized CI run.
 
-A1/A2 are accepted only for the four inputs in
-[the contributor workflow](../CONTRIBUTING.md). Timing targets, general ownership
-coverage and full qualification remain unproved. The bounded path selects `src/ScanRoute.cpp`, `src/ScanRoute.h`, Rust core `route.rs` and core
-`color/output.rs` on the configured `linux-debug` tree. For example:
-`python -B scripts/verify.py development --preset linux-debug --files rust/film-juicer-core/src/route.rs`.
-Explicit entries beside CTest registration select the route bridge or output-color
-FFI group and exact fixture; Rust scopes also select direct boundary probes and
-named active-profile Cargo tests/Clippy. Uncertain public-interface changes add
-plugin checks. Header compilation retains all actual configured variants without
-selecting tests merely because they link the same library.
+## Shared native verification
 
-Initialization needs no old preparation/development receipts. Unsupported changes,
-index-only edits and pending failures remain unresolved. A later, overlapping or
-pending preparation invalidates affected prior reuse. A successful selected scope
-can coexist with an incomplete request (exit 2). Unchanged reuse reports that no
-checks executed, and unrelated saved scopes remain separate. Ordinary Rust edits
-use Cargo incrementally; stale-time content edits invalidate only affected active
-packages/reverse consumers. Missing or unresolved header consumers cannot pass.
-Dirty unrelated fixture/resource payloads stay unresolved without global content
-hashing. Selected fixture contents remain preparation inputs; tool, log, JUnit and
-process-proof contents remain reuse inputs. Header discovery and preparation are
-checked again before publishing success, including newly introduced consumers.
-Unchanged reuse performs one fresh admission against the retained pass; it does
-not repeat the same admission when no checks execute. Parsed compilation entries
-and ordered include discovery are shared within one validation boundary, with
-fresh discovery after configure, build, analysis and CTest operations.
-For unchanged latency, count the complete supervised command as bookkeeping;
-receipt phase timings end before publication and do not replace that full cost.
+Use the shared verifier for build preparation, focused development checks and
+named qualification. Development and qualification create fresh native results
+under `out/validation/<preset>/results/<run-id>/`; preparation is build-only.
 
-Named checkpoints and aggregate collection are available after A3's focused
-verification; exact baseline recovery and cumulative size proof are recorded in
-the current handoff. Use `scripts/verify.py qualification --preset <preset>
---reason <reason> --selection <groups...> --runtime <host|all>`; selections are
-`product`, `boundary`, `tooling`, `corpus` or the separate Release/testing-OFF
-`production` gate. Product selection requires `--base`. Exact membership prints
-before execution. Successful stages reuse original records across campaign names;
-failed or incomplete gates remain pending. Legacy sealed-build adapters are
-unsupported. `collect-qualification` accepts only the complete explicit native,
-profile, runtime, corpus and production gate set described in CONTRIBUTING.md.
-
-Linux/WSL collection of Windows preparation receipts also requires
-`--windows-python <qualified-Windows-python.exe>`; see the
-[collection contract](../CONTRIBUTING.md#required-checks). The collector retains
-supervised entry/terminal Windows identity evidence under
-`out/validation/linux-debug/collection-<id>/`. Preserve that complete campaign on
-failure. To exercise the actual WSL/Windows identity controls, set
-`JUICER_WINDOWS_PYTHON` to the qualified native Windows venv interpreter and
-`JUICER_WINDOWS_IDENTITY_PROOF` to a retained Windows preparation receipt containing
-compiler dependency aliases. The proof operand supplies alias fixture provenance.
-
-Product admission never builds implicitly. First use `verify.py prepare --preset
-<preset> --targets all --testing ON`, or explicitly authorize preparation with the
-qualification command's `--prepare` flag. A mismatch preserves existing outputs.
-Retry reasons apply to failed checks; matching passed checks and CTest cases retain
-their original evidence and do not run again. A composed result validates every
-original process/JUnit report and requires complete, nonduplicated passed-case coverage.
-Ordinary stages and CTest groups have no elapsed kill deadline (`TIMEOUT 0`).
-Progressing or quiet work continues under its existing owner. Diagnose suspected
-stalls before cancellation; failure/cancellation still requires descendant drainage.
-Mixed checkpoint selections run their host and GPU parts separately under one
-build-tree owner and one aggregate group result. Only the GPU part holds the
-shared device lease; reuse requires exact membership and completed results from
-every part. Enabling the dispatcher does not establish full product qualification.
-Development verification selects individual existing state, process, native/transitive,
-generated-input, shadow-header and partial-build controls. It does not dispatch the
-entire build-evidence group or change product fixtures. Control artifacts remain
-under the selected preset's validation directory. No full product/platform
-qualification is claimed by this scope.
-`Quality.BuildRegistration` uses the same outer-outcome retention rules, including
-subtest/setup/cleanup errors and blocked owners. Its fixtures live under
-`JUICER_TEST_ARTIFACT_DIR/registration-controls/`, or the native Debug preset's
-`registration-controls/` when run directly without an artifact root. Completed
-commands do not authorize releasing an interrupted fixture owner. Both fixture
-families include focused lifecycle controls in their existing discovery groups.
-Windows `Quality.Execution` covers the exact-path, Job-owned VCTIP cleanup,
-natural-drain grace, other-child wait and cap, and failed-parent behavior;
-`Quality.BuildEvidence` covers generated-header reconfiguration and unowned
-shadow headers. Both run in the normal Debug tooling selection in Windows CI.
-
-Build-evidence fault variants that start from the same prepared state share a
-fixture within one test method and report each fault as a named subtest. Between
-variants, the test restores its owned inputs, artifacts and provenance at the
-original configured path, then checks preparation again before the next fault.
-Each variant still runs the real build/publication path and checks rejection,
-pending state and owner preservation. Cold preparation, renewal, missing-scope
-admission and recovery remain separate scenarios. File-identity and lease tests
-use lightweight fixtures without Cargo setup. Production freshness checks and
-CTest groups have no elapsed kill deadline.
-
-Preparation and checkpoint entry points validate stage names, declared membership,
-nonempty commands/inputs and any explicitly supplied finite positive timeout before creating pending
-owners or reusing results. Invalid requests leave prior receipts, artifacts and
-absent/pending owners unchanged. Focused build-evidence and checkpoint regressions
-exercise rejection and subsequent valid reuse; actual execution or evidence
-validation failures still block reuse until repaired through the owning path.
-
-Interrupted preparation recovery requires a healthy normal build-tree lease and
-the original attempt's sealed drainage proof. Every started configure, Cargo clean
-and build command must have matching terminal process, result and output receipts.
-Only the original live owner may attest that a failed attempt started no command.
-A retry preserves the old pending marker and failed receipts before fresh
-preparation; the scope's successful baseline remains until replacement succeeds.
-Unproved, damaged or legacy owners remain blocked. This does not recover a hard
-owner death or take over a blocked lease. Focused compiler-free fixtures exercise
-real descendant interruption, successful fresh recovery and proof rejection before
-outputs or ownership mutate.
-
-Native build fixtures start with the C stub. Rust cases explicitly construct
-their two-crate workspace once when enabling Rust, before any source mutation;
-later preparation does not recreate edited or missing inputs. Initial sanity
-checks in artifact/fallback/fresh-scope cases execute the native value witness
-directly. Their selected/final CTest runs and failure/recovery executions still
-exercise the real verification path.
-
-During implementation, build the affected test targets and run only the owning
-cases needed to check the current edit. Run new compiled cases on Linux and
-Windows early so platform-specific compilation, lifetime or diagnostic issues
-are found before the final matrix. For example, quality-tool changes can start
-with these short development checks in each native Python environment:
+`prepare` configures and builds the selected target/file closure. It does not run
+tests or produce a qualification result:
 
 ```sh
-python -m unittest discover -s tests/quality -p test_check_quality.py -v
-python -m unittest discover -s tests/ctest -p test_report.py -v
+python -B scripts/verify.py prepare --preset linux-debug --targets JuicerFilmRecipeTests --testing ON
+python -B scripts/verify.py prepare --preset linux-release --targets juicer --testing OFF
 ```
 
-At a designated complete checkpoint, run the required preset selections once.
-When using an unfiltered suite, do not precede it with another broad focused pass
-solely to produce a separate receipt. Record focused-domain results from that same
-full-suite JUnit report:
+`development` selects files, tests or targets and may specify the runtime
+prerequisite. A focused result covers only its stated selection:
 
 ```sh
-ctest --preset linux-debug --parallel 4 --output-junit out/validation/linux-debug/ctest.xml
-ctest --preset linux-debug -R 'Quality.Dispatcher|Ctest.Host.Report' --show-only=json-v1 > out/validation/linux-debug/focused-tests.json
-python tests/ctest/report.py --junit out/validation/linux-debug/ctest.xml --inventory out/validation/linux-debug/focused-tests.json > out/validation/linux-debug/focused-summary.json
+python -B scripts/verify.py development --preset linux-debug \
+  --files rust/film-juicer-core/src/route.rs --runtime host --run-id route-edit
 ```
 
-Use the required owning-domain selection and corresponding preset/campaign
-paths. `--show-only` lists tests without executing them. The report command fails
-for an empty selection, missing required case, failure, skip or malformed input;
-its output explicitly identifies evidence extracted from the full run. It does
-not replace checking the full CTest exit status. Keep inventory and report tied
-to the same candidate/configuration; neither an older report nor a result from
-another preset qualifies the current build. Preserve separately required
-reference captures, transition checkpoints and production Release isolation.
-When redirecting the inventory in Windows PowerShell 5, use `Set-Content
--Encoding utf8` so the JSON is UTF-8 rather than PowerShell's default UTF-16.
-
-`host` means execution does not require an NVIDIA driver or device. It still
-requires the CUDA 13.2 toolkit to configure/build and may load toolkit runtime
-libraries. `gpu` means the executable loader or the case itself needs the
-driver/device. `reference` is an additional meaning label for cases checked
-against a defined external authority; each such test still has exactly one
-execution requirement (`host` or `gpu`). CUDA test processes share one CTest
-resource lock.
-
-The Python comparator can also be debugged directly:
+`qualification` builds the selected closure through the native owner, then runs
+the exact selected CTest groups and required logical rows. `product`, `boundary`,
+`tooling` and `corpus` are independent selections; `host`, `gpu` and `all` name
+runtime prerequisites. A `--label` regex narrows the selected group and therefore
+produces focused evidence only. `--build-dir` supplies an already configured
+standalone tooling tree.
 
 ```sh
-python3.13 -m unittest discover -s tests/gamma -p test_compare.py -v
+python -B scripts/verify.py qualification --preset linux-debug \
+  --reason 'Boundary change' --selection boundary --runtime host --run-id boundary-edit
+python -B scripts/verify.py qualification --preset linux-debug \
+  --build-dir out/build/tooling-linux --reason 'Tooling checks' \
+  --selection tooling --runtime host --run-id tooling-check
 ```
 
-Turning testing off preserves the normal plug-in build and performs no
-GoogleTest fetch or Python discovery:
+Every native operation supervises its selected build and test children, compares
+source inputs at entry and exit, and publishes results only after descendants
+have drained. Results preserve the actual selected functions, rows and operations.
+Only GPU selections hold the shared physical-device lease. Bundles are flat and
+can be inspected offline; a result for one preset or focused selection cannot be
+assembled into a complete checkpoint by collection.
+
+`collect-qualification` validates one complete fresh checkpoint for each
+requested preset and rejects focused or mixed partial results:
 
 ```sh
-cmake --preset linux-debug -DBUILD_TESTING=OFF
-cmake --build --preset linux-debug
+python -B scripts/verify.py collect-qualification \
+  --bundles <bundle-directory> --output <new-report.json>
 ```
+
+Collection also accepts optional `--selection`, `--runtime` and `--presets`
+arguments when the complete fresh checkpoint spans multiple requested presets.
+
+Ordinary quality commands use the same native process owner. They do not admit
+installed-tool hashes or reuse older successful runs. Rust naming and boundary
+compiler fixtures remain CTest-owned; selected Rust test binaries are built by
+CMake and run once through cargo-nextest, not rebuilt from inside the quality
+command. Quality logs and diagnostics are kept under
+`out/validation/<preset>/results/quality-<id>/`.
+
+The shared standalone and product tooling registration has 13 Debug tests:
+`Quality.NativeResults`, `Quality.HostResults`, `Quality.GpuResults`,
+`Quality.Dispatcher`, `Quality.ToolingLint`, `Quality.Execution`,
+`Quality.BuildEvidence`, `Quality.BuildRegistration`, `Quality.Verify`,
+`Quality.Checkpoint`, `Ctest.Host.Report`, `Ctest.Host.Repetition` and
+`Ffi.Host.RustBuild`. The three result groups have 120-second limits; the other
+tooling registrations have 600-second limits. Windows CI runs three independent
+shards: `tooling-core`, `tooling-BuildEvidence` and `tooling-Checkpoint`. A shard
+uses its exact label regex and does not claim complete tooling qualification.
+
+Native CI keeps product and boundary work in separate Debug/Release jobs, tooling
+on each OS, and the corpus selection in Linux Debug. These host results do not
+establish the Release testing-OFF artifact contract, GPU acceptance or installed
+Resolve behavior. Keep existing scientific fixtures, domain assertions, C11/C++20/
+Rust ABI checks and ownership/lifetime tests unchanged. See the [contributor
+workflow](../CONTRIBUTING.md#required-checks) for supported local commands.
 
 ## Suite map
 
@@ -716,7 +527,7 @@ combinations. Each native CI lane adds an explicit Release Rust selection
 quality selection.
 
 `Quality.RustNaming` uses the current workspace manifests and Clippy configuration
-in temporary copies under `out/validation/<preset>/quality/rust-naming/`.
+in temporary copies. Its logs are retained with the fresh native quality result.
 The checked-in `quality/fixtures/rust_naming/*.rs` files are product naming-policy
 contracts, not external references. Both crates are checked in the preset's
 profile, including test targets. Expected failures must produce the specific
@@ -732,7 +543,7 @@ groups reuse Cargo artifacts under `out/build/<preset>/cargo/quality-probes/`,
 separately from product artifacts. Cargo's fingerprints and build lock govern
 reuse; standalone runs compile every current probe and check its diagnostics.
 The groups remove temporary source workspaces on completion and keep
-logs under `out/validation/<preset>/quality/rust-boundaries/`. Run
+logs with the fresh native quality result. Run
 `ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or its standalone harness. Cargo is offline and locked; the configured build supplies
 the dependencies. Each negative fixture in `quality/fixtures/rust_boundaries/`
 must fail for its expected compiler code at its own source location, not because
@@ -747,47 +558,30 @@ sessions for disposable source variants. Product builds retain their configured
 incremental policy. Set `CARGO_INCREMENTAL=1` explicitly when comparing probe
 timings or choosing that cache tradeoff; the harnesses honor an existing setting.
 
-At compiler-probe closeout, the owning change selects the runs still needed for
-reusable evidence, active diagnosis or rollback. Ordinary superseded success logs
-follow the seven-day retention window in [failure diagnosis](#diagnosing-a-failure);
-their mere presence does not require indefinite retention. Preserve original
-receipts and required raw closure; prove outer outcome, consumers and drainage
-before disposal. There is no background expiry or separate retention collector.
+At compiler-probe closeout, retain current results needed for review, active
+diagnosis or rollback. Superseded ordinary success logs follow the seven-day
+retention window in [failure diagnosis](#diagnosing-a-failure); their presence
+alone does not require indefinite retention. Keep each result bundle intact while
+it remains a review or reproduction input. There is no background expiry service.
 
-CTest directly owns compiler execution for both probe groups. Ordinary quality
-checks retain formatting, Clippy and native/CUDA analysis; they do not dispatch
-these probes. No publisher, manifest, alias receipt or recursive runtime seal is
-involved. Compiler commands have no elapsed limit and keep separate diagnostics
-for every run. Probe-workspace Cargo configuration must match repository ancestry.
+CTest owns compiler execution for both probe groups through the shared native
+runner. Ordinary quality checks retain formatting, Clippy and native/CUDA analysis;
+they do not dispatch these probes. Each current attempt retains its own diagnostics
+with the native result. Probe-workspace Cargo configuration must match repository
+ancestry.
 
-Relevance labels form one disjoint partition: `product`, `boundary`, `tooling`,
-`corpus`; `host`/`gpu` are independent prerequisites. Both native CI jobs execute
-product and boundary groups for Debug and Release. Tooling executes once per native
-platform in Debug; corpus executes once in Linux Debug. The focused checkpoint
-controls cover exact execution membership, input/configuration invalidation,
-cross-campaign reuse, retained failures and inspected final-artifact binding.
-Successful production OFF scopes retain their inspected archives/module/PDB and
-consumed build configuration under the original production evidence directory.
-Collection verifies those execution-bound copies, source/fixture membership,
-tools, logs and process drainage without requiring the restored ON tree to match
-OFF bytes. A receipt with `scope_status=passed` and `status=incomplete` remains
-eligible after unrelated pending work is repaired; unresolved work and newer
-failed production owners still prevent aggregate completion. Fresh production
-execution remains restricted to a testing-OFF Release tree. Older receipts without
-retained build inputs require fresh OFF execution; never backfill or rewrite them.
-`Quality.Checkpoint` replaces retired publication/sealing protocol controls.
-`Quality.PreparationRenewal` owns the complete native miniature
-repair/checkpoint/collection replay separately. Neither outer suite has an elapsed
-limit. Intentional timeout fault controls retain their explicit deadlines.
-Both are required host/tooling tests in Debug. The
-miniature replay does not establish real product, GPU or OFX qualification.
-`JUICER_TEST_ARTIFACT_DIR` supplied by CTest selects artifact output without
-requesting whole-fixture retention. Checkpoint fixtures use the native preset's
-`checkpoint-controls`; BuildEvidence routes its fixtures below the artifact root.
-Successful, fully drained synthetic workspaces clean up after the outer test
-consumes their receipts. Set `JUICER_TEST_RETAIN_FIXTURES=1` for deliberate diagnostic
-capture. Outer failures (including subtests), interrupted/undrained work and
-unproved owners retain their diagnostics and configured paths.
+Relevance labels partition `product`, `boundary`, `tooling` and `corpus`;
+`host`/`gpu` are independent prerequisites. CI executes product and boundary
+groups in Debug and Release, tooling once per native platform in Debug, and
+corpus once in Linux Debug. A focused run cannot stand in for an unselected group
+or be combined with earlier results to claim a complete checkpoint. The verifier
+collector validates fresh complete results per preset.
+
+`JUICER_TEST_ARTIFACT_DIR` selects synthetic test output without requesting whole
+fixture retention. Successful, fully drained workspaces clean up after assertions;
+failures, interruptions, blocked owners and explicit retention preserve the
+diagnostics and configured paths. Ordinary fixture cleanup does not sweep prior
+runs or scientific capture inputs.
 
 Asset-owner, spectral/exposure-product, bootstrap and illuminant tests create
 isolated input workspaces under their configured scratch roots. Host preparation
@@ -942,19 +736,22 @@ underlying command and paths are needed. GPU diagnostics retain case, route,
 fixture and CUDA failure detail. A missing driver/device is a failure for a
 selected `gpu` test, not a skip.
 
-The real parallel analyzer control retains its complete failure directory under
-`out/validation/<preset>/quality/parallel-controls/` and prints its location.
+The real parallel analyzer control retains its complete failure directory in its
+fresh native quality result bundle under
+`out/validation/<preset>/results/quality-<id>/` and prints its location.
 Standalone controls use the native Debug preset. Successful controls clean their
 scratch directory; CI uploads retained command logs and raw process diagnostics.
 
-At closeout retain maintained scientific fixtures/provenance, active work and
-required reproductions, real unresolved failures, and a small named set of reusable
-executions with complete original receipt/log/process/payload closure. Historical
-acceptance needs exact source identity or a reconstructible patch, final case
-membership/outcomes, review/decision and limits. An old link or receipt alone does
-not retain every intermediate attempt. Retire obsolete scopes from reuse in a new
-disposition; never rewrite original hashes or replace collector-required raw proof
-with a summary.
+Current native result bundles are flat outcomes for one fresh operation; a named
+completed bundle does not admit or supply a pass to a later operation or
+qualification. At closeout retain maintained scientific fixtures/provenance,
+active work and required reproductions, and real unresolved failures. Frozen
+historical acceptance obligations still require exact source identity or a
+reconstructible patch, final case membership/outcomes, review/decision and limits,
+with their required original receipt/log/process/payload closure. An old link or
+receipt alone does not retain every intermediate attempt. Retire obsolete
+historical scopes from reuse in a new disposition; never rewrite original hashes
+or replace collector-required raw proof with a summary.
 
 Ordinary raw success and redundant resolved-failure diagnostics without a continuing
 consumer have a seven-day post-acceptance/resolution rollback window. Superseded
@@ -963,15 +760,13 @@ actual processes, descendants, leases, registered worktrees, path boundaries and
 consumers. Expected-negative child receipts follow their outer test's outcome.
 Preserve scientific exceptions and mandatory reproductions according to their
 obligations. Review ordinary closed-slice narrative above 10 MiB, with scientific
-data and required reusable closure separately justified; this is not a deletion
+data and required frozen historical evidence closure separately justified; this is not a deletion
 quota. No automatic cleanup service is implied.
 
-CTest can write JUnit output without a project-specific report layer:
-
-```sh
-ctest --preset linux-debug -L host \
-  --output-junit out/validation/linux-debug/host-junit.xml
-```
+Native qualification runs CTest through the shared process owner and keeps its
+JUnit output with that operation's flat result bundle. Use the qualification
+command above when you need a CTest report tied to the selected build and test
+execution.
 
 ## Adding a regression case
 
@@ -992,7 +787,7 @@ the assertion at a product boundary.
 For gamma comparator behavior, add a `unittest.TestCase` method to
 `test_compare.py`. For a new integration executable or destructive lifecycle
 group, declare one explicit CTest process in `tests/CMakeLists.txt`, give it a
-`TIMEOUT 0` and its actual `host`/`gpu` requirement, and keep destructive
+finite `TIMEOUT` and its actual `host`/`gpu` requirement, and keep destructive
 transitions isolated.
 
 Fixtures must state whether they express a product contract, a Film-Juicer
@@ -1754,3 +1549,17 @@ metadata. Both native Release testing-OFF probes call the real
 full-value/metadata/failure/diagnostic rows alongside retained probes.
 Written-byte capacities 0/1/short/M/M+1 include R1. Ordinary tests never regenerate
 fixtures; conversion safety expectations do not execute undefined native casts.
+
+## Native result boundaries
+
+The shared verifier uses the existing native preset trees and publishes a fresh
+flat result directory for each invocation. Its offline collector checks complete
+checkpoint membership; it does not combine focused results into a pass. GPU runs
+hold the shared device lease only while GPU work executes. Ordinary host workflow
+results do not establish GPU or installed-Resolve acceptance.
+
+This workflow guidance leaves scientific fixtures, external-reference provenance,
+ABI and lifetime assertions, and the established Release testing-OFF contract
+unchanged. The host CI cutover does not perform OFF probes, a full platform matrix,
+or establish shipping-feature isolation. It does not change the meaning of frozen
+R4/I8 evidence or authorize later phases.

@@ -115,7 +115,7 @@ namespace DiffusionFrameTest {
         return {{"family", r.family}, {"weights", bits(std::array<double, 3>{r.group_weights[0], r.group_weights[1], r.group_weights[2]})}, {"centers", bits(std::array<double, 3>{r.group_lambda_um[0], r.group_lambda_um[1], r.group_lambda_um[2]})}, {"warmth", std::bit_cast<std::uint64_t>(r.warmth)}, {"scale", std::bit_cast<std::uint64_t>(r.spatial_scale)}, {"scatter", std::bit_cast<std::uint64_t>(r.scatter_fraction)}, {"active", r.active != 0}, {"resolved_hash", r.resolved_hash}, {"domain", r.domain}, {"hash", r.hash}};
     }
 
-    Json products(const std::filesystem::path& resources, const Json& specs) {
+    Json products(const std::filesystem::path& resources, const Json& specs, const Json& expectedRows) {
         const auto started = std::chrono::steady_clock::now();
         auto progress = [&](const char* stage, const std::string& name) {
             std::fprintf(stderr, "DiffusionFrame stage=%s case=%s seconds=%.3f\n", stage, name.c_str(), std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
@@ -125,8 +125,21 @@ namespace DiffusionFrameTest {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
+        std::size_t expectedIndex = 0;
+        std::vector<std::string> frame_ids, sample_ids;
+        for (std::size_t row_index = 0; row_index < specs.size(); ++row_index) {
+            const auto& spec = specs.at(row_index);
+            const auto name = spec.at("name").get<std::string>();
+            frame_ids.emplace_back(name + "/product-check");
+            for (const auto& sample : expectedRows.at(row_index).at("samples"))
+                sample_ids.emplace_back(sample.at("input").at("name").get<std::string>() + "/product-check");
+        }
+        JuicerTests::Cohort frame_products("diffusion_frame.product_frame", frame_ids);
+        JuicerTests::Cohort sample_products("diffusion_frame.product_stage", sample_ids);
         for (const auto& spec : specs) {
             const auto name = spec.at("name").get<std::string>();
+            const auto& expectedRow = expectedRows.at(expectedIndex++);
+            auto frameEvent = frame_products.case_event(name + "/product-check");
             progress("recipe", name);
             const auto route = spec.at("route").get<unsigned>();
             ParamSnapshot params;
@@ -174,7 +187,16 @@ namespace DiffusionFrameTest {
                 sample["width"] = spec.at("extent")[2];
                 sample["height"] = spec.at("extent")[3];
                 progress(stage, name);
+                const auto sampleName = sample.at("name").get<std::string>();
+                auto sampleEvent = sample_products.case_event(sampleName + "/product-check");
                 auto sampleRow = sample_product(sample);
+                const auto& expectedSamples = expectedRow.at("samples");
+                const auto expectedSample = std::find_if(expectedSamples.begin(), expectedSamples.end(), [&](const Json& candidate) {
+                    return candidate.at("input").at("name") == sampleName;
+                });
+                require(expectedSample != expectedSamples.end(), "diffusion product sample exists in captured fixture");
+                require_equal(sampleRow, *expectedSample, "completed diffusion product sample matches captured fixture");
+                sampleEvent.passed();
                 if (!row.at("frame").is_null()) {
                     const auto rawStage = row.at("frame").at(stage);
                     require(sampleRow.at("success").get<bool>() &&
@@ -187,10 +209,13 @@ namespace DiffusionFrameTest {
                 }
                 row["samples"].push_back(std::move(sampleRow));
             }
-            rows.push_back(row);
+            require_equal(row, expectedRow, "completed diffusion product frame matches captured fixture");
+            rows.push_back(std::move(row));
+            frameEvent.passed();
             progress("case-complete", name);
         }
         progress("owner-release", "");
+        require(expectedIndex == expectedRows.size(), "complete diffusion product fixture membership");
         return rows;
     }
 
@@ -303,6 +328,9 @@ namespace DiffusionFrameTest {
         return {{"category", 0}, {"reason", 0}, {"stage", 0}, {"field", 0}, {"diagnostic", ""}};
     }
     void sample_values(const Json& row, const Json& checked) {
+        const auto caseId = row.at("input").at("name").get<std::string>();
+        JuicerTests::CaseEvent cppEvent("cpp", caseId);
+        JuicerTests::CaseEvent c11Event("c11", caseId);
         const auto input = raw_sample(row.at("input"));
         const bool validSample = row.at("success");
         const auto expected = validSample ? expected_sample(row.at("sample")) : FjDiffusionSample{};
@@ -319,6 +347,8 @@ namespace DiffusionFrameTest {
             Spektrafilm::DiffusionPsfSampleDescriptor native;
             JuicerCuda::Failure failure;
             require(!JuicerDiffusion::prepare_sample(resolved(row.at("input")), input.pixel_size_um, input.width, input.height, native, failure) && project(native) == row.at("sample"), "ordinary native sample failure retains default family while raw failure clears");
+            c11Event.passed();
+            cppEvent.passed();
             return;
         }
         const auto sample = expected_sample(row.at("sample"));
@@ -331,6 +361,7 @@ namespace DiffusionFrameTest {
             metadata(prepare(&sample, &out, &failure, &error), failure, error, text, checked.at("components"));
             require(project(out) == row.at("components"), "all 36 diffusion component words including signed zeros/failure clearing");
         }
+        c11Event.passed();
         Spektrafilm::DiffusionPsfSampleDescriptor native;
         JuicerCuda::Failure failure;
         const bool prepared = JuicerDiffusion::prepare_sample(resolved(row.at("input")), input.pixel_size_um, input.width, input.height, native, failure);
@@ -338,10 +369,14 @@ namespace DiffusionFrameTest {
         Spektrafilm::DiffusionPsfComponents expanded;
         const bool expandedOk = JuicerDiffusion::prepare_components(native, expanded, failure);
         require(expandedOk == row.at("expanded").get<bool>() && project(expanded) == row.at("components") && failure.diagnostic == row.at("component_diagnostic").get<std::string>(), "native component adapter full values/failure");
+        cppEvent.passed();
     }
     // Keep frozen whole-producer values separate from independently authored boundary metadata.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void frame_values(const Json& row, const Json& checked) {
+        const auto caseId = row.at("input").at("name").get<std::string>();
+        JuicerTests::CaseEvent cppEvent("cpp", caseId);
+        JuicerTests::CaseEvent c11Event("c11", caseId);
         const auto input = raw_frame(row.at("input"));
         const auto expected = expected_frame(row.at("frame"));
         for (auto prepare : {fj_legacy_diffusion_frame_prepare, fj_test_diffusion_frame_prepare, fj_test_diffusion_frame_c_prepare}) {
@@ -353,6 +388,7 @@ namespace DiffusionFrameTest {
             metadata(prepare(&input, &out, &failure, &error), failure, error, text, checked);
             require(project(out) == project(expected), "complete diffusion frame route/domain/flags/stages/identities and clearing");
         }
+        c11Event.passed();
         const auto& authored = row.at("input");
         SpatialOptics optics;
         optics.cameraDiffusion = component(authored.at("camera"));
@@ -361,6 +397,7 @@ namespace DiffusionFrameTest {
         JuicerCuda::Failure failure;
         const bool prepared = JuicerDiffusion::prepare_frame(optics, static_cast<Spektrafilm::ScanRoute>(input.route), input.pixel_size_um, {input.full_frame.x, input.full_frame.y, input.full_frame.width, input.full_frame.height}, native, failure);
         require(prepared == row.at("success").get<bool>() && project(native) == row.at("frame") && failure.diagnostic == row.at("diagnostic").get<std::string>(), "native frame adapter exact projection/failure/absence");
+        cppEvent.passed();
     }
     void values(const Json& captured, const Json& checked) {
         require(captured.at("samples").size() == checked.at("samples").size() && captured.at("frames").size() == checked.at("frames").size(), "exact diffusion characterization membership");
@@ -378,12 +415,32 @@ namespace DiffusionFrameTest {
     // Raw cases pair original producer inputs with the separate closed-envelope expectations.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void boundary(const Json& captured, const Json& checked) {
+        JuicerTests::CaseEvent caseEvent("cpp", "diffusion-frame/raw-boundary");
         auto input = raw_sample(captured.at("samples")[0].at("input"));
         auto sample = expected_sample(captured.at("samples")[0].at("sample"));
         auto frame = raw_frame(captured.at("frames")[3].at("input"));
         frame.route = 1;
+        std::vector<std::string> raw_ids, capacity_ids, projection_fault_ids;
+        std::vector<std::string> raw_row_ids;
+        for (const auto& row : checked.at("raw"))
+            raw_row_ids.emplace_back("operation-" + std::to_string(row.at("operation").get<unsigned>()) + "/" + row.value("mutation", std::string("default")));
+        for (unsigned operation = 1; operation <= 3; ++operation) {
+            for (unsigned mode = 0; mode < 7; ++mode)
+                raw_ids.emplace_back("operation-" + std::to_string(operation) + "/mode-" + std::to_string(mode));
+            for (const auto capacity : {0u, 1u, 7u, 256u})
+                capacity_ids.emplace_back("operation-" + std::to_string(operation) + "/capacity-" + std::to_string(capacity));
+            const unsigned last = operation == 1 ? 5u : operation == 2 ? 2u
+                                                                       : 6u;
+            for (unsigned fault = 2; fault <= last; ++fault)
+                projection_fault_ids.emplace_back("operation-" + std::to_string(operation) + "/fault-" + std::to_string(fault));
+        }
+        JuicerTests::Cohort raw_defects("diffusion_frame.raw_defect", raw_ids);
+        JuicerTests::Cohort raw_rows("diffusion_frame.raw_row", raw_row_ids);
+        JuicerTests::Cohort diagnostic_capacities("diffusion_frame.diagnostic_capacity", capacity_ids);
+        JuicerTests::Cohort projection_faults("diffusion_frame.native_projection_fault", projection_fault_ids);
         for (const auto& row : checked.at("raw")) {
             const unsigned op = row.at("operation");
+            auto row_event = raw_rows.case_event("operation-" + std::to_string(op) + "/" + row.value("mutation", std::string("default")));
             FjDiffusionFailure failure{99, 99, 99};
             char text[256];
             FjErrorBuffer error{text, sizeof(text), 0};
@@ -412,11 +469,13 @@ namespace DiffusionFrameTest {
                 metadata(fj_test_diffusion_frame_prepare(&invalid, &out, &failure, &error), failure, error, text, row);
                 require(project(out) == project(FjDiffusionFrameSet{}), "safe stage sample failure collapse/clearing");
             }
+            row_event.passed();
         }
         auto raw = [&]<class I, class O>(auto prepare, const I& valid, O empty, unsigned operation) {
             O out{};
             FjDiffusionFailure failure{};
             for (unsigned mode = 0; mode < 7; ++mode) {
+                auto row_event = raw_defects.case_event("operation-" + std::to_string(operation) + "/mode-" + std::to_string(mode));
                 std::memset(&out, 0x55, sizeof(out));
                 failure = {99, 99, 99};
                 char text[256] = "seed";
@@ -433,6 +492,7 @@ namespace DiffusionFrameTest {
                 const auto s = prepare(in, destination, details, mode == 6 ? nullptr : &error);
                 if (mode == 4 || mode == 6) {
                     status(s);
+                    row_event.passed();
                     continue;
                 }
                 status(s, 2);
@@ -440,6 +500,7 @@ namespace DiffusionFrameTest {
                     require(project(out) == project(empty), "independent raw output clearing");
                 if (details)
                     require(failure.reason == 1 && failure.stage == 0 && failure.field == 0, "independent raw failure delivery");
+                row_event.passed();
             }
             status(fj_test_diffusion_frame_fault(operation, 1));
             status(fj_test_diffusion_frame_fault(2, 6), 2);
@@ -466,6 +527,7 @@ namespace DiffusionFrameTest {
             status(fj_test_diffusion_frame_fault(operation, 0));
             const std::array messages{"invalid diffusion sample arguments", "invalid diffusion components arguments", "invalid diffusion frame arguments"};
             for (const std::size_t capacity : {0u, 1u, 7u, 256u}) {
+                auto row_event = diagnostic_capacities.case_event("operation-" + std::to_string(operation) + "/capacity-" + std::to_string(capacity));
                 std::array<char, 257> text{};
                 text.fill('Q');
                 FjErrorBuffer error{capacity ? text.data() : reinterpret_cast<char*>(UINTPTR_MAX), capacity, 99};
@@ -476,6 +538,7 @@ namespace DiffusionFrameTest {
                 require(error.length == count && failure.reason == 1 && failure.stage == 0 && failure.field == 0 && project(out) == project(empty), "bounded diagnostics preserve status, typed failure and clearing");
                 if (capacity)
                     require(text[count] == '\0' && std::string_view(text.data(), count) == std::string_view(messages[operation - 1], count) && text[capacity] == 'Q', "diagnostic truncation, terminator and backing bound");
+                row_event.passed();
             }
             alignas(O) std::array<unsigned char, sizeof(O) + 1> badOutput{};
             alignas(FjDiffusionFailure) std::array<unsigned char, sizeof(FjDiffusionFailure) + 1> badFailure{};
@@ -511,6 +574,7 @@ namespace DiffusionFrameTest {
             for (unsigned fault = 2; fault <= (op == 3 ? 6u : op == 1 ? 5u
                                                                       : 2u);
                  ++fault) {
+                auto row_event = projection_faults.case_event("operation-" + std::to_string(op) + "/fault-" + std::to_string(fault));
                 status(fj_test_diffusion_frame_fault(op, fault));
                 JuicerCuda::Failure failure;
                 bool success = false;
@@ -545,7 +609,9 @@ namespace DiffusionFrameTest {
                                                                                                                                                                                                                   : "frame") +
                                                                                                                                                             " projection invalid",
                         "native closed envelope/projection rejection");
+                row_event.passed();
             }
         }
+        caseEvent.passed();
     }
 } // namespace DiffusionFrameTest

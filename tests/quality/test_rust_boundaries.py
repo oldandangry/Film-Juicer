@@ -205,6 +205,7 @@ class RustBoundaryTests(unittest.TestCase):
         feature_forms: tuple[bool, ...] = (False, True),
     ) -> None:
         """Check one family while keeping each batched fixture's source identity."""
+        expected_cases = set(self.subtest_cases)
         for accepted in (True, False):
             candidates = tuple(fixture for fixture, expected in cases if (expected is None) == accepted)
             if accepted:
@@ -233,7 +234,12 @@ class RustBoundaryTests(unittest.TestCase):
                     for test_support, (status, diagnostics) in zip(feature_forms, results, strict=True):
                         for fixture in selected:
                             expected = next(value for name, value in cases if name == fixture)
-                            with self.subTest(fixture=fixture, release=release, test_support=test_support):
+                            case_id = (
+                                f"{fixture}|{'release' if release else 'debug'}|"
+                                f"{'test-support' if test_support else 'default'}"
+                            )
+                            self.assertIn(case_id, expected_cases)
+                            with self.subTest(case=case_id):
                                 if expected is None:
                                     self.assert_accepted(status, diagnostics, tuple(identities.values()))
                                 else:
@@ -250,473 +256,607 @@ class RustBoundaryTests(unittest.TestCase):
         quality.check_dependency_contract(self.workspace, json.loads(result.stdout))
 
     def test_valid_profile_consumers_compile(self) -> None:
+        self.subtest_cases = tuple(
+            f"accepted|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for release in self.profiles for support in (False, True)
+        )
         self.attach("film-juicer-plugin/src/lib.rs", "accepted")
         for release in self.profiles:
             for support, (status, diagnostics) in zip((False, True), self.check_features("film-juicer-plugin", release), strict=True):
-                with self.subTest(release=release, test_support=support):
+                case_id = f"accepted|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+                with self.subTest(case=case_id):
                     self.assertEqual(status, 0, diagnostics)
 
     def test_profile_views_cannot_outlive_their_owners(self) -> None:
+        self.subtest_cases = tuple(
+            f"borrowed-views|{'release' if release else 'debug'}" for release in self.profiles
+        )
         self.attach("film-juicer-plugin/src/lib.rs", "borrowed_views")
         for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
-            self.assert_rejected(status, diagnostics, {
-                "E0515": ("film_owner.view()", "print_owner.view()", "spectra_owner.view()", "mallett_owner.samples()", "cmf_owner.rows()", "csv_owner.rows()", "noise_owner.view()"),
-                "E0505": ("drop(film_owner)", "drop(print_owner)", "drop(spectra_owner)", "drop(mallett_owner)", "drop(cmf_owner)", "drop(csv_owner)", "drop(noise_owner)"),
-            })
+            case_id = f"borrowed-views|{'release' if release else 'debug'}"
+            with self.subTest(case=case_id):
+                self.assert_rejected(status, diagnostics, {
+                    "E0515": ("film_owner.view()", "print_owner.view()", "spectra_owner.view()", "mallett_owner.samples()", "cmf_owner.rows()", "csv_owner.rows()", "noise_owner.view()"),
+                    "E0505": ("drop(film_owner)", "drop(print_owner)", "drop(spectra_owner)", "drop(mallett_owner)", "drop(cmf_owner)", "drop(csv_owner)", "drop(noise_owner)"),
+                })
 
     def test_film_input_color_is_complete_and_immutable(self) -> None:
+        cases = (('input_color_complete', None),
+         ('input_color_default', {'E0599': ('InputColor::default()', 'Recipe::default()')}),
+         ('input_color_private', {'E0616': ('color.rgb_to_xyz', 'recipe.color')}),
+         ('input_color_mutation', {'E0594': ('color.rgb_to_xyz()[0] = 1.0',)}),
+         ('input_color_construction', {'E0624': ('InputColor::from_matrices',)}),
+         ('input_color_literal', {'E0451': ('InputColor { ..color }',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('input_color_complete', None),
-                ('input_color_default', {'E0599': ('InputColor::default()', 'Recipe::default()')}),
-                ('input_color_private', {'E0616': ('color.rgb_to_xyz', 'recipe.color')}),
-                ('input_color_mutation', {'E0594': ('color.rgb_to_xyz()[0] = 1.0',)}),
-                ('input_color_construction', {'E0624': ('InputColor::from_matrices',)}),
-                ('input_color_literal', {'E0451': ('InputColor { ..color }',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_output_color_is_complete_and_immutable(self) -> None:
+        cases = (('output_color_complete', None),
+         ('output_color_private', {'E0616': ('color.hash',)}),
+         ('output_color_default', {'E0599': ('OutputColor::default()',)}),
+         ('output_color_construction', {'E0451': ('OutputColor { ..*output_color',)}),
+         ('output_color_mutation', {'E0594': ('color.rgb_to_xyz()[0] = 1.0',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('output_color_complete', None),
-                ('output_color_private', {'E0616': ('color.hash',)}),
-                ('output_color_default', {'E0599': ('OutputColor::default()',)}),
-                ('output_color_construction', {'E0451': ('OutputColor { ..*output_color',)}),
-                ('output_color_mutation', {'E0594': ('color.rgb_to_xyz()[0] = 1.0',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_film_development_is_complete_private_and_borrowed(self) -> None:
+        cases = (('film_complete', None),
+         ('film_private', {'E0616': ('development.hash', 'development.profile')}),
+         ('film_default', {'E0599': ('Development::default()',)}),
+         ('film_construction', {'E0451': ('Development { ..development }',)}),
+         ('film_readonly',
+          {'E0594': ('development.gamma_rgb()[0] = 1.0', 'development.normalized_curves_cmy()[0][0] = 0.0')}),
+         ('film_borrowed', {'E0515': ('development.log_exposure()',), 'E0505': ('drop(development)',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('film_complete', None),
-                ('film_private', {'E0616': ('development.hash', 'development.profile')}),
-                ('film_default', {'E0599': ('Development::default()',)}),
-                ('film_construction', {'E0451': ('Development { ..development }',)}),
-                ('film_readonly',
-                 {'E0594': ('development.gamma_rgb()[0] = 1.0', 'development.normalized_curves_cmy()[0][0] = 0.0')}),
-                ('film_borrowed', {'E0515': ('development.log_exposure()',), 'E0505': ('drop(development)',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_output_gamut_completed_api_is_private_and_borrowed(self) -> None:
+        cases = (('output_gamut_private', {'E0616': ('transform.hash', 'boundary.cmax[0]')}),
+         ('output_gamut_default', {'E0599': ('OutputTransform::default()', 'OutputBoundary::default()')}),
+         ('output_gamut_construction',
+          {'E0451': ('OutputTransform { ..transform }', 'OutputBoundary { ..boundary }')}),
+         ('output_gamut_borrowed',
+          {'E0515': ('boundary.cmax()',), 'E0505': ('drop(boundary)', 'drop(transform)')}))
+        feature_forms = (False,)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('output_gamut_private', {'E0616': ('transform.hash', 'boundary.cmax[0]')}),
-                ('output_gamut_default', {'E0599': ('OutputTransform::default()', 'OutputBoundary::default()')}),
-                ('output_gamut_construction',
-                 {'E0451': ('OutputTransform { ..transform }', 'OutputBoundary { ..boundary }')}),
-                ('output_gamut_borrowed',
-                 {'E0515': ('boundary.cmax()',), 'E0505': ('drop(boundary)', 'drop(transform)')}),
-            ),
+            cases=cases,
             feature_forms=(False,),
         )
 
     def test_print_illuminant_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('print_illuminant_complete', None),
+         ('print_illuminant_construction', {'E0451': ('print::Illuminant { ..illuminant }',)}),
+         ('print_illuminant_default', {'E0599': ('print::Illuminant::default()',)}),
+         ('print_illuminant_private', {'E0616': ('illuminant.samples',)}),
+         ('print_illuminant_readonly', {'E0594': ('illuminant.samples()[0] = 0.0',)}),
+         ('print_illuminant_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('print_illuminant_complete', None),
-                ('print_illuminant_construction', {'E0451': ('print::Illuminant { ..illuminant }',)}),
-                ('print_illuminant_default', {'E0599': ('print::Illuminant::default()',)}),
-                ('print_illuminant_private', {'E0616': ('illuminant.samples',)}),
-                ('print_illuminant_readonly', {'E0594': ('illuminant.samples()[0] = 0.0',)}),
-                ('print_illuminant_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_print_preflash_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('print_preflash_complete', None),
+         ('print_preflash_construction', {'E0451': ('print::PreflashRaw { ..raw }',)}),
+         ('print_preflash_default', {'E0599': ('print::PreflashRaw::default()',)}),
+         ('print_preflash_private', {'E0616': ('raw.cmy',)}),
+         ('print_preflash_readonly', {'E0594': ('raw.cmy()[0] = 0.0',)}),
+         ('print_preflash_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('print_preflash_complete', None),
-                ('print_preflash_construction', {'E0451': ('print::PreflashRaw { ..raw }',)}),
-                ('print_preflash_default', {'E0599': ('print::PreflashRaw::default()',)}),
-                ('print_preflash_private', {'E0616': ('raw.cmy',)}),
-                ('print_preflash_readonly', {'E0594': ('raw.cmy()[0] = 0.0',)}),
-                ('print_preflash_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_film_reference_is_complete_private_readonly_and_borrowed(self) -> None:
+        cases = (('film_reference_complete', None),
+         ('film_reference_construction', {'E0451': ('reference::Reference { ..value }',)}),
+         ('film_reference_default', {'E0599': ('reference::Reference::default()',)}),
+         ('film_reference_private', {'E0616': ('value.baseline_raw_rgb', 'value.hash')}),
+         ('film_reference_readonly', {'E0594': ('value.baseline_density_cmy()[0] = 0.0',)}),
+         ('film_reference_owned', None),
+         ('film_reference_borrow',
+          {'E0515': ('basis_rgb: &basis', 'illuminant: &light', 'sensitivity_rgb: &sensitivity')}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('film_reference_complete', None),
-                ('film_reference_construction', {'E0451': ('reference::Reference { ..value }',)}),
-                ('film_reference_default', {'E0599': ('reference::Reference::default()',)}),
-                ('film_reference_private', {'E0616': ('value.baseline_raw_rgb', 'value.hash')}),
-                ('film_reference_readonly', {'E0594': ('value.baseline_density_cmy()[0] = 0.0',)}),
-                ('film_reference_owned', None),
-                ('film_reference_borrow',
-                 {'E0515': ('basis_rgb: &basis', 'illuminant: &light', 'sensitivity_rgb: &sensitivity')}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_print_balance_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('print_balance_complete', None),
+         ('print_balance_construction', {'E0451': ('print::Balance { ..balance }',)}),
+         ('print_balance_default', {'E0599': ('print::Balance::default()',)}),
+         ('print_balance_private', {'E0616': ('balance.baseline_raw_rgb',)}),
+         ('print_balance_readonly', {'E0594': ('balance.baseline_raw_rgb()[0] = 0.0',)}),
+         ('print_balance_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('print_balance_complete', None),
-                ('print_balance_construction', {'E0451': ('print::Balance { ..balance }',)}),
-                ('print_balance_default', {'E0599': ('print::Balance::default()',)}),
-                ('print_balance_private', {'E0616': ('balance.baseline_raw_rgb',)}),
-                ('print_balance_readonly', {'E0594': ('balance.baseline_raw_rgb()[0] = 0.0',)}),
-                ('print_balance_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_frame_geometry_is_complete_private_and_readonly(self) -> None:
+        cases = (('frame_complete', None),
+         ('frame_construction', {'E0451': ('Geometry { ..geometry }',)}),
+         ('frame_private', {'E0616': ('geometry.domain', 'geometry.pixel_size_um')}),
+         ('frame_default', {'E0599': ('Geometry::default()',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('frame_complete', None),
-                ('frame_construction', {'E0451': ('Geometry { ..geometry }',)}),
-                ('frame_private', {'E0616': ('geometry.domain', 'geometry.pixel_size_um')}),
-                ('frame_default', {'E0599': ('Geometry::default()',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_dir_boundary_is_complete_private_readonly_and_borrowed(self) -> None:
+        cases = (('dir_boundary_complete', None),
+         ('dir_boundary_construction',
+          {'E0451': ('Input { ..input }', 'Boundary { ..boundary }', 'Axis { ..axis }', 'Error { ..error }')}),
+         ('dir_boundary_key', {'E0423': ('Key(0)',)}),
+         ('dir_boundary_private',
+          {'E0616': ('input.coefficients', 'boundary.weights', 'axis.terminal', 'error.reason', 'key.0')}),
+         ('dir_boundary_default',
+          {'E0599': ('Input::default()',
+                     'Boundary::default()',
+                     'Axis::default()',
+                     'Error::default()',
+                     'Key::default()')}),
+         ('dir_boundary_readonly', {'E0594': ('weights()[0] = 0.0', 'terminal()[0] = 0.0')}),
+         ('dir_boundary_borrow', {'E0515': ('boundary.weights()',)}),
+         ('dir_boundary_drop', {'E0505': ('drop(boundary)',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('dir_boundary_complete', None),
-                ('dir_boundary_construction',
-                 {'E0451': ('Input { ..input }', 'Boundary { ..boundary }', 'Axis { ..axis }',
-                            'Error { ..error }')}),
-                ('dir_boundary_key', {'E0423': ('Key(0)',)}),
-                ('dir_boundary_private',
-                 {'E0616': ('input.coefficients', 'boundary.weights', 'axis.terminal', 'error.reason', 'key.0')}),
-                ('dir_boundary_default',
-                 {'E0599': ('Input::default()', 'Boundary::default()', 'Axis::default()', 'Error::default()',
-                            'Key::default()')}),
-                ('dir_boundary_readonly', {'E0594': ('weights()[0] = 0.0', 'terminal()[0] = 0.0')}),
-                ('dir_boundary_borrow', {'E0515': ('boundary.weights()',)}),
-                ('dir_boundary_drop', {'E0505': ('drop(boundary)',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_effects_frame_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('effects_frame_complete', None),
+         ('effects_frame_private', {'E0616': ('frame.hash', 'frame.origins')}),
+         ('effects_frame_construction', {'E0451': ('Frame { ..frame }',)}),
+         ('effects_frame_default', {'E0599': ('Frame::default()',)}),
+         ('effects_frame_mutation', {'E0594': ('weave()[0] = 0.0', 'origins()[0].cell_x = 0')}),
+         ('effects_frame_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('effects_frame_complete', None),
-                ('effects_frame_private', {'E0616': ('frame.hash', 'frame.origins')}),
-                ('effects_frame_construction', {'E0451': ('Frame { ..frame }',)}),
-                ('effects_frame_default', {'E0599': ('Frame::default()',)}),
-                ('effects_frame_mutation', {'E0594': ('weave()[0] = 0.0', 'origins()[0].cell_x = 0')}),
-                ('effects_frame_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_grain_frame_is_complete_private_readonly_and_owns_no_curve_borrow(self) -> None:
+        cases = (('grain_frame_complete', None),
+         ('grain_frame_private', {'E0616': ('plan.frame0', 'gaussian.sigma_px', 'error.field')}),
+         ('grain_frame_construction',
+          {'E0451': ('Plan { ..plan }', 'Gaussian { ..gaussian }', 'Error { ..error }')}),
+         ('grain_frame_default', {'E0599': ('Plan::default()', 'Gaussian::default()', 'Error::default()')}),
+         ('grain_frame_mutation', {'E0594': ('density_max_cmy()[0] = 0.0', 'density_min_layers()[0][0] = 0.0')}),
+         ('grain_frame_borrow', {'E0515': ('plan.density_max_cmy()',), 'E0505': ('drop(plan)',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('grain_frame_complete', None),
-                ('grain_frame_private', {'E0616': ('plan.frame0', 'gaussian.sigma_px', 'error.field')}),
-                ('grain_frame_construction',
-                 {'E0451': ('Plan { ..plan }', 'Gaussian { ..gaussian }', 'Error { ..error }')}),
-                ('grain_frame_default', {'E0599': ('Plan::default()', 'Gaussian::default()', 'Error::default()')}),
-                ('grain_frame_mutation',
-                 {'E0594': ('density_max_cmy()[0] = 0.0', 'density_min_layers()[0][0] = 0.0')}),
-                ('grain_frame_borrow', {'E0515': ('plan.density_max_cmy()',), 'E0505': ('drop(plan)',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_dir_frame_is_complete_private_readonly_and_failure_trace_cannot_execute(self) -> None:
+        cases = (('dir_frame_complete', None),
+         ('dir_frame_construction',
+          {'E0451': ('Plan { ..plan }', 'Component { ..component }', 'FailureTrace { ..trace }')}),
+         ('dir_frame_private', {'E0616': ('plan.progress', 'component.sigma_px', 'error.trace')}),
+         ('dir_frame_default',
+          {'E0599': ('Plan::default()', 'Component::default()', 'FailureTrace::default()', 'Error::default()')}),
+         ('dir_frame_readonly', {'E0594': ('coefficients()[0] = 0.0',)}),
+         ('dir_frame_failure_plan', {'E0308': ('consume(error.trace().unwrap())',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('dir_frame_complete', None),
-                ('dir_frame_construction',
-                 {'E0451': ('Plan { ..plan }', 'Component { ..component }', 'FailureTrace { ..trace }')}),
-                ('dir_frame_private', {'E0616': ('plan.progress', 'component.sigma_px', 'error.trace')}),
-                ('dir_frame_default',
-                 {'E0599': ('Plan::default()', 'Component::default()', 'FailureTrace::default()',
-                            'Error::default()')}),
-                ('dir_frame_readonly', {'E0594': ('coefficients()[0] = 0.0',)}),
-                ('dir_frame_failure_plan', {'E0308': ('consume(error.trace().unwrap())',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_diffusion_frame_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('diffusion_frame_complete', None),
+         ('diffusion_frame_construction',
+          {'E0451': ('Sample { ..sample }', 'Components { ..components }', 'FrameSet { ..frame }')}),
+         ('diffusion_frame_private',
+          {'E0616': ('sample.fields', 'components.lambda_px', 'frame.hash', 'frame.camera')}),
+         ('diffusion_frame_readonly', {'E0594': ('blue_weights()[8] = 0.0',)}),
+         ('diffusion_frame_default',
+          {'E0599': ('Sample::default()', 'Components::default()', 'FrameSet::default()', 'Stage::default()')}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('diffusion_frame_complete', None),
-                ('diffusion_frame_construction',
-                 {'E0451': ('Sample { ..sample }', 'Components { ..components }', 'FrameSet { ..frame }')}),
-                ('diffusion_frame_private',
-                 {'E0616': ('sample.fields', 'components.lambda_px', 'frame.hash', 'frame.camera')}),
-                ('diffusion_frame_readonly', {'E0594': ('blue_weights()[8] = 0.0',)}),
-                ('diffusion_frame_default',
-                 {'E0599': ('Sample::default()', 'Components::default()', 'FrameSet::default()',
-                            'Stage::default()')}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_halation_frame_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('halation_frame_complete', None),
+         ('halation_frame_construction', {'E0451': ('HalationFrame { ..frame }',)}),
+         ('halation_frame_private', {'E0616': ('frame.recipe_hash', 'frame.channels', 'core().radius')}),
+         ('halation_frame_readonly', {'E0594': ('fir_weights()[0] = 0.0',)}),
+         ('halation_frame_default', {'E0599': ('HalationFrame::default()',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('halation_frame_complete', None),
-                ('halation_frame_construction', {'E0451': ('HalationFrame { ..frame }',)}),
-                ('halation_frame_private', {'E0616': ('frame.recipe_hash', 'frame.channels', 'core().radius')}),
-                ('halation_frame_readonly', {'E0594': ('fir_weights()[0] = 0.0',)}),
-                ('halation_frame_default', {'E0599': ('HalationFrame::default()',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_gaussian_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('gaussian_complete', None),
+         ('gaussian_construction', {'E0451': ('GaussianKernel { ..kernel }',)}),
+         ('gaussian_default', {'E0599': ('GaussianKernel::default()',)}),
+         ('gaussian_private', {'E0616': ('kernel.radius', 'kernel.weights')}),
+         ('gaussian_readonly', {'E0594': ('kernel.weights()[0] = 0.0',)}),
+         ('gaussian_owned', None),
+         ('gaussian_borrow', {'E0515': ('kernel.weights()',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('gaussian_complete', None),
-                ('gaussian_construction', {'E0451': ('GaussianKernel { ..kernel }',)}),
-                ('gaussian_default', {'E0599': ('GaussianKernel::default()',)}),
-                ('gaussian_private', {'E0616': ('kernel.radius', 'kernel.weights')}),
-                ('gaussian_readonly', {'E0594': ('kernel.weights()[0] = 0.0',)}),
-                ('gaussian_owned', None),
-                ('gaussian_borrow', {'E0515': ('kernel.weights()',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_scanner_post_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('scanner_post_complete', None),
+         ('scanner_post_construction', {'E0451': ('scanner::PostEffects { ..post }',)}),
+         ('scanner_post_default', {'E0599': ('scanner::PostEffects::default()',)}),
+         ('scanner_post_private', {'E0616': ('post.fields', 'post.hash')}),
+         ('scanner_post_readonly', {'E0594': ('post.fields().values()[0] = 0.0',)}),
+         ('scanner_post_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('scanner_post_complete', None),
-                ('scanner_post_construction', {'E0451': ('scanner::PostEffects { ..post }',)}),
-                ('scanner_post_default', {'E0599': ('scanner::PostEffects::default()',)}),
-                ('scanner_post_private', {'E0616': ('post.fields', 'post.hash')}),
-                ('scanner_post_readonly', {'E0594': ('post.fields().values()[0] = 0.0',)}),
-                ('scanner_post_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_scanner_descriptor_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('scanner_descriptor_complete', None),
+         ('scanner_descriptor_construction', {'E0451': ('scanner::LutDescriptor { ..descriptor }',)}),
+         ('scanner_descriptor_default', {'E0599': ('scanner::LutDescriptor::default()',)}),
+         ('scanner_descriptor_private', {'E0616': ('descriptor.route', 'descriptor.hash')}),
+         ('scanner_descriptor_readonly', {'E0308': ('let _: &mut u64 = descriptor.hash()',)}),
+         ('scanner_descriptor_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('scanner_descriptor_complete', None),
-                ('scanner_descriptor_construction', {'E0451': ('scanner::LutDescriptor { ..descriptor }',)}),
-                ('scanner_descriptor_default', {'E0599': ('scanner::LutDescriptor::default()',)}),
-                ('scanner_descriptor_private', {'E0616': ('descriptor.route', 'descriptor.hash')}),
-                ('scanner_descriptor_readonly', {'E0308': ('let _: &mut u64 = descriptor.hash()',)}),
-                ('scanner_descriptor_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_scanner_color_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('scanner_color_complete', None),
+         ('scanner_color_construction', {'E0451': ('scanner::Color { ..color }',)}),
+         ('scanner_color_default', {'E0599': ('scanner::Color::default()',)}),
+         ('scanner_color_private', {'E0616': ('color.cat02', 'color.hash')}),
+         ('scanner_color_readonly', {'E0594': ('color.cat02()[0] = 0.0',)}),
+         ('scanner_color_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('scanner_color_complete', None),
-                ('scanner_color_construction', {'E0451': ('scanner::Color { ..color }',)}),
-                ('scanner_color_default', {'E0599': ('scanner::Color::default()',)}),
-                ('scanner_color_private', {'E0616': ('color.cat02', 'color.hash')}),
-                ('scanner_color_readonly', {'E0594': ('color.cat02()[0] = 0.0',)}),
-                ('scanner_color_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_scanner_lut_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('scanner_lut_complete', None),
+         ('scanner_lut_construction', {'E0451': ('scanner::Lut { ..lut }',)}),
+         ('scanner_lut_default', {'E0599': ('scanner::Lut::default()',)}),
+         ('scanner_lut_private', {'E0616': ('lut.resolution', 'lut.log2_xyz')}),
+         ('scanner_lut_readonly', {'E0594': ('lut.log2_xyz()[0] = 0.0',)}),
+         ('scanner_lut_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('scanner_lut_complete', None),
-                ('scanner_lut_construction', {'E0451': ('scanner::Lut { ..lut }',)}),
-                ('scanner_lut_default', {'E0599': ('scanner::Lut::default()',)}),
-                ('scanner_lut_private', {'E0616': ('lut.resolution', 'lut.log2_xyz')}),
-                ('scanner_lut_readonly', {'E0594': ('lut.log2_xyz()[0] = 0.0',)}),
-                ('scanner_lut_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_scanner_correction_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('scanner_correction_complete', None),
+         ('scanner_correction_construction', {'E0451': ('scanner::Correction { ..correction }',)}),
+         ('scanner_correction_default', {'E0599': ('scanner::Correction::default()',)}),
+         ('scanner_correction_private', {'E0616': ('correction.route', 'correction.storage')}),
+         ('scanner_correction_readonly', {'E0070': ('correction.exposure_scale() = 0.0',)}),
+         ('scanner_correction_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('scanner_correction_complete', None),
-                ('scanner_correction_construction', {'E0451': ('scanner::Correction { ..correction }',)}),
-                ('scanner_correction_default', {'E0599': ('scanner::Correction::default()',)}),
-                ('scanner_correction_private', {'E0616': ('correction.route', 'correction.storage')}),
-                ('scanner_correction_readonly', {'E0070': ('correction.exposure_scale() = 0.0',)}),
-                ('scanner_correction_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_optics_are_complete_private_readonly_and_owned(self) -> None:
+        cases = (('optics_complete', None),
+         ('optics_default',
+          {'E0599': ('optics::Recipe::default()',
+                     'optics::Diffusion::default()',
+                     'optics::LensBlur::default()',
+                     'optics::Halation::default()')}),
+         ('optics_private',
+          {'E0616': ('recipe.camera_diffusion',
+                     'recipe.camera_lens_blur().sigma_um',
+                     'recipe.scatter_halation().first_sigma_um'),
+           'E0624': ('optics::Diffusion::inactive()', 'optics::LensBlur::new', 'optics::Halation::new')}),
+         ('optics_construction',
+          {'E0451': ('optics::Recipe { ..recipe }',
+                     'optics::Diffusion { ..diffusion }',
+                     'optics::LensBlur { ..lens }',
+                     'optics::Halation { ..halation }')}),
+         ('optics_readonly',
+          {'E0594': ('*recipe.camera_diffusion() = diffusion',
+                     '*recipe.camera_lens_blur() = lens',
+                     '*recipe.scatter_halation() = halation')}),
+         ('optics_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('optics_complete', None),
-                ('optics_default',
-                 {'E0599': ('optics::Recipe::default()', 'optics::Diffusion::default()',
-                            'optics::LensBlur::default()', 'optics::Halation::default()')}),
-                ('optics_private',
-                 {'E0616': ('recipe.camera_diffusion', 'recipe.camera_lens_blur().sigma_um',
-                            'recipe.scatter_halation().first_sigma_um'),
-                  'E0624': ('optics::Diffusion::inactive()', 'optics::LensBlur::new', 'optics::Halation::new')}),
-                ('optics_construction',
-                 {'E0451': ('optics::Recipe { ..recipe }', 'optics::Diffusion { ..diffusion }',
-                            'optics::LensBlur { ..lens }', 'optics::Halation { ..halation }')}),
-                ('optics_readonly',
-                 {'E0594': ('*recipe.camera_diffusion() = diffusion', '*recipe.camera_lens_blur() = lens',
-                            '*recipe.scatter_halation() = halation')}),
-                ('optics_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_effects_are_complete_private_readonly_and_owned(self) -> None:
+        cases = (('effects_complete', None),
+         ('effects_default',
+          {'E0599': ('effects::Recipe::default()', 'effects::Dust::default()', 'effects::Scratch::default()')}),
+         ('effects_private',
+          {'E0616': ('recipe.film_dust', 'dust.cell_width_mm', 'scratch.length_min_mm'),
+           'E0624': ('effects::Recipe::zero()', 'effects::Dust::new', 'effects::Scratch::new')}),
+         ('effects_construction',
+          {'E0451': ('effects::Recipe { ..recipe }',
+                     'effects::Dust { ..dust }',
+                     'effects::Scratch { ..scratch }')}),
+         ('effects_readonly', {'E0594': ('*recipe.film_dust() = dust', '*recipe.gate_scratch() = scratch')}),
+         ('effects_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('effects_complete', None),
-                ('effects_default',
-                 {'E0599': ('effects::Recipe::default()', 'effects::Dust::default()',
-                            'effects::Scratch::default()')}),
-                ('effects_private',
-                 {'E0616': ('recipe.film_dust', 'dust.cell_width_mm', 'scratch.length_min_mm'),
-                  'E0624': ('effects::Recipe::zero()', 'effects::Dust::new', 'effects::Scratch::new')}),
-                ('effects_construction',
-                 {'E0451': ('effects::Recipe { ..recipe }', 'effects::Dust { ..dust }',
-                            'effects::Scratch { ..scratch }')}),
-                ('effects_readonly', {'E0594': ('*recipe.film_dust() = dust', '*recipe.gate_scratch() = scratch')}),
-                ('effects_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_film_grain_is_complete_private_readonly_and_owned(self) -> None:
+        cases = (('film_grain_complete', None),
+         ('film_grain_default', {'E0599': ('grain::Recipe::default()',)}),
+         ('film_grain_private',
+          {'E0616': ('recipe.particle_density_min_cmy', 'recipe.axis_block_prefix_max_cmy')}),
+         ('film_grain_construction', {'E0451': ('grain::Recipe { ..recipe }',)}),
+         ('film_grain_readonly',
+          {'E0594': ('recipe.particle_scale_cmy()[0] = 0.0', 'recipe.axis_block_prefix_max_cmy()[0][0] = 0.0')}),
+         ('film_grain_owned', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('film_grain_complete', None),
-                ('film_grain_default', {'E0599': ('grain::Recipe::default()',)}),
-                ('film_grain_private',
-                 {'E0616': ('recipe.particle_density_min_cmy', 'recipe.axis_block_prefix_max_cmy')}),
-                ('film_grain_construction', {'E0451': ('grain::Recipe { ..recipe }',)}),
-                ('film_grain_readonly',
-                 {'E0594': ('recipe.particle_scale_cmy()[0] = 0.0',
-                            'recipe.axis_block_prefix_max_cmy()[0][0] = 0.0')}),
-                ('film_grain_owned', None),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_film_dir_density_is_complete_private_and_readonly(self) -> None:
+        cases = (('film_dir_complete', None),
+         ('film_dir_default', {'E0599': ('Recipe::default()', 'Minimum::default()', 'Bounds::default()')}),
+         ('film_dir_private', {'E0616': ('recipe.compensated_axes_rgb', 'minimum.cmy', 'bounds.hash')}),
+         ('film_dir_construction',
+          {'E0451': ('Recipe { ..recipe }', 'Minimum { ..minimum }', 'Bounds { ..bounds }')}),
+         ('film_dir_readonly',
+          {'E0594': ('recipe.matrix_rgb()[0][0] = 0.0',
+                     'minimum.cmy()[0] = 0.0',
+                     'bounds.minimum_cmy()[0] = 0.0')}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('film_dir_complete', None),
-                ('film_dir_default', {'E0599': ('Recipe::default()', 'Minimum::default()', 'Bounds::default()')}),
-                ('film_dir_private', {'E0616': ('recipe.compensated_axes_rgb', 'minimum.cmy', 'bounds.hash')}),
-                ('film_dir_construction',
-                 {'E0451': ('Recipe { ..recipe }', 'Minimum { ..minimum }', 'Bounds { ..bounds }')}),
-                ('film_dir_readonly',
-                 {'E0594': ('recipe.matrix_rgb()[0][0] = 0.0', 'minimum.cmy()[0] = 0.0',
-                            'bounds.minimum_cmy()[0] = 0.0')}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_completed_profile_storage_is_private_to_its_owner(self) -> None:
         # The plugin is a real external consumer of the core, and a sibling of
         # asset_profile; inserting the probe inside the owner would bypass privacy.
+        self.subtest_cases = tuple(
+            f"private-storage|{'release' if release else 'debug'}" for release in self.profiles
+        )
         self.attach("film-juicer-plugin/src/lib.rs", "private_storage")
         for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
-            self.assert_rejected(status, diagnostics, {
-                "E0616": ("film.processing_defaults", "tables.interpolation_log_exposure", "film_owner.profile", "print_owner.profile", "spectra_owner.lut", "mallett_owner.basis", "cmf_owner.rows", "csv_owner.rows", "noise_owner.bundle"),
-            })
+            case_id = f"private-storage|{'release' if release else 'debug'}"
+            with self.subTest(case=case_id):
+                self.assert_rejected(status, diagnostics, {
+                    "E0616": ("film.processing_defaults", "tables.interpolation_log_exposure", "film_owner.profile", "print_owner.profile", "spectra_owner.lut", "mallett_owner.basis", "cmf_owner.rows", "csv_owner.rows", "noise_owner.bundle"),
+                })
 
     def test_noise_borrows_and_storage_under_test_support(self) -> None:
+        cases = (('noise_borrowed', {'E0515': ('noise_owner.view()',), 'E0505': ('drop(noise_owner)',)}),
+         ('noise_private', {'E0616': ('noise_owner.bundle',)}))
+        feature_forms = (True,)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('noise_borrowed', {'E0515': ('noise_owner.view()',), 'E0505': ('drop(noise_owner)',)}),
-                ('noise_private', {'E0616': ('noise_owner.bundle',)}),
-            ),
+            cases=cases,
             feature_forms=(True,),
         )
 
     def test_completed_profile_construction_cannot_be_bypassed(self) -> None:
+        self.subtest_cases = tuple(
+            f"private-construction|{'release' if release else 'debug'}" for release in self.profiles
+        )
         self.attach("film-juicer-plugin/src/lib.rs", "private_construction")
         for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
-            self.assert_rejected(status, diagnostics, {
-                "E0451": ("FilmProfile { ..film }", "PrintProfile { ..print }"),
-            })
+            case_id = f"private-construction|{'release' if release else 'debug'}"
+            with self.subTest(case=case_id):
+                self.assert_rejected(status, diagnostics, {
+                    "E0451": ("FilmProfile { ..film }", "PrintProfile { ..print }"),
+                })
 
     def test_lens_construction_and_storage_are_private(self) -> None:
         # Type-check errors can suppress later field-privacy diagnostics, so
         # each rejected construction/access is its own compiler consumer.
-        for fixture, expected in (
-            ("illuminant_private", {"E0451": ("LensInput {",)}),
-            ("illuminant_default", {"E0599": ("LensInput::default()",)}),
-            ("illuminant_mutation", {"E0616": ("input.kg3[0]",)}),
-        ):
+        cases = (('illuminant_private', {'E0451': ('LensInput {',)}),
+         ('illuminant_default', {'E0599': ('LensInput::default()',)}),
+         ('illuminant_mutation', {'E0616': ('input.kg3[0]',)}))
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}"
+            for fixture, _ in cases for release in self.profiles
+        )
+        for fixture, expected in cases:
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
                 for release in self.profiles:
                     status, diagnostics = self.check("film-juicer-plugin", release)
-                    self.assert_rejected(status, diagnostics, expected)
+                    case_id = f"{fixture}|{'release' if release else 'debug'}"
+                    with self.subTest(case=case_id):
+                        self.assert_rejected(status, diagnostics, expected)
             finally:
                 self.doCleanups()
 
@@ -1127,15 +1267,19 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertIsNone(re.search(loop, helper))
 
     def test_completed_spectral_results_are_private_and_readonly(self) -> None:
+        cases = (('spectral_default', {'E0599': ('Tables::default()', 'White::default()')}),
+         ('spectral_private', {'E0451': ('Tables { ..tables }', 'White { ..white }')}),
+         ('spectral_mutation', {'E0616': ('tables.white_xyz[0]', 'white.xyz[0]')}),
+         ('spectral_readonly', {'E0594': ('tables.white_xyz()[0]', 'white.xyz()[0]')}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('spectral_default', {'E0599': ('Tables::default()', 'White::default()')}),
-                ('spectral_private', {'E0451': ('Tables { ..tables }', 'White { ..white }')}),
-                ('spectral_mutation', {'E0616': ('tables.white_xyz[0]', 'white.xyz[0]')}),
-                ('spectral_readonly', {'E0594': ('tables.white_xyz()[0]', 'white.xyz()[0]')}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
@@ -1148,126 +1292,196 @@ class RustBoundaryTests(unittest.TestCase):
             ("film-juicer-plugin", "asset_noise.rs"),
             ("film-juicer-plugin", "asset_calibration.rs"),
         )
+        self.subtest_cases = tuple(
+            f"{package}/{source}|{'release' if release else 'debug'}"
+            for package, source in owners for release in self.profiles
+        )
         for package, source in owners:
-            with self.subTest(package=package, source=source):
+            for release in self.profiles:
+                case_id = f"{package}/{source}|{'release' if release else 'debug'}"
                 self.attach(f"{package}/src/{source}", "unsafe_override")
                 try:
-                    for release in self.profiles:
+                    with self.subTest(case=case_id):
                         status, diagnostics = self.check(package, release)
                         self.assert_rejected(status, diagnostics, {"E0453": ("unsafe_code",)})
                 finally:
                     self.doCleanups()
 
     def test_completed_exposure_results_are_private_and_readonly(self) -> None:
+        cases = (('exposure_default', {'E0599': ('Sensitivity::default()', 'ReferenceWhite::default()')}),
+         ('exposure_private', {'E0451': ('Sensitivity { ..sensitivity }', 'ReferenceWhite { ..white }')}),
+         ('exposure_mutation', {'E0616': ('sensitivity.values_rgb[0][0]', 'white.samples[0]')}),
+         ('exposure_readonly', {'E0594': ('sensitivity.values_rgb()[0][0]', 'white.samples()[0]')}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('exposure_default', {'E0599': ('Sensitivity::default()', 'ReferenceWhite::default()')}),
-                ('exposure_private', {'E0451': ('Sensitivity { ..sensitivity }', 'ReferenceWhite { ..white }')}),
-                ('exposure_mutation', {'E0616': ('sensitivity.values_rgb[0][0]', 'white.samples[0]')}),
-                ('exposure_readonly', {'E0594': ('sensitivity.values_rgb()[0][0]', 'white.samples()[0]')}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_completed_exposure_results_do_not_retain_sources(self) -> None:
+        self.subtest_cases = tuple(
+            f"exposure-borrow|{'release' if release else 'debug'}" for release in self.profiles
+        )
         self.attach("film-juicer-plugin/src/lib.rs", "exposure_borrow")
         for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
-            self.assertEqual(status, 0, diagnostics)
-
-    def test_complete_mallett_results_and_input_borrows(self) -> None:
-        self.check_fixture_cases(
-            "film-juicer-plugin/src/lib.rs",
-            "film-juicer-plugin",
-            cases=(
-                ('mallett_default',
-                 {'E0599': ('MallettMidgray::default()', 'MidgrayNormalization::default()',
-                            'ReferenceSource::default()', 'ReferenceRaw::default()')}),
-                ('mallett_private',
-                 {'E0451': ('MallettMidgray { ..midgray }', 'MidgrayNormalization { ..normalization }',
-                            'ReferenceSource { ..source }', 'ReferenceRaw { ..raw }')}),
-                ('mallett_mutation',
-                 {'E0616': ('midgray.raw_midgray_bgr[0]', 'normalization.raw_green', 'source.value', 'raw.rgb[0]')}),
-                ('mallett_readonly',
-                 {'E0594': ('midgray.raw_midgray_bgr()[0]', 'midgray.midgray_dwg_rgb()[0]', 'raw.rgb()[0]')}),
-                ('mallett_borrow',
-                 {'E0515': ('basis_rgb: &basis', 'illuminant: &illuminant', 'sensitivity_rgb: &sensitivity')}),
-            ),
-            feature_forms=(False, True),
-        )
-        self.attach("film-juicer-plugin/src/lib.rs", "mallett_complete")
-        for release in self.profiles:
-            for status, diagnostics in self.check_features("film-juicer-plugin", release):
+            case_id = f"exposure-borrow|{'release' if release else 'debug'}"
+            with self.subTest(case=case_id):
                 self.assertEqual(status, 0, diagnostics)
 
-    def test_complete_tc_lut_privacy_and_borrowing(self) -> None:
+    def test_complete_mallett_results_and_input_borrows(self) -> None:
+        cases = (('mallett_default',
+          {'E0599': ('MallettMidgray::default()',
+                     'MidgrayNormalization::default()',
+                     'ReferenceSource::default()',
+                     'ReferenceRaw::default()')}),
+         ('mallett_private',
+          {'E0451': ('MallettMidgray { ..midgray }',
+                     'MidgrayNormalization { ..normalization }',
+                     'ReferenceSource { ..source }',
+                     'ReferenceRaw { ..raw }')}),
+         ('mallett_mutation',
+          {'E0616': ('midgray.raw_midgray_bgr[0]', 'normalization.raw_green', 'source.value', 'raw.rgb[0]')}),
+         ('mallett_readonly',
+          {'E0594': ('midgray.raw_midgray_bgr()[0]', 'midgray.midgray_dwg_rgb()[0]', 'raw.rgb()[0]')}),
+         ('mallett_borrow',
+          {'E0515': ('basis_rgb: &basis', 'illuminant: &illuminant', 'sensitivity_rgb: &sensitivity')}),
+         ('mallett_complete', None))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('tc_default', {'E0599': ('FilmTcLut::default()',)}),
-                ('tc_private', {'E0451': ('FilmTcLut { ..lut }',)}),
-                ('tc_readonly', {'E0594': ('lut.samples()[0]',)}),
-                ('tc_borrow', {'E0515': ('lut.samples()',), 'E0505': ('drop(lut)',)}),
-            ),
+            cases=cases,
+            feature_forms=(False, True),
+        )
+
+    def test_complete_tc_lut_privacy_and_borrowing(self) -> None:
+        cases = (('tc_default', {'E0599': ('FilmTcLut::default()',)}),
+         ('tc_private', {'E0451': ('FilmTcLut { ..lut }',)}),
+         ('tc_readonly', {'E0594': ('lut.samples()[0]',)}),
+         ('tc_borrow', {'E0515': ('lut.samples()',), 'E0505': ('drop(lut)',)}),
+         ('tc_complete', None))
+        feature_forms = (False,)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
+        self.check_fixture_cases(
+            "film-juicer-plugin/src/lib.rs",
+            "film-juicer-plugin",
+            cases=cases,
             feature_forms=(False,),
         )
-        self.attach("film-juicer-plugin/src/lib.rs", "tc_complete")
-        for release in self.profiles:
-            status, diagnostics = self.check("film-juicer-plugin", release)
-            self.assertEqual(status, 0, diagnostics)
 
 
     def test_complete_input_hull_privacy_and_borrows(self) -> None:
+        cases = (('hull_default', {'E0599': ('Hull::default()',)}),
+         ('hull_private', {'E0451': ('Hull { ..hull }',)}),
+         ('hull_mutation', {'E0616': ('hull.xy', 'hull.hash', 'hull.center')}),
+         ('hull_readonly', {'E0594': ('hull.xy()', 'hull.center()')}),
+         ('hull_borrow', {'E0515': ('HullInput { x: &samples',), 'E0505': ('drop(hull)',)}),
+         ('hull_complete', None))
+        feature_forms = (False,)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('hull_default', {'E0599': ('Hull::default()',)}),
-                ('hull_private', {'E0451': ('Hull { ..hull }',)}),
-                ('hull_mutation', {'E0616': ('hull.xy', 'hull.hash', 'hull.center')}),
-                ('hull_readonly', {'E0594': ('hull.xy()', 'hull.center()')}),
-                ('hull_borrow', {'E0515': ('HullInput { x: &samples',), 'E0505': ('drop(hull)',)}),
-            ),
+            cases=cases,
             feature_forms=(False,),
         )
-        self.attach("film-juicer-plugin/src/lib.rs", "hull_complete")
-        for release in self.profiles:
-            status, diagnostics = self.check("film-juicer-plugin", release)
-            self.assertEqual(status, 0, diagnostics)
 
     def test_prepared_state_is_complete_private_and_borrowed(self) -> None:
+        cases = (('prepared_state_complete', None),
+         ('prepared_state_private', {'E0616': ('state.hash',), 'E0603': ('crate::preparation::project_state',)}),
+         ('prepared_state_construction', {'E0451': ('RenderState { ..state }',)}),
+         ('prepared_state_default', {'E0599': ('RenderState::default()',)}),
+         ('prepared_state_mutation', {'E0594': ('state.s_inverse()[0]',)}),
+         ('prepared_state_borrow', {'E0515': ('state.s_inverse()',), 'E0505': ('drop(state)',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('prepared_state_complete', None),
-                ('prepared_state_private', {'E0616': ('state.hash',), 'E0603': ('crate::preparation::project_state',)}),
-                ('prepared_state_construction', {'E0451': ('RenderState { ..state }',)}),
-                ('prepared_state_default', {'E0599': ('RenderState::default()',)}),
-                ('prepared_state_mutation', {'E0594': ('state.s_inverse()[0]',)}),
-                ('prepared_state_borrow', {'E0515': ('state.s_inverse()',), 'E0505': ('drop(state)',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
     def test_cuda_render_borrows_complete_owners_and_hides_projection(self) -> None:
+        cases = (('cuda_render_complete', None),
+         ('cuda_render_raw_records', {'E0308': ('raw_frame', 'raw_abort')}),
+         ('cuda_render_capability_construction', {'E0451': ('FramePolicy { ..policy }',)}),
+         ('cuda_render_projection_private', {'E0603': ('crate::cuda::projection::host_data',)}),
+         ('cuda_render_state_borrow', {'E0505': ('drop(state)',)}),
+         ('cuda_render_owner_thread', {'E0277': ('std::thread::spawn(move || owner)',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
         self.check_fixture_cases(
             "film-juicer-plugin/src/lib.rs",
             "film-juicer-plugin",
-            cases=(
-                ('cuda_render_complete', None),
-                ('cuda_render_raw_records', {'E0308': ('raw_frame', 'raw_abort')}),
-                ('cuda_render_capability_construction', {'E0451': ('FramePolicy { ..policy }',)}),
-                ('cuda_render_projection_private', {'E0603': ('crate::cuda::projection::host_data',)}),
-                ('cuda_render_state_borrow', {'E0505': ('drop(state)',)}),
-                ('cuda_render_owner_thread', {'E0277': ('std::thread::spawn(move || owner)',)}),
-            ),
+            cases=cases,
             feature_forms=(False, True),
         )
 
+
+RustBoundaryTests.test_film_input_color_is_complete_and_immutable.required_subtests = True
+RustBoundaryTests.test_valid_profile_consumers_compile.required_subtests = True
+RustBoundaryTests.test_profile_views_cannot_outlive_their_owners.required_subtests = True
+RustBoundaryTests.test_output_color_is_complete_and_immutable.required_subtests = True
+RustBoundaryTests.test_film_development_is_complete_private_and_borrowed.required_subtests = True
+RustBoundaryTests.test_output_gamut_completed_api_is_private_and_borrowed.required_subtests = True
+RustBoundaryTests.test_print_illuminant_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_print_preflash_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_film_reference_is_complete_private_readonly_and_borrowed.required_subtests = True
+RustBoundaryTests.test_print_balance_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_frame_geometry_is_complete_private_and_readonly.required_subtests = True
+RustBoundaryTests.test_dir_boundary_is_complete_private_readonly_and_borrowed.required_subtests = True
+RustBoundaryTests.test_effects_frame_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_grain_frame_is_complete_private_readonly_and_owns_no_curve_borrow.required_subtests = True
+RustBoundaryTests.test_dir_frame_is_complete_private_readonly_and_failure_trace_cannot_execute.required_subtests = True
+RustBoundaryTests.test_diffusion_frame_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_halation_frame_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_gaussian_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_scanner_post_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_scanner_descriptor_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_scanner_color_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_scanner_lut_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_scanner_correction_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_optics_are_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_effects_are_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_film_grain_is_complete_private_readonly_and_owned.required_subtests = True
+RustBoundaryTests.test_film_dir_density_is_complete_private_and_readonly.required_subtests = True
+RustBoundaryTests.test_completed_profile_storage_is_private_to_its_owner.required_subtests = True
+RustBoundaryTests.test_noise_borrows_and_storage_under_test_support.required_subtests = True
+RustBoundaryTests.test_completed_profile_construction_cannot_be_bypassed.required_subtests = True
+RustBoundaryTests.test_lens_construction_and_storage_are_private.required_subtests = True
+RustBoundaryTests.test_safe_modules_cannot_relax_unsafe_prohibition.required_subtests = True
+RustBoundaryTests.test_completed_spectral_results_are_private_and_readonly.required_subtests = True
+RustBoundaryTests.test_completed_exposure_results_are_private_and_readonly.required_subtests = True
+RustBoundaryTests.test_completed_exposure_results_do_not_retain_sources.required_subtests = True
+RustBoundaryTests.test_complete_mallett_results_and_input_borrows.required_subtests = True
+RustBoundaryTests.test_complete_tc_lut_privacy_and_borrowing.required_subtests = True
+RustBoundaryTests.test_complete_input_hull_privacy_and_borrows.required_subtests = True
+RustBoundaryTests.test_prepared_state_is_complete_private_and_borrowed.required_subtests = True
+RustBoundaryTests.test_cuda_render_borrows_complete_owners_and_hides_projection.required_subtests = True
 
 if __name__ == "__main__":
     unittest.main()

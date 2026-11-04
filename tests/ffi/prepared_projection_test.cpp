@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -19,6 +20,7 @@
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
 #include "spatial_optics_fixture.h"
+#include "gtest_cases.h"
 
 namespace {
     FjPreparedHostData make_fixed_input();
@@ -67,9 +69,17 @@ namespace {
         ASSERT_NE(preset, nullptr);
         const auto captured = nlohmann::json::parse(std::ifstream(directory / manifest.at("presets").at(preset).at("native").get<std::string>()));
         ASSERT_EQ(captured.at("cases").size(), 153u);
+        std::vector<std::string> expectedIds;
+        for (const auto& row : captured.at("cases")) {
+            if (row.at("success").get<bool>() && row.at("native").at("active").get<bool>())
+                expectedIds.push_back(row.at("input").at("name").get<std::string>());
+        }
+        JuicerTests::GtestCohort cohort("grain-frame-projection", expectedIds);
         for (const auto& row : captured.at("cases")) {
             if (!row.at("success").get<bool>() || !row.at("native").at("active").get<bool>())
                 continue;
+            const auto id = row.at("input").at("name").get<std::string>();
+            auto caseEvent = cohort.case_event(id);
             SCOPED_TRACE(row.at("input").at("name").get<std::string>());
             FjPreparedHostData wire = make_fixed_input();
             JuicerCuda::PreparedDescriptors source, decoded;
@@ -115,6 +125,7 @@ namespace {
             EXPECT_EQ(decoded.grainPayload.coefficients.debug_view, input.coefficients.debug_view);
             EXPECT_EQ(decoded.grainPayload.recipeHash, frame.recipeHash);
             EXPECT_EQ(decoded.grainPayload.densityLayersHash, frame.densityCurvesLayersHash);
+            caseEvent.passed();
         }
     }
 
@@ -125,14 +136,28 @@ namespace {
         ASSERT_NE(preset, nullptr);
         const auto captured = load_shared_fixture(directory / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
         auto rows = captured.at("cases");
+        const auto caseCount = rows.size();
         for (const auto& row : captured.at("products"))
             rows.push_back(row);
         ASSERT_EQ(rows.size(), 98u);
+        std::vector<std::string> expectedIds;
+        for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const auto& row = rows[rowIndex];
+            if (!row.at("success").get<bool>())
+                continue;
+            expectedIds.push_back(std::string(rowIndex < caseCount ? "case/" : "product/") +
+                                  row.at("input").at("name").get<std::string>() + "/" + std::to_string(rowIndex));
+        }
+        JuicerTests::GtestCohort cohort("dir-frame-projection", expectedIds);
         bool sawZeroWeightYvv = false;
-        for (const auto& row : rows) {
+        for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const auto& row = rows[rowIndex];
             SCOPED_TRACE(row.at("input").at("name").get<std::string>());
             if (!row.at("success").get<bool>())
                 continue;
+            const auto id = std::string(rowIndex < caseCount ? "case/" : "product/") +
+                            row.at("input").at("name").get<std::string>() + "/" + std::to_string(rowIndex);
+            auto caseEvent = cohort.case_event(id);
             const auto& input = row.at("input");
             const auto scalar = [](const nlohmann::json& v) {
                 return std::bit_cast<float>(v.get<std::uint32_t>());
@@ -164,6 +189,7 @@ namespace {
             if (frame.hash != 0 && frame.dirRecipeHash == 0) {
                 EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic));
                 EXPECT_EQ(diagnostic, "MalformedPreparedHostData field=spatial_dir.identity");
+                caseEvent.passed();
                 continue;
             }
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic)) << diagnostic;
@@ -181,6 +207,7 @@ namespace {
             }
             EXPECT_EQ(JuicerTestSupport::dir_frame_fields(decoded.spatialDir), expected);
             EXPECT_EQ(decoded.spatialDir.hash, frame.hash);
+            caseEvent.passed();
         }
         EXPECT_TRUE(sawZeroWeightYvv);
     }
@@ -192,10 +219,21 @@ namespace {
         ASSERT_NE(preset, nullptr);
         const auto captured = load_shared_fixture(directory / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
         auto rows = captured.at("cases");
+        const auto caseCount = rows.size();
         for (const auto& row : captured.at("products"))
             rows.push_back(row);
         ASSERT_EQ(rows.size(), 72u);
-        for (const auto& row : rows) {
+        std::vector<std::string> expectedIds;
+        for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            expectedIds.push_back(std::string(rowIndex < caseCount ? "case/" : "product/") +
+                                  rows[rowIndex].at("input").at("name").get<std::string>() + "/" + std::to_string(rowIndex));
+        }
+        JuicerTests::GtestCohort cohort("halation-frame-projection", expectedIds);
+        for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const auto& row = rows[rowIndex];
+            const auto id = std::string(rowIndex < caseCount ? "case/" : "product/") +
+                            row.at("input").at("name").get<std::string>() + "/" + std::to_string(rowIndex);
+            auto caseEvent = cohort.case_event(id);
             SCOPED_TRACE(row.at("input").at("name").get<std::string>());
             const auto& input = row.at("input");
             ScatterHalationOpticsRecipe recipe;
@@ -215,8 +253,10 @@ namespace {
             ASSERT_EQ(success, row.at("success").get<bool>());
             ASSERT_EQ(frame.has_value(), row.at("present").get<bool>());
             ASSERT_TRUE(JuicerTestSupport::matches_halation_frame(frame, row.at("descriptor")));
-            if (!success)
+            if (!success) {
+                caseEvent.passed();
                 continue;
+            }
             JuicerCuda::PreparedDescriptors source;
             // Populate unrelated fixed families using the existing projection fixture below.
             FjPreparedHostData wire = make_fixed_input();
@@ -230,6 +270,7 @@ namespace {
                 decoded.halation->channels[2].bounce[2].firWeights[18] = std::bit_cast<float>(std::bit_cast<std::uint32_t>(decoded.halation->channels[2].bounce[2].firWeights[18]) ^ 1u);
                 EXPECT_FALSE(JuicerTestSupport::matches_halation_frame(decoded.halation, row.at("descriptor"))) << "reader reaches final unused weight";
             }
+            caseEvent.passed();
         }
     }
 
@@ -411,7 +452,10 @@ namespace {
 
     TEST(PreparedProjection, RealPostConstructorSurvivesExecutionProjection) {
         const std::uint64_t expectedHashes[]{7511645345345342884ull, 3186614872363949542ull, 2245189015135736206ull, 1365222576910583988ull};
+        const std::vector<std::string> ids{"route/0", "route/1", "route/2", "route/3"};
+        JuicerTests::GtestCohort cohort("post-constructor-routes", ids);
         for (unsigned route = 0; route < 4; ++route) {
+            auto caseEvent = cohort.case_event("route/" + std::to_string(route));
             const FjScannerPostEffectsInput postInput{route, 1, 2.0f, 0.3f, 0.7f, 1.25f, 0.7f, 0.8f};
             FjScannerPostEffectsDescriptor post{};
             FjScannerPostEffectsFailure failure{};
@@ -449,6 +493,7 @@ namespace {
             FjPreparedHostData roundtrip{};
             JuicerCudaTest::encode_prepared_descriptors(decoded, roundtrip);
             EXPECT_EQ(std::memcmp(&roundtrip.scanner_post, &encoded.scanner_post, sizeof(encoded.scanner_post)), 0);
+            caseEvent.passed();
         }
     }
 
@@ -465,7 +510,10 @@ namespace {
             {FJ_ROUTE_NEGATIVE_PRINT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ProfilePolarity::Negative, Scanner::ScannedMediumKind::Print},
             {FJ_ROUTE_POSITIVE_DIRECT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ProfilePolarity::Positive, Scanner::ScannedMediumKind::Film},
             {FJ_ROUTE_POSITIVE_PRINT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositivePrintScan, Spektrafilm::ProfilePolarity::Positive, Scanner::ScannedMediumKind::Print}};
+        const std::vector<std::string> ids{"route/0", "route/1", "route/2", "route/3"};
+        JuicerTests::GtestCohort cohort("route-polarity-medium", ids);
         for (const auto& item : cases) {
+            auto caseEvent = cohort.case_event("route/" + std::to_string(item.route));
             SCOPED_TRACE(item.route);
             FjPreparedHostData input{};
             input.output_color.encoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_SRGB);
@@ -483,6 +531,7 @@ namespace {
             EXPECT_FALSE(actual.grain);
             EXPECT_FALSE(actual.effects);
             EXPECT_EQ(actual.spatialDir.hash, 0u);
+            caseEvent.passed();
         }
     }
 
@@ -525,8 +574,16 @@ namespace {
     }
 
     TEST(PreparedProjection, DisabledGamutKeepsRecipeIdentityWithoutActiveResources) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        for (const auto route : routes)
+            for (bool enabled : {false, true})
+                ids.push_back("route=" + std::to_string(static_cast<int>(route)) + "/enabled=" + std::to_string(enabled));
+        JuicerTests::GtestCohort cohort("disabled-gamut-routes", ids);
+        for (const auto route : routes) {
             for (bool enabled : {false, true}) {
+                const auto id = "route=" + std::to_string(static_cast<int>(route)) + "/enabled=" + std::to_string(enabled);
+                auto caseEvent = cohort.case_event(id);
                 SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " enabled=" << enabled);
                 FjPreparedHostData input{};
                 input.output_color = make_fixed_input().output_color;
@@ -546,6 +603,7 @@ namespace {
                 JuicerCudaTest::encode_prepared_descriptors(actual, encoded);
                 EXPECT_EQ(encoded.output_color.gamut_recipe_hash, input.output_color.gamut_recipe_hash);
                 EXPECT_EQ(encoded.output_color.flags, input.output_color.flags);
+                caseEvent.passed();
             }
         }
     }
@@ -835,9 +893,18 @@ namespace {
     }
 
     TEST(PreparedProjection, OutputEncodingRoundTripsBothRoutesAndFlagsWithoutRepreparation) {
-        for (const auto route : {FJ_ROUTE_NEGATIVE_DIRECT, FJ_ROUTE_NEGATIVE_PRINT, FJ_ROUTE_POSITIVE_DIRECT, FJ_ROUTE_POSITIVE_PRINT}) {
+        const std::array routes{FJ_ROUTE_NEGATIVE_DIRECT, FJ_ROUTE_NEGATIVE_PRINT, FJ_ROUTE_POSITIVE_DIRECT, FJ_ROUTE_POSITIVE_PRINT};
+        std::vector<std::string> ids;
+        for (const auto route : routes)
+            for (std::uint32_t space = 0; space <= FJ_OUTPUT_REC709; ++space)
+                for (bool enabled : {false, true})
+                    ids.push_back("route=" + std::to_string(route) + "/space=" + std::to_string(space) + "/enabled=" + std::to_string(enabled));
+        JuicerTests::GtestCohort cohort("output-encoding-roundtrip", ids);
+        for (const auto route : routes) {
             for (std::uint32_t space = 0; space <= FJ_OUTPUT_REC709; ++space) {
                 for (bool enabled : {false, true}) {
+                    const auto id = "route=" + std::to_string(route) + "/space=" + std::to_string(space) + "/enabled=" + std::to_string(enabled);
+                    auto caseEvent = cohort.case_event(id);
                     JuicerCuda::PreparedDescriptors retained;
                     const auto expected = JuicerCudaTest::prepare_output_encoding(space);
                     {
@@ -868,30 +935,47 @@ namespace {
                     }
                     for (int i = 0; i < 9; ++i)
                         EXPECT_EQ(std::bit_cast<std::uint32_t>(actual.dwg_to_output[i]), std::bit_cast<std::uint32_t>(expected.dwg_to_output[i]));
+                    caseEvent.passed();
                 }
             }
         }
     }
 
     TEST(PreparedProjection, OutputEncodingAdmissionUsesSchemaAndKindEvenWhenDisabled) {
+        const std::vector<std::uint32_t> schemas{0u, 2u, std::numeric_limits<std::uint32_t>::max()};
+        const std::vector<std::uint32_t> kinds{6u, std::numeric_limits<std::uint32_t>::max()};
+        std::vector<std::string> ids;
+        for (bool enabled : {false, true}) {
+            for (const auto schema : schemas)
+                ids.push_back("enabled=" + std::to_string(enabled) + "/schema=" + std::to_string(schema));
+            for (const auto kind : kinds)
+                ids.push_back("enabled=" + std::to_string(enabled) + "/kind=" + std::to_string(kind));
+            ids.push_back("enabled=" + std::to_string(enabled) + "/accepted-authored-values");
+        }
+        JuicerTests::GtestCohort cohort("output-encoding-admission", ids);
         for (bool enabled : {false, true}) {
             auto input = make_fixed_input();
             input.output_color.flags = enabled ? FJ_COLOR_ENCODE_CCTF : 0u;
             for (const auto schema : {0u, 2u, std::numeric_limits<std::uint32_t>::max()}) {
+                auto caseEvent = cohort.case_event("enabled=" + std::to_string(enabled) + "/schema=" + std::to_string(schema));
                 input.output_color.encoding.schema = schema;
                 JuicerCuda::PreparedDescriptors actual;
                 std::string diagnostic;
                 EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic));
                 EXPECT_EQ(actual.color.hash, 0u);
                 EXPECT_NE(diagnostic.find("output_color.encoding"), std::string::npos);
+                caseEvent.passed();
             }
             input.output_color.encoding.schema = 1;
             for (const auto kind : {6u, std::numeric_limits<std::uint32_t>::max()}) {
+                auto caseEvent = cohort.case_event("enabled=" + std::to_string(enabled) + "/kind=" + std::to_string(kind));
                 input.output_color.encoding.cctf_kind = kind;
                 JuicerCuda::PreparedDescriptors actual;
                 std::string diagnostic;
                 EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic));
+                caseEvent.passed();
             }
+            auto acceptedCase = cohort.case_event("enabled=" + std::to_string(enabled) + "/accepted-authored-values");
             input.output_color.encoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_DISPLAY_P3);
             // Authored coefficient content is not a completion/admission test.
             input.output_color.encoding.gamma = std::numeric_limits<float>::quiet_NaN();
@@ -901,6 +985,7 @@ namespace {
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic));
             EXPECT_TRUE(std::isnan(actual.color.preparedEncoding.gamma));
             EXPECT_EQ(std::bit_cast<std::uint32_t>(actual.color.preparedEncoding.dwg_to_output[0]), 0x80000000u);
+            acceptedCase.passed();
         }
     }
 
@@ -1027,7 +1112,12 @@ namespace {
             {"effects frame identity", [](FjPreparedHostData& value) {
                  value.effects.hash = 0;
              }}};
+        std::vector<std::string> ids;
+        for (const auto& item : cases)
+            ids.emplace_back(item.name);
+        JuicerTests::GtestCohort cohort("malformed-descriptors", ids);
         for (const auto& item : cases) {
+            auto caseEvent = cohort.case_event(item.name);
             SCOPED_TRACE(item.name);
             FjPreparedHostData input = make_fixed_input();
             JuicerCuda::PreparedDescriptors actual;
@@ -1045,6 +1135,7 @@ namespace {
             EXPECT_EQ(actual.grainPayload.densityLayersHash, 0u);
             EXPECT_EQ(actual.spatialDir.hash, 0u);
             EXPECT_EQ(actual.scanner.hash, 0u);
+            caseEvent.passed();
         }
     }
 

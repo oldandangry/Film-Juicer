@@ -52,16 +52,17 @@ namespace JuicerCudaTest {
     void check_prepared_state_lifetime(std::optional<PreparedState>&, FjAssets*, FjCuda*, const FjCudaContext&, const FjFrame&, const FjSubmission&, FjPreparedHostData&, FjErrorBuffer*, StateLifetimeCase);
 
     // Temporal grain fixtures borrow the complete state; DIR-only callers need no hold here.
-    void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const FjPreparedStateView* state = nullptr, const FjHostPreparation* hostPreparation = nullptr);
+    void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const FjPreparedStateView* state, const FjHostPreparation* hostPreparation, const std::string& invocationContext);
 
-    FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error);
+    FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error, const std::string& invocationContext);
 
 
     bool execute_boundary(
         const PreparedState& owner,
         const FjFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
-        std::string& diagnostic);
+        std::string& diagnostic,
+        const std::string& invocationPhase);
 
 } // namespace JuicerCudaTest
 #endif

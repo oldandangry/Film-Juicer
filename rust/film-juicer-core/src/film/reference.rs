@@ -362,6 +362,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
 
     #[test]
     fn synthetic_lookup_preserves_endpoint_and_upper_bound_selection() {
@@ -380,12 +381,24 @@ mod tests {
             sample_density(0.0, &[-1.0, -0.0, 0.0, 1.0], &curves, 0),
             Some(8.0)
         );
-        for query in [f32::NEG_INFINITY, 0.0, f32::INFINITY] {
+        let queries = [
+            ("negative-infinity", f32::NEG_INFINITY),
+            ("zero", 0.0),
+            ("positive-infinity", f32::INFINITY),
+        ];
+        let mut cases = RowCases::new(
+            "film-reference-singleton-query",
+            queries.iter().map(|(id, _)| *id),
+        );
+        for (id, query) in queries {
+            let case = cases.case(id);
             assert_eq!(
                 sample_density(query, &[2.0], &[[7.0, 8.0, 9.0]], 2),
                 Some(9.0)
             );
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -433,8 +446,22 @@ mod tests {
                 }),
             )
         };
-        for (selector, operation) in [(5, Operation::Source), (6, Operation::MallettRaw)] {
-            for (index, exposure) in [(1, Exposure::Baseline), (2, Exposure::Compensated)] {
+        let cases_expected = [
+            "source/baseline",
+            "source/compensated",
+            "mallett-raw/baseline",
+            "mallett-raw/compensated",
+        ];
+        let mut cases = RowCases::new("film-reference-exposure-faults", cases_expected);
+        for (selector, operation, operation_id) in [
+            (5, Operation::Source, "source"),
+            (6, Operation::MallettRaw, "mallett-raw"),
+        ] {
+            for (index, exposure, exposure_id) in [
+                (1, Exposure::Baseline, "baseline"),
+                (2, Exposure::Compensated, "compensated"),
+            ] {
+                let case = cases.case(format!("{operation_id}/{exposure_id}"));
                 film::input::testing::arm_exposure(selector, index, 3);
                 assert_eq!(
                     prepare().err(),
@@ -447,7 +474,9 @@ mod tests {
                 assert!(film::input::testing::exposure_consumed(selector, 3));
                 assert!(!film::input::testing::exposure_consumed(selector, 3));
                 assert!(prepare().is_ok());
+                case.passed();
             }
         }
+        cases.finish();
     }
 }

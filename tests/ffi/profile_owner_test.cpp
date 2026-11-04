@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include "gtest_cases.h"
 #include "juicer_test_api.h"
 
 extern "C" const std::size_t* fj_test_profile_abi_c_facts(std::size_t* count);
@@ -240,8 +241,11 @@ namespace {
         constexpr std::array<const char*, 2> kUses{"still", "cine"};
         constexpr std::array<const char*, 3> kAntihalation{"strong", "weak", "no"};
         constexpr std::array<std::array<float, 3>, 3> kAmounts{{{0.015f, 0.005f, 0.0f}, {0.08f, 0.02f, 0.0f}, {0.3f, 0.1f, 0.015f}}};
+        JuicerTests::GtestCohort metadata_cases("metadata", 6u);
+        std::size_t metadata_index = 0;
         for (std::size_t use = 0; use < 2; ++use) {
             for (std::size_t antihalation = 0; antihalation < 3; ++antihalation) {
+                auto metadata_case = metadata_cases.case_event(std::to_string(metadata_index++));
                 const std::string key = std::string(kUses[use]) + "_" + kAntihalation[antihalation];
                 const std::string metadata = ",\"use\":\"" + std::string(kUses[use]) + "\",\"antihalation\":\"" + kAntihalation[antihalation] + "\"";
                 write_profile(root, key, {.metadata = metadata.c_str()});
@@ -254,6 +258,8 @@ namespace {
                     EXPECT_EQ(std::bit_cast<std::uint32_t>(view.halation_first_sigma_um[channel]), std::bit_cast<std::uint32_t>(use == 0 ? 65.0f : 50.0f));
                     EXPECT_EQ(std::bit_cast<std::uint32_t>(view.halation_primary_amount[channel]), std::bit_cast<std::uint32_t>(kAmounts[antihalation][channel]));
                 }
+
+                metadata_case.passed();
             }
         }
     }
@@ -288,11 +294,16 @@ namespace {
         expect_status(fj_test_film_profile_view(retained.owner, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         expect_status(fj_test_film_profile_acquire(text(path), text(key), nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         const std::array<FjStringView, 5> invalid{{{nullptr, 0}, {nullptr, 1}, {path.data(), std::numeric_limits<std::size_t>::max()}, {"\xff", 1}, {"a\0b", 3}}};
+        JuicerTests::GtestCohort invalid_descriptors_cases("invalid-descriptors", std::size(invalid));
+        std::size_t invalid_descriptors_index = 0;
         for (const auto input : invalid) {
+            auto invalid_descriptors_case = invalid_descriptors_cases.case_event(std::to_string(invalid_descriptors_index++));
             expect_status(fj_test_film_profile_acquire(input, text(key), &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(output, nullptr);
             expect_status(fj_test_film_profile_acquire(text(path), input, &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(output, nullptr);
+
+            invalid_descriptors_case.passed();
         }
         bytes.fill('x');
         error = {bytes.data(), bytes.size(), 99};
@@ -312,7 +323,10 @@ namespace {
         write_profile(root, "descending", {.exposure = "[1,0]"});
         write_profile(root, "computed", {.exposure = "[0]", .amplitudes = "[[1e40,2,3],[4,5,6],[7,8,9]]"});
         write_profile(root, "unsupported", {.metadata = ",\"use\":\"unsupported\""});
+        JuicerTests::GtestCohort typed_failures_cases("typed-failures", 4u);
+        std::size_t typed_failures_index = 0;
         for (const char* key : {"decode", "descending", "computed", "unsupported"}) {
+            auto typed_failures_case = typed_failures_cases.case_event(std::to_string(typed_failures_index++));
             const std::string path = root.generic_string();
             FjFilmProfile* owner = nullptr;
             std::array<char, 512> bytes{};
@@ -321,6 +335,8 @@ namespace {
             EXPECT_EQ(owner, nullptr);
             EXPECT_GT(error.length, 0u);
             EXPECT_NE(std::string(bytes.data()).find(key), std::string::npos);
+
+            typed_failures_case.passed();
         }
         const std::string missingRoot = (scratchRoot / "no-catalog").generic_string();
         FjFilmProfile* owner = nullptr;
@@ -391,12 +407,17 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
+        testing::InitGoogleTest(&argc, argv);
+        if (::testing::GTEST_FLAG(list_tests))
+            return RUN_ALL_TESTS();
+        JuicerTests::CaseLog case_log;
         if (argc != 2) {
             throw std::runtime_error("profile owner test requires its isolated artifact root");
         }
         scratchRoot = std::filesystem::path(argv[1]);
-        testing::InitGoogleTest(&argc, argv);
-        return RUN_ALL_TESTS();
+        const int result = RUN_ALL_TESTS();
+        case_log.finish();
+        return result;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "profile owner fixture: %s\n", error.what());
         return 1;

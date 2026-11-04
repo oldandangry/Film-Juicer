@@ -267,8 +267,13 @@ fn failure_partial_write_preserves_existing_sample_and_allows_retry() {
 
 #[test]
 fn failure_retention_resumes_original_payload_on_save_error() {
+    use crate::test_cases::RowCases;
+
     let directory = FailureDirectory::new();
+    let mut cases = RowCases::new("npy-failure-retention-save-errors", ["directory", "file"]);
     for writable in [true, false] {
+        let id = if writable { "directory" } else { "file" };
+        let case = cases.case(id);
         let root = directory
             .0
             .join(if writable { "directory" } else { "file" });
@@ -298,7 +303,9 @@ fn failure_retention_resumes_original_payload_on_save_error() {
             assert!(diagnostic.contains("sample could not be saved"));
             assert_eq!(std::fs::read(&root).unwrap(), b"occupied regular file");
         }
+        case.passed();
     }
+    cases.finish();
 }
 
 #[test]
@@ -326,6 +333,7 @@ fn failure_diagnostic_write_error_preserves_original_payload() {
 
 #[test]
 fn structural_mutations() {
+    use crate::test_cases::RowCases;
     let source = source();
     let payload = 10 + usize::from(u16::from_le_bytes([source[8], source[9]]));
     let expected: Vec<_> = (0..243)
@@ -333,9 +341,16 @@ fn structural_mutations() {
         .collect();
     let mut accepted = 0;
     let mut rejected = 0;
+    let mut cases = RowCases::new(
+        "npy-structural-mutations",
+        SEEDS.iter().map(|seed| format!("seed/{seed:016x}")),
+    );
     for seed in SEEDS {
+        let row = cases.case(format!("seed/{seed:016x}"));
         let mut state = seed;
+        let mut visited = 0;
         for case in 0..CASES {
+            visited += 1;
             let mut bytes = source.clone();
             let mut oracle = None;
             match case % 8 {
@@ -401,7 +416,10 @@ fn structural_mutations() {
                 }
             }
         }
+        assert_eq!(visited, CASES);
+        row.passed();
     }
+    cases.finish();
     assert!(accepted >= 512 && rejected >= 512);
     println!(
         "NPY corpus seeds={SEEDS:x?} cases={} accepted={accepted} rejected={rejected}",
@@ -411,23 +429,47 @@ fn structural_mutations() {
 
 #[test]
 fn representations_and_shape_overflow() {
+    use crate::test_cases::RowCases;
     // Independent expected conversions, including nonfinite samples.
-    for (dtype, payload, expected) in [
+    let representations = [
         ("<f2", vec![0x23, 0x7e], 0x7fc4_6000),
         ("<f4", 0xff80_0000u32.to_le_bytes().to_vec(), 0xff80_0000),
         ("<f8", f64::MAX.to_le_bytes().to_vec(), 0x7f80_0000),
-    ] {
-        for header in [
+    ];
+    let shapes = ["(184467440737095516160,3)", "(18446744073709551615,3)"];
+    let ids = representations
+        .iter()
+        .flat_map(|(dtype, _, _)| {
+            [0, 1].map(move |header| format!("dtype/{dtype}/header/{header}"))
+        })
+        .chain(["overflow-a", "overflow-b"].map(|shape| format!("shape/{shape}")))
+        .collect::<Vec<_>>();
+    let mut cases = RowCases::new("npy-representations", ids);
+    for (dtype, payload, expected) in representations {
+        for (header_index, header) in [
             format!("{{'descr':'{dtype}', 'fortran_order':False, 'shape':(81,3)}}\n"),
             format!("{{\"shape\": (81, 3,), \"fortran_order\": False, \"descr\": \"{dtype}\",}}\n"),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row = cases.case(format!("dtype/{dtype}/header/{header_index}"));
             let mut bytes = npy(header.as_bytes(), &payload.repeat(243));
             check(&mut bytes, 1, Some(Ok(vec![expected; 243])));
+            row.passed();
         }
     }
-    for shape in ["(184467440737095516160,3)", "(18446744073709551615,3)"] {
+    for (index, shape) in shapes.into_iter().enumerate() {
+        let name = if index == 0 {
+            "overflow-a"
+        } else {
+            "overflow-b"
+        };
+        let row = cases.case(format!("shape/{name}"));
         let header = format!("{{'descr':'<f8','fortran_order':False,'shape':{shape}}}\n");
         let mut bytes = npy(header.as_bytes(), &[]);
         check(&mut bytes, 1, Some(Err(ReadErrorKind::Size)));
+        row.passed();
     }
+    cases.finish();
 }

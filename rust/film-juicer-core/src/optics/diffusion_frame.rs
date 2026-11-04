@@ -592,6 +592,7 @@ impl FrameSet {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::{Value, json};
 
@@ -685,51 +686,88 @@ mod tests {
             captured
         };
         let mut mismatches = Vec::new();
-        let mut compare = |label: String, actual: Value, expected: &Value| {
+        fn compare(mismatches: &mut Vec<String>, label: String, actual: Value, expected: &Value) {
             if &actual != expected {
                 mismatches.push(format!("{label}: actual={actual} expected={expected}"));
             }
-        };
-        let samples: Vec<&Value> = captured["samples"]
+        }
+        let samples: Vec<(&str, &Value)> = captured["samples"]
             .as_array()
             .unwrap()
             .iter()
+            .map(|row| ("sample", row))
             .chain(
                 captured["products"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .flat_map(|row| row["samples"].as_array().unwrap()),
+                    .flat_map(|row| {
+                        row["samples"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|sample| ("product-sample", sample))
+                    }),
             )
             .collect();
-        for row in samples {
+        let mut sample_cases = RowCases::new(
+            "diffusion-samples",
+            samples
+                .iter()
+                .map(|(group, row)| format!("{group}/{}", row["input"]["name"].as_str().unwrap())),
+        );
+        for (group, row) in samples {
+            let case = sample_cases.case(format!(
+                "{group}/{}",
+                row["input"]["name"].as_str().unwrap()
+            ));
+            let mismatch_count = mismatches.len();
             let input = &row["input"];
             let label = input["name"].as_str().unwrap();
             match Sample::new(sample_input(input)) {
                 Ok(sample) => {
-                    compare(format!("{label}/success"), json!(true), &row["success"]);
                     compare(
+                        &mut mismatches,
+                        format!("{label}/success"),
+                        json!(true),
+                        &row["success"],
+                    );
+                    compare(
+                        &mut mismatches,
                         format!("{label}/sample"),
                         sample_json(sample.fields()),
                         &row["sample"],
                     );
                     match Components::new((&sample).into()) {
                         Ok(components) => {
-                            compare(format!("{label}/expanded"), json!(true), &row["expanded"]);
                             compare(
+                                &mut mismatches,
+                                format!("{label}/expanded"),
+                                json!(true),
+                                &row["expanded"],
+                            );
+                            compare(
+                                &mut mismatches,
                                 format!("{label}/components"),
                                 components_json(&components),
                                 &row["components"],
                             );
                         }
                         Err(error) => {
-                            compare(format!("{label}/expanded"), json!(false), &row["expanded"]);
                             compare(
+                                &mut mismatches,
+                                format!("{label}/expanded"),
+                                json!(false),
+                                &row["expanded"],
+                            );
+                            compare(
+                                &mut mismatches,
                                 format!("{label}/component_diagnostic"),
                                 json!(error.diagnostic()),
                                 &row["component_diagnostic"],
                             );
                             compare(
+                                &mut mismatches,
                                 format!("{label}/cleared_components"),
                                 json!({"lambda":vec![0; 9],"red":vec![0; 9],"green":vec![0; 9],"blue":vec![0; 9]}),
                                 &row["components"],
@@ -738,26 +776,55 @@ mod tests {
                     }
                 }
                 Err(error) => {
-                    compare(format!("{label}/success"), json!(false), &row["success"]);
                     compare(
+                        &mut mismatches,
+                        format!("{label}/success"),
+                        json!(false),
+                        &row["success"],
+                    );
+                    compare(
+                        &mut mismatches,
                         format!("{label}/diagnostic"),
                         json!(error.diagnostic()),
                         &row["diagnostic"],
                     );
                     compare(
+                        &mut mismatches,
                         format!("{label}/native_default"),
                         json!({"family":1,"weights":vec![0; 3],"centers":vec![0; 3],"warmth":0,"scale":0,"pixel":0,"radius":0,"hash":0}),
                         &row["sample"],
                     );
                 }
             }
+            if mismatches.len() == mismatch_count {
+                case.passed();
+            }
         }
-        for row in captured["frames"]
+        let frames: Vec<(&str, &Value)> = captured["frames"]
             .as_array()
             .unwrap()
             .iter()
-            .chain(captured["products"].as_array().unwrap())
-        {
+            .map(|row| ("frame", row))
+            .chain(
+                captured["products"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| ("product-frame", row)),
+            )
+            .collect();
+        let mut frame_cases = RowCases::new(
+            "diffusion-frames",
+            frames
+                .iter()
+                .map(|(group, row)| format!("{group}/{}", row["input"]["name"].as_str().unwrap())),
+        );
+        for (group, row) in frames {
+            let case = frame_cases.case(format!(
+                "{group}/{}",
+                row["input"]["name"].as_str().unwrap()
+            ));
+            let mismatch_count = mismatches.len();
             let input = &row["input"];
             let label = input["name"].as_str().unwrap();
             let result = FrameSet::new(FrameInput {
@@ -768,6 +835,7 @@ mod tests {
                 enlarger: stage_input(&input["enlarger"]),
             });
             compare(
+                &mut mismatches,
                 format!("{label}/success"),
                 json!(result.is_ok()),
                 &row["success"],
@@ -776,14 +844,33 @@ mod tests {
                 Ok(f) => (frame_json(f.as_ref()), ""),
                 Err(e) => (Value::Null, e.diagnostic()),
             };
-            compare(format!("{label}/frame"), frame, &row["frame"]);
             compare(
+                &mut mismatches,
+                format!("{label}/frame"),
+                frame,
+                &row["frame"],
+            );
+            compare(
+                &mut mismatches,
                 format!("{label}/diagnostic"),
                 json!(diagnostic),
                 &row["diagnostic"],
             );
+            if mismatches.len() == mismatch_count {
+                case.passed();
+            }
         }
-        for row in captured["primitives"].as_array().unwrap() {
+        let primitives = captured["primitives"].as_array().unwrap();
+        let mut primitive_cases = RowCases::new(
+            "diffusion-primitives",
+            primitives
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("primitive/{index}")),
+        );
+        for (index, row) in primitives.iter().enumerate() {
+            let case = primitive_cases.case(format!("primitive/{index}"));
+            let mismatch_count = mismatches.len();
             let value = scalar(&row["input"]["value"]);
             let exponent = scalar(&row["input"]["exponent"]);
             for (name, value) in [
@@ -792,10 +879,14 @@ mod tests {
                 ("pow", value.powf(exponent)),
             ] {
                 compare(
+                    &mut mismatches,
                     format!("primitive/{name}/{}", row["input"]["value"]),
                     json!(value.to_bits()),
                     &row[name],
                 );
+            }
+            if mismatches.len() == mismatch_count {
+                case.passed();
             }
         }
         assert_eq!(captured["samples"].as_array().unwrap().len(), 96);
@@ -808,5 +899,8 @@ mod tests {
             mismatches.len(),
             mismatches.join("\n")
         );
+        sample_cases.finish();
+        frame_cases.finish();
+        primitive_cases.finish();
     }
 }

@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 use film_juicer_core::profile::{
     IlluminantKind, Antihalation, CatalogEntryErrorKind, CatalogError, ChannelModel, Polarity,
     ProfileError, ProfileErrorKind, ProfileSource, ProfileUse, Requirement, Role, Stage, Support,
@@ -166,41 +169,60 @@ fn bundled_catalog_matches_reference() {
     assert_eq!(catalog.default_print().key(), "kodak_portra_endura");
     assert!(catalog.film("missing").is_none());
     assert!(catalog.print("missing").is_none());
-    for (entries, expected) in [
-        (catalog.films(), FILM_CATALOG),
-        (catalog.prints(), PRINT_CATALOG),
+    let mut rows = RowCases::new("bundled-catalog-role-membership", ["film", "print"]);
+    for (role, entries, expected) in [
+        ("film", catalog.films(), FILM_CATALOG),
+        ("print", catalog.prints(), PRINT_CATALOG),
     ] {
+        let row = rows.case(role);
         for (entry, &(key, label)) in entries.iter().zip(expected) {
             assert_eq!((entry.key(), entry.label()), (key, label));
         }
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
 fn loads_bundled_profiles() {
     let catalog = load_catalog(&repository().join("Resources")).unwrap();
-    for (role, entries) in [
-        (Role::Film, catalog.films()),
-        (Role::Print, catalog.prints()),
-    ] {
-        for entry in entries {
-            let (key, label) = (entry.key(), entry.label());
-            let source = match role {
-                Role::Film => load_film_source(entry.source_path()),
-                Role::Print => load_print_source(entry.source_path()),
-            }
-            .unwrap_or_else(|error| panic!("{key}: {error}"));
-            let info = source.info();
-            assert_eq!((info.stock(), info.name()), (key, label));
-            assert_eq!(
-                (info.support(), info.stage(), info.polarity()),
-                (entry.support(), entry.stage(), entry.polarity())
-            );
-            assert_eq!(source.samples().log_exposure().len(), 256);
-            assert_eq!(source.samples().wavelengths()[0].to_bits(), 0x43be0000);
-            assert_eq!(source.samples().wavelengths()[80].to_bits(), 0x44430000);
+    let entries: Vec<_> = catalog
+        .films()
+        .iter()
+        .map(|entry| (Role::Film, entry))
+        .chain(catalog.prints().iter().map(|entry| (Role::Print, entry)))
+        .collect();
+    let ids: Vec<String> = entries
+        .iter()
+        .map(|(role, entry)| {
+            format!(
+                "{}/{}",
+                if *role == Role::Film { "film" } else { "print" },
+                entry.key()
+            )
+        })
+        .collect();
+    let mut rows = RowCases::new("bundled-profile-source-cases", &ids);
+    for ((role, entry), id) in entries.iter().zip(&ids) {
+        let row = rows.case(id);
+        let (key, label) = (entry.key(), entry.label());
+        let source = match role {
+            Role::Film => load_film_source(entry.source_path()),
+            Role::Print => load_print_source(entry.source_path()),
         }
+        .unwrap_or_else(|error| panic!("{key}: {error}"));
+        let info = source.info();
+        assert_eq!((info.stock(), info.name()), (key, label));
+        assert_eq!(
+            (info.support(), info.stage(), info.polarity()),
+            (entry.support(), entry.stage(), entry.polarity())
+        );
+        assert_eq!(source.samples().log_exposure().len(), 256);
+        assert_eq!(source.samples().wavelengths()[0].to_bits(), 0x43be0000);
+        assert_eq!(source.samples().wavelengths()[80].to_bits(), 0x44430000);
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
@@ -436,7 +458,9 @@ fn profile_sources_match_reference() {
 #[test]
 fn loads_default_metadata() {
     let dir = Directory::new();
+    let mut role_cases = RowCases::new("profile-loads_default_metadata", ["film", "print"]);
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let source = dir.load_source(&profile_document(role), role).unwrap();
         let info = source.info();
         assert_eq!((info.stock(), info.name()), ("authored", "authored"));
@@ -467,13 +491,18 @@ fn loads_default_metadata() {
         let samples = source.samples();
         assert!(samples.hanatos2025_adaptation_window_params().is_none());
         assert!(samples.hanatos2025_adaptation_surface_params().is_none());
+
+        row_case.passed();
     }
+    role_cases.finish();
 }
 
 #[test]
 fn preserves_sample_bits() {
     let dir = Directory::new();
+    let mut role_cases = RowCases::new("profile-preserves_sample_bits", ["film", "print"]);
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let source = dir.load_source(&profile_document(role), role).unwrap();
         let samples = source.samples();
         assert_eq!(
@@ -499,13 +528,16 @@ fn preserves_sample_bits() {
                 0x3ff0000010000000
             ]
         );
+
+        row_case.passed();
     }
+    role_cases.finish();
 }
 
 #[test]
 fn rejects_invalid_metadata() {
     let dir = Directory::new();
-    for key in [
+    let string_fields = [
         "stock",
         "name",
         "support",
@@ -516,25 +548,52 @@ fn rejects_invalid_metadata() {
         "channel_model",
         "reference_illuminant",
         "viewing_illuminant",
-    ] {
-        for value in [Value::Null, json!(1), json!(true), json!([]), json!({})] {
-            let mut input = profile_document(Role::Film);
-            input["info"][key] = value;
-            assert_field_error(
-                dir.load_source(&input, Role::Film).unwrap_err(),
-                &format!("info.{key}"),
-                Requirement::String,
-            );
-        }
-    }
-    for key in [
+    ];
+    let invalid_values = [
+        ("null", Value::Null),
+        ("number", json!(1)),
+        ("boolean", json!(true)),
+        ("array", json!([])),
+        ("object", json!({})),
+    ];
+    let enum_fields = [
         "support",
         "stage",
         "type",
         "use",
         "antihalation",
         "channel_model",
-    ] {
+    ];
+    let mut ids: Vec<String> = string_fields
+        .iter()
+        .flat_map(|key| {
+            invalid_values
+                .iter()
+                .map(move |(kind, _)| format!("info/{key}/wrong-type/{kind}"))
+        })
+        .collect();
+    ids.extend(
+        enum_fields
+            .iter()
+            .map(|key| format!("info/{key}/unknown-metadata")),
+    );
+    ids.push("info/stock/missing".to_owned());
+    let mut cases = RowCases::new("invalid-profile-metadata", &ids);
+    for key in string_fields {
+        for (kind, value) in &invalid_values {
+            let row = cases.case(format!("info/{key}/wrong-type/{kind}"));
+            let mut input = profile_document(Role::Film);
+            input["info"][key] = value.clone();
+            assert_field_error(
+                dir.load_source(&input, Role::Film).unwrap_err(),
+                &format!("info.{key}"),
+                Requirement::String,
+            );
+            row.passed();
+        }
+    }
+    for key in enum_fields {
+        let row = cases.case(format!("info/{key}/unknown-metadata"));
         let mut input = profile_document(Role::Film);
         input["info"][key] = json!("unknown");
         assert_field_error(
@@ -542,7 +601,9 @@ fn rejects_invalid_metadata() {
             &format!("info.{key}"),
             Requirement::MetadataValue,
         );
+        row.passed();
     }
+    let row = cases.case("info/stock/missing");
     let mut input = profile_document(Role::Film);
     input["info"].as_object_mut().unwrap().remove("stock");
     assert_field_error(
@@ -550,6 +611,8 @@ fn rejects_invalid_metadata() {
         "info.stock",
         Requirement::String,
     );
+    row.passed();
+    cases.finish();
 }
 
 #[test]
@@ -619,18 +682,30 @@ fn loads_metadata_variants() {
 fn preserves_illuminant_spelling() {
     let dir = Directory::new();
     let mut input = profile_document(Role::Film);
-    for key in ["reference_illuminant", "viewing_illuminant"] {
-        for accepted in [
-            " d55 ",
-            "th_kg3_l",
-            "KINOTON75P",
-            "D1",
-            "BB3200",
-            "BB+3200.5",
-            "BB3.2e3",
-            "BB1e-3",
-            " bb3200.5 ",
-        ] {
+    let keys = ["reference_illuminant", "viewing_illuminant"];
+    let accepted = [
+        " d55 ",
+        "th_kg3_l",
+        "KINOTON75P",
+        "D1",
+        "BB3200",
+        "BB+3200.5",
+        "BB3.2e3",
+        "BB1e-3",
+        " bb3200.5 ",
+    ];
+    let ids: Vec<String> = keys
+        .iter()
+        .flat_map(|key| {
+            accepted
+                .iter()
+                .map(move |value| format!("info/{key}/accepted/{}", value.trim()))
+        })
+        .collect();
+    let mut cases = RowCases::new("accepted-illuminant-spellings", &ids);
+    for key in keys {
+        for accepted in accepted {
+            let row = cases.case(format!("info/{key}/accepted/{}", accepted.trim()));
             input["info"][key] = json!(accepted);
             let source = dir.load_source(&input, Role::Film).unwrap();
             let actual = if key == "reference_illuminant" {
@@ -639,36 +714,67 @@ fn preserves_illuminant_spelling() {
                 source.info().viewing_illuminant()
             };
             assert_eq!(actual, accepted);
+            row.passed();
         }
         input["info"][key] = json!("D55");
     }
+    cases.finish();
 }
 
 #[test]
 fn rejects_invalid_illuminants() {
     let dir = Directory::new();
     let mut input = profile_document(Role::Film);
-    for key in ["reference_illuminant", "viewing_illuminant"] {
-        for rejected in ["D", "D-50", "BB1e309", "unknown"] {
+    let keys = ["reference_illuminant", "viewing_illuminant"];
+    let rejected_values = ["D", "D-50", "BB1e309", "unknown"];
+    let ids: Vec<String> = keys
+        .iter()
+        .flat_map(|key| {
+            rejected_values
+                .iter()
+                .map(move |value| format!("info/{key}/rejected/{value}"))
+        })
+        .collect();
+    let mut cases = RowCases::new("rejected-illuminant-spellings", &ids);
+    for key in keys {
+        for rejected in rejected_values {
+            let row = cases.case(format!("info/{key}/rejected/{rejected}"));
             input["info"][key] = json!(rejected);
             assert_field_error(
                 dir.load_source(&input, Role::Film).unwrap_err(),
                 &format!("info.{key}"),
                 Requirement::Illuminant,
             );
+            row.passed();
         }
         input["info"][key] = json!("D55");
     }
+    cases.finish();
 }
 
 #[test]
 fn adaptation_nullability_follows_role() {
     let dir = Directory::new();
+    let mut role_cases = RowCases::new(
+        "profile-adaptation_nullability_follows_role",
+        ["film", "print"],
+    );
+    let keys = [
+        "hanatos2025_adaptation_window_params",
+        "hanatos2025_adaptation_surface_params",
+    ];
+    let inner_ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| keys.iter().map(move |key| format!("{role}/{key}")))
+        .collect();
+    let mut adaptation_cases = RowCases::new("adaptation-nullability-fields", &inner_ids);
     for role in [Role::Film, Role::Print] {
-        for key in [
-            "hanatos2025_adaptation_window_params",
-            "hanatos2025_adaptation_surface_params",
-        ] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
+        for key in keys {
+            let field_case = adaptation_cases.case(format!(
+                "{}/{key}",
+                if role == Role::Film { "film" } else { "print" }
+            ));
             let mut input = profile_document(role);
             input["data"][key] = Value::Null;
             if role == Role::Print {
@@ -682,18 +788,35 @@ fn adaptation_nullability_follows_role() {
             }
             input["data"][key] = json!([]);
             assert!(dir.load_source(&input, role).is_ok());
+            field_case.passed();
         }
+
+        row_case.passed();
     }
+    adaptation_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
 fn validates_adaptation_samples() {
     let dir = Directory::new();
+    let mut role_cases = RowCases::new("profile-validates_adaptation_samples", ["film", "print"]);
+    let keys = [
+        "hanatos2025_adaptation_window_params",
+        "hanatos2025_adaptation_surface_params",
+    ];
+    let inner_ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| keys.iter().map(move |key| format!("{role}/{key}")))
+        .collect();
+    let mut adaptation_cases = RowCases::new("adaptation-sample-fields", &inner_ids);
     for role in [Role::Film, Role::Print] {
-        for key in [
-            "hanatos2025_adaptation_window_params",
-            "hanatos2025_adaptation_surface_params",
-        ] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
+        for key in keys {
+            let field_case = adaptation_cases.case(format!(
+                "{}/{key}",
+                if role == Role::Film { "film" } else { "print" }
+            ));
             let mut input = profile_document(role);
             input["data"][key] = json!(false);
             assert_field_error(
@@ -769,20 +892,38 @@ fn validates_adaptation_samples() {
                         .is_infinite()
                 );
             }
+            field_case.passed();
         }
+
+        row_case.passed();
     }
+    adaptation_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
 fn requires_consumed_sample_fields() {
     let dir = Directory::new();
+    let mut role_cases =
+        RowCases::new("profile-requires_consumed_sample_fields", ["film", "print"]);
+    let keys = [
+        "wavelengths",
+        "log_sensitivity",
+        "channel_density",
+        "base_density",
+    ];
+    let inner_ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| keys.iter().map(move |key| format!("{role}/{key}")))
+        .collect();
+    let mut sample_cases = RowCases::new("required-sample-fields", &inner_ids);
     for role in [Role::Film, Role::Print] {
-        for key in [
-            "wavelengths",
-            "log_sensitivity",
-            "channel_density",
-            "base_density",
-        ] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
+        for key in keys {
+            let field_case = sample_cases.case(format!(
+                "{}/{key}",
+                if role == Role::Film { "film" } else { "print" }
+            ));
             let mut input = profile_document(role);
             input["data"].as_object_mut().unwrap().remove(key);
             assert_field_error(
@@ -790,19 +931,37 @@ fn requires_consumed_sample_fields() {
                 &format!("data.{key}"),
                 Requirement::ArrayLength(81),
             );
+            field_case.passed();
         }
+
+        row_case.passed();
     }
+    sample_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
 fn validates_sample_dimensions() {
     let dir = Directory::new();
-    for key in [
+    let outer_fields = [
         "wavelengths",
         "log_sensitivity",
         "channel_density",
         "base_density",
-    ] {
+    ];
+    let inner_fields = ["log_sensitivity", "channel_density"];
+    let ids: Vec<String> = outer_fields
+        .iter()
+        .map(|key| format!("outer/{key}/wrong-length"))
+        .chain(
+            inner_fields
+                .iter()
+                .map(|key| format!("inner/{key}/wrong-length")),
+        )
+        .collect();
+    let mut cases = RowCases::new("sample-dimension-errors", &ids);
+    for key in outer_fields {
+        let row = cases.case(format!("outer/{key}/wrong-length"));
         let mut input = profile_document(Role::Film);
         input["data"][key] = json!([1]);
         assert_field_error(
@@ -810,8 +969,10 @@ fn validates_sample_dimensions() {
             &format!("data.{key}"),
             Requirement::ArrayLength(81),
         );
+        row.passed();
     }
-    for key in ["log_sensitivity", "channel_density"] {
+    for key in inner_fields {
+        let row = cases.case(format!("inner/{key}/wrong-length"));
         let mut input = profile_document(Role::Film);
         input["data"][key][0] = json!([1, 2]);
         assert_field_error(
@@ -819,13 +980,25 @@ fn validates_sample_dimensions() {
             &format!("data.{key}[0]"),
             Requirement::ArrayLength(3),
         );
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
 fn preserves_sample_conversion() {
     let dir = Directory::new();
-    for key in ["log_sensitivity", "channel_density"] {
+    let fields = ["log_sensitivity", "channel_density"];
+    let ids: Vec<String> = fields
+        .iter()
+        .flat_map(|key| {
+            ["reject-string", "f32-overflow-null"].map(|variant| format!("{key}/{variant}"))
+        })
+        .chain(std::iter::once("base_density/reject-boolean".to_owned()))
+        .collect();
+    let mut cases = RowCases::new("sample-conversion-inputs", &ids);
+    for key in fields {
+        let string_row = cases.case(format!("{key}/reject-string"));
         let mut input = profile_document(Role::Film);
         input["data"][key][0] = json!(["1", 2, 3]);
         assert_field_error(
@@ -833,6 +1006,8 @@ fn preserves_sample_conversion() {
             &format!("data.{key}[0][0]"),
             Requirement::FiniteNumber,
         );
+        string_row.passed();
+        let conversion_row = cases.case(format!("{key}/f32-overflow-null"));
         input["data"][key][0] = json!([1e40, null, -1e40]);
         assert_eq!(
             if key == "log_sensitivity" {
@@ -850,7 +1025,9 @@ fn preserves_sample_conversion() {
             },
             [0x7f800000, 0x7fc00000, 0xff800000]
         );
+        conversion_row.passed();
     }
+    let base_density_row = cases.case("base_density/reject-boolean");
     let mut input = profile_document(Role::Film);
     input["data"]["base_density"][0] = json!(true);
     assert_field_error(
@@ -858,12 +1035,33 @@ fn preserves_sample_conversion() {
         "data.base_density[0]",
         Requirement::FiniteNumber,
     );
+    base_density_row.passed();
+    cases.finish();
 }
 
 #[test]
 fn preserves_authored_wavelength_positions() {
     let dir = Directory::new();
+    let mut role_cases = RowCases::new(
+        "profile-preserves_authored_wavelength_positions",
+        ["film", "print"],
+    );
+    let invalid_values = [
+        ("null", Value::Null),
+        ("boolean", json!(true)),
+        ("string", json!("381")),
+    ];
+    let invalid_ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| {
+            invalid_values
+                .iter()
+                .map(move |(kind, _)| format!("{role}/{kind}/wavelengths/0"))
+        })
+        .collect();
+    let mut invalid_cases = RowCases::new("invalid-wavelength-samples", &invalid_ids);
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let mut input = profile_document(role);
         let labels: [f32; 81] = std::array::from_fn(|index| 381.0 + index as f32 * 5.0);
         input["data"]["wavelengths"] = json!(labels.as_slice());
@@ -905,34 +1103,65 @@ fn preserves_authored_wavelength_positions() {
                 .collect::<Vec<_>>(),
             [0x43be0000, 0x7f800000, 0x80000000]
         );
-        for invalid in [Value::Null, json!(true), json!("381")] {
-            input["data"]["wavelengths"][0] = invalid;
+        for (kind, invalid) in &invalid_values {
+            let invalid_case = invalid_cases.case(format!(
+                "{}/{kind}/wavelengths/0",
+                if role == Role::Film { "film" } else { "print" }
+            ));
+            input["data"]["wavelengths"][0] = invalid.clone();
             assert_field_error(
                 dir.load_source(&input, role).unwrap_err(),
                 "data.wavelengths[0]",
                 Requirement::FiniteNumber,
             );
+            invalid_case.passed();
         }
+
+        row_case.passed();
     }
+    invalid_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
 fn preserves_authored_exposure_sequence() {
     let dir = Directory::new();
     // Inputs are the oracle: decoding must preserve every authored f64 bit and position.
-    let sequences: &[&[f64]] = &[
-        &[1.0],
-        &[0.0, 0.0],
-        &[2.0, 1.0, -1.0],
-        &[1.00000001, 1.00000002],
-        &[1.00000002, 1.00000001],
-        &[1.0, -0.0, 0.0, -1.0],
-        &[-1e40, -1.0, 0.0, 1.0, 1e40],
-        &[1e40, -1e40],
+    let sequences: [(&str, &[f64]); 8] = [
+        ("single", &[1.0][..]),
+        ("equal-zeroes", &[0.0, 0.0]),
+        ("descending", &[2.0, 1.0, -1.0]),
+        ("ascending-near-equal", &[1.00000001, 1.00000002]),
+        ("descending-near-equal", &[1.00000002, 1.00000001]),
+        ("signed-zero", &[1.0, -0.0, 0.0, -1.0]),
+        ("wide-finite", &[-1e40, -1.0, 0.0, 1.0, 1e40]),
+        ("opposite-wide", &[1e40, -1e40]),
     ];
+    let mut role_cases = RowCases::new(
+        "profile-preserves_authored_exposure_sequence",
+        ["film", "print"],
+    );
+    let sequence_ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| {
+            sequences
+                .iter()
+                .map(move |(name, _)| format!("{role}/sequence/{name}"))
+                .chain([
+                    format!("{role}/narrowing/descending-double"),
+                    format!("{role}/narrowing/f32-overflow"),
+                ])
+        })
+        .collect();
+    let mut sequence_cases = RowCases::new("authored-exposure-sequences", &sequence_ids);
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let mut input = profile_document(role);
-        for &authored in sequences {
+        for (name, authored) in sequences {
+            let sequence_case = sequence_cases.case(format!(
+                "{}/sequence/{name}",
+                if role == Role::Film { "film" } else { "print" }
+            ));
             input["data"]["log_exposure"] = json!(authored);
             let source = dir.load_source(&input, role).unwrap();
             let exposure = source.samples().log_exposure();
@@ -941,13 +1170,23 @@ fn preserves_authored_exposure_sequence() {
                 authored.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
                 "{role:?} {authored:?}"
             );
+            sequence_case.passed();
         }
+        let descending_case = sequence_cases.case(format!(
+            "{}/narrowing/descending-double",
+            if role == Role::Film { "film" } else { "print" }
+        ));
         input["data"]["log_exposure"] = json!([1.00000002, 1.00000001]);
         let source = dir.load_source(&input, role).unwrap();
         let exposure = source.samples().log_exposure();
         assert!(exposure[0] > exposure[1]);
         assert_eq!((exposure[0] as f32).to_bits(), 0x3f800000);
         assert_eq!((exposure[1] as f32).to_bits(), 0x3f800000);
+        descending_case.passed();
+        let overflow_case = sequence_cases.case(format!(
+            "{}/narrowing/f32-overflow",
+            if role == Role::Film { "film" } else { "print" }
+        ));
         input["data"]["log_exposure"] = json!([-1e40, 1e40]);
         let source = dir.load_source(&input, role).unwrap();
         assert_eq!(
@@ -959,45 +1198,64 @@ fn preserves_authored_exposure_sequence() {
                 .collect::<Vec<_>>(),
             [0xff800000, 0x7f800000]
         );
+        overflow_case.passed();
+
+        row_case.passed();
     }
+    sequence_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
 fn requires_exposure_array_and_numbers() {
     let dir = Directory::new();
+    let mut role_cases = RowCases::new(
+        "profile-requires_exposure_array_and_numbers",
+        ["film", "print"],
+    );
+    let failure_cases = [
+        ("null-array", Value::Null),
+        ("number-array", json!(1)),
+        ("empty-array", json!([])),
+        ("null-sample", json!([null])),
+        ("boolean-sample", json!([true])),
+        ("string-sample", json!(["1"])),
+        ("nested-array-sample", json!([[]])),
+    ];
+    let inner_ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| {
+            failure_cases
+                .iter()
+                .map(move |(id, _)| format!("{role}/{id}"))
+                .chain(std::iter::once(format!("{role}/missing-array")))
+        })
+        .collect();
+    let mut exposure_cases = RowCases::new("exposure-array-errors", &inner_ids);
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let mut input = profile_document(role);
-        for (array, field, requirement) in [
-            (Value::Null, "data.log_exposure", Requirement::ExposureCount),
-            (json!(1), "data.log_exposure", Requirement::ExposureCount),
-            (json!([]), "data.log_exposure", Requirement::ExposureCount),
-            (
-                json!([null]),
-                "data.log_exposure[0]",
-                Requirement::FiniteNumber,
-            ),
-            (
-                json!([true]),
-                "data.log_exposure[0]",
-                Requirement::FiniteNumber,
-            ),
-            (
-                json!(["1"]),
-                "data.log_exposure[0]",
-                Requirement::FiniteNumber,
-            ),
-            (
-                json!([[]]),
-                "data.log_exposure[0]",
-                Requirement::FiniteNumber,
-            ),
-        ] {
-            input["data"]["log_exposure"] = array;
+        for (id, array) in &failure_cases {
+            let error_case = exposure_cases.case(format!(
+                "{}/{id}",
+                if role == Role::Film { "film" } else { "print" }
+            ));
+            input["data"]["log_exposure"] = array.clone();
             let error = dir.load_source(&input, role).unwrap_err();
             assert_eq!(error.role, role);
             assert_eq!(error.stock.as_deref(), Some("authored"));
+            let (field, requirement) = if id.ends_with("array") {
+                ("data.log_exposure", Requirement::ExposureCount)
+            } else {
+                ("data.log_exposure[0]", Requirement::FiniteNumber)
+            };
             assert_field_error(error, field, requirement);
+            error_case.passed();
         }
+        let missing_case = exposure_cases.case(format!(
+            "{}/missing-array",
+            if role == Role::Film { "film" } else { "print" }
+        ));
         input["data"]
             .as_object_mut()
             .unwrap()
@@ -1007,13 +1265,34 @@ fn requires_exposure_array_and_numbers() {
             "data.log_exposure",
             Requirement::ExposureCount,
         );
+        missing_case.passed();
+
+        row_case.passed();
     }
+    exposure_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
 fn decodes_model_structure_and_numbers() {
     let dir = Directory::new();
-    for key in ["centers", "amplitudes", "sigmas"] {
+    let fields = ["centers", "amplitudes", "sigmas"];
+    let invalid_values = ["null", "boolean", "string"];
+    let ids: Vec<String> = fields
+        .iter()
+        .flat_map(|key| {
+            std::iter::once(format!("{key}/outer-shape"))
+                .chain(
+                    invalid_values
+                        .iter()
+                        .map(move |kind| format!("{key}/coefficient/{kind}")),
+                )
+                .chain([format!("{key}/row-width"), format!("{key}/missing-field")])
+        })
+        .collect();
+    let mut cases = RowCases::new("density-model-structure-inputs", &ids);
+    for key in fields {
+        let outer_shape = cases.case(format!("{key}/outer-shape"));
         let mut input = profile_document(Role::Film);
         input["data"]["density_curves_model"][key] = json!([[1, 2, 3]]);
         assert_field_error(
@@ -1021,7 +1300,13 @@ fn decodes_model_structure_and_numbers() {
             "data.density_curves_model",
             Requirement::ModelCoefficients,
         );
-        for invalid in [Value::Null, json!(true), json!("1")] {
+        outer_shape.passed();
+        for (kind, invalid) in [
+            ("null", Value::Null),
+            ("boolean", json!(true)),
+            ("string", json!("1")),
+        ] {
+            let row = cases.case(format!("{key}/coefficient/{kind}"));
             input = profile_document(Role::Film);
             input["data"]["density_curves_model"][key][0][0] = invalid;
             assert_field_error(
@@ -1029,7 +1314,9 @@ fn decodes_model_structure_and_numbers() {
                 "data.density_curves_model",
                 Requirement::ModelCoefficients,
             );
+            row.passed();
         }
+        let row_width = cases.case(format!("{key}/row-width"));
         input = profile_document(Role::Film);
         input["data"]["density_curves_model"][key][0] = json!([1, 2]);
         assert_field_error(
@@ -1037,6 +1324,8 @@ fn decodes_model_structure_and_numbers() {
             "data.density_curves_model",
             Requirement::ModelCoefficients,
         );
+        row_width.passed();
+        let missing_field = cases.case(format!("{key}/missing-field"));
         input = profile_document(Role::Film);
         input["data"]["density_curves_model"]
             .as_object_mut()
@@ -1047,15 +1336,45 @@ fn decodes_model_structure_and_numbers() {
             "data.density_curves_model",
             Requirement::ModelCoefficients,
         );
+        missing_field.passed();
     }
+    cases.finish();
 }
 
 #[test]
 fn preserves_unusual_authored_coefficient_bits() {
     let dir = Directory::new();
+    let mut role_cases = RowCases::new(
+        "profile-preserves_unusual_authored_coefficient_bits",
+        ["film", "print"],
+    );
+    let fields = ["centers", "amplitudes", "sigmas"];
+    let raw_values = [
+        ("positive-overflow", 1e40_f64),
+        ("negative-overflow", -1e40),
+        ("positive-underflow", 1e-50),
+        ("negative-underflow", -1e-50),
+        ("negative-one", -1.0),
+        ("positive-zero", 0.0),
+        ("negative-zero", -0.0),
+    ];
+    let mut coefficient_ids = Vec::new();
+    for role in ["film", "print"] {
+        for field in fields {
+            for (value, _) in raw_values {
+                coefficient_ids.push(format!("{role}/{field}/{value}"));
+            }
+        }
+    }
+    let mut coefficient_cases = RowCases::new("authored-density-coefficients", &coefficient_ids);
     for role in [Role::Film, Role::Print] {
-        for key in ["centers", "amplitudes", "sigmas"] {
-            for raw in [1e40_f64, -1e40, 1e-50, -1e-50, -1.0, 0.0, -0.0] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
+        for key in fields {
+            for (value_name, raw) in raw_values {
+                let coefficient_case = coefficient_cases.case(format!(
+                    "{}/{key}/{value_name}",
+                    if role == Role::Film { "film" } else { "print" }
+                ));
                 let mut input = profile_document(role);
                 input["data"]["density_curves_model"][key][2][1] = json!(raw);
                 let source = dir.load_source(&input, role).unwrap();
@@ -1071,9 +1390,14 @@ fn preserves_unusual_authored_coefficient_bits() {
                     raw.to_bits(),
                     "{role:?} {key} {raw}"
                 );
+                coefficient_case.passed();
             }
         }
+
+        row_case.passed();
     }
+    coefficient_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
@@ -1096,23 +1420,44 @@ fn ignores_sampled_density_curves() {
 #[test]
 fn reports_source_errors() {
     let dir = Directory::new();
+    let json_inputs = ["malformed-object", "trailing-value", "unused-overflow"];
+    let root_inputs = ["array", "null", "number"];
+    let ids: Vec<String> = std::iter::once("missing-file".to_owned())
+        .chain(json_inputs.iter().map(|id| format!("json/{id}")))
+        .chain(root_inputs.iter().map(|id| format!("root/{id}")))
+        .chain([
+            "missing-data-object".to_owned(),
+            "missing-density-model".to_owned(),
+        ])
+        .collect();
+    let mut cases = RowCases::new("profile-source-error-inputs", &ids);
+    let missing_file = cases.case("missing-file");
     let error = load_film_source(&dir.0.join("missing.json")).unwrap_err();
     assert!(matches!(error.kind, ProfileErrorKind::Read(_)));
-    for text in ["{", "true trailing", "{\"unused\":1e999}"] {
+    missing_file.passed();
+    for (id, text) in json_inputs
+        .into_iter()
+        .zip(["{", "true trailing", "{\"unused\":1e999}"])
+    {
+        let row = cases.case(format!("json/{id}"));
         let path = dir.write("source.json", text);
         assert!(matches!(
             load_film_source(&path).unwrap_err().kind,
             ProfileErrorKind::Json(_)
         ));
+        row.passed();
     }
-    for text in ["[]", "null", "1"] {
+    for (id, text) in root_inputs.into_iter().zip(["[]", "null", "1"]) {
+        let row = cases.case(format!("root/{id}"));
         let path = dir.write("source.json", text);
         assert_field_error(
             load_film_source(&path).unwrap_err(),
             "info",
             Requirement::Object,
         );
+        row.passed();
     }
+    let missing_data = cases.case("missing-data-object");
     let mut input = profile_document(Role::Film);
     input.as_object_mut().unwrap().remove("data");
     assert_field_error(
@@ -1120,6 +1465,8 @@ fn reports_source_errors() {
         "data",
         Requirement::Object,
     );
+    missing_data.passed();
+    let missing_model = cases.case("missing-density-model");
     input = profile_document(Role::Film);
     input["data"]
         .as_object_mut()
@@ -1130,6 +1477,8 @@ fn reports_source_errors() {
         "data.density_curves_model",
         Requirement::Object,
     );
+    missing_model.passed();
+    cases.finish();
 }
 
 #[test]
@@ -1186,10 +1535,21 @@ fn last_json_member_wins() {
             "\"stock\":\"authored\"",
             "\"stock\":1,\"stock\":\"authored\"",
         );
-    for text in [text.clone(), format!("\u{feff}{text}")] {
+    let variants = [
+        ("plain", text.clone()),
+        ("bom-prefixed", format!("\u{feff}{text}")),
+    ];
+    let mut rows = RowCases::new(
+        "last-json-member-variants",
+        variants.iter().map(|(id, _)| *id),
+    );
+    for (id, text) in variants {
+        let row = rows.case(id);
         let path = dir.write("source.json", text);
         assert_eq!(load_film_source(&path).unwrap().info().stock(), "authored");
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
@@ -1233,7 +1593,21 @@ fn classifies_catalog_entries() {
     );
     assert_eq!(catalog.ignored().len(), 4);
     assert_eq!(catalog.unavailable().len(), 5);
-    for entry in catalog.unavailable() {
+    let ids: Vec<String> = catalog
+        .unavailable()
+        .iter()
+        .map(|entry| {
+            entry
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let mut rows = RowCases::new("unavailable-catalog-entries", &ids);
+    for (entry, id) in catalog.unavailable().iter().zip(&ids) {
+        let row = rows.case(id);
         match entry.path.file_name().unwrap().to_str().unwrap() {
             "bad.json" | "trailing.json" => {
                 assert!(matches!(entry.kind, CatalogEntryErrorKind::Json(_)))
@@ -1241,7 +1615,9 @@ fn classifies_catalog_entries() {
             "no-stock.json" => assert!(matches!(entry.kind, CatalogEntryErrorKind::MissingStock)),
             _ => assert!(matches!(entry.kind, CatalogEntryErrorKind::UnsupportedRole)),
         }
+        row.passed();
     }
+    rows.finish();
     let film = catalog.default_film();
     assert_eq!(
         (film.key(), film.label()),
@@ -1257,7 +1633,12 @@ fn classifies_catalog_entries() {
 fn catalog_defers_sample_decoding_until_selection() {
     let dir = Directory::new();
     dir.write_defaults();
+    let mut role_cases = RowCases::new(
+        "profile-catalog_defers_sample_decoding_until_selection",
+        ["film", "print"],
+    );
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let mut input = profile_document(role);
         let key = if role == Role::Film {
             "trusted-film"
@@ -1298,12 +1679,20 @@ fn catalog_defers_sample_decoding_until_selection() {
         ));
         assert_eq!(catalog.default_film().key(), "kodak_portra_400");
         assert_eq!(catalog.default_print().key(), "kodak_portra_endura");
+
+        row_case.passed();
     }
+    role_cases.finish();
 }
 
 #[test]
 fn rejects_catalog_duplicates_per_role() {
+    let mut role_cases = RowCases::new(
+        "profile-rejects_catalog_duplicates_per_role",
+        ["film", "print"],
+    );
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let dir = Directory::new();
         dir.write_defaults();
         let (key, stage) = if role == Role::Film {
@@ -1323,7 +1712,10 @@ fn rejects_catalog_duplicates_per_role() {
             }
             error => panic!("{error}"),
         }
+
+        row_case.passed();
     }
+    role_cases.finish();
     let dir = Directory::new();
     dir.write_defaults();
     dir.write_entry(
@@ -1382,52 +1774,71 @@ fn catalog_requires_roles_and_defaults() {
 #[test]
 fn blackbody_requires_finite_decimal() {
     let dir = Directory::new();
+    let labels = [
+        ("BB3200", true),
+        (" bb+3200.5\t", true),
+        ("Bb3.2e+3", true),
+        ("BB1e-0", true),
+        ("BB1.5e308", true),
+        ("BB5e-324", true),
+        ("BB0.1e-323", true),
+        ("BB1e309", false),
+        ("BB0", true),
+        ("BB-0", true),
+        ("BB-3200", true),
+        (" \tBb-3200.5\r\n", true),
+        ("BB-1.5e-3", true),
+        ("BB1e-999", true),
+        ("BB-1e-999", true),
+        ("BB-1e309", false),
+        ("BBNaN", false),
+        ("BBinf", false),
+        ("BBInfinity", false),
+        ("BB-inf", false),
+        ("BB+NaN", false),
+        ("BB+", false),
+        ("BB-", false),
+        ("BB", false),
+        ("BB1e-", false),
+        ("BB3.2.0", false),
+        ("BB3_200", false),
+        ("BB3,200", false),
+        ("BB3200!", false),
+        ("BB 3200", false),
+        ("B.B3200", false),
+        ("éBB3200", false),
+        ("☀BB3200", false),
+        ("BB0x1p4", false),
+        ("BB0X1000", false),
+        ("BB0x1p-1074", false),
+        ("BB0x1fffffffffffffp971", false),
+        ("BB0x1fffffffffffff8p967", false),
+        ("BB0x1fffffffffffff80p963", false),
+    ];
+    let mut role_cases = RowCases::new(
+        "profile-blackbody_requires_finite_decimal",
+        ["film", "print"],
+    );
+    let mut inner_ids = Vec::new();
+    for role in ["film", "print"] {
+        for key in ["reference_illuminant", "viewing_illuminant"] {
+            for (label, _) in labels {
+                inner_ids.push(format!("{role}/{key}/label-{label:?}"));
+            }
+        }
+    }
+    let mut illuminant_cases = RowCases::new("blackbody-illuminant-labels", &inner_ids);
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let mut input = profile_document(role);
         for key in ["reference_illuminant", "viewing_illuminant"] {
             // Product-contract expectations, including cases whose validity would
             // change if decimal points, exponent signs or punctuation were removed.
-            for (illuminant, accepted) in [
-                ("BB3200", true),
-                (" bb+3200.5\t", true),
-                ("Bb3.2e+3", true),
-                ("BB1e-0", true),
-                ("BB1.5e308", true),
-                ("BB5e-324", true),
-                ("BB0.1e-323", true),
-                ("BB1e309", false),
-                ("BB0", true),
-                ("BB-0", true),
-                ("BB-3200", true),
-                (" \tBb-3200.5\r\n", true),
-                ("BB-1.5e-3", true),
-                ("BB1e-999", true),
-                ("BB-1e-999", true),
-                ("BB-1e309", false),
-                ("BBNaN", false),
-                ("BBinf", false),
-                ("BBInfinity", false),
-                ("BB-inf", false),
-                ("BB+NaN", false),
-                ("BB+", false),
-                ("BB-", false),
-                ("BB", false),
-                ("BB1e-", false),
-                ("BB3.2.0", false),
-                ("BB3_200", false),
-                ("BB3,200", false),
-                ("BB3200!", false),
-                ("BB 3200", false),
-                ("B.B3200", false),
-                ("éBB3200", false),
-                ("☀BB3200", false),
-                ("BB0x1p4", false),
-                ("BB0X1000", false),
-                ("BB0x1p-1074", false),
-                ("BB0x1fffffffffffffp971", false),
-                ("BB0x1fffffffffffff8p967", false),
-                ("BB0x1fffffffffffff80p963", false),
-            ] {
+            for (illuminant, accepted) in labels {
+                let illuminant_case = illuminant_cases.case(format!(
+                    "{}/{key}/label-{illuminant:?}",
+                    if role == Role::Film { "film" } else { "print" }
+                ));
                 input["info"][key] = json!(illuminant);
                 let result = dir.load_source(&input, role);
                 assert_eq!(result.is_ok(), accepted, "{role:?} {key} {illuminant}");
@@ -1445,17 +1856,61 @@ fn blackbody_requires_finite_decimal() {
                         assert_field_error(error, &format!("info.{key}"), Requirement::Illuminant);
                     }
                 }
+                illuminant_case.passed();
             }
             input["info"][key] = json!("D55");
         }
+
+        row_case.passed();
     }
+    illuminant_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
 fn preserves_json_number_bits() {
     let dir = Directory::new();
     dir.write_defaults();
+    let number_tokens = [
+        ("-0", 0x8000000000000000, 0x80000000),
+        ("-0.0", 0x8000000000000000, 0x80000000),
+        ("-0e0", 0x8000000000000000, 0x80000000),
+        ("-0e-0", 0x8000000000000000, 0x80000000),
+        ("-0e+0", 0x8000000000000000, 0x80000000),
+        ("0", 0, 0),
+        ("0e-0", 0, 0),
+        ("1e-0", 0x3ff0000000000000, 0x3f800000),
+        ("1E-0", 0x3ff0000000000000, 0x3f800000),
+        ("1e-00", 0x3ff0000000000000, 0x3f800000),
+        ("1e+0", 0x3ff0000000000000, 0x3f800000),
+    ];
+    let mut role_cases = RowCases::new("profile-preserves_json_number_bits", ["film", "print"]);
+    let token_ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| {
+            number_tokens
+                .iter()
+                .map(move |(token, _, _)| format!("{role}/{token}"))
+        })
+        .collect();
+    let mut token_cases = RowCases::new("preserved-json-number-tokens", &token_ids);
+    let sample_names = [
+        "log-sensitivity",
+        "channel-density",
+        "base-density",
+        "adaptation-window",
+    ];
+    let mut sample_ids = Vec::new();
+    for role in ["film", "print"] {
+        for (token, _, _) in number_tokens {
+            for sample in sample_names {
+                sample_ids.push(format!("{role}/{token}/{sample}"));
+            }
+        }
+    }
+    let mut sample_cases = RowCases::new("preserved-json-f32-samples", &sample_ids);
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let mut input = profile_document(role);
         input["info"]["stock"] = json!(r#"quoted " -0, slash \ 1e-0]"#);
         input["data"]["log_exposure"] = json!(["TOKEN"]);
@@ -1466,19 +1921,11 @@ fn preserves_json_number_bits() {
         input["data"]["density_curves_model"]["amplitudes"][0][0] = json!("TOKEN");
         input["data"]["hanatos2025_adaptation_window_params"] = json!(["TOKEN", 1, 2, 3]);
         input["unused"] = json!({"$serde_json::private::Number":"not a number"});
-        for (token, bits_f64, bits_f32) in [
-            ("-0", 0x8000000000000000, 0x80000000),
-            ("-0.0", 0x8000000000000000, 0x80000000),
-            ("-0e0", 0x8000000000000000, 0x80000000),
-            ("-0e-0", 0x8000000000000000, 0x80000000),
-            ("-0e+0", 0x8000000000000000, 0x80000000),
-            ("0", 0, 0),
-            ("0e-0", 0, 0),
-            ("1e-0", 0x3ff0000000000000, 0x3f800000),
-            ("1E-0", 0x3ff0000000000000, 0x3f800000),
-            ("1e-00", 0x3ff0000000000000, 0x3f800000),
-            ("1e+0", 0x3ff0000000000000, 0x3f800000),
-        ] {
+        for &(token, bits_f64, bits_f32) in &number_tokens {
+            let token_case = token_cases.case(format!(
+                "{}/{token}",
+                if role == Role::Film { "film" } else { "print" }
+            ));
             let text = serde_json::to_string(&input)
                 .unwrap()
                 .replace("\"TOKEN\"", token);
@@ -1496,16 +1943,25 @@ fn preserves_json_number_bits() {
                 source.density_model().amplitudes()[0][0].to_bits(),
                 bits_f64
             );
-            for sample in [
-                source.samples().log_sensitivity()[0][0],
-                source.samples().channel_density()[0][0],
-                source.samples().base_density()[0],
-                source
-                    .samples()
-                    .hanatos2025_adaptation_window_params()
-                    .unwrap()[0],
-            ] {
+            let sample_values = [
+                ("log-sensitivity", source.samples().log_sensitivity()[0][0]),
+                ("channel-density", source.samples().channel_density()[0][0]),
+                ("base-density", source.samples().base_density()[0]),
+                (
+                    "adaptation-window",
+                    source
+                        .samples()
+                        .hanatos2025_adaptation_window_params()
+                        .unwrap()[0],
+                ),
+            ];
+            for (sample_name, sample) in sample_values {
+                let sample_case = sample_cases.case(format!(
+                    "{}/{token}/{sample_name}",
+                    if role == Role::Film { "film" } else { "print" }
+                ));
                 assert_eq!(sample.to_bits(), bits_f32, "{role:?} {token}");
+                sample_case.passed();
             }
             dir.write("profiles/numbers.json", text);
             let catalog = load_catalog(&dir.0).unwrap();
@@ -1516,36 +1972,68 @@ fn preserves_json_number_bits() {
             }
             .unwrap();
             assert_eq!(entry.label(), stock);
+            token_case.passed();
         }
+
+        row_case.passed();
     }
+    sample_cases.finish();
+    token_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
 fn requires_complete_json_documents() {
     let dir = Directory::new();
     dir.write_defaults();
+    let invalid_documents = [
+        ("unfinished-exponent", "1e"),
+        ("overflow-exponent", "1e309"),
+        ("nan-token", "NaN"),
+        ("infinity-token", "Infinity"),
+        ("truncated-document", "truncate"),
+        ("trailing-token", "trailing"),
+        ("second-document", "second-document"),
+    ];
+    let mut role_cases = RowCases::new(
+        "profile-requires_complete_json_documents",
+        ["film", "print"],
+    );
+    let document_ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| {
+            invalid_documents
+                .iter()
+                .map(move |(id, _)| format!("{role}/{id}"))
+                .chain(std::iter::once(format!("{role}/trailing-whitespace")))
+        })
+        .collect();
+    let mut document_cases = RowCases::new("complete-json-document-cases", &document_ids);
     for role in [Role::Film, Role::Print] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
         let mut input = profile_document(role);
         input["data"]["log_exposure"] = json!(["TOKEN"]);
         let text = serde_json::to_string(&input).unwrap();
         let complete = text.replace("\"TOKEN\"", "0");
-        for text in [
-            text.replace("\"TOKEN\"", "1e"),
-            text.replace("\"TOKEN\"", "1e309"),
-            text.replace("\"TOKEN\"", "NaN"),
-            text.replace("\"TOKEN\"", "Infinity"),
-            complete[..complete.len() - 1].to_owned(),
-            format!("{complete} trailing"),
-            format!("{complete} {{}}"),
-        ] {
-            let path = dir.write("source.json", &text);
+        for (id, replacement) in invalid_documents {
+            let document_case = document_cases.case(format!(
+                "{}/{id}",
+                if role == Role::Film { "film" } else { "print" }
+            ));
+            let malformed = match replacement {
+                "truncate" => complete[..complete.len() - 1].to_owned(),
+                "trailing" => format!("{complete} trailing"),
+                "second-document" => format!("{complete} {{}}"),
+                token => text.replace("\"TOKEN\"", token),
+            };
+            let path = dir.write("source.json", &malformed);
             let error = match role {
                 Role::Film => load_film_source(&path),
                 Role::Print => load_print_source(&path),
             }
             .unwrap_err();
             assert!(matches!(error.kind, ProfileErrorKind::Json(_)));
-            dir.write("profiles/numbers.json", text);
+            dir.write("profiles/numbers.json", malformed);
             let catalog = load_catalog(&dir.0).unwrap();
             assert_eq!(catalog.films().len(), 1);
             assert_eq!(catalog.prints().len(), 1);
@@ -1554,7 +2042,12 @@ fn requires_complete_json_documents() {
                 catalog.unavailable()[0].kind,
                 CatalogEntryErrorKind::Json(_)
             ));
+            document_case.passed();
         }
+        let whitespace_case = document_cases.case(format!(
+            "{}/trailing-whitespace",
+            if role == Role::Film { "film" } else { "print" }
+        ));
         let text = format!("{complete} \t\r\n");
         let path = dir.write("source.json", &text);
         match role {
@@ -1566,7 +2059,12 @@ fn requires_complete_json_documents() {
         let catalog = load_catalog(&dir.0).unwrap();
         assert!(catalog.unavailable().is_empty());
         assert_eq!(catalog.films().len() + catalog.prints().len(), 3);
+        whitespace_case.passed();
+
+        row_case.passed();
     }
+    document_cases.finish();
+    role_cases.finish();
 }
 
 #[test]
@@ -1612,14 +2110,16 @@ fn preserves_model_channel_layer_order() {
 fn catalog_recognizes_profile_fields() {
     let dir = Directory::new();
     dir.write_defaults();
-    for key in [
+    let fields = [
         "wavelengths",
         "log_sensitivity",
         "channel_density",
         "base_density",
         "log_exposure",
         "density_curves",
-    ] {
+    ];
+    let mut cases = RowCases::new("catalog-profile-field-recognition", fields);
+    for key in fields {
         let mut data = serde_json::Map::new();
         data.insert(key.to_owned(), Value::Null);
         dir.write(
@@ -1630,13 +2130,24 @@ fn catalog_recognizes_profile_fields() {
     let catalog = load_catalog(&dir.0).unwrap();
     assert_eq!(catalog.films().len(), 7);
     assert!(catalog.unavailable().is_empty());
+    for key in fields {
+        let row = cases.case(key);
+        assert!(
+            catalog.film(key).is_some(),
+            "catalog omitted field fixture {key}"
+        );
+        row.passed();
+    }
+    cases.finish();
 }
 
 #[test]
 fn catalog_rejects_null_metadata() {
     let dir = Directory::new();
     dir.write_defaults();
-    for key in ["support", "stage", "type"] {
+    let fields = ["support", "stage", "type"];
+    let mut cases = RowCases::new("catalog-null-metadata-fields", fields);
+    for key in fields {
         let mut info = json!({"stock":key});
         info[key] = Value::Null;
         dir.write_entry(&format!("null-{key}.json"), info);
@@ -1649,34 +2160,79 @@ fn catalog_rejects_null_metadata() {
             .iter()
             .all(|entry| matches!(entry.kind, CatalogEntryErrorKind::UnsupportedRole))
     );
+    for key in fields {
+        let row = cases.case(key);
+        let filename = format!("null-{key}.json");
+        let entry = catalog
+            .unavailable()
+            .iter()
+            .find(|entry| {
+                entry.path.file_name().and_then(|name| name.to_str()) == Some(filename.as_str())
+            })
+            .expect("catalog omitted null-metadata field fixture");
+        assert!(matches!(entry.kind, CatalogEntryErrorKind::UnsupportedRole));
+        row.passed();
+    }
+    cases.finish();
 }
 
 #[test]
 fn illuminant_kinds_preserve_original_decimal_bits_and_named_precedence() {
     let directory = Directory::new();
+    let blackbody_labels = [
+        (" BB+3200.5 ", 3200.5_f64),
+        ("bb3.2005e3", 3200.5),
+        ("BB0", 0.0),
+        ("BB-0.0", -0.0),
+        ("BB-3200", -3200.0),
+        ("BB1e-400", 0.0),
+    ];
+    let named_labels = ["D65", "TH_KG3", "D1234", "KINOTON75P"];
+    let mut role_cases = RowCases::new(
+        "profile-illuminant_kinds_preserve_original_decimal_bits_and_named_precedence",
+        ["film", "print"],
+    );
+    let mut blackbody_ids = Vec::new();
+    for role in ["film", "print"] {
+        for key in ["reference_illuminant", "viewing_illuminant"] {
+            for (label, _) in blackbody_labels {
+                blackbody_ids.push(format!("{role}/{key}/label-{label:?}"));
+            }
+        }
+    }
+    let mut blackbody_cases = RowCases::new("illuminant-blackbody-label-kinds", &blackbody_ids);
+    let named_ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| {
+            named_labels
+                .iter()
+                .map(move |label| format!("{role}/viewing/{label}"))
+        })
+        .collect();
+    let mut named_cases = RowCases::new("illuminant-named-label-kinds", &named_ids);
     for role in [Role::Film, Role::Print] {
-        for (label, expected) in [
-            (" BB+3200.5 ", 3200.5_f64),
-            ("bb3.2005e3", 3200.5),
-            ("BB0", 0.0),
-            ("BB-0.0", -0.0),
-            ("BB-3200", -3200.0),
-            ("BB1e-400", 0.0),
-        ] {
-            let mut document = profile_document(role);
-            document["info"]["reference_illuminant"] = json!(label);
-            document["info"]["viewing_illuminant"] = json!(label);
-            let source = directory.load_source(&document, role).unwrap();
-            for (original, kind) in [
-                (
-                    source.info().reference_illuminant(),
-                    source.info().reference_illuminant_kind(),
-                ),
-                (
-                    source.info().viewing_illuminant(),
-                    source.info().viewing_illuminant_kind(),
-                ),
-            ] {
+        let row_case = role_cases.case(if role == Role::Film { "film" } else { "print" });
+        for (label, expected) in blackbody_labels {
+            for key in ["reference_illuminant", "viewing_illuminant"] {
+                let label_case = blackbody_cases.case(format!(
+                    "{}/{key}/label-{label:?}",
+                    if role == Role::Film { "film" } else { "print" }
+                ));
+                let mut document = profile_document(role);
+                document["info"]["reference_illuminant"] = json!(label);
+                document["info"]["viewing_illuminant"] = json!(label);
+                let source = directory.load_source(&document, role).unwrap();
+                let (original, kind) = if key == "reference_illuminant" {
+                    (
+                        source.info().reference_illuminant(),
+                        source.info().reference_illuminant_kind(),
+                    )
+                } else {
+                    (
+                        source.info().viewing_illuminant(),
+                        source.info().viewing_illuminant_kind(),
+                    )
+                };
                 assert_eq!(original, label);
                 match kind {
                     IlluminantKind::Blackbody { temperature_kelvin } => {
@@ -1684,9 +2240,14 @@ fn illuminant_kinds_preserve_original_decimal_bits_and_named_precedence() {
                     }
                     IlluminantKind::Named => panic!("BB must retain its decimal interpretation"),
                 }
+                label_case.passed();
             }
         }
-        for label in ["D65", "TH_KG3", "D1234", "KINOTON75P"] {
+        for label in named_labels {
+            let label_case = named_cases.case(format!(
+                "{}/viewing/{label}",
+                if role == Role::Film { "film" } else { "print" }
+            ));
             let mut document = profile_document(role);
             document["info"]["viewing_illuminant"] = json!(label);
             let source = directory.load_source(&document, role).unwrap();
@@ -1695,6 +2256,12 @@ fn illuminant_kinds_preserve_original_decimal_bits_and_named_precedence() {
                 IlluminantKind::Named
             );
             assert_eq!(source.info().viewing_illuminant(), label);
+            label_case.passed();
         }
+
+        row_case.passed();
     }
+    blackbody_cases.finish();
+    named_cases.finish();
+    role_cases.finish();
 }

@@ -2051,6 +2051,7 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use std::path::Path;
 
     fn assets() -> Assets {
@@ -2182,13 +2183,21 @@ mod tests {
     fn all_routes_and_methods_complete_with_active_spatial_dir() {
         let assets = assets();
         let mut count = 0;
-        for route in [
+        let routes = [
             ScanRoute::NegativeDirect,
             ScanRoute::NegativePrint,
             ScanRoute::PositiveDirect,
             ScanRoute::PositivePrint,
-        ] {
+        ];
+        let mut cases = RowCases::new(
+            "recipe-route-methods",
+            routes.iter().flat_map(|route| {
+                (0..3).map(move |method| format!("{}/{method}", route_key(*route)))
+            }),
+        );
+        for route in routes {
             for method in 0..3 {
+                let case = cases.case(format!("{}/{method}", route_key(route)));
                 let state = prepare(&assets, &params(route, method)).unwrap_or_else(|error| {
                     panic!("route={} method={method}: {error}", route_key(route))
                 });
@@ -2216,9 +2225,11 @@ mod tests {
                     );
                 }
                 count += 1;
+                case.passed();
             }
         }
         assert_eq!(count, 12);
+        cases.finish();
     }
     #[test]
     fn direct_ignores_print_only_sources_and_controls() {

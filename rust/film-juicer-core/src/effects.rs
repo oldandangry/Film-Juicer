@@ -826,6 +826,7 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
     use std::path::PathBuf;
 
@@ -958,8 +959,13 @@ mod tests {
         let fixture = fixture();
         let rows = fixture["cases"].as_array().unwrap();
         assert_eq!(rows.len(), 220);
+        let mut cases = RowCases::new(
+            "film-effects-recipes",
+            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        );
         let mut mismatches = Vec::new();
         for row in rows {
+            let case = cases.case(row["id"].as_str().unwrap());
             let actual = project(&Recipe::new(params(&row["controls"])).unwrap());
             if actual != row["recipe"] {
                 let mut fields = Vec::new();
@@ -987,6 +993,8 @@ mod tests {
                     }
                 }
                 mismatches.push(format!("{}: {}", row["id"], fields.join(", ")));
+            } else {
+                case.passed();
             }
         }
         println!(
@@ -995,6 +1003,7 @@ mod tests {
             mismatches.len()
         );
         assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+        cases.finish();
     }
     #[test]
     fn actual_probability_guard_and_entry_consumption_are_thread_local() {
@@ -1006,7 +1015,18 @@ mod tests {
             .find(|v| v["id"] == "effects-active")
             .unwrap();
         let controls = params(&row["controls"]);
-        for probability in [f32::NAN, f32::INFINITY, -1.0, 0.25] {
+        let probabilities = [
+            ("nan", f32::NAN),
+            ("positive-infinity", f32::INFINITY),
+            ("negative-one", -1.0),
+            ("quarter", 0.25),
+        ];
+        let mut cases = RowCases::new(
+            "effects-probability-guard",
+            probabilities.iter().map(|(id, _)| *id),
+        );
+        for (id, probability) in probabilities {
+            let case = cases.case(id);
             test_support::substitute_next_probability(probability);
             assert_eq!(Recipe::new(controls).unwrap_err(), Error::Probability);
             assert!(Recipe::new(controls).is_ok());
@@ -1019,13 +1039,17 @@ mod tests {
             .unwrap();
             assert_eq!(project(&suppressed), project(&Recipe::zero()));
             assert!(Recipe::new(controls).is_ok());
+            if id == "quarter" {
+                test_support::substitute_next_probability(0.25);
+                std::thread::spawn(move || assert!(Recipe::new(controls).is_ok()))
+                    .join()
+                    .unwrap();
+                assert_eq!(Recipe::new(controls).unwrap_err(), Error::Probability);
+                assert!(Recipe::new(controls).is_ok());
+            }
+            case.passed();
         }
-        test_support::substitute_next_probability(0.25);
-        std::thread::spawn(move || assert!(Recipe::new(controls).is_ok()))
-            .join()
-            .unwrap();
-        assert_eq!(Recipe::new(controls).unwrap_err(), Error::Probability);
-        assert!(Recipe::new(controls).is_ok());
+        cases.finish();
     }
     #[test]
     fn owned_result_and_zero_identity_do_not_encode_readiness() {

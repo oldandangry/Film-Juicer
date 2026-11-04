@@ -878,7 +878,7 @@ is automated numerical capture; no visual comparison images are generated.
 
 ## Output gamut construction
 
-`Gamut.Host.Output.Math` checks all nine transforms and complete 64×720 boundary
+`Rust.Core` (the `output_gamut` integration binary) checks all nine transforms and complete 64×720 boundary
 arrays against the four-preset native characterizations, including ordered
 primitives, intermediate cubics, platform libm bits and raw identities.
 `Gamut.Host.Output.boundary` checks both production exports and direct facades,

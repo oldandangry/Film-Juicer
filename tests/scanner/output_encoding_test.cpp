@@ -30,6 +30,8 @@
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/prepared_frame_fixture.h"
 #include "../ffi/prepared_product_fixture.h"
+#include "../ffi/case_results.h"
+#include "../ffi/gtest_cases.h"
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(const JuicerCuda::DirectPipelineRunParams*, void*);
 extern "C" cudaError_t juicer_cuda_print_focused_pipeline(const JuicerCuda::PrintPipelineRunParams*, void*);
@@ -42,6 +44,10 @@ namespace {
     constexpr double kMaximumError = 1.0e-6;
     constexpr double kMeanError = 1.0e-7;
     constexpr std::uint32_t kPadding = 0xa5a5a5a5u;
+
+    std::string route_case_key(Spektrafilm::ScanRoute route) {
+        return "route-" + std::to_string(static_cast<int>(route));
+    }
 
     void require(bool ok, const std::string& message) {
         if (!ok) {
@@ -303,15 +309,33 @@ namespace {
         const auto values = transfer_inputs(image.count);
         image.planes.upload(values);
         auto p = image.params<Params>();
+        const std::string pipeline = std::is_same_v<Params, JuicerCuda::DirectPipelineRunParams>
+                                         ? "direct"
+                                         : "print";
+        std::vector<std::string> ids;
+        ids.reserve(static_cast<std::size_t>(OutputEncoding::ColorSpace::Count) * 4);
+        for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space)
+            for (const bool cctf : {false, true})
+                for (const bool inputIsOutput : {false, true})
+                    ids.push_back("components-" + std::to_string(components) + "/" + pipeline +
+                                  "/space-" + std::to_string(space) + "/cctf-" + (cctf ? "on" : "off") +
+                                  "/identity-" + (inputIsOutput ? "on" : "off"));
+        JuicerTests::GtestCohort cases("transfer-" + pipeline + "-components-" +
+                                           std::to_string(components),
+                                       ids);
         for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space) {
             for (bool cctf : {false, true}) {
                 for (bool inputIsOutput : {false, true}) {
+                    auto row = cases.case_event("components-" + std::to_string(components) + "/" + pipeline +
+                                                "/space-" + std::to_string(space) + "/cctf-" + (cctf ? "on" : "off") +
+                                                "/identity-" + (inputIsOutput ? "on" : "off"));
                     SCOPED_TRACE(testing::Message() << "space=" << space << " cctf=" << cctf << " identity=" << inputIsOutput << " components=" << components);
                     const OutputEncoding::Params settings{OutputEncoding::colorSpaceFromIndex(space), cctf, inputIsOutput};
                     p.scanStage.scanColor.encoding = encoding(settings);
                     image.clear_output();
                     launch_post(p, image.planes.get());
                     image.compare(image.output.download(), image.oracle(values, settings), !cctf && inputIsOutput);
+                    row.passed();
                 }
             }
         }
@@ -360,13 +384,20 @@ namespace {
                 }
             }
         }
+        std::vector<std::string> ids;
+        ids.reserve(static_cast<std::size_t>(OutputEncoding::ColorSpace::Count));
+        for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space)
+            ids.push_back("space-" + std::to_string(space));
+        JuicerTests::GtestCohort cases("output-space", ids);
         for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space) {
+            auto row = cases.case_event("space-" + std::to_string(space));
             const OutputEncoding::Params settings{OutputEncoding::colorSpaceFromIndex(space), true, true};
             p.scanStage.scanColor.encoding = encoding(settings);
             image.planes.upload(values);
             image.clear_output();
             launch_post(p, image.planes.get(), effects);
             image.compare(image.output.download(), image.oracle(observed, settings), false);
+            row.passed();
         }
     }
 
@@ -715,7 +746,14 @@ namespace {
             }
         }
         template <typename Params>
-        void check_required_lut_failures(const RouteInputs& inputs) {
+        void check_required_lut_failures(const RouteInputs& inputs, const std::string& caller) {
+            const std::array<const char*, 7> faultIds = {
+                "log2_xyz", "slope_c", "slope_m", "slope_y", "cell_min", "cell_max", "resolution"};
+            std::vector<std::string> ids;
+            ids.reserve(faultIds.size());
+            for (const auto* id : faultIds)
+                ids.emplace_back(id);
+            JuicerTests::GtestCohort cases("required-lut-failure-" + caller, ids);
             Image image({17, 9}, 4);
             auto frame = prepare_route(inputs, image);
             auto params = make_bound_params<Params>(inputs, frame, image);
@@ -730,16 +768,9 @@ namespace {
             Buffer densities(3u * image.count);
             Buffer scanOutput(3u * image.count);
             densities.upload(std::vector<float>(3u * image.count, 0.25f));
-            const std::array<const char*, 7> cases = {
-                "log2_xyz",
-                "slope_c",
-                "slope_m",
-                "slope_y",
-                "cell_min",
-                "cell_max",
-                "resolution"};
-            for (std::size_t failure = 0; failure < cases.size(); ++failure) {
-                SCOPED_TRACE(cases[failure]);
+            for (std::size_t failure = 0; failure < faultIds.size(); ++failure) {
+                auto row = cases.case_event(faultIds[failure]);
+                SCOPED_TRACE(faultIds[failure]);
                 auto broken = params;
                 switch (failure) {
                     case 0:
@@ -787,6 +818,7 @@ namespace {
                 for (float value : scanOutput.download()) {
                     EXPECT_EQ(std::bit_cast<std::uint32_t>(value), 0u);
                 }
+                row.passed();
             }
 
             clear_device_flag(params.scanStage.scanErrorFlag);
@@ -989,7 +1021,17 @@ namespace {
     };
 
     TEST_F(ScannerRoutes, CorrectionRoutes) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (const auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.glareActive = false;
@@ -1060,11 +1102,26 @@ namespace {
             EXPECT_EQ(restored.printValues, active.printValues);
             EXPECT_EQ(held.recipeHash, heldHash);
             EXPECT_EQ(held.scannerRecipeHash, heldScannerHash);
+            row.passed();
         }
     }
 
     TEST_F(ScannerRoutes, GamutSwitchKeepsPreparedRenderingStable) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * 4);
+        for (const auto route : routes) {
+            for (std::size_t pass = 0; pass < 4; ++pass) {
+                const bool enabled = pass % 2 == 1;
+                ids.push_back(route_case_key(route) + "/pass-" + std::to_string(pass) +
+                              "/gamut-" + (enabled ? "on" : "off"));
+            }
+        }
+        JuicerTests::GtestCohort cases("route-gamut-pass", ids);
+        for (const auto route : routes) {
             auto controls = RouteInputs::controls_for_route(route);
             controls.glareActive = false;
             controls.scannerLutResolution = 17;
@@ -1080,7 +1137,12 @@ namespace {
             Image image({31, 19}, 4);
             const auto initial = correction_resources(disabled, image);
             std::array<std::vector<std::uint32_t>, 2> expected;
-            for (const auto* inputs : {&disabled, &enabled, &disabled, &enabled}) {
+            const std::array inputsByPass{&disabled, &enabled, &disabled, &enabled};
+            for (std::size_t pass = 0; pass < inputsByPass.size(); ++pass) {
+                const auto* inputs = inputsByPass[pass];
+                auto row = cases.case_event(route_case_key(route) + "/pass-" +
+                                            std::to_string(pass) + "/gamut-" +
+                                            (inputs->outputGamut.enabled ? "on" : "off"));
                 const auto& gamut = inputs->outputGamut;
                 SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " gamut=" << gamut.enabled);
                 std::cout << "prepared gamut route=" << static_cast<int>(route) << " enabled=" << gamut.enabled << '\n';
@@ -1113,14 +1175,27 @@ namespace {
                 EXPECT_EQ(reused.printHashes, initial.printHashes);
                 EXPECT_EQ(reused.printAddresses, initial.printAddresses);
                 EXPECT_EQ(reused.printValues, initial.printValues);
+                if (pass + 1 == inputsByPass.size()) {
+                    EXPECT_EQ(disabled.outputGamut.hash, disabledHash);
+                    EXPECT_EQ(enabled.outputGamut.hash, enabledHash);
+                }
+                row.passed();
             }
-            EXPECT_EQ(disabled.outputGamut.hash, disabledHash);
-            EXPECT_EQ(enabled.outputGamut.hash, enabledHash);
         }
     }
 
     TEST_F(ScannerRoutes, PostConstructorResourcesReuseRebuildRejectAndRecover) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (const auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.glareActive = true;
             controls.glarePercent = 2.0f;
@@ -1224,13 +1299,28 @@ namespace {
             EXPECT_FALSE(off.scanner_post_effects_resources(off.workspace_lease(), 0).active);
             EXPECT_FALSE(off.scanner_workspace(off.workspace_lease()).active);
             require(off.finish(nullptr, failure), failure.diagnostic);
+            row.passed();
         }
     }
 
     TEST_F(ScannerRoutes, FusedAndSeparateOutputMatchOnAllFourRoutes) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * 2 * 2);
+        for (const auto route : routes)
+            for (const bool gamut : {false, true})
+                for (const int space : {0, 7})
+                    ids.push_back(route_case_key(route) + "/gamut-" + (gamut ? "on" : "off") +
+                                  "/space-" + std::to_string(space));
+        JuicerTests::GtestCohort cases("route-gamut-space", ids);
+        for (auto route : routes) {
             for (bool gamut : {false, true}) {
                 for (int space : {0, 7}) {
+                    auto row = cases.case_event(route_case_key(route) + "/gamut-" +
+                                                (gamut ? "on" : "off") + "/space-" + std::to_string(space));
                     SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " space=" << space << " gamut=" << gamut);
                     RouteInputs inputs(route, space, gamut);
                     if (Spektrafilm::scan_route_is_print(route)) {
@@ -1238,32 +1328,50 @@ namespace {
                     } else {
                         check_route<JuicerCuda::DirectPipelineRunParams>(inputs);
                     }
+                    row.passed();
                 }
             }
         }
     }
 
     TEST_F(ScannerRoutes, RequiredLutFailuresAreReportedByBothScannerCallers) {
+        JuicerTests::GtestCohort cases("caller", {"direct", "print"});
+        auto directRow = cases.case_event("direct");
         RouteInputs direct(
             Spektrafilm::ScanRoute::NegativeDirectScan,
             0,
             false);
-        check_required_lut_failures<JuicerCuda::DirectPipelineRunParams>(direct);
+        check_required_lut_failures<JuicerCuda::DirectPipelineRunParams>(direct, "direct");
+        directRow.passed();
 
+        auto printRow = cases.case_event("print");
         RouteInputs print(
             Spektrafilm::ScanRoute::PositivePrintScan,
             0,
             false);
-        check_required_lut_failures<JuicerCuda::PrintPipelineRunParams>(print);
+        check_required_lut_failures<JuicerCuda::PrintPipelineRunParams>(print, "print");
+        printRow.passed();
     }
 
     TEST_F(ScannerRoutes, DeferredDirFailureComesFromReadbackBits) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array bitsCases{0, 1, (1 << 8) | (2 << 9), 1 | (1 << 8) | (7 << 9)};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * bitsCases.size());
+        for (const auto route : routes)
+            for (const int bits : bitsCases)
+                ids.push_back(route_case_key(route) + "/readback-" + std::to_string(bits));
+        JuicerTests::GtestCohort cases("route-readback-bits", ids);
+        for (const auto route : routes) {
             RouteInputs inputs(route, 0, false);
             Image image({17, 9}, 4);
             // Product readback contract: bit 0 is scanner RGB; bit 8 is DIR,
             // with the failed DIR channels in bits 9-11.
-            for (const int bits : {0, 1, (1 << 8) | (2 << 9), 1 | (1 << 8) | (7 << 9)}) {
+            for (const int bits : bitsCases) {
+                auto row = cases.case_event(route_case_key(route) + "/readback-" + std::to_string(bits));
                 SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " bits=" << bits);
                 JuicerCuda::Failure error;
                 auto submitted = prepare_route(inputs, image);
@@ -1292,12 +1400,23 @@ namespace {
                 // Inactive-frame failure cannot retain the prior DIR disposition.
                 EXPECT_EQ(next.prepare_scan_error_stage(flag, nullptr, error), JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed);
                 EXPECT_EQ(flag, nullptr);
+                row.passed();
             }
         }
     }
 
     TEST_F(ScannerRoutes, ResolutionTransitionRestoresLutContentAndOutput) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (const auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             const bool print = Spektrafilm::scan_route_is_print(route);
             ParamSnapshot controls17 = RouteInputs::controls_for_route(route);
@@ -1335,10 +1454,14 @@ namespace {
             EXPECT_EQ(initial.lut.content, restored.lut.content);
             EXPECT_EQ(initial.output, retained.output);
             EXPECT_EQ(initial.output, restored.output);
+            row.passed();
         }
     }
 
     TEST_F(ScannerRoutes, PrintResourceCacheAcceptsPublishedValuesAcrossDescriptorChanges) {
+        const std::vector<std::string> scenarios{
+            "retained-default", "retained-gamma", "illuminant-change", "main-filter-change", "preflash-enabled", "preflash-disabled", "normalization-disabled", "normalization-enabled", "print-profile-change"};
+        JuicerTests::GtestCohort cases("print-cache-scenario", scenarios);
         ParamSnapshot defaultControls =
             RouteInputs::controls_for_route(Spektrafilm::ScanRoute::NegativePrintScan);
         ParamSnapshot gammaControls = defaultControls;
@@ -1348,46 +1471,66 @@ namespace {
 
         auto check_print = [&](const char* scenario, ParamSnapshot controls) {
             SCOPED_TRACE(scenario);
+            auto row = cases.case_event(scenario);
             RouteInputs inputs(std::move(controls), 0, false);
             check_route<JuicerCuda::PrintPipelineRunParams>(inputs);
+            row.passed();
         };
 
         {
             SCOPED_TRACE("retained default publication");
+            auto row = cases.case_event("retained-default");
             check_route<JuicerCuda::PrintPipelineRunParams>(retainedDefault);
             check_route<JuicerCuda::PrintPipelineRunParams>(retainedDefault);
+            row.passed();
         }
         {
             SCOPED_TRACE("retained gamma publication");
+            auto row = cases.case_event("retained-gamma");
             check_route<JuicerCuda::PrintPipelineRunParams>(retainedGamma);
+            row.passed();
         }
 
         ParamSnapshot illuminantControls = defaultControls;
         illuminantControls.enlIll = 0;
-        check_print("illuminant change", illuminantControls);
+        check_print("illuminant-change", illuminantControls);
 
         ParamSnapshot filterControls = defaultControls;
         filterControls.printUiYmcCc = {4.0, -3.0, 2.0};
-        check_print("main filter change", filterControls);
+        check_print("main-filter-change", filterControls);
 
         ParamSnapshot preflashControls = defaultControls;
         preflashControls.printPreflashExposure = 0.1;
         preflashControls.preflashMFilterCc = 3.0;
         preflashControls.preflashYFilterCc = -2.0;
-        check_print("preflash enabled", preflashControls);
-        check_print("preflash disabled", defaultControls);
+        check_print("preflash-enabled", preflashControls);
+        check_print("preflash-disabled", defaultControls);
 
         ParamSnapshot unnormalizedControls = defaultControls;
         unnormalizedControls.normalizePrintExposure = 0;
-        check_print("normalization disabled", unnormalizedControls);
-        check_print("normalization enabled", defaultControls);
+        check_print("normalization-disabled", unnormalizedControls);
+        check_print("normalization-enabled", defaultControls);
 
         ParamSnapshot profileControls = defaultControls;
         profileControls.printProfileKey = "kodak_supra_endura";
-        check_print("print profile change", profileControls);
+        check_print("print-profile-change", profileControls);
     }
     TEST_F(ScannerRoutes, LutConstructionFailuresPreserveCategoryAndCache) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * 13);
+        for (const auto route : routes) {
+            for (unsigned buffer = 1; buffer <= 10; ++buffer)
+                ids.push_back(route_case_key(route) + "/buffer-" + std::to_string(buffer));
+            ids.push_back(route_case_key(route) + "/cache-hit-armed-fault");
+            for (const unsigned operation : {0u, 1u})
+                ids.push_back(route_case_key(route) + "/operation-" + std::to_string(operation));
+        }
+        JuicerTests::GtestCohort cases("route-fault", ids);
+        for (const auto route : routes) {
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.scannerLutResolution = 17;
@@ -1405,22 +1548,30 @@ namespace {
                     EXPECT_EQ(word, kPadding);
             };
             for (unsigned buffer = 1; buffer <= 10; ++buffer) {
+                auto row = cases.case_event(route_case_key(route) + "/buffer-" + std::to_string(buffer));
                 SCOPED_TRACE(testing::Message() << "buffer=" << buffer);
                 ASSERT_EQ(fj_test_scanner_lut_fault(0, buffer + 1).category, FJ_STATUS_SUCCESS);
                 reject(inputs, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
+                row.passed();
             }
             require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
             const auto original = bit_patterns(image.output.download());
             controls.scannerLutResolution = 33;
             RouteInputs replacement(controls, 0, false);
-            ASSERT_EQ(fj_test_scanner_lut_fault(0, 2).category, FJ_STATUS_SUCCESS);
-            require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-            EXPECT_EQ(bit_patterns(image.output.download()), original);
-            // A cache hit must leave the armed constructor fault for this miss.
-            reject(replacement, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
-            for (unsigned operation : {0u, 1u}) {
+            {
+                auto row = cases.case_event(route_case_key(route) + "/cache-hit-armed-fault");
+                ASSERT_EQ(fj_test_scanner_lut_fault(0, 2).category, FJ_STATUS_SUCCESS);
+                require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                EXPECT_EQ(bit_patterns(image.output.download()), original);
+                // A cache hit must leave the armed constructor fault for this miss.
+                reject(replacement, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
+                row.passed();
+            }
+            for (const unsigned operation : {0u, 1u}) {
+                auto row = cases.case_event(route_case_key(route) + "/operation-" + std::to_string(operation));
                 ASSERT_EQ(fj_test_scanner_lut_fault(operation, 1).category, FJ_STATUS_SUCCESS);
                 reject(replacement, FJ_STATUS_INTERNAL_FAILURE, "scanner LUT preparation panicked");
+                row.passed();
             }
             require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
             EXPECT_EQ(bit_patterns(image.output.download()), original);
@@ -1432,7 +1583,16 @@ namespace {
     }
 
     TEST_F(ScannerRoutes, LutIdentityTracksSelectedProfileBoundsAndIlluminant) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (const auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.filmProfileKey = "kodak_portra_400";
@@ -1460,6 +1620,7 @@ namespace {
             EXPECT_EQ(restored.lut.hash, before.lut.hash);
             EXPECT_EQ(restored.lut.content, before.lut.content);
             EXPECT_EQ(restored.output, before.output);
+            row.passed();
         }
     }
 
@@ -1477,7 +1638,17 @@ namespace {
         const auto directory = std::filesystem::path(__FILE__).parent_path() / "lut-fixtures";
         const auto frozen = load_shared_fixture(directory / (preset + ".json"), "manifest.json");
         ASSERT_EQ(frozen.at("preset"), preset);
-        for (const auto& row : frozen.at("products")) {
+        std::vector<std::string> ids;
+        ids.reserve(frozen.at("products").size());
+        for (std::size_t index = 0; index < frozen.at("products").size(); ++index) {
+            const auto& row = frozen.at("products").at(index);
+            ids.push_back("product-" + std::to_string(index) + "/route-" +
+                          std::to_string(row.at("route").get<unsigned>()));
+        }
+        JuicerTests::GtestCohort products("native-lut-product", ids);
+        for (std::size_t index = 0; index < frozen.at("products").size(); ++index) {
+            const auto& row = frozen.at("products").at(index);
+            auto product = products.case_event(ids[index]);
             const auto route = static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>());
             ParamSnapshot controls;
             controls.scanRoute = route;
@@ -1498,15 +1669,22 @@ namespace {
                     expected.push_back(word.get<std::uint32_t>());
             EXPECT_EQ(capture.lut.content, expected);
             EXPECT_EQ(capture.lut.bytes, expected.size() * sizeof(float));
+            product.passed();
         }
     }
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
+    testing::InitGoogleTest(&argc, argv);
+    if (testing::GTEST_FLAG(list_tests))
+        return RUN_ALL_TESTS();
     JuicerCuda::Owner cudaOwner;
     cudaOwner.create(JuicerProcess::data_directory());
-    testing::InitGoogleTest(&argc, argv);
+    JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
+    case_log.finish();
     const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
     return closed.category == FJ_STATUS_SUCCESS ? result : 1;
+} catch (...) {
+    return 1;
 }

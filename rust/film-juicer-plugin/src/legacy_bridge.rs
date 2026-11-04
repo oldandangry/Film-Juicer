@@ -584,15 +584,26 @@ const _: unsafe extern "C" fn(u32, *mut FjOutputColorPreparation) -> FjStatus =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
 
     #[test]
     fn foreign_tags_preserve_the_reference_table() {
         let expected = [[0, 1, 0, 1], [2, 3, 2, 3], [0, 1, 0, 1]];
+        let ids: Vec<String> = (0..expected.len())
+            .flat_map(|polarity| {
+                (0..expected[polarity].len())
+                    .map(move |selection| format!("polarity-{polarity}/selection-{selection}"))
+            })
+            .collect();
+        let mut rows = RowCases::new("foreign-route-table", &ids);
         for (polarity, routes) in expected.into_iter().enumerate() {
             for (selection, route) in routes.into_iter().enumerate() {
+                let row = rows.case(format!("polarity-{polarity}/selection-{selection}"));
                 assert_eq!(resolve_foreign(polarity as u8, selection as u8), Ok(route));
+                row.passed();
             }
         }
+        rows.finish();
     }
 
     #[test]

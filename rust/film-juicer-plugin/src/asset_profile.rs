@@ -191,6 +191,7 @@ mod tests {
     use std::path::Path;
 
     use film_juicer_core::assets::Assets;
+    use crate::test_cases::RowCases;
 
     use super::*;
 
@@ -229,7 +230,14 @@ mod tests {
             view.authored_log_exposure.len(),
             tables.authored_log_exposure().len()
         );
-        for (span, expected) in [
+        let span_ids = [
+            "log-exposure",
+            "density-curves-cmy",
+            "channel-density-cmy",
+            "base-density",
+        ];
+        let mut span_rows = RowCases::new("foreign-profile-span-bindings", span_ids);
+        for ((span, expected), id) in [
             (
                 view.interpolation_log_exposure,
                 tables.interpolation_log_exposure(),
@@ -243,10 +251,16 @@ mod tests {
                 tables.channel_density().as_flattened(),
             ),
             (view.base_density, tables.base_density()),
-        ] {
+        ]
+        .into_iter()
+        .zip(span_ids)
+        {
+            let row = span_rows.case(id);
             assert_eq!(span.as_ptr(), expected.as_ptr());
             assert_eq!(span.len(), expected.len());
+            row.passed();
         }
+        span_rows.finish();
         for layer in 0..3 {
             for channel in 0..3 {
                 let expected = &tables.density_curves_layers()[layer][channel];

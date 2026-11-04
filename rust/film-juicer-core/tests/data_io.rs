@@ -18,6 +18,9 @@ use film_juicer_core::data_io::{
     ReadError, ReadErrorKind, ReadPart, load_csv_pairs, load_cmf_csv, load_mallett_basis,
     load_spectra_lut,
 };
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -196,7 +199,12 @@ const BUNDLE: &[BundleCase] = &[
 
 #[test]
 fn bundled_csv_bits() {
+    let mut cases = RowCases::new(
+        "bundled-csv-resources",
+        BUNDLE[..8].iter().map(|(resource, _, _, _)| *resource),
+    );
     for &(resource, rows, hash, samples) in &BUNDLE[..8] {
+        let row = cases.case(resource);
         let path = repository().join("Resources").join(resource);
         let values: Vec<f32> = if resource == "cie1931_2deg.csv" {
             let csv = load_cmf_csv(&path).unwrap();
@@ -211,12 +219,19 @@ fn bundled_csv_bits() {
         for &(index, expected) in samples {
             assert_eq!(values[index].to_bits(), expected, "{resource}[{index}]");
         }
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
 fn bundled_npy_bits() {
+    let mut cases = RowCases::new(
+        "bundled-npy-resources",
+        BUNDLE[8..].iter().map(|(resource, _, _, _)| *resource),
+    );
     for &(resource, _, hash, samples) in &BUNDLE[8..] {
+        let row = cases.case(resource);
         let path = repository().join("Resources").join(resource);
         let basis = resource.ends_with("mallett2019_basis.npy");
         let values = if basis {
@@ -232,7 +247,9 @@ fn bundled_npy_bits() {
         if resource.contains("arctic") {
             assert_eq!(values.iter().copied().fold(0.0_f32, f32::max), 41.0625);
         }
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
@@ -295,28 +312,45 @@ fn csv_pair_extraction() {
             &[0x40000000, 0x40400000, 0x3f800000, 0x40800000],
         ),
     ];
-    for &(line, expected) in cases {
+    let ids: Vec<String> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("csv-line/{i}"))
+        .collect();
+    let mut rows = RowCases::new("csv-pair-extraction-lines", &ids);
+    for ((line, expected), id) in cases.iter().zip(&ids) {
+        let row = rows.case(id);
         let csv = load_csv_pairs(directory.write(format!("{line}\n"))).unwrap();
         let actual: Vec<u32> = csv.rows().iter().flatten().map(|v| v.to_bits()).collect();
-        assert_eq!(actual, expected, "{line:?}");
+        assert_eq!(actual, *expected, "{line:?}");
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
 fn cmf_csv_extraction() {
     let directory = Directory::new();
-    for line in [
+    let accepted = [
         "1,2,3,4",
         "1 2 3 4",
         "1,,2,,,3,4tail",
         "1,2,3,4,5",
         "1,2,3,4#comment",
         "1,2,3,4;comment",
-    ] {
+    ];
+    let accepted_ids: Vec<String> = (0..accepted.len())
+        .map(|i| format!("accepted/{i}"))
+        .collect();
+    let mut accepted_rows = RowCases::new("cmf-csv-accepted-forms", &accepted_ids);
+    for (line, id) in accepted.into_iter().zip(&accepted_ids) {
+        let row = accepted_rows.case(id);
         let csv = load_cmf_csv(directory.write(line)).unwrap();
         assert_eq!(csv.rows(), &[[1.0, 2.0, 3.0, 4.0]], "{line}");
+        row.passed();
     }
-    for line in [
+    accepted_rows.finish();
+    let rejected = [
         "1,2,3",
         "1,2,bad,4",
         "1,2,3,NaN",
@@ -325,7 +359,13 @@ fn cmf_csv_extraction() {
         "1,2,3 ,4",
         "1,2,3,4e+",
         "1;2;3;4",
-    ] {
+    ];
+    let rejected_ids: Vec<String> = (0..rejected.len())
+        .map(|i| format!("rejected/{i}"))
+        .collect();
+    let mut rejected_rows = RowCases::new("cmf-csv-rejected-forms", &rejected_ids);
+    for (line, id) in rejected.into_iter().zip(&rejected_ids) {
+        let row = rejected_rows.case(id);
         assert!(
             load_cmf_csv(directory.write(line))
                 .unwrap()
@@ -333,7 +373,9 @@ fn cmf_csv_extraction() {
                 .is_empty(),
             "{line}"
         );
+        row.passed();
     }
+    rejected_rows.finish();
     let csv = load_cmf_csv(directory.write("-0,+0,-0e0,1e-50")).unwrap();
     assert_eq!(
         csv.rows()[0].map(f32::to_bits),
@@ -359,34 +401,66 @@ fn csv_preserves_raw_rows() {
 #[test]
 fn csv_line_limit() {
     let directory = Directory::new();
+    let mut rows = RowCases::new(
+        "csv-line-limit-boundaries",
+        ["over-limit-second-line", "at-limit-valid-row"],
+    );
+    let too_long = rows.case("over-limit-second-line");
     let mut source = b"1,2\n".to_vec();
     source.extend(vec![b'x'; 65_536]);
     let error = load_csv_pairs(directory.write(source)).unwrap_err();
     assert_eq!(error.kind, ReadErrorKind::CsvLineTooLong { line: 2 });
     assert!(error.path.ends_with("input"));
+    too_long.passed();
+    let at_limit = rows.case("at-limit-valid-row");
     let source = format!("1,2{}", " ".repeat(65_532));
     assert_eq!(
         load_csv_pairs(directory.write(source)).unwrap().rows(),
         &[[1.0, 2.0]]
     );
+    at_limit.passed();
+    rows.finish();
 }
 
 #[test]
 fn missing_files() {
     let directory = Directory::new();
     let path = directory.0.join("absent");
-    for error in [
-        load_csv_pairs(&path).unwrap_err(),
-        load_cmf_csv(&path).unwrap_err(),
-        load_spectra_lut(&path).unwrap_err(),
-        load_mallett_basis(&path).unwrap_err(),
-    ] {
-        assert_eq!(error.path, path);
-        assert_eq!(
-            error.kind,
-            ReadErrorKind::Open(std::io::ErrorKind::NotFound)
-        );
-    }
+    let ids = ["csv-pairs", "cmf-csv", "spectral-lut", "mallett-basis"];
+    let mut rows = RowCases::new("missing-resource-files", ids);
+    let row = rows.case("csv-pairs");
+    let error = load_csv_pairs(&path).unwrap_err();
+    assert_eq!(error.path, path);
+    assert_eq!(
+        error.kind,
+        ReadErrorKind::Open(std::io::ErrorKind::NotFound)
+    );
+    row.passed();
+    let row = rows.case("cmf-csv");
+    let error = load_cmf_csv(&path).unwrap_err();
+    assert_eq!(error.path, path);
+    assert_eq!(
+        error.kind,
+        ReadErrorKind::Open(std::io::ErrorKind::NotFound)
+    );
+    row.passed();
+    let row = rows.case("spectral-lut");
+    let error = load_spectra_lut(&path).unwrap_err();
+    assert_eq!(error.path, path);
+    assert_eq!(
+        error.kind,
+        ReadErrorKind::Open(std::io::ErrorKind::NotFound)
+    );
+    row.passed();
+    let row = rows.case("mallett-basis");
+    let error = load_mallett_basis(&path).unwrap_err();
+    assert_eq!(error.path, path);
+    assert_eq!(
+        error.kind,
+        ReadErrorKind::Open(std::io::ErrorKind::NotFound)
+    );
+    row.passed();
+    rows.finish();
 }
 
 fn npy(header: &str, payload: &[u8]) -> Vec<u8> {
@@ -408,12 +482,17 @@ fn load_npy(path: &Path, basis: bool) -> Result<Vec<f32>, ReadError> {
 #[test]
 fn equivalent_npy_headers() {
     let directory = Directory::new();
+    let ids: Vec<String> = BUNDLE[8..]
+        .iter()
+        .flat_map(|(resource, _, _, _)| (0..6).map(move |i| format!("{resource}/header/{i}")))
+        .collect();
+    let mut cases = RowCases::new("equivalent-npy-header-forms", &ids);
     for &(resource, _, hash, _) in &BUNDLE[8..] {
         let bytes = fs::read(repository().join("Resources").join(resource)).unwrap();
         let basis = resource.ends_with("mallett2019_basis.npy");
         let dtype = if basis { "<f4" } else { "<f2" };
         let shape = if basis { "81,3" } else { "192,192,81" };
-        for header in [
+        for (header_index, header) in [
             format!("{{'descr':'{dtype}','fortran_order':False,'shape':({shape})}}\n"),
             format!("{{\"descr\":\"{dtype}\",\"shape\":({shape},),\"fortran_order\":False,}}\n"),
             format!(" {{'fortran_order':False,'descr':\"{dtype}\",'shape':({shape})}}    \n"),
@@ -425,11 +504,15 @@ fn equivalent_npy_headers() {
                 "\t{{\n\"shape\" : ( {shape} , ), 'descr' : '{dtype}',\n'fortran_order' : False ,\n}}\t \n"
             ),
             format!("{{'shape':({shape}),'fortran_order':False,'descr':'{dtype}'}}\r\n"),
-        ] {
+        ].into_iter().enumerate() {
+            let id = format!("{resource}/header/{header_index}");
+            let row = cases.case(id);
             let values = load_npy(&directory.write(npy(&header, &bytes[128..])), basis).unwrap();
             assert_eq!(fingerprint(values), hash, "{resource}: {header}");
+            row.passed();
         }
     }
+    cases.finish();
 }
 
 #[test]
@@ -497,7 +580,7 @@ fn supported_float_widths_preserve_authored_samples() {
         0x3f80_0000,
         0x3f80_0001,
     ];
-    for (dtype, pattern, expected) in [
+    let types = [
         (
             "<f2",
             half.into_iter()
@@ -515,8 +598,20 @@ fn supported_float_widths_preserve_authored_samples() {
             double.into_iter().flat_map(f64::to_le_bytes).collect(),
             double_bits.to_vec(),
         ),
-    ] {
-        for (basis, shape, count) in [(false, "192,192,81", 2_985_984), (true, "81,3", 243)] {
+    ];
+    let ids: Vec<String> = ["<f2", "<f4", "<f8"]
+        .into_iter()
+        .flat_map(|dtype| {
+            ["spectra-lut", "mallett-basis"].map(move |asset| format!("{dtype}/{asset}"))
+        })
+        .collect();
+    let mut cases = RowCases::new("npy-float-width-samples", &ids);
+    for (dtype, pattern, expected) in types {
+        for (basis, shape, count, asset) in [
+            (false, "192,192,81", 2_985_984, "spectra-lut"),
+            (true, "81,3", 243, "mallett-basis"),
+        ] {
+            let row = cases.case(format!("{dtype}/{asset}"));
             let width = pattern.len() / expected.len();
             let mut payload = Vec::with_capacity(count * width);
             for index in 0..count {
@@ -534,14 +629,21 @@ fn supported_float_widths_preserve_authored_samples() {
                     "{dtype} basis={basis} [{index}]"
                 );
             }
+            row.passed();
         }
     }
+    cases.finish();
 }
 
 #[test]
 fn changed_bundled_contents_load() {
     let directory = Directory::new();
+    let mut cases = RowCases::new(
+        "changed-bundled-npy-content",
+        BUNDLE[8..].iter().map(|(resource, _, _, _)| *resource),
+    );
     for &(resource, _, hash, _) in &BUNDLE[8..] {
+        let row = cases.case(resource);
         let mut bytes = fs::read(repository().join("Resources").join(resource)).unwrap();
         let basis = resource.ends_with("mallett2019_basis.npy");
         // Change a finite sample without changing the representation.
@@ -563,13 +665,24 @@ fn changed_bundled_contents_load() {
             values[0].to_bits(),
             if basis { 0xffc1_2345 } else { 0xffc4_6000 }
         );
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
 fn rejects_malformed_or_unsupported_npy_representations() {
     let directory = Directory::new();
-    for (basis, shape) in [(false, "192,192,81"), (true, "81,3")] {
+    let layouts = [
+        (false, "192,192,81", "spectra-lut"),
+        (true, "81,3", "mallett-basis"),
+    ];
+    let mut layout_cases = RowCases::new(
+        "npy-malformed-layouts",
+        layouts.iter().map(|(_, _, id)| *id),
+    );
+    for (basis, shape, layout_id) in layouts {
+        let layout_case = layout_cases.case(layout_id);
         let layout = if basis { "(81, 3)" } else { "(192, 192, 81)" };
         let valid = format!("{{'descr':'<f4','fortran_order':False,'shape':({shape})}}\n");
         let mut headers = vec![
@@ -631,53 +744,106 @@ fn rejects_malformed_or_unsupported_npy_representations() {
         ] {
             headers.push(valid.replace(&format!("({shape})"), wrong_shape));
         }
-        for header in headers {
+        let header_ids: Vec<String> = (0..headers.len()).map(|i| format!("header/{i}")).collect();
+        let mut header_cases =
+            RowCases::new(format!("npy-invalid-header/{layout_id}"), &header_ids);
+        for (header, id) in headers.into_iter().zip(&header_ids) {
+            let row = header_cases.case(id);
             let path = directory.write(npy(&header, &[]));
             assert_invalid(load_npy(&path, basis).unwrap_err(), &path, layout);
+            row.passed();
         }
-        for (major, minor) in [(0, 0), (1, 1), (2, 0), (3, 0), (255, 255)] {
+        header_cases.finish();
+        let versions = [(0, 0), (1, 1), (2, 0), (3, 0), (255, 255)];
+        let version_ids: Vec<String> = versions
+            .iter()
+            .map(|(major, minor)| format!("version/{major}/{minor}"))
+            .collect();
+        let mut version_cases =
+            RowCases::new(format!("npy-invalid-versions/{layout_id}"), &version_ids);
+        for ((major, minor), id) in versions.into_iter().zip(&version_ids) {
+            let row = version_cases.case(id);
             let mut bytes = npy(&valid, &[]);
             bytes[6] = major;
             bytes[7] = minor;
             let path = directory.write(bytes);
             assert_invalid(load_npy(&path, basis).unwrap_err(), &path, layout);
+            row.passed();
         }
+        version_cases.finish();
+        let mut magic_cases =
+            RowCases::new(format!("npy-invalid-magic/{layout_id}"), ["bad-magic"]);
+        let magic = magic_cases.case("bad-magic");
         let mut bytes = npy(&valid, &[]);
         bytes[0] = 0;
         let path = directory.write(bytes);
         assert_invalid(load_npy(&path, basis).unwrap_err(), &path, layout);
+        magic.passed();
+        magic_cases.finish();
+        layout_case.passed();
     }
+    layout_cases.finish();
 }
 
 #[test]
 fn rejects_npy_size_overflow() {
     let directory = Directory::new();
-    for (basis, tail) in [(false, ",192,81"), (true, ",3")] {
-        for dimension in [
+    let layouts = [
+        (false, ",192,81", "spectra-lut"),
+        (true, ",3", "mallett-basis"),
+    ];
+    let ids = ["spectra-lut", "mallett-basis"];
+    let mut layout_cases = RowCases::new("npy-size-overflow-layouts", ids);
+    for (basis, tail, name) in layouts {
+        let layout = layout_cases.case(name);
+        let dimensions = [
             format!("{}0", usize::MAX),
             usize::MAX.to_string(),
             (usize::MAX / 8).to_string(),
-        ] {
+        ];
+        let ids: Vec<String> = (0..dimensions.len())
+            .map(|i| format!("dimension/{i}"))
+            .collect();
+        let mut cases = RowCases::new(format!("npy-overflow-dimensions/{name}"), &ids);
+        for (dimension, id) in dimensions.into_iter().zip(&ids) {
+            let row = cases.case(id);
             let header =
                 format!("{{'descr':'<f8','fortran_order':False,'shape':({dimension}{tail})}}\n");
             let path = directory.write(npy(&header, &[]));
             let error = load_npy(&path, basis).unwrap_err();
             assert_eq!(error.path, path);
             assert_eq!(error.kind, ReadErrorKind::Size);
+            row.passed();
         }
+        cases.finish();
+        layout.passed();
     }
+    layout_cases.finish();
 }
 
 #[test]
 fn rejects_truncated_npy_headers_and_payloads() {
     let directory = Directory::new();
-    for (basis, shape, count) in [(false, "192,192,81", 2_985_984), (true, "81,3", 243)] {
-        for (dtype, width) in [("<f2", 2), ("<f4", 4), ("<f8", 8)] {
+    let layouts = [
+        (false, "192,192,81", 2_985_984, "spectra-lut"),
+        (true, "81,3", 243, "mallett-basis"),
+    ];
+    let mut layouts_cases = RowCases::new(
+        "npy-truncated-layouts",
+        layouts.iter().map(|(_, _, _, id)| *id),
+    );
+    for (basis, shape, count, name) in layouts {
+        let layout_case = layouts_cases.case(name);
+        let dtypes = [("<f2", 2), ("<f4", 4), ("<f8", 8)];
+        let dtype_ids = ["<f2", "<f4", "<f8"];
+        let mut dtype_cases = RowCases::new(format!("npy-truncated-dtypes/{name}"), dtype_ids);
+        for ((dtype, width), dtype_id) in dtypes.into_iter().zip(dtype_ids) {
+            let dtype_case = dtype_cases.case(dtype_id);
             let header = format!("{{'descr':'{dtype}','fortran_order':False,'shape':({shape})}}\n");
             let mut bytes = npy(&header, &[]);
             let offset = bytes.len();
             bytes.resize(offset + count * width, 0);
-            for (length, part) in [
+            let cuts = [
                 (0, ReadPart::Header),
                 (6, ReadPart::Header),
                 (9, ReadPart::Header),
@@ -686,7 +852,15 @@ fn rejects_truncated_npy_headers_and_payloads() {
                 (offset, ReadPart::Payload),
                 (bytes.len() - width, ReadPart::Payload),
                 (bytes.len() - 1, ReadPart::Payload),
-            ] {
+            ];
+            let ids: Vec<String> = cuts
+                .iter()
+                .enumerate()
+                .map(|(i, (length, part))| format!("cut/{i}/{part:?}/{length}"))
+                .collect();
+            let mut cut_cases = RowCases::new(format!("npy-truncated-cuts/{name}/{dtype}"), &ids);
+            for ((length, part), id) in cuts.into_iter().zip(&ids) {
+                let row = cut_cases.case(id);
                 let path = directory.write(&bytes[..length]);
                 let error = load_npy(&path, basis).unwrap_err();
                 assert_eq!(error.path, path);
@@ -695,15 +869,26 @@ fn rejects_truncated_npy_headers_and_payloads() {
                     ReadErrorKind::ShortRead(part),
                     "{dtype} length={length}"
                 );
+                row.passed();
             }
+            cut_cases.finish();
+            dtype_case.passed();
         }
+        dtype_cases.finish();
+        layout_case.passed();
     }
+    layouts_cases.finish();
 }
 
 #[test]
 fn rejects_trailing_npy_payload_bytes() {
     let directory = Directory::new();
+    let mut rows = RowCases::new(
+        "npy-trailing-payload-bytes",
+        BUNDLE[8..].iter().map(|(resource, _, _, _)| *resource),
+    );
     for &(resource, _, _, _) in &BUNDLE[8..] {
+        let row = rows.case(resource);
         let mut bytes = fs::read(repository().join("Resources").join(resource)).unwrap();
         let basis = resource.ends_with("mallett2019_basis.npy");
         bytes.push(0);
@@ -713,5 +898,7 @@ fn rejects_trailing_npy_payload_bytes() {
             &path,
             if basis { "(81, 3)" } else { "(192, 192, 81)" },
         );
+        row.passed();
     }
+    rows.finish();
 }

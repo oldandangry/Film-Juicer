@@ -18,7 +18,9 @@ namespace ScannerPostTest {
     void values(const Json& rows) {
         for (const auto& row : rows) {
             auto input = wire(row.at("input"));
-            for (auto describe : {fj_legacy_scanner_post_describe, fj_test_scanner_post_describe}) {
+            const std::array<std::pair<std::string_view, decltype(&fj_legacy_scanner_post_describe)>, 2> callers{{{"cpp", fj_legacy_scanner_post_describe}, {"c11", fj_test_scanner_post_describe}}};
+            for (const auto& [caller, describe] : callers) {
+                JuicerTests::CaseEvent case_event(caller, row.at("id").get_ref<const std::string&>());
                 FjScannerPostEffectsDescriptor d;
                 FjScannerPostEffectsFailure failure;
                 std::memset(&d, 0xa5, sizeof(d));
@@ -49,11 +51,13 @@ namespace ScannerPostTest {
                     }
                     require(failure.lane == lane + 1 && std::string(text) == expected.at("diagnostic").get<std::string>(), "post first bad value and exact diagnostic");
                 }
+                case_event.passed();
             }
         }
     }
     void boundary(const Json& rows) {
         values(rows);
+        JuicerTests::CaseEvent boundary_event("cpp", "scanner-post/boundary");
         auto input = wire(rows.at(100).at("input")); // print active; 100 cases/route
         require(input.route == 1, "post active print fixture selection");
         FjScannerPostEffectsDescriptor d;
@@ -62,7 +66,9 @@ namespace ScannerPostTest {
             std::memset(&d, 0xa5, sizeof(d));
             std::memset(&failure, 0xa5, sizeof(failure));
         };
+        JuicerTests::Cohort raw_modes("scanner_post.raw_malformed", 7);
         for (unsigned mode = 0; mode < 7; ++mode) {
+            auto row_event = raw_modes.case_event(std::to_string(mode));
             poison();
             auto in = input;
             auto* argument = &in;
@@ -89,12 +95,15 @@ namespace ScannerPostTest {
                 require(zero(d), "post independent result clearing");
             if (details)
                 require(failure.reason == 1 && failure.lane == 0 && zero(failure.rejected), "post independent failure clearing");
+            row_event.passed();
         }
         FjErrorBuffer empty{reinterpret_cast<char*>(1), 0, 99};
         status(fj_test_scanner_post_describe(&input, &d, &failure, &empty));
         require(empty.length == 0 && zero(failure), "post zero-capacity diagnostic");
         status(fj_test_scanner_post_describe(&input, &d, &failure, nullptr));
+        JuicerTests::Cohort radius_lanes("scanner_post.radius_lane", 3);
         for (unsigned lane = 1; lane <= 3; ++lane) {
+            auto row_event = radius_lanes.case_event(std::to_string(lane - 1));
             auto in = input;
             const float threshold = 2147483648.0f / 3.0f;
             if (lane == 1)
@@ -112,8 +121,11 @@ namespace ScannerPostTest {
             status(fj_test_scanner_post_describe(&in, &d, &failure, &error), FJ_STATUS_PREPARATION_FAILURE);
             require(failure.reason == 3 && failure.lane == lane && zero(d) && zero(failure.rejected), "post bounded radius range/order envelope");
             require(std::string_view(text) == "scanner post-effects Gaussian radius outside int32 range", "post exact radius diagnostic");
+            row_event.passed();
         }
+        JuicerTests::Cohort fault_rows("scanner_post.fault", {"hash", "panic"});
         for (unsigned fault : {1u, 2u}) {
+            auto row_event = fault_rows.case_event(fault == 1 ? "hash" : "panic");
             status(fj_test_scanner_post_fault(fault));
             auto invalid = input;
             invalid.route = 4;
@@ -137,6 +149,7 @@ namespace ScannerPostTest {
             } else
                 require(zero(failure.rejected) && std::string_view(text) == "scanner post-effects preparation panicked", "post contained panic");
             status(fj_test_scanner_post_describe(&input, &d, &failure, nullptr));
+            row_event.passed();
         }
         status(fj_test_scanner_post_fault(1));
         auto inactive = wire(rows.at(1).at("input"));
@@ -144,8 +157,10 @@ namespace ScannerPostTest {
         require(d.hash == 0 && zero(failure), "post inactive legitimate zero consumes hash fault");
         status(fj_test_scanner_post_describe(&input, &d, &failure, nullptr));
         status(fj_test_scanner_post_fault(3), FJ_STATUS_UNSUPPORTED_INPUT);
+        boundary_event.passed();
     }
     void lifetime(const Json& rows) {
+        JuicerTests::CaseEvent lifetime_event("cpp", "scanner-post/lifetime");
         FjScannerPostEffectsDescriptor held{};
         FjScannerPostEffectsFailure failure{};
         {
@@ -165,11 +180,13 @@ namespace ScannerPostTest {
         FjScannerPostEffectsDescriptor result{};
         status(fj_test_scanner_post_describe(&input, &result, &failure, nullptr), FJ_STATUS_PREPARATION_FAILURE);
         require(failure.reason == 4 && project(held) == rows.at(100).at("native").at("descriptor"), "post fault stays thread-local and cannot mutate held result");
+        lifetime_event.passed();
     }
     void callers(const std::filesystem::path& resources, const Json& rows) {
         JuicerCuda::Owner owner;
         owner.create(resources);
         for (unsigned route = 0; route < 4; ++route) {
+            JuicerTests::CaseEvent route_event("cpp", "scanner-post/route/" + std::to_string(route));
             const auto rowIndex = static_cast<Json::size_type>(route) * 100;
             const auto selected = static_cast<Spektrafilm::ScanRoute>(route);
             auto controls = FilmReferenceTest::controls(1, selected, 0);
@@ -225,6 +242,7 @@ namespace ScannerPostTest {
             FjPreparedStateView recovered{};
             status(recoveredProduct.view(recovered, error));
             require(project(recovered.scanner_post_effects) == project(initial), "actual route recovers after one-shot failure");
+            route_event.passed();
         }
     }
 } // namespace ScannerPostTest

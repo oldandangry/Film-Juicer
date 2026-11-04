@@ -208,12 +208,15 @@ namespace EffectsFrameTest {
                 {"strength_min", std::bit_cast<std::uint32_t>(v.strength_min)},
                 {"strength_max", std::bit_cast<std::uint32_t>(v.strength_max)}};
     }
-    Json product_rows(const std::filesystem::path& resources, const Json& inputs) {
+    Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json& expectedRows) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
+        std::size_t expectedIndex = 0;
         for (unsigned route = 0; route < 4; ++route) {
             for (const auto& spec : inputs.at("products")) {
+                const auto caseId = std::to_string(route) + "/" + spec.at("id").get<std::string>();
+                JuicerTests::CaseEvent caseEvent("cpp", caseId);
                 ParamSnapshot params;
                 params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
                 params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
@@ -233,7 +236,7 @@ namespace EffectsFrameTest {
                 const auto& effects = view.effects;
                 Json literal = inputs.at("cases")[0];
                 literal.update(spec.at("overrides"));
-                literal["id"] = std::to_string(route) + "/" + spec.at("id").get<std::string>();
+                literal["id"] = caseId;
                 literal["active"] = effects.active != 0;
                 literal["recipe_hash"] = effects.hash;
                 literal["gate_weave_amount"] = std::bit_cast<std::uint64_t>(effects.gate_weave_amount);
@@ -252,9 +255,13 @@ namespace EffectsFrameTest {
                     std::string diagnostic;
                     require(JuicerEffects::compose_frame_descriptor(math, effects.film_dust, effects.film_scratch, effects.gate_dust, effects.gate_scratch, descriptor, diagnostic), diagnostic.c_str());
                 }
-                rows.push_back({{"route", route}, {"spec", spec}, {"input", literal}, {"success", result.category == FJ_STATUS_SUCCESS}, {"diagnostic", std::string(text.data(), error.length)}, {"native", JuicerTestSupport::effects_frame_fields(descriptor)}});
+                auto row = Json{{"route", route}, {"spec", spec}, {"input", literal}, {"success", result.category == FJ_STATUS_SUCCESS}, {"diagnostic", std::string(text.data(), error.length)}, {"native", JuicerTestSupport::effects_frame_fields(descriptor)}};
+                require_equal(row, expectedRows.at(expectedIndex++), "completed effects product row matches captured fixture");
+                rows.push_back(std::move(row));
+                caseEvent.passed();
             }
         }
+        require(expectedIndex == expectedRows.size(), "complete effects product fixture membership");
         return rows;
     }
     FjEffectsFrameMath expected_math(const Json& row) {
@@ -290,6 +297,7 @@ namespace EffectsFrameTest {
     void value_rows(const Json& rows) {
         const auto defaults = JuicerTestSupport::effects_frame_fields({});
         for (const auto& row : rows) {
+            const auto caseId = row.at("input").at("id").get<std::string>();
             Input input(row.at("input"));
             const bool success = row.at("success");
             const auto expected = expected_math(row);
@@ -299,17 +307,21 @@ namespace EffectsFrameTest {
             FjEffectsFrameInput raw{};
             std::string diagnostic;
             if (JuicerEffects::project_input(input.frame, raw, diagnostic)) {
+                JuicerTests::CaseEvent c11Event("c11", row.at("input").at("id").get<std::string>());
                 for (unsigned facade = 0; facade < 2; ++facade)
                     require(fj_test_effects_frame_c_check(facade, &raw, &expected, envelope, failure, row.at("diagnostic").get<std::string>().c_str()) != 0, ("strict C11 full effects frame " + row.at("input").at("id").get<std::string>()).c_str());
+                c11Event.passed();
             } else {
                 require(!success && diagnostic == row.at("diagnostic").get<std::string>(), "required effects native pointer guard precedes inactive");
             }
+            JuicerTests::CaseEvent cppEvent("cpp", caseId);
             for (bool facade : {false, true}) {
                 Spektrafilm::FilmJuicerEffectsFrameDescriptor out;
                 const bool actual = facade ? JuicerTestSupport::prepare_effects_frame(input.frame, out, diagnostic) : JuicerEffects::prepare_frame(input.frame, out, diagnostic);
                 require(actual == success && diagnostic == row.at("diagnostic").get<std::string>(), ("effects outcome " + row.at("input").at("id").get<std::string>()).c_str());
                 require(JuicerTestSupport::effects_frame_fields(out) == (success ? row.at("native") : defaults), ("effects complete native fields/policies/hash " + row.at("input").at("id").get<std::string>()).c_str());
             }
+            cppEvent.passed();
         }
     }
     void values(const Json& captured, const Json& checked) {
@@ -324,16 +336,27 @@ namespace EffectsFrameTest {
         value_rows(captured.at("products"));
     }
     void raw_and_faults(const Json& captured) {
+        JuicerTests::CaseEvent caseEvent("cpp", "effects-frame/raw-and-faults");
         Input input(captured.at("cases")[0].at("input"));
         FjEffectsFrameInput raw{};
         std::string diagnostic;
         require(JuicerEffects::project_input(input.frame, raw, diagnostic), "effects raw baseline input");
         const auto expected = expected_math(captured.at("cases")[0]);
-        for (unsigned facade = 0; facade < 2; ++facade) {
+        std::vector<std::string> mode_ids;
+        for (unsigned facade = 0; facade < 2; ++facade)
             for (unsigned mode = 0; mode < 20; ++mode)
+                mode_ids.emplace_back("caller-" + std::to_string(facade) + "/mode-" + std::to_string(mode));
+        JuicerTests::Cohort raw_modes("effects_frame.raw_mode", mode_ids);
+        for (unsigned facade = 0; facade < 2; ++facade) {
+            for (unsigned mode = 0; mode < 20; ++mode) {
+                auto row_event = raw_modes.case_event("caller-" + std::to_string(facade) + "/mode-" + std::to_string(mode));
                 require(fj_test_effects_frame_c_raw(facade, &raw, mode, &expected) != 0, ("C11 raw effects mode " + std::to_string(mode)).c_str());
+                row_event.passed();
+            }
         }
+        JuicerTests::Cohort frame_faults("effects_frame.frame_fault", 6);
         for (unsigned fault = 1; fault <= 6; ++fault) {
+            auto row_event = frame_faults.case_event(std::to_string(fault - 1));
             Input attempt(captured.at("cases")[fault == 6 ? 7 : 0].at("input"));
             if (fault == 6) {
                 attempt.recipe.active = false;
@@ -344,6 +367,7 @@ namespace EffectsFrameTest {
             require(!JuicerTestSupport::prepare_effects_frame(attempt.frame, out, diagnostic), "malformed completed effects result is unusable");
             require(diagnostic == (fault == 1 ? "physical effects frame preparation panicked" : "ResourceDescriptorMismatch phase=effects_descriptor field=rust_result") && JuicerTestSupport::effects_frame_fields(out) == JuicerTestSupport::effects_frame_fields({}), "effects panic/result fault clears native default");
             require(JuicerTestSupport::prepare_effects_frame(attempt.frame, out, diagnostic), "effects fault consumes once");
+            row_event.passed();
         }
         status(fj_test_effects_frame_fault(1));
         status(fj_test_effects_frame_fault(7), 2);
@@ -362,6 +386,7 @@ namespace EffectsFrameTest {
         status(fj_test_grain_frame_prepare(&grain, &grainMath, &grainFailure, nullptr), 8);
         require(grainFailure.reason == 3, "effects cannot consume grain faults");
         status(fj_test_effects_frame_fault(0));
+        caseEvent.passed();
     }
 
 } // namespace EffectsFrameTest

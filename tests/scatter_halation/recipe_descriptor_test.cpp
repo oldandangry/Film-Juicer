@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 
+#include "gtest_cases.h"
 #include "gtest/gtest.h"
 
 #include "FilmEffectsFrameDescriptors.h"
@@ -142,7 +143,10 @@ namespace {
         EXPECT_FALSE(descriptor.filmActive);
         EXPECT_FALSE(descriptor.gateOutputActive);
 
+        JuicerTests::GtestCohort activation_masks_cases("activation-masks", 5u);
+        std::size_t activation_masks_index = 0;
         for (const int activationMask : {1, 2, 4, 8, 16}) {
+            auto activation_masks_case = activation_masks_cases.case_event(std::to_string(activation_masks_index++));
             SCOPED_TRACE(activationMask);
             const auto recipe = effects_recipe_for_test(activationMask);
             input = effects_input_for_test(recipe);
@@ -156,6 +160,8 @@ namespace {
                 descriptor.gateOutputActive,
                 (activationMask & 28) != 0);
             EXPECT_EQ(descriptor.requiresFullFrame, (activationMask & 16) != 0);
+
+            activation_masks_case.passed();
         }
     }
 
@@ -194,7 +200,10 @@ namespace {
     }
 
     TEST(ScatterHalationControls, RetainsFloat32BoundsAndIdentity) {
+        JuicerTests::GtestCohort control_values_cases("control-values", 4u);
+        std::size_t control_values_index = 0;
         for (double value : {0.0, 1.0, 1.25, 2.0}) {
+            auto control_values_case = control_values_cases.case_event(std::to_string(control_values_index++));
             SCOPED_TRACE(value);
             ScatterHalationRawControls raw{true, value, value, value, value};
             ScatterHalationControls controls;
@@ -211,6 +220,8 @@ namespace {
             EXPECT_EQ(float_bits(controls.scatterSpatialScale), expected);
             EXPECT_EQ(float_bits(controls.halationAmount), expected);
             EXPECT_EQ(float_bits(controls.halationSpatialScale), expected);
+
+            control_values_case.passed();
         }
 
         const float retained = 1.0f;
@@ -235,12 +246,15 @@ namespace {
     }
 
     TEST(ScatterHalationControls, RejectsInvalidActiveValues) {
+        JuicerTests::GtestCohort invalid_values_cases("invalid-values", 5u);
+        std::size_t invalid_values_index = 0;
         for (double value : {
                  std::numeric_limits<double>::quiet_NaN(),
                  std::numeric_limits<double>::infinity(),
                  -std::numeric_limits<double>::infinity(),
                  -0.01,
                  std::nextafter(2.0, 3.0)}) {
+            auto invalid_values_case = invalid_values_cases.case_event(std::to_string(invalid_values_index++));
             SCOPED_TRACE(value);
             ScatterHalationRawControls raw;
             raw.active = true;
@@ -252,6 +266,8 @@ namespace {
                 controls,
                 diagnostic));
             EXPECT_FALSE(diagnostic.empty());
+
+            invalid_values_case.passed();
         }
 
         ScatterHalationRawControls inactive;
@@ -285,7 +301,10 @@ namespace {
                                                    {50.0f, {0.08f, 0.02f, 0.0f}},
                                                    {50.0f, {0.3f, 0.1f, 0.015f}}}};
         const auto active = controls_or_fail({true, 1.0, 1.0, 1.0, 1.0});
+        JuicerTests::GtestCohort profile_mappings_cases("profile-mappings", std::size(mappings));
+        std::size_t profile_mappings_index = 0;
         for (const Mapping& mapping : mappings) {
+            auto profile_mappings_case = profile_mappings_cases.case_event(std::to_string(profile_mappings_index++));
             SCOPED_TRACE(mapping.sigma);
             const std::array<float, 3> firstSigmaUm{mapping.sigma, mapping.sigma, mapping.sigma};
             const auto recipe = recipe_or_fail(active, firstSigmaUm, mapping.strength);
@@ -298,6 +317,8 @@ namespace {
                     float_bits(recipe.totalStrength[channel]),
                     float_bits(mapping.strength[channel]));
             }
+
+            profile_mappings_case.passed();
         }
 
         const ScatterHalationControls inactive;
@@ -396,9 +417,13 @@ namespace {
 int main(int argc, char** argv) noexcept {
     JuicerCuda::Owner cudaOwner;
     try {
-        cudaOwner.create(JuicerProcess::data_directory());
         testing::InitGoogleTest(&argc, argv);
+        if (::testing::GTEST_FLAG(list_tests))
+            return RUN_ALL_TESTS();
+        cudaOwner.create(JuicerProcess::data_directory());
+        JuicerTests::CaseLog case_log;
         const int result = RUN_ALL_TESTS();
+        case_log.finish();
         const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         return closed.category == FJ_STATUS_SUCCESS ? result : 1;
     } catch (const std::exception& error) {

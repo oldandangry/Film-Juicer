@@ -21,6 +21,21 @@ endif()
 
 find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Interpreter)
 
+# CTest keeps scheduling; the existing verifier captures framework/custom cases
+# inside the native build owner's contained process tree.
+function(juicer_host_launcher target protocol)
+    target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/third_party")
+    set_property(TARGET ${target} PROPERTY TEST_LAUNCHER
+        "${Python3_EXECUTABLE};-B;${PROJECT_SOURCE_DIR}/scripts/verify.py;native-case;--preset;${JUICER_TEST_PRESET_NAME};--protocol;${protocol};--")
+endfunction()
+
+function(juicer_add_host_test name target protocol)
+    add_test(NAME "${name}" COMMAND "${Python3_EXECUTABLE}" -B
+        "${PROJECT_SOURCE_DIR}/scripts/verify.py" native-case
+        --preset "${JUICER_TEST_PRESET_NAME}" --protocol "${protocol}"
+        -- "$<TARGET_FILE:${target}>" ${ARGN})
+endfunction()
+
 set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 if(WIN32)
@@ -32,6 +47,12 @@ FetchContent_Declare(
     URL_HASH SHA256=6e3191c1455468b3fc35a417fb565c1c5071aee1b7e7f85e30cf48a98d37d8b5
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(googletest)
+
+add_library(juicer_host_gtest_main OBJECT ffi/host_gtest_main.cpp)
+target_compile_features(juicer_host_gtest_main PRIVATE cxx_std_20)
+target_include_directories(juicer_host_gtest_main PRIVATE "${PROJECT_SOURCE_DIR}/third_party")
+target_link_libraries(juicer_host_gtest_main PRIVATE GTest::gtest)
+
 
 foreach(flags IN ITEMS CMAKE_CUDA_FLAGS CMAKE_CUDA_FLAGS_DEBUG CMAKE_CUDA_FLAGS_RELEASE)
     if("${${flags}}" MATCHES "(^|[ \t\r\n])--?use_fast_math([= \t\r\n]|$)")
@@ -70,54 +91,33 @@ juicer_register_tooling_tests(
     BUILD_TYPE "${CMAKE_BUILD_TYPE}"
     HOST_WINDOWS "${JUICER_TOOLING_HOST_WINDOWS}"
     TESTS_OUT JUICER_TOOLING_TESTS)
+set_tests_properties(Quality.HostResults PROPERTIES
+    ENVIRONMENT "FJ_HOST_NATIVE_ABI=$<TARGET_FILE:JuicerCudaAbiTests>;FJ_HOST_NATIVE_GTEST=$<TARGET_FILE:JuicerCudaFailureTests>")
+set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Quality.HostResults "JuicerCudaAbiTests;JuicerCudaFailureTests")
 
-set(JUICER_RUST_TEST_COMMAND
-    "${JUICER_CARGO_EXECUTABLE}" test
-    --locked
-    --package film-juicer-core
-    --target "${JUICER_RUST_TARGET}"
-    --target-dir "${JUICER_RUST_TARGET_DIR}")
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    list(APPEND JUICER_RUST_TEST_COMMAND --release)
-endif()
-set(JUICER_RUST_CORE_TEST_COMMAND
-    "${CMAKE_COMMAND}" -E env
-    "RUSTFLAGS="
-    "CARGO_BUILD_RUSTFLAGS="
-    "CARGO_ENCODED_RUSTFLAGS="
-    ${JUICER_RUST_TEST_COMMAND})
-# Keep cold test compilation in the build phase, outside the CTest runtime budget.
-# Cargo owns test-source and include-file freshness on incremental builds.
-add_custom_target(juicer_rust_core_tests ALL
-    COMMAND ${JUICER_RUST_CORE_TEST_COMMAND} --no-run
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    COMMENT "Preparing core Rust test executables (${JUICER_RUST_CARGO_PROFILE})"
-    VERBATIM
-    USES_TERMINAL)
-add_test(NAME Rust.Core COMMAND ${JUICER_RUST_CORE_TEST_COMMAND} -- --test-threads=2)
+set(JUICER_RUST_TEST_RUNNER
+    "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/verify.py" rust-tests
+    --preset "${JUICER_TEST_PRESET_NAME}"
+    --cargo "${JUICER_CARGO_EXECUTABLE}"
+    --nextest "${JUICER_NEXTEST_EXECUTABLE}"
+    --binaries-metadata "${JUICER_RUST_TESTS_BINARIES_METADATA}"
+    --cargo-metadata "${JUICER_RUST_TESTS_CARGO_METADATA}"
+    --config-file "${PROJECT_SOURCE_DIR}/.config/nextest.toml")
+add_test(NAME Rust.Core COMMAND ${JUICER_RUST_TEST_RUNNER} --package core)
 set_tests_properties(Rust.Core PROPERTIES
     LABELS "host"
     TIMEOUT 0
-    PROCESSORS 2
+    PROCESSORS 1
     RESOURCE_LOCK juicer_cargo
     ENVIRONMENT "JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/rust-core"
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
-add_test(NAME Rust.Bridge
-    COMMAND "${CMAKE_COMMAND}" -E env
-        "RUSTFLAGS="
-        "CARGO_BUILD_RUSTFLAGS="
-        "CARGO_ENCODED_RUSTFLAGS="
-        "${JUICER_CARGO_EXECUTABLE}" test
-            --locked --package film-juicer-plugin
-            --no-default-features ${JUICER_RUST_FEATURE_ARGUMENT}
-            --target "${JUICER_RUST_TARGET}"
-            --target-dir "${JUICER_RUST_TARGET_DIR}"
-            ${JUICER_RUST_PROFILE_ARGUMENT})
+add_test(NAME Rust.Bridge COMMAND ${JUICER_RUST_TEST_RUNNER} --package bridge)
 set_tests_properties(Rust.Bridge PROPERTIES
-    LABELS "host" TIMEOUT 0 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+    LABELS "host" TIMEOUT 0 PROCESSORS 1 RESOURCE_LOCK juicer_cargo
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
-add_test(NAME Ffi.Host.NativeBoundary
+juicer_add_python_test(NAME Ffi.Host.NativeBoundary
     COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p "test_native_boundary.py" -v)
 set_tests_properties(Ffi.Host.NativeBoundary PROPERTIES LABELS "host" TIMEOUT 0)
@@ -238,63 +238,63 @@ set_target_properties(JuicerFilmRecipeTests PROPERTIES
     LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_dependencies(JuicerFilmRecipeTests juicer_test_resources)
-add_test(NAME Ffi.Host.EffectsFrame COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.EffectsFrame JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/effects-frame-fixtures/manifest.json" effects-frame "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Film.Host.EffectsFrameProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Film.Host.EffectsFrameProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/effects-frame-fixtures/manifest.json" effects-frame-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.EffectsFrame Film.Host.EffectsFrameProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.GrainFrame COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.GrainFrame JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/grain/frame-fixtures/manifest.json" grain-frame "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Film.Host.GrainFrameProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Film.Host.GrainFrameProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/grain/frame-fixtures/manifest.json" grain-frame-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.GrainFrame Film.Host.GrainFrameProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.DirBoundary COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.DirBoundary JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/dir/boundary-fixtures/manifest.json" dir-boundary "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Film.Host.DirBoundaryProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Film.Host.DirBoundaryProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/dir/boundary-fixtures/manifest.json" dir-boundary-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.DirBoundary Film.Host.DirBoundaryProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.DirFrame COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.DirFrame JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/dir/frame-fixtures/manifest.json" dir-frame "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Film.Host.DirFrameProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Film.Host.DirFrameProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/dir/frame-fixtures/manifest.json" dir-frame-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.DirFrame Film.Host.DirFrameProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.DiffusionFrame COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.DiffusionFrame JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/diffusion/frame-fixtures/manifest.json" diffusion-frame "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Optics.Host.DiffusionFrameProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Optics.Host.DiffusionFrameProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/diffusion/frame-fixtures/manifest.json" diffusion-frame-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.DiffusionFrame Optics.Host.DiffusionFrameProducts PROPERTIES LABELS "host" TIMEOUT 0)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     # Keep the full numerical fixture separate at the preset's four-worker limit.
     set_tests_properties(Optics.Host.DiffusionFrameProducts PROPERTIES PROCESSORS 4)
 endif()
-add_test(NAME Ffi.Host.HalationFrame COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.HalationFrame JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation/frame-fixtures/manifest.json" halation-frame "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Optics.Host.HalationFrameProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Optics.Host.HalationFrameProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation/frame-fixtures/manifest.json" halation-frame-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.HalationFrame Optics.Host.HalationFrameProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.FrameGeometry COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.FrameGeometry JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/frame/geometry-fixtures/manifest.json" frame "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Frame.Host.GeometryProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Frame.Host.GeometryProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/frame/geometry-fixtures/manifest.json" frame-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.FrameGeometry Frame.Host.GeometryProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.GaussianKernel COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.GaussianKernel JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/manifest.json" gaussian "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Optics.Host.GaussianKernelProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Optics.Host.GaussianKernelProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/manifest.json" gaussian-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.GaussianKernel Optics.Host.GaussianKernelProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.ScannerPostEffects COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.ScannerPostEffects JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/post-effects-fixtures/manifest.json" scanner-post "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Scanner.Host.PostEffectsProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Scanner.Host.PostEffectsProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/post-effects-fixtures/manifest.json" scanner-post-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.ScannerPostEffects Scanner.Host.PostEffectsProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.ScannerLutDescriptor COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.ScannerLutDescriptor JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/descriptor-fixtures/manifest.json" scanner-descriptor "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Scanner.Host.LutDescriptorProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Scanner.Host.LutDescriptorProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/descriptor-fixtures/manifest.json" scanner-descriptor-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.ScannerLutDescriptor Scanner.Host.LutDescriptorProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.ScannerLut COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.ScannerLut JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/lut-fixtures/manifest.json" scanner-lut "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Scanner.Host.LutProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Scanner.Host.LutProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/lut-fixtures/manifest.json" scanner-lut-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.ScannerLut Scanner.Host.LutProducts PROPERTIES LABELS "host" TIMEOUT 0)
 if(WIN32)
@@ -302,58 +302,58 @@ if(WIN32)
 else()
     set(JUICER_FILM_DIR_FIXTURE linux)
 endif()
-add_test(NAME Ffi.Host.FilmRecipes COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.FilmRecipes JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/dir-fixtures/${JUICER_FILM_DIR_FIXTURE}.json")
 set_tests_properties(Ffi.Host.FilmRecipes PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.FilmReference COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.FilmReference JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/reference-fixtures/manifest.json" film-reference "${JUICER_TEST_PRESET_NAME}")
-add_test(NAME Film.Host.ReferenceProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Film.Host.ReferenceProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/reference-fixtures/manifest.json" film-reference-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.FilmReference Film.Host.ReferenceProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Film.Host.DirDensityProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Film.Host.DirDensityProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/dir-fixtures/${JUICER_FILM_DIR_FIXTURE}.json" products)
 set_tests_properties(Film.Host.DirDensityProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.VisualGrain COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.VisualGrain JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/grain-fixtures/manifest.json" grain "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.VisualGrain PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Film.Host.VisualGrainProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Film.Host.VisualGrainProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/grain-fixtures/manifest.json" grain-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Film.Host.VisualGrainProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.PhysicalEffects COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.PhysicalEffects JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/effects-fixtures/manifest.json" effects "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.PhysicalEffects PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Film.Host.PhysicalEffectsProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Film.Host.PhysicalEffectsProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/effects-fixtures/manifest.json" effects-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Film.Host.PhysicalEffectsProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.SpatialOptics COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.SpatialOptics JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/optics-fixtures/manifest.json" optics "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.SpatialOptics PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Film.Host.SpatialOpticsProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Film.Host.SpatialOpticsProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/optics-fixtures/manifest.json" optics-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Film.Host.SpatialOpticsProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.PrintIlluminant COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.PrintIlluminant JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/illuminant-fixtures/rust-manifest.json" print-illuminant "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.PrintIlluminant PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Print.Host.IlluminantProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Print.Host.IlluminantProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/illuminant-fixtures/rust-manifest.json" print-illuminant-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Print.Host.IlluminantProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.PrintPreflash COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.PrintPreflash JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/preflash-fixtures/manifest.json" print-preflash "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.PrintPreflash PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Print.Host.PreflashProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Print.Host.PreflashProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/preflash-fixtures/manifest.json" print-preflash-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Print.Host.PreflashProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.PrintBalance COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.PrintBalance JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/balance-fixtures/manifest.json" print-balance "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.PrintBalance PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Print.Host.BalanceProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Print.Host.BalanceProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/balance-fixtures/manifest.json" print-balance-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Print.Host.BalanceProducts PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.ScannerCorrection COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Ffi.Host.ScannerCorrection JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/correction-fixtures/manifest.json" scanner-correction "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ffi.Host.ScannerCorrection PROPERTIES LABELS "host" TIMEOUT 0
     ENVIRONMENT "JUICER_DIAGNOSTICS=2;JUICER_DIAGNOSTICS_PATH=${JUICER_TEST_ARTIFACT_ROOT}/scanner/correction-boundary-trace.log")
-add_test(NAME Scanner.Host.CorrectionProducts COMMAND JuicerFilmRecipeTests
+juicer_add_host_test(Scanner.Host.CorrectionProducts JuicerFilmRecipeTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/correction-fixtures/manifest.json" scanner-correction-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Scanner.Host.CorrectionProducts PROPERTIES LABELS "host" TIMEOUT 0
     ENVIRONMENT "JUICER_DIAGNOSTICS=2;JUICER_DIAGNOSTICS_PATH=${JUICER_TEST_ARTIFACT_ROOT}/scanner/correction-product-trace.log")
@@ -415,7 +415,7 @@ target_compile_definitions(juicer_allocation_retry_test_objects PRIVATE
     JUICER_ALLOCATION_RETRY_TEST_HOOK=1)
 add_executable(JuicerCudaFailureTests ffi/cuda_failure_test.cpp
     $<TARGET_OBJECTS:juicer_allocation_retry_test_objects>)
-target_link_libraries(JuicerCudaFailureTests PRIVATE juicer_test_core GTest::gtest_main)
+target_link_libraries(JuicerCudaFailureTests PRIVATE juicer_test_core GTest::gtest juicer_host_gtest_main)
 target_compile_definitions(JuicerCudaFailureTests PRIVATE JUICER_ALLOCATION_RETRY_TEST_HOOK=1)
 set_target_properties(JuicerCudaFailureTests PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME Ffi.Host.CudaFailure COMMAND JuicerCudaFailureTests)
@@ -427,7 +427,7 @@ target_link_libraries(juicer_pinned_upload_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_pinned_upload_test_objects PRIVATE JUICER_PINNED_UPLOAD_TEST_HOOK=1)
 add_executable(JuicerPinnedUploadTests resource/pinned_upload_test.cpp
     $<TARGET_OBJECTS:juicer_pinned_upload_test_objects>)
-target_link_libraries(JuicerPinnedUploadTests PRIVATE juicer_test_core GTest::gtest_main CUDA::cuda_driver)
+target_link_libraries(JuicerPinnedUploadTests PRIVATE juicer_test_core GTest::gtest juicer_host_gtest_main CUDA::cuda_driver)
 target_compile_definitions(JuicerPinnedUploadTests PRIVATE JUICER_PINNED_UPLOAD_TEST_HOOK=1
     JUICER_TEST_RESOURCE_DIR="${JUICER_TEST_RESOURCE_DIR}")
 add_dependencies(JuicerPinnedUploadTests juicer_test_resources)
@@ -476,23 +476,29 @@ foreach(deferred_case IN ITEMS lock allocation storage ordinary control)
 endforeach()
 
 add_executable(JuicerCudaInspectTests ffi/cuda_inspect_test.cpp)
-target_link_libraries(JuicerCudaInspectTests PRIVATE juicer_test_core GTest::gtest_main)
+target_link_libraries(JuicerCudaInspectTests PRIVATE juicer_test_core GTest::gtest juicer_host_gtest_main)
 set_target_properties(JuicerCudaInspectTests PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME Ffi.Host.CudaInspect COMMAND JuicerCudaInspectTests --gtest_filter=InspectHost.*)
 set_tests_properties(Ffi.Host.CudaInspect PROPERTIES LABELS "host" TIMEOUT 0)
 # Keep the host binary independent of the NVIDIA driver at load time.
 add_executable(JuicerCudaInspectGpuTests ffi/cuda_inspect_test.cpp)
 target_compile_definitions(JuicerCudaInspectGpuTests PRIVATE JUICER_CUDA_INSPECT_GPU_TEST=1)
-target_link_libraries(JuicerCudaInspectGpuTests PRIVATE juicer_test_core GTest::gtest_main CUDA::cuda_driver)
+target_link_libraries(JuicerCudaInspectGpuTests PRIVATE juicer_test_core GTest::gtest juicer_host_gtest_main CUDA::cuda_driver)
 set_target_properties(JuicerCudaInspectGpuTests PROPERTIES LINKER_LANGUAGE CXX)
-add_test(NAME Ffi.Gpu.CudaInspect COMMAND JuicerCudaInspectGpuTests --gtest_filter=InspectGpu.*)
+add_test(NAME Ffi.Gpu.CudaInspect COMMAND JuicerCudaInspectGpuTests
+    --gtest_filter=InspectGpu.*-InspectGpu.DeviceMismatchWhenTwoDevicesAreAvailable)
 set_tests_properties(Ffi.Gpu.CudaInspect PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
+# Keep the two-device requirement visible and independently reportable. Its skip
+# remains incomplete evidence on single-device hosts, never an accepted pass.
+add_test(NAME Ffi.Gpu.CudaInspect.MultiDevice COMMAND JuicerCudaInspectGpuTests
+    --gtest_filter=InspectGpu.DeviceMismatchWhenTwoDevicesAreAvailable)
+set_tests_properties(Ffi.Gpu.CudaInspect.MultiDevice PROPERTIES LABELS "gpu;multi-gpu" TIMEOUT 120 RESOURCE_LOCK juicer_gpu)
 
 add_executable(JuicerCudaOwnerUnloadTests ofx/cuda_owner_unload_test.cpp ../src/main.cpp)
 target_link_libraries(JuicerCudaOwnerUnloadTests PRIVATE juicer_test_core juicer_ofxs)
 set_target_properties(JuicerCudaOwnerUnloadTests PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME Ofx.Host.CudaOwnerUnload COMMAND JuicerCudaOwnerUnloadTests)
-set_tests_properties(Ofx.Host.CudaOwnerUnload PROPERTIES LABELS "host" TIMEOUT 0)
+set_tests_properties(Ofx.Host.CudaOwnerUnload PROPERTIES LABELS "host" TIMEOUT 120)
 
 # One explicit development owner; linkage determines dependencies, not test relevance.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/route/development.json")
@@ -513,7 +519,7 @@ endif()
 add_test(NAME ${route_development_test} COMMAND ${route_development_target})
 set_tests_properties(Route.Host.Bridge PROPERTIES LABELS "host" TIMEOUT 0)
 
-add_test(NAME Quality.RustNaming
+juicer_add_python_test(NAME Quality.RustNaming
     COMMAND "${CMAKE_COMMAND}" -E env
         "JUICER_CARGO=${JUICER_CARGO_EXECUTABLE}"
         "JUICER_RUST_TARGET=${JUICER_RUST_TARGET}"
@@ -527,7 +533,7 @@ add_test(NAME Quality.RustNaming
 set_tests_properties(Quality.RustNaming PROPERTIES
     LABELS "host" TIMEOUT 0)
 
-add_test(NAME Quality.RustBoundaries
+juicer_add_python_test(NAME Quality.RustBoundaries
     COMMAND "${CMAKE_COMMAND}" -E env
         "JUICER_CARGO=${JUICER_CARGO_EXECUTABLE}"
         "JUICER_RUST_TARGET=${JUICER_RUST_TARGET}"
@@ -593,12 +599,13 @@ add_dependencies(JuicerScatterHalationHostTests juicer_test_resources)
 
 include(GoogleTest)
 add_executable(JuicerHashContractTests hash/hash_contract_test.cpp)
-target_link_libraries(JuicerHashContractTests PRIVATE juicer_settings GTest::gtest_main)
+target_link_libraries(JuicerHashContractTests PRIVATE juicer_settings GTest::gtest juicer_host_gtest_main)
 set_target_properties(JuicerHashContractTests PROPERTIES
     LINKER_LANGUAGE CXX
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_executable(JuicerScratchRequestTests resource/scratch_request_test.cpp)
-target_link_libraries(JuicerScratchRequestTests PRIVATE juicer_core GTest::gtest_main)
+target_include_directories(JuicerScratchRequestTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ffi")
+target_link_libraries(JuicerScratchRequestTests PRIVATE juicer_core GTest::gtest juicer_host_gtest_main)
 set_target_properties(JuicerScratchRequestTests PROPERTIES
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_test(NAME Resource.Host.ScratchRequest COMMAND JuicerScratchRequestTests)
@@ -608,7 +615,7 @@ set(JUICER_PREPARED_TEST_SOURCES
     ffi/prepared_projection_test.cpp ffi/prepared_span_test.cpp
     ffi/prepared_descriptors.cpp)
 add_executable(JuicerPreparedProjectionTests ${JUICER_PREPARED_TEST_SOURCES} ffi/spatial_optics_fixture.cpp)
-target_link_libraries(JuicerPreparedProjectionTests PRIVATE juicer_test_core GTest::gtest_main)
+target_link_libraries(JuicerPreparedProjectionTests PRIVATE juicer_test_core GTest::gtest juicer_host_gtest_main)
 target_compile_definitions(JuicerPreparedProjectionTests PRIVATE
     FJ_PREPARED_STATE_PRESET="${JUICER_TEST_PRESET_NAME}")
 set_target_properties(JuicerPreparedProjectionTests PROPERTIES
@@ -633,13 +640,13 @@ set_tests_properties(Ffi.Host.PreparedState Prepare.Host.StateProducts PROPERTIE
 set_tests_properties(Ffi.Host.PreparedState Prepare.Host.StateProducts PROPERTIES
     ENVIRONMENT "JUICER_TEST_PRESET_NAME=${JUICER_TEST_PRESET_NAME}")
 include(ffi/prepared_sanitizers.cmake)
-add_test(NAME Ffi.Host.SanitizerRunner
+juicer_add_python_test(NAME Ffi.Host.SanitizerRunner
     COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_prepared_sanitizer_control.py -v)
 set_tests_properties(Ffi.Host.SanitizerRunner PROPERTIES LABELS "host" TIMEOUT 0)
 
 add_executable(JuicerProfileCudaSafetyTests profile/native_cuda_safety_test.cu)
-target_link_libraries(JuicerProfileCudaSafetyTests PRIVATE juicer_core GTest::gtest_main)
+target_link_libraries(JuicerProfileCudaSafetyTests PRIVATE juicer_core GTest::gtest juicer_host_gtest_main)
 if(WIN32)
     target_link_libraries(JuicerProfileCudaSafetyTests PRIVATE CUDA::cudart)
 else()
@@ -654,7 +661,7 @@ set_tests_properties(Profile.Gpu.NativeSafety PROPERTIES
 
 # Raw lookup facades and prepared-state publication use the existing test consumer.
 add_executable(JuicerAssetLookupTests ffi/asset_lookup_test.cpp)
-target_link_libraries(JuicerAssetLookupTests PRIVATE juicer_test_core GTest::gtest_main)
+target_link_libraries(JuicerAssetLookupTests PRIVATE juicer_test_core GTest::gtest juicer_host_gtest_main)
 target_compile_definitions(JuicerAssetLookupTests PRIVATE JUICER_LOOKUP_RESOURCE_DIR="${JUICER_TEST_RESOURCE_DIR}")
 add_dependencies(JuicerAssetLookupTests juicer_test_resources)
 set_target_properties(JuicerAssetLookupTests PROPERTIES
@@ -664,6 +671,8 @@ set_tests_properties(Assets.Host.LookupSafety PROPERTIES LABELS "host" TIMEOUT 0
 
 # GoogleTest treats DISCOVERY_TIMEOUT 0 as unset and falls back to five seconds.
 # Give post-build executable startup an explicit allowance during parallel links.
+juicer_host_launcher(JuicerHashContractTests gtest)
+juicer_host_launcher(JuicerScatterHalationHostTests gtest)
 gtest_discover_tests(JuicerHashContractTests
     TEST_PREFIX "Hash.Host."
     DISCOVERY_MODE POST_BUILD
@@ -717,7 +726,7 @@ set_tests_properties(Diffusion.HostReference PROPERTIES
     LABELS "host;reference"
     TIMEOUT 0)
 
-add_test(NAME Gamma.Comparator
+juicer_add_python_test(NAME Gamma.Comparator
     COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/gamma"
         -p test_compare.py
@@ -728,7 +737,7 @@ set_tests_properties(Gamma.Comparator PROPERTIES
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_test(NAME Ofx.SyntheticHostLifecycle
+    juicer_add_python_test(NAME Ofx.SyntheticHostLifecycle
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/ofx/probe.py"
             "$<TARGET_FILE:juicer>"
@@ -1026,9 +1035,10 @@ set_tests_properties(Scanner.Gpu.OutputEncoding PROPERTIES
 
 add_executable(JuicerRenderAssertionTests ofx/render_assertions_test.cpp ofx/render_assertions.cpp)
 target_compile_features(JuicerRenderAssertionTests PRIVATE cxx_std_20)
-target_link_libraries(JuicerRenderAssertionTests PRIVATE GTest::gtest_main)
+target_include_directories(JuicerRenderAssertionTests PRIVATE "${PROJECT_SOURCE_DIR}/third_party")
+target_link_libraries(JuicerRenderAssertionTests PRIVATE GTest::gtest juicer_host_gtest_main)
 add_test(NAME Ofx.Host.RenderAssertions COMMAND JuicerRenderAssertionTests)
-set_tests_properties(Ofx.Host.RenderAssertions PROPERTIES LABELS "host" TIMEOUT 0)
+set_tests_properties(Ofx.Host.RenderAssertions PROPERTIES LABELS "host" TIMEOUT 120)
 
 add_test(NAME Ofx.Gpu.AcceptedCudaCaptures COMMAND JuicerProcessorReferenceProbe --accepted-clean-captures)
 set_tests_properties(Ofx.Gpu.AcceptedCudaCaptures PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
@@ -1079,28 +1089,28 @@ set_target_properties(JuicerColorPreparationTests PROPERTIES
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_dependencies(JuicerColorPreparationTests juicer_test_resources)
 
-add_test(NAME Ffi.Host.SharedFixtureLoading COMMAND JuicerColorPreparationTests
+juicer_add_host_test(Ffi.Host.SharedFixtureLoading JuicerColorPreparationTests custom
     "${JUICER_TEST_ARTIFACT_ROOT}/fixtures/shared-loader" unused fixture-format)
 set_tests_properties(Ffi.Host.SharedFixtureLoading PROPERTIES LABELS "host" TIMEOUT 0)
 
-add_test(NAME Color.Host.Cat16 COMMAND JuicerColorPreparationTests
+juicer_add_host_test(Color.Host.Cat16 JuicerColorPreparationTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" leaf)
 set_tests_properties(Color.Host.Cat16 PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.ColorPreparation COMMAND JuicerColorPreparationTests
+juicer_add_host_test(Ffi.Host.ColorPreparation JuicerColorPreparationTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" preparation)
 set_tests_properties(Ffi.Host.ColorPreparation PROPERTIES LABELS "host" TIMEOUT 0)
 
-add_test(NAME Color.Host.Cat02 COMMAND JuicerColorPreparationTests
+juicer_add_host_test(Color.Host.Cat02 JuicerColorPreparationTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/cat02-${JUICER_TEST_PRESET_NAME}.json" cat02-leaf)
 set_tests_properties(Color.Host.Cat02 PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.Cat02Preparation COMMAND JuicerColorPreparationTests
+juicer_add_host_test(Ffi.Host.Cat02Preparation JuicerColorPreparationTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/cat02-${JUICER_TEST_PRESET_NAME}.json" cat02-preparation)
 set_tests_properties(Ffi.Host.Cat02Preparation PROPERTIES LABELS "host" TIMEOUT 0)
 
-add_test(NAME Color.Host.InputColor COMMAND JuicerColorPreparationTests
+juicer_add_host_test(Color.Host.InputColor JuicerColorPreparationTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/input-color-${JUICER_TEST_PRESET_NAME}.json" input-leaf)
 set_tests_properties(Color.Host.InputColor PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Ffi.Host.InputColorPreparation COMMAND JuicerColorPreparationTests
+juicer_add_host_test(Ffi.Host.InputColorPreparation JuicerColorPreparationTests custom
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/input-color-${JUICER_TEST_PRESET_NAME}.json" input-preparation)
 # Admission hooks and asset caches are process-local; bound host contention to two slots.
 set_tests_properties(Ffi.Host.InputColorPreparation PROPERTIES LABELS "host" TIMEOUT 0 PROCESSORS 2)
@@ -1154,12 +1164,12 @@ add_test(NAME Exposure.Host.Admission COMMAND JuicerExposurePreparationTests adm
     "${JUICER_TEST_RESOURCE_DIR}")
 set_tests_properties(Exposure.Host.Admission PROPERTIES LABELS "host" TIMEOUT 0)
 
-add_test(NAME Exposure.Host.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+juicer_add_python_test(NAME Exposure.Host.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover
     -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_exposure_fixtures.py -v)
 set_tests_properties(Exposure.Host.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 0
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
-add_test(NAME Ffi.Host.SharedFixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+juicer_add_python_test(NAME Ffi.Host.SharedFixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover
     -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_shared_fixtures.py -v)
 set_tests_properties(Ffi.Host.SharedFixtureFormat PROPERTIES LABELS "host" TIMEOUT 0
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
@@ -1193,7 +1203,7 @@ foreach(mallett_case IN ITEMS products admission)
     set_tests_properties(Exposure.Host.Mallett.${mallett_case} PROPERTIES LABELS "host" TIMEOUT 0)
 endforeach()
 
-add_test(NAME Exposure.Host.Mallett.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+juicer_add_python_test(NAME Exposure.Host.Mallett.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover
     -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_mallett_exposure_fixtures.py -v)
 set_tests_properties(Exposure.Host.Mallett.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 0
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
@@ -1248,7 +1258,7 @@ add_dependencies(JuicerTcLutLifetimeTests juicer_test_resources)
 add_test(NAME Reconstruction.Host.TcLut.Lifetime COMMAND JuicerTcLutLifetimeTests "${JUICER_TEST_RESOURCE_DIR}")
 set_tests_properties(Reconstruction.Host.TcLut.Lifetime PROPERTIES LABELS "host" TIMEOUT 0)
 
-add_test(NAME Reconstruction.Host.TcLut.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_tc_lut_fixtures.py -v)
+juicer_add_python_test(NAME Reconstruction.Host.TcLut.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_tc_lut_fixtures.py -v)
 set_tests_properties(Reconstruction.Host.TcLut.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 0 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 add_executable(JuicerInputHullTests ffi/input_hull_abi_c.c ffi/input_hull_test.cpp $<TARGET_OBJECTS:juicer_spectral_fixture_objects> $<TARGET_OBJECTS:juicer_spectral_allocation_test_objects> ffi/prepared_descriptors.cpp)
@@ -1260,11 +1270,7 @@ foreach(hull_case IN ITEMS boundary binding products cache admission-1 admission
         "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/input_hull/manifest.json" "${JUICER_TEST_PRESET_NAME}")
     set_tests_properties(Gamut.Host.InputHull.${hull_case} PROPERTIES LABELS "host" TIMEOUT 0)
 endforeach()
-add_test(NAME Gamut.Host.InputHull.Math
-    COMMAND "${CMAKE_COMMAND}" -E env "RUSTFLAGS=" "CARGO_BUILD_RUSTFLAGS=" "CARGO_ENCODED_RUSTFLAGS="
-        ${JUICER_RUST_TEST_COMMAND} --features test-support --test input_hull)
-set_tests_properties(Gamut.Host.InputHull.Math PROPERTIES LABELS "host" TIMEOUT 0 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-add_test(NAME Gamut.Host.InputHull.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_input_hull_fixtures.py -v)
+juicer_add_python_test(NAME Gamut.Host.InputHull.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_input_hull_fixtures.py -v)
 set_tests_properties(Gamut.Host.InputHull.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 0 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 add_executable(JuicerOutputGamutTests ffi/output_gamut_abi_c.c ffi/output_gamut_test.cpp)
@@ -1275,11 +1281,6 @@ foreach(gamut_case IN ITEMS boundary binding)
         "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/output_gamut/manifest.json" "${JUICER_TEST_PRESET_NAME}")
     set_tests_properties(Gamut.Host.Output.${gamut_case} PROPERTIES LABELS "host" TIMEOUT 0)
 endforeach()
-add_test(NAME Gamut.Host.Output.Math
-    COMMAND "${CMAKE_COMMAND}" -E env "RUSTFLAGS=" "CARGO_BUILD_RUSTFLAGS=" "CARGO_ENCODED_RUSTFLAGS="
-        ${JUICER_RUST_TEST_COMMAND} --features test-support --test output_gamut)
-set_tests_properties(Gamut.Host.Output.Math PROPERTIES LABELS "host" TIMEOUT 0 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-
 add_executable(JuicerOutputGamutCacheTests ffi/output_gamut_cache_test.cpp ffi/spectral_allocation_probe.cpp)
 target_link_libraries(JuicerOutputGamutCacheTests PRIVATE juicer_test_core)
 set_target_properties(JuicerOutputGamutCacheTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -1287,7 +1288,7 @@ add_dependencies(JuicerOutputGamutCacheTests juicer_test_resources)
 add_test(NAME Gamut.Host.Output.Cache COMMAND JuicerOutputGamutCacheTests "${JUICER_TEST_RESOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/output_gamut/manifest.json" "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Gamut.Host.Output.Cache PROPERTIES LABELS "host" TIMEOUT 0)
-add_test(NAME Gamut.Host.Output.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_output_gamut_fixtures.py -v)
+juicer_add_python_test(NAME Gamut.Host.Output.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_output_gamut_fixtures.py -v)
 set_tests_properties(Gamut.Host.Output.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 0 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ffi/output-color-development.json")
@@ -1371,7 +1372,7 @@ endforeach()
 string(APPEND juicer_artifact_contract "]\n}\n")
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/artifact-contract.json"
     CONTENT "${juicer_artifact_contract}")
-add_test(NAME Ffi.Host.BuildArtifacts
+juicer_add_python_test(NAME Ffi.Host.BuildArtifacts
     COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/ffi/build_artifact_contract.py"
         --manifest "${CMAKE_CURRENT_BINARY_DIR}/artifact-contract.json")
 set_tests_properties(Ffi.Host.BuildArtifacts PROPERTIES LABELS "host" TIMEOUT 0)
@@ -1394,4 +1395,75 @@ foreach(juicer_test IN LISTS juicer_registered_tests)
         set(juicer_relevance product)
     endif()
     set_property(TEST "${juicer_test}" APPEND PROPERTY LABELS "${juicer_relevance}")
+    set_property(TEST "${juicer_test}" APPEND PROPERTY ENVIRONMENT "FJ_HOST_TEST=${juicer_test}")
 endforeach()
+
+# Small independent contract: target ownership/runtime and required registration
+# counts. Function/fixture names stay with their framework or owning domain.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/host-contracts.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/host-contracts.json" juicer_host_contract)
+string(JSON juicer_host_target_count LENGTH "${juicer_host_contract}" targets)
+math(EXPR juicer_host_last "${juicer_host_target_count} - 1")
+set(juicer_mixed_host_targets JuicerFilmRecipeTests JuicerColorPreparationTests)
+set(juicer_host_target_paths "{\n")
+set(separator "")
+foreach(index RANGE ${juicer_host_last})
+    string(JSON target MEMBER "${juicer_host_contract}" targets ${index})
+    string(JSON protocol GET "${juicer_host_contract}" targets ${target} protocol)
+    # These two executables also have retained GPU modes. Wrap only their
+    # explicit host registrations; Step 2c owns their GPU execution cutover.
+    if(NOT target IN_LIST juicer_mixed_host_targets)
+        juicer_host_launcher(${target} ${protocol})
+    endif()
+    string(JSON row_count ERROR_VARIABLE row_error LENGTH "${juicer_host_contract}" targets ${target} rows)
+    if(NOT row_error AND row_count GREATER 0)
+        math(EXPR row_last "${row_count} - 1")
+        foreach(row_index RANGE ${row_last})
+            string(JSON row_test GET "${juicer_host_contract}" targets ${target} rows ${row_index})
+            set_property(TEST "${row_test}" APPEND PROPERTY ENVIRONMENT "FJ_HOST_ROWS=1")
+        endforeach()
+    endif()
+    string(APPEND juicer_host_target_paths "${separator}\"${target}\":\"$<TARGET_FILE:${target}>\"")
+    set(separator ",\n")
+endforeach()
+string(APPEND juicer_host_target_paths "\n}\n")
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/host-targets.json"
+    CONTENT "${juicer_host_target_paths}")
+
+# Retained CUDA/OFX modes keep their owning isolated CTest processes and labels.
+# The same launcher captures their cases under native build/GPU ownership.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/gpu-contracts.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/gpu-contracts.json" juicer_gpu_contract)
+string(JSON juicer_gpu_target_count LENGTH "${juicer_gpu_contract}" targets)
+math(EXPR juicer_gpu_last "${juicer_gpu_target_count} - 1")
+set(juicer_gpu_target_paths "{\n")
+set(separator "")
+foreach(index RANGE ${juicer_gpu_last})
+    string(JSON target MEMBER "${juicer_gpu_contract}" targets ${index})
+    string(JSON protocol GET "${juicer_gpu_contract}" targets ${target} protocol)
+    target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/third_party")
+    set_property(TARGET ${target} PROPERTY TEST_LAUNCHER
+        "${Python3_EXECUTABLE};-B;${PROJECT_SOURCE_DIR}/scripts/verify.py;native-case;--preset;${JUICER_TEST_PRESET_NAME};--protocol;${protocol};--runtime;gpu;--")
+    string(APPEND juicer_gpu_target_paths "${separator}\"${target}\":\"$<TARGET_FILE:${target}>\"")
+    set(separator ",\n")
+endforeach()
+string(APPEND juicer_gpu_target_paths "\n}\n")
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/gpu-targets.json"
+    CONTENT "${juicer_gpu_target_paths}")
+
+get_property(juicer_registered_tests DIRECTORY PROPERTY TESTS)
+foreach(test IN LISTS juicer_registered_tests)
+    get_property(labels TEST "${test}" PROPERTY LABELS)
+    if("gpu" IN_LIST labels OR "host" IN_LIST labels)
+        get_property(timeout TEST "${test}" PROPERTY TIMEOUT)
+        if(NOT timeout GREATER 0)
+            set_property(TEST "${test}" PROPERTY TIMEOUT 600)
+        endif()
+    endif()
+endforeach()
+
+set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Ofx.SyntheticHostLifecycle juicer)
+set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Ffi.Host.BuildArtifacts "${juicer_static_cufft_targets};${juicer_shared_cufft_targets};${juicer_without_cufft_targets};juicer;juicer_test_resources")
+juicer_write_python_targets()

@@ -33,10 +33,11 @@ namespace HalationFrameTest {
         return {{"recipe_hash", v.recipeHash}, {"scatter_amount", std::bit_cast<std::uint32_t>(v.scatterAmount)}, {"channels", channels}};
     }
 
-    Json products(const std::filesystem::path& resources, const Json& pixelBits) {
+    Json products(const std::filesystem::path& resources, const Json& pixelBits, const Json& expectedRows) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
+        std::size_t expectedIndex = 0;
         for (unsigned route = 0; route < 4; ++route) {
             for (bool active : {false, true}) {
                 ParamSnapshot params;
@@ -62,6 +63,7 @@ namespace HalationFrameTest {
                                {"total_strength", words(h.total_strength, 3)},
                                {"recipe_hash", h.hash},
                                {"pixel_size_um", bits}};
+                    JuicerTests::CaseEvent caseEvent("cpp", input.at("name").get<std::string>() + "/product-check");
                     const auto wire = raw(input);
                     FjScatterHalation descriptor{};
                     FjHalationFrameFailure failure{};
@@ -70,10 +72,14 @@ namespace HalationFrameTest {
                     const auto result = fj_test_scatter_halation_frame_prepare(&wire, &descriptor, &failure, &error);
                     const bool success = result.category == FJ_STATUS_SUCCESS;
                     const bool present = success && wire.recipe.hash != 0;
-                    rows.push_back({{"input", input}, {"success", success}, {"present", present}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"descriptor", present ? project(descriptor) : Json(nullptr)}});
+                    auto row = Json{{"input", input}, {"success", success}, {"present", present}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"descriptor", present ? project(descriptor) : Json(nullptr)}};
+                    require_equal(row, expectedRows.at(expectedIndex++), "completed halation product row matches captured fixture");
+                    rows.push_back(std::move(row));
+                    caseEvent.passed();
                 }
             }
         }
+        require(expectedIndex == expectedRows.size(), "complete halation product fixture membership");
         return rows;
     }
 } // namespace HalationFrameTest
@@ -156,6 +162,9 @@ namespace HalationFrameTest {
                 rows.push_back(row);
         require(rows.size() == checked.at("cases").size(), "exact halation fixture and checked membership");
         for (const auto& row : rows) {
+            const auto caseId = row.at("input").at("name").get<std::string>();
+            JuicerTests::CaseEvent cppEvent("cpp", caseId);
+            JuicerTests::CaseEvent c11Event("c11", caseId);
             const auto input = raw(row.at("input"));
             const auto& contract = checked.at("cases").at(row.at("input").at("name").get<std::string>());
             const auto failureExpected = expected_failure(contract);
@@ -196,17 +205,31 @@ namespace HalationFrameTest {
                 changed.channels[2].bounce[2].feedback[2] = std::bit_cast<float>(std::bit_cast<std::uint32_t>(changed.channels[2].bounce[2].feedback[2]) ^ 1u);
                 require(!fj_test_scatter_halation_frame_c_check(&input, &changed, &failureExpected, 0, ""), "C11 reader reaches final YVV coefficient");
             }
+            c11Event.passed();
+            cppEvent.passed();
         }
     }
     void boundary() {
+        JuicerTests::CaseEvent caseEvent("cpp", "halation-frame/raw-boundary");
         FjHalationFrameInput input{};
         input.recipe.hash = 17;
         input.recipe.scatter_active = 1;
         input.recipe.scatter_amount = input.recipe.scatter_spatial_scale = 1.0f;
         input.pixel_size_um = 1.0f;
         const FjHalationFrameFailure rawFailure{1, 0, 3, 3, 0};
+        std::vector<std::string> malformed_ids, capacity_ids;
+        for (unsigned caller = 0; caller < 3; ++caller) {
+            for (unsigned malformed = 0; malformed < 8; ++malformed)
+                malformed_ids.emplace_back("caller-" + std::to_string(caller) + "/malformed-" + std::to_string(malformed));
+            for (const auto capacity : {0u, 1u, 7u})
+                capacity_ids.emplace_back("caller-" + std::to_string(caller) + "/capacity-" + std::to_string(capacity));
+        }
+        JuicerTests::Cohort malformed_cases("halation_frame.raw_malformed", malformed_ids);
+        JuicerTests::Cohort diagnostic_capacities("halation_frame.diagnostic_capacity", capacity_ids);
+        unsigned caller_index = 0;
         for (auto prepare : {fj_legacy_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_prepare, fj_test_scatter_halation_frame_c_prepare}) {
             for (unsigned malformed = 0; malformed < 8; ++malformed) {
+                auto row_event = malformed_cases.case_event("caller-" + std::to_string(caller_index) + "/malformed-" + std::to_string(malformed));
                 auto probe = input;
                 FjScatterHalation out{};
                 std::memset(&out, 0x55, sizeof(out));
@@ -239,8 +262,10 @@ namespace HalationFrameTest {
                     require(std::string_view(text) == "invalid scatter/halation frame arguments", "exact raw halation diagnostic");
                 else
                     require(error.length == 0, "malformed backing clears diagnostic length");
+                row_event.passed();
             }
             for (std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{7}}) {
+                auto row_event = diagnostic_capacities.case_event("caller-" + std::to_string(caller_index) + "/capacity-" + std::to_string(capacity));
                 FjScatterHalation out{};
                 FjHalationFrameFailure failure{};
                 char text[8] = "seed";
@@ -248,11 +273,13 @@ namespace HalationFrameTest {
                 status(prepare(nullptr, &out, &failure, &error), 2);
                 metadata(failure, rawFailure);
                 require(error.length == (capacity ? capacity - 1 : 0) && (!capacity || text[error.length] == '\0'), "bounded/zero-capacity halation diagnostics");
+                row_event.passed();
             }
             FjScatterHalation out{};
             FjHalationFrameFailure failure{};
             status(prepare(&input, &out, &failure, nullptr));
             status(prepare(nullptr, &out, &failure, nullptr), 2);
+            ++caller_index;
         }
         status(fj_test_scatter_halation_frame_fault(1));
         status(fj_test_scatter_halation_frame_fault(5), 2);
@@ -274,7 +301,9 @@ namespace HalationFrameTest {
         native.hash = input.recipe.hash;
         native.scatterActive = true;
         native.scatterAmount = native.scatterSpatialScale = 1;
+        JuicerTests::Cohort projection_faults("halation_frame.native_projection_fault", 4);
         for (unsigned fault : {1u, 2u, 3u, 4u}) {
+            auto row_event = projection_faults.case_event(std::to_string(fault - 1));
             status(fj_test_scatter_halation_frame_fault(fault));
             std::optional<ScatterHalationFrameDescriptor> descriptor{ScatterHalationFrameDescriptor{}};
             JuicerCuda::Failure rejected;
@@ -282,6 +311,8 @@ namespace HalationFrameTest {
             status(rejected.status, fault == 1 ? 8u : 3u);
             require(rejected.diagnostic == (fault == 1 ? "scatter/halation frame preparation panicked" : "scatter/halation frame projection invalid"), "typed halation projection failure");
             require(JuicerHalation::prepare_frame(native, 1, descriptor, rejected) && descriptor, "one-shot halation fault recovery");
+            row_event.passed();
         }
+        caseEvent.passed();
     }
 } // namespace HalationFrameTest

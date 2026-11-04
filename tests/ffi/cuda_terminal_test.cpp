@@ -9,12 +9,14 @@
 #include <system_error>
 #include <cstring>
 #include <utility>
+#include <vector>
 
 #include "ProcessRoot.h"
 #include "RustAssetBridge.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "case_results.h"
 
 namespace {
     std::atomic<std::size_t> allocations{0};
@@ -356,7 +358,13 @@ namespace {
                 reject_accepting_calls(borrow);
                 const std::string original(diagnostic.data());
                 injection.clear();
-                for (std::size_t capacity : {0u, 1u, 8u}) {
+                const std::array<std::size_t, 3> capacities{0u, 1u, 8u};
+                std::vector<std::string> capacity_ids;
+                for (const auto capacity : capacities)
+                    capacity_ids.push_back(mode + "/" + std::to_string(capacity));
+                JuicerTests::Cohort capacity_cases("cuda_terminal.capacity", capacity_ids);
+                for (const std::size_t capacity : capacities) {
+                    auto capacity_event = capacity_cases.case_event(mode + "/" + std::to_string(capacity));
                     error = {diagnostic.data(), capacity, 99};
                     require(same_status(fj_cuda_shutdown(borrow, &error), expected), "diagnostic capacity changed terminal status");
                     require(error.length == (capacity ? capacity - 1 : 0), "terminal diagnostic length wrong");
@@ -364,6 +372,7 @@ namespace {
                         require(diagnostic[capacity - 1] == '\0', "terminal diagnostic missing terminator");
                         require(original.compare(0, error.length, diagnostic.data(), error.length) == 0, "terminal diagnostic changed after failure");
                     }
+                    capacity_event.passed();
                 }
                 error = {diagnostic.data(), diagnostic.size(), 0};
                 const auto before = allocations.load();
@@ -398,6 +407,11 @@ void* operator new(std::size_t size) {
     }
     throw std::bad_alloc();
 }
+// Keep the replacement deallocator's backing free opaque to GCC's inlined
+// new/delete mismatch analysis. Allocation counting still uses the real calls.
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline))
+#endif
 void operator delete(void* block) noexcept {
     std::free(block);
 }
@@ -449,8 +463,15 @@ namespace JuicerCuda::TerminalTest {
 } // namespace JuicerCuda::TerminalTest
 
 int main(int argc, char** argv) {
+    JuicerTests::CaseLog case_log;
+    const bool listing = argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases";
+    const std::string mode = argc > 1 && (!listing || argc > 2) ? argv[1] : "success";
+    if (listing) {
+        JuicerTests::list_case("cuda_terminal", mode);
+        return 0;
+    }
+    JuicerTests::CaseEvent event("cuda_terminal", mode);
     try {
-        const std::string mode = argc > 1 ? argv[1] : "success";
         if (mode == "partial-library") {
             JuicerCuda::Owner owner;
             failLibraryConstruction = true;
@@ -540,6 +561,8 @@ int main(int argc, char** argv) {
             check_failure(mode, false);
         }
         std::printf("PASS terminal ownership: %s\n", mode.c_str());
+        event.passed();
+        case_log.finish();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL terminal ownership: %s\n", error.what());

@@ -90,6 +90,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          cargo install cargo-nextest --version 0.9.143 --locked
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
           python -m pip install -r tests/requirements.txt
@@ -115,17 +116,17 @@ jobs:
           cmake --build --preset windows-clang-debug
           if ($LASTEXITCODE -ne 0) { throw "Debug build failed" }
 
-      - name: List and run Debug product and boundary tests
+      - name: Qualify Debug product and boundary tests
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force out/validation/windows-clang-debug | Out-Null
-          ctest --preset windows-clang-debug -N -L "product|boundary" -LE gpu
-          if ($LASTEXITCODE -ne 0) { throw "Debug test discovery failed" }
-          ctest --preset windows-clang-debug -L "product|boundary" -LE gpu `
-            --no-tests=error --output-on-failure `
-            --output-junit "$env:GITHUB_WORKSPACE\out\validation\windows-clang-debug\host-junit.xml"
-          if ($LASTEXITCODE -ne 0) { throw "Debug host tests failed" }
+          python -B scripts/verify.py qualification `
+            --preset windows-clang-debug `
+            --reason 'CI Windows Debug product and boundary scope' `
+            --selection product boundary `
+            --runtime host `
+            --run-id "ci-windows-debug-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ($LASTEXITCODE -ne 0) { throw "Debug qualification failed" }
 
       - name: Load Debug module and verify OFX discovery exports
         shell: pwsh
@@ -162,13 +163,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: windows-debug-host-junit
+          name: windows-debug-host-results
           path: |
-            out/validation/windows-clang-debug/host-junit.xml
+            out/validation/windows-clang-debug/results/ci-windows-debug-${{ github.run_id }}-${{ github.run_attempt }}/**
             out/build/windows-clang-debug/Testing/Temporary/LastTest.log
             out/build/windows-clang-debug/compile_commands.json
-            out/validation/windows-clang-debug/quality/rust-naming/**
-            out/validation/windows-clang-debug/quality/rust-boundaries/**
           if-no-files-found: warn
 
   windows-product-release:
@@ -246,6 +245,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          cargo install cargo-nextest --version 0.9.143 --locked
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
           python -m pip install -r tests/requirements.txt
@@ -271,17 +271,17 @@ jobs:
           cmake --build --preset windows-clang-release
           if ($LASTEXITCODE -ne 0) { throw "Release build failed" }
 
-      - name: List and run Release product and boundary tests
+      - name: Qualify Release product and boundary tests
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force out/validation/windows-clang-release | Out-Null
-          ctest --preset windows-clang-release -N -L "product|boundary" -LE gpu
-          if ($LASTEXITCODE -ne 0) { throw "Release test discovery failed" }
-          ctest --preset windows-clang-release -L "product|boundary" -LE gpu `
-            --no-tests=error --output-on-failure `
-            --output-junit "$env:GITHUB_WORKSPACE\out\validation\windows-clang-release\host-junit.xml"
-          if ($LASTEXITCODE -ne 0) { throw "Release host tests failed" }
+          python -B scripts/verify.py qualification `
+            --preset windows-clang-release `
+            --reason 'CI Windows Release product and boundary scope' `
+            --selection product boundary `
+            --runtime host `
+            --run-id "ci-windows-release-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ($LASTEXITCODE -ne 0) { throw "Release qualification failed" }
 
       - name: Load Release module and verify OFX discovery exports
         shell: pwsh
@@ -318,13 +318,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: windows-release-host-junit
+          name: windows-release-host-results
           path: |
-            out/validation/windows-clang-release/host-junit.xml
+            out/validation/windows-clang-release/results/ci-windows-release-${{ github.run_id }}-${{ github.run_attempt }}/**
             out/build/windows-clang-release/Testing/Temporary/LastTest.log
             out/build/windows-clang-release/compile_commands.json
-            out/validation/windows-clang-release/quality/rust-naming/**
-            out/validation/windows-clang-release/quality/rust-boundaries/**
           if-no-files-found: warn
 
   windows-analysis:
@@ -408,6 +406,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          cargo install cargo-nextest --version 0.9.143 --locked
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
           python -m pip install -r tests/requirements.txt
@@ -478,18 +477,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
 
-      - name: Upload analysis receipts and compile databases
+      - name: Upload analysis results and compile databases
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: windows-analysis-quality
           path: |
-            out/validation/windows-clang-debug/quality/**/*.log
-            out/validation/windows-clang-debug/quality/**/*.json
-            out/validation/windows-clang-debug/quality/parallel-controls/**
+            out/validation/windows-clang-debug/results/quality-*/**
             out/build/windows-clang-debug/compile_commands.json
-            out/validation/windows-clang-release/quality/**/*.log
-            out/validation/windows-clang-release/quality/**/*.json
+            out/validation/windows-clang-release/results/quality-*/**
             out/build/windows-clang-release/compile_commands.json
           if-no-files-found: warn
 
@@ -498,7 +494,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [core, BuildEvidence, Checkpoint, PreparationRenewal]
+        shard: [core, BuildEvidence, Checkpoint]
     runs-on: windows-2025-vs2026
     timeout-minutes: 90
     env:
@@ -545,6 +541,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          cargo install cargo-nextest --version 0.9.143 --locked
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
           python -m pip install -r tests/requirements.txt
@@ -567,7 +564,8 @@ jobs:
           import subprocess
           import sys
 
-          report = Path("out/validation/windows-clang-debug/verifier-scope.json")
+          report = Path(f"out/validation/windows-clang-debug/results/verifier-scope-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}.json")
+          report.parent.mkdir(parents=True, exist_ok=True)
           base = os.environ.get("SCOPE_BASE", "")
           command = [sys.executable, "-B", "scripts/check-quality.py",
                      "--preset", "windows-clang-debug", "--candidate", os.environ["SCOPE_CANDIDATE"],
@@ -596,16 +594,22 @@ jobs:
             -DJUICER_TOOLING_ARTIFACT_ROOT="$env:GITHUB_WORKSPACE\out\validation\windows-clang-debug"
           if ($LASTEXITCODE -ne 0) { throw "Standalone tooling configuration failed" }
 
-      - name: List and run complete tooling selection
+      - name: Qualify tooling selection
+        id: tooling-run
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          ctest --test-dir out/build/tooling-windows -N -L "^tooling-${{ matrix.shard }}$"
-          if ($LASTEXITCODE -ne 0) { throw "Tooling test discovery failed" }
-          ctest --test-dir out/build/tooling-windows -L "^tooling-${{ matrix.shard }}$" --parallel 4 `
-            --no-tests=error --output-on-failure --test-output-size-passed 65536 --test-output-truncation middle `
-            --output-junit "$env:GITHUB_WORKSPACE\out\validation\windows-clang-debug\tooling-junit.xml"
-          if ($LASTEXITCODE -ne 0) { throw "Tooling tests failed" }
+          $runId = "ci-tooling-${{ matrix.shard }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT".ToLowerInvariant()
+          "run_id=$runId" >> $env:GITHUB_OUTPUT
+          python -B scripts/verify.py qualification `
+            --preset windows-clang-debug `
+            --build-dir out/build/tooling-windows `
+            --reason 'CI Windows standalone tooling shard ${{ matrix.shard }}' `
+            --selection tooling `
+            --runtime host `
+            --run-id "$runId" `
+            --label '^tooling-${{ matrix.shard }}$'
+          if ($LASTEXITCODE -ne 0) { throw "Tooling qualification failed" }
 
       - name: Select failed tooling controls
         if: always()
@@ -628,8 +632,8 @@ jobs:
         with:
           name: windows-tooling-${{ matrix.shard }}-results
           path: |
-            out/validation/windows-clang-debug/tooling-junit.xml
-            out/validation/windows-clang-debug/verifier-scope.json
+            out/validation/windows-clang-debug/results/${{ steps.tooling-run.outputs.run_id || 'unstarted' }}/**
+            out/validation/windows-clang-debug/results/verifier-scope-${{ github.run_id }}-${{ github.run_attempt }}.json
             out/validation/windows-clang-debug/ffi/rust-build/**
             out/build/tooling-windows/Testing/Temporary/LastTest.log
           if-no-files-found: warn

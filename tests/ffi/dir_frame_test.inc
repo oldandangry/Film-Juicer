@@ -17,10 +17,11 @@ namespace DirFrameTest {
         return {{"input", input}, {"success", success}, {"native", JuicerTestSupport::dir_frame_fields(out)}};
     }
 
-    Json products(const std::filesystem::path& resources, const Json& inputs) {
+    Json products(const std::filesystem::path& resources, const Json& inputs, const Json& expectedRows) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
+        std::size_t expectedIndex = 0;
         for (unsigned route = 0; route < 4; ++route) {
             ParamSnapshot params;
             params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
@@ -45,12 +46,16 @@ namespace DirFrameTest {
                            {"render", spec.at("render")},
                            {"full", spec.at("full")},
                            {"label", route % 2 ? "print" : "direct"}};
+                JuicerTests::CaseEvent caseEvent("cpp", input.at("name").get<std::string>() + "/product-check");
                 auto row = replacement_case(input);
                 row["route"] = route;
                 row["recipe_hash"] = view.recipe_hash;
-                rows.push_back(row);
+                require_equal(row, expectedRows.at(expectedIndex++), "completed DIR route product row matches captured fixture");
+                rows.push_back(std::move(row));
+                caseEvent.passed();
             }
         }
+        require(expectedIndex == expectedRows.size(), "complete DIR product fixture membership");
         return rows;
     }
 
@@ -142,6 +147,9 @@ namespace DirFrameTest {
         const std::array fieldNames{"", "pixel_size_um", "render_extent", "full_frame_extent", "partial_render_window", "core", "tail", "component_values", "component_capacity", "radius", "iir_denominator", "iir_output", "empty_plan"};
         for (const auto* rows : {&captured.at("cases"), &captured.at("products")}) {
             for (const auto& row : *rows) {
+                const auto caseId = row.at("input").at("name").get<std::string>();
+                JuicerTests::CaseEvent cppEvent("cpp", caseId);
+                JuicerTests::CaseEvent c11Event("c11", caseId);
                 const auto input = raw_input(row.at("input"));
                 const bool success = row.at("success");
                 FjDirFrameMath expected{};
@@ -183,20 +191,34 @@ namespace DirFrameTest {
                                 .c_str());
                 }
                 require(fj_test_dir_frame_c_check(&input, &expected, &rejected, success ? 0u : 3u, diagnostic.c_str()), "C11 reader checks all fields and failure trace");
+                c11Event.passed();
                 require(replacement_case(row.at("input")) == Json{{"input", row.at("input")}, {"success", row.at("success")}, {"native", row.at("native")}}, "facade and common native composer");
                 const auto outcome = prepare_wire(input);
                 SpatialDirDescriptor composed;
                 const auto label = row.at("input").at("label").get<std::string>();
                 require(Spektrafilm::compose_spatial_dir_descriptor(outcome, label.c_str(), composed) == success && JuicerTestSupport::dir_frame_fields(composed) == row.at("native"), "production bridge and sole native hash");
+                cppEvent.passed();
             }
         }
     }
 
     void boundary(const Json& rows) {
+        JuicerTests::CaseEvent caseEvent("cpp", "dir-frame/raw-boundary");
         const auto input = raw_input(rows[0].at("input"));
         const auto zero = math_words(FjDirFrameMath{});
+        std::vector<std::string> raw_ids, capacity_ids;
+        for (unsigned caller = 0; caller < 3; ++caller) {
+            for (unsigned mode = 0; mode < 10; ++mode)
+                raw_ids.emplace_back("caller-" + std::to_string(caller) + "/mode-" + std::to_string(mode));
+            for (const auto capacity : {0u, 1u, 8u, 256u})
+                capacity_ids.emplace_back("caller-" + std::to_string(caller) + "/capacity-" + std::to_string(capacity));
+        }
+        JuicerTests::Cohort raw_cases("dir_frame.raw_defect", raw_ids);
+        JuicerTests::Cohort capacity_cases("dir_frame.raw_capacity", capacity_ids);
+        unsigned caller_index = 0;
         for (auto call : {fj_legacy_dir_frame_prepare, fj_test_dir_frame_prepare, fj_test_dir_frame_c_prepare}) {
             for (unsigned mode = 0; mode < 10; ++mode) {
+                auto row_event = raw_cases.case_event("caller-" + std::to_string(caller_index) + "/mode-" + std::to_string(mode));
                 FjDirFrameMath math;
                 FjDirFrameFailure failure;
                 std::memset(&math, 0xa5, sizeof math);
@@ -224,10 +246,12 @@ namespace DirFrameTest {
                     require(failure.reason == 1 && failure.field == 0 && failure.component == 4 && math_words(failure.trace) == zero, "independent raw failure clearing");
                 if (mode < 7)
                     require(std::string(text.data()) == "invalid spatial DIR frame arguments", "raw diagnostic text");
+                row_event.passed();
             }
             auto invalid = input;
             invalid.pixel_size_um = 0;
             for (std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{8}, std::size_t{256}}) {
+                auto row_event = capacity_cases.case_event("caller-" + std::to_string(caller_index) + "/capacity-" + std::to_string(capacity));
                 FjDirFrameMath math{};
                 FjDirFrameFailure failure{};
                 std::array<char, 256> text{};
@@ -238,9 +262,13 @@ namespace DirFrameTest {
                 require(error.length == count && (!capacity || (text[count] == 0 && std::string_view(text.data(), count) == diagnostic.substr(0, count))) &&
                             failure.reason == 2 && failure.field == 1 && failure.component == 4 && math_words(math) == zero && math_words(failure.trace) == zero,
                         "bounded diagnostic preserves ordinary envelope and clearing");
+                row_event.passed();
             }
+            ++caller_index;
         }
+        JuicerTests::Cohort boundary_faults("dir_frame.boundary_fault", 6);
         for (unsigned fault = 1; fault <= 6; ++fault) {
+            auto row_event = boundary_faults.case_event(std::to_string(fault - 1));
             const auto& source = fault == 6 ? rows.at(1) : rows.at(0);
             auto literal = raw_input(source.at("input"));
             float pixel = scalar(source.at("input").at("pixel"));
@@ -256,6 +284,7 @@ namespace DirFrameTest {
             require(failure.status.category == (fault == 1 ? 8u : 3u), "panic versus corrupt projection classification");
             const auto recovered = prepare_wire(raw_input(rows[0].at("input")));
             require(Spektrafilm::compose_spatial_dir_descriptor(recovered, "direct", out), "fault consumed once");
+            row_event.passed();
         }
         status(fj_test_dir_frame_fault(1));
         status(fj_test_dir_frame_fault(7), 2);
@@ -270,16 +299,20 @@ namespace DirFrameTest {
         other.join();
         status(fj_legacy_dir_frame_prepare(&input, &math, &failure, nullptr), 8);
         status(fj_legacy_dir_frame_prepare(&input, &math, &failure, nullptr));
+        JuicerTests::Cohort inactive_faults("dir_frame.inactive_fault", 5);
         for (unsigned fault = 2; fault <= 6; ++fault) {
+            auto row_event = inactive_faults.case_event(std::to_string(fault - 2));
             auto inactive = input;
             inactive.active = 0;
             status(fj_test_dir_frame_fault(fault));
             status(fj_legacy_dir_frame_prepare(&inactive, &math, &failure, nullptr));
             require(math_words(math) == zero && failure.reason == 0, "inapplicable fault consumes without manufacturing work/failure");
             status(fj_legacy_dir_frame_prepare(&input, &math, &failure, nullptr));
+            row_event.passed();
         }
         status(fj_test_dir_frame_fault(1));
         status(fj_test_dir_frame_fault(0));
         status(fj_legacy_dir_frame_prepare(&input, &math, &failure, nullptr));
+        caseEvent.passed();
     }
 } // namespace DirFrameTest

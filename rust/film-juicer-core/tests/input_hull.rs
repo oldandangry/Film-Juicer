@@ -1,5 +1,8 @@
 #![cfg(feature = "test-support")]
 use film_juicer_core::gamut::{self, fixtures};
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 use serde_json::{json, Value};
 use std::fs;
 
@@ -56,6 +59,22 @@ fn membership() -> Value {
     };
     manifest["preset_membership"][format!("{platform}-{profile}")].clone()
 }
+
+fn ray_case_id(row: &Value, include_case: bool) -> String {
+    let domain = row["domain"].as_u64().unwrap();
+    let origin_x = row["origin"][0].as_u64().unwrap();
+    let origin_y = row["origin"][1].as_u64().unwrap();
+    let direction_x = row["direction"][0].as_u64().unwrap();
+    let direction_y = row["direction"][1].as_u64().unwrap();
+    let coordinates = format!(
+        "domain-{domain}/origin-{origin_x:016x}-{origin_y:016x}/direction-{direction_x:016x}-{direction_y:016x}"
+    );
+    if include_case {
+        format!("{}/{coordinates}", row["case"].as_str().unwrap())
+    } else {
+        coordinates
+    }
+}
 #[test]
 fn native_ordered_math_and_shared_ray_bits() {
     let member = membership();
@@ -70,12 +89,21 @@ fn native_ordered_math_and_shared_ray_bits() {
     let mut failures = Vec::new();
     let mut count = 0;
     let mut cases = 0;
-    for row in native["math"].as_array().unwrap() {
+    let math_rows: Vec<_> = native["math"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| ![4, 5, 6].contains(&row["id"].as_u64().unwrap()))
+        .collect();
+    let ids: Vec<String> = math_rows
+        .iter()
+        .map(|row| format!("math/{}", row["id"].as_u64().unwrap()))
+        .collect();
+    let mut row_cases = RowCases::new("input-hull-native-math-cases", &ids);
+    for (row, id) in math_rows.iter().zip(&ids) {
+        let case_row = row_cases.case(id);
+        let failures_before = failures.len();
         let id = row["id"].as_u64().unwrap();
-        // Native vector/axis structure admission precedes fixed core input.
-        if [4, 5, 6].contains(&id) {
-            continue;
-        }
         let sources: [[f32; 81]; 4] = std::array::from_fn(|c| {
             std::array::from_fn(|i| {
                 f32::from_bits(row["sources"][c]["values"][i].as_u64().unwrap() as u32)
@@ -146,6 +174,8 @@ fn native_ordered_math_and_shared_ray_bits() {
                 &mut count,
             ),
         }
+        assert_eq!(failures.len(), failures_before, "input-hull math row {id}");
+        case_row.passed();
         cases += 1;
     }
     let locus: [[f64; 2]; 66] =
@@ -157,7 +187,15 @@ fn native_ordered_math_and_shared_ray_bits() {
     });
     let mut square = [[0.; 2]; 66];
     square[..5].copy_from_slice(&[[0., 0.], [1., 0.], [1., 1.], [0., 1.], [0., 0.]]);
-    for (i, row) in native["rays"].as_array().unwrap().iter().enumerate() {
+    let native_ray_rows = native["rays"].as_array().unwrap();
+    let native_ray_ids: Vec<String> = native_ray_rows
+        .iter()
+        .map(|row| ray_case_id(row, false))
+        .collect();
+    let mut native_ray_cases = RowCases::new("native-ray-intersections", &native_ray_ids);
+    for (i, (row, id)) in native_ray_rows.iter().zip(&native_ray_ids).enumerate() {
+        let row_case = native_ray_cases.case(id);
+        let failures_before = failures.len();
         let center = pair(&row["origin"]);
         let direction = pair(&row["direction"]);
         let result = match row["domain"].as_u64().unwrap() {
@@ -173,13 +211,28 @@ fn native_ordered_math_and_shared_ray_bits() {
             &mut failures,
             &mut count,
         );
+        if failures.len() == failures_before {
+            row_case.passed();
+        }
     }
     square[..5].copy_from_slice(&[[0., 0.], [0., 1.], [1., 1.], [1., 0.], [0., 0.]]);
     let mut narrow = [[0_f32; 2]; 1025];
     for i in 0..5 {
         narrow[i] = square[i].map(|v| v as f32);
     }
-    for (i, row) in supplement["rays"].as_array().unwrap().iter().enumerate() {
+    let supplement_ray_rows = supplement["rays"].as_array().unwrap();
+    let supplement_ray_ids: Vec<String> = supplement_ray_rows
+        .iter()
+        .map(|row| ray_case_id(row, true))
+        .collect();
+    let mut threshold_ray_cases = RowCases::new("threshold-ray-intersections", &supplement_ray_ids);
+    for (i, (row, id)) in supplement_ray_rows
+        .iter()
+        .zip(&supplement_ray_ids)
+        .enumerate()
+    {
+        let row_case = threshold_ray_cases.case(id);
+        let failures_before = failures.len();
         let center = pair(&row["origin"]);
         let direction = pair(&row["direction"]);
         let result = if row["domain"] == 0 {
@@ -194,6 +247,9 @@ fn native_ordered_math_and_shared_ray_bits() {
             &mut failures,
             &mut count,
         );
+        if failures.len() == failures_before {
+            row_case.passed();
+        }
     }
     assert_eq!(cases, 11);
     assert_eq!(count, 45850);
@@ -203,6 +259,9 @@ fn native_ordered_math_and_shared_ray_bits() {
         failures.len(),
         &failures[..failures.len().min(20)]
     );
+    native_ray_cases.finish();
+    threshold_ray_cases.finish();
+    row_cases.finish();
 }
 
 #[test]
@@ -213,17 +272,29 @@ fn native_primitive_context_bits() {
     )
     .unwrap();
     let data = fs::read(fixture_root().join(member["primitives"].as_str().unwrap())).unwrap();
+    let mut cases = RowCases::new("input-hull-native-arrays", ["trigonometry", "exponentials"]);
+    let row = cases.case("trigonometry");
+    let mut visited = 0;
     assert_eq!(data.len(), 519536 * 32);
     for (index, record) in data.as_chunks::<32>().0.iter().enumerate() {
+        visited += 1;
         let word = |i| u64::from_le_bytes(record[i..i + 8].try_into().unwrap());
         let value = f64::from_bits(word(0));
         assert_eq!(value.cos().to_bits(), word(8), "cos {index}");
         assert_eq!(value.sin().to_bits(), word(16), "sin {index}");
     }
+    assert_eq!(visited, 519536);
+    row.passed();
+    let row = cases.case("exponentials");
+    let mut visited = 0;
     for row in native["weights"].as_array().unwrap() {
+        visited += 1;
         let argument = f64::from_bits(row["argument"].as_u64().unwrap());
         assert_eq!(argument.exp().to_bits(), row["result"].as_u64().unwrap());
     }
+    assert_eq!(visited, 1024);
+    row.passed();
+    cases.finish();
 }
 
 #[test]

@@ -1,5 +1,122 @@
+if(CMAKE_SCRIPT_MODE_FILE AND DEFINED JUICER_RUST_TESTS_METADATA_MODE)
+    foreach(required_variable IN ITEMS
+        JUICER_RUST_TESTS_CARGO
+        JUICER_RUST_TESTS_NEXTEST
+        JUICER_RUST_TESTS_ROOT
+        JUICER_RUST_TESTS_TARGET
+        JUICER_RUST_TESTS_TARGET_DIR
+        JUICER_RUST_TESTS_BINARIES_METADATA
+        JUICER_RUST_TESTS_CARGO_METADATA
+        JUICER_RUST_TESTS_PROFILE)
+        if(NOT DEFINED ${required_variable} OR "${${required_variable}}" STREQUAL "")
+            message(FATAL_ERROR "Missing ${required_variable} for Rust test metadata preparation")
+        endif()
+    endforeach()
+
+    string(TIMESTAMP JUICER_RUST_TESTS_CARGO_START "%s%f" UTC)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "CARGO_TARGET_DIR=${JUICER_RUST_TESTS_TARGET_DIR}"
+            "${JUICER_RUST_TESTS_CARGO}" metadata
+            --format-version 1
+            --locked
+            --no-default-features
+            --features film-juicer-plugin/test-support
+            --filter-platform "${JUICER_RUST_TESTS_TARGET}"
+            --manifest-path "${JUICER_RUST_TESTS_ROOT}/Cargo.toml"
+        WORKING_DIRECTORY "${JUICER_RUST_TESTS_ROOT}"
+        RESULT_VARIABLE JUICER_RUST_TESTS_CARGO_METADATA_RESULT
+        OUTPUT_FILE "${JUICER_RUST_TESTS_CARGO_METADATA}"
+        ERROR_VARIABLE JUICER_RUST_TESTS_CARGO_METADATA_ERROR)
+    string(TIMESTAMP JUICER_RUST_TESTS_CARGO_END "%s%f" UTC)
+    math(EXPR JUICER_RUST_TESTS_CARGO_US
+        "${JUICER_RUST_TESTS_CARGO_END} - ${JUICER_RUST_TESTS_CARGO_START}")
+    if(NOT JUICER_RUST_TESTS_CARGO_METADATA_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Could not save Cargo metadata for Rust tests: "
+            "${JUICER_RUST_TESTS_CARGO_METADATA_ERROR}")
+    endif()
+
+    set(JUICER_RUST_TESTS_PROFILE_ARGUMENT)
+    if(JUICER_RUST_TESTS_PROFILE STREQUAL "release")
+        set(JUICER_RUST_TESTS_PROFILE_ARGUMENT --release)
+    elseif(NOT JUICER_RUST_TESTS_PROFILE STREQUAL "debug")
+        message(FATAL_ERROR "Unsupported Rust test Cargo profile: ${JUICER_RUST_TESTS_PROFILE}")
+    endif()
+    string(TIMESTAMP JUICER_RUST_TESTS_BINARIES_START "%s%f" UTC)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "CARGO=${JUICER_RUST_TESTS_CARGO}"
+            "RUSTFLAGS="
+            "CARGO_BUILD_RUSTFLAGS="
+            "CARGO_ENCODED_RUSTFLAGS="
+            "${JUICER_RUST_TESTS_NEXTEST}" nextest list
+            --locked
+            --workspace
+            --tests
+            --no-default-features
+            --features film-juicer-plugin/test-support
+            --target "${JUICER_RUST_TESTS_TARGET}"
+            --target-dir "${JUICER_RUST_TESTS_TARGET_DIR}"
+            ${JUICER_RUST_TESTS_PROFILE_ARGUMENT}
+            --list-type binaries-only
+            --message-format json
+            --config-file "${JUICER_RUST_TESTS_ROOT}/.config/nextest.toml"
+        WORKING_DIRECTORY "${JUICER_RUST_TESTS_ROOT}"
+        RESULT_VARIABLE JUICER_RUST_TESTS_BINARIES_RESULT
+        OUTPUT_FILE "${JUICER_RUST_TESTS_BINARIES_METADATA}"
+        ERROR_VARIABLE JUICER_RUST_TESTS_BINARIES_ERROR)
+    string(TIMESTAMP JUICER_RUST_TESTS_BINARIES_END "%s%f" UTC)
+    math(EXPR JUICER_RUST_TESTS_BINARIES_US
+        "${JUICER_RUST_TESTS_BINARIES_END} - ${JUICER_RUST_TESTS_BINARIES_START}")
+    if(NOT JUICER_RUST_TESTS_BINARIES_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Could not save nextest binaries metadata for Rust tests: "
+            "${JUICER_RUST_TESTS_BINARIES_ERROR}")
+    endif()
+    message(STATUS "${JUICER_RUST_TESTS_BINARIES_ERROR}")
+    file(WRITE "${JUICER_RUST_TESTS_TARGET_DIR}/metadata/preparation-timings.json"
+        "{\"cargo_metadata_microseconds\":${JUICER_RUST_TESTS_CARGO_US},\"binaries_metadata_microseconds\":${JUICER_RUST_TESTS_BINARIES_US}}\n")
+    return()
+endif()
+
 set(JUICER_RUST_VERSION "1.98.1")
 set(JUICER_CARGO_EXECUTABLE "" CACHE FILEPATH "Cargo executable for the pinned Film-Juicer toolchain")
+set(JUICER_NEXTEST_EXECUTABLE "" CACHE FILEPATH "cargo-nextest executable for focused Rust tests")
+
+if(BUILD_TESTING)
+    if(NOT JUICER_NEXTEST_EXECUTABLE)
+        find_program(JUICER_NEXTEST_FOUND
+            NAMES cargo-nextest cargo-nextest.exe
+            HINTS
+                "$ENV{USERPROFILE}/.cargo/bin"
+                "$ENV{HOME}/.cargo/bin")
+        if(JUICER_NEXTEST_FOUND)
+            set(JUICER_NEXTEST_EXECUTABLE "${JUICER_NEXTEST_FOUND}"
+                CACHE FILEPATH "cargo-nextest executable for focused Rust tests" FORCE)
+        endif()
+    endif()
+    if(NOT JUICER_NEXTEST_EXECUTABLE)
+        message(FATAL_ERROR "BUILD_TESTING requires cargo-nextest 0.9.143 on the native host")
+    endif()
+    if(JUICER_NEXTEST_EXECUTABLE)
+        execute_process(
+            COMMAND "${JUICER_NEXTEST_EXECUTABLE}" nextest --version
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+            RESULT_VARIABLE JUICER_NEXTEST_VERSION_RESULT
+            OUTPUT_VARIABLE JUICER_NEXTEST_VERSION_OUTPUT
+            ERROR_VARIABLE JUICER_NEXTEST_VERSION_ERROR
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT JUICER_NEXTEST_VERSION_RESULT EQUAL 0 OR
+           NOT JUICER_NEXTEST_VERSION_OUTPUT MATCHES "^cargo-nextest 0\\.9\\.143($| )")
+            message(FATAL_ERROR
+                "Rust.Core and Rust.Bridge require cargo-nextest 0.9.143: "
+                "${JUICER_NEXTEST_VERSION_OUTPUT}${JUICER_NEXTEST_VERSION_ERROR}")
+        endif()
+    else()
+        message(FATAL_ERROR "BUILD_TESTING requires cargo-nextest 0.9.143 for Rust.Core and Rust.Bridge")
+    endif()
+endif()
 
 if(NOT JUICER_CARGO_EXECUTABLE)
     find_program(JUICER_CARGO_FOUND
@@ -70,6 +187,33 @@ file(CONFIGURE OUTPUT "${JUICER_RUST_TARGET_DIR}/CACHEDIR.TAG"
 set(JUICER_RUST_ARCHIVE
     "${JUICER_RUST_TARGET_DIR}/${JUICER_RUST_TARGET}/${JUICER_RUST_CARGO_PROFILE}/${JUICER_RUST_ARCHIVE_NAME}")
 set(JUICER_RUST_BUILD_STAMP "${CMAKE_BINARY_DIR}/cargo-build.stamp")
+
+if(BUILD_TESTING AND JUICER_NEXTEST_EXECUTABLE)
+    set(JUICER_RUST_TESTS_TARGET_DIR "${JUICER_RUST_TARGET_DIR}/test-support")
+    set(JUICER_RUST_TESTS_METADATA_DIR "${JUICER_RUST_TESTS_TARGET_DIR}/metadata")
+    set(JUICER_RUST_TESTS_BINARIES_METADATA
+        "${JUICER_RUST_TESTS_METADATA_DIR}/binaries.json")
+    set(JUICER_RUST_TESTS_CARGO_METADATA
+        "${JUICER_RUST_TESTS_METADATA_DIR}/cargo.json")
+    set(JUICER_RUST_TESTS_PROFILE "${JUICER_RUST_CARGO_PROFILE}")
+    add_custom_target(juicer_rust_tests ALL
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${JUICER_RUST_TESTS_METADATA_DIR}"
+        COMMAND "${CMAKE_COMMAND}"
+            "-DJUICER_RUST_TESTS_METADATA_MODE=ON"
+            "-DJUICER_RUST_TESTS_CARGO=${JUICER_CARGO_EXECUTABLE}"
+            "-DJUICER_RUST_TESTS_NEXTEST=${JUICER_NEXTEST_EXECUTABLE}"
+            "-DJUICER_RUST_TESTS_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DJUICER_RUST_TESTS_TARGET=${JUICER_RUST_TARGET}"
+            "-DJUICER_RUST_TESTS_TARGET_DIR=${JUICER_RUST_TESTS_TARGET_DIR}"
+            "-DJUICER_RUST_TESTS_BINARIES_METADATA=${JUICER_RUST_TESTS_BINARIES_METADATA}"
+            "-DJUICER_RUST_TESTS_CARGO_METADATA=${JUICER_RUST_TESTS_CARGO_METADATA}"
+            "-DJUICER_RUST_TESTS_PROFILE=${JUICER_RUST_TESTS_PROFILE}"
+            -P "${PROJECT_SOURCE_DIR}/cmake/JuicerRust.cmake"
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        COMMENT "Preparing Rust core and bridge test binaries (${JUICER_RUST_TESTS_PROFILE})"
+        VERBATIM
+        USES_TERMINAL)
+endif()
 
 set(JUICER_RUST_FEATURE_ARGUMENT)
 if(BUILD_TESTING)

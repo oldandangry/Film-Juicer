@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use film_juicer_core::assets::Assets;
 use film_juicer_core::film::{Development, Error, Params};
 use film_juicer_core::route::ScanRoute;
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 use serde_json::{Value, json};
 
 fn bits(values: &[f32]) -> Value {
@@ -34,6 +37,15 @@ fn route(tag: u64) -> ScanRoute {
         _ => panic!("capture tag"),
     }
 }
+fn development_case_id(case: &Value) -> String {
+    format!(
+        "{}/route-{}/gamma-{:016x}/grain-{}",
+        case["key"].as_str().unwrap(),
+        case["route"].as_u64().unwrap(),
+        case["gamma_double"].as_u64().unwrap(),
+        case["grain_policy"].as_u64().unwrap()
+    )
+}
 #[test]
 fn matches_native_captures_and_retains_the_profile() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -52,8 +64,14 @@ fn matches_native_captures_and_retains_the_profile() {
     let assets = Assets::new(PathBuf::from(&args[1]));
     let fixture: Value = serde_json::from_slice(&fs::read(&args[2]).unwrap()).unwrap();
     let mut count = 0;
-    for case in fixture["cases"].as_array().unwrap() {
+    let cases = fixture["cases"].as_array().unwrap();
+    let mut ledger_cases = RowCases::new(
+        "native-development-cases",
+        cases.iter().map(development_case_id),
+    );
+    for case in cases {
         let key = case["key"].as_str().unwrap();
+        let row = ledger_cases.case(development_case_id(case));
         let profile = assets.film(key).unwrap();
         let expected = &case["development"];
         let table = &fixture["profiles"][key];
@@ -124,17 +142,30 @@ fn matches_native_captures_and_retains_the_profile() {
             assert_eq!(development.layers_hash(), 0);
         }
         count += 1;
+        row.passed();
     }
+    ledger_cases.finish();
     assert_eq!(count, 480);
     let profile = assets.film("kodak_portra_400").unwrap();
-    for gamma in [
+    let invalid_gammas = [
         f32::NAN,
         f32::INFINITY,
         f32::NEG_INFINITY,
         0.0,
         0.049,
         4.001,
-    ] {
+    ];
+    let gamma_ids = [
+        "nan",
+        "+infinity",
+        "-infinity",
+        "zero",
+        "below-min",
+        "above-max",
+    ];
+    let mut invalid_rows = RowCases::new("invalid-gamma-controls", gamma_ids);
+    for (gamma, id) in invalid_gammas.into_iter().zip(gamma_ids) {
+        let row = invalid_rows.case(id);
         assert!(matches!(
             Development::new(
                 profile.clone(),
@@ -146,7 +177,14 @@ fn matches_native_captures_and_retains_the_profile() {
             ),
             Err(Error::InvalidGamma)
         ));
+        row.passed();
     }
+    invalid_rows.finish();
+    let mut route_row = RowCases::new(
+        "route-polarity-mismatch",
+        ["positive-route-on-negative-film"],
+    );
+    let mismatch = route_row.case("positive-route-on-negative-film");
     assert!(matches!(
         Development::new(
             profile,
@@ -158,6 +196,8 @@ fn matches_native_captures_and_retains_the_profile() {
         ),
         Err(Error::RouteMismatch)
     ));
+    mismatch.passed();
+    route_row.finish();
     let retained = {
         let temporary = Assets::new(PathBuf::from(&args[1]));
         Development::new(
@@ -193,7 +233,25 @@ fn variable_axes_and_reservation_identity_failures() {
         &fs::read(fixtures.join(format!("{preset}-synthetic.json"))).unwrap(),
     )
     .unwrap();
-    for case in captured.as_array().unwrap() {
+    let cases = captured.as_array().unwrap();
+    let ids: Vec<_> = cases
+        .iter()
+        .map(|case| case["case"].as_str().unwrap().to_owned())
+        .collect();
+    let mut ledger_cases = RowCases::new("synthetic-development-cases", &ids);
+    #[cfg(feature = "test-support")]
+    let mut fault_ids = Vec::new();
+    #[cfg(feature = "test-support")]
+    for id in &ids {
+        for fault in 1..=3 {
+            fault_ids.push(format!("{id}/reservation-fault/{fault}"));
+        }
+    }
+    #[cfg(feature = "test-support")]
+    let mut fault_rows = RowCases::new("synthetic-reservation-faults", &fault_ids);
+    for case in cases {
+        let id = case["case"].as_str().unwrap();
+        let row = ledger_cases.case(id);
         let assets = Assets::new(
             fixtures
                 .join("synthetic")
@@ -217,6 +275,7 @@ fn variable_axes_and_reservation_identity_failures() {
         assert_eq!(json!(development.normalized_curves_hash()), case["hash"]);
         #[cfg(feature = "test-support")]
         for fault in 1..=3 {
+            let fault_row = fault_rows.case(format!("{id}/reservation-fault/{fault}"));
             film_juicer_core::film::test_support::reject_next(fault);
             let error = Development::new(profile.clone(), params()).err().unwrap();
             assert_eq!(
@@ -227,6 +286,11 @@ fn variable_axes_and_reservation_identity_failures() {
                     Error::ZeroIdentity
                 }
             );
+            fault_row.passed();
         }
+        row.passed();
     }
+    ledger_cases.finish();
+    #[cfg(feature = "test-support")]
+    fault_rows.finish();
 }

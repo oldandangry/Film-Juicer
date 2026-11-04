@@ -1,0 +1,10 @@
+nextest-version = "0.9.143"
+
+[profile.default]
+fail-fast = false
+retries = 0
+test-threads = 1
+
+[profile.default.junit]
+report-skipped = "all"
+store-success-output = false

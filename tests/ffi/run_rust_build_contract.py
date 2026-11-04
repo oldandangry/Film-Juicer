@@ -19,10 +19,13 @@ def digest(path):
 
 
 class RustBuild(unittest.TestCase):
-    def test_completion_and_archive_propagation(self):
-        for configuration in ("Debug", "Release"):
-            with self.subTest(configuration=configuration):
-                self.exercise(configuration)
+    def test_debug_completion_and_archive_propagation(self):
+        self.subtest_cases = ("features:OFF", "features:ON", "cargo-failure:1", "cargo-failure:2")
+        self.exercise("Debug")
+
+    def test_release_completion_and_archive_propagation(self):
+        self.subtest_cases = ("features:OFF", "features:ON", "cargo-failure:1", "cargo-failure:2")
+        self.exercise("Release")
 
     def exercise(self, configuration):
         options = OPTIONS
@@ -85,7 +88,7 @@ class RustBuild(unittest.TestCase):
                  "-DCMAKE_MAKE_PROGRAM=" + options.ninja, "-DCMAKE_C_COMPILER=" + options.cc,
                  "-DJUICER_CARGO_EXECUTABLE=" + options.cargo])
 
-        command = [options.cmake, "--build", str(build), "--parallel", "2"]
+        command = [options.cmake, "--build", str(build), "--target", "consumer", "--parallel", "2"]
         target = "x86_64-pc-windows-msvc" if os.name == "nt" else "x86_64-unknown-linux-gnu"
         archive = build / "cargo" / target / configuration.lower() / (
             "film_juicer_plugin.lib" if os.name == "nt" else "libfilm_juicer_plugin.a")
@@ -135,13 +138,14 @@ class RustBuild(unittest.TestCase):
         self.assertEqual(run([str(consumer)]).strip(), "9")
 
         for enabled in ("OFF", "ON"):
-            before = state()
-            configure(enabled)
-            run(command)
-            self.assertNotEqual(state()["archive"], before["archive"])
-            self.assertNotEqual(state()["link"], before["link"])
-            self.assertEqual((build / "cargo-features.txt").read_text(), "test-support=" + enabled + "\n")
-            self.assertEqual(run([str(consumer)]).strip(), "9")
+            with self.subTest(case=f"features:{enabled}", enabled=enabled):
+                before = state()
+                configure(enabled)
+                run(command)
+                self.assertNotEqual(state()["archive"], before["archive"])
+                self.assertNotEqual(state()["link"], before["link"])
+                self.assertEqual((build / "cargo-features.txt").read_text(), "test-support=" + enabled + "\n")
+                self.assertEqual(run([str(consumer)]).strip(), "9")
 
         extra = core / "src/unused.rs"
         extra.write_text("// New glob member.\n")
@@ -158,9 +162,11 @@ class RustBuild(unittest.TestCase):
         valid = broken.read_text()
         broken.write_text(valid + 'compile_error!("intentional Cargo failure");\n')
         shutil.copyfile(broken, artifact / "failed-input.rs")
-        for _ in range(2):
-            self.assertIn("intentional Cargo failure", run(command, success=False))
-            self.assertEqual(stamp.stat().st_mtime_ns, before["stamp"], "failed Cargo must not complete preparation")
+        for attempt in (1, 2):
+            with self.subTest(case=f"cargo-failure:{attempt}"):
+                self.assertIn("intentional Cargo failure", run(command, success=False))
+                self.assertEqual(stamp.stat().st_mtime_ns, before["stamp"],
+                                 "failed Cargo must not complete preparation")
         broken.write_text(valid)
         run(command)
         self.assertGreater(stamp.stat().st_mtime_ns, before["stamp"])
@@ -170,6 +176,10 @@ class RustBuild(unittest.TestCase):
         # Logs and the failing input survive; this isolated compilation cache is disposable.
         shutil.rmtree(build)
         shutil.rmtree(source)
+
+
+RustBuild.test_debug_completion_and_archive_propagation.required_subtests = True
+RustBuild.test_release_completion_and_archive_propagation.required_subtests = True
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include "gtest_cases.h"
 #include "asset_lookup_test.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
@@ -176,7 +177,10 @@ namespace {
     TEST(AssetLookup, SyntheticFiniteInterpolationAndEndpoints) {
         const std::vector<float> axis{0.0f, 2.0f, 4.0f};
         const std::vector<std::array<float, 3>> curves{{0.0f, 4.0f, 8.0f}, {4.0f, 8.0f, 12.0f}, {8.0f, 12.0f, 16.0f}};
+        JuicerTests::GtestCohort interpolation_channels_cases("interpolation-channels", 3u);
+        std::size_t interpolation_channels_index = 0;
         for (std::size_t channel = 0; channel < 3u; ++channel) {
+            auto interpolation_channels_case = interpolation_channels_cases.case_event(std::to_string(interpolation_channels_index++));
             const float offset = 4.0f * static_cast<float>(channel);
             EXPECT_EQ(AssetLookupTest::sample_reference_density(1.0f, axis, curves, channel), 2.0f + offset);
             for (float query : {-1.0f, 0.0f}) {
@@ -185,21 +189,33 @@ namespace {
             for (float query : {4.0f, 5.0f}) {
                 EXPECT_EQ(AssetLookupTest::sample_reference_density(query, axis, curves, channel), 8.0f + offset);
             }
+
+            interpolation_channels_case.passed();
         }
     }
 
     TEST(AssetLookup, ScannerFiniteAscendingAndDescending) {
+        JuicerTests::GtestCohort scanner_queries_cases("scanner-queries", 7u);
+        std::size_t scanner_queries_index = 0;
         for (float query : {-1.0f, 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f}) {
+            auto scanner_queries_case = scanner_queries_cases.case_event(std::to_string(scanner_queries_index++));
             const float expected = query < 0.0f ? 0.0f : (query > 4.0f ? 8.0f : query * 2.0f);
             EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(query, {0.0f, 2.0f, 4.0f}, {0.0f, 4.0f, 8.0f}), expected);
             EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(query, {4.0f, 2.0f, 0.0f}, {8.0f, 4.0f, 0.0f}), expected);
+
+            scanner_queries_case.passed();
         }
     }
 
     TEST(AssetLookup, SingletonAndDistinctDuplicateSelection) {
+        JuicerTests::GtestCohort singleton_queries_cases("singleton-queries", 5u);
+        std::size_t singleton_queries_index = 0;
         for (float query : {-kInfinity, 1.0f, 2.0f, 3.0f, kInfinity}) {
+            auto singleton_queries_case = singleton_queries_cases.case_event(std::to_string(singleton_queries_index++));
             EXPECT_EQ(AssetLookupTest::sample_reference_density(query, {2.0f}, {{7.0f, 8.0f, 9.0f}}, 0u), 7.0f);
             EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(query, {2.0f}, {7.0f}), 7.0f);
+
+            singleton_queries_case.passed();
         }
         const std::vector<float> axis{0.0f, 2.0f, 2.0f, 4.0f};
         const std::vector<std::array<float, 3>> curves{{0.0f, 0.0f, 0.0f}, {4.0f, 4.0f, 4.0f}, {8.0f, 8.0f, 8.0f}, {12.0f, 12.0f, 12.0f}};
@@ -210,20 +226,30 @@ namespace {
         EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(2.0f, {4.0f, 2.0f, 2.0f, 0.0f}, {12.0f, 8.0f, 4.0f, 0.0f}), 4.0f);
         EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(3.0f, {4.0f, 2.0f, 2.0f, 0.0f}, {12.0f, 8.0f, 4.0f, 0.0f}), 10.0f);
         EXPECT_EQ(AssetLookupTest::sample_reference_density(2.0f, {2.0f, 2.0f}, {{7.0f, 7.0f, 7.0f}, {9.0f, 9.0f, 9.0f}}, 0u), 7.0f);
+        JuicerTests::GtestCohort signed_zero_queries_cases("signed-zero-queries", 2u);
+        std::size_t signed_zero_queries_index = 0;
         for (float query : {-0.0f, 0.0f}) {
+            auto signed_zero_queries_case = signed_zero_queries_cases.case_event(std::to_string(signed_zero_queries_index++));
             EXPECT_EQ(AssetLookupTest::sample_reference_density(query, {-0.0f, 0.0f}, {{7.0f, 7.0f, 7.0f}, {9.0f, 9.0f, 9.0f}}, 0u), 7.0f);
             EXPECT_EQ(AssetLookupTest::sample_reference_density(query, {-1.0f, -0.0f, 0.0f, 1.0f}, curves, 0u), 8.0f);
+
+            signed_zero_queries_case.passed();
         }
     }
 
     TEST(AssetLookup, OrderedInfinitiesDoNotImplyFiniteOutput) {
         const std::vector<float> axis{-kInfinity, 0.0f, kInfinity};
         const std::vector<std::array<float, 3>> curves{{1.0f, 1.0f, 1.0f}, {2.0f, 2.0f, 2.0f}, {3.0f, 3.0f, 3.0f}};
+        JuicerTests::GtestCohort infinite_queries_cases("infinite-queries", 3u);
+        std::size_t infinite_queries_index = 0;
         for (float query : {-kInfinity, 1.0f, kInfinity}) {
+            auto infinite_queries_case = infinite_queries_cases.case_event(std::to_string(infinite_queries_index++));
             const float expected = query == -kInfinity ? 1.0f : (query == kInfinity ? 3.0f : 2.0f);
             EXPECT_EQ(AssetLookupTest::sample_reference_density(query, axis, curves, 0u), expected);
             EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(query, axis, {1.0f, 2.0f, 3.0f}), expected);
             EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(query, {kInfinity, 0.0f, -kInfinity}, {3.0f, 2.0f, 1.0f}), expected);
+
+            infinite_queries_case.passed();
         }
         const auto synthetic = AssetLookupTest::sample_reference_density(-1.0f, axis, curves, 0u);
         const auto scanner = AssetLookupTest::interp_clamped_monotonic_for_test(-1.0f, axis, {1.0f, 2.0f, 3.0f});

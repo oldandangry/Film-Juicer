@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -19,6 +20,7 @@
 #include "SpectralData.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "juicer_test_api.h"
+#include "case_results.h"
 #include "exposure_fixture.h"
 #include "print_illuminant_fixture.h"
 #include "spectral_source_fixture.h"
@@ -119,32 +121,69 @@ namespace {
         const float normalization[]{actual.raw_green, actual.scale};
         exact<2>(normalization, expected.at("normalization"));
     }
+    std::string case_id(const Json& row, std::string_view cohort, std::size_t index) {
+        if (!row.contains("id"))
+            return "row-" + std::to_string(index);
+        const std::string id = row.at("id").is_string() ? row.at("id").get<std::string>() : std::to_string(row.at("id").get<std::int64_t>());
+        if (cohort == "focused") {
+            const auto& input = row.at("input");
+            return id + "/space-" + std::to_string(input.at("space").get<int>()) + "/adapt-" + std::to_string(input.at("adapt").get<bool>()) + "/decode-" + std::to_string(input.at("decode").get<bool>());
+        }
+        if (cohort == "references")
+            return id + "/source-scale-" + std::to_string(row.at("source_scale")[0].get<std::uint32_t>()) + "-" + std::to_string(row.at("source_scale")[1].get<std::uint32_t>());
+        return id;
+    }
+    std::vector<std::string> fixture_case_ids(const Json& fixture, std::string_view group) {
+        std::vector<std::string> ids;
+        const auto& rows = fixture.at(group);
+        ids.reserve(rows.size() * 2);
+        for (std::size_t index = 0; index < rows.size(); ++index)
+            for (const char* caller : {"legacy", "facade"})
+                ids.emplace_back(std::string(caller) + "/" + case_id(rows[index], group, index));
+        return ids;
+    }
     void numerical(const Json& fixture) {
-        for (const auto& row : fixture.at("focused")) {
+        JuicerTests::Cohort focused_rows("mallett.focused", fixture_case_ids(fixture, "focused"));
+        JuicerTests::Cohort normalization_rows("mallett.normalizations", fixture_case_ids(fixture, "normalizations"));
+        JuicerTests::Cohort source_rows("mallett.sources", fixture_case_ids(fixture, "sources"));
+        JuicerTests::Cohort reference_rows("mallett.references", fixture_case_ids(fixture, "references"));
+        for (std::size_t index = 0; index < fixture.at("focused").size(); ++index) {
+            const auto& row = fixture.at("focused")[index];
+            const auto id = case_id(row, "focused", index);
             FocusedInput input(row);
             Diagnostic error;
             for (bool facade : {false, true}) {
+                auto event = focused_rows.case_event(std::string(facade ? "facade/" : "legacy/") + id);
                 FjMallettMidgray result{};
                 status((facade ? fj_test_exposure_mallett_midgray : fj_legacy_exposure_mallett_midgray)(&input.input, &result, &error.error), FJ_STATUS_SUCCESS);
                 check(result, row.at("expected"));
+                error.guards();
+                event.passed();
             }
-            error.guards();
         }
-        for (const auto& row : fixture.at("normalizations")) {
+        for (std::size_t index = 0; index < fixture.at("normalizations").size(); ++index) {
+            const auto& row = fixture.at("normalizations")[index];
+            const auto id = case_id(row, "normalizations", index);
             const float green = std::bit_cast<float>(row.at("green").get<std::uint32_t>());
             const Json expected = Json::array({row.at("expected")[0], row.at("expected")[2]});
             for (bool facade : {false, true}) {
+                auto event = normalization_rows.case_event(std::string(facade ? "facade/" : "legacy/") + id);
                 FjMidgrayNormalization result{};
                 Diagnostic error;
                 status((facade ? fj_test_exposure_tc_midgray : fj_legacy_exposure_tc_midgray)(green, &result, &error.error), FJ_STATUS_SUCCESS);
                 const float values[]{result.raw_green, result.scale};
                 exact<2>(values, expected);
+                error.guards();
+                event.passed();
             }
         }
-        for (const auto& row : fixture.at("sources")) {
+        for (std::size_t index = 0; index < fixture.at("sources").size(); ++index) {
+            const auto& row = fixture.at("sources")[index];
+            const auto id = case_id(row, "sources", index);
             const float ev = std::bit_cast<float>(row.at("ev").get<std::uint32_t>());
             const bool built = row.at("built").get<bool>();
             for (bool facade : {false, true}) {
+                auto event = source_rows.case_event(std::string(facade ? "facade/" : "legacy/") + id);
                 float result = -1;
                 Diagnostic error;
                 status((facade ? fj_test_exposure_reference_source : fj_legacy_exposure_reference_source)(ev, &result, &error.error), built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
@@ -152,12 +191,17 @@ namespace {
                     exact<1>(&result, Json::array({row.at("exp2_source")[1]}));
                 else
                     require(std::bit_cast<std::uint32_t>(result) == 0, "failed source clear");
+                error.guards();
+                event.passed();
             }
         }
-        for (const auto& row : fixture.at("references")) {
+        for (std::size_t index = 0; index < fixture.at("references").size(); ++index) {
+            const auto& row = fixture.at("references")[index];
+            const auto id = case_id(row, "references", index);
             ReferenceInput input(row);
             const bool built = row.at("built").get<bool>();
             for (bool facade : {false, true}) {
+                auto event = reference_rows.case_event(std::string(facade ? "facade/" : "legacy/") + id);
                 FjReferenceRaw result{};
                 Diagnostic error;
                 status((facade ? fj_test_exposure_mallett_reference_raw : fj_legacy_exposure_mallett_reference_raw)(&input.input, &result, &error.error), built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
@@ -168,6 +212,8 @@ namespace {
                                 return std::bit_cast<std::uint32_t>(v) == 0;
                             }),
                             "failed reference clear");
+                error.guards();
+                event.passed();
             }
         }
         FocusedInput focused(fixture.at("focused")[0]);
@@ -177,11 +223,13 @@ namespace {
         FjReferenceRaw raw{};
         float source = 0;
         Diagnostic error;
+        JuicerTests::CaseEvent c_abi_event("mallett_exposure", "c11_abi");
         require(fj_test_mallett_exposure_abi_c(&focused.input, &result, 1.0f, &normalization, 0.0f, &source, &reference.input, &raw, &error.error) == 0, "C11 prototypes/status transport");
         check(result, fixture.at("focused")[0].at("expected"));
         exact<3>(raw.rgb, fixture.at("references")[0].at("expected"));
         require(normalization.raw_green == 1.0f && normalization.scale == 1.0f, "C11 TC values");
         exact<1>(&source, Json::array({fixture.at("sources")[0].at("exp2_source")[1]}));
+        c_abi_event.passed();
     }
     void spectrum_exact(const FjSpectrumFixture& actual, const Json& expected) {
         exact<3>(actual.pre_xyz, expected.at("pre_xyz"));
@@ -189,7 +237,7 @@ namespace {
         exact<3>(actual.post_adapt_xyz, expected.at("post_adapt_xyz"));
         exact<81>(actual.spectrum, expected.at("spectrum"));
     }
-    void spectra(const Json& fixture, const std::filesystem::path& resources) {
+    void spectra(const Json& fixture, const std::filesystem::path& resources, std::string_view fixture_id) {
         const JuicerTestSupport::SpectralSourceAssets assets(resources);
         const JuicerTestSupport::HanatosSource source(assets.get());
         Diagnostic error;
@@ -208,6 +256,8 @@ namespace {
         const FjMallettRawInput mallett{{1, 1, 1}, {basis.front().data(), 243}, {illuminant.data(), 81}, {sensitivity.front().data(), 243}};
         bool checkFaults = true;
         for (const auto& row : fixture.at("helpers")) {
+            const std::string row_id = row.at("id").is_string() ? row.at("id").get<std::string>() : std::to_string(row.at("id").get<std::int64_t>());
+            JuicerTests::CaseEvent event("mallett.spectra.helper", std::string(fixture_id) + "/" + row_id);
             const auto rgb = decode<3>(row.at("rgb")), white = decode<3>(row.at("reference_white"));
             const FjHanatosSpectrumInput hanatos{{rgb[0], rgb[1], rgb[2]}, {white[0], white[1], white[2]}, source.view().samples};
             FjTablesSpectrumInput tables{{rgb[0], rgb[1], rgb[2]}, {white[0], white[1], white[2]}, {}, {ax.data(), 81}, {ay.data(), 81}, {az.data(), 81}};
@@ -218,11 +268,13 @@ namespace {
             spectrum_exact(hanatosOut, row.at("hanatos_expected"));
             spectrum_exact(tablesOut, row.at("tables_expected"));
             require(bgr[0] == 235 && bgr[1] == 235 && bgr[2] == 235, "independent retained BGR leaf");
+            event.passed();
             if (!checkFaults)
                 continue;
             checkFaults = false;
             for (std::uint32_t operation : {1u, 2u, 3u})
                 for (std::uint32_t fault : {1u, 2u}) {
+                    JuicerTests::CaseEvent fault_event("mallett.spectra.fault", std::string(fixture_id) + "/" + std::to_string(operation) + "/" + std::to_string(fault));
                     status(fj_test_exposure_fixture_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
                     std::memset(&hanatosOut, 0x7f, sizeof(hanatosOut));
                     std::memset(&tablesOut, 0x7f, sizeof(tablesOut));
@@ -242,6 +294,7 @@ namespace {
                         require(out->pre_xyz[0] == 0 && out->consumer_white[0] == 0 && out->post_adapt_xyz[0] == 0, "spectrum observations clear");
                     }
                     fj_test_exposure_fixture_clear_fault();
+                    fault_event.passed();
                 }
         }
     }
@@ -258,7 +311,10 @@ namespace {
         FocusedInput input(fixture.at("focused")[0]);
         ReferenceInput reference(fixture.at("references")[0]);
         Diagnostic error;
+        constexpr std::array<const char*, 12> focused_fields{"input_space", "decode_cctf", "adapt_xyz", "basis_extent", "illuminant_extent", "sensitivity_extent", "basis_null", "illuminant_null", "sensitivity_null", "basis_oversized", "basis_unaligned", "basis_overflow_address"};
+        JuicerTests::Cohort focused_defects("mallett.boundary.focused", std::vector<std::string>(focused_fields.begin(), focused_fields.end()));
         for (int bad = 0; bad < 12; ++bad) {
+            auto event = focused_defects.case_event(focused_fields[bad]);
             auto view = input.input;
             FjMallettMidgray result{};
             std::memset(&result, 0x7f, sizeof(result));
@@ -289,7 +345,9 @@ namespace {
             status(fj_legacy_exposure_mallett_midgray(&view, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
             require(cleared(result), "structural failure clears completed fields");
             error.guards();
+            event.passed();
         }
+        JuicerTests::CaseEvent arguments_event("mallett.boundary.arguments", "null_inputs_and_outputs");
         FjMallettMidgray result{};
         status(fj_legacy_exposure_mallett_midgray(nullptr, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
         status(fj_legacy_exposure_mallett_midgray(&input.input, nullptr, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -297,14 +355,21 @@ namespace {
         std::memset(&result, 0x7f, sizeof(result));
         status(fj_legacy_exposure_mallett_midgray(&input.input, &result, &invalid), FJ_STATUS_UNSUPPORTED_INPUT);
         require(cleared(result), "invalid diagnostic clears output");
+        arguments_event.passed();
+        JuicerTests::Cohort diagnostic_capacities("mallett.boundary.diagnostic_capacity", {"0", "1", "7", "512"});
         for (std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{7}, std::size_t{512}}) {
+            auto event = diagnostic_capacities.case_event(std::to_string(capacity));
             error.error.capacity = capacity;
             error.error.length = 99;
             status(fj_legacy_exposure_mallett_midgray(nullptr, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
             require(capacity == 0 ? error.error.length == 0 : error.error.length < capacity && error.error.data[error.error.length] == '\0', "bounded diagnostic/terminator");
             error.guards();
+            event.passed();
         }
+        constexpr std::array<const char*, 4> reference_fields{"basis_extent", "illuminant_null", "sensitivity_oversized", "null_input"};
+        JuicerTests::Cohort reference_defects("mallett.boundary.reference", std::vector<std::string>(reference_fields.begin(), reference_fields.end()));
         for (int bad = 0; bad < 4; ++bad) {
+            auto event = reference_defects.case_event(reference_fields[bad]);
             auto view = reference.input;
             FjReferenceRaw raw;
             std::memset(&raw, 0x7f, sizeof(raw));
@@ -316,14 +381,23 @@ namespace {
                 view.sensitivity_rgb.count = std::numeric_limits<std::size_t>::max();
             status(fj_legacy_exposure_mallett_reference_raw(bad == 3 ? nullptr : &view, &raw, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
             require(raw.rgb[0] == 0 && raw.rgb[1] == 0 && raw.rgb[2] == 0, "reference structural clearing");
+            event.passed();
         }
+        JuicerTests::CaseEvent rejected_arguments("mallett.boundary.rejected_arguments", "raw_tc_and_reference_outputs");
         status(fj_legacy_exposure_mallett_reference_raw(&reference.input, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         status(fj_legacy_exposure_tc_midgray(1, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         status(fj_legacy_exposure_reference_source(0, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        rejected_arguments.passed();
         error.error.capacity = 512;
+        std::vector<std::string> fault_ids;
+        for (std::uint32_t operation = 3; operation <= 6; ++operation)
+            for (const std::uint32_t fault : {1u, 2u, 4u})
+                fault_ids.emplace_back(std::to_string(operation) + "/" + std::to_string(fault));
+        JuicerTests::Cohort operation_faults("mallett.boundary.operation_fault", fault_ids);
         for (std::uint32_t operation = 3; operation <= 6; ++operation) {
             status(fj_test_exposure_arm_fault(operation, 1, 3), FJ_STATUS_UNSUPPORTED_INPUT);
             for (std::uint32_t fault : {1u, 2u, 4u}) {
+                auto event = operation_faults.case_event(std::to_string(operation) + "/" + std::to_string(fault));
                 status(fj_test_exposure_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
                 FjMidgrayNormalization normalized{};
                 float source = -1;
@@ -342,16 +416,21 @@ namespace {
                 require(operation != 5 || source == 0, "source fault clear");
                 require(operation != 6 || (raw.rgb[0] == 0 && raw.rgb[1] == 0 && raw.rgb[2] == 0), "reference fault clear");
                 fj_test_exposure_clear_fault();
+                event.passed();
             }
         }
+        JuicerTests::CaseEvent facade_event("mallett.boundary.facade_fault", "midgray");
         fj_test_exposure_arm_facade_fault();
         status(fj_test_exposure_mallett_midgray(&input.input, &result, &error.error), FJ_STATUS_INTERNAL_FAILURE);
         require(fj_test_exposure_facade_fault_consumed() == 1 && cleared(result), "direct-core facade witness");
+        facade_event.passed();
+        JuicerTests::CaseEvent skip_event("mallett.boundary.malformed_skips_math", "midgray");
         status(fj_test_exposure_arm_fault(3, 1, 1), FJ_STATUS_SUCCESS);
         status(fj_legacy_exposure_mallett_midgray(nullptr, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
         require(fj_test_exposure_fault_consumed(3, 1) == 0, "malformed input skips mathematics");
         status(fj_legacy_exposure_mallett_midgray(&input.input, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
         require(fj_test_exposure_fault_consumed(3, 1) == 1, "later valid call consumes armed fault");
+        skip_event.passed();
         fj_test_exposure_clear_fault();
         status(fj_test_exposure_arm_fault(3, 1, 1), FJ_STATUS_SUCCESS);
         FjStatus other{};
@@ -375,6 +454,88 @@ namespace {
 } // namespace
 int main(int argc, char** argv) {
     try {
+        JuicerTests::CaseLog case_log;
+        if (argc > 3 && std::string_view(argv[argc - 1]) == "--list-cases") {
+            const std::string selected = argv[3];
+            std::ifstream manifestFile(argv[1]);
+            const auto manifest = Json::parse(manifestFile);
+            if (selected == "numerical") {
+                const auto path = std::filesystem::path(argv[1]).parent_path() / manifest.at("presets").at(argv[2]).at("numerical").get<std::string>();
+                std::ifstream values(path);
+                const auto fixture = Json::parse(values);
+                for (const auto& [group, caller] : {std::pair{"focused", "mallett.focused"}, std::pair{"normalizations", "mallett.normalizations"}, std::pair{"sources", "mallett.sources"}, std::pair{"references", "mallett.references"}})
+                    for (const auto& id : fixture_case_ids(fixture, group))
+                        JuicerTests::list_case(caller, id);
+                JuicerTests::list_case("mallett_exposure", "c11_abi");
+            } else if (selected == "products" || selected == "admission") {
+                const auto path = std::filesystem::path(argv[1]).parent_path() / manifest.at("presets").at(argv[2]).at("products").get<std::string>();
+                std::ifstream values(path);
+                const auto products = Json::parse(values);
+                if (selected == "products") {
+                    for (const auto& row : products.at("products"))
+                        JuicerTests::list_case("mallett.product", std::to_string(row.at("polarity").get<int>()) + "/" + std::to_string(row.at("route").get<int>()) + "/" + std::to_string(row.at("method").get<int>()) + "/" + std::to_string(row.at("variant").get<int>()));
+                    for (int route = 0; route < 4; ++route) {
+                        for (const char* source : {"missing", "rows_80x3", "columns_81x2", "short_payload"})
+                            JuicerTests::list_case("mallett.constructor.source", std::to_string(route) + "/" + source);
+                        for (int operation : {3, 5, 6})
+                            for (int fault : {1, 2, 4})
+                                JuicerTests::list_case("mallett.constructor.exposure_fault", std::to_string(route) + "/" + std::to_string(operation) + "/" + std::to_string(fault));
+                        for (int precedence = 0; precedence < 3; ++precedence)
+                            JuicerTests::list_case("mallett.constructor.precedence", std::to_string(route) + "/" + std::to_string(precedence));
+                    }
+                    for (int method : {0, 2})
+                        JuicerTests::list_case("mallett.constructor.tc_normalization", std::to_string(method));
+                    JuicerTests::list_case("mallett.caller", "products_owner_close");
+                } else {
+                    for (int polarity = 0; polarity < 2; ++polarity)
+                        for (int route = 0; route < 2; ++route) {
+                            for (const char* source : {"missing", "rows_80x3", "columns_81x2", "short_payload"})
+                                JuicerTests::list_case("mallett.admission.source", std::to_string(polarity) + "/" + std::to_string(route) + "/" + source);
+                            for (int operation : {3, 5, 6})
+                                for (int fault : {1, 2, 4})
+                                    JuicerTests::list_case("mallett.admission.exposure_fault", std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(operation) + "/" + std::to_string(fault));
+                            for (int source_failure = 0; source_failure < 2; ++source_failure)
+                                for (int mode = 0; mode < 3; ++mode)
+                                    JuicerTests::list_case("mallett.admission.supersession", std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(source_failure) + "/" + std::to_string(mode));
+                            for (int earlier = 0; earlier < 3; ++earlier)
+                                JuicerTests::list_case("mallett.admission.precedence", std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(earlier));
+                        }
+                    for (int method : {0, 2})
+                        JuicerTests::list_case("mallett.admission.tc_normalization", std::to_string(method));
+                    JuicerTests::list_case("mallett.admission.skipped_tc_normalization", "mallett");
+                    JuicerTests::list_case("mallett.caller", "admission_owner_close");
+                }
+            } else if (selected == "spectra") {
+                for (int index : {5, 6}) {
+                    const std::string fixture_id = index == 5 ? "cat02" : "input-color";
+                    const auto captured = load_shared_fixture(argv[index], index == 5 ? "cat02-manifest.json" : "input-color-manifest.json");
+                    for (const auto& row : captured.at("helpers")) {
+                        const std::string row_id = row.at("id").is_string() ? row.at("id").get<std::string>() : std::to_string(row.at("id").get<std::int64_t>());
+                        JuicerTests::list_case("mallett.spectra.helper", fixture_id + "/" + row_id);
+                    }
+                    for (int operation : {1, 2, 3})
+                        for (int fault : {1, 2})
+                            JuicerTests::list_case("mallett.spectra.fault", fixture_id + "/" + std::to_string(operation) + "/" + std::to_string(fault));
+                }
+            } else if (selected == "boundary") {
+                for (const char* id : {"input_space", "decode_cctf", "adapt_xyz", "basis_extent", "illuminant_extent", "sensitivity_extent", "basis_null", "illuminant_null", "sensitivity_null", "basis_oversized", "basis_unaligned", "basis_overflow_address"})
+                    JuicerTests::list_case("mallett.boundary.focused", id);
+                JuicerTests::list_case("mallett.boundary.arguments", "null_inputs_and_outputs");
+                for (std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{7}, std::size_t{512}})
+                    JuicerTests::list_case("mallett.boundary.diagnostic_capacity", std::to_string(capacity));
+                for (const char* id : {"basis_extent", "illuminant_null", "sensitivity_oversized", "null_input"})
+                    JuicerTests::list_case("mallett.boundary.reference", id);
+                JuicerTests::list_case("mallett.boundary.rejected_arguments", "raw_tc_and_reference_outputs");
+                for (std::uint32_t operation = 3; operation <= 6; ++operation)
+                    for (std::uint32_t fault : {1u, 2u, 4u})
+                        JuicerTests::list_case("mallett.boundary.operation_fault", std::to_string(operation) + "/" + std::to_string(fault));
+                JuicerTests::list_case("mallett.boundary.facade_fault", "midgray");
+                JuicerTests::list_case("mallett.boundary.malformed_skips_math", "midgray");
+            } else {
+                JuicerTests::list_case("mallett_exposure", selected);
+            }
+            return 0;
+        }
         require(argc == 4 || argc == 5 || argc == 6 || argc == 7, "manifest preset numerical|boundary|products|admission|spectra [resources artifacts fixtures]");
         const std::filesystem::path manifestPath(argv[1]);
         std::ifstream stream(manifestPath);
@@ -390,13 +551,14 @@ int main(int argc, char** argv) {
         else if (std::string(argv[3]) == "spectra" && argc == 7) {
             for (int i : {5, 6}) {
                 const auto captured = load_shared_fixture(argv[i], i == 5 ? "cat02-manifest.json" : "input-color-manifest.json");
-                spectra(captured, argv[4]);
+                spectra(captured, argv[4], i == 5 ? "cat02" : "input-color");
             }
-        } else if (std::string(argv[3]) == "boundary")
+        } else if (std::string(argv[3]) == "boundary") {
             boundary(fixture);
-        else
+        } else
             throw std::runtime_error("unknown fixed exposure group");
         std::puts("Mallett exposure qualification PASS");
+        case_log.finish();
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());

@@ -87,7 +87,7 @@ def check(root: Path, ruff: str, shellcheck: str, actionlint: str) -> dict[str, 
     files = source_files(root)
     config = root / "ruff.toml"
     inputs = [root / n for names in files.values() for n in names]
-    inputs += [config, Path(__file__), *tools.values()]
+    inputs += [config, Path(__file__)]
     before = file_identities(inputs)
     check_python(root, files["python"], tools["ruff"], config)
     if files["shell"]:

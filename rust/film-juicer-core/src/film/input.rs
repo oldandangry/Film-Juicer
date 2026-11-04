@@ -518,6 +518,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use std::path::Path;
 
     fn profile() -> profile::FilmProfile {
@@ -666,10 +667,24 @@ mod tests {
         ));
         let complete = profile();
         let white = [0.95, 1.0, 1.09];
-        for (reference, kind) in [
-            ([-1.0; 81], exposure::ErrorKind::ReferenceIlluminant),
-            ([0.0; 81], exposure::ErrorKind::BandPassResponse),
-        ] {
+        let rows = [
+            (
+                "negative-reference",
+                [-1.0; 81],
+                exposure::ErrorKind::ReferenceIlluminant,
+            ),
+            (
+                "zero-reference",
+                [0.0; 81],
+                exposure::ErrorKind::BandPassResponse,
+            ),
+        ];
+        let mut cases = RowCases::new(
+            "film-input-reference-failures",
+            rows.iter().map(|(id, _, _)| *id),
+        );
+        for (id, reference, kind) in rows {
+            let case = cases.case(id);
             let mut borrowed = resources(&reference);
             borrowed.reference_white_xyz = Some(&white);
             borrowed.tc_source_hash = 1;
@@ -679,7 +694,9 @@ mod tests {
                 panic!("reference computation must precede missing reconstruction");
             };
             assert_eq!(error.kind(), kind);
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn identity_matrices_are_completed_values() {

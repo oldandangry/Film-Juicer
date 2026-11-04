@@ -28,6 +28,8 @@
 #include "../ffi/prepared_frame_fixture.h"
 #include "../ffi/prepared_product_fixture.h"
 #include "../ffi/spatial_optics_fixture.h"
+#include "../ffi/case_results.h"
+#include "../ffi/gtest_cases.h"
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
@@ -78,6 +80,10 @@ namespace JuicerProcess::TestSupport {
 namespace {
     using Frame = JuicerProcess::Root::PreparedCudaFrame;
     namespace FrameFixture = JuicerCudaTest::PreparedFrameFixture;
+
+    std::string route_case_key(Spektrafilm::ScanRoute route) {
+        return "route-" + std::to_string(static_cast<int>(route));
+    }
 
     void require(bool ok, const std::string& detail) {
         if (!ok) {
@@ -432,11 +438,13 @@ namespace {
     };
 
     TEST_F(GrainScratch, PreparedFrameNoiseReleaseFailurePreservesConsumerAndRootOutcomes) {
+        JuicerTests::GtestCohort cases("noise-release-operation", {"consumer-exception-preserved", "release-failure-preserved", "retry-after-release-failure"});
         Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
         const std::size_t baseline = fj_test_live_noise_owners();
         NoiseFaultReset resetFault;
         FrameFixture::FrameFacts facts = inputs.facts;
 
+        auto consumerException = cases.case_event("consumer-exception-preserved");
         bool sentinelRethrown = false;
         std::string diagnostic;
         try {
@@ -449,7 +457,9 @@ namespace {
         }
         EXPECT_TRUE(sentinelRethrown);
         EXPECT_EQ(fj_test_live_noise_owners(), baseline);
+        consumerException.passed();
 
+        auto releaseFailure = cases.case_event("release-failure-preserved");
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
         snapshot.instanceToken.value = 0x475241494eull;
         snapshot.frameToken.value = nextIdentity;
@@ -467,7 +477,9 @@ namespace {
         EXPECT_EQ(fj_test_live_noise_owners(), baseline);
         if (call.frame.active())
             finish(call.frame);
+        releaseFailure.passed();
 
+        auto retry_event = cases.case_event("retry-after-release-failure");
         fj_test_noise_fault(0);
         FrameCall retry{true, key, snapshot, stream, {}, {}};
         diagnostic.clear();
@@ -478,6 +490,7 @@ namespace {
         if (retry.frame.active())
             finish(retry.frame);
         EXPECT_EQ(fj_test_live_noise_owners(), baseline);
+        retry_event.passed();
     }
 
     TEST(GrainUpload, RetainsCapacityFailureAfterRelock) {
@@ -506,8 +519,23 @@ namespace {
     }
 
     TEST_F(GrainScratch, GaussianPreparedArraysMatchFrozenWordsAndWarmHitsDoNoConstruction) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan})
-            for (float pixelSize : {2.0f, 6.0f}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array pixelSizes{2.0f, 6.0f};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * pixelSizes.size());
+        for (const auto route : routes)
+            for (const auto pixelSize : pixelSizes)
+                ids.push_back(route_case_key(route) + "/pixel-" +
+                              std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
+        JuicerTests::GtestCohort cases("route-pixel-size", ids);
+        for (auto route : routes)
+            for (float pixelSize : pixelSizes) {
+                auto row = cases.case_event(
+                    route_case_key(route) + "/pixel-" +
+                    std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
                 Inputs inputs(64, 48, route, {.pixelSize = pixelSize});
                 auto frame = prepare(inputs);
                 const auto kernels = frame.visual_grain_resources();
@@ -537,12 +565,20 @@ namespace {
                         EXPECT_EQ(reused.dyeCloud[layer][c].weights, kernels.dyeCloud[layer][c].weights);
                 }
                 finish(warm);
+                row.passed();
             }
     }
 
     TEST_F(GrainScratch, ReusesFinishedRawCorrectionPlanesWithoutDedicatedGrainAllocations) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan,
-                           Spektrafilm::ScanRoute::NegativePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             Inputs inputs(128, 96, route);
             auto frame = prepare(inputs);
             const auto lease = frame.workspace_lease();
@@ -562,12 +598,25 @@ namespace {
             EXPECT_NE(grain.layerWork, optics.rgbG);
             EXPECT_NE(grain.sharedDelta, optics.rgbB);
             finish(frame);
+            row.passed();
         }
     }
 
     TEST_F(GrainScratch, FilmGammaRebuildReusesExactCurveAndLayerDeviceStorage) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
-            for (bool layers : {false, true}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array layerModes{false, true};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * layerModes.size());
+        for (const auto route : routes)
+            for (const auto layers : layerModes)
+                ids.push_back(route_case_key(route) + "/layers-" + (layers ? "on" : "off"));
+        JuicerTests::GtestCohort cases("route-layer-mode", ids);
+        for (auto route : routes) {
+            for (bool layers : layerModes) {
+                auto row = cases.case_event(route_case_key(route) + "/layers-" + (layers ? "on" : "off"));
                 GrainVariant variant;
                 variant.layers = layers;
                 Inputs before(64, 48, route, variant);
@@ -589,6 +638,7 @@ namespace {
                 EXPECT_EQ(firstCurves.normalizedHash, changedCurves.normalizedHash);
                 EXPECT_EQ(firstCurves.layersHash, changedCurves.layersHash);
                 finish(second);
+                row.passed();
             }
         }
     }
@@ -605,14 +655,37 @@ namespace {
         finish(frame);
     }
     TEST_F(GrainScratch, GrainMatchesDedicatedScratchBitForBitAcrossRoutesShapesTimesAndDebugViews) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
-            for (bool layers : {false, true}) {
-                for (bool shared : {false, true}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array layerModes{false, true};
+        const std::array sharedModes{false, true};
+        const std::array times{12.0, 12.375};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * layerModes.size() * sharedModes.size() * times.size() * 7);
+        for (const auto route : routes)
+            for (const auto layers : layerModes)
+                for (const auto shared : sharedModes)
+                    for (const auto time : times)
+                        for (int debug = 0; debug <= 6; ++debug)
+                            ids.push_back(route_case_key(route) + "/layers-" + (layers ? "on" : "off") +
+                                          "/shared-" + (shared ? "on" : "off") + "/time-" +
+                                          std::to_string(std::bit_cast<std::uint64_t>(time)) +
+                                          "/debug-" + std::to_string(debug));
+        JuicerTests::GtestCohort cases("route-layer-shared-time-debug", ids);
+        for (auto route : routes) {
+            for (bool layers : layerModes) {
+                for (bool shared : sharedModes) {
                     // Only frame time changes between passes. Retain one host
                     // product per debug view; every CUDA frame remains fresh.
                     std::array<std::optional<Inputs>, 7> inputsByDebug;
-                    for (double time : {12.0, 12.375}) {
+                    for (double time : times) {
                         for (int debug = 0; debug <= 6; ++debug) {
+                            auto row = cases.case_event(route_case_key(route) + "/layers-" + (layers ? "on" : "off") +
+                                                        "/shared-" + (shared ? "on" : "off") + "/time-" +
+                                                        std::to_string(std::bit_cast<std::uint64_t>(time)) +
+                                                        "/debug-" + std::to_string(debug));
                             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route)
                                                             << " layers=" << layers << " shared=" << shared << " time=" << time << " debug=" << debug);
                             auto& retained = inputsByDebug[debug];
@@ -633,6 +706,7 @@ namespace {
                             EXPECT_EQ(work.sharedDelta != nullptr, shared && debug <= 1);
                             compare_grain(inputs, frame);
                             finish(frame);
+                            row.passed();
                         }
                     }
                 }
@@ -641,8 +715,22 @@ namespace {
     }
 
     TEST_F(GrainScratch, ReusesOnlyWithinEligibleRouteAndRetainedTier) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
-            for (float pixelSize : {6.0f, 200.0f}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array pixelSizes{6.0f, 200.0f};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * pixelSizes.size());
+        for (const auto route : routes)
+            for (const auto pixelSize : pixelSizes)
+                ids.push_back(route_case_key(route) + "/pixel-" +
+                              std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
+        JuicerTests::GtestCohort cases("route-pixel-size", ids);
+        for (auto route : routes) {
+            for (float pixelSize : pixelSizes) {
+                auto row = cases.case_event(route_case_key(route) + "/pixel-" +
+                                            std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
                 Inputs inputs(64, 48, route, {.pixelSize = pixelSize});
                 auto frame = prepare(inputs);
                 auto lease = frame.workspace_lease();
@@ -660,12 +748,21 @@ namespace {
                 EXPECT_EQ(after.deltaAccum, before.deltaAccum);
                 compare_grain(inputs, frame);
                 finish(frame);
+                row.passed();
             }
         }
     }
 
     TEST_F(GrainScratch, SurvivesResolutionChangesQueuedAbortAndContextRetirement) {
-        for (int width : {64, 320, 48, 128}) {
+        const std::array widths{64, 320, 48, 128};
+        std::vector<std::string> ids;
+        ids.reserve(widths.size() + 1);
+        for (const int width : widths)
+            ids.push_back("width-" + std::to_string(width));
+        ids.push_back("context-retirement-recreation");
+        JuicerTests::GtestCohort cases("width-context-transition", ids);
+        for (int width : widths) {
+            auto row = cases.case_event("width-" + std::to_string(width));
             Inputs inputs(width, width / 2, Spektrafilm::ScanRoute::NegativePrintScan);
             auto frame = prepare(inputs);
             const auto marker = frame.workspace_lease();
@@ -677,7 +774,9 @@ namespace {
             auto next = prepare(inputs);
             compare_grain(inputs, next);
             finish(next);
+            row.passed();
         }
+        auto retirement = cases.case_event("context-retirement-recreation");
         require_cuda(cudaStreamSynchronize(stream));
         std::string error;
         require(JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error), error);
@@ -685,6 +784,7 @@ namespace {
         auto recreated = prepare(inputs);
         compare_grain(inputs, recreated);
         finish(recreated);
+        retirement.passed();
     }
 
     TEST_F(GrainScratch, RejectsConcurrentRetainedLeasesAndOrdersLaterStreamReuse) {
@@ -739,7 +839,15 @@ namespace {
     }
 
     TEST_F(GrainScratch, AdmittedTierPreservesGrainBindingAndOutput) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             Inputs inputs(96, 64, route);
             auto frame = prepare(inputs);
             const auto lease = frame.workspace_lease();
@@ -762,6 +870,7 @@ namespace {
             std::cout << "ADMITTED_DIR_PLANES=" << dir.planeRoles.total_float_planes() << '\n';
             compare_grain(inputs, frame);
             finish(frame);
+            row.passed();
         }
     }
 
@@ -985,11 +1094,17 @@ namespace {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
+    testing::InitGoogleTest(&argc, argv);
+    if (testing::GTEST_FLAG(list_tests))
+        return RUN_ALL_TESTS();
     JuicerCuda::Owner cudaOwner;
     cudaOwner.create(JuicerProcess::data_directory());
-    testing::InitGoogleTest(&argc, argv);
+    JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
+    case_log.finish();
     const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
     return closed.category == FJ_STATUS_SUCCESS ? result : 1;
+} catch (...) {
+    return 1;
 }

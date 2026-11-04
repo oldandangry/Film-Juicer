@@ -25,6 +25,7 @@
 #include "ResourceAssetLibrary.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "case_results.h"
 
 namespace {
     using Json = nlohmann::json;
@@ -86,8 +87,14 @@ namespace {
     }
     void products(FjAssets* assets, const Json& fixture) {
         require(fixture.at("products").size() == 56, "all 56 Mallett product rows retained");
+        std::vector<std::string> product_ids;
+        for (const auto& row : fixture.at("products"))
+            product_ids.emplace_back(std::to_string(row.at("polarity").get<int>()) + "/" + std::to_string(row.at("route").get<int>()) + "/" + std::to_string(row.at("method").get<int>()) + "/" + std::to_string(row.at("variant").get<int>()));
+        JuicerTests::Cohort product_rows("mallett.product", product_ids);
         for (std::size_t i = 0; i < fixture.at("products").size(); ++i) {
             const auto& row = fixture.at("products")[i];
+            const std::string case_id = std::to_string(row.at("polarity").get<int>()) + "/" + std::to_string(row.at("route").get<int>()) + "/" + std::to_string(row.at("method").get<int>()) + "/" + std::to_string(row.at("variant").get<int>());
+            auto event = product_rows.case_event(case_id);
             auto p = controls(row);
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
@@ -107,6 +114,7 @@ namespace {
             for (std::size_t channel = 0; channel < 81; ++channel)
                 sensitivity.push_back(bits(std::span(view.film_exposure.sensitivity_rgb.data + channel * 3, 3)));
             require(sensitivity == row.at("final_sensitivity") && span_bits(view.exposure_tables.illuminant, 81) == row.at("reference_spd"), "source/sensitivity remain exact");
+            event.passed();
         }
     }
     void pending(InstanceState& state, const ParamSnapshot& p) {
@@ -204,6 +212,19 @@ namespace {
     }
     void constructor_failures(FjAssets* assets, const std::filesystem::path& artifactRoot) {
         const auto sourceCases = source_failures(artifactRoot);
+        std::vector<std::string> source_ids, exposure_fault_ids, precedence_ids;
+        for (std::uint32_t route = 0; route < 4; ++route) {
+            for (const auto& source : sourceCases)
+                source_ids.emplace_back(std::to_string(route) + "/" + source.name);
+            for (std::uint32_t operation : {3u, 5u, 6u})
+                for (std::uint32_t fault : {1u, 2u, 4u})
+                    exposure_fault_ids.emplace_back(std::to_string(route) + "/" + std::to_string(operation) + "/" + std::to_string(fault));
+            for (int precedence = 0; precedence < 3; ++precedence)
+                precedence_ids.emplace_back(std::to_string(route) + "/" + std::to_string(precedence));
+        }
+        JuicerTests::Cohort source_rows("mallett.constructor.source", source_ids);
+        JuicerTests::Cohort exposure_fault_rows("mallett.constructor.exposure_fault", exposure_fault_ids);
+        JuicerTests::Cohort precedence_rows("mallett.constructor.precedence", precedence_ids);
         for (std::uint32_t route = 0; route < 4; ++route) {
             auto p = snapshot(static_cast<Spektrafilm::ScanRoute>(route), Spektrafilm::RgbToRawMethod::Mallett2019);
             std::array<char, 2048> diagnostic{};
@@ -214,6 +235,7 @@ namespace {
             require(held->view(seed, error).category == FJ_STATUS_SUCCESS, "constructor seed view");
             const auto retained = complete_result(seed, 1);
             for (const auto& source : sourceCases) {
+                auto event = source_rows.case_event(std::to_string(route) + "/" + source.name);
                 FaultScope cleanup;
                 arm_source(source.path);
                 require(fj_test_exposure_arm_fault(3, 1, 1).category == FJ_STATUS_SUCCESS, "constructor midgray fault arm");
@@ -227,9 +249,11 @@ namespace {
                 const auto later = prepare_state(assets, p, failed, error);
                 require(later.category == FJ_STATUS_UNSUPPORTED_INPUT && !failed && fj_test_exposure_fault_consumed(3, 1) == 1, "constructor retry reaches skipped midgray fault");
                 require(prepare_state(assets, p, failed, error).category == FJ_STATUS_SUCCESS && failed, "constructor source/fault one-shot recovery");
+                event.passed();
             }
             for (std::uint32_t operation : {3u, 5u, 6u}) {
                 for (std::uint32_t fault : {1u, 2u, 4u}) {
+                    auto event = exposure_fault_rows.case_event(std::to_string(route) + "/" + std::to_string(operation) + "/" + std::to_string(fault));
                     FaultScope cleanup;
                     require(fj_test_exposure_arm_fault(operation, 1, fault).category == FJ_STATUS_SUCCESS, "constructor checked exposure arm");
                     std::optional<PreparedState> failed;
@@ -246,9 +270,11 @@ namespace {
                     FjPreparedStateView unchanged{};
                     require(held->view(unchanged, error).category == FJ_STATUS_SUCCESS && complete_result(unchanged, 1) == retained, "checked exposure failure preserves complete held values");
                     require(prepare_state(assets, p, failed, error).category == FJ_STATUS_SUCCESS && failed, "constructor checked exposure recovery");
+                    event.passed();
                 }
             }
             for (int precedence = 0; precedence < 3; ++precedence) {
+                auto event = precedence_rows.case_event(std::to_string(route) + "/" + std::to_string(precedence));
                 FaultScope cleanup;
                 auto controls = p;
                 if (precedence == 0)
@@ -274,9 +300,12 @@ namespace {
                     float matrix[9]{};
                     require(fj_legacy_cat02_matrix(white, white, matrix).category == FJ_STATUS_UNSUPPORTED_INPUT, "constructor source failure leaves first scanner color call pending");
                 }
+                event.passed();
             }
         }
+        JuicerTests::Cohort normalization_rows("mallett.constructor.tc_normalization", {"0", "2"});
         for (int method : {0, 2}) {
+            auto event = normalization_rows.case_event(std::to_string(method));
             FaultScope cleanup;
             const auto p = snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, static_cast<Spektrafilm::RgbToRawMethod>(method));
             require(fj_test_exposure_arm_fault(4, 1, 4).category == FJ_STATUS_SUCCESS, "constructor TC normalization arm");
@@ -287,6 +316,7 @@ namespace {
             require(status.category == FJ_STATUS_PREPARATION_FAILURE && !failed && fj_test_exposure_fault_consumed(4, 4) == 1, "constructor actual TC normalization category/one-shot");
             require(std::string(diagnostic.data(), error.length) == "TC mid-gray normalization: fixed exposure preparation category fault", "constructor TC normalization diagnostic");
             require(prepare_state(assets, p, failed, error).category == FJ_STATUS_SUCCESS && failed, "constructor TC normalization recovery");
+            event.passed();
         }
     }
     struct Supersession {
@@ -309,6 +339,24 @@ namespace {
     void admission(const Json& contract, const std::filesystem::path& artifactRoot) {
         require(contract.contains("diagnostic"), "frozen historical failure contract remains present");
         const auto sourceCases = source_failures(artifactRoot);
+        std::vector<std::string> source_ids, exposure_fault_ids, supersession_ids, precedence_ids;
+        for (int polarity = 0; polarity < 2; ++polarity)
+            for (int route = 0; route < 2; ++route) {
+                for (const auto& source : sourceCases)
+                    source_ids.emplace_back(std::to_string(polarity) + "/" + std::to_string(route) + "/" + source.name);
+                for (std::uint32_t operation : {3u, 5u, 6u})
+                    for (std::uint32_t fault : {1u, 2u, 4u})
+                        exposure_fault_ids.emplace_back(std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(operation) + "/" + std::to_string(fault));
+                for (bool source_failure : {false, true})
+                    for (int mode = 0; mode < 3; ++mode)
+                        supersession_ids.emplace_back(std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(source_failure) + "/" + std::to_string(mode));
+                for (int earlier = 0; earlier < 3; ++earlier)
+                    precedence_ids.emplace_back(std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(earlier));
+            }
+        JuicerTests::Cohort source_rows("mallett.admission.source", source_ids);
+        JuicerTests::Cohort exposure_fault_rows("mallett.admission.exposure_fault", exposure_fault_ids);
+        JuicerTests::Cohort supersession_rows("mallett.admission.supersession", supersession_ids);
+        JuicerTests::Cohort precedence_rows("mallett.admission.precedence", precedence_ids);
         for (int polarity = 0; polarity < 2; ++polarity)
             for (int route = 0; route < 2; ++route) {
                 const bool print = route == 1;
@@ -316,6 +364,7 @@ namespace {
                 auto changed = p;
                 changed.cameraExposureCompensationEv = 1.5;
                 for (const auto& source : sourceCases) {
+                    auto event = source_rows.case_event(std::to_string(polarity) + "/" + std::to_string(route) + "/" + source.name);
                     FaultScope cleanup;
                     InstanceState state;
                     pending(state, p);
@@ -348,9 +397,11 @@ namespace {
                     require(reused.directState == recovered.directState && reused.printState == recovered.printState && state.buildCounterNext.load() == counter + 1, "same-input owner reuse");
                     require(JuicerProcess::root().assets().release_cached_payloads().category == FJ_STATUS_SUCCESS, "release source/profile cache");
                     require(recipe_hash(old, print) == oldRecipe && complete_result(JuicerTestSupport::published_view(old), 1) == retained && recipe_hash(recovered, print) == recipe_hash(reused, print), "admitted complete holds survive cache release");
+                    event.passed();
                 }
                 for (std::uint32_t operation : {3u, 5u, 6u})
                     for (std::uint32_t fault : {1u, 2u, 4u}) {
+                        auto event = exposure_fault_rows.case_event(std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(operation) + "/" + std::to_string(fault));
                         FaultScope cleanup;
                         InstanceState state;
                         pending(state, p);
@@ -369,9 +420,11 @@ namespace {
                             require(JuicerAtomic::load_shared_ptr(&state.activeDirectState) == old.directState && JuicerAtomic::load_shared_ptr(&state.activePrintState) == old.printState, "exception retains publication");
                         fj_test_exposure_clear_fault();
                         require(admitted(admit_pending_render_state(state), print), "typed-fault recovery");
+                        event.passed();
                     }
                 for (bool sourceFailure : {false, true})
                     for (int mode = 0; mode < 3; ++mode) {
+                        auto event = supersession_rows.case_event(std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(sourceFailure) + "/" + std::to_string(mode));
                         FaultScope cleanup;
                         InstanceState state;
                         pending(state, p);
@@ -390,8 +443,10 @@ namespace {
                         require(complete_result(JuicerTestSupport::published_view(held), 1) == retained, "supersession preserves admitted complete values");
                         require(mode == 0 ? admitted(next, print) : next.status == (mode == 1 ? PendingRenderAdmissionStatus::InvalidSnapshotControls : PendingRenderAdmissionStatus::NeedsSnapshotAcquisition), "supersession resolves current snapshot");
                         set_pending_capture_test_hook(nullptr, nullptr);
+                        event.passed();
                     }
                 for (int earlier = 0; earlier < 3; ++earlier) {
+                    auto event = precedence_rows.case_event(std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(earlier));
                     FaultScope cleanup;
                     const auto& source = sourceCases[0];
                     arm_source(source.path);
@@ -426,9 +481,12 @@ namespace {
                         float matrix[9];
                         require(fj_legacy_cat02_matrix(white, white, matrix).category == FJ_STATUS_UNSUPPORTED_INPUT, "late scanner fault remained armed, observed before cleanup");
                     }
+                    event.passed();
                 }
             }
+        JuicerTests::Cohort tc_normalization_rows("mallett.admission.tc_normalization", {"0", "2"});
         for (int method : {0, 2}) {
+            auto event = tc_normalization_rows.case_event(std::to_string(method));
             FaultScope cleanup;
             InstanceState state;
             auto p = snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, static_cast<Spektrafilm::RgbToRawMethod>(method));
@@ -437,8 +495,11 @@ namespace {
             require(admit_pending_render_state(state).status == PendingRenderAdmissionStatus::RebuildFailed && fj_test_exposure_fault_consumed(4, 4) == 1, "TC actual consumer");
             fj_test_exposure_clear_fault();
             require(admitted(admit_pending_render_state(state), false), "TC normalization recovery");
+            event.passed();
         }
         {
+            JuicerTests::Cohort skipped_normalization("mallett.admission.skipped_tc_normalization", {"mallett"});
+            auto event = skipped_normalization.case_event("mallett");
             FaultScope cleanup;
             InstanceState state;
             auto p = snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Mallett2019);
@@ -453,6 +514,7 @@ namespace {
             require(rawStatus.category == FJ_STATUS_PREPARATION_FAILURE && rawStatus.api == FJ_API_NONE && rawStatus.native_code == 0, "raw TC fixed-exposure status");
             require(std::string(diagnostic.data(), error.length) == "fixed exposure preparation category fault", "raw TC diagnostic remains unprefixed");
             require(fj_test_exposure_fault_consumed(4, 4) == 1, "raw TC consumes skipped fault");
+            event.passed();
         }
     }
 } // namespace
@@ -469,5 +531,7 @@ void fj_test_mallett_callers(const std::filesystem::path& resources, const Json&
         products(assets, fixture);
         constructor_failures(assets, artifactRoot);
     }
+    JuicerTests::CaseEvent close_event("mallett.caller", admissionOnly ? "admission_owner_close" : "products_owner_close");
     require(owner.close().category == FJ_STATUS_SUCCESS, "caller owner close");
+    close_event.passed();
 }

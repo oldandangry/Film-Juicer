@@ -28,6 +28,7 @@
 #include "SpectralData.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "case_results.h"
 #include "PreparedState.h"
 #include "print_illuminant_fixture.h"
 #include "prepared_boundary.h"
@@ -95,7 +96,8 @@ namespace {
         JuicerAssets::Library native;
 
     public:
-        explicit InputHullCacheProbe(const std::filesystem::path& root) : native(root) {}
+        explicit InputHullCacheProbe(const std::filesystem::path& root)
+            : native(root) {}
         FjAssets* owner() const {
             return native.borrow_rust_assets();
         }
@@ -159,9 +161,15 @@ namespace {
         return out;
     }
     void completed(const FjInputHull& hull, const Json& expected) {
+        constexpr std::size_t kPolygonPoints = 1025;
+        require(expected["xy"].size() == kPolygonPoints, "frozen native hull primitive extent");
         require(bits(hull.center_xy) == expected["center"] && hull.hash == expected["hash"], "center/hash exact");
-        for (std::size_t i = 0; i < 1025; ++i)
+        std::size_t visited = 0;
+        for (std::size_t i = 0; i < kPolygonPoints; ++i) {
             require(bits(std::array{hull.xy[i * 2], hull.xy[i * 2 + 1]}) == expected["xy"][i], "complete polygon words");
+            ++visited;
+        }
+        require(visited == kPolygonPoints, "actual native hull polygon traversal count");
     }
     struct Diagnostic {
         std::array<char, 513> data{};
@@ -208,9 +216,12 @@ namespace {
     };
     void boundary(const Json& fixture) {
         for (const auto& row : fixture["math"]) {
+            const auto row_id = std::to_string(row.at("id").get<int>());
             Source source(row);
             const auto request = source.record();
             for (auto call : {fj_test_input_hull_abi_c, fj_test_gamut_input_hull}) {
+                const std::string caller = call == fj_test_input_hull_abi_c ? "c11" : "facade";
+                JuicerTests::CaseEvent event("input_hull.boundary", caller + "/" + row_id);
                 Output out;
                 out.poison();
                 Diagnostic diagnostic;
@@ -224,6 +235,7 @@ namespace {
                     completed(out.value, id == 5 ? fixture["math"][0]["expected"] : row["expected"]);
                 else if (result.category == FJ_STATUS_PREPARATION_FAILURE)
                     require(diagnostic.text() == row["expected"]["diagnostic"].get<std::string>(), "typed producer diagnostic");
+                event.passed();
             }
         }
         Source source(fixture["math"][0]);
@@ -231,6 +243,7 @@ namespace {
         for (std::uint32_t facade = 0; facade <= 1; ++facade) {
             const auto call = facade ? fj_test_gamut_input_hull : fj_test_input_hull_abi_c;
             for (std::uint32_t fault = 1; fault <= 6; ++fault) {
+                JuicerTests::CaseEvent event("input_hull.boundary_fault", std::to_string(facade) + "/" + std::to_string(fault));
                 status(fj_test_gamut_arm_fault(facade, fault), FJ_STATUS_SUCCESS);
                 Output out;
                 out.poison();
@@ -242,9 +255,11 @@ namespace {
                 diagnostic.check();
                 status(call(&request, &out.value, &diagnostic.record), FJ_STATUS_SUCCESS);
                 completed(out.value, fixture["math"][0]["expected"]);
+                event.passed();
             }
         }
         for (int condition = 0; condition < 13; ++condition) {
+            JuicerTests::CaseEvent event("input_hull.boundary_condition", std::to_string(condition));
             Output out;
             out.poison();
             Diagnostic diagnostic;
@@ -295,7 +310,9 @@ namespace {
             }
             status(fj_test_input_hull_abi_c(record, output, error), FJ_STATUS_UNSUPPORTED_INPUT);
             out.check(condition != 8 && condition != 9);
+            event.passed();
         }
+        JuicerTests::CaseEvent tail_event("input_hull.boundary", "c11_status_and_alias_contract");
         Output out;
         FjErrorBuffer statusOnly{nullptr, 0, 99};
         status(fj_test_input_hull_abi_c(&request, &out.value, &statusOnly), FJ_STATUS_SUCCESS);
@@ -311,10 +328,12 @@ namespace {
         alias.d65 = alias.x;
         status(fj_test_input_hull_abi_c(&alias, &out.value, &statusOnly), FJ_STATUS_PREPARATION_FAILURE);
         fj_test_gamut_clear_fault();
+        tail_event.passed();
     }
     void binding(const Json& fixture) {
         Gamut::InputCompressionHull retained;
         for (const auto& row : fixture["math"]) {
+            JuicerTests::CaseEvent event("input_hull.binding", std::to_string(row.at("id").get<int>()));
             std::array<Spectral::Curve, 4> source;
             for (std::size_t i = 0; i < 4; ++i) {
                 source[i].linear = values(row["sources"][i]["values"]);
@@ -325,10 +344,12 @@ namespace {
             require(bits(retained.center) == row["expected"]["center"], "native binding center");
             for (std::size_t i = 0; i < 1025; ++i)
                 require(bits(retained.xy[i]) == row["expected"]["xy"][i], "native binding xy");
+            event.passed();
         }
         Source source(fixture["math"][0]);
         const auto request = source.record();
         for (std::uint32_t fault : {1u, 2u, 3u, 4u, 5u, 6u}) {
+            JuicerTests::CaseEvent event("input_hull.binding_fault", std::to_string(fault));
             std::array<Spectral::Curve, 4> curves;
             for (std::size_t i = 0; i < 4; ++i) {
                 curves[i].linear = source.data[i];
@@ -345,6 +366,7 @@ namespace {
             }
             require(!built && exceptional == (fault <= 2) && !retained.valid && retained.hash == 0, "native ordinary/exceptional mapping");
             require(fj_test_gamut_fault_consumed(0, fault) == 1, "native fault before cleanup");
+            event.passed();
         }
         FjInputHull owned{};
         Diagnostic diagnostic;
@@ -358,7 +380,9 @@ namespace {
         }).join();
     }
     void cache(const std::filesystem::path& resources, const Json& fixture) {
+        JuicerTests::Cohort allocation_failures("input_hull.cache_allocation", {"1", "2"});
         for (unsigned allocation = 1; allocation <= 2; ++allocation) {
+            auto row_event = allocation_failures.case_event(std::to_string(allocation));
             JuicerAssets::Library native(resources);
             (void)native.input_compression_hull();
             FjCacheObservationOwner* raw = nullptr;
@@ -378,6 +402,7 @@ namespace {
             require(hull_metrics(observation).allocations == before.allocations, "native wrapper failure does not allocate another Rust hull");
             status(native.close(), FJ_STATUS_SUCCESS);
             require(hull_metrics(observation).live_bytes == 0, "failed native hull wrapper releases its acquired foreign hold");
+            row_event.passed();
         }
         {
             InputHullCacheProbe library(resources);
@@ -521,6 +546,62 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
+        JuicerTests::CaseLog case_log;
+        if (argc == 6 && std::string_view(argv[argc - 1]) == "--list-cases") {
+            std::ifstream manifestFile(argv[3]);
+            Json manifest;
+            manifestFile >> manifest;
+            const auto member = manifest["preset_membership"][argv[4]];
+            const auto directory = std::filesystem::path(argv[3]).parent_path();
+            std::ifstream records(directory / member["records"].get<std::string>());
+            const Json listed = PrintIlluminantFixtures::apply(directory / member["records"].get<std::string>(), Json::parse(records));
+            const std::string selected = argv[1];
+            if (selected == "boundary") {
+                for (const auto& row : listed["math"])
+                    for (const char* caller : {"c11", "facade"})
+                        JuicerTests::list_case("input_hull.boundary", std::string(caller) + "/" + std::to_string(row.at("id").get<int>()));
+                for (std::uint32_t facade = 0; facade <= 1; ++facade)
+                    for (std::uint32_t fault = 1; fault <= 6; ++fault)
+                        JuicerTests::list_case("input_hull.boundary_fault", std::to_string(facade) + "/" + std::to_string(fault));
+                for (int condition = 0; condition < 13; ++condition)
+                    JuicerTests::list_case("input_hull.boundary_condition", std::to_string(condition));
+                JuicerTests::list_case("input_hull.boundary", "c11_status_and_alias_contract");
+            } else if (selected == "binding") {
+                for (const auto& row : listed["math"])
+                    JuicerTests::list_case("input_hull.binding", std::to_string(row.at("id").get<int>()));
+                for (std::uint32_t fault = 1; fault <= 6; ++fault)
+                    JuicerTests::list_case("input_hull.binding_fault", std::to_string(fault));
+            } else if (selected == "products") {
+                JuicerTests::list_case("input_hull", selected);
+                for (int method : {0, 1, 2})
+                    JuicerTests::list_case("input_hull.product", "no-work/method/" + std::to_string(method));
+                JuicerTests::list_case("input_hull.product", "no-work/consume-pending-fault");
+                for (const auto& row : listed["products"]) {
+                    const int route = row.value("route", 0), polarity = row.value("polarity", 0), method = row.at("method").get<int>();
+                    const auto id = method == 1
+                                        ? "method/1/compression/" + std::to_string(row.at("compression").get<int>())
+                                        : "route/" + std::to_string(route) + "/polarity/" + std::to_string(polarity) + "/method/" + std::to_string(method) + "/compression/" + std::to_string(row.at("compression").get<int>());
+                    JuicerTests::list_case("input_hull.product", id);
+                }
+                JuicerTests::list_case("input_hull", "owner_close");
+            } else if (selected == "cache") {
+                JuicerTests::list_case("input_hull", selected);
+                for (unsigned allocation = 1; allocation <= 2; ++allocation)
+                    JuicerTests::list_case("input_hull.cache_allocation", std::to_string(allocation));
+                JuicerTests::list_case("input_hull", "owner_close");
+            } else if (selected.starts_with("admission-")) {
+                const auto fault = std::stoul(selected.substr(10));
+                const auto id = "route/3/method/2/fault/" + std::to_string(fault);
+                JuicerTests::list_case("input_hull", selected);
+                for (const char* stage : {"cold", "current", "warm-cache", "standalone-raw"})
+                    JuicerTests::list_case("input_hull.admission", id + "/" + stage);
+                JuicerTests::list_case("input_hull", "owner_close");
+            } else {
+                JuicerTests::list_case("input_hull", selected);
+                JuicerTests::list_case("input_hull", "owner_close");
+            }
+            return 0;
+        }
         require(argc == 5, "case resources manifest preset");
         std::ifstream manifestFile(argv[3]);
         Json manifest;
@@ -539,17 +620,26 @@ int main(int argc, char** argv) {
         else {
             JuicerCuda::Owner owner;
             owner.create(argv[2]);
-            if (mode == "products")
+            if (mode == "products") {
+                JuicerTests::CaseEvent event("input_hull", mode);
                 fj_test_input_hull_products(fixture, directory / member["tables"].get<std::string>());
-            else if (mode == "cache")
+                event.passed();
+            } else if (mode == "cache") {
+                JuicerTests::CaseEvent event("input_hull", mode);
                 cache(argv[2], fixture);
-            else if (mode.starts_with("admission-"))
+                event.passed();
+            } else if (mode.starts_with("admission-")) {
+                JuicerTests::CaseEvent event("input_hull", mode);
                 fj_test_input_hull_admission(static_cast<std::uint32_t>(std::stoul(mode.substr(10))));
-            else
+                event.passed();
+            } else
                 throw std::runtime_error("unknown input hull case");
+            JuicerTests::CaseEvent close_event("input_hull", "owner_close");
             status(owner.close(), FJ_STATUS_SUCCESS);
+            close_event.passed();
         }
         std::puts("PASS input hull contract");
+        case_log.finish();
         return 0;
     } catch (const JuicerCuda::ExecutionFailure& error) {
         std::fprintf(stderr, "%s\n", error.failure.diagnostic.c_str());

@@ -72,6 +72,7 @@ jobs:
           set -euo pipefail
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          cargo install cargo-nextest --version 0.9.143 --locked
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
           python -m pip install -r tests/requirements.txt
@@ -96,15 +97,16 @@ jobs:
           df -h / "$GITHUB_WORKSPACE"
           df -i / "$GITHUB_WORKSPACE"
 
-      - name: List and run Debug product, boundary, and corpus tests
+      - name: Qualify Debug product, boundary, and corpus tests
         shell: bash
         run: |
           set -euo pipefail
-          cmake -E make_directory out/validation/linux-debug
-          ctest --preset linux-debug -N -L "product|boundary|corpus" -LE gpu
-          ctest --preset linux-debug -L "product|boundary|corpus" -LE gpu \
-            --no-tests=error --output-on-failure \
-            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/host-junit.xml"
+          python -B scripts/verify.py qualification \
+            --preset linux-debug \
+            --reason 'CI Linux Debug product, boundary, and corpus scope' \
+            --selection product boundary corpus \
+            --runtime host \
+            --run-id "ci-linux-debug-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Report Debug storage usage
         if: always()
@@ -138,13 +140,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: linux-debug-host-junit
+          name: linux-debug-host-results
           path: |
-            out/validation/linux-debug/host-junit.xml
+            out/validation/linux-debug/results/ci-linux-debug-${{ github.run_id }}-${{ github.run_attempt }}/**
             out/build/linux-debug/Testing/Temporary/LastTest.log
             out/build/linux-debug/compile_commands.json
-            out/validation/linux-debug/quality/rust-naming/**
-            out/validation/linux-debug/quality/rust-boundaries/**
           if-no-files-found: warn
 
   linux-product-release:
@@ -204,6 +204,7 @@ jobs:
           set -euo pipefail
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          cargo install cargo-nextest --version 0.9.143 --locked
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
           python -m pip install -r tests/requirements.txt
@@ -228,15 +229,16 @@ jobs:
           df -h / "$GITHUB_WORKSPACE"
           df -i / "$GITHUB_WORKSPACE"
 
-      - name: List and run Release product and boundary tests
+      - name: Qualify Release product and boundary tests
         shell: bash
         run: |
           set -euo pipefail
-          cmake -E make_directory out/validation/linux-release
-          ctest --preset linux-release -N -L "product|boundary" -LE gpu
-          ctest --preset linux-release -L "product|boundary" -LE gpu \
-            --no-tests=error --output-on-failure \
-            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-release/host-junit.xml"
+          python -B scripts/verify.py qualification \
+            --preset linux-release \
+            --reason 'CI Linux Release product and boundary scope' \
+            --selection product boundary \
+            --runtime host \
+            --run-id "ci-linux-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Report Release storage usage
         if: always()
@@ -270,13 +272,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: linux-release-host-junit
+          name: linux-release-host-results
           path: |
-            out/validation/linux-release/host-junit.xml
+            out/validation/linux-release/results/ci-linux-release-${{ github.run_id }}-${{ github.run_attempt }}/**
             out/build/linux-release/Testing/Temporary/LastTest.log
             out/build/linux-release/compile_commands.json
-            out/validation/linux-release/quality/rust-naming/**
-            out/validation/linux-release/quality/rust-boundaries/**
           if-no-files-found: warn
 
   linux-analysis:
@@ -339,6 +339,7 @@ jobs:
           set -euo pipefail
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          cargo install cargo-nextest --version 0.9.143 --locked
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
           python -m pip install -r tests/requirements.txt
@@ -438,18 +439,16 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
 
-      - name: Upload analysis receipts and compile databases
+      - name: Upload native quality results and compile databases
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: linux-analysis-quality
           path: |
-            out/validation/linux-debug/quality/**/*.log
-            out/validation/linux-debug/quality/**/*.json
-            out/validation/linux-debug/quality/parallel-controls/**
+            out/validation/linux-debug/results/quality-*/**
+            out/validation/linux-debug/results/verifier-scope-${{ github.run_id }}-${{ github.run_attempt }}.json
             out/build/linux-debug/compile_commands.json
-            out/validation/linux-release/quality/**/*.log
-            out/validation/linux-release/quality/**/*.json
+            out/validation/linux-release/results/quality-*/**
             out/build/linux-release/compile_commands.json
           if-no-files-found: warn
 
@@ -482,6 +481,7 @@ jobs:
           ld.lld --version
           rustup set profile minimal
           rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          cargo install cargo-nextest --version 0.9.143 --locked
           python -m pip install --upgrade pip
           python -m pip install cmake==4.3.1
           python -m pip install -r tests/requirements.txt
@@ -502,7 +502,8 @@ jobs:
           import subprocess
           import sys
 
-          report = Path("out/validation/linux-debug/verifier-scope.json")
+          report = Path(f"out/validation/linux-debug/results/verifier-scope-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}.json")
+          report.parent.mkdir(parents=True, exist_ok=True)
           base = os.environ.get("SCOPE_BASE", "")
           command = [sys.executable, "-B", "scripts/check-quality.py",
                      "--preset", "linux-debug", "--candidate", os.environ["SCOPE_CANDIDATE"],
@@ -527,14 +528,17 @@ jobs:
             -DJUICER_TOOLING_ROOT="$GITHUB_WORKSPACE" \
             -DJUICER_TOOLING_ARTIFACT_ROOT="$GITHUB_WORKSPACE/out/validation/linux-debug"
 
-      - name: List and run complete tooling selection
+      - name: Qualify tooling selection
         shell: bash
         run: |
           set -euo pipefail
-          ctest --test-dir out/build/tooling-linux -N -L tooling
-          ctest --test-dir out/build/tooling-linux -L tooling --parallel 4 \
-            --no-tests=error --output-on-failure --test-output-size-passed 65536 --test-output-truncation middle \
-            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/tooling-junit.xml"
+          python -B scripts/verify.py qualification \
+            --preset linux-debug \
+            --build-dir out/build/tooling-linux \
+            --reason 'CI Linux standalone tooling selection' \
+            --selection tooling \
+            --runtime host \
+            --run-id "ci-tooling-linux-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Select failed tooling controls
         if: always()
@@ -557,8 +561,8 @@ jobs:
         with:
           name: linux-tooling-results
           path: |
-            out/validation/linux-debug/tooling-junit.xml
-            out/validation/linux-debug/verifier-scope.json
+            out/validation/linux-debug/results/ci-tooling-linux-${{ github.run_id }}-${{ github.run_attempt }}/**
+            out/validation/linux-debug/results/verifier-scope-${{ github.run_id }}-${{ github.run_attempt }}.json
             out/validation/linux-debug/ffi/rust-build/**
             out/build/tooling-linux/Testing/Temporary/LastTest.log
           if-no-files-found: warn

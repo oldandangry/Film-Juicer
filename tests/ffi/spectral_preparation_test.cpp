@@ -19,6 +19,7 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_test_api.h"
+#include "case_results.h"
 #include "print_illuminant_fixture.h"
 #include "exposure_fixture.h"
 #include "juicer_cuda_owner.h"
@@ -111,13 +112,16 @@ namespace {
     }
     void tables(const Json& fixture) {
         for (const auto& row : fixture.at("leaf").at("tables")) {
+            const auto row_id = std::to_string(row.at("input").at("id").get<int>());
             Input in(row.at("input"));
             for (bool facade : {false, true}) {
+                JuicerTests::CaseEvent event("spectral.tables", std::string(facade ? "facade/" : "legacy/") + row_id);
                 FjSpectralTables out{};
                 Diagnostic d;
                 status(facade ? fj_test_spectral_tables(&in.view, &out, &d.error) : fj_legacy_spectral_tables(&in.view, &out, &d.error), FJ_STATUS_SUCCESS);
                 compare_tables(out, row.at("expected"));
                 require(d.error.length == 0, "success clears diagnostic");
+                event.passed();
             }
         }
         Input reference(fixture.at("leaf").at("tables")[0].at("input"));
@@ -125,19 +129,23 @@ namespace {
         Diagnostic d;
         status(fj_legacy_spectral_tables(&reference.view, &baseline, &d.error), FJ_STATUS_SUCCESS);
         for (const auto& row : fixture.at("dependencies")) {
+            JuicerTests::CaseEvent event("spectral.dependencies", std::to_string(row.at("input").at("id").get<int>()));
             Input in(row.at("input"));
             FjSpectralTables out{};
             status(fj_legacy_spectral_tables(&in.view, &out, &d.error), FJ_STATUS_SUCCESS);
             compare_tables(out, row.at("expected"));
             require(out.illuminant_hash == baseline.illuminant_hash && out.tables_hash != baseline.tables_hash, "isolated source dependency changes table family identity with supplied identity preserved");
+            event.passed();
         }
         require(fixture.at("leaf").at("bool_encoding") == Json::array({1, 0, 1}), "frozen bool byte encoding");
     }
     void whites(const Json& fixture) {
         for (const auto& row : fixture.at("leaf").at("tables")) {
+            const auto row_id = std::to_string(row.at("input").at("id").get<int>());
             Input in(row.at("input"));
             const FjSpectralWhiteInput input{in.view.observer, in.view.illuminant};
             for (bool facade : {false, true}) {
+                JuicerTests::CaseEvent event("spectral.white", std::string(facade ? "facade/" : "legacy/") + row_id);
                 FjSpectralWhite out{};
                 FjSpectralWhiteFailure failure{};
                 Diagnostic d;
@@ -154,18 +162,22 @@ namespace {
                     require(failure.reason == row.at("white_failure").at("reason") && std::bit_cast<std::uint64_t>(failure.luminance_sum) == row.at("white_failure").at("luminance_sum"), "closed native white failure/sum");
                     require(d.error.length > 0, "computed white failure diagnostic");
                 }
+                event.passed();
             }
         }
     }
     void inverses(const Json& fixture) {
         for (const auto& row : fixture.at("leaf").at("inverse")) {
+            const auto row_id = std::to_string(row.at("id").get<int>());
             const auto x = decode<81>(row.at("input")[0]), y = decode<81>(row.at("input")[1]), z = decode<81>(row.at("input")[2]);
             const FjSpectralSInput input{span(x), span(y), span(z)};
             for (bool facade : {false, true}) {
+                JuicerTests::CaseEvent event("spectral.inverse", std::string(facade ? "facade/" : "legacy/") + row_id);
                 FjSpectralInverse out{};
                 Diagnostic d;
                 status(facade ? fj_test_spectral_s_inverse(&input, &out, &d.error) : fj_legacy_spectral_s_inverse(&input, &out, &d.error), FJ_STATUS_SUCCESS);
                 exact(bits(out.matrix), row.at("expected"), "S inverse " + std::to_string(row.at("id").get<int>()));
+                event.passed();
             }
         }
     }
@@ -175,28 +187,45 @@ namespace {
         FjSpectralTables out{};
         Diagnostic d;
         auto malformed = in.view;
+        JuicerTests::Cohort raw_input_rows("spectral.edge.raw_input", {"illuminant-count-0", "illuminant-count-80", "illuminant-count-82", "missing-baseline-min", "misaligned-dyes", "illuminant-count-overflow", "illuminant-address-overflow", "null-input", "null-output", "null-diagnostic"});
         for (auto count : {0u, 80u, 82u}) {
+            auto event = raw_input_rows.case_event("illuminant-count-" + std::to_string(count));
             malformed.illuminant.count = count;
             out.tables_hash = 123;
             status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
             require(out.tables_hash == 0 && out.lambda_nm[0] == 0 && d.error.length > 0, "malformed tables cleared");
+            event.passed();
         }
         malformed = in.view;
         malformed.baseline_min = {nullptr, 0};
         malformed.baseline_mid = span(in.midpoint);
+        auto baseline_event = raw_input_rows.case_event("missing-baseline-min");
         status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        baseline_event.passed();
         malformed = in.view;
         malformed.dyes_cmy.data = reinterpret_cast<const float*>(reinterpret_cast<const char*>(in.dyes.data()) + 1);
+        auto dyes_event = raw_input_rows.case_event("misaligned-dyes");
         status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        dyes_event.passed();
         malformed = in.view;
         malformed.illuminant.count = std::numeric_limits<std::size_t>::max();
+        auto overflow_count_event = raw_input_rows.case_event("illuminant-count-overflow");
         status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        overflow_count_event.passed();
         malformed = in.view;
         malformed.illuminant.data = reinterpret_cast<const float*>(std::numeric_limits<std::uintptr_t>::max() - 3);
+        auto overflow_address_event = raw_input_rows.case_event("illuminant-address-overflow");
         status(fj_legacy_spectral_tables(&malformed, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        overflow_address_event.passed();
+        auto null_input_event = raw_input_rows.case_event("null-input");
         status(fj_legacy_spectral_tables(nullptr, &out, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        null_input_event.passed();
+        auto null_output_event = raw_input_rows.case_event("null-output");
         status(fj_legacy_spectral_tables(&in.view, nullptr, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        null_output_event.passed();
+        auto null_diagnostic_event = raw_input_rows.case_event("null-diagnostic");
         status(fj_legacy_spectral_tables(&in.view, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        null_diagnostic_event.passed();
         const FjSpectralWhiteInput w{in.view.observer, in.view.illuminant};
         FjSpectralWhite white{};
         FjSpectralWhiteFailure failure{};
@@ -212,8 +241,14 @@ namespace {
                     return fj_legacy_spectral_s_inverse(&s, &inverse, &d.error);
             }
         };
+        std::vector<std::string> operation_fault_ids;
+        for (std::uint32_t op = 1; op <= 3; ++op)
+            for (std::uint32_t fault = 1; fault <= 4; ++fault)
+                operation_fault_ids.emplace_back(std::to_string(op) + "/" + std::to_string(fault));
+        JuicerTests::Cohort operation_fault_rows("spectral.edge.operation_fault", operation_fault_ids);
         for (std::uint32_t op = 1; op <= 3; ++op)
             for (std::uint32_t fault = 1; fault <= 4; ++fault) {
+                auto event = operation_fault_rows.case_event(std::to_string(op) + "/" + std::to_string(fault));
                 status(fj_test_spectral_arm_fault(op, 2, fault), FJ_STATUS_SUCCESS);
                 status(call(op), FJ_STATUS_SUCCESS);
                 const std::uint32_t category[] = {0, FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_PREPARATION_FAILURE};
@@ -222,6 +257,7 @@ namespace {
                 require((white.hash == 0 && failure.reason == 0 && failure.luminance_sum == 0) || op != 2, "fault white/meta clear");
                 require(inverse.matrix[0] == 0 || op != 3, "fault inverse clear");
                 status(call(op), FJ_STATUS_SUCCESS);
+                event.passed();
             }
         status(fj_test_spectral_arm_fault(1, 1, 1), FJ_STATUS_SUCCESS);
         status(fj_test_spectral_tables(&in.view, &out, &d.error), FJ_STATUS_SUCCESS);
@@ -277,6 +313,55 @@ namespace {
 } // namespace
 int main(int argc, char** argv) {
     try {
+        JuicerTests::CaseLog case_log;
+        if (argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases") {
+            const Json listed = load_exposure_qualified_fixture(argv[2]);
+            const std::string selected = argv[1];
+            if (selected == "tables") {
+                for (const auto& row : listed.at("leaf").at("tables"))
+                    for (const char* caller : {"legacy", "facade"})
+                        JuicerTests::list_case("spectral.tables", std::string(caller) + "/" + std::to_string(row.at("input").at("id").get<int>()));
+                for (const auto& row : listed.at("dependencies"))
+                    JuicerTests::list_case("spectral.dependencies", std::to_string(row.at("input").at("id").get<int>()));
+            } else if (selected == "white") {
+                for (const auto& row : listed.at("leaf").at("tables"))
+                    for (const char* caller : {"legacy", "facade"})
+                        JuicerTests::list_case("spectral.white", std::string(caller) + "/" + std::to_string(row.at("input").at("id").get<int>()));
+            } else if (selected == "inverse") {
+                for (const auto& row : listed.at("leaf").at("inverse"))
+                    for (const char* caller : {"legacy", "facade"})
+                        JuicerTests::list_case("spectral.inverse", std::string(caller) + "/" + std::to_string(row.at("id").get<int>()));
+            } else if (selected == "products") {
+                JuicerTests::list_case("spectral_preparation", selected);
+                for (const auto& row : listed.at("products")) {
+                    const auto id = "polarity/" + std::to_string(row.at("polarity").get<int>()) + "/route/" +
+                                    std::to_string(row.at("route").get<int>()) + "/method/" +
+                                    std::to_string(row.at("method").get<int>()) + "/label/" +
+                                    row.at("label").get<std::string>() + "/variant/" + std::to_string(row.value("variant", 0));
+                    JuicerTests::list_case("spectral.product", id);
+                }
+            } else if (selected == "admission") {
+                JuicerTests::list_case("spectral_preparation", selected);
+                for (int route = 0; route < 4; ++route)
+                    for (std::uint32_t operation = 1; operation <= 3; ++operation)
+                        for (std::uint32_t fault = 1; fault <= 4; ++fault)
+                            JuicerTests::list_case("spectral.admission", "route/" + std::to_string(route) + "/operation/" + std::to_string(operation) + "/fault/" + std::to_string(fault));
+                for (int route = 0; route < 4; ++route)
+                    for (int method = 0; method < 3; ++method)
+                        for (std::uint32_t operation = 1; operation <= 3; ++operation)
+                            JuicerTests::list_case("spectral.admission.count", "route/" + std::to_string(route) + "/method/" + std::to_string(method) + "/operation/" + std::to_string(operation));
+            } else if (selected == "edge") {
+                for (const auto* id : {"illuminant-count-0", "illuminant-count-80", "illuminant-count-82", "missing-baseline-min", "misaligned-dyes", "illuminant-count-overflow", "illuminant-address-overflow", "null-input", "null-output", "null-diagnostic"})
+                    JuicerTests::list_case("spectral.edge.raw_input", id);
+                for (std::uint32_t operation = 1; operation <= 3; ++operation)
+                    for (std::uint32_t fault = 1; fault <= 4; ++fault)
+                        JuicerTests::list_case("spectral.edge.operation_fault", std::to_string(operation) + "/" + std::to_string(fault));
+                JuicerTests::list_case("spectral_preparation", selected);
+            } else {
+                JuicerTests::list_case("spectral_preparation", selected);
+            }
+            return 0;
+        }
         require(argc == 3 || argc == 5, "group, preset fixture and optional product resource/scratch required");
         const Json fixture = PrintIlluminantFixtures::apply(argv[2], load_exposure_qualified_fixture(argv[2]));
         const std::string group = argv[1];
@@ -286,18 +371,24 @@ int main(int argc, char** argv) {
             whites(fixture);
         else if (group == "inverse")
             inverses(fixture);
-        else if (group == "edge" && argc == 5)
+        else if (group == "edge" && argc == 5) {
+            JuicerTests::CaseEvent event("spectral_preparation", "edge");
             edge(fixture, argv[3]);
-        else if ((group == "products" || group == "admission") && argc == 5)
+            event.passed();
+        } else if ((group == "products" || group == "admission") && argc == 5) {
+            JuicerTests::CaseEvent event("spectral_preparation", group);
             fj_test_spectral_products(fixture, {.resources = argv[3], .scratch = argv[4]}, group == "admission");
-        else
+            event.passed();
+        } else
             throw std::runtime_error("unknown spectral group");
         std::puts("PASS spectral frozen native values/contract");
+        int exitCode = 0;
         if (group == "products" || group == "admission") {
             const bool ownersDrained = fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0;
-            return JuicerTestSupport::test_asset_workspaces.finish(0, ownersDrained);
+            exitCode = JuicerTestSupport::test_asset_workspaces.finish(0, ownersDrained);
         }
-        return 0;
+        case_log.finish();
+        return exitCode;
     } catch (const JuicerCuda::ExecutionFailure& e) {
         std::fprintf(stderr, "spectral execution failure category=%u: %s\n", e.failure.status.category, e.failure.diagnostic.c_str());
         return 1;

@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "juicer_test_api.h"
+#include "case_results.h"
 
 #define FJ_EXPOSURE_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
 #define FJ_EXPOSURE_FIELD(type, field, offset) static_assert(offsetof(type, field) == offset);
@@ -61,6 +62,18 @@ namespace {
         require(bits == expected || (std::isnan(actual) && std::isnan(std::bit_cast<float>(expected))),
                 "exposure bit mismatch " + std::to_string(bits) + " expected " + std::to_string(expected));
     }
+    std::string fixture_row_id(const Json& row, std::size_t ordinal) {
+        if (!row.contains("id"))
+            return std::to_string(ordinal);
+        const auto& id = row.at("id");
+        if (id.is_string())
+            return id.get<std::string>();
+        if (id.is_number_unsigned())
+            return std::to_string(id.get<std::uint64_t>());
+        if (id.is_number_integer())
+            return std::to_string(id.get<std::int64_t>());
+        throw std::runtime_error("exposure fixture row id must be a string or integer");
+    }
     void cleared(const FjSensitivity& result, const FjSensitivityFailure& failure) {
         for (const auto& rgb : result.values_rgb)
             for (float v : rgb)
@@ -86,10 +99,13 @@ namespace {
         }
     };
     void sensitivity(const Json& fixture) {
+        std::size_t ordinal = 0;
         for (const auto& row : fixture.at("sensitivity")) {
+            const auto row_id = fixture_row_id(row, ordinal++);
             SensitivityInput input(row.at("input"));
             const auto& expected = row.at("expected");
             for (bool facade : {false, true}) {
+                JuicerTests::CaseEvent event("exposure.sensitivity", std::string(facade ? "facade/" : "legacy/") + row_id);
                 FjSensitivity result{};
                 FjSensitivityFailure failure{};
                 Diagnostic error;
@@ -109,6 +125,7 @@ namespace {
                     if (hashFailure)
                         require(failure.hash_sample_index == expected.at("hash_failure_index").get<std::uint32_t>(), "first nonfinite hash index");
                 }
+                event.passed();
             }
         }
     }
@@ -118,7 +135,9 @@ namespace {
         std::vector<float> spectra(std::size_t{192} * 192u * 81u);
         for (std::size_t i = 0; i < spectra.size(); ++i)
             spectra[i] = std::bit_cast<float>(0x3e000123u + static_cast<std::uint32_t>(i % 4093u) * 173u);
+        std::size_t ordinal = 0;
         for (const auto& row : fixture.at("reference")) {
+            const auto row_id = fixture_row_id(row, ordinal++);
             const bool acceptedHanatos = row.at("source") == "accepted_hanatos";
             const bool altered = row.contains("source_index");
             const auto index = altered ? row.at("source_index").get<std::size_t>() : 0u;
@@ -146,6 +165,7 @@ namespace {
             const float blur = std::bit_cast<float>(row.at("blur").get<std::uint32_t>());
             const FjReferenceWhiteInput input{source, {white[0], white[1], white[2]}, blur};
             for (bool facade : {false, true}) {
+                JuicerTests::CaseEvent event("exposure.reference", std::string(facade ? "facade/" : "legacy/") + row_id);
                 FjReferenceWhite result{};
                 Diagnostic error;
                 status((facade ? fj_test_reconstruction_reference_white : fj_legacy_reconstruction_reference_white)(&input, &result, &error.error), row.at("built").get<bool>() ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
@@ -157,6 +177,7 @@ namespace {
                         require(value == 0.0f, "failed white publishes no samples");
                     require(std::string(error.bytes.data(), error.error.length) == row.at("diagnostic").get<std::string>(), "reference failure requirement");
                 }
+                event.passed();
             }
             // The raw facade above remains the sole expected-value producer.
             if (altered && !acceptedHanatos)
@@ -169,15 +190,20 @@ namespace {
         FjSensitivity result{};
         FjSensitivityFailure failure{};
         auto invalid = input.view;
+        JuicerTests::Cohort sensitivity_faults("exposure.boundary.sensitivity_fault", 4);
         for (std::uint32_t fault = 1; fault <= 4; ++fault) {
+            auto row_event = sensitivity_faults.case_event(std::to_string(fault - 1));
             status(fj_test_exposure_arm_fault(2, 1, fault), FJ_STATUS_SUCCESS);
             const auto expected = std::array{FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_PREPARATION_FAILURE};
             status(fj_legacy_exposure_sensitivity(&input.view, &result, &failure, &error.error), expected[fault - 1]);
             require(fj_test_exposure_fault_consumed(2, fault) == 1, "same-thread raw fault consumption witness");
             cleared(result, failure);
             status(fj_legacy_exposure_sensitivity(&input.view, &result, &failure, &error.error), FJ_STATUS_SUCCESS);
+            row_event.passed();
         }
+        JuicerTests::Cohort malformed_sensitivity("exposure.boundary.sensitivity_malformed", 11);
         for (std::size_t bad = 0; bad < 11; ++bad) {
+            auto row_event = malformed_sensitivity.case_event(std::to_string(bad));
             invalid = input.view;
             switch (bad) {
                 case 0:
@@ -222,6 +248,7 @@ namespace {
             status(fj_legacy_exposure_sensitivity(&invalid, &result, &failure, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
             cleared(result, failure);
             require(!failure.hash_failure && !failure.hash_sample_index, "malformed metadata clears");
+            row_event.passed();
         }
         invalid = input.view;
         invalid.window_params = {reinterpret_cast<const float*>(1), std::numeric_limits<std::size_t>::max()};
@@ -244,15 +271,20 @@ namespace {
         require(fj_test_exposure_abi_c(&referenceInput, &white, &input.view, &result, &failure, &error.error) == 1, "real C11 export values/prototypes");
         for (float value : white.samples)
             require(value == 1.0f, "C11 reconstructed values");
+        JuicerTests::Cohort reference_faults("exposure.boundary.reference_fault", 4);
         for (std::uint32_t fault = 1; fault <= 4; ++fault) {
+            auto row_event = reference_faults.case_event(std::to_string(fault - 1));
             status(fj_test_exposure_arm_fault(1, 1, fault), FJ_STATUS_SUCCESS);
             const auto categories = std::array{FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_PREPARATION_FAILURE};
             status(fj_legacy_reconstruction_reference_white(&referenceInput, &white, &error.error), categories[fault - 1]);
             require(fj_test_exposure_fault_consumed(1, fault) == 1, "raw reference fault consumed");
             for (float value : white.samples)
                 require(value == 0.0f, "failed reference clears output");
+            row_event.passed();
         }
+        JuicerTests::Cohort malformed_reference("exposure.boundary.reference_malformed", 5);
         for (std::size_t bad = 0; bad < 5; ++bad) {
+            auto row_event = malformed_reference.case_event(std::to_string(bad));
             auto malformed = referenceInput;
             if (bad == 0)
                 malformed.spectra.count -= 1;
@@ -265,6 +297,7 @@ namespace {
             if (bad == 4)
                 malformed.spectra.data = reinterpret_cast<const float*>(std::numeric_limits<std::uintptr_t>::max() - 3u);
             status(fj_legacy_reconstruction_reference_white(&malformed, &white, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+            row_event.passed();
         }
         fj_test_exposure_arm_facade_fault();
         status(fj_test_reconstruction_reference_white(&referenceInput, &white, &error.error), FJ_STATUS_INTERNAL_FAILURE);
@@ -309,12 +342,60 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
+        JuicerTests::CaseLog case_log;
+        if (argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases") {
+            const std::string selected = argv[1];
+            if (selected == "sensitivity" || selected == "reference") {
+                std::ifstream listing(argv[2]);
+                Json original;
+                listing >> original;
+                const auto listed = PrintIlluminantFixtures::apply(argv[2], original);
+                if (selected == "sensitivity") {
+                    for (std::size_t ordinal = 0; ordinal < listed.at("sensitivity").size(); ++ordinal)
+                        for (const char* caller : {"legacy", "facade"})
+                            JuicerTests::list_case("exposure.sensitivity", std::string(caller) + "/" + fixture_row_id(listed.at("sensitivity")[ordinal], ordinal));
+                } else {
+                    for (std::size_t ordinal = 0; ordinal < listed.at("reference").size(); ++ordinal)
+                        for (const char* caller : {"legacy", "facade"})
+                            JuicerTests::list_case("exposure.reference", std::string(caller) + "/" + fixture_row_id(listed.at("reference")[ordinal], ordinal));
+                }
+            } else if (selected == "products") {
+                const auto listed = PrintIlluminantFixtures::apply(argv[2], load_exposure_product_fixture(argv[2]));
+                JuicerTests::list_case("exposure_preparation", selected);
+                for (const auto& row : listed.at("products")) {
+                    const auto id = "polarity/" + std::to_string(row.at("polarity").get<int>()) + "/route/" +
+                                    std::to_string(row.at("route").get<int>()) + "/method/" +
+                                    std::to_string(row.at("method").get<int>()) + "/label/" +
+                                    row.at("label").get<std::string>() + "/variant/" + std::to_string(row.value("variant", 0));
+                    JuicerTests::list_case("spectral.product", id);
+                }
+            } else if (selected == "admission") {
+                JuicerTests::list_case("exposure_preparation", selected);
+                for (int route = 0; route < 4; ++route)
+                    for (int method = 0; method < 3; ++method)
+                        for (std::uint32_t operation = 1; operation <= 2; ++operation) {
+                            if (operation == 1 && method != 0)
+                                continue;
+                            for (std::uint32_t fault = 1; fault <= 4; ++fault)
+                                JuicerTests::list_case("exposure.admission", "route/" + std::to_string(route) + "/method/" + std::to_string(method) + "/operation/" + std::to_string(operation) + "/fault/" + std::to_string(fault));
+                        }
+                for (int route = 0; route < 4; ++route)
+                    for (int method : {1, 2})
+                        JuicerTests::list_case("exposure.admission", "route/" + std::to_string(route) + "/method/" + std::to_string(method) + "/skipped-reference");
+            } else {
+                JuicerTests::list_case("exposure_preparation", selected);
+            }
+            return 0;
+        }
         require(argc >= 2, "exposure group required");
         const std::string group = argv[1];
         if (group == "admission") {
+            JuicerTests::CaseEvent event("exposure_preparation", group);
             require(argc == 3, "exposure admission requires resources");
             fj_test_exposure_admission(argv[2]);
             std::puts("PASS exposure admission contract");
+            event.passed();
+            case_log.finish();
             return 0;
         }
         require(argc == 3 || argc == 5, "exposure fixture, optional resource/scratch required");
@@ -325,19 +406,25 @@ int main(int argc, char** argv) {
             reference(fixture, argv[3]);
         } else if (group == "sensitivity")
             sensitivity(fixture);
-        else if (group == "boundary")
+        else if (group == "boundary") {
+            JuicerTests::CaseEvent boundary_event("exposure_preparation", group);
             boundary(fixture);
-        else if (group == "products") {
+            boundary_event.passed();
+        } else if (group == "products") {
+            JuicerTests::CaseEvent products_event("exposure_preparation", group);
             require(argc == 5, "exposure products require resource and scratch");
             fj_test_spectral_products(fixture, {.resources = argv[3], .scratch = argv[4]}, false);
+            products_event.passed();
         } else
             throw std::runtime_error("unknown exposure group");
         std::puts("PASS exposure construction/ABI/failure contract");
+        int exitCode = 0;
         if (group == "products") {
             const bool ownersDrained = fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0;
-            return JuicerTestSupport::test_asset_workspaces.finish(0, ownersDrained);
+            exitCode = JuicerTestSupport::test_asset_workspaces.finish(0, ownersDrained);
         }
-        return 0;
+        case_log.finish();
+        return exitCode;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
         return 1;

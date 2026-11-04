@@ -30,15 +30,22 @@ namespace ScannerCorrectionTest {
 
     Json project(const FjScannerColorCorrection& value);
 
-    Json products(const std::filesystem::path& resources) {
+    Json products(const std::filesystem::path& resources, const Json& expectedProducts) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
         require(assets != nullptr, "scanner correction products have process Rust assets");
         Json out = Json::array();
+        std::vector<std::string> recipe_ids;
+        for (unsigned route = 0; route < 4; ++route)
+            for (int mode = 0; mode < 3; ++mode)
+                for (unsigned flags = 0; flags < 4; ++flags)
+                    recipe_ids.emplace_back(std::to_string(route) + "/" + std::to_string(mode) + "/" + std::to_string(flags));
+        JuicerTests::Cohort recipe_rows("scanner_correction.recipe_tuple", recipe_ids);
         for (unsigned route = 0; route < 4; ++route)
             for (int mode = 0; mode < 3; ++mode)
                 for (unsigned flags = 0; flags < 4; ++flags) {
+                    auto case_event = recipe_rows.case_event(std::to_string(route) + "/" + std::to_string(mode) + "/" + std::to_string(flags));
                     auto params = PrintPreflashTest::controls();
                     params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
                     params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
@@ -128,6 +135,8 @@ namespace ScannerCorrectionTest {
                     if (printOwner)
                         status(fj_legacy_print_profile_release(printOwner, &error));
                     status(fj_legacy_film_profile_release(filmOwner, &error));
+                    require(out.back() == expectedProducts.at(out.size() - 1), "per-case complete scanner correction product");
+                    case_event.passed();
                 }
         return out;
     }
@@ -286,6 +295,9 @@ namespace ScannerCorrectionTest {
                 const auto& norm = checked.at("cases").at(row.at("id").get<std::string>());
                 if (norm.at("native_only").get<bool>())
                     continue;
+                const auto id = row.at("id").get<std::string>();
+                const std::string suffix = facade ? "/test-facade" : "/legacy-facade";
+                JuicerTests::CaseEvent facade_event("cpp", id + suffix);
                 Inputs source(row.at("input"));
                 const bool print = row.at("spec").at("print");
                 const bool missing = row.at("spec").value("mutation", "none") == "missing";
@@ -313,14 +325,19 @@ namespace ScannerCorrectionTest {
                 const auto direct = source.direct(tables);
                 const auto paper = source.print(tables);
                 const auto result = reason == 0 ? expected(row.at("native").at("descriptor")) : FjScannerColorCorrection{};
+                JuicerTests::CaseEvent c11_event("c11", id + suffix + "/c-call");
                 require(fj_test_scanner_correction_c_call(print ? 1u : 0u, &source.params, missing ? nullptr : &direct, missing ? nullptr : &paper, &result, norm.at("category"), reason) == 1, "actual C11 signature/value/failure call");
+                c11_event.passed();
+                facade_event.passed();
             }
             for (const auto& row : captured.at("products")) {
+                JuicerTests::CaseEvent case_event("cpp", "scanner-correction/product/" + row.at("id").get<std::string>() + (facade ? "/test-facade" : "/legacy-facade"));
                 Inputs source(row.at("input"));
                 const auto out = invoke(source, row.at("print"), facade);
                 status(out.status);
                 require(out.failure.reason == 0 && out.length == 0, "actual scanner inputs accepted");
                 require(project(out.value) == row.at("native").at("descriptor"), "all genuine input corrections exact");
+                case_event.passed();
             }
         }
         Outcome retained;
@@ -332,12 +349,32 @@ namespace ScannerCorrectionTest {
     }
 
     void boundary(const Json& captured) {
+        JuicerTests::CaseEvent boundary_event("cpp", "scanner-correction/boundary");
         Inputs source(literal(captured, "direct-none").at("input"));
         Inputs paperSource(literal(captured, "print-none").at("input"));
+        std::vector<std::string> mode_ids, capacity_ids, scenario_ids, fault_ids;
+        for (unsigned facade = 0; facade < 2; ++facade) {
+            for (unsigned route = 0; route < 256; ++route)
+                for (unsigned flags = 0; flags < 4; ++flags)
+                    for (bool print : {false, true})
+                        mode_ids.emplace_back("caller-" + std::to_string(facade) + "/route-" + std::to_string(route) + "/flags-" + std::to_string(flags) + "/print-" + std::to_string(print));
+            for (const auto capacity : {0u, 1u, 9u, 512u})
+                capacity_ids.emplace_back("caller-" + std::to_string(facade) + "/capacity-" + std::to_string(capacity));
+            for (unsigned scenario = 0; scenario < 13; ++scenario)
+                scenario_ids.emplace_back("caller-" + std::to_string(facade) + "/scenario-" + std::to_string(scenario));
+            for (unsigned operation = 0; operation < 2; ++operation)
+                fault_ids.emplace_back("caller-" + std::to_string(facade) + "/operation-" + std::to_string(operation));
+        }
+        JuicerTests::Cohort demand_modes("scanner_correction.demand_mode", mode_ids);
+        JuicerTests::Cohort diagnostic_capacities("scanner_correction.diagnostic_capacity", capacity_ids);
+        JuicerTests::Cohort malformed_scenarios("scanner_correction.malformed_scenario", scenario_ids);
+        JuicerTests::Cohort preparation_faults("scanner_correction.preparation_fault", fault_ids);
+        unsigned facade_index = 0;
         for (bool facade : {false, true}) {
             for (unsigned route = 0; route < 256; ++route)
                 for (unsigned flags = 0; flags < 4; ++flags)
                     for (bool print : {false, true}) {
+                        auto row_event = demand_modes.case_event("caller-" + std::to_string(facade_index) + "/route-" + std::to_string(route) + "/flags-" + std::to_string(flags) + "/print-" + std::to_string(print));
                         const FjScannerCorrectionParams params{route, flags, kNan, kNan};
                         std::uint32_t required = 99;
                         FjScannerCorrectionFailure detail{99};
@@ -357,10 +394,12 @@ namespace ScannerCorrectionTest {
                         } else
                             failure(out, active ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_PREPARATION_FAILURE, {active ? 1u : print ? 7u
                                                                                                                                     : 2u});
+                        row_event.passed();
                     }
             const auto tables = source.tables();
             auto input = source.direct(tables);
             for (unsigned scenario = 0; scenario < 13; ++scenario) {
+                auto row_event = malformed_scenarios.case_event("caller-" + std::to_string(facade_index) + "/scenario-" + std::to_string(scenario));
                 auto params = source.params;
                 auto malformed = input;
                 auto malformedTables = tables;
@@ -407,6 +446,7 @@ namespace ScannerCorrectionTest {
                     require(out.trace.outcome == 0 && trace_words(out.trace) == Json::array({0, 0, 0, 0, 0, 0, 0, 0}), "independent valid trace clears");
                 if (scenario != 8)
                     require(diagnostic.length < diagnostic.capacity && out.text[diagnostic.length] == '\0', "diagnostic remains bounded on structural failure");
+                row_event.passed();
             }
             auto ignoredTables = tables;
             ignoredTables.baseline_min = {reinterpret_cast<const float*>(std::uintptr_t{1}), SIZE_MAX};
@@ -417,6 +457,7 @@ namespace ScannerCorrectionTest {
             require(project(ignoredOut.value) == literal(captured, "direct-none").at("native").at("descriptor"), "disabled baseline backing ignored");
             const std::string message = "ResourceDescriptorMismatch phase=8B print correction inputs";
             for (std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{9}, std::size_t{512}}) {
+                auto row_event = diagnostic_capacities.case_event("caller-" + std::to_string(facade_index) + "/capacity-" + std::to_string(capacity));
                 std::array<char, 512> text{};
                 text.fill('x');
                 FjErrorBuffer error{capacity ? text.data() : reinterpret_cast<char*>(std::uintptr_t{1}), capacity, 99};
@@ -426,8 +467,10 @@ namespace ScannerCorrectionTest {
                 failure(out, FJ_STATUS_PREPARATION_FAILURE, {7});
                 const auto length = capacity == 0 ? 0 : std::min(capacity - 1, message.size());
                 require(error.length == length && (capacity == 0 || (text[length] == '\0' && std::string(text.data()) == message.substr(0, length))), "capacity zero/one/truncated/full preserves checked envelope");
+                row_event.passed();
             }
             for (unsigned operation : {0u, 1u}) {
+                auto row_event = preparation_faults.case_event("caller-" + std::to_string(facade_index) + "/operation-" + std::to_string(operation));
                 auto& active = operation == 0 ? source : paperSource;
                 status(fj_test_scanner_correction_fault(operation, 1));
                 std::uint32_t demand = 99;
@@ -449,11 +492,15 @@ namespace ScannerCorrectionTest {
                 independent.join();
                 failure(invoke(active, operation != 0, facade), FJ_STATUS_INTERNAL_FAILURE, {14});
                 status(invoke(active, operation != 0, facade).status);
+                row_event.passed();
             }
+            ++facade_index;
         }
         status(fj_test_scanner_correction_fault(2, 1), FJ_STATUS_UNSUPPORTED_INPUT);
         status(fj_test_scanner_correction_fault(0, 2), FJ_STATUS_UNSUPPORTED_INPUT);
+        JuicerTests::Cohort demand_query_scenarios("scanner_correction.demand_query_scenario", {"0", "1", "2", "3", "4"});
         for (unsigned scenario = 0; scenario < 5; ++scenario) {
+            auto row_event = demand_query_scenarios.case_event(std::to_string(scenario));
             auto params = source.params;
             std::uint32_t required = 99;
             FjScannerCorrectionFailure detail{99};
@@ -468,6 +515,7 @@ namespace ScannerCorrectionTest {
                 require(required == 0, "query independently clears required on invalid peer/Params/all-off width");
             if (scenario != 2)
                 require(detail.reason == FJ_SCANNER_CORRECTION_REASON_RAW, "query independently reports RAW on invalid peer");
+            row_event.passed();
         }
         {
             auto tables = source.tables();
@@ -484,9 +532,10 @@ namespace ScannerCorrectionTest {
         FjScannerCorrectionFailure detail{99};
         status(fj_legacy_scanner_correction_input_demand(&source.params, 2, &required, &detail, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         require(required == 0 && detail.reason == 1, "unknown query operation clears required");
+        boundary_event.passed();
     }
 
     void check_products(const std::filesystem::path& resources, const Json& captured) {
-        require_equal(products(resources), captured.at("products"), "all 48 actual correction products retain controls, resource inputs, descriptor and enclosing identities");
+        require_equal(products(resources, captured.at("products")), captured.at("products"), "all 48 actual correction products retain controls, resource inputs, descriptor and enclosing identities");
     }
 } // namespace ScannerCorrectionTest

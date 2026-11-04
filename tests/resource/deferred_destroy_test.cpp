@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +12,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include "../ffi/case_results.h"
 #include "Cuda/JuicerCudaResources.h"
 
 namespace {
@@ -135,6 +137,9 @@ namespace JuicerCuda::DeferredDestroyTest {
 
 // Reject allocation while extracting/draining/restoring the deferred batch.
 // CUDA allocations and fixture construction precede this bounded interval.
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline))
+#endif
 void* operator new(std::size_t size) {
     if (rejectAllocation) {
         throw std::bad_alloc{};
@@ -144,6 +149,11 @@ void* operator new(std::size_t size) {
     }
     throw std::bad_alloc{};
 }
+// Match the existing allocation-counting fixture: keep backing free opaque to
+// GCC's inlined new/delete mismatch analysis without changing allocation calls.
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline))
+#endif
 void operator delete(void* block) noexcept {
     std::free(block);
 }
@@ -164,7 +174,21 @@ void operator delete[](void* block, std::size_t) noexcept {
 
 int main(int argc, char** argv) {
     try {
-        check(argc > 1 ? argv[1] : "lock");
+        static constexpr std::array<const char*, 5> modes{"lock", "allocation", "storage", "ordinary", "control"};
+        const std::string mode = argc > 1 && std::string_view(argv[1]) != "--list-cases" ? argv[1] : "lock";
+        require(std::any_of(modes.begin(), modes.end(), [&](const char* name) {
+                    return mode == name;
+                }),
+                "unknown deferred-destroy mode");
+        if (JuicerTests::list_requested(argc, argv)) {
+            JuicerTests::list_case("DeferredDestroy", mode);
+            return 0;
+        }
+        JuicerTests::CaseLog log;
+        JuicerTests::CaseEvent operation("DeferredDestroy", mode);
+        check(mode);
+        operation.passed();
+        log.finish();
         std::puts("PASS deferred resource ownership");
         return 0;
     } catch (const std::exception& error) {

@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
+#include "gtest_cases.h"
 #include "juicer_cuda_api.h"
 #include "juicer_cuda_owner.h"
 
@@ -44,6 +45,7 @@ namespace {
         JuicerCuda::Owner owner;
     };
 
+#if !defined(JUICER_CUDA_INSPECT_GPU_TEST)
     TEST_F(InspectHost, InvalidArgumentsLeaveOutputUnchanged) {
         auto frame = frame_at();
         FjCudaContext context{73, 91};
@@ -85,10 +87,15 @@ namespace {
         frame = frame_at();
         frame.stream = 1;
         reject(frame);
+        JuicerTests::GtestCohort windows_cases("windows", 7u);
+        std::size_t windows_index = 0;
         for (const FjRect window : {FjRect{0, 0, 0, 1}, FjRect{0, 0, 1, 0}, FjRect{2, 0, 1, 1}, FjRect{-3, -2, 3, 2}, FjRect{-1, -2, 5, 2}, FjRect{-1, -4, 3, 2}, FjRect{-1, -2, 3, 4}}) {
+            auto windows_case = windows_cases.case_event(std::to_string(windows_index++));
             frame = frame_at();
             frame.render_window = window;
             reject(frame);
+
+            windows_case.passed();
         }
         frame = frame_at();
         frame.full_frame_extent = {};
@@ -99,8 +106,11 @@ namespace {
     }
 
     TEST_F(InspectHost, EachImageIsValidatedIndependently) {
+        JuicerTests::GtestCohort source_faults_cases("source-faults", 28u);
+        std::size_t source_faults_index = 0;
         for (bool source : {true, false}) {
             for (int fault = 0; fault < 14; ++fault) {
+                auto source_faults_case = source_faults_cases.case_event(std::to_string(source_faults_index++));
                 SCOPED_TRACE(std::to_string(source) + ":" + std::to_string(fault));
                 auto frame = frame_at();
                 auto& image = source ? frame.source : frame.destination;
@@ -150,6 +160,8 @@ namespace {
                         break;
                 }
                 reject(frame);
+
+                source_faults_case.passed();
             }
         }
     }
@@ -161,6 +173,8 @@ namespace {
         frame.destination.address += 16;
         reject(frame);
     }
+
+#endif
 
 #if defined(JUICER_CUDA_INSPECT_GPU_TEST)
     class InspectGpu : public InspectHost {
@@ -197,11 +211,14 @@ namespace {
     }
 
     TEST_F(InspectGpu, AllocationCoverageIncludesFullSourceAndDestinationBounds) {
+        const JuicerTests::GtestCohort source_destination("source-destination", 2);
         for (bool sourceImage : {true, false}) {
+            auto event = source_destination.case_event(sourceImage ? "1" : "0");
             auto input = frame();
             auto& image = sourceImage ? input.source : input.destination;
             image.address += 4096 - 128;
             reject(input);
+            event.passed();
         }
         auto input = frame();
         input.source.address += 4096 - (7 * 144 + 128);

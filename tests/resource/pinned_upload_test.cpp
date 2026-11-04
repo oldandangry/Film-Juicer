@@ -17,6 +17,7 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
+#include "../ffi/gtest_cases.h"
 #include "../ffi/juicer_test_api.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaResources.h"
@@ -285,8 +286,13 @@ namespace {
 
     TEST_F(PinnedUpload, ReservationFailuresPreserveRuntimeCodesWithoutDeviceReclaim) {
         const std::array<std::uint8_t, 64> source{};
+        JuicerTests::GtestCohort cases("reservation-failure", std::vector<std::string>{"allocate-memory", "allocate-invalid", "allocate-context-loss", "event-memory", "event-invalid", "event-context-loss"});
         for (const auto operation : {Operation::Allocate, Operation::CreateEvent}) {
             for (const auto error : {cudaErrorMemoryAllocation, cudaErrorInvalidValue, cudaErrorContextIsDestroyed}) {
+                const auto* const operationName = operation == Operation::Allocate ? "allocate" : "event";
+                const auto* const errorName = error == cudaErrorMemoryAllocation ? "memory" : error == cudaErrorInvalidValue ? "invalid"
+                                                                                                                             : "context-loss";
+                auto row = cases.case_event(std::string(operationName) + "-" + errorName);
                 inject(operation, error);
                 ASSERT_FALSE(upload(source.data(), source.size()));
                 expect_status({error == cudaErrorContextIsDestroyed ? FJ_STATUS_CONTEXT_LOSS : FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, error});
@@ -294,13 +300,18 @@ namespace {
                 EXPECT_EQ(JuicerCuda::PinnedUploadTest::snapshot(key).totalBytes, 0);
                 EXPECT_EQ(JuicerCuda::PinnedUploadTest::snapshot(key).reserved, 0);
                 EXPECT_EQ(JuicerCuda::PinnedUploadTest::calls[static_cast<std::size_t>(Operation::Copy)], 0);
+                row.passed();
             }
         }
     }
 
     TEST_F(PinnedUpload, FailedStagedCopyReturnsReservationAndNeverBorrowsCallerStorage) {
         const std::array<std::uint8_t, 64> source{};
+        JuicerTests::GtestCohort cases("copy-failure", std::vector<std::string>{"invalid", "memory", "context-loss"});
         for (const auto error : {cudaErrorInvalidValue, cudaErrorMemoryAllocation, cudaErrorContextIsDestroyed}) {
+            const auto* const errorName = error == cudaErrorInvalidValue ? "invalid" : error == cudaErrorMemoryAllocation ? "memory"
+                                                                                                                          : "context-loss";
+            auto row = cases.case_event(errorName);
             JuicerCuda::PinnedUploadTest::calls = {};
             inject(Operation::Copy, error);
             ASSERT_FALSE(upload(source.data(), source.size()));
@@ -312,6 +323,7 @@ namespace {
             const auto state = JuicerCuda::PinnedUploadTest::snapshot(key);
             EXPECT_EQ(state.available, 1);
             EXPECT_EQ(state.reserved + state.inFlight + state.quarantined, 0);
+            row.passed();
         }
         ASSERT_TRUE(upload(source.data(), source.size()));
     }
@@ -334,8 +346,13 @@ namespace {
 
     TEST_F(PinnedUpload, ReservationDiagnosticFailurePreservesNativeStatus) {
         const std::array<std::uint8_t, 64> source{};
+        JuicerTests::GtestCohort cases("reservation-diagnostic-failure", std::vector<std::string>{"allocate-memory", "allocate-invalid", "allocate-context-loss", "event-memory", "event-invalid", "event-context-loss"});
         for (const auto operation : {Operation::Allocate, Operation::CreateEvent}) {
             for (const auto error : {cudaErrorMemoryAllocation, cudaErrorInvalidValue, cudaErrorContextIsDestroyed}) {
+                const auto* const operationName = operation == Operation::Allocate ? "allocate" : "event";
+                const auto* const errorName = error == cudaErrorMemoryAllocation ? "memory" : error == cudaErrorInvalidValue ? "invalid"
+                                                                                                                             : "context-loss";
+                auto row = cases.case_event(std::string(operationName) + "-" + errorName);
                 inject(operation, error);
                 JuicerCuda::PinnedUploadTest::failDiagnosticAllocation = true;
                 bool uploaded = true;
@@ -345,6 +362,7 @@ namespace {
                 EXPECT_FALSE(JuicerCuda::PinnedUploadTest::failDiagnosticAllocation);
                 EXPECT_EQ(JuicerCuda::PinnedUploadTest::snapshot(key).totalBytes, 0);
                 EXPECT_EQ(JuicerCuda::PinnedUploadTest::calls[static_cast<std::size_t>(Operation::Copy)], 0);
+                row.passed();
             }
         }
         EXPECT_EQ(JuicerCuda::PinnedUploadTest::diagnosticCalls, 6);
@@ -354,7 +372,11 @@ namespace {
         const std::vector<std::uint8_t> source(64, 0x52);
         warm(source);
         const auto block = JuicerCuda::PinnedUploadTest::snapshot(key).blocks.front();
+        JuicerTests::GtestCohort cases("copy-diagnostic-failure", std::vector<std::string>{"invalid", "memory", "context-loss"});
         for (const auto error : {cudaErrorInvalidValue, cudaErrorMemoryAllocation, cudaErrorContextIsDestroyed}) {
+            const auto* const errorName = error == cudaErrorInvalidValue ? "invalid" : error == cudaErrorMemoryAllocation ? "memory"
+                                                                                                                          : "context-loss";
+            auto row = cases.case_event(errorName);
             inject(Operation::Copy, error);
             JuicerCuda::PinnedUploadTest::failDiagnosticAllocation = true;
             bool uploaded = true;
@@ -367,6 +389,7 @@ namespace {
             EXPECT_EQ(state.reserved + state.inFlight + state.quarantined, 0);
             ASSERT_EQ(state.blocks.size(), 1);
             EXPECT_EQ(state.blocks.front().id, block.id);
+            row.passed();
         }
         EXPECT_EQ(JuicerCuda::PinnedUploadTest::diagnosticCalls, 3);
         EXPECT_EQ(JuicerCuda::PinnedUploadTest::calls[static_cast<std::size_t>(Operation::Copy)], 3);
@@ -433,7 +456,9 @@ namespace {
 
     TEST_F(PinnedUpload, CompletionDiagnosticFailurePreservesQuarantineAndContextLoss) {
         const std::vector<std::uint8_t> source(64, 0x48);
+        JuicerTests::GtestCohort cases("completion-diagnostic-failure", std::vector<std::string>{"record-valid-sync-loss", "record-loss-sync-invalid"});
         for (const bool recordLosesContext : {false, true}) {
+            auto row = cases.case_event(recordLosesContext ? "record-loss-sync-invalid" : "record-valid-sync-loss");
             warm(source);
             const auto block = JuicerCuda::PinnedUploadTest::snapshot(key).blocks.front();
             UploadGate gate(stream);
@@ -456,6 +481,7 @@ namespace {
             EXPECT_EQ(JuicerCuda::PinnedUploadTest::snapshot(key).quarantined, 1);
             JuicerCuda::purge_pinned_upload_staging_for_context(key.deviceId, key.contextOpaque, PinnedUploadPurgeDisposition::NormalRetire);
             require_cuda(cudaFreeHost(block.pointer));
+            row.passed();
         }
         EXPECT_EQ(JuicerCuda::PinnedUploadTest::diagnosticCalls, 2);
     }

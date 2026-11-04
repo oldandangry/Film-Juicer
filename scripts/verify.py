@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -15,91 +17,19 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from build_dependencies import CompilationInputs, file_identities, header_consumers
-from build_evidence import (
-    SCOPED_PROTOCOL,
-    check_scoped_preparation,
-    prepare_build,
-    prepare_targets,
-    retire_s4c1_pending,
-    retire_s4e_aborted_owner,
-    run_ctest,
-)
-from execution import Campaign, OutputLease, UnresolvedScope, digest, write_json
+# Collection can run with only this entry point and the pure reader present.
+if __name__ == "__main__" and sys.argv[1:2] == ["collect-qualification"]:
+    from qualification import collection_main
+    raise SystemExit(collection_main(sys.argv[2:]))
 
+from execution import OutputLease, UnresolvedScope, write_json, windows_vctip
+from build_dependencies import header_consumers
+from qualification import collect_bundles
+
+OPTICS_FUNCTION = "optics::tests::matches_frozen_native_words_identities_and_failures"
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED = {"src/ScanRoute.cpp", "src/ScanRoute.h", "rust/film-juicer-core/src/route.rs", "rust/film-juicer-core/src/color/output.rs"}
 OWNERS = ("tests/route/development.json", "tests/ffi/output-color-development.json")
-
-
-def staged_changes(root):
-    rows = subprocess.check_output(
-        ["git", "diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z", "--"], cwd=root
-    ).decode().split("\0")
-    return {rows[index + 1]: rows[index] for index in range(0, len(rows) - 1, 2)}
-
-
-def dirty_paths(root, staged=None):
-    if staged is None:
-        staged = staged_changes(root)
-    commands = [
-        ["git", "diff", "--name-only", "--no-renames", "-z", "--"],
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-    ]
-    return set(staged) | {name for command in commands for name in subprocess.check_output(command, cwd=root).decode().split("\0") if name}
-
-
-def is_documentation(name):
-    """Identify repository prose for broad discovery, never declared inputs."""
-    path = Path(name)
-    if path.suffix != ".md":
-        return False
-    if len(path.parts) == 1:
-        return name in {"README.md", "CONTRIBUTING.md"}
-    if path.parts[0] == "docs":
-        return True
-    if path.parts[0] != "tests":
-        return False
-    fixture = any(part == "fixtures" or part.endswith("-fixtures") for part in path.parts[:-1])
-    return not fixture or path.name == "README.md" or path.name.endswith("-README.md")
-
-
-def source_snapshot(root):
-    """Observe owned source/configuration content without reading the fixture corpus."""
-    names = subprocess.check_output(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=root
-    ).decode().split("\0")
-    staged = staged_changes(root)
-    dirty = dirty_paths(root, staged)
-    names += ["rust/film-juicer-plugin/src/cuda/sys.rs", "src/GeneratedColorSpaces.cpp", "src/GeneratedColorSpaces.h"]
-    observed = {}
-    for name in sorted(set(names) | dirty):
-        if (not name or name.startswith((".juicer-local/", "out/"))
-                or "__pycache__" in Path(name).parts or is_documentation(name)):
-            continue
-        path = root / name
-        payload = (name.startswith(("Resources/", "external/")) or "/fixtures/" in name
-                   or path.suffix.lower() in {".npy", ".npz", ".png", ".bin", ".zip", ".exr"})
-        if payload:
-            if name in dirty:
-                # Unowned payloads cannot pass this scope. Keep their membership
-                # and index state pending without reading their scientific bytes.
-                observed[name] = {"unresolved": True, "exists": path.is_file()}
-            continue
-        observed[name] = digest(path) if path.is_file() else None
-    # Keep the index identity when its bytes differ from HEAD, even if the
-    # worktree was restored. This also observes a second staged-only edit.
-    for name in observed.keys() & staged.keys():
-        observed[name] = {"worktree": observed[name], "index": staged[name]}
-    return observed
-
-
-def edit_selection(current, previous, explicit=()):
-    old = previous["observed"]
-    changed = {name for name in old.keys() | current.keys()
-               if not is_documentation(name)
-               and (old.get(name) != current.get(name) or (name in old) != (name in current))}
-    return sorted(set(previous.get("pending", ())) | changed)
 
 
 def rust_body_edit(root, name, revision):
@@ -133,10 +63,10 @@ def select_consumers(root, build, selected, *, require_compiled=False, compilati
     if unknown:
         raise UnresolvedScope("unresolved development scope: " + ", ".join(sorted(unknown)))
     if not selected:
-        raise UnresolvedScope("empty development selection has no successful scope to reuse")
+        raise UnresolvedScope("empty development selection")
     if any(not (root / name).is_file() for name in selected):
         raise UnresolvedScope("unresolved deleted or renamed development input")
-    targets, tests, inputs, packages, filters = set(), set(), set(selected), set(), set()
+    targets, tests, packages = set(), set(), set()
     compiler = {name for name in selected if name.endswith(".cpp")}
     body_only = {}
     for owner_path in OWNERS:
@@ -146,16 +76,9 @@ def select_consumers(root, build, selected, *, require_compiled=False, compilati
             continue
         targets.add(owner["target"])
         tests.add(owner["test"])
-        inputs.add(owner_path)
-        if owner.get("fixture"):
-            inputs.add(owner["fixture"])
         if any(name.endswith(".rs") for name in owned):
             packages.add("film-juicer-core")
-            filters.add(owner["rust_filter"])
             tests.add("Quality.RustBoundaries")
-            inputs.update(["tests/quality/test_rust_boundaries.py",
-                           "tests/ffi/color_preparation_test.cpp"])
-            inputs.update(path.relative_to(root).as_posix() for path in (root / "tests/quality/fixtures/rust_boundaries").glob("*.rs"))
             body_only.update({name: rust_body_edit(root, name, owner["rust_interface_revision"]) for name in owned if name.endswith(".rs")})
     if "src/ScanRoute.h" in selected:
         objects, sources = header_consumers(root, build, ["src/ScanRoute.h"], require_compiled=require_compiled, compilation=compilation)
@@ -163,61 +86,10 @@ def select_consumers(root, build, selected, *, require_compiled=False, compilati
         compiler.update(sources)
     if any(not proven for proven in body_only.values()):
         packages.add("film-juicer-plugin")
-        filters = {""}  # Public interface or uncertain impact: cover both packages.
     if not targets:
         raise UnresolvedScope("no explicit development owner")
     return {"files": sorted(selected), "compiler_consumers": sorted(compiler),
-            "targets": sorted(targets), "tests": sorted(tests), "inputs": sorted(inputs),
-            "rust_packages": sorted(packages), "rust_test_filters": sorted(filters),
-            "checks": ["source hygiene", "selected native/Rust analysis", *sorted(tests)],
-            "reasons": ["explicit owners beside CTest registration; all configured header variants; linkage only determines build dependencies"]}
-
-
-def check_receipt_payloads(root, receipt, *, allow_ctest_failure=False):
-    record = json.loads(Path(receipt).read_text(encoding="utf-8"))
-    ctest_failure = (allow_ctest_failure and record.get("status") == "failed" and record.get("returncode") == 8
-                     and record.get("process_tree", {}).get("status") == "completed"
-                     and Path(record["identity"]["command"][0]).stem == "ctest"
-                     and "--output-junit" in record["identity"]["command"])
-    if (not ctest_failure and (record.get("status") != "passed" or record.get("returncode") != 0)
-            or not record.get("process_tree", {}).get("drained")):
-        raise ValueError("failed, partial or undrained evidence cannot be reused")
-    if digest(root / record["output"]) != record["output_sha256"]:
-        raise ValueError("command evidence payload changed")
-    executable = shutil.which(record["identity"]["command"][0])
-    if executable is None or digest(Path(executable)) != record["identity"]["executable_sha256"]:
-        raise ValueError("consumed command executable changed")
-    process = json.loads(Path(record["process_tree"]["receipt"]).read_text(encoding="utf-8"))
-    if any(record["process_tree"].get(key) != value for key, value in process.items()):
-        raise ValueError("process evidence payload changed")
-    return record
-
-
-def load_development_state(root, build, previous_path, explicit):
-    state = build / "verification-development.json"
-    latest = json.loads(state.read_text(encoding="utf-8")) if state.is_file() else None
-    if latest:
-        path = Path(latest["receipt"])
-        if digest(path) != latest["sha256"]:
-            raise ValueError("latest development receipt changed; pending work cannot be discarded")
-        if previous_path and Path(previous_path).resolve() != path.resolve():
-            raise ValueError("previous receipt is not the latest development attempt; retain pending work")
-        previous_path = path
-    if not previous_path:
-        current = source_snapshot(root)
-        # Observation alone is never a successful verification baseline.
-        return {"observed": current,
-                "pending": sorted(name for name in dirty_paths(root) if not is_documentation(name)),
-                "established": True}
-    previous = json.loads(Path(previous_path).read_text(encoding="utf-8"))
-    if previous.get("preset") != build.name or previous.get("mode") not in {"development", "preparation", "qualification"}:
-        raise ValueError("previous receipt must be development evidence for this preset")
-    if previous.get("protocol") != SCOPED_PROTOCOL:
-        current = source_snapshot(root)
-        # Retain failures, but never import a legacy preparation/qualification pass.
-        pending = set(previous.get("pending", ())) | {name for name in dirty_paths(root) if not is_documentation(name)}
-        return {"observed": current, "pending": sorted(pending), "established": True}
-    return previous
+            "targets": sorted(targets), "tests": sorted(tests), "rust_packages": sorted(packages)}
 
 
 def quality_command(preset, selection):
@@ -226,259 +98,1024 @@ def quality_command(preset, selection):
     if selection["compiler_consumers"]:
         command += ["--compiler-consumers", *selection["compiler_consumers"]]
     if selection["rust_packages"]:
-        command += ["--rust-packages", *selection["rust_packages"],
-                    "--rust-test-filters", *selection["rust_test_filters"]]
+        command += ["--rust-packages", *selection["rust_packages"]]
     return command
 
 
-def scope_key(selection):
-    return json.dumps(selection["files"], separators=(",", ":"))
+def rust_tests(args):
+    """Run one Rust test package from CMake-prepared nextest binaries."""
+    from qualification import framework_terminals
 
+    package = getattr(args, "package", "core")
+    package_name = {"core": "film-juicer-core", "bridge": "film-juicer-plugin"}.get(package)
+    if package_name is None:
+        raise ValueError("Rust test package must be core or bridge")
+    registration = "Rust.Core" if package == "core" else "Rust.Bridge"
+    if os.environ.get("FJ_RUST_FILTER") or os.environ.get("FJ_OPTICS_BUNDLE"):
+        raise ValueError("Rust function filtering requires an explicit supported selection; the pilot environment is retired")
+    bundle_value = os.environ.get("FJ_HOST_BUNDLE")
+    if bundle_value is None:
+        from execution import NativeRun
 
-def verify_development_receipt(campaign, build, previous, *, selection=None):
-    if previous.get("protocol") != SCOPED_PROTOCOL or previous.get("scope_status") != "passed":
-        raise ValueError("only successful scoped development evidence can be reused")
-    compilation = CompilationInputs(campaign.root, build) if "src/ScanRoute.h" in previous["selection"]["files"] else None
-    if selection is None:
-        selection = select_consumers(campaign.root, build, previous["selection"]["files"], compilation=compilation)
-    if selection != previous["selection"]:
-        raise ValueError("development selection changed")
-    check_scoped_preparation(campaign, build, Path(previous["build"]), compilation=compilation)
-    quality = check_receipt_payloads(campaign.root, previous["quality_command"])
-    tests = check_receipt_payloads(campaign.root, previous["tests_command"])
-    if quality["identity"]["command"] != quality_command(build.name, selection):
-        raise ValueError("development quality command changed")
-    pattern = "^(" + "|".join(re.escape(name) for name in selection["tests"]) + ")$"
-    command = tests["identity"]["command"]
-    expected = ["ctest", "--preset", build.name, "-R", pattern, "--output-on-failure", "--output-junit", previous["junit"]]
-    if command != expected:
-        raise ValueError("development CTest command/membership changed")
-    if file_identities([Path(name) for name in previous["evidence"]]) != previous["evidence"]:
-        raise ValueError("development evidence or consumed tool/input changed")
-
-
-def _development_owned(args, *, started=None, lease_seconds=0.0):
-    started = time.monotonic() if started is None else started
-    timings = {"lease_wait_seconds": lease_seconds}
-    phase = time.monotonic()
-    if args.preset != "linux-debug":
-        raise ValueError("development supports the existing linux-debug tree only")
-    build = ROOT / "out/build" / args.preset
-    previous = load_development_state(ROOT, build, args.previous, args.files or ())
-    timings["state_load_seconds"] = time.monotonic() - phase
-    scopes = dict(previous.get("successful_scopes", {}))
-    pointer = build / "verification-development.json"
-    if previous.get("scope_status") == "passed" and pointer.is_file():
-        scopes[scope_key(previous["selection"])] = json.loads(pointer.read_text())
-    explicit = set(args.files or previous.get("selection", {}).get("files", ()))
-    selected = sorted(explicit & SUPPORTED)
-    if not selected:
-        raise UnresolvedScope("select a supported route/header/output-color input")
-    phase = time.monotonic()
-    current = source_snapshot(ROOT)
-    # Unsupported changes never become verified merely because their bytes are
-    # unnecessary to this selected owner, including a second already-dirty edit.
-    pending = set(edit_selection(current, previous)) | (explicit - SUPPORTED)
-    for name, identity in current.items():
-        if isinstance(identity, dict):
-            worktree = identity.get("worktree", identity)
-            if isinstance(worktree, dict) and worktree.get("unresolved"):
-                pending.add(name)
-    timings["observation_entry_seconds"] = time.monotonic() - phase
-    campaign = Campaign(ROOT, args.preset, "development-" + uuid.uuid4().hex, ["prepare", "quality", "tests"])
-    result_path = campaign.directory / "development.json"
-    record = {"mode": "development", "protocol": SCOPED_PROTOCOL, "preset": args.preset,
-              "status": "running", "scope_status": "running", "observed": current,
-              "pending": sorted(pending | set(selected)), "selection": {"files": selected}, "successful_scopes": scopes,
-              "timings": timings}
-    print(f"Development receipt: {result_path}", flush=True)
-    try:
-        candidate = previous
-        saved = scopes.get(scope_key({"files": selected}))
-        if saved:
-            if digest(Path(saved["receipt"])) != saved["sha256"]:
-                raise ValueError("successful scoped record changed")
-            candidate = json.loads(Path(saved["receipt"]).read_text())
-        reusable = (candidate.get("scope_status") == "passed" and not set(selected) & pending
-                    and candidate.get("selection", {}).get("files") == selected)
-        if reusable:
+        # Direct CTest remains supervised when the shared native runner is absent.
+        directory = ROOT / "out/validation" / args.preset / "rust-tests" / (registration + "-" + uuid.uuid4().hex)
+        with OutputLease(ROOT, ROOT / "out/build" / args.preset):
+            directory.mkdir(parents=True)
+            run = NativeRun(ROOT, directory)
+            environment = dict(os.environ, FJ_HOST_BUNDLE=str(directory))
             try:
-                phase = time.monotonic()
-                # No build/analyzer/test runs on this branch. Admit the stored
-                # pass once, with fresh current inputs, immediately before reuse.
-                verify_development_receipt(campaign, build, candidate)
-            except ValueError:
-                reusable = False
-            finally:
-                timings["reuse_validation_seconds"] = time.monotonic() - phase
-        if reusable:
-            selection = candidate["selection"]
-            record["selection"] = selection
-            record.update({name: candidate[name] for name in ("build", "quality_command", "tests_command", "quality", "junit", "evidence")})
-            record["reused_from"] = str(saved["receipt"] if saved else args.previous or json.loads(pointer.read_text())["receipt"])
-            print("Reused previous scoped pass; no build, analyzer or tests executed.", flush=True)
+                command = [sys.executable, "-B", str(Path(__file__).absolute()), *sys.argv[1:]]
+                log = run.command("rust-tests-" + package, command, env=environment)
+                print(log.read_text(), end="")
+            except BaseException:
+                print("Rust test diagnostics retained:", directory, file=sys.stderr)
+                raise
+            else:
+                shutil.rmtree(directory)  # NativeRun proved descendant drainage.
+        return 0
+
+    bundle = Path(bundle_value)
+    discovery_path = bundle / f"{registration}.discovery.json"
+    junit_path = bundle / f"{registration}.xml"
+    execution_path = bundle / f"{registration}.execution.json"
+    events_path = bundle / "rust.jsonl" if package == "core" else None
+    config_path = bundle / f"{registration}.nextest.toml"
+
+    # Cargo metadata supplies the test-target contract independently of the
+    # nextest discovery it will later validate. This catches a missing lib or
+    # integration-test binary without maintaining a second list of test names.
+    cargo_bytes = args.cargo_metadata.read_bytes()
+    binaries_bytes = args.binaries_metadata.read_bytes()
+    bookkeeping_reads = len(cargo_bytes) + len(binaries_bytes)
+    cargo_metadata = json.loads(cargo_bytes)
+    binaries_metadata = json.loads(binaries_bytes)
+    packages = {row["id"]: row for row in cargo_metadata["packages"]}
+    selected_package = next((row for row in packages.values() if row["name"] == package_name), None)
+    if selected_package is None:
+        raise ValueError("Cargo metadata omits Rust test package: " + package_name)
+    expected_binaries = {
+        (selected_package["id"], target["name"])
+        for target in selected_package["targets"]
+        if target.get("test") and any(kind in target["kind"] for kind in ("test", "lib", "staticlib"))
+    }
+    actual_binaries = {
+        (binary["package-id"], binary["binary-name"])
+        for binary in binaries_metadata["rust-binaries"].values()
+        if binary.get("package-id") == selected_package["id"]
+    }
+    missing_binaries = expected_binaries - actual_binaries
+    unexpected_binaries = actual_binaries - expected_binaries
+    if not expected_binaries or missing_binaries or unexpected_binaries:
+        raise ValueError("Rust test binary contract differs from Cargo targets: "
+                         + repr({"missing": sorted(missing_binaries), "unexpected": sorted(unexpected_binaries)}))
+
+    source_root = Path(selected_package["manifest_path"]).parent
+    doctest_sources = []
+    scanned_source_count = 0
+    scanned_source_bytes = 0
+    for source_path in source_root.rglob("*.rs"):
+        scanned_source_count += 1
+        source_bytes = source_path.read_bytes()
+        scanned_source_bytes += len(source_bytes)
+        if "```" in source_bytes.decode("utf-8"):
+            doctest_sources.append(str(source_path.relative_to(ROOT)))
+    if doctest_sources:
+        raise ValueError("Rust doctest source requires an explicit Cargo doc-test path: " + repr(doctest_sources))
+
+    # Keep the source/build-independent reader's binary-membership evidence in
+    # the same result bundle. Both Rust registrations share these exact inputs.
+    for destination_name, payload in (
+        ("rust-cargo.json", cargo_bytes),
+        ("rust-binaries.json", binaries_bytes),
+    ):
+        destination = bundle / destination_name
+        if destination.exists():
+            previous = destination.read_bytes()
+            bookkeeping_reads += len(previous)
+            if previous != payload:
+                raise ValueError("Rust metadata changed within one host result bundle: " + destination_name)
         else:
-            phase = time.monotonic()
-            selection = select_consumers(ROOT, build, selected)
-            record["selection"] = selection
-            timings["selection_entry_seconds"] = time.monotonic() - phase
-            print(json.dumps(selection, indent=2), flush=True)
-            phase = time.monotonic()
-            _, built = prepare_build(campaign, "prepare", source=ROOT, build=build,
-                                     inputs=[*selection["inputs"], "scripts/verify.py", "scripts/check-quality.py"], timeout=None,
-                                     configure_args=["-DBUILD_TESTING=ON"], targets=selection["targets"])
-            timings["preparation_seconds"] = time.monotonic() - phase
-            record["build"] = str(built)
-            selection = select_consumers(ROOT, build, selected, require_compiled=True)
-            record["selection"] = selection
-            phase = time.monotonic()
-            quality = campaign.run("quality", quality_command(args.preset, selection), inputs=selected,
-                                   timeout=None, repeat_reason="analyze selected development scope")
-            timings["quality_seconds"] = time.monotonic() - phase
-            junit = campaign.directory / "tests.xml"
-            phase = time.monotonic()
-            tests = run_ctest(campaign, "tests", build=build, prepared=built,
-                              inputs=selection["inputs"], timeout=None, tests=selection["tests"], junit=junit)
-            timings["ctest_seconds"] = time.monotonic() - phase
-            payloads = [built, quality, tests, junit]
-            for receipt in (built, quality, tests):
-                stage = check_receipt_payloads(ROOT, receipt)
-                payloads += [ROOT / stage["output"], Path(stage["process_tree"]["receipt"])]
-            output = (ROOT / check_receipt_payloads(ROOT, quality)["output"]).read_text(encoding="utf-8")
-            qpath = Path(re.search(r"^Quality run: (.+)$", output, re.M)[1]) / "run.json"
-            q = json.loads(qpath.read_text(encoding="utf-8"))
-            if q.get("status") != "passed" or q.get("mode") != "development" or q["selected"] != selected:
-                raise ValueError("development quality did not complete its declared scope")
-            payloads += [qpath, *(qpath.parent / name for name in q["files"]), *(Path(name) for name in q["consumed_inputs"]),
-                         *(ROOT / name for name, checksum in q["inputs"]["files"].items() if checksum is not None)]
-            for name, checksum in q["files"].items():
-                if digest(qpath.parent / name) != checksum:
-                    raise ValueError("inner quality payload changed")
-            for name, checksum in q["consumed_inputs"].items():
-                if digest(Path(name)) != checksum:
-                    raise ValueError("consumed quality input changed")
-            record.update(quality_command=str(quality), tests_command=str(tests), quality=str(qpath), junit=str(junit), evidence=file_identities(payloads))
-        phase = time.monotonic()
-        if source_snapshot(ROOT) != current:
-            raise ValueError("source membership or contents changed during development")
-        timings["observation_final_seconds"] = time.monotonic() - phase
-        if not reusable:
-            phase = time.monotonic()
-            compilation = CompilationInputs(ROOT, build) if "src/ScanRoute.h" in selected else None
-            if select_consumers(ROOT, build, selected, compilation=compilation) != selection:
-                raise ValueError("source membership, contents or selection changed during development")
-            timings["selection_final_seconds"] = time.monotonic() - phase
-            phase = time.monotonic()
-            check_scoped_preparation(campaign, build, Path(record["build"]), compilation=compilation)
-            timings["preparation_final_seconds"] = time.monotonic() - phase
-        pending -= set(selected)
-        record.update(scope_status="passed", status="incomplete" if pending else "passed", pending=sorted(pending))
-        print(f"Selected scope passed; {len(pending)} other paths remain unresolved.", flush=True)
-    except BaseException as error:
-        record.update(status="unresolved" if isinstance(error, UnresolvedScope) else "failed", scope_status="failed", error=str(error))
-        raise
+            destination.write_bytes(payload)
+
+    config_bytes = args.config_file.read_bytes()
+    bookkeeping_reads += len(config_bytes)
+    config_path.write_text(
+        config_bytes.decode("utf-8")
+        + "\npath = " + json.dumps(str(junit_path)) + "\n"
+    )
+    common = [str(args.nextest), "nextest"]
+    metadata = [
+        "--config-file", str(config_path), "--user-config-file", "none", "--profile", "default",
+        "--binaries-metadata", str(args.binaries_metadata),
+        "--cargo-metadata", str(args.cargo_metadata),
+    ]
+    filter_expr = "package(=" + package_name + ")"
+    metadata.extend(["-E", filter_expr])
+    environment = dict(os.environ)
+    environment.pop("FJ_HOST_BUNDLE", None)
+    environment.pop("FJ_OPTICS_CASES", None)
+    environment.pop("FJ_RUST_ROWS", None)
+    environment["FJ_RUST_ROWS"] = str(bundle / (registration + ".rows.jsonl"))
+    if events_path is not None:
+        environment["FJ_OPTICS_CASES"] = str(events_path)
+    commands = [
+        [*common, "list", *metadata, "--message-format", "json"],
+        [*common, "run", *metadata, "--test-threads", "1", "--retries", "0",
+         "--no-fail-fast", "--no-tests", "fail"],
+    ]
+    records = []
+    discovery_bytes = 0
+    try:
+        started = time.perf_counter()
+        with discovery_path.open("xb") as output:
+            completed = subprocess.run(commands[0], env=environment, stdout=output)
+        records.append({"command": commands[0], "returncode": completed.returncode,
+                        "seconds": time.perf_counter() - started})
+        completed.check_returncode()
+        discovery = discovery_path.read_bytes()
+        discovery_bytes = len(discovery)
+        discovery_document = json.loads(discovery)
+        discovered_binaries = set(discovery_document["rust-suites"])
+        binary_packages = {
+            binary["binary-id"]: binary["package-id"]
+            for binary in binaries_metadata["rust-binaries"].values()
+        }
+        metadata_binary_ids = set(binary_packages)
+        if not metadata_binary_ids or discovered_binaries != metadata_binary_ids:
+            raise ValueError("nextest discovery does not match prepared workspace binaries")
+        expected_tests = set()
+        filtered_tests = set()
+        for binary_id, suite in discovery_document["rust-suites"].items():
+            for test_name, case in suite["testcases"].items():
+                key = (binary_id, test_name)
+                match = case["filter-match"]["status"]
+                if match == "matches":
+                    if binary_packages.get(binary_id) != selected_package["id"]:
+                        raise ValueError("nextest selected a test from the other Rust package: " + test_name)
+                    if case["ignored"]:
+                        raise ValueError("unexpected ignored Rust test: " + test_name)
+                    expected_tests.add(key)
+                else:
+                    filtered_tests.add(key)
+        if not expected_tests:
+            raise ValueError("Rust nextest selection is empty")
+        started = time.perf_counter()
+        completed = subprocess.run(commands[1], env=environment)
+        records.append({"command": commands[1], "returncode": completed.returncode,
+                        "seconds": time.perf_counter() - started})
+        if completed.returncode == 0:
+            framework_terminals(
+                junit_path.read_bytes(), expected_tests, nextest=True, filtered=filtered_tests
+            )
+            from qualification import rust_case_events
+            contract_path = bundle / "host-contracts.json"
+            contract_bytes = (contract_path if contract_path.exists() else ROOT / "tests/host-contracts.json").read_bytes()
+            row_bytes = (bundle / (registration + ".rows.jsonl")).read_bytes()
+            bookkeeping_reads += len(contract_bytes) + len(row_bytes)
+            contract = json.loads(contract_bytes)
+            rust_case_events(row_bytes, contract, expected_tests)
+        return completed.returncode
     finally:
-        record["seconds"] = time.monotonic() - started
-        record["timing_boundary"] = "development entry before lease through start of publication; supervised command wall time includes publication and lease release"
-        if record.get("reused_from"):
-            record["bookkeeping_before_publication_seconds"] = record["seconds"]
-        phase = time.monotonic()
-        write_json(result_path, record)
-        write_json(build / "verification-development.json", {"receipt": str(result_path), "sha256": digest(result_path)})
-        print(json.dumps({"publication_seconds": time.monotonic() - phase,
-                          "entry_through_publication_seconds": time.monotonic() - started}), flush=True)
-    return result_path
+        write_json(execution_path, {
+            "registration": registration,
+            "package": package_name,
+            "cargo": str(args.cargo),
+            "features": "test-support",
+            "required_binaries": sorted(expected_binaries),
+            "discovered_binaries": sorted(discovered_binaries) if "discovered_binaries" in locals() else [],
+            "doctests": {"status": "none", "source_files_scanned": scanned_source_count,
+                         "source_read_bytes": scanned_source_bytes, "code_fence_sources": doctest_sources},
+            "commands": records,
+            "discovery_read_bytes": discovery_bytes,
+            "bookkeeping_read_bytes": bookkeeping_reads + scanned_source_bytes + discovery_bytes
+                + (junit_path.stat().st_size if junit_path.exists() else 0),
+        })
 
 
-def development(args):
-    started = time.monotonic()
-    with OutputLease(ROOT, ROOT / "out/build" / args.preset):
-        return _development_owned(args, started=started, lease_seconds=time.monotonic() - started)
+def native_case_key(command):
+    import hashlib
+    return "host-" + hashlib.sha256(json.dumps(command, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    modes = parser.add_subparsers(dest="mode", required=True)
-    preparation = modes.add_parser("prepare", help="prepare explicit owning targets and dependencies only")
-    preparation.add_argument("--preset", required=True)
-    preparation_scope = preparation.add_mutually_exclusive_group(required=True)
-    preparation_scope.add_argument("--files", nargs="+")
-    preparation_scope.add_argument("--targets", nargs="+")
-    preparation.add_argument("--testing", choices=("ON", "OFF"), default="ON")
-    retirement = modes.add_parser("retire-s4c1-pending", help="one-time disposition of the two owner-authorized Linux legacy markers")
-    retirement.add_argument("--preset", required=True, choices=("linux-debug", "linux-release"))
-    s4e_retirement = modes.add_parser("retire-s4e-aborted-owner", help="one-time unqualified disposition of the two owner-authorized S4E Debug records")
-    s4e_retirement.add_argument("--preset", required=True, choices=("linux-debug", "windows-clang-debug"))
-    dev = modes.add_parser("development")
-    dev.add_argument("--preset", required=True)
-    choice = dev.add_mutually_exclusive_group(required=True)
-    choice.add_argument("--files", nargs="+")
-    choice.add_argument("--previous", type=Path)
-    from qualification import GROUPS, PRESETS
-    checkpoint = modes.add_parser("qualification", help="explicit native checkpoint; no unknown-scope fallback")
-    checkpoint.add_argument("--preset", required=True, choices=PRESETS)
-    checkpoint.add_argument("--reason", required=True)
-    checkpoint.add_argument("--selection", nargs="+", required=True, choices=sorted(GROUPS))
-    checkpoint.add_argument("--runtime", choices=("host", "all"), required=True)
-    checkpoint.add_argument("--base")
-    checkpoint.add_argument("--campaign")
-    checkpoint.add_argument("--repeat-reason", default="")
-    checkpoint.add_argument("--prepare", action="store_true",
-                            help="explicitly authorize building all testing-ON targets before qualification")
-    collection = modes.add_parser("collect-qualification", help="aggregate complete retained native/profile checkpoints")
-    collection.add_argument("--receipts", nargs="+", type=Path, required=True)
-    collection.add_argument("--output", type=Path, required=True)
-    collection.add_argument("--windows-python", help="qualified native Windows Python for Linux collection")
-    args = parser.parse_args()
-    if args.mode == "retire-s4c1-pending":
-        print("Legacy retirement only; fresh preparation still required:", retire_s4c1_pending(ROOT, args.preset))
+def gtest_environment(environment):
+    """The registered command owns selection, repetition and sharding."""
+    return {k: v for k, v in environment.items() if not k.startswith("GTEST_") and k != "TESTBRIDGE_TEST_ONLY"}
+
+
+def native_case(args):
+    """CTest launcher; a contained child never builds or admits old evidence."""
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        raise ValueError("native case command required")
+    # GoogleTest's CMake post-build discovery is already inside the build owner.
+    if "--gtest_list_tests" in command:
+        return subprocess.run(command, env=gtest_environment(os.environ)).returncode
+    if "FJ_HOST_BUNDLE" not in os.environ:
+        from execution import NativeRun
+        directory = ROOT / "out/validation" / args.preset / "native-host" / uuid.uuid4().hex
+        with ExitStack() as ownership:
+            ownership.enter_context(OutputLease(ROOT, ROOT / "out/build" / args.preset))
+            if args.runtime == "gpu":
+                ownership.enter_context(OutputLease(ROOT))
+            directory.mkdir(parents=True)
+            run = NativeRun(ROOT, directory)
+            environment = dict(os.environ, FJ_HOST_BUNDLE=str(directory))
+            try:
+                log = run.command("native-case", [sys.executable, "-B", str(Path(__file__).absolute()),
+                                  "native-case", "--preset", args.preset, "--protocol", args.protocol,
+                                  "--runtime", args.runtime,
+                                  "--", *command], env=environment)
+                print(log.read_text(), end="")
+            except BaseException:
+                print("Native case diagnostics retained:", directory, file=sys.stderr)
+                raise
+            else:
+                shutil.rmtree(directory)
         return 0
-    if args.mode == "retire-s4e-aborted-owner":
-        print("S4E retirement only; fresh preparation still required:", retire_s4e_aborted_owner(ROOT, args.preset))
+    bundle = Path(os.environ["FJ_HOST_BUNDLE"])
+    key = native_case_key(command)
+    environment = gtest_environment(os.environ)
+    for name in ("FJ_HOST_CASES", "FJ_OPTICS_CASES"):
+        environment.pop(name, None)
+    records = []
+    bookkeeping_reads = 0
+    outcomes_valid = False
+    contract_name = args.runtime + "-contracts.json"
+    contract_path = bundle / contract_name
+    contract_bytes = (contract_path if contract_path.exists() else ROOT / "tests" / contract_name).read_bytes()
+    bookkeeping_reads += len(contract_bytes)
+    contract = json.loads(contract_bytes)
+    def invoke(arguments, *, output=None, env=environment):
+        started = time.perf_counter()
+        completed = subprocess.run(arguments, env=env, stdout=output)
+        records.append({"command": arguments, "returncode": completed.returncode,
+                        "seconds": time.perf_counter() - started})
+        completed.check_returncode()
+        return completed
+    try:
+        # Discover inside this already-contained CTest family, just as nextest
+        # does for Rust. No extra supervisor is needed for each fixture listing.
+        if args.protocol == "gtest":
+            discovery = bundle / (key + ".discovery.json")
+            unfiltered = [argument for argument in command if not argument.startswith("--gtest_filter=")]
+            invoke([*unfiltered, "--gtest_list_tests"], env=dict(environment, GTEST_OUTPUT="json:" + str(bundle / (key + ".target.json"))))
+            invoke([*command, "--gtest_list_tests"], env=dict(environment, GTEST_OUTPUT="json:" + str(discovery)))
+        rows = args.protocol == "custom" or os.environ.get("FJ_HOST_ROWS") == "1"
+        if rows:
+            with (bundle / (key + ".list.jsonl")).open("xb") as output:
+                invoke([*command, "--list-cases"], output=output)
+        environment["FJ_HOST_CASES"] = str(bundle / (key + ".jsonl"))
+        if args.protocol == "gtest":
+            environment["GTEST_OUTPUT"] = "xml:" + str(bundle / (key + ".xml"))
+        invoke(command)
+        from qualification import case_events, framework_terminals, gtest_discovery, native_cohort_count, optics_keys
+        def read(name):
+            nonlocal bookkeeping_reads
+            data = (bundle / (key + name)).read_bytes()
+            bookkeeping_reads += len(data)
+            return data
+        if args.protocol == "gtest":
+            excluded = {tuple(n.split(".", 1)) for n in contract.get("excluded_gtest", {})}
+            discovered = gtest_discovery(read(".discovery.json"), excluded=excluded)
+            selected = discovered - excluded
+            if not selected:
+                raise ValueError("empty native framework selection")
+            if not selected <= gtest_discovery(read(".target.json"), excluded=excluded):
+                raise ValueError("GoogleTest selection is outside its owning target")
+            framework_terminals(read(".xml"), selected, filtered=discovered & excluded)
+            cohorts = {s + "." + n: contract["gtest_cohorts"].get(s + "." + n, 0) for s, n in selected}
+        else:
+            name = os.environ.get("FJ_HOST_TEST")
+            if not name:
+                raise ValueError("custom host registration identity missing")
+            cohorts = native_cohort_count(contract, name, args.preset)
+        expected = set()
+        if rows:
+            expected = optics_keys([json.loads(line) for line in read(".list.jsonl").splitlines()])
+            if not expected:
+                raise ValueError("empty native host case listing")
+        case_events(read(".jsonl"), expected, cohorts=cohorts)
+        outcomes_valid = True
         return 0
-    if args.mode == "collect-qualification":
-        from qualification import collect_qualification
-        if args.output.exists():
-            raise ValueError("retain the existing aggregate and use a new output path")
-        result = collect_qualification(ROOT, args.receipts, windows_python=args.windows_python)
-        if args.output.exists():
-            raise ValueError("retain the existing aggregate and use a new output path")
-        write_json(args.output, result)
-        print("Complete retained qualification:", args.output)
-        return 0
-    if args.mode == "qualification":
-        from qualification import qualify
-        result = qualify(ROOT, args)
-        return 2 if json.loads(result.read_text())["status"] == "incomplete" else 0
-    if args.mode == "prepare":
-        if args.targets:
-            print("Target preparation only; no runtime qualification:",
-                  prepare_targets(ROOT, args.preset, args.targets, args.testing))
-            return 0
-        if args.testing != "ON":
-            raise ValueError("file-selected development preparation requires testing ON")
-        if args.preset != "linux-debug":
-            raise ValueError("preparation supports linux-debug only")
-        build = ROOT / "out/build" / args.preset
-        selection = select_consumers(ROOT, build, args.files)
-        with OutputLease(ROOT, build):
-            campaign = Campaign(ROOT, args.preset, "preparation-" + uuid.uuid4().hex, ["prepare"])
-            _, built = prepare_build(campaign, "prepare", source=ROOT, build=build,
-                                     inputs=[*selection["inputs"], "scripts/verify.py", "scripts/check-quality.py"], timeout=None,
-                                     configure_args=["-DBUILD_TESTING=ON"], targets=selection["targets"])
-            print("Scoped preparation only; pending development state preserved:", built)
-    else:
-        result = development(args)
-        print(result)
-        if json.loads(result.read_text())["status"] == "incomplete":
-            return 2
+    finally:
+        write_json(bundle / (key + ".execution.json"), {"command": command,
+                   "returncode": records[-1]["returncode"] if records else None,
+                   "commands": records, "outcomes_valid": outcomes_valid, "bookkeeping_read_bytes": bookkeeping_reads})
+
+
+def tool_versions(args):
+    """Read independent versions inside one caller-owned process tree."""
+    from concurrent.futures import ThreadPoolExecutor
+    names = [name for name, _ in args.tool]
+    if len(names) != len(set(names)) or set(names) - {"cmake", "ctest", "cargo", "rustc", "nextest", "cxx", "cuda"}:
+        raise ValueError("invalid version probe selection")
+    def probe(tool):
+        name, executable = tool
+        command = [executable, "-Vv" if name == "rustc" else "--version"]
+        started = time.perf_counter()
+        record = {"name": name, "command": command, "returncode": None}
+        try:
+            completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            record.update(returncode=completed.returncode, output=completed.stdout.strip())
+        except OSError as exc:
+            record["error"] = f"{type(exc).__name__}: {exc}"
+        record["seconds"] = time.perf_counter() - started
+        return record
+    # These are read-only probes. The enclosing NativeRun supervisor contains
+    # all children until every probe finishes, including failures.
+    with ThreadPoolExecutor(max_workers=min(5, len(names))) as workers:
+        records = list(workers.map(probe, args.tool))
+    print(json.dumps(records))
+    return 0 if all(r["returncode"] == 0 for r in records) else 1
+
+
+def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests=False):
+    """Describe this working candidate using Git's native source identities.
+
+    HEAD plus a binary working-tree patch reconstruct tracked inputs; new inputs
+    retain their bytes. Runtime fixture bytes are compared separately by the run.
+    No checkout copies, historical admission or installed-tool reads are involved.
+    """
+    import base64
+    import hashlib
+    import stat
+    started = time.perf_counter()
+    costs = {"git_output_bytes": 0, "source_read_bytes": 0}
+    def git(*arguments):
+        data = subprocess.check_output(["git", "-c", "core.fsmonitor=false", "-c", "core.checkStat=minimal", "-c", "core.trustctime=false", *arguments], cwd=root)
+        costs["git_output_bytes"] += len(data)
+        return data
+    filemode = git("config", "--type=bool", "--default=true", "--get", "core.filemode").strip() == b"true"
+    explicit = {"CMakeLists.txt", "CMakePresets.json", ".clang-tidy", ".clang-format", ".gitattributes", ".cargo/config",
+                "tests/CMakeLists.txt", "tests/ToolingTests.cmake", "tests/ffi/prepared_sanitizers.cmake",
+                "tests/route/development.json", "tests/ffi/output-color-development.json",
+                "tests/film/optics-fixtures/manifest.json", literal_name, "scripts/source_file_policy.json"}
+    roots = ("src", "native", "rust", "scripts", "cmake", "third_party", ".config", ".cargo", ".github/workflows")
+    if gpu_witness or domain_tests:
+        roots += ("Resources",)
+    if domain_tests:
+        roots += ("tests",)
+    policy = (root / "scripts/source_file_policy.json").read_bytes()
+    costs["source_read_bytes"] += len(policy)
+    code = set(json.loads(policy)["supportedExtensions"]) | {".rs", ".py", ".cmake", ".toml", ".lock", ".yml", ".yaml"}
+    paths = [":(literal)" + name for name in [*roots, *sorted(explicit), "Cargo.toml", "Cargo.lock",
+             "rust-toolchain.toml", "rustfmt.toml", "clippy.toml", "ruff.toml"]]
+    # All public test code stays conservative: the selected executable links
+    # support sources in other domains. Git avoids reopening their unchanged bytes.
+    paths += [":(glob)tests/**/" + "*" + extension for extension in sorted(code)]
+    # Include directory-link entries in discovery even when their names have no
+    # source suffix. No scientific payload bytes are opened by this Git listing.
+    discovery = [":(literal)" + name for name in [*roots, "tests", *sorted(explicit), "Cargo.toml", "Cargo.lock",
+                 "rust-toolchain.toml", "rustfmt.toml", "clippy.toml", "ruff.toml"]]
+    entries = git("ls-files", "-v", "--stage", "--cached", "--others", "--exclude-standard", "-z", "--", *discovery)
+    checked_dirs = set()
+    def reject_links(name):
+        path = root / name
+        leaf = None
+        while path != root:
+            if path in checked_dirs:
+                break
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                path = path.parent
+                continue
+            if path == root / name:
+                leaf = info
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ValueError("selected worktree source must be a regular file: " + str(name))
+            if stat.S_ISDIR(info.st_mode):
+                checked_dirs.add(path)
+            path = path.parent
+        return leaf
+    inputs, new_files = {}, {}
+    for entry in entries.decode().split("\0"):
+        if not entry:
+            continue
+        tag, entry = entry[:1], entry[2:]
+        if tag == "?":
+            name, identity = entry, None
+            info = reject_links(name)
+        else:
+            metadata, name = entry.split("\t", 1)
+            mode, blob, stage = metadata.split()
+            identity = {"git_blob": blob, "mode": mode}
+        if (name not in explicit and Path(name).suffix not in code and Path(name).name != "CMakeLists.txt"
+                and not ((gpu_witness or domain_tests) and name.startswith("Resources/"))
+                and not (domain_tests and name.startswith("tests/"))):
+            continue
+        if tag != "?":
+            reject_links(Path(name).parent)
+        if tag != "?" and (tag != "H" or stage != "0" or mode not in {"100644", "100755"}):
+            raise ValueError("selected source must have ordinary, merged Git tracking: " + name)
+        if identity is None:
+            path = root / name
+            if info is None or not stat.S_ISREG(info.st_mode):
+                raise ValueError("untracked source must be a regular file: " + name)
+            data = path.read_bytes()
+            costs["source_read_bytes"] += len(data)
+            identity = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
+                        "mode": "100755" if filemode and info.st_mode & 0o111 else "100644"}
+            new_files[name] = base64.b64encode(data).decode("ascii")
+        inputs[name] = identity
+    if not inputs:
+        raise ValueError("empty spatial-optics source scope")
+    # Obtain worktree modes and the reconstructible patch in one Git scan.
+    # --raw --patch -z separates its records from the patch with an empty NUL record.
+    diff = git("diff", "--raw", "--patch", "--binary", "--no-abbrev", "--no-renames",
+               "--no-ext-diff", "--no-textconv", "-z", "HEAD", "--", *paths)
+    patch = b""
+    if diff:
+        raw, patch = diff.split(b"\0\0", 1)
+        changed = raw.split(b"\0")
+        for position in range(0, len(changed), 2):
+            mode = changed[position].split()[1]
+            name = changed[position + 1].decode()
+            if mode not in {b"000000", b"100644", b"100755"}:
+                raise ValueError("selected worktree source must be a regular file: " + name)
+            if mode == b"000000":
+                reject_links(name)  # Git may report files under a linked directory as deleted.
+    source = {"head": git("rev-parse", "HEAD").decode().strip(), "inputs": inputs,
+              "new_files_base64": new_files,
+              "git_filemode": filemode,
+              "git_version": git("version").decode().strip(),
+              "source_identity": "HEAD + index + scoped binary patch; Git minimal stat uses whole-second mtime/size and racy-entry content checks; new files retain bytes"}
+    costs["source_capture_seconds"] = time.perf_counter() - started
+    return source, patch, costs
+
+
+def gpu_lock_probe(*, wait_for_owner=False):
+    """An independent native contender must not borrow the owner's GPU token."""
+    if "JUICER_OUTPUT_LEASES" in os.environ:
+        raise ValueError("GPU contender must be independent of delegated leases")
+    if wait_for_owner:
+        deadline = time.monotonic() + 30
+        while not (ROOT / "out/verification-locks/gpu/owner.json").exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError("no GPU owner appeared for the native contender")
+            time.sleep(.02)
+    try:
+        with OutputLease(ROOT, timeout=0.1):
+            raise ValueError("GPU contender unexpectedly acquired the physical-device lease")
+    except TimeoutError:
+        print(json.dumps({"physical_gpu": "excluded"}))
     return 0
 
 
+def cache_values(build):
+    path = build / "CMakeCache.txt"
+    return {line.split(":", 1)[0]: line.partition("=")[2] for line in path.read_text().splitlines()
+            if ":" in line and "=" in line and not line.startswith(("#", "//"))} if path.exists() else {}
+
+
+def finish_native_run(run, result, candidate, costs, validate):
+    """Publish one flat bundle after all commands and source checks complete."""
+    import gzip
+    import hashlib
+    publication_started = time.perf_counter()
+    if any(not command["drained"] for command in run.commands):
+        write_json(run.directory / "incomplete.json", result)
+        raise RuntimeError("native owner remains blocked; descendants unproved")
+    data = (json.dumps(candidate, separators=(",", ":")) + "\n").encode()
+    (run.directory / "candidate.json").write_bytes(data)
+    costs["candidate_write_bytes"] = len(data)
+    payloads = {}
+    costs["worker_read_bytes"] = 0
+    for path in sorted(run.directory.iterdir()):
+        if path.suffix not in {".json", ".jsonl", ".xml", ".toml", ".patch"} or path.name.endswith((".process.json", ".gate.json")):
+            continue
+        if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
+            raise ValueError("linked native result member")
+        data = path.read_bytes()
+        costs["report_read_bytes"] += len(data)
+        payloads[path.name] = data
+        result["members"][path.name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        if path.name.endswith(".execution.json"):
+            costs["worker_read_bytes"] += json.loads(data).get("bookkeeping_read_bytes", 0)
+    if result["status"] == "passed":
+        started = time.perf_counter()
+        try:
+            validate(result, payloads)
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            result.update(status="failed", error=str(error))
+        costs["publication_validation_seconds"] = time.perf_counter() - started
+    with gzip.open(run.directory / "diagnostics.gz", "wb") as output:
+        for path in sorted(run.directory.iterdir()):
+            if path.name.endswith((".log", ".process.json", ".gate.json")):
+                data = path.read_bytes()
+                costs["report_read_bytes"] += len(data)
+                output.write(("\n--- " + path.name + " ---\n").encode())
+                output.write(data)
+                path.unlink()
+    costs["mandatory_retained_bytes"] = sum(item["bytes"] for item in result["members"].values())
+    costs["compressed_diagnostic_bytes"] = (run.directory / "diagnostics.gz").stat().st_size
+    result["diagnostics"] = {"path": "diagnostics.gz", "optional": True}
+    costs["publication_seconds"] = time.perf_counter() - publication_started
+    if "elapsed_seconds" in costs:
+        costs["elapsed_seconds"] += costs["publication_seconds"]
+    run.publish(result)
+    print(run.directory / "result.json")
+    return 0 if result["status"] == "passed" else 1
+
+
+def native_tests(args):
+    """Fresh CMake-selected native/Rust/Python execution under one build owner."""
+    import xml.etree.ElementTree as ET
+    from execution import NativeRun, name_component
+    from qualification import membership, native_registration, python_registration, validate_tests_result
+    if args.preset.startswith("windows") != (os.name == "nt"):
+        raise ValueError("tests must execute on their native platform")
+    started = time.perf_counter()
+    build = (args.build_dir or ROOT / "out/build" / args.preset).absolute()
+    directory = ROOT / "out/validation" / args.preset / "results" / name_component(args.run_id or uuid.uuid4().hex)
+    costs = {"source_read_bytes": 0, "git_output_bytes": 0, "source_capture_seconds": 0.0, "report_read_bytes": 0}
+    def capture():
+        source, patch, measured = capture_native_source(ROOT, "tests/python-contracts.json", domain_tests=True)
+        for key, value in measured.items():
+            costs[key] += value
+        return source, patch
+    with OutputLease(ROOT, build):
+        directory.mkdir(parents=True, exist_ok=False)
+        run = NativeRun(ROOT, directory)
+        initial, patch = capture()
+        candidate = {**initial, "preset": args.preset, "configuration": {},
+                     "features": {"native_archive": "test-support (interim)"},
+                     "environment": {k: os.environ[k] for k in ("CARGO_HOME", "RUSTUP_HOME", "CUDACXX", "CUDAToolkit_ROOT", "CMAKE_BUILD_PARALLEL_LEVEL") if k in os.environ}}
+        (directory / "candidate.patch").write_bytes(patch)
+        contracts = {}
+        for runtime in ("host", "gpu", "python"):
+            data = (ROOT / "tests" / (runtime + "-contracts.json")).read_bytes()
+            costs["source_read_bytes"] += len(data)
+            contracts[runtime] = json.loads(data)
+            (directory / (runtime + "-contracts.json")).write_bytes(data)
+            (directory / (runtime + "-targets.json")).write_text("{}\n")
+        (directory / "registration.json").write_text('{"tests":[]}\n')
+        (directory / "target-discovery.json").write_text("{}\n")
+        result = {"schema": "native-tests-v1", "status": "failed", "preset": args.preset,
+                  "candidate_head": initial["head"], "shipping_isolation": False,
+                  "scope": "checkpoint" if args.mode == "qualification" and not args.label and not args.tests else "focused",
+                  "groups": args.selection or [], "runtime": args.runtime, "selection": [], "case_files": {},
+                  "commands": run.commands, "members": {}, "optics_rows": [], "costs": costs, "build_kind": "product", "reason": args.reason,
+                  "quality_files": sorted(args.files or [])}
+        try:
+            cmake = shutil.which("cmake")
+            if not cmake:
+                raise ValueError("qualified native CMake required")
+            ctest = str(Path(cmake).with_name("ctest" + (".exe" if os.name == "nt" else "")))
+            cache = cache_values(build)
+            home = Path(cache.get("CMAKE_HOME_DIRECTORY", ROOT))
+            standalone = home.samefile(ROOT / "tests/tooling")
+            if cache and not (home.samefile(ROOT) or standalone):
+                raise ValueError("build cache belongs to another source tree")
+            if args.build_dir and not standalone and build != ROOT / "out/build" / args.preset:
+                raise ValueError("explicit build directory must be the configured native tooling entry")
+            result["build_kind"] = "tooling" if standalone else "product"
+            configure = [cmake, "--preset", args.preset, "-DBUILD_TESTING=ON", "-DPython3_EXECUTABLE=" + sys.executable]
+            cargo = str(args.cargo or cache.get("JUICER_CARGO_EXECUTABLE") or shutil.which("cargo") or "")
+            nextest = str(args.nextest or cache.get("JUICER_NEXTEST_EXECUTABLE") or shutil.which("cargo-nextest") or "")
+            if not standalone:
+                if not cargo or not nextest:
+                    raise ValueError("qualified Rust/Cargo and cargo-nextest required")
+                configure += ["-DJUICER_CARGO_EXECUTABLE=" + cargo, "-DJUICER_NEXTEST_EXECUTABLE=" + nextest]
+                desired = {"BUILD_TESTING": "ON", "CMAKE_BUILD_TYPE": "Debug" if args.preset.endswith("debug") else "Release",
+                           "JUICER_CARGO_EXECUTABLE": cargo, "JUICER_NEXTEST_EXECUTABLE": nextest, "Python3_EXECUTABLE": sys.executable}
+                if any(os.path.normcase(os.path.normpath(cache.get(k, ""))) != os.path.normcase(os.path.normpath(v)) for k, v in desired.items()):
+                    run.command("configure", configure, vctip_executable=windows_vctip(os.environ))
+            build_command = [cmake, "--build", str(build)]
+            run.command("configuration", [*build_command, "--target", "help"], vctip_executable=windows_vctip(os.environ))
+            cache = cache_values(build)
+            candidate["configuration"] = {k: cache.get(k) for k in ("BUILD_TESTING", "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")}
+            data = run.command("registration", [ctest, "--test-dir", str(build), "--show-only=json-v1"], stdout_only=True).read_bytes()
+            costs["report_read_bytes"] += len(data)
+            (directory / "registration.json").write_bytes(data)
+            inventory = json.loads(data)
+            target_data = {}
+            for runtime in ("host", "gpu", "python"):
+                path = build / "tests" / (runtime + "-targets.json")
+                data = path.read_bytes() if runtime == "python" or not standalone else b"{}"
+                costs["report_read_bytes"] += len(data)
+                (directory / (runtime + "-targets.json")).write_bytes(data)
+                target_data[runtime] = json.loads(data)
+            native = {} if standalone else {runtime: native_registration(contracts[runtime], target_data[runtime], inventory, runtime=runtime) for runtime in ("host", "gpu")}
+            python = python_registration(contracts["python"], inventory, args.preset, standalone=standalone)
+            entries = {**python, **{name: entry for domain in native.values() for name, entry in domain.items()}}
+            available = set(entries) | (set() if standalone else {"Rust.Core", "Rust.Bridge"})
+            if {test["name"] for test in inventory["tests"]} != available:
+                raise ValueError("missing or unowned public CTest registration")
+            prerequisites = {test["name"]: {p["name"]: p["value"] for p in test["properties"]} for test in inventory["tests"]}
+            source_selection = None
+            if args.files:
+                source_selection = select_consumers(ROOT, build, args.files, require_compiled=False)
+                selected = set(source_selection["tests"])
+                if source_selection["rust_packages"]:
+                    selected.add("Rust.Core")
+                    if "film-juicer-plugin" in source_selection["rust_packages"]:
+                        selected.add("Rust.Bridge")
+            elif args.tests:
+                selected = set(args.tests)
+            elif args.targets:
+                selected = {name for name, entry in entries.items() if entry.get("target") in args.targets}
+            else:
+                groups = membership(inventory, args.selection, args.runtime)
+                selected = {name for names in groups.values() for name in names}
+            if not selected <= available:
+                raise ValueError("unknown explicit test selection")
+            if args.tests and any(args.runtime != "all" and args.runtime not in prerequisites[name]["LABELS"] for name in selected):
+                raise ValueError("explicit test selection disagrees with runtime")
+            if args.label:
+                selected = {name for name in selected if any(re.search(args.label, label) for label in prerequisites[name]["LABELS"])}
+            selected = {name for name in selected if args.runtime == "all" or args.runtime in prerequisites.get(name, {}).get("LABELS", [])}
+            if not selected or not selected <= available:
+                raise ValueError("empty or unknown explicit test selection")
+            result["selection"] = sorted(selected)
+            result["case_files"] = {name: {k: entries[name][k] for k in ("key", "protocol", "rows")} for name in selected if name in entries}
+            targets = set(args.targets or ())
+            for name in selected:
+                if name in native.get("host", {}) or name in native.get("gpu", {}):
+                    targets.add(entries[name]["target"])
+                if name in python:
+                    targets.update(target_data["python"][name])
+            if selected & {"Rust.Core", "Rust.Bridge"}:
+                targets.add("juicer_rust_tests")
+            if source_selection:
+                targets.update(source_selection["targets"])
+            if targets:
+                run.command("build", [*build_command, "--target", *sorted(targets), "--", "-k0"], vctip_executable=windows_vctip(os.environ))
+            versions = [sys.executable, "-B", str(Path(__file__).absolute()), "tool-versions", "--tool", "cmake", cmake, "--tool", "ctest", ctest]
+            if not standalone:
+                for name, executable in (("cargo", cargo), ("rustc", str(Path(cargo).with_name("rustc.exe" if os.name == "nt" else "rustc"))), ("nextest", nextest)):
+                    versions += ["--tool", name, executable]
+                for name, key in (("cxx", "CMAKE_CXX_COMPILER"), ("cuda", "CMAKE_CUDA_COMPILER")):
+                    versions += ["--tool", name, cache[key]]
+            version_data = run.command("versions", versions, stdout_only=True).read_bytes()
+            costs["report_read_bytes"] += len(version_data)
+            candidate["version_commands"] = json.loads(version_data)
+            candidate["versions"] = {item["name"]: item["output"] for item in candidate["version_commands"]}
+            if not standalone and (not candidate["versions"]["cargo"].startswith("cargo 1.98.1 ") or not candidate["versions"]["rustc"].startswith("rustc 1.98.1 ") or not candidate["versions"]["nextest"].startswith("cargo-nextest 0.9.143 ")):
+                raise ValueError("qualified Rust/Cargo 1.98.1 and nextest 0.9.143 required")
+            if "Rust.Core" in selected:
+                manifest = json.loads((ROOT / "tests/film/optics-fixtures/manifest.json").read_bytes())
+                literal = ROOT / "tests/film/optics-fixtures" / manifest["presets"][args.preset]["literal"]
+                result["optics_rows"] = [row["id"] for row in json.loads(literal.read_bytes())["cases"]]
+            environment = dict(os.environ, FJ_HOST_BUNDLE=str(directory))
+            for name in ("FJ_RUST_FILTER", "FJ_OPTICS_BUNDLE", "FJ_HOST_ROWS"):
+                environment.pop(name, None)
+            if source_selection:
+                run.command("quality", quality_command(args.preset, source_selection), env=environment)
+            combined = ET.Element("testsuites")
+            for runtime in ("host", "gpu"):
+                names = sorted(name for name in selected if runtime in prerequisites[name]["LABELS"])
+                if not names:
+                    continue
+                with ExitStack() as ownership:
+                    if runtime == "gpu":
+                        ownership.enter_context(OutputLease(ROOT))
+                        contender = dict(os.environ)
+                        contender.pop("JUICER_OUTPUT_LEASES", None)
+                        data = run.command("gpu-exclusion", [sys.executable, "-B", str(Path(__file__).absolute()), "gpu-lock-probe"], env=contender).read_bytes()
+                        if json.loads(data) != {"physical_gpu": "excluded"}:
+                            raise ValueError("physical GPU contender was admitted")
+                        (directory / "gpu-exclusion.json").write_bytes(data)
+                    env = dict(environment)
+                    env["JUICER_OUTPUT_LEASES"] = os.environ["JUICER_OUTPUT_LEASES"]
+                    junit = directory / ("ctest-" + runtime + ".xml")
+                    timeout = 60 + sum(prerequisites[name]["TIMEOUT"] for name in names)
+                    run.command("ctest-" + runtime, [ctest, "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
+                        "--output-junit", str(junit), "-j", "1", "-R", "^(" + "|".join(map(re.escape, names)) + ")$"], env=env, timeout=timeout)
+                    tree = ET.fromstring(junit.read_bytes())
+                    combined.extend(list(tree) if tree.tag == "testsuites" else [tree])
+                    junit.unlink()
+                    if runtime == "gpu":
+                        result["physical_gpu"] = {"contender_excluded": True, "drained_while_locked": True}
+            (directory / "ctest.xml").write_bytes(ET.tostring(combined, encoding="utf-8"))
+            discovery = {}
+            for name in selected:
+                if name in entries and entries[name]["protocol"] == "gtest":
+                    path = directory / (entries[name]["key"] + ".target.json")
+                    data = path.read_bytes()
+                    costs["report_read_bytes"] += len(data)
+                    document = json.loads(data)
+                    target = entries[name]["target"]
+                    if target in discovery and discovery[target] != document:
+                        raise ValueError("native target discovery changed")
+                    discovery[target] = document
+                    path.unlink()
+            (directory / "target-discovery.json").write_text(json.dumps(discovery, separators=(",", ":")))
+            result["status"] = "passed"
+        except BaseException as error:
+            result["error"] = f"{type(error).__name__}: {error}"
+        finally:
+            try:
+                final, final_patch = capture()
+                result["candidate_unchanged"] = initial == final and patch == final_patch
+                if not result["candidate_unchanged"]:
+                    result.update(status="failed", error="candidate changed during native execution")
+            except BaseException as error:
+                result.update(status="failed", error=str(error))
+            costs["elapsed_seconds"] = time.perf_counter() - started
+            costs["measurement"] = "explicit source/Git and result bookkeeping; compiler/test/resource/OS I/O and transient rewrites unmeasured"
+            return finish_native_run(run, result, candidate, costs, validate_tests_result)
+
+
+def development(args):
+    return native_tests(args)
+
+
+def fresh_prepare(args):
+    """Configure/build explicit targets without creating preparation admission."""
+    from execution import NativeRun, name_component
+    from qualification import validate_build_result
+    if args.preset.startswith("windows") != (os.name == "nt"):
+        raise ValueError("build preparation requires its native platform")
+    started = time.perf_counter()
+    build = ROOT / "out/build" / args.preset
+    directory = ROOT / "out/validation" / args.preset / "results" / name_component(args.run_id or "build-" + uuid.uuid4().hex)
+    with OutputLease(ROOT, build):
+        directory.mkdir(parents=True, exist_ok=False)
+        run = NativeRun(ROOT, directory)
+        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py")
+        costs["report_read_bytes"] = 0
+        candidate = {**source, "preset": args.preset}
+        result = {"schema": "native-build-v1", "status": "failed", "preset": args.preset, "scope": "build",
+                  "candidate_head": source["head"], "shipping_isolation": False, "commands": run.commands, "members": {}, "costs": costs}
+        (directory / "candidate.patch").write_bytes(patch)
+        try:
+            cmake = shutil.which("cmake")
+            if not cmake:
+                raise ValueError("qualified native CMake required")
+            cache = cache_values(build)
+            if cache and not Path(cache["CMAKE_HOME_DIRECTORY"]).samefile(ROOT):
+                raise ValueError("build cache belongs to another source tree")
+            run.command("configure", [cmake, "--preset", args.preset, "-DBUILD_TESTING=" + args.testing, "-DPython3_EXECUTABLE=" + sys.executable], vctip_executable=windows_vctip(os.environ))
+            targets = args.targets or select_consumers(ROOT, build, args.files, require_compiled=False)["targets"]
+            if not targets:
+                raise ValueError("explicit preparation selected no build targets")
+            run.command("build", [cmake, "--build", "--preset", args.preset, "--target", *targets, "--", "-k0"], vctip_executable=windows_vctip(os.environ))
+            cache = cache_values(build)
+            candidate["configuration"] = {key: cache.get(key) for key in
+                ("BUILD_TESTING", "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")}
+            version_data = run.command("versions", [sys.executable, "-B", str(Path(__file__).absolute()),
+                "tool-versions", "--tool", "cmake", cmake], stdout_only=True).read_bytes()
+            costs["report_read_bytes"] += len(version_data)
+            candidate["version_commands"] = json.loads(version_data)
+            result.update(status="passed", targets=targets)
+        except BaseException as error:
+            result["error"] = str(error)
+        final, final_patch, measured = capture_native_source(ROOT, "scripts/verify.py")
+        for key, value in measured.items():
+            costs[key] += value
+        result["candidate_unchanged"] = source == final and patch == final_patch
+        costs["elapsed_seconds"] = time.perf_counter() - started
+        costs["measurement"] = "explicit source/Git and result bookkeeping; compiler/test/resource/OS I/O and transient rewrites unmeasured"
+        return finish_native_run(run, result, candidate, costs, validate_build_result)
+
+
+def python_tests(args):
+    """Run an existing unittest entry point with independent function/row outcomes."""
+    import contextlib
+    import runpy
+    import tempfile
+    import unittest
+    from execution import NativeRun
+    from qualification import validate_python_result
+
+    started = time.perf_counter()
+    command = list(args.command)
+    if command[:1] == ["--"]:
+        command.pop(0)
+    if not command or Path(command[0]).resolve() != Path(sys.executable).resolve():
+        raise ValueError("Python tests require the configured native interpreter")
+    key = args.key or native_case_key(command)
+    from execution import name_component
+    name_component(key)
+    parent = os.environ.get("FJ_HOST_BUNDLE")
+    if not parent:
+        build = args.build_dir or ROOT / "out/build" / args.preset
+        with OutputLease(ROOT, build):
+            scratch = ROOT / "out/validation" / args.preset / "python-controls"
+            scratch.mkdir(parents=True, exist_ok=True)
+            directory = Path(tempfile.mkdtemp(prefix="case-", dir=scratch))
+            run = NativeRun(ROOT, directory)
+            environment = dict(os.environ, FJ_HOST_BUNDLE=str(directory))
+            try:
+                run.command("python-suite", [sys.executable, "-B", str(Path(__file__).absolute()),
+                            "python-tests", "--preset", args.preset, "--key", key, "--", *command],
+                            env=environment, timeout=1200)
+            except BaseException:
+                print("Python controls retained:", directory, file=sys.stderr)
+                raise
+            else:
+                shutil.rmtree(directory)
+                return 0
+
+    directory = Path(parent)
+    discovery_path = directory / (key + ".discovery.json")
+    functions_path = directory / (key + ".functions.jsonl")
+    rows_path = directory / (key + ".rows.jsonl")
+    execution_path = directory / (key + ".execution.json")
+    original_main, original_subtest = unittest.main, unittest.TestCase.subTest
+    terminal, declared_rows, active_tests = {}, set(), set()
+    main_started = False
+    selected = None
+    functions = rows = None
+    outcome = {"command": command, "returncode": 1, "outcomes_valid": False}
+
+    def emit(stream, record):
+        stream.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+    def cases(suite):
+        for item in suite:
+            if isinstance(item, unittest.TestSuite):
+                yield from cases(item)
+            else:
+                yield item
+
+    class Result(unittest.TextTestResult):
+        def startTest(self, test):
+            super().startTest(test)
+            active_tests.add(id(test))
+            emit(functions, {"id": test.id(), "event": "start"})
+
+        def addSuccess(self, test):
+            super().addSuccess(test)
+            terminal[test.id()] = {"outcome": "passed"}
+
+        def addSkip(self, test, reason):
+            super().addSkip(test, reason)
+            if isinstance(test, unittest.case._SubTest):
+                emit(rows, {"caller": test.test_case.id() + "/subtests", "id": test.params["case"],
+                            "event": "terminal", "outcome": "skipped"})
+            else:
+                terminal[test.id()] = {"outcome": "skipped", "reason": reason}
+
+        def addSubTest(self, test, subtest, error):
+            super().addSubTest(test, subtest, error)
+            emit(rows, {"caller": test.id() + "/subtests", "id": subtest.params["case"],
+                        "event": "terminal", "outcome": "passed" if error is None else "failed"})
+
+        def stopTest(self, test):
+            emit(functions, {"id": test.id(), "event": "terminal", **terminal.pop(test.id(), {"outcome": "failed"})})
+            active_tests.discard(id(test))
+            super().stopTest(test)
+
+    class Runner(unittest.TextTestRunner):
+        resultclass = Result
+
+        def run(self, suite):
+            nonlocal selected, functions, rows
+            selected = []
+            for test in cases(suite):
+                method = getattr(test, test._testMethodName)
+                skipped = bool(getattr(type(test), "__unittest_skip__", False) or getattr(method, "__unittest_skip__", False))
+                reason = getattr(type(test), "__unittest_skip_why__", "") if getattr(type(test), "__unittest_skip__", False) else getattr(method, "__unittest_skip_why__", "")
+                selected.append({"id": test.id(), "skip": skipped, "skip_reason": str(reason),
+                                 "rows": bool(getattr(method, "required_subtests", False))})
+            if not selected or len({test["id"] for test in selected}) != len(selected):
+                raise ValueError("empty or duplicate Python function discovery")
+            discovery_path.write_text(json.dumps({"functions": selected}, separators=(",", ":")))
+            with functions_path.open("x", encoding="utf-8") as function_stream, rows_path.open("x", encoding="utf-8") as row_stream:
+                functions, rows = function_stream, row_stream
+                result = super().run(suite)
+                outcome["returncode"] = 0 if result.wasSuccessful() else 1
+                return result
+
+    @contextlib.contextmanager
+    def observed_subtest(test, msg=unittest.case._subtest_msg_sentinel, **parameters):
+        if id(test) not in active_tests:
+            with original_subtest(test, msg, **parameters):
+                yield
+            return
+        method = getattr(test, test._testMethodName)
+        case_id = parameters.get("case")
+        if not getattr(method, "required_subtests", False) or not isinstance(case_id, str) or not case_id:
+            raise ValueError("Python subtest needs declared owning membership and a stable case ID: " + test.id())
+        if test.id() not in declared_rows:
+            intended = getattr(test, "subtest_cases", ())
+            if (not intended or len(intended) != len(set(intended))
+                    or any(not isinstance(name, str) or not name for name in intended)):
+                raise ValueError("invalid Python owning subtest table: " + test.id())
+            emit(rows, {"caller": test.id() + "/subtests", "event": "membership", "ids": list(intended)})
+            declared_rows.add(test.id())
+        emit(rows, {"caller": test.id() + "/subtests", "id": case_id, "event": "start"})
+        with original_subtest(test, msg, **parameters):
+            yield
+
+    def observed_main(*values, **options):
+        nonlocal main_started
+        if main_started:
+            return original_main(*values, **options)
+        main_started = True
+        options["testRunner"] = Runner
+        return original_main(*values, **options)
+
+    try:
+        arguments = command[1:]
+        while arguments and arguments[0] in {"-B", "-u"}:
+            arguments.pop(0)
+        if "-f" in arguments or "--failfast" in arguments:
+            raise ValueError("Python outcome collection requires no fail-fast")
+        unittest.main = observed_main
+        unittest.TestCase.subTest = observed_subtest
+        previous = sys.argv
+        if arguments[:2] == ["-m", "unittest"]:
+            # Match Python's -m entry semantics; executing this verifier sets
+            # sys.path[0] to scripts rather than the caller's working directory.
+            sys.path.insert(0, str(Path.cwd()))
+            sys.argv = ["unittest", *arguments[2:]]
+            observed_main(module=None)
+        else:
+            script = Path(arguments[0]).resolve(strict=True)
+            sys.path.insert(0, str(script.parent))
+            sys.argv = [str(script), *arguments[1:]]
+            runpy.run_path(str(script), run_name="__main__")
+    except SystemExit as error:
+        outcome["returncode"] = int(error.code or 0)
+    finally:
+        unittest.main = original_main
+        unittest.TestCase.subTest = original_subtest
+        if "previous" in locals():
+            sys.argv = previous
+        if outcome["returncode"] == 0:
+            try:
+                discovery_data, function_data, row_data = discovery_path.read_bytes(), functions_path.read_bytes(), rows_path.read_bytes()
+                outcome["bookkeeping_read_bytes"] = len(discovery_data) + len(function_data) + len(row_data)
+                outcome["counts"] = validate_python_result(json.loads(discovery_data), function_data, row_data)
+                outcome["outcomes_valid"] = True
+            except (ValueError, KeyError, OSError, TypeError) as error:
+                outcome.update(returncode=1, error=str(error))
+                print("Python outcomes invalid:", error, file=sys.stderr)
+        outcome["seconds"] = time.perf_counter() - started
+        execution_path.write_text(json.dumps(outcome, separators=(",", ":")))
+    return outcome["returncode"]
+
+
+def main():
+    from qualification import PRESETS, GROUPS
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_subparsers(dest="mode", required=True)
+    for mode in ("development", "qualification"):
+        command = modes.add_parser(mode, help="fresh native execution; no historical admission")
+        command.add_argument("--preset", required=True, choices=PRESETS)
+        command.add_argument("--runtime", choices=("host", "gpu", "all"), default="host")
+        command.add_argument("--build-dir", type=Path)
+        command.add_argument("--cargo", type=Path)
+        command.add_argument("--nextest", type=Path)
+        command.add_argument("--run-id")
+        command.add_argument("--label")
+        if mode == "development":
+            selection = command.add_mutually_exclusive_group(required=True)
+            selection.add_argument("--files", nargs="+")
+            selection.add_argument("--tests", nargs="+")
+            selection.add_argument("--targets", nargs="+")
+            command.set_defaults(selection=None, reason="focused development")
+        else:
+            command.add_argument("--reason", required=True)
+            command.add_argument("--selection", required=True, nargs="+", choices=sorted(GROUPS))
+            command.set_defaults(files=None, tests=None, targets=None)
+    prepare = modes.add_parser("prepare", help="direct native configure/build; no reusable preparation receipt")
+    prepare.add_argument("--preset", required=True, choices=PRESETS)
+    selected = prepare.add_mutually_exclusive_group(required=True)
+    selected.add_argument("--targets", nargs="+")
+    selected.add_argument("--files", nargs="+")
+    prepare.add_argument("--testing", choices=("ON", "OFF"), default="ON")
+    prepare.add_argument("--run-id")
+    collection = modes.add_parser("collect-qualification", help="pure offline reading of named bundles")
+    collection.add_argument("--bundles", type=Path, nargs="+", required=True)
+    collection.add_argument("--output", type=Path, required=True)
+    collection.add_argument("--selection", nargs="+", choices=sorted(GROUPS))
+    collection.add_argument("--runtime", choices=("host", "gpu", "all"), default="host")
+    collection.add_argument("--presets", nargs="+", choices=PRESETS)
+    native = modes.add_parser("native-case", help=argparse.SUPPRESS)
+    native.add_argument("--preset", required=True)
+    native.add_argument("--protocol", choices=("gtest", "custom"), required=True)
+    native.add_argument("--runtime", choices=("host", "gpu"), default="host")
+    native.add_argument("command", nargs=argparse.REMAINDER)
+    python = modes.add_parser("python-tests", help=argparse.SUPPRESS)
+    python.add_argument("--preset", required=True)
+    python.add_argument("--key")
+    python.add_argument("--build-dir", type=Path)
+    python.add_argument("command", nargs=argparse.REMAINDER)
+    rust = modes.add_parser("rust-tests", help=argparse.SUPPRESS)
+    rust.add_argument("--package", choices=("core", "bridge"), required=True)
+    rust.add_argument("--preset", required=True, choices=PRESETS)
+    for flag in ("cargo", "nextest", "binaries-metadata", "cargo-metadata", "config-file"):
+        rust.add_argument("--" + flag, type=Path, required=True)
+    versions = modes.add_parser("tool-versions", help=argparse.SUPPRESS)
+    versions.add_argument("--tool", nargs=2, action="append", required=True)
+    probe = modes.add_parser("gpu-lock-probe", help=argparse.SUPPRESS)
+    probe.add_argument("--wait-for-owner", action="store_true")
+    args = parser.parse_args()
+    dispatch = {"prepare": fresh_prepare, "development": development, "qualification": native_tests,
+                "collect-qualification": collect_bundles, "native-case": native_case,
+                "python-tests": python_tests, "rust-tests": rust_tests, "tool-versions": tool_versions}
+    if args.mode == "gpu-lock-probe":
+        return gpu_lock_probe(wait_for_owner=args.wait_for_owner)
+    return dispatch[args.mode](args)
+
+
 if __name__ == "__main__":
-    sys.dont_write_bytecode = True
     try:
         raise SystemExit(main())
-    except (ValueError, OSError, subprocess.SubprocessError) as error:
-        print(f"Verification failed: {error}", file=sys.stderr)
-        raise SystemExit(1) from error
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+        print("Verification failed:", error, file=sys.stderr)
+        raise SystemExit(1)

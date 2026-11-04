@@ -4,6 +4,9 @@
 use std::path::{Path, PathBuf};
 
 use film_juicer_core::{data_io, exposure, reconstruction};
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 use serde_json::Value;
 
 fn repository() -> PathBuf {
@@ -30,7 +33,20 @@ fn fixed<const N: usize>(value: &Value) -> [f32; N] {
 
 #[test]
 fn sensitivity_matches_frozen_leaves_and_actual_producer_inputs() {
-    for row in fixture()["sensitivity"].as_array().unwrap() {
+    let rows = fixture()["sensitivity"].as_array().unwrap().to_vec();
+    let ids: Vec<String> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            row["input"]["id"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("sensitivity/{i}"))
+        })
+        .collect();
+    let mut cases = RowCases::new("exposure-sensitivity-inputs", &ids);
+    for (row, id) in rows.iter().zip(&ids) {
+        let case = cases.case(id);
         let source = &row["input"];
         let expected = &row["expected"];
         let linear = rgb(&source["linear"]);
@@ -103,7 +119,9 @@ fn sensitivity_matches_frozen_leaves_and_actual_producer_inputs() {
                 index.map(exposure::HashFailure::NonfiniteOperand)
             );
         }
+        case.passed();
     }
+    cases.finish();
 }
 
 #[test]
@@ -115,7 +133,20 @@ fn reference_matches_native_sampling_reflection_and_failure_priority() {
         repository().join("Resources/luts/spectral_upsampling/irradiance_xy_tc.npy"),
     )
     .unwrap();
-    for row in fixture()["reference"].as_array().unwrap() {
+    let rows = fixture()["reference"].as_array().unwrap().to_vec();
+    let ids: Vec<String> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            row["id"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("reference/{i}"))
+        })
+        .collect();
+    let mut cases = RowCases::new("exposure-reference-white-rows", &ids);
+    for (row, id) in rows.iter().zip(&ids) {
+        let case = cases.case(id);
         let index = row["source_index"].as_u64().map(|v| v as usize);
         let saved = index.map(|i| procedural[i]);
         if let Some(index) = index {
@@ -146,7 +177,9 @@ fn reference_matches_native_sampling_reflection_and_failure_priority() {
         if let (Some(index), Some(saved)) = (index, saved) {
             procedural[index] = saved;
         }
+        case.passed();
     }
+    cases.finish();
 }
 
 fn mallett_fixture() -> Value {
@@ -178,7 +211,20 @@ fn exact_words(actual: &[f32], expected: &Value) {
 #[test]
 fn focused_mallett_uses_independent_color_composition_and_bgr_expectations() {
     use film_juicer_core::color;
-    for row in mallett_fixture()["focused"].as_array().unwrap() {
+    let rows = mallett_fixture()["focused"].as_array().unwrap().to_vec();
+    let ids: Vec<String> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            row["id"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("focused/{i}"))
+        })
+        .collect();
+    let mut cases = RowCases::new("focused-mallett-cases", &ids);
+    for (row, id) in rows.iter().zip(&ids) {
+        let case = cases.case(id);
         let input = &row["input"];
         let basis = rgb(&input["basis"]);
         let illuminant = spectrum(&input["illuminant"]);
@@ -215,12 +261,20 @@ fn focused_mallett_uses_independent_color_composition_and_bgr_expectations() {
             ],
             &expected["normalization"],
         );
+        case.passed();
     }
+    cases.finish();
 }
 #[test]
 fn reference_source_and_distinct_rgb_reduction_preserve_frozen_outcomes() {
     let fixture = mallett_fixture();
-    for row in fixture["sources"].as_array().unwrap() {
+    let source_rows = fixture["sources"].as_array().unwrap();
+    let source_ids: Vec<String> = (0..source_rows.len())
+        .map(|i| format!("source/{i}"))
+        .collect();
+    let mut sources = RowCases::new("mallett-reference-source-ev", &source_ids);
+    for (row, id) in source_rows.iter().zip(&source_ids) {
+        let case = sources.case(id);
         let result = exposure::reference_source(word(&row["ev"]));
         assert_eq!(result.is_ok(), row["built"].as_bool().unwrap());
         match result {
@@ -230,8 +284,16 @@ fn reference_source_and_distinct_rgb_reduction_preserve_frozen_outcomes() {
             ),
             Err(error) => assert_eq!(error.kind(), exposure::ErrorKind::ReferenceSource),
         }
+        case.passed();
     }
-    for row in fixture["references"].as_array().unwrap() {
+    sources.finish();
+    let reference_rows = fixture["references"].as_array().unwrap();
+    let reference_ids: Vec<String> = (0..reference_rows.len())
+        .map(|i| format!("reference/{i}"))
+        .collect();
+    let mut references = RowCases::new("mallett-reference-raw-cases", &reference_ids);
+    for (row, id) in reference_rows.iter().zip(&reference_ids) {
+        let case = references.case(id);
         let basis = rgb(&row["basis"]);
         let illuminant = spectrum(&row["illuminant"]);
         let sensitivity = rgb(&row["sensitivity"]);
@@ -247,11 +309,22 @@ fn reference_source_and_distinct_rgb_reduction_preserve_frozen_outcomes() {
             Ok(value) => exact_words(value.rgb(), &row["expected"]),
             Err(error) => assert_eq!(error.kind(), exposure::ErrorKind::ReferenceRaw),
         }
+        case.passed();
     }
+    references.finish();
 }
 #[test]
 fn tc_green_threshold_zero_sign_and_reciprocal_match_independent_expectations() {
-    for row in mallett_fixture()["normalizations"].as_array().unwrap() {
+    let rows = mallett_fixture()["normalizations"]
+        .as_array()
+        .unwrap()
+        .to_vec();
+    let ids: Vec<String> = (0..rows.len())
+        .map(|i| format!("normalization/{i}"))
+        .collect();
+    let mut cases = RowCases::new("mallett-normalization-inputs", &ids);
+    for (row, id) in rows.iter().zip(&ids) {
+        let case = cases.case(id);
         let result = exposure::tc_midgray(word(&row["green"]));
         assert_eq!(
             result.raw_green().to_bits(),
@@ -261,5 +334,7 @@ fn tc_green_threshold_zero_sign_and_reciprocal_match_independent_expectations() 
             result.scale().to_bits(),
             word(&row["expected"][2]).to_bits()
         );
+        case.passed();
     }
+    cases.finish();
 }

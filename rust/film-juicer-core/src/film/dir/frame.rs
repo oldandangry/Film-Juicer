@@ -328,6 +328,7 @@ impl FailureTrace {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::Value;
 
@@ -438,13 +439,25 @@ mod tests {
         assert_eq!(captured["preset"], preset);
         assert_eq!(captured["cases"].as_array().unwrap().len(), 74);
         assert_eq!(captured["products"].as_array().unwrap().len(), 24);
-        for row in captured["cases"]
-            .as_array()
-            .unwrap()
+        let cases = captured["cases"].as_array().unwrap();
+        let products = captured["products"].as_array().unwrap();
+        let expected_ids = cases
             .iter()
-            .chain(captured["products"].as_array().unwrap())
+            .map(|row| format!("case/{}", row["input"]["name"].as_str().unwrap()))
+            .chain(
+                products
+                    .iter()
+                    .map(|row| format!("product/{}", row["input"]["name"].as_str().unwrap())),
+            )
+            .collect::<Vec<_>>();
+        let mut row_cases = RowCases::new("dir-frame", expected_ids);
+        for (group, row) in cases
+            .iter()
+            .map(|row| ("case", row))
+            .chain(products.iter().map(|row| ("product", row)))
         {
             let name = row["input"]["name"].as_str().unwrap();
+            let case = row_cases.case(format!("{group}/{name}"));
             let result = Plan::new(input(&row["input"]));
             assert_eq!(result.is_ok(), row["success"].as_bool().unwrap(), "{name}");
             match result {
@@ -468,6 +481,8 @@ mod tests {
                     }
                 }
             }
+            case.passed();
         }
+        row_cases.finish();
     }
 }

@@ -525,6 +525,7 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::Value;
     fn scalar(value: &Value) -> f64 {
@@ -579,8 +580,15 @@ mod tests {
     #[test]
     fn unchanged_primitives() {
         let (captured, _) = captured();
-        assert_eq!(captured["primitives"].as_array().unwrap().len(), 56);
-        for row in captured["primitives"].as_array().unwrap() {
+        let rows = captured["primitives"].as_array().unwrap();
+        assert_eq!(rows.len(), 56);
+        let mut cases = RowCases::new(
+            "dir-boundary-primitives",
+            rows.iter()
+                .map(|row| row["input"]["name"].as_str().unwrap()),
+        );
+        for row in rows {
+            let case = cases.case(row["input"]["name"].as_str().unwrap());
             let args = &row["input"]["words"];
             let lhs = Dd {
                 hi: scalar(&args[0]),
@@ -607,14 +615,24 @@ mod tests {
                 "{}",
                 row["input"]["name"]
             );
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn unchanged_complete_products_and_ordered_failures() {
         let (captured, checked) = captured();
         assert_eq!(captured["cases"].as_array().unwrap().len(), 114);
-        for row in captured["cases"].as_array().unwrap() {
+        let rows = captured["cases"].as_array().unwrap();
+        let mut cases = RowCases::new(
+            "dir-boundary-products",
+            rows.iter().enumerate().map(|(index, row)| {
+                format!("{}/row-{index}", row["input"]["name"].as_str().unwrap())
+            }),
+        );
+        for (index, row) in rows.iter().enumerate() {
             let name = row["input"]["name"].as_str().unwrap();
+            let case = cases.case(format!("{name}/row-{index}"));
             let input = input(&row["input"]);
             if let Ok(input) = &input {
                 assert_eq!(input.key().value(), row["key"].as_u64().unwrap(), "{name}");
@@ -657,7 +675,9 @@ mod tests {
                     "{name}"
                 ),
             }
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn signed_consumer_and_axis_order_safety() {

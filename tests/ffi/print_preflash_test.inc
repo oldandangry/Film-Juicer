@@ -22,13 +22,33 @@ namespace PrintPreflashTest {
         stream << value.dump(2) << '\n';
         require(bool(stream), "preflash capture write");
     }
+    std::vector<std::string> primitive_profile_ids() {
+        return {"kodak_portra_400", "fujifilm_provia_100f"};
+    }
+    std::vector<std::string> primitive_density_ids() {
+        std::vector<std::string> ids;
+        for (std::size_t index = 0; index < 21; ++index)
+            ids.emplace_back("authored/" + std::to_string(index));
+        for (const auto* key : {"kodak_portra_400", "fujifilm_provia_100f"})
+            for (std::size_t sample : {std::size_t{0}, std::size_t{40}, std::size_t{80}})
+                ids.emplace_back(std::string("profile/") + key + "/sample-" + std::to_string(sample));
+        return ids;
+    }
     Json primitives(const std::filesystem::path& resources) {
         Json rows = Json::array();
-        std::vector<float> densities{0.0f, -0.0f, 0.001f, -0.001f, 0.1f, 0.31f, 0.99999994f, 1.0f, 2.4f, 38.0f, 100.0f, 308.0f, 309.0f, 323.0f, 324.0f, -38.0f, -308.0f, -309.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
+        std::vector<std::pair<std::string, float>> densities;
+        const std::vector<float> authored{0.0f, -0.0f, 0.001f, -0.001f, 0.1f, 0.31f, 0.99999994f, 1.0f, 2.4f, 38.0f, 100.0f, 308.0f, 309.0f, 323.0f, 324.0f, -38.0f, -308.0f, -309.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
+        const auto profile_ids = primitive_profile_ids();
+        const auto density_ids = primitive_density_ids();
+        JuicerTests::Cohort profiles("print_preflash.primitive_profile", profile_ids);
+        JuicerTests::Cohort density_cases("print_preflash.primitive_density_grid", density_ids);
+        for (std::size_t index = 0; index < authored.size(); ++index)
+            densities.emplace_back("authored/" + std::to_string(index), authored[index]);
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         auto& assets = JuicerProcess::root().assets();
         for (const char* key : {"kodak_portra_400", "fujifilm_provia_100f"}) {
+            auto profile_event = profiles.case_event(key);
             const std::string selectedKey = key;
             FjFilmProfile* acquired = nullptr;
             status(fj_legacy_film_profile_acquire(assets.borrow_rust_assets(), {selectedKey.data(), selectedKey.size()}, &acquired, nullptr));
@@ -40,9 +60,13 @@ namespace PrintPreflashTest {
             status(fj_legacy_film_profile_view(film.get(), &view, nullptr));
             require(view.tables.base_density.count == 81, "primitive actual film source");
             for (std::size_t sample : {std::size_t{0}, std::size_t{40}, std::size_t{80}})
-                densities.push_back(view.tables.base_density.data[sample]);
+                densities.emplace_back(std::string("profile/") + key + "/sample-" + std::to_string(sample), view.tables.base_density.data[sample]);
+            profile_event.passed();
         }
-        for (float density : densities)
+        require(densities.size() == density_ids.size(), "complete named preflash density table");
+        for (const auto& [density_id, density] : densities) {
+            auto density_event = density_cases.case_event(density_id);
+            std::size_t visited = 0;
             for (float illuminant : {0.0f, -0.0f, 1.0f, 0.1234567f, -1.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
                 for (float sensitivity : {1.0f, -1.0f, 0.33333334f, std::numeric_limits<float>::max()}) {
                     const double d = density, i = illuminant, s = sensitivity;
@@ -51,6 +75,7 @@ namespace PrintPreflashTest {
                     const double light = std::isnan(transmitted) ? 0.0 : transmitted;
                     const double product = light * s;
                     for (double accumulator : {0.0, -product, 0x1.000001p0, 0x1.ffffffp127}) {
+                        ++visited;
                         const double sum = accumulator + product;
                         const double native[]{power, transmitted, light, product, sum};
                         double rust[5]{};
@@ -67,17 +92,28 @@ namespace PrintPreflashTest {
                                         {"rust_narrowed", std::bit_cast<std::uint32_t>(narrowed)}});
                     }
                 }
+            require(visited == 7u * 4u * 4u, "complete per-density preflash primitive arithmetic grid");
+            density_event.passed();
+        }
+        require(rows.size() == densities.size() * 7u * 4u * 4u, "complete preflash primitive table visitation");
         return rows;
     }
-    Json product_observations(const std::filesystem::path& resources) {
+    Json product_observations(const std::filesystem::path& resources, const Json& expectedProducts) {
         Json products = Json::array();
         {
             JuicerCuda::Owner owner;
             owner.create(resources.string().c_str());
             auto& assets = JuicerProcess::root().assets();
+            std::vector<std::string> product_ids;
+            for (unsigned route = 0; route < 4; ++route)
+                for (int mode = 0; mode < 3; ++mode)
+                    for (unsigned variant = 0; variant < 6; ++variant)
+                        product_ids.emplace_back("print-preflash/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
+            JuicerTests::Cohort product_rows("print_preflash.recipe_tuple", product_ids);
             for (unsigned route = 0; route < 4; ++route)
                 for (int mode = 0; mode < 3; ++mode)
                     for (unsigned variant = 0; variant < 6; ++variant) {
+                        auto case_event = product_rows.case_event("print-preflash/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
                         ParamSnapshot p;
                         p.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
                         p.printProfileKey = "kodak_portra_endura";
@@ -119,6 +155,8 @@ namespace PrintPreflashTest {
                             row["descriptors"] = {print.hash, print.main_illuminant_hash, print.preflash_illuminant_hash, print.preflash_raw_hash, print.balance_hash};
                         }
                         products.push_back(row);
+                        require(products.back() == expectedProducts.at(products.size() - 1), "per-case complete print preflash product");
+                        case_event.passed();
                     }
         }
         return products;
@@ -150,9 +188,12 @@ namespace PrintPreflashTest {
         const auto manifest = read(manifestPath);
         require(captured.at("cases").size() == 19, "adopted preflash literal membership");
         for (const auto& row : captured.at("cases")) {
+            const auto id = row.at("id").get<std::string>();
             Inputs source(row);
             const auto input = source.wire();
-            for (Prepare prepare : {fj_test_print_preflash_c_prepare, fj_test_print_preflash_prepare}) {
+            const std::array<std::pair<std::string_view, Prepare>, 2> callers{{{"c11", fj_test_print_preflash_c_prepare}, {"cpp", fj_test_print_preflash_prepare}}};
+            for (const auto& [caller, prepare] : callers) {
+                JuicerTests::CaseEvent case_event(caller, id);
                 FjPrintPreflashRaw out{{-13, -13, -13}};
                 FjPrintPreflashFailure failure{99, 98};
                 std::array<char, 128> text{};
@@ -168,10 +209,30 @@ namespace PrintPreflashTest {
                     zero(out);
                     require(std::string(text.data()) == "print preflash reason=2 channel=" + std::to_string(channel), "exact bounded channel diagnostic");
                 }
+                case_event.passed();
             }
         }
     }
     void transport(const Json& captured) {
+        JuicerTests::CaseEvent transport_event("cpp", "print-preflash/transport");
+        std::vector<std::string> span_ids, capacity_ids, fault_ids;
+        for (unsigned caller = 0; caller < 2; ++caller) {
+            for (unsigned span = 0; span < 3; ++span) {
+                for (unsigned count = 0; count < 6; ++count)
+                    span_ids.emplace_back("caller-" + std::to_string(caller) + "/span-" + std::to_string(span) + "/count-" + std::to_string(count));
+                for (unsigned pointer = 0; pointer < 3; ++pointer)
+                    span_ids.emplace_back("caller-" + std::to_string(caller) + "/span-" + std::to_string(span) + "/pointer-" + std::to_string(pointer));
+            }
+            for (const auto capacity : {0u, 1u, 8u})
+                capacity_ids.emplace_back("caller-" + std::to_string(caller) + "/capacity-" + std::to_string(capacity));
+            for (bool reject_first : {false, true})
+                fault_ids.emplace_back("caller-" + std::to_string(caller) + "/reject-first-" + std::to_string(reject_first));
+        }
+        JuicerTests::Cohort malformed_spans("print_preflash.span_defect", span_ids);
+        JuicerTests::Cohort diagnostic_capacities("print_preflash.diagnostic_capacity", capacity_ids);
+        JuicerTests::Cohort preparation_faults("print_preflash.fault_order", fault_ids);
+        JuicerTests::Cohort raw_addresses("print_preflash.raw_address", {"caller-0/address-0", "caller-0/address-1", "caller-1/address-0", "caller-1/address-1"});
+        unsigned caller_index = 0;
         for (Prepare prepare : {fj_test_print_preflash_c_prepare, fj_test_print_preflash_prepare}) {
             Inputs source(captured.at("cases")[0]);
             auto input = source.wire();
@@ -192,27 +253,38 @@ namespace PrintPreflashTest {
             raw(nullptr);
             raw(reinterpret_cast<const FjPrintPreflashInput*>(storage.data() + 1));
             raw(reinterpret_cast<const FjPrintPreflashInput*>(end));
+            unsigned span_index = 0;
             for (auto member : {&FjPrintPreflashInput::film_base_density, &FjPrintPreflashInput::filtered_illuminant, &FjPrintPreflashInput::print_sensitivity_cmy}) {
+                unsigned count_index = 0;
                 for (std::size_t count : {std::size_t{0}, std::size_t{80}, std::size_t{82}, std::size_t{242}, std::size_t{244}, SIZE_MAX}) {
+                    auto row_event = malformed_spans.case_event("caller-" + std::to_string(caller_index) + "/span-" + std::to_string(span_index) + "/count-" + std::to_string(count_index++));
                     auto invalid = input;
                     (invalid.*member).count = count;
                     raw(&invalid);
+                    row_event.passed();
                 }
+                unsigned pointer_index = 0;
                 for (const float* pointer : {static_cast<const float*>(nullptr), reinterpret_cast<const float*>(storage.data() + 1), reinterpret_cast<const float*>(end)}) {
+                    auto row_event = malformed_spans.case_event("caller-" + std::to_string(caller_index) + "/span-" + std::to_string(span_index) + "/pointer-" + std::to_string(pointer_index++));
                     auto invalid = input;
                     (invalid.*member).data = pointer;
                     raw(&invalid);
+                    row_event.passed();
                 }
+                ++span_index;
             }
             status(call(&input, nullptr, &failure), FJ_STATUS_UNSUPPORTED_INPUT);
             metadata(failure, FJ_PRINT_PREFLASH_REASON_RAW);
             status(call(&input, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             zero(out);
+            unsigned address_index = 0;
             for (std::uintptr_t address : {end, reinterpret_cast<std::uintptr_t>(storage.data() + 1)}) {
+                auto row_event = raw_addresses.case_event("caller-" + std::to_string(caller_index) + "/address-" + std::to_string(address_index++));
                 status(call(&input, reinterpret_cast<FjPrintPreflashRaw*>(address), &failure), FJ_STATUS_UNSUPPORTED_INPUT);
                 metadata(failure, FJ_PRINT_PREFLASH_REASON_RAW);
                 status(call(&input, &out, reinterpret_cast<FjPrintPreflashFailure*>(address)), FJ_STATUS_UNSUPPORTED_INPUT);
                 zero(out);
+                row_event.passed();
             }
             FjErrorBuffer invalid{nullptr, 1, 99};
             raw(&input, &invalid);
@@ -231,6 +303,7 @@ namespace PrintPreflashTest {
             const std::string message(full.data());
             require(error.length == message.size(), "preflash length excludes NUL");
             for (std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{8}}) {
+                auto row_event = diagnostic_capacities.case_event("caller-" + std::to_string(caller_index) + "/capacity-" + std::to_string(capacity));
                 std::array<char, 8> text{};
                 text.fill('x');
                 error = {capacity ? text.data() : reinterpret_cast<char*>(UINTPTR_MAX), capacity, 99};
@@ -242,10 +315,12 @@ namespace PrintPreflashTest {
                     require(text[capacity - 1] == '\0' && std::string(text.data()) == message.substr(0, capacity - 1), "diagnostic prefix/NUL");
                 else
                     require(text[0] == 'x', "zero-capacity backing untouched");
+                row_event.passed();
             }
             source = Inputs(captured.at("cases")[0]);
             input = source.wire();
             for (bool rejectFirst : {false, true}) {
+                auto row_event = preparation_faults.case_event("caller-" + std::to_string(caller_index) + "/reject-first-" + std::to_string(rejectFirst));
                 status(fj_test_film_recipe_fault(11, 1));
                 if (rejectFirst)
                     raw(nullptr);
@@ -256,9 +331,11 @@ namespace PrintPreflashTest {
                 }
                 status(call(&input, &out, &failure));
                 metadata(failure, FJ_PRINT_PREFLASH_REASON_NONE);
+                row_event.passed();
             }
             status(fj_test_film_recipe_fault(11, 1));
             status(fj_test_film_recipe_fault(11, 0));
+            ++caller_index;
             status(call(&input, &out, &failure));
             status(fj_test_film_recipe_fault(11, 2), FJ_STATUS_UNSUPPORTED_INPUT);
             status(fj_test_film_recipe_fault(13, 1), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -290,10 +367,13 @@ namespace PrintPreflashTest {
             }
             require(words(retained.cmy, 3) == captured.at("cases")[0].at("raw"), "raw facade result owns all words after input destruction");
         }
+        transport_event.passed();
     }
     void products(const std::filesystem::path& resources, const Json& captured) {
-        require(product_observations(resources) == captured.at("products"), "all 72 frozen caller values, input bindings, descriptor and final/seed identities");
+        require(product_observations(resources, captured.at("products")) == captured.at("products"), "all 72 frozen caller values, input bindings, descriptor and final/seed identities");
+        JuicerTests::CaseEvent caller_event("cpp", "print-preflash/actual-caller");
         caller(resources);
+        caller_event.passed();
     }
 } // namespace PrintPreflashTest
 
@@ -535,6 +615,7 @@ namespace PrintPreflashTest {
         require(code == cudaSuccess, cudaGetErrorString(code));
     }
     void cache(const std::filesystem::path& resources, const Json& captured) {
+        JuicerTests::CaseEvent cache_event("cpp", "print-preflash/cache");
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         cuda_ok(cudaSetDevice(0));
@@ -565,7 +646,9 @@ namespace PrintPreflashTest {
             const auto originalRaw = words(cached.printPreflashRaw, 3);
             status(fj_test_film_recipe_fault(11, 1));
             prepare(product, p, true);
+            const JuicerTests::Cohort reuse_variants("print_preflash.cache_reuse_variants", std::vector<std::string>{"5", "3", "4"});
             for (unsigned variant : {5u, 3u, 4u}) {
+                auto variant_event = reuse_variants.case_event(std::to_string(variant));
                 auto changedControls = p;
                 if (variant == 5)
                     changedControls.printPreflashExposure = .25;
@@ -577,13 +660,16 @@ namespace PrintPreflashTest {
                 status(fj_test_film_recipe_fault(11, 1));
                 prepare(changed, changedControls, true);
                 require(cached.printPreflashRawDescriptorHash == originalHash && cached.printPreflashIlluminantDescriptorHash == originalLightHash && cached.printPreflashIllumFiltered == originalLight && words(cached.printPreflashRaw, 3) == originalRaw, "amount/main-only/output edits preserve raw reuse and illumination residency");
+                variant_event.passed();
             }
             prepare(product, p);
             cached.printPreflashRawDescriptorHash = 0;
             const auto hostLight = cached.printPreflashIllumFilteredHost;
             prepare(product, p);
             require(cached.printPreflashRawDescriptorHash == originalHash && cached.printPreflashIllumFiltered == originalLight && cached.printPreflashIllumFilteredHost == hostLight && words(cached.printPreflashRaw, 3) == originalRaw, "illuminant-hit/raw-miss uses retained host light and recovers");
+            const JuicerTests::Cohort source_variants("print_preflash.cache_sources", 2);
             for (bool film : {true, false}) {
+                auto source_event = source_variants.case_event(film ? "1" : "0");
                 auto changedControls = p;
                 changedControls.filmProfileKey = film ? "kodak_ektar_100" : p.filmProfileKey;
                 changedControls.printProfileKey = film ? p.printProfileKey : "fujifilm_crystal_archive_typeii";
@@ -594,6 +680,7 @@ namespace PrintPreflashTest {
                 prepare(changed, changedControls);
                 require(cached.printPreflashRawDescriptorHash != originalHash, "film/print source identity contributes to raw key");
                 prepare(product, p);
+                source_event.passed();
             }
             auto changedControls = p;
             changedControls.preflashMFilterCc = 5;
@@ -601,9 +688,17 @@ namespace PrintPreflashTest {
             auto changed = build(changedControls);
             prepare(changed, changedControls);
             require(cached.printPreflashRawDescriptorHash != originalHash && cached.printPreflashIlluminantDescriptorHash != originalLightHash, "preflash offsets invalidate both light and raw families");
+            std::vector<std::string> offset_ids;
             for (const auto& row : captured.at("products"))
                 if (row.at("route") == 1 && row.at("mode") == p.spectralUpsamplingMode && row.at("variant") == 2)
+                    offset_ids.push_back("route-1/mode-" + std::to_string(row.at("mode").get<int>()) + "/variant-2");
+            const JuicerTests::Cohort offset_rows("print_preflash.cache_offset_products", offset_ids);
+            for (const auto& row : captured.at("products"))
+                if (row.at("route") == 1 && row.at("mode") == p.spectralUpsamplingMode && row.at("variant") == 2) {
+                    auto offset_event = offset_rows.case_event("route-1/mode-" + std::to_string(row.at("mode").get<int>()) + "/variant-2");
                     require(words(cached.printPreflashRaw, 3) == row.at("raw"), "changed-offset cache result matches frozen actual caller");
+                    offset_event.passed();
+                }
             auto disabledControls = p;
             disabledControls.printPreflashExposure = 0;
             auto disabled = build(disabledControls);
@@ -623,5 +718,6 @@ namespace PrintPreflashTest {
         }
         require(ledger->snapshot().chargedBytes == 0, "cache fixture releases every device allocation");
         JuicerCuda::purge_pinned_upload_staging_for_context(0, context, JuicerCuda::PinnedUploadPurgeDisposition::NormalRetire);
+        cache_event.passed();
     }
 } // namespace PrintPreflashTest

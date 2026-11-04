@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
     fn scalar(v: &Value) -> f32 {
         f32::from_bits(v.as_u64().unwrap() as u32)
@@ -131,12 +132,22 @@ mod tests {
     #[test]
     fn complete_native_values_and_ordered_failures() {
         let captured = captured();
-        assert_eq!(captured["cases"].as_array().unwrap().len(), 153);
-        for row in captured["cases"].as_array().unwrap() {
+        let rows = captured["cases"].as_array().unwrap();
+        assert_eq!(rows.len(), 153);
+        let mut cases = RowCases::new(
+            "grain-frame-values",
+            rows.iter()
+                .filter(|row| {
+                    row["input"]["missing_recipe"] != true && row["input"]["missing_film"] != true
+                })
+                .map(|row| row["input"]["name"].as_str().unwrap()),
+        );
+        for row in rows {
             let v = &row["input"];
             if v["missing_recipe"] == true || v["missing_film"] == true {
                 continue;
             }
+            let case = cases.case(v["name"].as_str().unwrap());
             let curves: Vec<Vec<Vec<f32>>> = v["layer_curves"]
                 .as_array()
                 .unwrap()
@@ -194,13 +205,23 @@ mod tests {
                         .collect::<Vec<_>>()
                 );
             }
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn independently_captured_primitives() {
         let captured = captured();
-        assert_eq!(captured["primitives"].as_array().unwrap().len(), 50);
-        for row in captured["primitives"].as_array().unwrap() {
+        let rows = captured["primitives"].as_array().unwrap();
+        assert_eq!(rows.len(), 50);
+        let mut cases = RowCases::new(
+            "grain-frame-primitives",
+            rows.iter()
+                .enumerate()
+                .map(|(index, _)| format!("primitive/{index}")),
+        );
+        for (index, row) in rows.iter().enumerate() {
+            let case = cases.case(format!("primitive/{index}"));
             let v = &row["input"];
             let expected = &row["result"];
             let actual = match v["op"].as_str().unwrap() {
@@ -216,23 +237,37 @@ mod tests {
                             v["input"], expected, bits
                         );
                     }
+                    case.passed();
                     continue;
                 }
                 _ => panic!("closed primitive cohort"),
             };
             assert_eq!(actual, *expected, "{v}");
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn bounded_conversion_and_deferred_borrowing() {
         let captured = captured();
         let mut v = input(&captured["cases"][0]["input"]);
-        for rate in [f64::MAX, 2.0_f64.powi(63) / 2.5] {
+        let rates = [
+            ("maximum", f64::MAX),
+            ("rounded-overflow", 2.0_f64.powi(63) / 2.5),
+        ];
+        let mut rate_cases = RowCases::new(
+            "grain-frame-period-overflow",
+            rates.iter().map(|(id, _)| *id),
+        );
+        for (id, rate) in rates {
+            let case = rate_cases.case(id);
             v.frame_rate = rate;
             let error = Plan::new(v, |_, _| panic!("period failure must precede layer access"))
                 .unwrap_err();
             assert_eq!(error.field(), Field::PeriodFrames);
+            case.passed();
         }
+        rate_cases.finish();
         v = input(&captured["cases"][0]["input"]);
         v.sublayers_active = true;
         let error = Plan::new(v, |l, c| {
@@ -252,12 +287,22 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/grain/frame-fixtures/checked.json");
         let checked: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        for row in checked["gaussian_safety"].as_array().unwrap() {
+        let rows = checked["gaussian_safety"].as_array().unwrap();
+        let mut gaussian_cases = RowCases::new(
+            "grain-frame-gaussian-safety",
+            rows.iter()
+                .enumerate()
+                .map(|(index, _)| format!("sigma/{index}")),
+        );
+        for (index, row) in rows.iter().enumerate() {
+            let case = gaussian_cases.case(format!("sigma/{index}"));
             assert_eq!(
                 gaussian(&Gaussian::new(scalar(&row["input"]))),
                 row["expected"]
             );
+            case.passed();
         }
+        gaussian_cases.finish();
         assert_eq!(maximum(-0.0, 0.0).to_bits(), (-0.0_f32).to_bits());
         assert_eq!(minimum(-0.0, 0.0).to_bits(), (-0.0_f32).to_bits());
         assert!(maximum(f32::NAN, 1.0).is_nan());

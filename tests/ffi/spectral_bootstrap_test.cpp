@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include "gtest_cases.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
@@ -140,7 +141,10 @@ namespace {
     }
 
     TEST(SpectralBootstrap, SequentialOwnerCmfFailuresClearAllCurves) {
+        JuicerTests::GtestCohort cmf_failures_cases("cmf-failures", 4u);
+        std::size_t cmf_failures_index = 0;
         for (const char* failure : {"missing", "empty", "axis", "token"}) {
+            auto cmf_failures_case = cmf_failures_cases.case_event(std::to_string(cmf_failures_index++));
             SCOPED_TRACE(failure);
             {
                 JuicerCuda::Owner first;
@@ -199,10 +203,14 @@ namespace {
             }
             EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
             expect_no_cuda();
+
+            cmf_failures_case.passed();
         }
     }
 
     TEST(SpectralBootstrap, IndependentMissingFamiliesAndSelectedConsumers) {
+        JuicerTests::GtestCohort missing_family_method_cases("missing-family-method", 9u);
+        std::size_t missing_family_method_index = 0;
         for (const char* missing : {SpectralFixture::kHanatos, SpectralFixture::kArctic, SpectralFixture::kMallett}) {
             SCOPED_TRACE(missing);
             const auto root = consumer_root(std::string("missing-") + missing);
@@ -211,6 +219,7 @@ namespace {
             owner.create(root);
             const unsigned absent = missing == SpectralFixture::kHanatos ? 0u : (missing == SpectralFixture::kArctic ? 2u : 1u);
             for (unsigned method : {0u, 1u, 2u}) {
+                auto missing_family_method_case = missing_family_method_cases.case_event(std::to_string(missing_family_method_index++));
                 bool success = false;
                 std::string diagnostic;
                 if (method != absent) {
@@ -233,6 +242,8 @@ namespace {
                 if (method == absent) {
                     EXPECT_FALSE(diagnostic.empty());
                 }
+
+                missing_family_method_case.passed();
             }
             expect_no_cuda();
         }
@@ -290,7 +301,10 @@ namespace {
 
     TEST(SpectralBootstrap, SupportedWidthsChangedExtremaAndSignedSpecials) {
         const std::vector<std::uint32_t> decoded{0u, 0x80000000u, 0x3f800000u, 0xc0000000u, 0x7f800000u, 0xff800000u, 0x7fc46000u, 0xffc6a000u};
+        JuicerTests::GtestCohort source_widths_cases("source-widths", 3u);
+        std::size_t source_widths_index = 0;
         for (unsigned width : {2u, 4u, 8u}) {
+            auto source_widths_case = source_widths_cases.case_event(std::to_string(source_widths_index++));
             const auto root = source_root("width-" + std::to_string(width));
             std::vector<std::uint64_t> bits;
             if (width == 2) {
@@ -359,11 +373,16 @@ namespace {
             EXPECT_EQ(integrated.capacity, 0u);
             EXPECT_EQ(fj_test_reconstruction_release_tc_lut(&integrated).category, FJ_STATUS_SUCCESS);
             expect_no_cuda();
+
+            source_widths_case.passed();
         }
     }
 
     TEST(SpectralBootstrap, AlteredFiniteSourcesAndOverflowReachComputation) {
+        JuicerTests::GtestCohort source_overflow_cases("source-overflow", 2u);
+        std::size_t source_overflow_index = 0;
         for (bool overflow : {false, true}) {
+            auto source_overflow_case = source_overflow_cases.case_event(std::to_string(source_overflow_index++));
             const auto root = consumer_root(overflow ? "narrowing-overflow" : "changed-finite");
             if (overflow) {
                 SpectralFixture::write_npy(root, SpectralFixture::kHanatos, {.elementBytes = 8, .sampleCount = SpectralFixture::kLutCount}, {std::bit_cast<std::uint64_t>(1e300)});
@@ -396,11 +415,16 @@ namespace {
                 EXPECT_EQ(product.view(view, error).category, FJ_STATUS_SUCCESS);
             }
             expect_no_cuda();
+
+            source_overflow_case.passed();
         }
     }
 
     TEST(SpectralBootstrap, MalformedSourcesFailWithoutTranspositionOrPartialPublication) {
+        JuicerTests::GtestCohort malformed_sources_cases("malformed-sources", 6u);
+        std::size_t malformed_sources_index = 0;
         for (unsigned failure = 0; failure < 6; ++failure) {
+            auto malformed_sources_case = malformed_sources_cases.case_event(std::to_string(malformed_sources_index++));
             const auto root = source_root("malformed-" + std::to_string(failure));
             if (failure == 0) {
                 SpectralFixture::write_npy(root, SpectralFixture::kMallett, {.elementBytes = 4, .sampleCount = 243, .shape = "3,81"});
@@ -468,6 +492,8 @@ namespace {
             }
             expect_no_cuda();
             EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
+
+            malformed_sources_case.passed();
         }
     }
 
@@ -500,6 +526,9 @@ namespace {
 
 int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
+    if (::testing::GTEST_FLAG(list_tests))
+        return RUN_ALL_TESTS();
+    JuicerTests::CaseLog case_log;
     if (argc != 3) {
         return 2;
     }
@@ -507,6 +536,7 @@ int main(int argc, char** argv) try {
     scratch = fs::absolute(argv[2]);
     fs::create_directories(scratch);
     const int result = RUN_ALL_TESTS();
+    case_log.finish();
     const bool ownersDrained = fj_test_spectral_live_owners() == 0 && fj_test_assets_live_owners() == 0;
     return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
 } catch (const std::exception& error) {

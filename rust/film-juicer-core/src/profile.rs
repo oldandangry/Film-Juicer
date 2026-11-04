@@ -903,11 +903,12 @@ pub fn load_print_source(path: &Path) -> Result<ProfileSource, ProfileError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_cases::RowCases;
     use super::{blackbody_temperature, exposure_count_supported};
 
     #[test]
     fn preserves_blackbody_decimal_value() {
-        for (authored, kelvin) in [
+        let rows = [
             ("BB3200.5", 3200.5_f64),
             (" bb+3200.5\t", 3200.5),
             ("Bb3.2e+3", 3200.0),
@@ -920,19 +921,39 @@ mod tests {
             ("BB1e-999", 0.0),
             ("BB-1e-999", -0.0),
             ("BB0.1e-323", 0.0),
-        ] {
+        ];
+        let mut cases = RowCases::new(
+            "profile-blackbody-tokens",
+            rows.iter().map(|(authored, _)| format!("token/{authored}")),
+        );
+        for (authored, kelvin) in rows {
+            let case = cases.case(format!("token/{authored}"));
             assert_eq!(
                 blackbody_temperature(authored).unwrap().to_bits(),
                 kelvin.to_bits()
             );
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
     fn enforces_exposure_count_bounds() {
-        assert!(!exposure_count_supported(0));
-        assert!(exposure_count_supported(1));
-        assert!(exposure_count_supported(i32::MAX as usize));
-        assert!(!exposure_count_supported(i32::MAX as usize + 1));
+        let rows = [
+            ("zero", 0, false),
+            ("minimum", 1, true),
+            ("maximum", i32::MAX as usize, true),
+            ("above-maximum", i32::MAX as usize + 1, false),
+        ];
+        let mut cases = RowCases::new(
+            "profile-exposure-count-bounds",
+            rows.iter().map(|(name, _, _)| *name),
+        );
+        for (name, count, expected) in rows {
+            let case = cases.case(name);
+            assert_eq!(exposure_count_supported(count), expected);
+            case.passed();
+        }
+        cases.finish();
     }
 }

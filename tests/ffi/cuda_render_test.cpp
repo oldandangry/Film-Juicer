@@ -23,6 +23,7 @@
 #include <cuda_runtime.h>
 
 #include "prepared_descriptors.h"
+#include "case_results.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
@@ -409,7 +410,7 @@ namespace JuicerCudaTest {
         std::cout << "held-state lifetime route=" << route << " case=" << static_cast<unsigned>(lifetimeCase) << " consumed=1 native-reservation=0\n";
     }
 
-    void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const FjPreparedStateView* state, const FjHostPreparation* hostPreparation) {
+    void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const FjPreparedStateView* state, const FjHostPreparation* hostPreparation, const std::string& invocationContext) {
         const auto check = [&](const FjFrame& candidateFrame, const FjSubmission& candidateSubmission, const FjPreparedHostData& candidate, const char* rejectedField) {
             std::array<char, 256> message{};
             FjErrorBuffer error{message.data(), message.size(), 0};
@@ -440,6 +441,11 @@ namespace JuicerCudaTest {
             check(frame, submission, changed, "print.density_cmy");
         }
         if (prepared.spatial_dir.hash != 0) {
+            const bool extentCaseAvailable = prepared.optics.flags == 0 && prepared.grain.hash == 0 && prepared.effects.hash == 0;
+            std::vector<std::string> ids{"filter-domain-x", "filter-domain-y", "filter-domain-width", "filter-domain-height"};
+            if (extentCaseAvailable)
+                ids.insert(ids.begin(), "render-extent-width");
+            JuicerTests::Cohort cohort(invocationContext + "/frame-spatial-dir", ids);
             for (int fault = 0; fault < 5; ++fault) {
                 auto changedFrame = frame;
                 auto changed = prepared;
@@ -459,11 +465,16 @@ namespace JuicerCudaTest {
                 } else {
                     --changed.spatial_dir.filter_domain_extent.height;
                 }
+                constexpr std::array<const char*, 5> faultIds{"render-extent-width", "filter-domain-x", "filter-domain-y", "filter-domain-width", "filter-domain-height"};
+                auto row = cohort.case_event(faultIds[fault]);
                 check(changedFrame, submission, changed, "spatial_dir.frame");
+                row.passed();
             }
         }
         if (prepared.grain.hash != 0) {
             require(state != nullptr, "grain frame probes require their held complete state");
+            constexpr std::array<std::string_view, 5> faultIds{"session-seed", "clip-token", "pixel-size", "integral-time-frame-token", "fractional-time"};
+            JuicerTests::Cohort faultCohort(invocationContext + "/frame-grain-bindings", std::vector<std::string>(faultIds.begin(), faultIds.end()));
             for (int fault = 0; fault < 5; ++fault) {
                 auto changed = frame;
                 auto identity = submission;
@@ -485,11 +496,18 @@ namespace JuicerCudaTest {
                         changed.time_frames += 0.25;
                         break;
                 }
+                auto row = faultCohort.case_event(faultIds[fault]);
                 check(changed, identity, prepared, "grain.frame");
+                row.passed();
             }
             // Rebuild only test inputs through the authoritative producer. Signed
             // and fractional times exercise both the frame token and grain phase.
-            for (const double time : {-37.75, -1.0, -0.25, 0.0, 37.25}) {
+            constexpr std::array<double, 5> times{-37.75, -1.0, -0.25, 0.0, 37.25};
+            constexpr std::array<std::string_view, 5> timeIds{"negative-fractional", "negative-integral", "negative-quarter", "zero", "positive-fractional"};
+            JuicerTests::Cohort timeCohort(invocationContext + "/frame-grain-time", std::vector<std::string>(timeIds.begin(), timeIds.end()));
+            for (std::size_t index = 0; index < times.size(); ++index) {
+                const double time = times[index];
+                auto row = timeCohort.case_event(timeIds[index]);
                 auto changedFrame = frame;
                 changedFrame.time_frames = time;
                 auto identity = submission;
@@ -528,12 +546,13 @@ namespace JuicerCudaTest {
                 changed.grain = encoded.grain;
                 changed.grain.frame_alpha += 0.125f;
                 check(changedFrame, identity, changed, "grain.frame");
+                row.passed();
             }
         }
         std::cout << "frame bindings route=" << prepared.route << " grain=" << (prepared.grain.hash != 0) << " passed\n";
     }
 
-    FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error) {
+    FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error, const std::string& invocationContext) {
         constexpr FjStatus unsupported{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
         constexpr FjStatus preparationFailure{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         constexpr FjStatus success{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
@@ -548,15 +567,22 @@ namespace JuicerCudaTest {
         require_status(render({AbortQuery::query, &beforeEnqueue}), cancelled, "cancel before first preparation");
         require(beforeEnqueue.calls == 1 && beforeEnqueue.sameThread, "pre-enqueue callback");
         require(JuicerProcess::TestSupport::RootLifetimeObserver::fences(JuicerProcess::root()) == 0, "pre-enqueue cancellation created no frame fence");
+        constexpr std::array<const char*, 7> argumentFaultIds{"null-owner", "null-context", "null-frame", "null-submission", "null-prepared", "malformed-error-buffer", "null-error-output"};
+        JuicerTests::Cohort argumentFaults(invocationContext + "/render-null-arguments", std::vector<std::string>(argumentFaultIds.begin(), argumentFaultIds.end()));
         for (int fault = 0; fault < 7; ++fault) {
+            auto row = argumentFaults.case_event(argumentFaultIds[fault]);
             FjErrorBuffer malformedError{nullptr, 4, 92};
             const auto result = fault == 6
                                     ? render_raw_prepared(cuda, frame, submission, prepared, {}, nullptr)
                                     : fj_cuda_render(fault == 0 ? nullptr : cuda, fault == 1 ? nullptr : &context, fault == 2 ? nullptr : &frame, fault == 3 ? nullptr : &submission, fault == 4 ? nullptr : &prepared, {}, fault == 5 ? &malformedError : error);
             require_status(result, fault == 6 ? success : unsupported, "null argument");
+            row.passed();
         }
         require_status(fj_cuda_render(reinterpret_cast<FjCuda*>(std::uintptr_t{1}), &context, &frame, &submission, &prepared, {}, error), preparationFailure, "unregistered owner");
+        constexpr std::array<const char*, 4> contextFaultIds{"invalid-device", "null-context-handle", "different-device", "different-context"};
+        JuicerTests::Cohort contextFaults(invocationContext + "/render-context-identity", std::vector<std::string>(contextFaultIds.begin(), contextFaultIds.end()));
         for (int fault = 0; fault < 4; ++fault) {
+            auto row = contextFaults.case_event(contextFaultIds[fault]);
             auto changed = context;
             if (fault == 0)
                 changed.device_id = -1;
@@ -567,8 +593,12 @@ namespace JuicerCudaTest {
             if (fault == 3)
                 ++changed.context;
             require_status(fj_cuda_render(cuda, &changed, &frame, &submission, &prepared, {}, error), unsupported, "context identity");
+            row.passed();
         }
+        constexpr std::array<const char*, 9> submissionFaultIds{"zero-instance-token", "zero-submission-id", "different-frame-token", "different-upload-hash", "different-dir-hash", "zero-scanner-hash", "different-auto-exposure-hash", "zero-upload-hash", "zero-auto-exposure-hash"};
+        JuicerTests::Cohort submissionFaults(invocationContext + "/render-submission-identity", std::vector<std::string>(submissionFaultIds.begin(), submissionFaultIds.end()));
         for (int fault = 0; fault < 9; ++fault) {
+            auto row = submissionFaults.case_event(submissionFaultIds[fault]);
             auto changed = submission;
             switch (fault) {
                 case 0:
@@ -600,8 +630,12 @@ namespace JuicerCudaTest {
                     break;
             }
             require_status(fj_cuda_render(cuda, &context, &frame, &changed, &prepared, {}, error), unsupported, "submission identity");
+            row.passed();
         }
+        constexpr std::array<const char*, 13> frameFaultIds{"null-source-address", "negative-row-bytes", "reserved-flags", "missing-stream-flag", "nan-time", "overflow-time", "negative-pixel-size", "negative-frame-rate", "empty-render-window", "empty-full-frame", "unsupported-components", "unsupported-depth", "aliased-source-destination"};
+        JuicerTests::Cohort frameFaults(invocationContext + "/render-frame-input", std::vector<std::string>(frameFaultIds.begin(), frameFaultIds.end()));
         for (int fault = 0; fault < 13; ++fault) {
+            auto row = frameFaults.case_event(frameFaultIds[fault]);
             auto changed = frame;
             switch (fault) {
                 case 0:
@@ -645,8 +679,12 @@ namespace JuicerCudaTest {
                     break;
             }
             require_status(fj_cuda_render(cuda, &context, &changed, &submission, &prepared, {}, error), unsupported, "frame input");
+            row.passed();
         }
+        constexpr std::array<const char*, 10> preparedFaultIds{"unknown-route", "different-recipe-hash", "null-sensitivity", "short-density-count", "different-preview-width", "different-source-bounds", "different-density-bounds-hash", "invalid-profile-key", "reserved-scanner-post-flags", "reserved-output-color-flags"};
+        JuicerTests::Cohort preparedFaults(invocationContext + "/render-prepared-input", std::vector<std::string>(preparedFaultIds.begin(), preparedFaultIds.end()));
         for (int fault = 0; fault < 10; ++fault) {
+            auto row = preparedFaults.case_event(preparedFaultIds[fault]);
             auto changed = prepared;
             switch (fault) {
                 case 0:
@@ -681,6 +719,7 @@ namespace JuicerCudaTest {
                     break;
             }
             require_status(fj_cuda_render(cuda, &context, &frame, &submission, &changed, {}, error), unsupported, "prepared input");
+            row.passed();
         }
         // The reinspection must reject a different current context, even if the
         // caller supplies the identity returned by an earlier successful inspect.
@@ -703,7 +742,12 @@ namespace JuicerCudaTest {
         require_status(wrongStream, unsupported, "foreign stream context");
 
         using JuicerCuda::RenderTest::Injection;
-        for (const auto injection : {Injection::Allocation, Injection::Standard, Injection::Unknown, Injection::Typed}) {
+        constexpr std::array<Injection, 4> injections{Injection::Allocation, Injection::Standard, Injection::Unknown, Injection::Typed};
+        constexpr std::array<const char*, 4> injectionIds{"allocation", "standard", "unknown", "typed"};
+        JuicerTests::Cohort injectionCases(invocationContext + "/render-exception-injection", std::vector<std::string>(injectionIds.begin(), injectionIds.end()));
+        for (std::size_t index = 0; index < injections.size(); ++index) {
+            const auto injection = injections[index];
+            auto row = injectionCases.case_event(injectionIds[index]);
             JuicerCuda::RenderTest::injection = injection;
             JuicerCuda::RenderTest::injectedStatus = JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED);
             const auto result = render();
@@ -712,9 +756,22 @@ namespace JuicerCudaTest {
                                                                 : FjStatus{injection == Injection::Allocation ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
             require_status(result, expected, "C exception containment");
             require(error->length > 0, "owned exception diagnostic");
+            row.passed();
         }
-        for (const auto typed : {preparationFailure, JuicerCuda::runtime_failure_status(cudaErrorMemoryAllocation), JuicerCuda::runtime_failure_status(cudaErrorInvalidValue), JuicerCuda::cufft_failure_status(6), JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED)}) {
-            for (const std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{8}, std::size_t{64}}) {
+        const std::array<FjStatus, 5> typedStatuses{preparationFailure, JuicerCuda::runtime_failure_status(cudaErrorMemoryAllocation), JuicerCuda::runtime_failure_status(cudaErrorInvalidValue), JuicerCuda::cufft_failure_status(6), JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED)};
+        constexpr std::array<const char*, 5> typedStatusIds{"preparation-failure", "runtime-allocation", "runtime-invalid-value", "cufft", "driver-context-lost"};
+        constexpr std::array<std::size_t, 4> capacities{0, 1, 8, 64};
+        constexpr std::array<const char*, 4> capacityIds{"zero", "one", "eight", "sixty-four"};
+        std::vector<std::string> typedCapacityIds;
+        for (const char* statusId : typedStatusIds)
+            for (const char* capacityId : capacityIds)
+                typedCapacityIds.emplace_back(std::string(statusId) + "/" + capacityId);
+        JuicerTests::Cohort typedCapacities(invocationContext + "/render-typed-status-capacity", typedCapacityIds);
+        for (std::size_t statusIndex = 0; statusIndex < typedStatuses.size(); ++statusIndex) {
+            const auto typed = typedStatuses[statusIndex];
+            for (std::size_t capacityIndex = 0; capacityIndex < capacities.size(); ++capacityIndex) {
+                const auto capacity = capacities[capacityIndex];
+                auto row = typedCapacities.case_event(std::string(typedStatusIds[statusIndex]) + "/" + capacityIds[capacityIndex]);
                 std::array<char, 64> message{};
                 FjErrorBuffer output{capacity == 0 ? nullptr : message.data(), capacity, 92};
                 JuicerCuda::RenderTest::injection = Injection::Typed;
@@ -726,10 +783,21 @@ namespace JuicerCudaTest {
                 const auto length = capacity == 0 ? 0 : std::min(capacity - 1, full.size());
                 require(output.length == length, "diagnostic length");
                 require(capacity == 0 || (message[length] == '\0' && full.compare(0, length, message.data()) == 0), "diagnostic contents");
+                row.passed();
             }
         }
-        for (const bool deferred : {false, true}) {
-            for (const std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{8}, std::size_t{64}}) {
+        constexpr std::array<bool, 2> deferredCases{false, true};
+        constexpr std::array<const char*, 2> deferredIds{"not-deferred", "deferred"};
+        std::vector<std::string> deferredCapacityIds;
+        for (const char* deferredId : deferredIds)
+            for (const char* capacityId : capacityIds)
+                deferredCapacityIds.emplace_back(std::string(deferredId) + "/" + capacityId);
+        JuicerTests::Cohort deferredCapacities(invocationContext + "/render-deferred-capacity", deferredCapacityIds);
+        for (std::size_t deferredIndex = 0; deferredIndex < deferredCases.size(); ++deferredIndex) {
+            const bool deferred = deferredCases[deferredIndex];
+            for (std::size_t capacityIndex = 0; capacityIndex < capacities.size(); ++capacityIndex) {
+                const auto capacity = capacities[capacityIndex];
+                auto row = deferredCapacities.case_event(std::string(deferredIds[deferredIndex]) + "/" + capacityIds[capacityIndex]);
                 std::array<char, 64> text{};
                 FjErrorBuffer output{text.data(), capacity, 0};
                 JuicerCuda::RenderTest::injection = Injection::Typed;
@@ -740,12 +808,25 @@ namespace JuicerCudaTest {
                 JuicerCuda::RenderTest::injectedDeferredDirError = false;
                 require_status(outcome.status, preparationFailure, "typed deferred DIR status");
                 require(outcome.flags == (deferred ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U), "deferred provenance independent of diagnostic capacity and text");
+                row.passed();
             }
         }
         // EQUAL is prepared before publication. Its former late exception
         // transport is covered here without adding preparation work to render.
-        for (const auto category : {FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_ALLOCATION_FAILURE}) {
-            for (const bool completionFailure : {false, true}) {
+        constexpr std::array<std::uint32_t, 3> categories{FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_ALLOCATION_FAILURE};
+        constexpr std::array<const char*, 3> categoryIds{"unsupported-input", "internal-failure", "allocation-failure"};
+        constexpr std::array<bool, 2> completionCases{false, true};
+        constexpr std::array<const char*, 2> completionIds{"completion-success", "completion-failure"};
+        std::vector<std::string> categoryCompletionIds;
+        for (const char* categoryId : categoryIds)
+            for (const char* completionId : completionIds)
+                categoryCompletionIds.emplace_back(std::string(categoryId) + "/" + completionId);
+        JuicerTests::Cohort categoryCompletionCases(invocationContext + "/render-absent-stream-completion", categoryCompletionIds);
+        for (std::size_t categoryIndex = 0; categoryIndex < categories.size(); ++categoryIndex) {
+            const auto category = categories[categoryIndex];
+            for (std::size_t completionIndex = 0; completionIndex < completionCases.size(); ++completionIndex) {
+                const bool completionFailure = completionCases[completionIndex];
+                auto row = categoryCompletionCases.case_event(std::string(categoryIds[categoryIndex]) + "/" + completionIds[completionIndex]);
                 auto absentStream = frame;
                 absentStream.flags &= ~FJ_FRAME_STREAM_PRESENT;
                 absentStream.stream = 0;
@@ -762,6 +843,7 @@ namespace JuicerCudaTest {
                 require(JuicerCuda::RenderTest::completionCalls == 1 && JuicerCuda::RenderTest::lastCompletion == cudaSuccess,
                         "actual absent-stream completion precedes its test-only status override");
                 require(cudaStreamQuery(nullptr) == cudaSuccess, "native exception unwind completes absent-stream work");
+                row.passed();
             }
         }
         // The production adapter uses this same admitted body after inspection
@@ -776,7 +858,12 @@ namespace JuicerCudaTest {
             require_status(admitted.render(&inspected, &frame, &submission, &prepared, {}, recovery, diagnostic), success, "one inspection and render admission");
             require(!recovery.pending, "ordinary render schedules no host recovery");
         }
-        for (unsigned checkpoint = 1; checkpoint <= 3; ++checkpoint) {
+        constexpr std::array<unsigned, 3> checkpoints{1, 2, 3};
+        constexpr std::array<const char*, 3> checkpointIds{"before-enqueue", "after-enqueue", "after-execute"};
+        JuicerTests::Cohort cancellationCheckpoints(invocationContext + "/render-cancellation-checkpoints", std::vector<std::string>(checkpointIds.begin(), checkpointIds.end()));
+        for (std::size_t checkpointIndex = 0; checkpointIndex < checkpoints.size(); ++checkpointIndex) {
+            const unsigned checkpoint = checkpoints[checkpointIndex];
+            auto row = cancellationCheckpoints.case_event(checkpointIds[checkpointIndex]);
             AbortQuery callback;
             callback.cancelAt = checkpoint;
             {
@@ -803,6 +890,7 @@ namespace JuicerCudaTest {
             const auto calls = callback.calls;
             require_status(render(), success, "successful render after cancellation");
             require(callback.calls == calls, "callback retained after return");
+            row.passed();
         }
         AbortQuery invalid;
         invalid.cancelAt = 1;
@@ -819,7 +907,10 @@ namespace JuicerCudaTest {
 
         // Isolate the C entry's return-time contract from schedule-internal
         // synchronization by queuing finite work after the executor completes.
+        constexpr std::array<const char*, 3> streamIds{"present-supplied-stream", "present-default-stream", "absent-default-stream"};
+        JuicerTests::Cohort streamCases(invocationContext + "/render-stream-presence", std::vector<std::string>(streamIds.begin(), streamIds.end()));
         for (int streamCase = 0; streamCase < 3; ++streamCase) {
+            auto row = streamCases.case_event(streamIds[streamCase]);
             auto streamFrame = frame;
             if (streamCase != 0)
                 streamFrame.stream = 0;
@@ -832,10 +923,16 @@ namespace JuicerCudaTest {
             require_status(result, success, "stream-presence return contract");
             require(pending.observedPending, "stream completion probe actually queued pending work");
             require(cudaEventQuery(pending.event) == (streamCase == 2 ? cudaSuccess : cudaErrorNotReady), "supplied streams return asynchronously, absence completes");
+            row.passed();
         }
         // Explicit default-stream and absent-stream calls both execute; absence
         // additionally guarantees completion before caller storage/image release.
-        for (const bool supplied : {true, false}) {
+        constexpr std::array<bool, 2> suppliedCases{true, false};
+        constexpr std::array<const char*, 2> suppliedIds{"stream-supplied", "stream-absent"};
+        JuicerTests::Cohort suppliedStreamCases(invocationContext + "/render-default-stream", std::vector<std::string>(suppliedIds.begin(), suppliedIds.end()));
+        for (std::size_t suppliedIndex = 0; suppliedIndex < suppliedCases.size(); ++suppliedIndex) {
+            const bool supplied = suppliedCases[suppliedIndex];
+            auto row = suppliedStreamCases.case_event(suppliedIds[suppliedIndex]);
             auto defaultFrame = frame;
             defaultFrame.stream = 0;
             if (!supplied)
@@ -848,8 +945,14 @@ namespace JuicerCudaTest {
             require_status(render_raw_prepared(cuda, defaultFrame, submission, prepared, {AbortQuery::query, &cancel}, error), cancelled, "default stream cancellation");
             if (!supplied)
                 require(cudaStreamQuery(nullptr) == cudaSuccess, "absent stream abort completion");
+            row.passed();
         }
-        for (bool rustTc : {false, true}) {
+        constexpr std::array<bool, 2> uploadStorageCases{false, true};
+        constexpr std::array<const char*, 2> uploadStorageIds{"borrowed-prepared-storage", "rust-tc-allocation"};
+        JuicerTests::Cohort uploadStorage(invocationContext + "/render-expiring-upload-storage", std::vector<std::string>(uploadStorageIds.begin(), uploadStorageIds.end()));
+        for (std::size_t storageIndex = 0; storageIndex < uploadStorageCases.size(); ++storageIndex) {
+            const bool rustTc = uploadStorageCases[storageIndex];
+            auto row = uploadStorage.case_event(uploadStorageIds[storageIndex]);
             const JuicerCuda::ResourceManager::DeviceContextKey uploadKey{context.device_id, reinterpret_cast<void*>(context.context)};
             JuicerCuda::RenderTest::ExpiringUpload upload;
             upload.resources = JuicerProcess::TestSupport::RootLifetimeObserver::resources(JuicerProcess::root(), uploadKey);
@@ -920,6 +1023,7 @@ namespace JuicerCudaTest {
             require(cudaMemcpy(actual.data(), upload.second, actual.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess, "read native staged values");
             require(std::memcmp(actual.data(), expected.data(), expected.size() * sizeof(float)) == 0, "native staging retained exact borrowed values");
             std::cout << (rustTc ? "Rust TC allocation" : "caller prepared storage") << " expired after C return with native upload event outstanding\n";
+            row.passed();
         }
         const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
         JuicerCuda::ResourceManager::RegistryContextSnapshot oldEpoch;

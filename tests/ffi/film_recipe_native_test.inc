@@ -33,6 +33,7 @@ namespace {
     void native_cases(const std::filesystem::path& fixture, const Json& captured) {
         const auto f1 = read(fixture.parent_path() / (fixture.stem().string() + "-f1.json"));
         for (const auto& row : f1) {
+            JuicerTests::CaseEvent case_event("cpp", "film/default/raw/" + row.at("case").get<std::string>() + "/" + std::to_string(row.at("kind").get<unsigned>()));
             const auto name = row.at("case").get<std::string>();
             const auto root = (name == "duplicates" || name == "singleton") ? fixture.parent_path().parent_path() / "fixtures/synthetic" / name : fixture.parent_path() / "synthetic" / name;
             Assets assets(root);
@@ -70,6 +71,7 @@ namespace {
             }
             status(fj_legacy_film_development_release(development, nullptr));
             require(fj_test_film_dir_live_owners() == 0, "all F1 raw DIR owners drain after each fixture row");
+            case_event.passed();
         }
         require(fj_test_film_development_live_owners() == 0, "all F1 development holds released");
     }
@@ -78,6 +80,7 @@ namespace {
         JuicerCuda::Owner owner;
         owner.create(resources);
         for (const auto& row : captured.at("cases")) {
+            JuicerTests::CaseEvent case_event("cpp", film_case_id("film/products", row));
             ParamSnapshot controls;
             controls.filmProfileKey = row.at("key").get<std::string>();
             controls.printProfileKey = "kodak_portra_endura";
@@ -103,8 +106,11 @@ namespace {
             const auto& bounds = print ? view.enlarger_film_bounds : view.scanner_bounds;
             require(bounds.hash == row.at("bounds").at("hash") && words(bounds.minimum_cmy, 3) == row.at("bounds").at("minimum") && words(bounds.inv_span_cmy, 3) == row.at("bounds").at("inverse"), "actual scanner/enlarger bounds");
             require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "no foreign temporary hold in published native products");
+            case_event.passed();
         }
+        JuicerTests::Cohort route_admissions("film_dir.admission_route", 4);
         for (unsigned route = 0; route < 4; ++route) {
+            auto route_event = route_admissions.case_event(std::to_string(route));
             ParamSnapshot controls;
             controls.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
             controls.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
@@ -167,6 +173,7 @@ namespace {
                         state.buildCounterNext.load() == beforeSupersession + 1,
                     "a superseded checked Rust DIR failure retries only the latest complete snapshot");
             require(fj_test_film_dir_live_owners() == 0, "supersession drains foreign DIR owners");
+            route_event.passed();
         }
         std::puts("PASS 64 independent complete products, four-route failure/admission/recovery and family reuse");
     }

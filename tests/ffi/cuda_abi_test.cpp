@@ -2,10 +2,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <iterator>
+#include <string_view>
 #include <type_traits>
 
 #include "juicer_cuda_api.h"
 #include "cuda_abi_test.h"
+#include "case_results.h"
 
 #define FJ_ABI_TYPE(type, size, alignment)     \
     static_assert(sizeof(type) == size);       \
@@ -26,7 +28,13 @@ static_assert(std::is_same_v<decltype(&fj_cuda_retire_instance), FjStatus (*)(Fj
 static_assert(std::is_same_v<decltype(&fj_cuda_shutdown), FjStatus (*)(FjCuda*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_destroy), FjStatus (*)(FjCuda*, FjErrorBuffer*)>);
 
-int main() {
+int main(int argc, char** argv) {
+    JuicerTests::CaseLog case_log;
+    if (argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases") {
+        JuicerTests::list_case("cuda_abi", "c_cpp_rust.layout_tags_signatures");
+        return 0;
+    }
+    JuicerTests::CaseEvent event("cuda_abi", "c_cpp_rust.layout_tags_signatures");
     const std::size_t cppFacts[] = {
 #define FJ_ABI_TYPE(type, size, alignment) sizeof(type), alignof(type),
 #define FJ_ABI_FIELD(type, field, offset) offsetof(type, field),
@@ -60,5 +68,7 @@ int main() {
         }
     }
     std::printf("C/C++/Rust agree on %zu ABI layout/tag/flag facts; all signatures compiled.\n", cCount);
+    event.passed();
+    case_log.finish();
     return 0;
 }

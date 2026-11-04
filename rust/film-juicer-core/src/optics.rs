@@ -623,8 +623,47 @@ impl Recipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
+    use std::io::{BufWriter, Write};
     use std::path::PathBuf;
+
+    struct CaseWriter(Option<BufWriter<std::fs::File>>);
+
+    impl CaseWriter {
+        fn new() -> Self {
+            let writer = std::env::var_os("FJ_OPTICS_CASES").map(|path| {
+                BufWriter::new(std::fs::File::create(path).expect("create FJ_OPTICS_CASES output"))
+            });
+            Self(writer)
+        }
+
+        fn start(&mut self, id: &str) {
+            self.write(json!({"id":id,"caller":"rust","event":"start"}));
+        }
+
+        fn terminal(&mut self, id: &str, passed: bool, diagnostic: Option<&str>) {
+            let outcome = if passed { "passed" } else { "failed" };
+            let mut record = json!({"id":id,"caller":"rust","event":"terminal","outcome":outcome});
+            if let Some(diagnostic) = diagnostic {
+                record["diagnostic"] = json!(diagnostic);
+            }
+            self.write(record);
+        }
+
+        fn write(&mut self, record: Value) {
+            if let Some(writer) = &mut self.0 {
+                serde_json::to_writer(&mut *writer, &record).expect("write optics case record");
+                writer.write_all(b"\n").expect("write optics case newline");
+            }
+        }
+
+        fn flush(&mut self) {
+            if let Some(writer) = &mut self.0 {
+                writer.flush().expect("flush optics case records");
+            }
+        }
+    }
 
     fn fixture(kind: &str) -> Value {
         let preset = match (cfg!(target_os = "windows"), cfg!(debug_assertions)) {
@@ -730,22 +769,35 @@ mod tests {
         let rows = captured["cases"].as_array().unwrap();
         assert_eq!(rows.len(), 553);
         let mut mismatches = Vec::new();
+        let mut cases = CaseWriter::new();
         for row in rows {
+            let id = row["id"].as_str().unwrap();
+            cases.start(id);
             match Recipe::new(params(&row["input"])) {
                 Ok(recipe) => {
-                    if row["success"] != true || project(&recipe) != row["recipe"] {
-                        mismatches.push(json!({"id":row["id"],"expected":row["recipe"],"actual":project(&recipe)}));
+                    let actual = project(&recipe);
+                    if row["success"] != true || actual != row["recipe"] {
+                        mismatches
+                            .push(json!({"id":row["id"],"expected":row["recipe"],"actual":actual}));
+                        cases.terminal(id, false, Some("frozen native recipe mismatch"));
+                    } else {
+                        cases.terminal(id, true, None);
                     }
                 }
                 Err(error) => {
-                    if row["success"] != false
-                        || diagnostic(error) != row["diagnostic"].as_str().unwrap()
-                    {
-                        mismatches.push(json!({"id":row["id"],"error":diagnostic(error),"expected":row["diagnostic"]}));
+                    let actual = diagnostic(error);
+                    if row["success"] != false || actual != row["diagnostic"].as_str().unwrap() {
+                        mismatches.push(
+                            json!({"id":row["id"],"error":actual,"expected":row["diagnostic"]}),
+                        );
+                        cases.terminal(id, false, Some("frozen native error mismatch"));
+                    } else {
+                        cases.terminal(id, true, None);
                     }
                 }
             }
         }
+        cases.flush();
         if !mismatches.is_empty() {
             eprintln!(
                 "OPTICS_NATIVE_MISMATCHES {}",
@@ -763,13 +815,31 @@ mod tests {
         let captured = fixture("defaults");
         let rows = captured["completed_profile_defaults"].as_array().unwrap();
         assert_eq!(rows.len(), 12);
+        let mut cases = RowCases::new(
+            "optics-completed-profile-defaults",
+            rows.iter().map(|row| {
+                format!(
+                    "{}/print={}",
+                    row["key"].as_str().unwrap(),
+                    row["input"]["print"].as_bool().unwrap()
+                )
+            }),
+        );
         for row in rows {
+            let id = format!(
+                "{}/print={}",
+                row["key"].as_str().unwrap(),
+                row["input"]["print"].as_bool().unwrap()
+            );
+            let case = cases.case(id);
             let recipe = {
                 let input = params(&row["input"]);
                 Recipe::new(input).unwrap()
             };
             assert_eq!(project(&recipe), row["recipe"], "{}", row["key"]);
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn real_resolved_hash_guard_is_call_bounded_and_thread_local() {

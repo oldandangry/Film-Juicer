@@ -32,13 +32,15 @@ class CtestReportTests(unittest.TestCase):
         self.assertIn("no additional execution", summary["source"])
 
     def test_missing_failed_and_skipped_cases_cannot_pass(self) -> None:
-        for case, category in (
+        rows = (
             ('', "missing"),
             ('<testcase name="lifetime" status="fail"><failure/></testcase>', "failed"),
             ('<testcase name="lifetime" status="run"><error/></testcase>', "failed"),
             ('<testcase name="lifetime" status="notrun"><skipped/></testcase>', "skipped"),
-        ):
-            with self.subTest(category=category):
+        )
+        self.subtest_cases = ("missing", "failed", "error", "skipped")
+        for case_id, (case, category) in zip(self.subtest_cases, rows):
+            with self.subTest(case=case_id):
                 self.write_cases('<testcase name="owner" status="run"/>' + case)
                 summary = report.summarize(self.junit, self.inventory)
                 self.assertEqual(summary["passed"], 1)
@@ -49,17 +51,21 @@ class CtestReportTests(unittest.TestCase):
 
     def test_empty_invalid_and_duplicate_selections_are_rejected(self) -> None:
         self.write_cases('<testcase name="owner" status="run"/>')
-        for selection in ({}, {"tests": []}, {"tests": [None]},
-                          {"tests": [{"name": ""}]}, {"tests": [{"name": "owner"}] * 2}):
-            with self.subTest(selection=selection):
+        rows = ({}, {"tests": []}, {"tests": [None]},
+                {"tests": [{"name": ""}]}, {"tests": [{"name": "owner"}] * 2})
+        self.subtest_cases = ("not-an-object", "empty", "null-row", "empty-name", "duplicate-name")
+        for case_id, selection in zip(self.subtest_cases, rows):
+            with self.subTest(case=case_id):
                 self.inventory.write_text(json.dumps(selection))
                 with self.assertRaises(ValueError):
                     report.summarize(self.junit, self.inventory)
 
     def test_duplicate_cases_and_unknown_execution_status_are_rejected(self) -> None:
-        for cases in ('<testcase name="owner" status="run"/>' * 2,
-                      '<testcase name="owner"/>', '<testcase status="run"/>'):
-            with self.subTest(cases=cases):
+        rows = ('<testcase name="owner" status="run"/>' * 2,
+                '<testcase name="owner"/>', '<testcase status="run"/>')
+        self.subtest_cases = ("duplicate-case", "unknown-status", "missing-name")
+        for case_id, cases in zip(self.subtest_cases, rows):
+            with self.subTest(case=case_id):
                 self.write_cases(cases)
                 with self.assertRaises(ValueError):
                     report.summarize(self.junit, self.inventory)
@@ -77,6 +83,20 @@ class CtestReportTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as failure:
                 report.main()
         self.assertEqual(failure.exception.code, 2)
+
+
+CtestReportTests.test_missing_failed_and_skipped_cases_cannot_pass.required_subtests = True
+CtestReportTests.test_missing_failed_and_skipped_cases_cannot_pass.subtest_cases = (
+    "missing", "failed", "error", "skipped"
+)
+CtestReportTests.test_empty_invalid_and_duplicate_selections_are_rejected.required_subtests = True
+CtestReportTests.test_empty_invalid_and_duplicate_selections_are_rejected.subtest_cases = (
+    "not-an-object", "empty", "null-row", "empty-name", "duplicate-name"
+)
+CtestReportTests.test_duplicate_cases_and_unknown_execution_status_are_rejected.required_subtests = True
+CtestReportTests.test_duplicate_cases_and_unknown_execution_status_are_rejected.subtest_cases = (
+    "duplicate-case", "unknown-status", "missing-name"
+)
 
 
 if __name__ == "__main__":

@@ -1375,6 +1375,7 @@ mod tests {
     use std::sync::Arc;
 
     use film_juicer_core::profile::{ProfileCompletionError, Role};
+    use crate::test_cases::RowCases;
 
     use super::*;
 
@@ -1412,7 +1413,14 @@ mod tests {
             raw.source_log_exposure.count,
             tables.authored_log_exposure().len()
         );
-        for (span, expected) in [
+        let span_ids = [
+            "log-exposure",
+            "density-curves-cmy",
+            "channel-density-cmy",
+            "base-density",
+        ];
+        let mut span_rows = RowCases::new("foreign-profile-span-bindings", span_ids);
+        for ((span, expected), id) in [
             (raw.log_exposure, tables.interpolation_log_exposure()),
             (
                 raw.density_curves_cmy,
@@ -1423,10 +1431,16 @@ mod tests {
                 tables.channel_density().as_flattened(),
             ),
             (raw.base_density, tables.base_density()),
-        ] {
+        ]
+        .into_iter()
+        .zip(span_ids)
+        {
+            let row = span_rows.case(id);
             assert_eq!(span.data, expected.as_ptr());
             assert_eq!(span.count, expected.len());
+            row.passed();
         }
+        span_rows.finish();
         for layer in 0..3 {
             for channel in 0..3 {
                 let expected = &tables.density_curves_layers()[layer][channel];
@@ -1469,7 +1483,10 @@ mod tests {
 
     #[test]
     fn consuming_release_reclaims_even_with_malformed_diagnostic() {
+        let ids = ["zero-capacity", "null-data", "invalid-capacity"];
+        let mut rows = RowCases::new("malformed-release-diagnostics", ids);
         for malformed in 0..3 {
+            let row = rows.case(ids[malformed]);
             let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
             let profile = assets.film("kodak_portra_400").unwrap();
             let weak = Arc::downgrade(&profile);
@@ -1500,12 +1517,17 @@ mod tests {
             );
             assert_eq!(error.length, 0);
             assert!(weak.upgrade().is_none());
+            row.passed();
         }
+        rows.finish();
     }
 
     #[test]
     fn unpublished_owner_is_reclaimed_on_failure_and_contained_panic() {
+        let ids = ["success", "error", "panic"];
+        let mut rows = RowCases::new("unpublished-owner-terminal-paths", ids);
         for failure in 0..3 {
+            let row = rows.case(ids[failure]);
             let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
             let profile = assets.film("kodak_portra_400").unwrap();
             let weak = Arc::downgrade(&profile);
@@ -1549,7 +1571,9 @@ mod tests {
             assert_eq!(error.length, 7);
             assert_eq!(bytes[7], 0);
             assert!(weak.upgrade().is_none());
+            row.passed();
         }
+        rows.finish();
     }
 }
 

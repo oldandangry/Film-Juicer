@@ -317,7 +317,9 @@ mod tests {
     use super::*;
     #[test]
     fn widened_half_sample_reflection_matches_repeated_folds() {
+        let mut visited = 0;
         for index in -46_340_i64..=46_420 {
+            visited += 1;
             let mut folded = index;
             while !(0..81).contains(&folded) {
                 folded = if folded < 0 {
@@ -328,6 +330,7 @@ mod tests {
             }
             assert_eq!(gaussian_reflect_index(i128::from(index)), folded as usize);
         }
+        assert_eq!(visited, 92_761);
     }
     #[test]
     fn size_impossibility_and_real_reservation_failure_are_distinct() {
