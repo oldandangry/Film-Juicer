@@ -9,15 +9,18 @@
   "targets": {
     "JuicerCudaAbiTests": {
       "protocol": "custom",
-      "registrations": 1
+      "registrations": 1,
+      "cuda_free": true
     },
     "JuicerProfileOwnerTests": {
       "protocol": "gtest",
-      "registrations": 1
+      "registrations": 1,
+      "cuda_free": true
     },
     "JuicerSpectralOwnerTests": {
       "protocol": "gtest",
-      "registrations": 1
+      "registrations": 1,
+      "cuda_free": true
     },
     "JuicerNoiseOwnerTests": {
       "protocol": "gtest",
@@ -61,11 +64,13 @@
     },
     "JuicerRouteBridgeTests": {
       "protocol": "custom",
-      "registrations": 1
+      "registrations": 1,
+      "cuda_free": true
     },
     "JuicerHashContractTests": {
       "protocol": "gtest",
-      "registrations": 3
+      "registrations": 3,
+      "cuda_free": true
     },
     "JuicerScatterHalationHostTests": {
       "protocol": "gtest",
@@ -148,7 +153,8 @@
     },
     "JuicerRenderAssertionTests": {
       "protocol": "gtest",
-      "registrations": 1
+      "registrations": 1,
+      "cuda_free": true
     }
   },
   "native_cohorts": {
@@ -343,5 +349,9 @@
     "SpectralOwner.MallettAndCmfFailureClearingAndConsumption": 2,
     "RenderAssertions.RejectsNonFiniteActualAndExpected": 1,
     "RenderAssertions.RejectsEveryHashAndSeedLane": 1
-  }
+  },
+  "cuda_free_required": [
+    "Rust.Core",
+    "Rust.Bridge"
+  ]
 }

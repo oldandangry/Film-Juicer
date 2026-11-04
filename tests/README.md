@@ -292,12 +292,43 @@ Linux Debug:
 
 ```sh
 cmake --preset linux-debug -DBUILD_TESTING=ON
-cmake --build --preset linux-debug
-ctest --preset linux-debug
+python -B scripts/verify.py qualification --preset linux-debug \
+  --selection product boundary tooling corpus --runtime all \
+  --reason "Complete supported-machine checkpoint"
 ```
 
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
+
+Test targets are excluded from the default product build. The verifier builds
+the selected target closure before CTest; `ctest` alone expects its selected
+binaries and Rust metadata to have been prepared. Unrelated test targets and
+Rust test metadata are not unconditional `ALL` work.
+
+For genuinely CUDA-independent work, use the same verifier and native preset:
+
+```sh
+python -B scripts/verify.py development --preset linux-debug --cuda-free \
+  --tests Rust.Bridge Ffi.Host.CudaAbi Route.Host.Bridge
+```
+
+This configures `tests/host` in `out/build/<preset>/host-tests`, reusing the
+parent preset's compiler settings and `cargo/{production,test-support}`. It
+registers Rust.Core/Bridge, shared tooling/Rust quality groups, and the existing
+CudaAbi, ProfileOwner, SpectralOwner, RouteBridge, HashContract and RenderAssertion
+native targets. No CUDA compiler or toolkit discovery is enabled. These are
+shared definitions from `tests/CMakeLists.txt`; this configuration supplies no
+product core, GPU tests, plug-in or alternate renderer. Product-linked `host`
+tests continue to require CUDA for compilation.
+
+Both configurations use the same preset build owner. The CUDA-independent
+entry checks that ownership at configure/build time; invoke it through
+`verify.py prepare --cuda-free --targets ...` or `development --cuda-free`.
+Select explicit tests or targets: file-driven product quality and full checkpoint
+selection stay on the product entry. Results identify `build_kind: cuda-free`
+and remain focused. The existing standalone `tests/tooling` entry remains a
+tooling-only configuration. Resource staging keeps its current copy behavior
+and shares the parent preset's staged tree; per-file staging is deferred.
 
 CMake always links `juicer` and the production prepared-render probe to
 `film_juicer_rust`, built without default features in

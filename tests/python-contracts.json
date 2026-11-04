@@ -70,11 +70,13 @@
     },
     "Quality.RustNaming": {
       "source": "tests/quality/test_rust_naming.py",
-      "tooling": false
+      "tooling": false,
+      "cuda_free": true
     },
     "Quality.RustBoundaries": {
       "source": "tests/quality/test_rust_boundaries.py",
-      "tooling": false
+      "tooling": false,
+      "cuda_free": true
     },
     "Ffi.Host.NativeBoundary": {
       "source": "tests/ffi/test_native_boundary.py",

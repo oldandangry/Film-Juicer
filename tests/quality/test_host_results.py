@@ -16,7 +16,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from qualification import (
-    OPTICS_FUNCTION, case_events, framework_terminals, domain_result_members, rust_case_events, rust_membership, validate_domain_result,
+    OPTICS_FUNCTION, case_events, framework_terminals, domain_result_members, native_registration,
+    python_registration, rust_case_events, rust_membership, tests_result_members,
+    validate_domain_result,
 )
 
 
@@ -75,6 +77,160 @@ class HostResultTests(unittest.TestCase):
         self.payloads["registration.json"] = encoded(document)
         with self.assertRaisesRegex(ValueError, "missing"):
             self.check()
+
+    @staticmethod
+    def registration_row(name, target, protocol="custom", *, runtime="host"):
+        command = ["python", "verify.py", "native-case", "--preset", "linux-debug",
+                   "--protocol", protocol]
+        if runtime != "host":
+            command.extend(("--runtime", runtime))
+        command.extend(("--", "/build/" + target))
+        return {"name": name, "command": command,
+                "properties": [{"name": "LABELS", "value": [runtime]}]}
+
+    def test_cuda_free_native_registration_accepts_only_selected_eligible_target(self):
+        contract = {
+            "schema": "native-host-contracts-v1",
+            "required": ["Ffi.Host.Abi"],
+            "cuda_free_required": ["Ffi.Host.Abi"],
+            "targets": {
+                "JuicerCudaAbiTests": {"protocol": "custom", "registrations": 1, "cuda_free": True},
+                "JuicerFilmRecipeTests": {"protocol": "custom", "registrations": 1},
+            },
+        }
+        paths = {"JuicerCudaAbiTests": "/build/JuicerCudaAbiTests"}
+        registration = {"tests": [self.registration_row("Ffi.Host.Abi", "JuicerCudaAbiTests")]}
+        found = native_registration(contract, paths, registration, runtime="host", cuda_free=True)
+        self.assertEqual(set(found), {"Ffi.Host.Abi"})
+        self.assertEqual(found["Ffi.Host.Abi"]["target"], "JuicerCudaAbiTests")
+
+    def test_cuda_free_native_registration_rejects_missing_eligible_target(self):
+        contract = {
+            "schema": "native-host-contracts-v1", "required": [],
+            "cuda_free_required": [],
+            "targets": {"JuicerHashContractTests": {
+                "protocol": "gtest", "registrations": 1, "cuda_free": True}},
+        }
+        registration = {"tests": [self.registration_row(
+            "Hash.Host.Contract", "JuicerHashContractTests", "gtest")]}
+        with self.assertRaisesRegex(ValueError, "target contract|CUDA-free|eligible"):
+            native_registration(contract, {}, registration, runtime="host", cuda_free=True)
+
+    def test_cuda_free_native_registration_rejects_extra_product_target(self):
+        contract = {
+            "schema": "native-host-contracts-v1", "required": [],
+            "cuda_free_required": ["Ffi.Host.Abi"],
+            "targets": {
+                "JuicerCudaAbiTests": {"protocol": "custom", "registrations": 1, "cuda_free": True},
+                "JuicerFilmRecipeTests": {"protocol": "custom", "registrations": 1},
+            },
+        }
+        paths = {"JuicerCudaAbiTests": "/build/JuicerCudaAbiTests",
+                 "JuicerFilmRecipeTests": "/build/JuicerFilmRecipeTests"}
+        registration = {"tests": [
+            self.registration_row("Ffi.Host.Abi", "JuicerCudaAbiTests"),
+            self.registration_row("Ffi.Host.FilmRecipe", "JuicerFilmRecipeTests"),
+        ]}
+        with self.assertRaisesRegex(ValueError, "target contract|CUDA-free|eligible"):
+            native_registration(contract, paths, registration, runtime="host", cuda_free=True)
+
+    def test_cuda_free_native_registration_requires_every_declared_registration(self):
+        contract = {
+            "schema": "native-host-contracts-v1", "required": [],
+            "cuda_free_required": ["Ffi.Host.Abi"],
+            "targets": {"JuicerCudaAbiTests": {
+                "protocol": "custom", "registrations": 1, "cuda_free": True}},
+        }
+        paths = {"JuicerCudaAbiTests": "/build/JuicerCudaAbiTests"}
+        with self.assertRaisesRegex(ValueError, "missing"):
+            native_registration(contract, paths, {"tests": []}, runtime="host", cuda_free=True)
+
+    def test_cuda_free_gpu_registration_requires_an_empty_closure(self):
+        contract = {"schema": "native-gpu-contracts-v1", "required": ["Gpu.Test"],
+                    "cuda_free_required": [],
+                    "targets": {"GpuTests": {"protocol": "gtest", "registrations": 1}}}
+        self.assertEqual(native_registration(contract, {}, {"tests": []},
+                                             runtime="gpu", cuda_free=True), {})
+        with self.assertRaisesRegex(ValueError, "target contract|CUDA-free|eligible"):
+            native_registration(contract, {"GpuTests": "/build/GpuTests"}, {"tests": []},
+                                runtime="gpu", cuda_free=True)
+
+    def test_full_native_registration_still_requires_all_targets_and_counts(self):
+        contract = {"schema": "native-host-contracts-v1",
+                    "required": ["Ffi.Host.Abi", "Route.Host.Bridge"],
+                    "targets": {
+                        "JuicerCudaAbiTests": {"protocol": "custom", "registrations": 1},
+                        "JuicerRouteBridgeTests": {"protocol": "custom", "registrations": 1},
+                    }}
+        paths = {name: "/build/" + name for name in contract["targets"]}
+        rows = [self.registration_row("Ffi.Host.Abi", "JuicerCudaAbiTests"),
+                self.registration_row("Route.Host.Bridge", "JuicerRouteBridgeTests")]
+        self.assertEqual(set(native_registration(contract, paths, {"tests": rows})),
+                         {"Ffi.Host.Abi", "Route.Host.Bridge"})
+        with self.assertRaisesRegex(ValueError, "registration"):
+            native_registration(contract, paths, {"tests": rows[:1]})
+
+    def test_cuda_free_python_registration_accepts_tooling_and_marked_rows(self):
+        contract = {"schema": "python-contracts-v1", "registrations": {
+            "Quality.Tooling": {"source": "tests/quality/test_tooling.py", "tooling": True},
+            "Quality.NativeBoundary": {"source": "tests/ffi/test_native_boundary.py", "cuda_free": True},
+            "Quality.Product": {"source": "tests/quality/test_product.py"},
+        }}
+        inventory = {"tests": [
+            {"name": "Quality.Tooling", "command": ["python", "verify.py", "python-tests", "--",
+                                                          "-m", "unittest", "discover", "-s",
+                                                          "tests/quality", "-p", "test_tooling.py"]},
+            {"name": "Quality.NativeBoundary", "command": ["python", "verify.py", "python-tests", "--",
+                                                              "-m", "unittest", "discover", "-s",
+                                                              "tests/ffi", "-p", "test_native_boundary.py"]},
+        ]}
+        self.assertEqual(set(python_registration(contract, inventory, "linux-debug", cuda_free=True)),
+                         {"Quality.Tooling", "Quality.NativeBoundary"})
+
+    def test_cuda_free_python_registration_rejects_unmarked_product_row(self):
+        contract = {"schema": "python-contracts-v1", "registrations": {
+            "Quality.Tooling": {"source": "tests/quality/test_tooling.py", "tooling": True},
+            "Quality.Product": {"source": "tests/quality/test_product.py"},
+        }}
+        inventory = {"tests": [
+            {"name": "Quality.Tooling", "command": ["python", "verify.py", "python-tests", "--",
+                                                          "-m", "unittest", "discover", "-s",
+                                                          "tests/quality", "-p", "test_tooling.py"]},
+            {"name": "Quality.Product", "command": ["python", "verify.py", "python-tests", "--",
+                                                          "-m", "unittest", "discover", "-s",
+                                                          "tests/quality", "-p", "test_product.py"]},
+        ]}
+        with self.assertRaisesRegex(ValueError, "unexpected Python registration"):
+            python_registration(contract, inventory, "linux-debug", cuda_free=True)
+
+    def test_full_python_registration_keeps_product_contract(self):
+        contract = {"schema": "python-contracts-v1", "registrations": {
+            "Quality.Tooling": {"source": "tests/quality/test_tooling.py", "tooling": True},
+            "Quality.Product": {"source": "tests/quality/test_product.py"},
+        }}
+        inventory = {"tests": [
+            {"name": "Quality.Tooling", "command": ["python", "verify.py", "python-tests", "--",
+                                                          "-m", "unittest", "discover", "-s",
+                                                          "tests/quality", "-p", "test_tooling.py"]},
+            {"name": "Quality.Product", "command": ["python", "verify.py", "python-tests", "--",
+                                                          "-m", "unittest", "discover", "-s",
+                                                          "tests/quality", "-p", "test_product.py"]},
+        ]}
+        self.assertEqual(set(python_registration(contract, inventory, "linux-debug")),
+                         {"Quality.Tooling", "Quality.Product"})
+
+    def test_cuda_free_results_are_focused_and_cannot_claim_checkpoint(self):
+        names = {"candidate.json", "candidate.patch", "registration.json", "target-discovery.json"}
+        for runtime in ("host", "gpu", "python"):
+            names.update({runtime + "-contracts.json", runtime + "-targets.json"})
+        result = {"preset": "linux-debug", "scope": "focused", "runtime": "host",
+                  "build_kind": "cuda-free", "shipping_isolation": False,
+                  "groups": [], "selection": [], "status": "failed", "members": {
+                      name: {"bytes": 0, "sha256": "0" * 64} for name in names}}
+        self.assertEqual(set(tests_result_members(result)), names)
+        result["scope"] = "checkpoint"
+        with self.assertRaisesRegex(ValueError, "CUDA-free|focused"):
+            tests_result_members(result)
 
     def test_missing_custom_row_terminal(self):
         name = self.custom + ".jsonl"

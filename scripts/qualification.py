@@ -231,8 +231,15 @@ def validate_native_result(result, payloads):
     return summary
 
 
-def native_registration(contract, paths, registration, *, runtime="host"):
+def native_registration(contract, paths, registration, *, runtime="host", cuda_free=False):
     """Check independent owning target counts before selecting execution."""
+    if cuda_free:
+        targets = {name: row for name, row in contract["targets"].items()
+                   if runtime == "host" and row.get("cuda_free") is True}
+        required = contract.get("cuda_free_required", []) if runtime == "host" else []
+        if runtime == "host" and (not targets or not required or not set(required) <= set(contract["required"])):
+            raise ValueError("missing CUDA-free host contract")
+        contract = {**contract, "targets": targets, "required": required}
     if contract.get("schema") != f"native-{runtime}-contracts-v1" or set(paths) != set(contract["targets"]):
         raise ValueError("invalid host target contract")
     found = {}
@@ -611,7 +618,7 @@ def membership(inventory, groups, runtime):
     return {group: sorted(names) for group, names in selected.items()}
 
 
-def python_registration(contract, inventory, preset, *, standalone=False):
+def python_registration(contract, inventory, preset, *, standalone=False, cuda_free=False):
     if contract.get("schema") != "python-contracts-v1":
         raise ValueError("invalid Python registration contract")
     configuration = "Debug" if preset.endswith("debug") else "Release"
@@ -619,7 +626,8 @@ def python_registration(contract, inventory, preset, *, standalone=False):
     expected = {name: row for name, row in contract["registrations"].items()
                 if configuration in row.get("configurations", ["Debug", "Release"])
                 and platform in row.get("platforms", ["linux", "windows"])
-                and (not standalone or row.get("tooling", False))}
+                and (not standalone or row.get("tooling", False))
+                and (not cuda_free or row.get("tooling", False) or row.get("cuda_free", False))}
     actual = {}
     for test in inventory["tests"]:
         command = test.get("command", [])
@@ -692,7 +700,10 @@ def tests_result_members(result):
     if result.get("rust_artifacts"):
         required.add("rust-artifacts.json")
     selected = result["selection"]
-    if (result.get("build_kind") not in {"product", "tooling"} or not set(result["groups"]) <= GROUPS
+    if result.get("build_kind") == "cuda-free" and result["scope"] != "focused":
+        raise ValueError("CUDA-free results must remain focused; they are not product checkpoints")
+    if (result.get("build_kind") not in {"product", "tooling", "cuda-free"}
+            or not set(result["groups"]) <= GROUPS
             or len(selected) != len(set(selected)) or result["status"] == "passed" and not selected):
         raise ValueError("invalid or empty native test membership")
     if result["status"] == "passed":
@@ -813,8 +824,9 @@ def validate_tests_result(result, payloads):
     inventory = json.loads(payloads["registration.json"])
     contracts = {runtime: json.loads(payloads[runtime + "-contracts.json"]) for runtime in ("host", "gpu", "python")}
     standalone = result["build_kind"] == "tooling"
-    native = {} if standalone else {runtime: native_registration(contracts[runtime], json.loads(payloads[runtime + "-targets.json"]), inventory, runtime=runtime) for runtime in ("host", "gpu")}
-    python = python_registration(contracts["python"], inventory, result["preset"], standalone=standalone)
+    cuda_free = result["build_kind"] == "cuda-free"
+    native = {} if standalone else {runtime: native_registration(contracts[runtime], json.loads(payloads[runtime + "-targets.json"]), inventory, runtime=runtime, cuda_free=cuda_free) for runtime in ("host", "gpu")}
+    python = python_registration(contracts["python"], inventory, result["preset"], standalone=standalone, cuda_free=cuda_free)
     available = set(python)
     if not standalone:
         available.update({"Rust.Core", "Rust.Bridge"})
@@ -871,7 +883,8 @@ def validate_tests_result(result, payloads):
                 raise ValueError("selected-source quality scope differs from execution")
             validate_quality_checks(checks, payloads)
     return {"status": result["status"], "preset": result["preset"], "scope": result["scope"],
-            "groups": result["groups"], "runtime": result["runtime"], "ctest_cases": len(selected), **counts,
+            "groups": result["groups"], "runtime": result["runtime"], "build_kind": result["build_kind"],
+            "ctest_cases": len(selected), **counts,
             "excluded_benchmarks": sorted(excluded), "unselected_registrations": sorted(available - selected), "shipping_isolation": False}
 
 

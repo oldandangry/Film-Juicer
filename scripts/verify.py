@@ -448,6 +448,7 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
     filemode = git("config", "--type=bool", "--default=true", "--get", "core.filemode").strip() == b"true"
     explicit = {"CMakeLists.txt", "CMakePresets.json", ".clang-tidy", ".clang-format", ".gitattributes", ".cargo/config",
                 "tests/CMakeLists.txt", "tests/ToolingTests.cmake", "tests/ffi/prepared_sanitizers.cmake",
+                "tests/host/CMakeLists.txt", "tests/host/CMakePresets.json",
                 "tests/route/development.json", "tests/ffi/output-color-development.json",
                 "tests/film/optics-fixtures/manifest.json", literal_name, "scripts/source_file_policy.json"}
     roots = ("src", "native", "rust", "scripts", "cmake", "third_party", ".config", ".cargo", ".github/workflows")
@@ -463,6 +464,7 @@ def capture_native_source(root, literal_name, *, gpu_witness=False, domain_tests
     # All public test code stays conservative: the selected executable links
     # support sources in other domains. Git avoids reopening their unchanged bytes.
     paths += [":(glob)tests/**/" + "*" + extension for extension in sorted(code)]
+    paths += [":(glob)tests/**/CMakeLists.txt"]
     # Include directory-link entries in discovery even when their names have no
     # source suffix. No scientific payload bytes are opened by this Git listing.
     discovery = [":(literal)" + name for name in [*roots, "tests", *sorted(explicit), "Cargo.toml", "Cargo.lock",
@@ -618,6 +620,22 @@ def finish_native_run(run, result, candidate, costs, validate):
     return 0 if result["status"] == "passed" else 1
 
 
+def configure_command(cmake, preset, *, cuda_free=False, testing="ON"):
+    command = [cmake, "--preset", preset + ("-host-tests" if cuda_free else "")]
+    if cuda_free:
+        command += ["-S", str(ROOT / "tests/host")]
+    return [*command, "-DBUILD_TESTING=" + testing, "-DPython3_EXECUTABLE=" + sys.executable]
+
+
+def check_owner(args):
+    """Require the preset owner already held by this configuration's caller."""
+    lease = OutputLease(ROOT, ROOT / "out/build" / args.preset, timeout=0)
+    with lease:
+        if lease.role not in {"delegated", "nested"}:
+            raise ValueError("shared Cargo configuration requires verify.py prepare/development ownership")
+    return 0
+
+
 def native_tests(args):
     """Fresh CMake-selected native/Rust/Python execution under one build owner."""
     import xml.etree.ElementTree as ET
@@ -626,7 +644,9 @@ def native_tests(args):
     if args.preset.startswith("windows") != (os.name == "nt"):
         raise ValueError("tests must execute on their native platform")
     started = time.perf_counter()
-    build = (args.build_dir or ROOT / "out/build" / args.preset).absolute()
+    cuda_free = getattr(args, "cuda_free", False)
+    preset_build = ROOT / "out/build" / args.preset
+    build = ((preset_build / "host-tests" if cuda_free else args.build_dir) or preset_build).absolute()
     directory = ROOT / "out/validation" / args.preset / "results" / name_component(args.run_id or uuid.uuid4().hex)
     costs = {"source_read_bytes": 0, "git_output_bytes": 0, "source_capture_seconds": 0.0, "report_read_bytes": 0}
     def capture():
@@ -634,7 +654,7 @@ def native_tests(args):
         for key, value in measured.items():
             costs[key] += value
         return source, patch
-    with OutputLease(ROOT, build):
+    with OutputLease(ROOT, preset_build):
         directory.mkdir(parents=True, exist_ok=False)
         run = NativeRun(ROOT, directory)
         initial, patch = capture()
@@ -663,14 +683,15 @@ def native_tests(args):
                 raise ValueError("qualified native CMake required")
             ctest = str(Path(cmake).with_name("ctest" + (".exe" if os.name == "nt" else "")))
             cache = cache_values(build)
-            home = Path(cache.get("CMAKE_HOME_DIRECTORY", ROOT))
+            expected_home = ROOT / "tests/host" if cuda_free else ROOT
+            home = Path(cache.get("CMAKE_HOME_DIRECTORY", expected_home))
             standalone = home.samefile(ROOT / "tests/tooling")
-            if cache and not (home.samefile(ROOT) or standalone):
+            if cache and not (home.samefile(expected_home) or standalone and not cuda_free):
                 raise ValueError("build cache belongs to another source tree")
             if args.build_dir and not standalone and build != ROOT / "out/build" / args.preset:
                 raise ValueError("explicit build directory must be the configured native tooling entry")
-            result["build_kind"] = "tooling" if standalone else "product"
-            configure = [cmake, "--preset", args.preset, "-DBUILD_TESTING=ON", "-DPython3_EXECUTABLE=" + sys.executable]
+            result["build_kind"] = "cuda-free" if cuda_free else "tooling" if standalone else "product"
+            configure = configure_command(cmake, args.preset, cuda_free=cuda_free)
             cargo = str(args.cargo or cache.get("JUICER_CARGO_EXECUTABLE") or shutil.which("cargo") or "")
             nextest = str(args.nextest or cache.get("JUICER_NEXTEST_EXECUTABLE") or shutil.which("cargo-nextest") or "")
             if not standalone:
@@ -684,8 +705,8 @@ def native_tests(args):
             build_command = [cmake, "--build", str(build)]
             run.command("configuration", [*build_command, "--target", "help"], vctip_executable=windows_vctip(os.environ))
             cache = cache_values(build)
-            candidate["configuration"] = {k: cache.get(k) for k in ("BUILD_TESTING", "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")}
-            if not standalone:
+            candidate["configuration"] = {k: cache.get(k) for k in ("BUILD_TESTING", "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER", "CMAKE_HOME_DIRECTORY")}
+            if not standalone and not cuda_free:
                 artifact_data = (build / "tests/rust-artifacts.json").read_bytes()
                 costs["report_read_bytes"] += len(artifact_data)
                 (directory / "rust-artifacts.json").write_bytes(artifact_data)
@@ -702,8 +723,8 @@ def native_tests(args):
                 costs["report_read_bytes"] += len(data)
                 (directory / (runtime + "-targets.json")).write_bytes(data)
                 target_data[runtime] = json.loads(data)
-            native = {} if standalone else {runtime: native_registration(contracts[runtime], target_data[runtime], inventory, runtime=runtime) for runtime in ("host", "gpu")}
-            python = python_registration(contracts["python"], inventory, args.preset, standalone=standalone)
+            native = {} if standalone else {runtime: native_registration(contracts[runtime], target_data[runtime], inventory, runtime=runtime, cuda_free=cuda_free) for runtime in ("host", "gpu")}
+            python = python_registration(contracts["python"], inventory, args.preset, standalone=standalone, cuda_free=cuda_free)
             entries = {**python, **{name: entry for domain in native.values() for name, entry in domain.items()}}
             available = set(entries) | (set() if standalone else {"Rust.Core", "Rust.Bridge"})
             if {test["name"] for test in inventory["tests"]} != available:
@@ -752,7 +773,8 @@ def native_tests(args):
                 for name, executable in (("cargo", cargo), ("rustc", str(Path(cargo).with_name("rustc.exe" if os.name == "nt" else "rustc"))), ("nextest", nextest)):
                     versions += ["--tool", name, executable]
                 for name, key in (("cxx", "CMAKE_CXX_COMPILER"), ("cuda", "CMAKE_CUDA_COMPILER")):
-                    versions += ["--tool", name, cache[key]]
+                    if name != "cuda" or not cuda_free:
+                        versions += ["--tool", name, cache[key]]
             version_data = run.command("versions", versions, stdout_only=True).read_bytes()
             costs["report_read_bytes"] += len(version_data)
             candidate["version_commands"] = json.loads(version_data)
@@ -834,9 +856,11 @@ def fresh_prepare(args):
     if args.preset.startswith("windows") != (os.name == "nt"):
         raise ValueError("build preparation requires its native platform")
     started = time.perf_counter()
-    build = ROOT / "out/build" / args.preset
+    cuda_free = getattr(args, "cuda_free", False)
+    preset_build = ROOT / "out/build" / args.preset
+    build = preset_build / "host-tests" if cuda_free else preset_build
     directory = ROOT / "out/validation" / args.preset / "results" / name_component(args.run_id or "build-" + uuid.uuid4().hex)
-    with OutputLease(ROOT, build):
+    with OutputLease(ROOT, preset_build):
         directory.mkdir(parents=True, exist_ok=False)
         run = NativeRun(ROOT, directory)
         source, patch, costs = capture_native_source(ROOT, "scripts/verify.py")
@@ -850,13 +874,14 @@ def fresh_prepare(args):
             if not cmake:
                 raise ValueError("qualified native CMake required")
             cache = cache_values(build)
-            if cache and not Path(cache["CMAKE_HOME_DIRECTORY"]).samefile(ROOT):
+            home = ROOT / "tests/host" if cuda_free else ROOT
+            if cache and not Path(cache["CMAKE_HOME_DIRECTORY"]).samefile(home):
                 raise ValueError("build cache belongs to another source tree")
-            run.command("configure", [cmake, "--preset", args.preset, "-DBUILD_TESTING=" + args.testing, "-DPython3_EXECUTABLE=" + sys.executable], vctip_executable=windows_vctip(os.environ))
+            run.command("configure", configure_command(cmake, args.preset, cuda_free=cuda_free, testing=args.testing), vctip_executable=windows_vctip(os.environ))
             targets = args.targets or select_consumers(ROOT, build, args.files, require_compiled=False)["targets"]
             if not targets:
                 raise ValueError("explicit preparation selected no build targets")
-            run.command("build", [cmake, "--build", "--preset", args.preset, "--target", *targets, "--", "-k0"], vctip_executable=windows_vctip(os.environ))
+            run.command("build", [cmake, "--build", str(build), "--target", *targets, "--", "-k0"], vctip_executable=windows_vctip(os.environ))
             cache = cache_values(build)
             candidate["configuration"] = {key: cache.get(key) for key in
                 ("BUILD_TESTING", "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")}
@@ -896,7 +921,7 @@ def python_tests(args):
     name_component(key)
     parent = os.environ.get("FJ_HOST_BUNDLE")
     if not parent:
-        build = args.build_dir or ROOT / "out/build" / args.preset
+        build = ROOT / "out/build" / args.preset
         with OutputLease(ROOT, build):
             scratch = ROOT / "out/validation" / args.preset / "python-controls"
             scratch.mkdir(parents=True, exist_ok=True)
@@ -1069,6 +1094,8 @@ def main():
         command.add_argument("--run-id")
         command.add_argument("--label")
         if mode == "development":
+            command.add_argument("--cuda-free", action="store_true",
+                                 help="select the shared CUDA-independent test configuration")
             selection = command.add_mutually_exclusive_group(required=True)
             selection.add_argument("--files", nargs="+")
             selection.add_argument("--tests", nargs="+")
@@ -1085,6 +1112,10 @@ def main():
     selected.add_argument("--files", nargs="+")
     prepare.add_argument("--testing", choices=("ON", "OFF"), default="ON")
     prepare.add_argument("--run-id")
+    prepare.add_argument("--cuda-free", action="store_true",
+                         help="prepare selected CUDA-independent test targets")
+    owner = modes.add_parser("check-owner", help=argparse.SUPPRESS)
+    owner.add_argument("--preset", required=True, choices=PRESETS)
     collection = modes.add_parser("collect-qualification", help="pure offline reading of named bundles")
     collection.add_argument("--bundles", type=Path, nargs="+", required=True)
     collection.add_argument("--output", type=Path, required=True)
@@ -1111,9 +1142,15 @@ def main():
     probe = modes.add_parser("gpu-lock-probe", help=argparse.SUPPRESS)
     probe.add_argument("--wait-for-owner", action="store_true")
     args = parser.parse_args()
+    if getattr(args, "cuda_free", False):
+        if getattr(args, "files", None) or getattr(args, "build_dir", None):
+            parser.error("--cuda-free requires explicit --tests or --targets and its standard configuration directory")
+        if getattr(args, "testing", "ON") != "ON":
+            parser.error("--cuda-free requires BUILD_TESTING=ON")
     dispatch = {"prepare": fresh_prepare, "development": development, "qualification": native_tests,
                 "collect-qualification": collect_bundles, "native-case": native_case,
-                "python-tests": python_tests, "rust-tests": rust_tests, "tool-versions": tool_versions}
+                "python-tests": python_tests, "rust-tests": rust_tests, "tool-versions": tool_versions,
+                "check-owner": check_owner}
     if args.mode == "gpu-lock-probe":
         return gpu_lock_probe(wait_for_owner=args.wait_for_owner)
     return dispatch[args.mode](args)

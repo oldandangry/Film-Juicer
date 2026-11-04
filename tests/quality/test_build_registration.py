@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
 import re
 import shutil
 import sys
+import subprocess
 import tempfile
 import unittest
 
@@ -220,6 +222,243 @@ MembershipRecordTests.test_duplicate_disabled_and_colliding_scratch_registration
 MembershipRecordTests.test_duplicate_disabled_and_colliding_scratch_registrations_reject.subtest_cases = (
     "duplicate", "disabled", "scratch-collision"
 )
+
+
+@unittest.skipUnless(os.environ.get("JUICER_CUDA_FREE_BUILD"),
+                     "requires the configured preset CUDA-free host test tree")
+class CudaFreeBuildRegistrationTests(unittest.TestCase):
+    """Actual selected closures and owner guards for the shared preset Cargo tree."""
+
+    HOST_TARGETS = (
+        "JuicerCudaAbiTests", "JuicerProfileOwnerTests", "JuicerSpectralOwnerTests",
+        "JuicerRouteBridgeTests", "JuicerHashContractTests", "JuicerRenderAssertionTests",
+    )
+    GPU_ONLY_TARGETS = (
+        "JuicerPinnedUploadTests", "JuicerGaussianKernelTests", "JuicerScannerLutResourceTests",
+        "JuicerDeferredDestroyTests", "JuicerCudaInspectGpuTests", "JuicerProfileCudaSafetyTests",
+        "JuicerScatterHalationGpuTests", "JuicerGrainDeltaTests", "JuicerScannerOutputTests",
+    )
+    CARGO_FILES = (
+        "production/features.txt", "production/build.stamp", "production/CACHEDIR.TAG",
+        "test-support/features.txt", "test-support/build.stamp", "test-support/CACHEDIR.TAG",
+        "test-support/metadata/binaries.json", "test-support/metadata/cargo.json",
+        "test-support/metadata/preparation-timings.json",
+    )
+
+    def setUp(self):
+        host_build = Path(os.environ["JUICER_CUDA_FREE_BUILD"]).resolve()
+        self.preset = host_build.parent.name
+        self.assertIn(self.preset, qualification.PRESETS)
+        self.preset_build = (ROOT / "out/build" / self.preset).resolve()
+        self.host_build = self.preset_build / "host-tests"
+        self.assertEqual(host_build, self.host_build.resolve())
+        self.assertEqual(host_build.parent, self.preset_build)
+        self.lease = execution.OutputLease(ROOT, self.preset_build, timeout=0)
+        self.lease.__enter__()
+        self.addCleanup(self.lease.__exit__, None, None, None)
+        self.assertIn(self.lease.role, ("delegated", "nested"),
+                      "the verifier must already hold this preset's canonical owner")
+        artifact_root = Path(os.environ.get(
+            "JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset
+        )).resolve() / "cuda-free-build-controls"
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        self.scratch = Path(tempfile.mkdtemp(prefix="selected closures ", dir=artifact_root))
+        self.addCleanup(self.finish_scratch)
+        self.logs = self.scratch / "commands"
+        self.logs.mkdir()
+        self.native_run = execution.NativeRun(ROOT, self.logs)
+        self.cmake = shutil.which("cmake")
+        self.python = Path(sys.executable)
+        self.verify = ROOT / "scripts/verify.py"
+        self.assertTrue(self.cmake, "CMake is required for selected build evidence")
+        self.assertTrue(self.verify.is_file())
+
+    def finish_scratch(self):
+        outcome = record_fixture(self.scratch, self)
+        owners = list((self.scratch / "out/verification-locks").glob("*/owner.json"))
+        if outcome == "passed" and not owners and not os.environ.get("JUICER_TEST_RETAIN_FIXTURES"):
+            try:
+                shutil.rmtree(self.scratch)
+            except BaseException:
+                record_fixture(self.scratch, self, "failed")
+                print("CUDA-free build evidence cleanup failed; retained:", self.scratch, file=sys.stderr)
+                raise
+        else:
+            print("Retained CUDA-free build evidence:", self.scratch, file=sys.stderr)
+
+    def cargo_snapshot(self):
+        cargo = self.preset_build / "cargo"
+        profile = "release" if self.preset.endswith("release") else "debug"
+        if os.name == "nt":
+            target, archive = "x86_64-pc-windows-msvc", "film_juicer_plugin.lib"
+        else:
+            target, archive = "x86_64-unknown-linux-gnu", "libfilm_juicer_plugin.a"
+        files = set(self.CARGO_FILES)
+        for variant in ("production", "test-support"):
+            files.add(f"{variant}/{target}/{profile}/{archive}")
+        if profile == "release":
+            files = {name.replace("/debug/", "/release/") for name in files}
+        snapshot = {}
+        for relative in files:
+            path = cargo / relative
+            snapshot[relative] = ((path.stat().st_size, path.stat().st_mtime_ns)
+                                  if path.is_file() else None)
+        return snapshot
+
+    def query_commands(self, name, build, *targets):
+        cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+        configured = re.search(r"^CMAKE_MAKE_PROGRAM:[^=]+=(.+)$", cache, re.MULTILINE)
+        self.assertIsNotNone(configured, "the configuration must select Ninja")
+        ninja = configured.group(1)
+        self.assertTrue(Path(ninja).is_file())
+        return self.native_run.command(
+            name, [ninja, "-C", str(build), "-t", "commands", *targets],
+            timeout=60, cwd=ROOT,
+        ).read_text(encoding="utf-8", errors="replace").replace("\\", "/")
+
+    def assert_no_test_metadata(self, commands):
+        lower = commands.casefold().replace("\\", "/")
+        for forbidden in ("nextest list", "--workspace --tests", "metadata/binaries.json",
+                          "metadata/cargo.json", "preparation-timings.json"):
+            self.assertNotIn(forbidden, lower)
+
+
+    def test_check_owner_borrows_only_the_inherited_canonical_preset_token(self):
+        before = self.cargo_snapshot()
+        environment = dict(os.environ)
+        inherited = json.loads(environment.get("JUICER_OUTPUT_LEASES", "{}"))
+        lease = execution.OutputLease(ROOT, self.preset_build)
+        key = hashlib.sha256(os.path.normcase(str(lease.path)).encode()).hexdigest()
+        self.assertIn(key, inherited, "this test must run under the canonical preset owner")
+
+        self.native_run.command("owner-delegated", [self.python, "-B", self.verify,
+                                "check-owner", "--preset", self.preset],
+                                env=environment, timeout=10)
+
+        missing = dict(environment)
+        missing.pop("JUICER_OUTPUT_LEASES", None)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.native_run.command("owner-missing-token", [self.python, "-B", self.verify,
+                                         "check-owner", "--preset", self.preset],
+                                         env=missing, timeout=10)
+
+        wrong = dict(environment)
+        wrong_tokens = dict(inherited)
+        wrong_tokens[key] = "wrong-owner-token"
+        wrong["JUICER_OUTPUT_LEASES"] = json.dumps(wrong_tokens, sort_keys=True)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.native_run.command("owner-wrong-token", [self.python, "-B", self.verify,
+                                       "check-owner", "--preset", self.preset],
+                                       env=wrong, timeout=10)
+        self.assertEqual(self.cargo_snapshot(), before)
+
+    def test_unowned_rust_test_target_fails_before_touching_shared_cargo(self):
+        before = self.cargo_snapshot()
+        environment = dict(os.environ)
+        environment.pop("JUICER_OUTPUT_LEASES", None)
+        with self.assertRaises(subprocess.CalledProcessError) as failure:
+            self.native_run.command("unowned-rust-tests", [self.cmake, "--build", str(self.host_build),
+                                        "--target", "juicer_rust_tests"],
+                                        env=environment, timeout=30, cwd=ROOT)
+        self.assertNotEqual(failure.exception.returncode, 0)
+        self.assertEqual(self.cargo_snapshot(), before)
+        log = (self.logs / "unowned-rust-tests.log").read_text(encoding="utf-8", errors="replace")
+        self.assertRegex(log.casefold(), "owner|lease")
+
+    def test_unowned_configuration_rejects_before_touching_shared_cargo(self):
+        before = self.cargo_snapshot()
+        environment = dict(os.environ)
+        environment.pop("JUICER_OUTPUT_LEASES", None)
+        try:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.native_run.command("unowned-configuration",
+                    [self.cmake, "-S", str(ROOT / "tests/host"), "-B", str(self.host_build)],
+                    env=environment, timeout=30)
+            self.assertEqual(self.cargo_snapshot(), before)
+        finally:
+            self.native_run.command("restore-configuration",
+                [self.cmake, "--build", str(self.host_build), "--target", "help"], timeout=60)
+
+    def test_shared_resource_stage_requires_owner_and_preserves_a_noop(self):
+        command = [self.cmake, "--build", str(self.host_build), "--target", "juicer_test_resources"]
+        self.native_run.command("resource-stage-prepare", command, timeout=120)
+        stage = self.preset_build / "tests/Resources"
+        paths = [self.preset_build / "tests/resources.stamp", stage]
+
+        def identities():
+            return {str(path): (path.stat().st_size, path.stat().st_mtime_ns) for path in paths}
+
+        before = identities()
+        environment = dict(os.environ)
+        environment.pop("JUICER_OUTPUT_LEASES", None)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.native_run.command("resource-stage-unowned", command, env=environment, timeout=30)
+        self.assertEqual(identities(), before)
+        self.native_run.command("resource-stage-noop", command, timeout=60)
+        self.assertEqual(identities(), before, "owner checks must not force resource payload writes")
+        commands = self.query_commands("resource-stage-commands", self.host_build, "juicer_test_resources")
+        self.assertIn("check-owner", commands)
+
+    def test_host_configuration_and_selected_six_target_closure_are_cuda_free(self):
+        cache_path = self.host_build / "CMakeCache.txt"
+        self.assertTrue(cache_path.is_file())
+        cache = cache_path.read_text(encoding="utf-8", errors="replace")
+        cache_rows = {match.group(1): match.group(2) for match in
+                      re.finditer(r"^([^#/:]+):[^=]*=(.*)$", cache, re.MULTILINE)}
+        self.assertEqual(cache_rows.get("BUILD_TESTING"), "ON")
+        self.assertEqual(cache_rows.get("CMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit"), "TRUE")
+        self.assertIn(cache_rows.get("CMAKE_CUDA_COMPILER"), (None, "", "CMAKE_CUDA_COMPILER-NOTFOUND"))
+        self.assertFalse(list((self.host_build / "CMakeFiles").rglob("CMakeCUDACompiler.cmake")))
+
+        compile_db = self.host_build / "compile_commands.json"
+        self.assertTrue(compile_db.is_file())
+        compile_rows = json.loads(compile_db.read_bytes())
+        self.assertTrue(compile_rows)
+        self.assertTrue(all(not Path(row["file"]).suffix.casefold() == ".cu" for row in compile_rows))
+
+        selected = self.query_commands("host-selected-commands", self.host_build, *self.HOST_TARGETS)
+        for source in ("cuda_abi_c.c", "profile_owner_test.cpp", "spectral_owner_test.cpp",
+                       "route_bridge_test.cpp", "ScanRoute.cpp", "hash_contract_test.cpp",
+                       "render_assertions_test.cpp"):
+            self.assertIn(source, selected)
+        self.assertIn("/out/build/" + self.preset + "/cargo/test-support", selected)
+        self.assertIn("/out/build/" + self.preset + "/cargo/production", selected)
+        self.assertNotIn("/host-tests/cargo/", selected)
+        self.assertNotIn("nvcc", selected.casefold())
+        self.assertNotIn("cufft", selected.casefold())
+        self.assertNotIn("/src/Cuda/", selected)
+        self.assert_no_test_metadata(selected)
+
+        all_commands = self.query_commands("host-all-commands", self.host_build)
+        self.assertEqual(all_commands.strip(), "", "the CUDA-free default target must not compile tests")
+        for source in ("cuda_abi_c.c", "profile_owner_test.cpp", "spectral_owner_test.cpp",
+                       "route_bridge_test.cpp", "hash_contract_test.cpp", "render_assertions_test.cpp"):
+            self.assertNotIn(source, all_commands)
+        self.assert_no_test_metadata(all_commands)
+
+    @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_BUILD"),
+                         "requires an explicitly configured testing-ON product graph")
+    def test_product_failure_consumer_and_default_all_have_separate_closures(self):
+        self.assertEqual(Path(os.environ["JUICER_PRODUCT_BUILD"]).resolve(), self.preset_build)
+        cache = (self.preset_build / "CMakeCache.txt").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("BUILD_TESTING:BOOL=ON", cache)
+        selected = self.query_commands("product-failure-commands", self.preset_build,
+                                       "JuicerCudaFailureTests")
+        self.assertIn("cuda_failure_test.cpp", selected)
+        self.assertIn("JuicerCudaExecutor.cpp", selected)
+        self.assertIn("JuicerCudaFilmPipeline.cu", selected)
+        self.assertIn("cufft", selected.casefold())
+        for target in self.GPU_ONLY_TARGETS:
+            self.assertNotIn(target, selected)
+
+        all_commands = self.query_commands("product-all-commands", self.preset_build)
+        for source in ("cuda_failure_test.cpp", "film_recipe_test.cpp", "pinned_upload_test.cpp",
+                       "hash_contract_test.cpp", "render_assertions_test.cpp"):
+            self.assertNotIn(source, all_commands)
+        lower = all_commands.casefold().replace("\\", "/")
+        self.assertIn("/cargo/production", lower)
+        self.assertNotIn("/cargo/test-support", lower)
+        self.assert_no_test_metadata(all_commands)
 
 
 if __name__ == "__main__":

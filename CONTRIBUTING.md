@@ -169,6 +169,14 @@ build/test orchestrator. With `BUILD_TESTING=ON`, CMake builds `Rust.Core` and
 quality commands do not invoke nested `cargo test` builds. Compiler boundary
 probes run from their existing CTest registrations.
 
+Tests and Rust test metadata are excluded from the default product build;
+the verifier builds their selected dependencies. Use `verify.py development
+--preset <preset> --cuda-free --tests ...` for the CUDA-independent Rust,
+tooling and native ABI/owner/value targets listed in tests/README.md. Its small
+CMake configuration shares the preset's Cargo artifacts and build owner, while
+product-linked host tests retain their CUDA compilation requirements. CUDA-free
+results stay focused and cannot supply a full product checkpoint.
+
 The shipping Rust archive always uses production features under the preset's
 `cargo/production`; facade and fault consumers link the separate `cargo/test-support`
 archive. Native objects remain shared. Ordinary test runs do not switch the

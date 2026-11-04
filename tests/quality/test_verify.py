@@ -68,6 +68,13 @@ class PublicCliTests(unittest.TestCase):
         self.assertEqual(args.testing, "ON")
         self.assertEqual(args.run_id, "prepare-one")
 
+    def test_prepare_dispatches_cuda_free_mode(self):
+        with patch.object(sys, "argv", ["verify.py", "prepare", "--preset", "linux-debug",
+                                        "--targets", "JuicerHashContractTests", "--cuda-free"]), \
+                patch.object(verify, "fresh_prepare", return_value=0) as prepare:
+            self.assertEqual(verify.main(), 0)
+        self.assertTrue(prepare.call_args.args[0].cuda_free)
+
     def test_development_dispatches_an_explicit_file_selection(self):
         with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
                                         "--files", "src/ScanRoute.cpp"]), \
@@ -90,6 +97,41 @@ class PublicCliTests(unittest.TestCase):
                 patch.object(verify, "development", return_value=0) as development:
             self.assertEqual(verify.main(), 0)
         self.assertEqual(development.call_args.args[0].targets, ["JuicerRouteBridgeTests"])
+
+    def test_development_dispatches_cuda_free_test_selection(self):
+        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
+                                        "--tests", "Route.Host.Bridge", "--cuda-free"]), \
+                patch.object(verify, "development", return_value=0) as development:
+            self.assertEqual(verify.main(), 0)
+        self.assertTrue(development.call_args.args[0].cuda_free)
+
+    def test_cuda_free_rejects_file_and_build_directory_selections(self):
+        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
+                                        "--files", "src/ScanRoute.cpp", "--cuda-free"]):
+            with self.assertRaises(SystemExit):
+                verify.main()
+        with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",
+                                        "--tests", "Route.Host.Bridge", "--build-dir", "out/build/linux-debug",
+                                        "--cuda-free"]):
+            with self.assertRaises(SystemExit):
+                verify.main()
+        with patch.object(sys, "argv", ["verify.py", "prepare", "--preset", "linux-debug",
+                                        "--files", "src/ScanRoute.cpp", "--cuda-free"]):
+            with self.assertRaises(SystemExit):
+                verify.main()
+
+    def test_check_owner_dispatches_canonical_preset(self):
+        with patch.object(sys, "argv", ["verify.py", "check-owner", "--preset", "linux-debug"]), \
+                patch.object(verify, "check_owner", return_value=0) as check_owner:
+            self.assertEqual(verify.main(), 0)
+        self.assertEqual(check_owner.call_args.args[0].preset, "linux-debug")
+
+    def test_check_owner_requires_an_already_held_preset_lease(self):
+        from execution import OutputLease
+        args = type("Args", (), {"preset": "linux-debug"})()
+        with patch.object(OutputLease, "check_held", side_effect=RuntimeError("no existing preset owner")):
+            with self.assertRaisesRegex(RuntimeError, "no existing preset owner"):
+                verify.check_owner(args)
 
     def test_qualification_dispatches_named_groups_and_runtime(self):
         with patch.object(sys, "argv", ["verify.py", "qualification", "--preset", "linux-debug",

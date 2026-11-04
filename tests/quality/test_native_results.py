@@ -373,6 +373,44 @@ class OpticsSourceTests(unittest.TestCase):
         self.assertEqual(after[0]["head"], before[0]["head"])
         subprocess.run(["git", "apply", "--reverse", "--check"], cwd=self.root, input=after[1], check=True)
 
+    def test_preparation_retains_new_host_entry_and_preset_bytes(self):
+        import base64
+        paths = ("tests/host/CMakeLists.txt", "tests/host/CMakePresets.json")
+        before = self.capture()
+        for name in paths:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"new host configuration\n")
+        source, _, _ = self.capture()
+        self.assertNotEqual(source, before[0])
+        for name in paths:
+            self.assertIn(name, source["inputs"])
+            self.assertEqual(base64.b64decode(source["new_files_base64"][name]), b"new host configuration\n")
+
+    def test_preparation_nested_cmake_edits_are_reconstructible(self):
+        paths = ("tests/host/CMakeLists.txt", "tests/host/CMakePresets.json",
+                 "tests/host/nested/CMakeLists.txt")
+        for name in paths:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"baseline host configuration\n")
+        self.git("add", "tests/host")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "commit", "-qm", "host configuration baseline")
+        before = self.capture()
+        self.subtest_cases = paths
+        for name in paths:
+            with self.subTest(case=name):
+                (self.root / name).write_bytes(b"modified host configuration\n")
+                after = self.capture()
+                self.assertNotEqual(before[1], after[1])
+                self.assertIn(("diff --git a/" + name + " b/" + name).encode(), after[1])
+                subprocess.run(["git", "apply", "--reverse", "--check"],
+                               cwd=self.root, input=after[1], check=True)
+                (self.root / name).write_bytes(b"baseline host configuration\n")
+
+    test_preparation_nested_cmake_edits_are_reconstructible.required_subtests = True
+
     def test_rapid_same_size_edit_after_staging_and_capture_is_detected(self):
         path = self.root / "src/producer.h"
         same_second = 0

@@ -80,6 +80,10 @@ if(CMAKE_SCRIPT_MODE_FILE AND DEFINED JUICER_RUST_TESTS_METADATA_MODE)
     return()
 endif()
 
+if(NOT DEFINED JUICER_RUST_SOURCE_DIR)
+    set(JUICER_RUST_SOURCE_DIR "${PROJECT_SOURCE_DIR}")
+endif()
+
 set(JUICER_RUST_VERSION "1.98.1")
 set(JUICER_CARGO_EXECUTABLE "" CACHE FILEPATH "Cargo executable for the pinned Film-Juicer toolchain")
 set(JUICER_NEXTEST_EXECUTABLE "" CACHE FILEPATH "cargo-nextest executable for focused Rust tests")
@@ -102,7 +106,7 @@ if(BUILD_TESTING)
     if(JUICER_NEXTEST_EXECUTABLE)
         execute_process(
             COMMAND "${JUICER_NEXTEST_EXECUTABLE}" nextest --version
-            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+            WORKING_DIRECTORY "${JUICER_RUST_SOURCE_DIR}"
             RESULT_VARIABLE JUICER_NEXTEST_VERSION_RESULT
             OUTPUT_VARIABLE JUICER_NEXTEST_VERSION_OUTPUT
             ERROR_VARIABLE JUICER_NEXTEST_VERSION_ERROR
@@ -145,7 +149,7 @@ endif()
 
 execute_process(
     COMMAND "${JUICER_CARGO_EXECUTABLE}" --version
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    WORKING_DIRECTORY "${JUICER_RUST_SOURCE_DIR}"
     RESULT_VARIABLE JUICER_CARGO_VERSION_RESULT
     OUTPUT_VARIABLE JUICER_CARGO_VERSION_OUTPUT
     ERROR_VARIABLE JUICER_CARGO_VERSION_ERROR
@@ -159,7 +163,7 @@ endif()
 
 execute_process(
     COMMAND "${JUICER_RUSTC_EXECUTABLE}" --version --verbose
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    WORKING_DIRECTORY "${JUICER_RUST_SOURCE_DIR}"
     RESULT_VARIABLE JUICER_RUSTC_VERSION_RESULT
     OUTPUT_VARIABLE JUICER_RUSTC_VERSION_OUTPUT
     ERROR_VARIABLE JUICER_RUSTC_VERSION_ERROR
@@ -179,7 +183,11 @@ else()
     set(JUICER_RUST_CARGO_PROFILE "debug")
     set(JUICER_RUST_PROFILE_ARGUMENT)
 endif()
-set(JUICER_RUST_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo")
+if(JUICER_CUDA_FREE_TESTS)
+    set(JUICER_RUST_TARGET_DIR "${JUICER_PRESET_BUILD_DIR}/cargo")
+else()
+    set(JUICER_RUST_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo")
+endif()
 set(JUICER_RUST_PRODUCTION_TARGET_DIR "${JUICER_RUST_TARGET_DIR}/production")
 set(JUICER_RUST_TEST_SUPPORT_TARGET_DIR "${JUICER_RUST_TARGET_DIR}/test-support")
 
@@ -191,35 +199,35 @@ if(BUILD_TESTING AND JUICER_NEXTEST_EXECUTABLE)
     set(JUICER_RUST_TESTS_CARGO_METADATA
         "${JUICER_RUST_TESTS_METADATA_DIR}/cargo.json")
     set(JUICER_RUST_TESTS_PROFILE "${JUICER_RUST_CARGO_PROFILE}")
-    add_custom_target(juicer_rust_tests ALL
+    add_custom_target(juicer_rust_tests
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${JUICER_RUST_TESTS_METADATA_DIR}"
         COMMAND "${CMAKE_COMMAND}"
             "-DJUICER_RUST_TESTS_METADATA_MODE=ON"
             "-DJUICER_RUST_TESTS_CARGO=${JUICER_CARGO_EXECUTABLE}"
             "-DJUICER_RUST_TESTS_NEXTEST=${JUICER_NEXTEST_EXECUTABLE}"
-            "-DJUICER_RUST_TESTS_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DJUICER_RUST_TESTS_ROOT=${JUICER_RUST_SOURCE_DIR}"
             "-DJUICER_RUST_TESTS_TARGET=${JUICER_RUST_TARGET}"
             "-DJUICER_RUST_TESTS_TARGET_DIR=${JUICER_RUST_TESTS_TARGET_DIR}"
             "-DJUICER_RUST_TESTS_BINARIES_METADATA=${JUICER_RUST_TESTS_BINARIES_METADATA}"
             "-DJUICER_RUST_TESTS_CARGO_METADATA=${JUICER_RUST_TESTS_CARGO_METADATA}"
             "-DJUICER_RUST_TESTS_PROFILE=${JUICER_RUST_TESTS_PROFILE}"
-            -P "${PROJECT_SOURCE_DIR}/cmake/JuicerRust.cmake"
-        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+            -P "${JUICER_RUST_SOURCE_DIR}/cmake/JuicerRust.cmake"
+        WORKING_DIRECTORY "${JUICER_RUST_SOURCE_DIR}"
         COMMENT "Preparing Rust core and bridge test binaries (${JUICER_RUST_TESTS_PROFILE})"
         VERBATIM
         USES_TERMINAL)
 endif()
 
 file(GLOB_RECURSE JUICER_RUST_SOURCES CONFIGURE_DEPENDS
-    LIST_DIRECTORIES FALSE "${PROJECT_SOURCE_DIR}/rust/*.rs")
+    LIST_DIRECTORIES FALSE "${JUICER_RUST_SOURCE_DIR}/rust/*.rs")
 set(JUICER_RUST_BUILD_INPUTS
-    "${PROJECT_SOURCE_DIR}/Cargo.toml"
-    "${PROJECT_SOURCE_DIR}/Cargo.lock"
-    "${PROJECT_SOURCE_DIR}/clippy.toml"
-    "${PROJECT_SOURCE_DIR}/rust-toolchain.toml"
-    "${PROJECT_SOURCE_DIR}/rustfmt.toml"
-    "${PROJECT_SOURCE_DIR}/rust/film-juicer-core/Cargo.toml"
-    "${PROJECT_SOURCE_DIR}/rust/film-juicer-plugin/Cargo.toml"
+    "${JUICER_RUST_SOURCE_DIR}/Cargo.toml"
+    "${JUICER_RUST_SOURCE_DIR}/Cargo.lock"
+    "${JUICER_RUST_SOURCE_DIR}/clippy.toml"
+    "${JUICER_RUST_SOURCE_DIR}/rust-toolchain.toml"
+    "${JUICER_RUST_SOURCE_DIR}/rustfmt.toml"
+    "${JUICER_RUST_SOURCE_DIR}/rust/film-juicer-core/Cargo.toml"
+    "${JUICER_RUST_SOURCE_DIR}/rust/film-juicer-plugin/Cargo.toml"
     ${JUICER_RUST_SOURCES})
 
 function(juicer_add_rust_artifact variant rust_target)
@@ -254,7 +262,7 @@ function(juicer_add_rust_artifact variant rust_target)
         # A fresh Cargo result can keep the archive unchanged. Only successful
         # preparation advances this variant's stamp; consumers track the archive.
         COMMAND "${CMAKE_COMMAND}" -E touch "${stamp}"
-        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        WORKING_DIRECTORY "${JUICER_RUST_SOURCE_DIR}"
         DEPENDS ${JUICER_RUST_BUILD_INPUTS} "${feature_input}"
         COMMENT "Building Film-Juicer Rust ${variant} (${JUICER_RUST_TARGET}, ${JUICER_RUST_CARGO_PROFILE})"
         VERBATIM USES_TERMINAL)
@@ -303,7 +311,7 @@ else()
             --print native-static-libs
             "${JUICER_RUST_PROBE_SOURCE}"
             -o "${JUICER_RUST_NATIVE_PROBE}"
-        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        WORKING_DIRECTORY "${JUICER_RUST_SOURCE_DIR}"
         RESULT_VARIABLE JUICER_RUST_NATIVE_RESULT
         OUTPUT_VARIABLE JUICER_RUST_NATIVE_OUTPUT
         ERROR_VARIABLE JUICER_RUST_NATIVE_ERROR)
