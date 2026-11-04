@@ -42,6 +42,7 @@
 #include "juicer_cuda_owner.h"
 #include "../ffi/juicer_test_api.h"
 #include "../ffi/case_results.h"
+#include "../ffi/test_asset_workspace.h"
 #include "../ffi/prepared_product_fixture.h"
 #include "../ffi/prepared_frame_fixture.h"
 #include "ScatterHalation.h"
@@ -690,7 +691,10 @@ namespace {
         FjFilmFixtureView _view{};
     };
 
-    void run_profile_rows(const Arguments& arguments, Results& results) {
+    void run_profile_rows(
+        const Arguments& arguments,
+        Results& results,
+        JuicerTestSupport::TestAssetWorkspaces& workspaces) {
         if (results.expect(
                 "scatter_halation.profile_rows",
                 {"profile/missing-metadata-defaults-still-weak",
@@ -704,11 +708,13 @@ namespace {
                  "profile/ordered-infinity-axis-and-layer-cmy-order",
                  "profile/variable-axis-duplicate-and-nullable-spectral-accepted"}))
             return;
+        const auto workspace = workspaces.create(
+            arguments.scratchRoot / "profile-catalogs");
         const std::filesystem::path source =
             arguments.resourceRoot / "profiles" / "kodak_portra_400.json";
         const nlohmann::json completeProfile = load_json(source);
         const auto stage_profile = [&](const std::string& key, const nlohmann::json& profile) {
-            const auto root = arguments.scratchRoot / "profile-catalogs" / key;
+            const auto root = workspace / key;
             std::filesystem::create_directories(root / "profiles");
             for (const char* defaultKey : {"kodak_portra_400", "kodak_portra_endura"}) {
                 std::filesystem::copy_file(
@@ -3738,7 +3744,8 @@ namespace {
         Results listing(true);
         run_control_rows(listing);
         run_build_product_rows(listing);
-        run_profile_rows(Arguments{}, listing);
+        JuicerTestSupport::TestAssetWorkspaces workspaces;
+        run_profile_rows(Arguments{}, listing, workspaces);
         run_recipe_rows(listing);
         run_descriptor_rows(listing);
         run_pending_admission_rows(listing);
@@ -3826,11 +3833,11 @@ int main(int argc, char** argv) noexcept {
         JuicerTests::Cohort selected_modes(
             "scatter_halation_gpu", selectedGroups);
         Results results;
+        JuicerTestSupport::TestAssetWorkspaces profileWorkspaces;
         if (arguments.caseGroup != "terminal-retention")
             results.expect("scatter_halation.shutdown", {"terminal/native-shutdown-last"});
         JuicerCuda::Owner cudaOwner;
         cudaOwner.create(JuicerProcess::data_directory());
-        std::filesystem::create_directories(arguments.scratchRoot);
         const auto run_mode = [&](std::string_view mode, auto&& run) {
             auto event = selected_modes.case_event(mode);
             const int failuresBefore = results.failure_count();
@@ -3840,7 +3847,7 @@ int main(int argc, char** argv) noexcept {
         const auto run_host_contracts = [&] {
             run_control_rows(results);
             run_build_product_rows(results);
-            run_profile_rows(arguments, results);
+            run_profile_rows(arguments, results, profileWorkspaces);
             run_recipe_rows(results);
             run_descriptor_rows(results);
             run_pending_admission_rows(results);
@@ -3910,15 +3917,27 @@ int main(int argc, char** argv) noexcept {
                 false,
                 "selected case group produced no test rows");
         }
+        bool ownersDrained = false;
         if (arguments.caseGroup != "terminal-retention") {
-            const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+            const auto shutdown = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+            const auto destroyed = cudaOwner.close();
             std::vector<JuicerCuda::ResourceManager::DeviceContextKey> live;
             JuicerCuda::ResourceManager::registry_snapshot_context_keys(live);
-            results.record("terminal/native-shutdown-last", closed.category == FJ_STATUS_SUCCESS && live.empty(), "typed shutdown closes the owner after all fixture work");
+            ownersDrained = shutdown.category == FJ_STATUS_SUCCESS &&
+                            destroyed.category == FJ_STATUS_SUCCESS && live.empty();
+            results.record(
+                "terminal/native-shutdown-last",
+                ownersDrained,
+                "shutdown=" + std::to_string(shutdown.category) +
+                    " destroy=" + std::to_string(destroyed.category) +
+                    " live_contexts=" + std::to_string(live.size()));
         }
         print_results(results);
         case_log.finish();
-        return results.failure_count() == 0 ? 0 : 1;
+        const int testResult = results.failure_count() == 0 ? 0 : 1;
+        if (arguments.caseGroup == "terminal-retention")
+            return testResult;
+        return profileWorkspaces.finish(testResult, ownersDrained);
     } catch (const std::exception& error) {
         report_fatal_and_shutdown(error.what());
         return 2;

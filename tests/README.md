@@ -341,7 +341,10 @@ each final consumer selects its Rust archive explicitly. Each variant has its ow
 the production archive. `Ffi.Host.BuildArtifacts` inspects the final link commands,
 production symbols and strings, and native archive neutrality;
 `Ffi.Gpu.ProductionPreparedRender` exercises cold and warm direct/print rendering
-through production APIs.
+through production APIs. Its ordinary `--summary` invocation retains shapes,
+compared sample counts, fixture-match and lifetime outcomes without duplicate
+pixel arrays. The probe's default full-word output remains available to the
+explicit production OFF validator; its capture contract is unchanged.
 
 With `BUILD_TESTING=ON`, CMake's `juicer_rust_tests` target prepares both
 `Rust.Core` and `Rust.Bridge` in the preset's single `cargo/test-support`
@@ -779,6 +782,12 @@ operations, missing inputs/outputs and the shared preset owner. Mutation fixture
 copy their explicit consumed inputs into private scratch, preserving canonical
 files and avoiding writable links to them. Resource membership and scientific
 fixture values are unchanged by staging.
+
+Scatter profile mutations use a unique operation workspace under their requested
+scratch root. Successful complete runs remove that workspace after CUDA shutdown
+and owner destruction. Failures, incomplete owner closure and
+`JUICER_TEST_RETAIN_FIXTURES=1` preserve it; existing siblings and explicit visual
+or performance outputs are untouched.
 
 ## Diagnosing a failure
 

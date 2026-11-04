@@ -329,7 +329,7 @@ namespace {
         const std::vector<float>& expected;
     };
 
-    Json run_pass(const Case& test, std::string_view pass, const PassPixels& pixels, std::vector<std::uint32_t>* coldWords, std::uint64_t* coldRecipeHash, DeviceBuffers& device) {
+    Json run_pass(const Case& test, std::string_view pass, const PassPixels& pixels, std::vector<std::uint32_t>* coldWords, std::uint64_t* coldRecipeHash, DeviceBuffers& device, bool summary) {
         const auto& source = pixels.source;
         const auto& expected = pixels.expected;
         const int pitch = kWidth * test.components + kPitchPadding;
@@ -399,7 +399,6 @@ namespace {
         const auto activeOutput = active_pixels(hostOutput, test);
         const bool fixtureMatch = compare_fixture(activeOutput, expected);
         require(fixtureMatch, std::string(test.id) + ": rendered pixels differ from accepted fixture");
-        auto words = words_json(activeOutput);
         std::vector<std::uint32_t> outputWords;
         outputWords.reserve(activeOutput.size());
         for (float value : activeOutput) {
@@ -431,9 +430,13 @@ namespace {
             {"views_released_after_submit", viewsReleased},
             {"stream_completed", streamCompleted},
             {"context_preserved", contextBefore == contextAfterSubmit},
-            {"context_restored", false},
-            {"input_f32_words", words_json(active_pixels(source, test))},
-            {"output_f32_words", std::move(words)}};
+            {"context_restored", false}};
+        if (summary) {
+            row["samples_compared"] = activeOutput.size();
+        } else {
+            row["input_f32_words"] = words_json(active_pixels(source, test));
+            row["output_f32_words"] = words_json(activeOutput);
+        }
         return row;
     }
 
@@ -447,7 +450,8 @@ int main(int argc, char** argv) {
             }
             return std::fflush(stdout) == 0 ? 0 : 1;
         }
-        require(argc == 5, "usage: JuicerProductionPreparedRenderProbe Resources processor-${preset}.dat preset product-updates.json");
+        const bool summary = argc == 6 && std::string_view(argv[5]) == "--summary";
+        require(argc == 5 || summary, "usage: JuicerProductionPreparedRenderProbe Resources processor-${preset}.dat preset product-updates.json [--summary]");
         JuicerTests::CaseLog cases;
         std::vector<std::string> intended;
         intended.reserve(kCaseIds.size());
@@ -493,9 +497,9 @@ int main(int argc, char** argv) {
             std::uint64_t coldRecipeHash = 0;
             const PassPixels pixels{.source = source, .expected = expected[caseIndex]};
             cases.event("production-prepared-render", std::string(test.id) + "/cold", "start");
-            rows.push_back(run_pass(test, "cold", pixels, &coldWords, &coldRecipeHash, device));
+            rows.push_back(run_pass(test, "cold", pixels, &coldWords, &coldRecipeHash, device, summary));
             cases.event("production-prepared-render", std::string(test.id) + "/warm", "start");
-            rows.push_back(run_pass(test, "warm", pixels, &coldWords, &coldRecipeHash, device));
+            rows.push_back(run_pass(test, "warm", pixels, &coldWords, &coldRecipeHash, device, summary));
 
             require_cuda(cudaFree(device.destination), "free destination buffer");
             device.destination = nullptr;

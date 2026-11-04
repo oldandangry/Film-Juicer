@@ -848,7 +848,7 @@ add_test(NAME Ffi.Gpu.ProductionPreparedRender
     COMMAND JuicerProductionPreparedRenderProbe "${JUICER_TEST_ROOT}/Resources"
         "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat"
         "${JUICER_TEST_PRESET_NAME}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/print/illuminant-fixtures/product-updates.json")
+        "${CMAKE_CURRENT_SOURCE_DIR}/print/illuminant-fixtures/product-updates.json" --summary)
 set_tests_properties(Ffi.Gpu.ProductionPreparedRender PROPERTIES
     LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 if(MSVC)
