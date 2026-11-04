@@ -2294,6 +2294,73 @@ class FileEvidenceTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.build = self.root / "build"
 
+    def test_windows_identity_request_preserves_lexical_proof_groups(self):
+        from build_dependencies import read_identity_request
+
+        request = self.root / "request.json"
+        value = {"protocol": "windows-file-identities-v1", "collection_id": "a" * 32,
+                 "phase": "entry", "proofs": {"b" * 64: {
+                     "files": [r"C:\PROGRA~1\CUDA\header.h", r"C:\SDK\include\Windows.h"],
+                     "rust_configuration": []}}}
+        write_json(request, value)
+        self.assertEqual(read_identity_request(request, digest(request)), value)
+        with self.assertRaisesRegex(ValueError, "request identity"):
+            read_identity_request(request, "0" * 64)
+
+    def test_windows_identity_request_rejects_duplicate_and_unowned_fields(self):
+        from build_dependencies import read_identity_request
+
+        request = self.root / "request.json"
+        value = {"protocol": "windows-file-identities-v1", "collection_id": "a" * 32,
+                 "phase": "entry", "proofs": {"b" * 64: {
+                     "files": [r"C:\SDK\header.h"], "rust_configuration": []}}}
+        for mutate in (lambda v: v.update(extra=True),
+                       lambda v: v.update(phase="cached"),
+                       lambda v: v["proofs"]["b" * 64]["files"].append(r"C:\SDK\header.h"),
+                       lambda v: v["proofs"]["b" * 64].update(extra=[]),
+                       lambda v: v["proofs"]["b" * 64].update(files=["relative.h"])):
+            candidate = json.loads(json.dumps(value))
+            mutate(candidate)
+            write_json(request, candidate)
+            with self.subTest(request=candidate), self.assertRaises(ValueError):
+                read_identity_request(request, digest(request))
+        request.write_text('{"protocol": 1, "protocol": 2}')
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            read_identity_request(request, digest(request))
+
+    @unittest.skipUnless(os.name == "posix", "foreign Windows preparation is consumed on Linux")
+    def test_foreign_native_maps_preserve_targets_and_recheck_mapped_bytes(self):
+        lexical = r"C:\SDK\include\header.h"
+        target = r"C:\SDK\Include\Header.h"
+        local = self.root / "header.h"
+        canonical = self.root / "Header.h"
+        for path in (local, canonical):
+            path.write_text("first")
+        files = {lexical: {"resolved": target, "sha256": digest(local)}}
+        proof = {"source": r"C:\source", "outputs": [], "context": {
+            "files": files, "rust_configuration": {}, "include_membership": {},
+            "configuration": {"inputs": {}, "tools": {}, "regeneration_mtimes": {}, "registrations": {}}}}
+        def resolve(name):
+            return {lexical: local, target: canonical, r"C:\source": self.root}[name]
+        native = {"files": json.loads(json.dumps(files)), "rust_configuration": {}}
+        with patch.object(build_evidence, "configuration_files", return_value=[]), \
+                patch.object(build_evidence, "registration_files", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "dependency contents or paths"):
+                build_evidence.check_preparation_inputs(self.build, proof, resolve=resolve)
+            build_evidence.check_preparation_inputs(self.build, proof, resolve=resolve,
+                                                   native_file_identities=native)
+            altered = json.loads(json.dumps(native))
+            altered["files"][lexical]["resolved"] = r"C:\Other\Header.h"
+            with self.assertRaisesRegex(ValueError, "native target"):
+                build_evidence.check_preparation_inputs(self.build, proof, resolve=resolve,
+                                                       native_file_identities=altered)
+            stamp = local.stat()
+            local.write_text("other")
+            os.utime(local, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            with self.assertRaisesRegex(ValueError, "mapped Windows preparation content"):
+                build_evidence.check_preparation_inputs(self.build, proof, resolve=resolve,
+                                                       native_file_identities=native)
+
     def test_identity_reads_reject_symlink_retarget_and_restored_time_content(self):
         from build_dependencies import file_identities
 

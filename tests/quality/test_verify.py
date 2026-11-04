@@ -18,6 +18,23 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SelectionTests(unittest.TestCase):
+    def test_collection_forwards_explicit_windows_interpreter(self):
+        import verify
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "aggregate.json"
+            python = r"C:\Qualified\python.exe"
+            with patch.object(sys, "argv", ["verify.py", "collect-qualification", "--receipts", "receipt.json",
+                                           "--output", str(output), "--windows-python", python]), \
+                    patch("qualification.collect_qualification", return_value={"status": "passed"}) as collect:
+                self.assertEqual(verify.main(), 0)
+            collect.assert_called_once_with(verify.ROOT, [Path("receipt.json")], windows_python=python)
+            self.assertEqual(json.loads(output.read_text()), {"status": "passed"})
+            with patch.object(sys, "argv", ["verify.py", "collect-qualification", "--receipts", "receipt.json",
+                                           "--output", str(output), "--windows-python", python]), \
+                    patch("qualification.collect_qualification", side_effect=AssertionError("existing output scheduled native work")):
+                with self.assertRaisesRegex(ValueError, "retain the existing aggregate"):
+                    verify.main()
+
     def test_s4e_retirement_dispatches_no_preparation_or_qualification(self):
         import verify
         for preset in ("linux-debug", "windows-clang-debug"):

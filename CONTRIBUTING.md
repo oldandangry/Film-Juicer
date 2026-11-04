@@ -419,6 +419,13 @@ and A1/A2 development receipts cannot supply that aggregate. Full product, GPU,
 Resolve and release acceptance remain separately required and are not established
 by this dispatcher implementation.
 
+When collecting Windows preparation receipts from Linux/WSL, add
+`--windows-python <qualified-Windows-python.exe>` with the exact native interpreter
+bound by the Windows preparations and checkpoint quality tools. The collector
+runs supervised Windows identity checks at entry and terminal. Preserve failed
+collection campaigns under `out/validation/linux-debug/collection-<id>/`, including
+their requests, outputs, command/process receipts, gates and seals, for diagnosis.
+
 The existing `execution.py` supervisor and build-tree lease cover preparation,
 analysis and test consumption. A fresh preparation may recover a pending owner
 only under a healthy build-tree lease and with intact proof that every command

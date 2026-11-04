@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Mapping, Sequence
 
 
@@ -133,16 +133,91 @@ def tool_snapshot(paths: Sequence[str], *, allow_missing=False) -> dict[str, str
     return result
 
 
+def windows_path(path):
+    return subprocess.check_output(["wslpath", "-w", str(path)], text=True).strip()
+
+
+def mapped_windows_path(path):
+    if not PureWindowsPath(path).is_absolute():
+        raise ValueError("Windows identity interpreter/path must be absolute")
+    return Path(subprocess.check_output(["wslpath", "-u", str(path)], text=True).strip())
+
+
+def windows_venv_home(config):
+    homes = [line.partition("=")[2].strip() for line in config.read_text().splitlines()
+             if line.partition("=")[0].strip() == "home"]
+    if len(homes) != 1 or not PureWindowsPath(homes[0]).is_absolute():
+        raise ValueError("Windows identity venv has no explicit base interpreter")
+    return str(PureWindowsPath(homes[0]) / "python.exe")
+
+
+def windows_runtime_paths():
+    python = Path(sys.executable)
+    configs = [python.parent / "pyvenv.cfg", python.parent.parent / "pyvenv.cfg"]
+    config = next((p for p in configs if p.is_file()), None)
+    base = Path(windows_venv_home(config)) if config else Path(sys.base_prefix) / "python.exe"
+    if base.resolve(strict=True) != (Path(sys.base_prefix) / "python.exe").resolve(strict=True):
+        raise ValueError("Windows runtime base interpreter disagrees with venv configuration")
+    return {"python": python, "base_python": base, "config": config}
+
+
+def windows_identity_interpreter(python):
+    if os.name != "posix":
+        raise ValueError("Windows identity interop requires the Linux collector")
+    python = str(PureWindowsPath(python))
+    executable = mapped_windows_path(python)
+    if not executable.is_file():
+        raise ValueError("Windows identity interpreter is unavailable")
+    config = next((p for p in (executable.parent / "pyvenv.cfg", executable.parent.parent / "pyvenv.cfg")
+                   if p.is_file()), None)
+    base = windows_venv_home(config) if config else python
+    return {"python": python, "base_python": base, "executable": executable, "config": config}
+
+
+def prepare_windows_identity_launch(root, python, request_path, *, base_python=None):
+    from build_dependencies import read_identity_request
+
+    interpreter = windows_identity_interpreter(python)
+    python, base, executable, config = (interpreter[n] for n in ("python", "base_python", "executable", "config"))
+    base_executable = mapped_windows_path(base)
+    base_target = str(PureWindowsPath(base_python)) if base_python is not None else base
+    supervisor_executable = mapped_windows_path(base_target)
+    if digest(supervisor_executable) != digest(base_executable):
+        raise ValueError("Windows identity qualified base interpreter differs from venv configuration")
+    checksum = digest(request_path)
+    request = read_identity_request(request_path, checksum)
+    helper = root / "scripts/build_dependencies.py"
+    supervisor = root / "scripts/process_tree.py"
+    project_tools = [helper, supervisor, root / "scripts/execution.py"]
+    tools = [executable, base_executable, supervisor_executable, *project_tools, *([config] if config else [])]
+    if any(not p.is_file() for p in tools):
+        raise ValueError("Windows identity launch tool/configuration is missing")
+    native_request = windows_path(request_path)
+    return {"python": python, "base_python": base, "executable": str(executable),
+            "base_target": base_target, "supervisor_executable": str(supervisor_executable),
+            "request": request_path.relative_to(root).as_posix(), "request_sha256": checksum,
+            "collection_id": request["collection_id"], "phase": request["phase"],
+            "supervisor": windows_path(supervisor), "tools": [str(p) for p in tools],
+            "command": [python, "-B", windows_path(helper), "--file-identities", native_request,
+                        "--request-sha256", checksum], "native_request": native_request}
+
+
 
 def run_process_tree(
     command, root, environment, output, timeout, receipt, lock, tree,
-    stderr_output=None, vctip_cleanup=None,
+    stderr_output=None, vctip_cleanup=None, windows_identity=None,
 ):
     OutputLease.check_held()
     supervisor = Path(__file__).with_name("process_tree.py")
     policy = ["--vctip-cleanup", json.dumps(vctip_cleanup)] if vctip_cleanup else []
+    supervisor_command = [sys.executable, "-B", str(supervisor), str(receipt), str(timeout), *policy, *command]
+    if windows_identity is not None:
+        supervisor_command = [windows_identity["supervisor_executable"], "-B", windows_identity["supervisor"],
+            windows_path(receipt), str(timeout), "--identity-request", windows_identity["native_request"],
+            windows_identity["request_sha256"], *command]
+        tree.update(drained=False)
     process = subprocess.Popen(
-        [sys.executable, "-B", str(supervisor), str(receipt), str(timeout), *policy, *command],
+        supervisor_command,
         cwd=root,
         env=environment,
         stdin=subprocess.PIPE,
@@ -151,7 +226,8 @@ def run_process_tree(
         start_new_session=os.name != "nt",
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
     )
-    tree.update(drained=False, supervisor_pid=process.pid, receipt=str(receipt))
+    tree.update(drained=False, receipt=str(receipt))
+    tree["interop_pid" if windows_identity is not None else "supervisor_pid"] = process.pid
     try:
         write_json(lock, {"owner_pid": os.getpid(), **tree})
         try:
@@ -163,7 +239,23 @@ def run_process_tree(
     finally:
         process.stdin.close()
         if receipt.is_file():
-            tree.update(json.loads(receipt.read_text(encoding="utf-8")))
+            observed = json.loads(receipt.read_text(encoding="utf-8"))
+            if windows_identity is not None:
+                expected = {"collection_id": windows_identity["collection_id"],
+                            "phase": windows_identity["phase"],
+                            "request_sha256": windows_identity["request_sha256"]}
+                seal_path = receipt.with_suffix(".seal.json")
+                seal = json.loads(seal_path.read_text()) if seal_path.is_file() else None
+                if (observed.get("identity_request") != expected or observed.get("command") != command
+                        or seal != {"receipt_sha256": digest(receipt), "identity_request": expected}
+                        or set(observed.get("creation", {})) != {"windows_creation_time_100ns"}
+                        or type(observed["creation"]["windows_creation_time_100ns"]) is not int
+                        or observed["creation"]["windows_creation_time_100ns"] <= 0
+                        or any(type(observed.get(k)) is not int or observed[k] <= 0
+                               for k in ("supervisor_pid", "command_pid", "gated_pid"))):
+                    tree.update(drained=False, status="blocked")
+                    raise RuntimeError("Windows identity native process evidence is missing or contradictory")
+            tree.update(observed)
     if process.returncode or not tree["drained"]:
         raise RuntimeError(
             "process-tree completion could not be established; campaign remains locked; "
@@ -248,13 +340,26 @@ class Campaign:
         vctip_executable: str | None = None,
         vctip_grace_seconds: float = 30,
         vctip_drain_cap_seconds: float = 300,
+        windows_python: str | None = None,
+        identity_request: Path | None = None,
+        windows_base_python: str | None = None,
     ) -> Path:
         OutputLease.check_held()
+        native = None
+        if windows_python is not None or identity_request is not None or windows_base_python is not None:
+            if (windows_python is None or identity_request is None
+                    or stage not in {"windows-entry", "windows-terminal"}
+                    or vctip_executable is not None):
+                raise ValueError("Windows identity route requires its bound collection stage/request")
+            native = prepare_windows_identity_launch(self.root, windows_python, identity_request,
+                                                     base_python=windows_base_python)
+            if list(command) != native["command"] or stage != "windows-" + native["phase"]:
+                raise ValueError("Windows identity command/stage does not match its request")
         self.check_run_request(stage, command, inputs=inputs, timeout=timeout)
         environment = command_environment(os.environ if env is None else env)
         if "JUICER_OUTPUT_LEASES" in os.environ:
             environment["JUICER_OUTPUT_LEASES"] = os.environ["JUICER_OUTPUT_LEASES"]
-        executable = shutil.which(command[0], path=environment.get("PATH", ""))
+        executable = native["executable"] if native else shutil.which(command[0], path=environment.get("PATH", ""))
         if executable is None:
             raise ValueError(f"command is unavailable: {command[0]}")
         if os.name == "nt":
@@ -281,12 +386,13 @@ class Campaign:
         elif vctip_grace_seconds != 30 or vctip_drain_cap_seconds != 300:
             raise ValueError("VCTIP drain policy requires a VCTIP executable")
         preparation_start = time.perf_counter()
-        selected_tools = [*tools, *([str(vctip_path)] if vctip_cleanup else [])]
+        selected_tools = [*tools, *([str(vctip_path)] if vctip_cleanup else []), *(native["tools"] if native else [])]
         identity = {
             "command": list(command),
             "inputs": snapshot(self.root, inputs),
             "tools": tool_snapshot(selected_tools),
-            "supervisor_sha256": digest(Path(__file__).with_name("process_tree.py")),
+            "supervisor_sha256": digest(self.root / "scripts/process_tree.py" if native
+                                         else Path(__file__).with_name("process_tree.py")),
             "executable_sha256": digest(Path(executable)),
             "environment_sha256": hashlib.sha256(
                 json.dumps(environment, sort_keys=True).encode()
@@ -294,6 +400,8 @@ class Campaign:
         }
         if vctip_cleanup:
             identity["vctip_cleanup"] = vctip_cleanup
+        if native is not None:
+            identity["windows_identity"] = native
         preparation_seconds = time.perf_counter() - preparation_start
         if any(
             identity["inputs"].get(name) != value
@@ -350,7 +458,9 @@ class Campaign:
                         list(command), self.root, environment, output, timeout,
                         directory / "process.json", lock, tree,
                     ]
-                    if vctip_cleanup:
+                    if native is not None:
+                        record["returncode"] = run_process_tree(*arguments, windows_identity=native)
+                    elif vctip_cleanup:
                         record["returncode"] = run_process_tree(
                             *arguments, vctip_cleanup=vctip_cleanup,
                         )

@@ -559,6 +559,7 @@ void JuicerProcessor::processImagesCUDA() {
     }
 
     if (result.fatal != 0) {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (!completion.completed) {
             if (!callScope.diagnostic().empty()) {
                 JTRACE("CUDA", callScope.diagnostic());
@@ -568,6 +569,7 @@ void JuicerProcessor::processImagesCUDA() {
                 JTRACE("CUDA", "prepared render failed without a diagnostic");
             }
         }
+#endif
         OFX::throwSuiteStatusException(kOfxStatErrFatal);
     }
 }

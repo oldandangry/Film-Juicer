@@ -14,6 +14,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
+sys.path.insert(0, str(Path(__file__).parents[2] / "tests/ctest"))
+from control_artifacts import record_fixture
+
 SPEC = importlib.util.spec_from_file_location(
     "campaign", Path(__file__).parents[2] / "scripts/execution.py"
 )
@@ -27,6 +31,12 @@ PROCESS_SPEC.loader.exec_module(process_tree)
 
 
 class CampaignTests(unittest.TestCase):
+    def test_windows_identity_route_requires_bound_request_and_collection_stage(self):
+        with patch.object(campaign.subprocess, "Popen", side_effect=AssertionError("unbound launch")):
+            with self.assertRaisesRegex(ValueError, "Windows identity"):
+                self.campaign.run("quality", self.command("pass"), inputs=["source.txt"],
+                                  windows_python=r"C:\Python\python.exe")
+
     def test_default_supervision_allows_progress_and_quiet_work_without_elapsed_kill(self):
         code = ("import time\n"
                 "for i in range(8):\n"
@@ -674,6 +684,349 @@ def unlink_directory(link):
         link.rmdir()
     else:
         link.unlink()
+
+
+@unittest.skipUnless(os.name == "posix" and os.environ.get("JUICER_WINDOWS_PYTHON"),
+                     "requires explicit qualified Windows Python under WSL")
+class WindowsIdentityInteropTests(unittest.TestCase):
+    def setUp(self):
+        repository = Path(__file__).resolve().parents[2]
+        parent = repository / "out/validation/linux-debug/checkpoint-controls"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.root = Path(tempfile.mkdtemp(prefix="identity-", dir=parent)).resolve()
+        print("Windows identity fixture:", self.root, file=sys.stderr, flush=True)
+        record_fixture(self.root, self, "running")
+        self.addCleanup(lambda: record_fixture(self.root, self, owner_root=self.root))
+        (self.root / "scripts").mkdir()
+        for name in ("execution.py", "process_tree.py", "build_dependencies.py"):
+            shutil.copy2(repository / "scripts" / name, self.root / "scripts" / name)
+        self.python = os.environ["JUICER_WINDOWS_PYTHON"]
+        self.input = self.root / "input.txt"
+        self.input.write_text("original")
+        self.request = self.root / "request.json"
+        self.request.write_text(json.dumps({"protocol": "windows-file-identities-v1",
+            "collection_id": "a" * 32, "phase": "entry", "proofs": {"b" * 64: {
+                "files": [campaign.windows_path(self.input)], "rust_configuration": []}}}))
+        self.owner = campaign.Campaign(self.root, "linux-debug", "collection",
+                                       ["windows-entry", "windows-terminal"])
+
+    def reader_prefix(self, source):
+        helper = self.root / "scripts/build_dependencies.py"
+        helper.write_text(helper.read_text().replace("from __future__ import annotations\n",
+            "from __future__ import annotations\n\nif __name__ == '__main__':\n"
+            "    import subprocess,sys,time\n    from pathlib import Path\n" +
+            "\n".join("    " + line for line in source.splitlines()) + "\n", 1))
+
+    def execute(self, timeout=10):
+        launch = campaign.prepare_windows_identity_launch(self.root, self.python, self.request)
+        return self.owner.run("windows-entry", launch["command"],
+            inputs=["request.json", "scripts/execution.py", "scripts/process_tree.py",
+                    "scripts/build_dependencies.py"], tools=launch["tools"], timeout=timeout,
+            windows_python=self.python, identity_request=self.request)
+
+    def test_native_identity_and_descendants_complete_before_release(self):
+        marker = campaign.windows_path(self.root / "descendant.txt")
+        child = "import time;from pathlib import Path;time.sleep(.8);Path(" + repr(marker) + ").write_text('finished')"
+        self.reader_prefix("subprocess.Popen([sys.executable, '-B', '-c', " + repr(child) + "])")
+        with campaign.OutputLease(self.root, self.root / "build"):
+            path = self.execute()
+        record = json.loads(path.read_text())
+        tree = record["process_tree"]
+        self.assertEqual(tree["status"], "completed")
+        self.assertTrue(tree["drained"])
+        self.assertEqual(set(tree["creation"]), {"windows_creation_time_100ns"})
+        self.assertIn("interop_pid", tree)
+        launch = record["identity"]["windows_identity"]
+        self.assertEqual(launch["supervisor_executable"], str(campaign.mapped_windows_path(launch["base_target"])))
+        self.assertEqual(tree["identity_request"]["request_sha256"], campaign.digest(self.request))
+        self.assertEqual((self.root / "descendant.txt").read_text(), "finished")
+        response = json.loads(path.with_name("output.log").read_text())
+        self.assertEqual(response["proofs"]["b" * 64]["files"][campaign.windows_path(self.input)]["sha256"],
+                         campaign.digest(self.input))
+        self.assertFalse((self.owner.directory / "running.lock").exists())
+
+    def test_native_failed_parent_drains_descendant_writer(self):
+        marker = self.root / "grandchild.txt"
+        grandchild = "import time;from pathlib import Path;p=Path(" + repr(campaign.windows_path(marker)) + ");\nwhile True:p.write_text(str(time.monotonic()));time.sleep(.02)"
+        child = "import subprocess,sys;subprocess.Popen([sys.executable,'-B','-c'," + repr(grandchild) + "])"
+        self.reader_prefix("subprocess.Popen([sys.executable, '-B', '-c', " + repr(child) + "])\n"
+            "deadline=time.monotonic()+5\n"
+            "while not Path(" + repr(campaign.windows_path(marker)) + ").exists():\n"
+            "    if time.monotonic()>deadline: raise RuntimeError('grandchild did not start')\n"
+            "    time.sleep(.02)\nraise SystemExit(7)")
+        with campaign.OutputLease(self.root, self.root / "build"):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.execute()
+        record = self.owner.attempts("windows-entry")[-1]
+        self.assertEqual(record["returncode"], 7)
+        self.assertEqual(record["process_tree"]["status"], "failed-parent")
+        self.assertTrue(record["process_tree"]["drained"])
+        before = marker.read_bytes()
+        time.sleep(.1)
+        self.assertEqual(marker.read_bytes(), before)
+
+    def test_native_timeout_drains_writer_and_releases_proved_lease(self):
+        marker = campaign.windows_path(self.root / "writer.txt")
+        child = "import time;from pathlib import Path;p=Path(" + repr(marker) + ");\nwhile True:p.write_text(str(time.monotonic()));time.sleep(.02)"
+        self.reader_prefix("subprocess.Popen([sys.executable, '-B', '-c', " + repr(child) + "])\ntime.sleep(30)")
+        with campaign.OutputLease(self.root, self.root / "build"):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self.execute(timeout=1)
+        record = self.owner.attempts("windows-entry")[-1]
+        self.assertEqual(record["process_tree"]["status"], "timeout")
+        self.assertTrue(record["process_tree"]["drained"])
+        marker = self.root / "writer.txt"
+        before = marker.read_bytes()
+        time.sleep(.1)
+        self.assertEqual(marker.read_bytes(), before)
+
+    def native_state(self, target=None):
+        import qualification
+
+        name = campaign.windows_path(self.input if target is None else target)
+        expected = {"b" * 64: {"files": {name: {
+            "resolved": campaign.windows_path(self.input), "sha256": campaign.digest(self.input)}},
+            "rust_configuration": {}}}
+        self.bind_runtime(expected["b" * 64]["files"])
+        return qualification, {"campaign": self.owner, "python": self.python,
+            "collection_id": "a" * 32, "expected": expected, "receipts": {}, "stages": []}
+
+    def bind_runtime(self, files):
+        launch = campaign.prepare_windows_identity_launch(self.root, self.python, self.request)
+        for role in ("python", "base_python"):
+            name = launch[role]
+            files[name] = {"resolved": name, "sha256": campaign.digest(campaign.mapped_windows_path(name))}
+
+    def copy_runtime(self):
+        runtime = campaign.windows_identity_interpreter(self.python)
+        self.assertIsNotNone(runtime["config"])
+        executable = self.root / "runtime/Scripts/python.exe"
+        executable.parent.mkdir(parents=True)
+        shutil.copy2(runtime["executable"], executable)
+        config = executable.parent.parent / "pyvenv.cfg"
+        shutil.copy2(runtime["config"], config)
+        self.python = campaign.windows_path(executable)
+        return config
+
+    def bind_runtime_fixture(self, config):
+        qualification, native = self.native_state()
+        files = native["expected"]["b" * 64]["files"]
+        for path in (config, self.root / "scripts/build_dependencies.py"):
+            name = campaign.windows_path(path)
+            files[name] = {"resolved": name, "sha256": campaign.digest(path)}
+        facts = self.root / "runtime-facts.json"
+        facts.write_text(json.dumps({"scope": "isolated runtime substitution control",
+                                     "proofs": native["expected"]}))
+        native["receipts"] = {"runtime-facts.json": campaign.digest(facts)}
+        return qualification, native
+
+    def test_native_interpreter_substitution_rejects_original_producer_binding(self):
+        config = self.copy_runtime()
+        qualification, native = self.bind_runtime_fixture(config)
+        executable = campaign.mapped_windows_path(self.python)
+        executable.write_bytes(executable.read_bytes() + b"\0identity-control-overlay")
+        with campaign.OutputLease(self.root, self.root / "build"):
+            with self.assertRaisesRegex(ValueError, "original proof maps"):
+                qualification.run_native_identity_phase(self.root, native, "entry")
+        process = self.owner.attempts("windows-entry")[-1]["process_tree"]
+        self.assertTrue(process["drained"])
+        self.assertEqual(process["status"], "completed")
+        self.assertEqual(native["stages"], [])
+
+    def test_native_config_mutation_during_reader_rejects_tool_seal(self):
+        config = self.copy_runtime()
+        self.reader_prefix("p=Path(" + repr(campaign.windows_path(config)) + ")\n"
+                           "p.write_bytes(p.read_bytes()+b'\\n# changed during native reader\\n')")
+        qualification, native = self.bind_runtime_fixture(config)
+        with campaign.OutputLease(self.root, self.root / "build"):
+            with self.assertRaisesRegex(ValueError, "inputs changed"):
+                qualification.run_native_identity_phase(self.root, native, "entry")
+        record = self.owner.attempts("windows-entry")[-1]
+        self.assertEqual(record["status"], "failed")
+        self.assertTrue(record["process_tree"]["drained"])
+        self.assertEqual(record["process_tree"]["status"], "completed")
+
+    def test_native_helper_mutation_during_reader_rejects_tool_seal(self):
+        config = self.copy_runtime()
+        helper = self.root / "scripts/build_dependencies.py"
+        self.reader_prefix("p=Path(" + repr(campaign.windows_path(helper)) + ")\n"
+                           "p.write_bytes(p.read_bytes()+b'\\n# changed during native reader\\n')")
+        qualification, native = self.bind_runtime_fixture(config)
+        with campaign.OutputLease(self.root, self.root / "build"):
+            with self.assertRaisesRegex(ValueError, "inputs changed"):
+                qualification.run_native_identity_phase(self.root, native, "entry")
+        record = self.owner.attempts("windows-entry")[-1]
+        self.assertEqual(record["status"], "failed")
+        self.assertTrue(record["process_tree"]["drained"])
+        self.assertEqual(record["process_tree"]["status"], "completed")
+
+    def test_native_base_target_rejects_equal_byte_alias_result(self):
+        launch = campaign.prepare_windows_identity_launch(self.root, self.python, self.request)
+        other = self.root / "other-python.exe"
+        shutil.copy2(campaign.mapped_windows_path(launch["base_python"]), other)
+        helper = self.root / "scripts/build_dependencies.py"
+        change = ("original_reader = read_windows_identities\n"
+                  "def substituted(path, checksum):\n"
+                  "    result = original_reader(path, checksum)\n"
+                  "    result['runtime']['base_python']['resolved'] = " + repr(campaign.windows_path(other)) + "\n"
+                  "    return result\nread_windows_identities = substituted\n\n")
+        helper.write_text(helper.read_text().replace('if __name__ == "__main__":\n',
+                                                     change + 'if __name__ == "__main__":\n'))
+        qualification, native = self.native_state()
+        with campaign.OutputLease(self.root, self.root / "build"):
+            with self.assertRaisesRegex(ValueError, "interpreter binding changed"):
+                qualification.run_native_identity_phase(self.root, native, "entry")
+
+    def test_native_evidence_closure_rejects_missing_tampered_and_reordered_payloads(self):
+        qualification, native = self.native_state()
+        with campaign.OutputLease(self.root, self.root / "build"):
+            qualification.run_native_identity_phase(self.root, native, "entry")
+            qualification.run_native_identity_phase(self.root, native, "terminal")
+            qualification.check_native_identity_evidence(self.root, native["stages"], native["expected"])
+            for entries in (native["stages"][:1], list(reversed(native["stages"]))):
+                with self.assertRaisesRegex(ValueError, "incomplete"):
+                    qualification.check_native_identity_evidence(self.root, entries, native["expected"])
+            for name in native["stages"][0]["payloads"]:
+                path = Path(name)
+                original = path.read_bytes()
+                try:
+                    path.write_bytes(original + b" ")
+                    with self.subTest(payload=path.name), self.assertRaises(ValueError):
+                        qualification.check_native_identity_evidence(self.root, native["stages"], native["expected"])
+                finally:
+                    path.write_bytes(original)
+
+    def test_native_terminal_scan_rejects_same_byte_junction_retarget(self):
+        self.assert_terminal_retarget_rejected(hardlink=False)
+
+    def test_native_terminal_scan_rejects_same_file_hardlink_target_retarget(self):
+        self.assert_terminal_retarget_rejected(hardlink=True)
+
+    def assert_terminal_retarget_rejected(self, *, hardlink):
+        first, second, alias = [self.root / n for n in ("first", "second", "alias")]
+        for path in (first, second):
+            path.mkdir()
+        (first / "input.txt").write_text("original")
+        if hardlink:
+            os.link(first / "input.txt", second / "input.txt")
+            self.assertEqual((first / "input.txt").stat().st_ino, (second / "input.txt").stat().st_ino)
+        else:
+            (second / "input.txt").write_text("original")
+        self.input = first / "input.txt"
+        marker = self.root / "retarget.txt"
+        self.reader_prefix("target = " + repr(campaign.windows_path(second)) + " if Path(" +
+            repr(campaign.windows_path(marker)) + ").exists() else " + repr(campaign.windows_path(first)) +
+            "\nalias = " + repr(campaign.windows_path(alias)) +
+            "\nif Path(alias).exists(): subprocess.run(['cmd.exe', '/c', 'rmdir', alias], check=True, capture_output=True)" +
+            "\nsubprocess.run(['cmd.exe', '/c', 'mklink', '/J', alias, target], check=True, capture_output=True)")
+        qualification, native = self.native_state(alias / "input.txt")
+        with campaign.OutputLease(self.root, self.root / "build"):
+            qualification.run_native_identity_phase(self.root, native, "entry")
+            marker.touch()
+            with self.assertRaisesRegex(ValueError, "original proof maps"):
+                qualification.run_native_identity_phase(self.root, native, "terminal")
+        self.assertEqual(campaign.digest(first / "input.txt"), campaign.digest(second / "input.txt"))
+
+    def test_native_supervisor_early_exit_quarantines_unproved_lease(self):
+        supervisor = self.root / "scripts/process_tree.py"
+        supervisor.write_text(supervisor.read_text().replace('    main()\n', '    os._exit(0)\n'))
+        lease = campaign.OutputLease(self.root, self.root / "build")
+        with lease, self.assertRaisesRegex(RuntimeError, "completion could not be established"):
+            self.execute()
+        self.assertEqual(self.owner.attempts("windows-entry")[-1]["status"], "blocked")
+        self.assertEqual(json.loads((lease.path / "owner.json").read_text())["status"], "blocked")
+
+    def test_native_supervisor_death_with_live_job_quarantines_evidence(self):
+        marker = self.root / "writer.txt"
+        child = "import time;from pathlib import Path;p=Path(" + repr(campaign.windows_path(marker)) + ");\nwhile True:p.write_text(str(time.monotonic()));time.sleep(.02)"
+        self.reader_prefix("subprocess.Popen([sys.executable,'-B','-c'," + repr(child) + "])\ntime.sleep(30)")
+        supervisor = self.root / "scripts/process_tree.py"
+        supervisor.write_text(supervisor.read_text().replace('\n        while True:\n',
+            '\n        while True:\n            if Path(' + repr(campaign.windows_path(marker)) +
+            ').is_file(): os._exit(23)\n', 1))
+        lease = campaign.OutputLease(self.root, self.root / "build")
+        with lease, self.assertRaisesRegex(RuntimeError, "native process evidence"):
+            self.execute()
+        self.assertEqual(self.owner.attempts("windows-entry")[-1]["status"], "blocked")
+        self.assertEqual(json.loads((lease.path / "owner.json").read_text())["status"], "blocked")
+        before = marker.read_bytes()
+        time.sleep(.1)
+        self.assertEqual(marker.read_bytes(), before)
+
+    @unittest.skipUnless(os.environ.get("JUICER_WINDOWS_IDENTITY_PROOF"),
+                         "requires explicit retained Windows preparation proof")
+    def test_native_compiler_alias_spellings_match_exactly(self):
+        import qualification
+
+        repository = Path(__file__).resolve().parents[2]
+        source = Path(os.environ["JUICER_WINDOWS_IDENTITY_PROOF"])
+        retained = self.root / "historical-preparation.json"
+        shutil.copy2(source, retained)
+        proof = json.loads(retained.read_text())["scoped_preparation"]
+        aliases = [(name, value["resolved"]) for name, value in proof["context"]["files"].items()
+                   if name != value["resolved"]]
+        self.assertTrue(any("~" in name for name, _ in aliases))
+        self.assertTrue(any(name.casefold() == target.casefold() for name, target in aliases))
+        fixture = self.root / "compiler-aliases.json"
+        groups = {"files": {name: proof["context"]["files"][name] for name, _ in aliases},
+                  "rust_configuration": {}}
+        self.bind_runtime(groups["files"])
+        fixture.write_text(json.dumps({"scope": "compiler alias identity control, not preparation admission",
+            "source_receipt_sha256": campaign.digest(retained), "groups": groups}))
+        expected = {campaign.digest(fixture): groups}
+        native = {"campaign": self.owner, "python": self.python, "collection_id": "a" * 32,
+                  "expected": expected, "receipts": {"compiler-aliases.json": campaign.digest(fixture)}, "stages": []}
+        with campaign.OutputLease(repository, campaign.mapped_windows_path(proof["build"])), \
+                campaign.OutputLease(self.root, self.root / "build"):
+            qualification.run_native_identity_phase(self.root, native, "entry")
+            qualification.run_native_identity_phase(self.root, native, "terminal")
+            qualification.check_native_identity_evidence(self.root, native["stages"], expected)
+
+    def test_native_parent_loss_closes_control_pipe_and_drains_job(self):
+        marker = self.root / "writer.txt"
+        child = "import time;from pathlib import Path;p=Path(" + repr(campaign.windows_path(marker)) + ");\nwhile True:p.write_text(str(time.monotonic()));time.sleep(.02)"
+        self.reader_prefix("subprocess.Popen([sys.executable, '-B', '-c', " + repr(child) + "])\ntime.sleep(30)")
+        worker = self.root / "worker.py"
+        worker.write_text("import sys\nfrom pathlib import Path\nroot=Path(" + repr(str(self.root)) + ")\n"
+            "sys.path.insert(0,str(root/'scripts'))\n"
+            "from execution import Campaign,OutputLease,prepare_windows_identity_launch\n"
+            "python=" + repr(self.python) + "\nrequest=root/'request.json'\n"
+            "launch=prepare_windows_identity_launch(root,python,request)\n"
+            "owner=Campaign(root,'linux-debug','owner-loss',['windows-entry'])\n"
+            "with OutputLease(root,root/'build'):\n"
+            " owner.run('windows-entry',launch['command'],inputs=['request.json','scripts/execution.py',"
+            "'scripts/process_tree.py','scripts/build_dependencies.py'],tools=launch['tools'],timeout=10,"
+            "windows_python=python,identity_request=request)\n")
+        with (self.root / "worker.log").open("wb") as output:
+            process = subprocess.Popen([sys.executable, "-B", str(worker)], stdout=output, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 10
+                while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(marker.exists())
+            finally:
+                process.kill()
+                process.wait(timeout=15)
+        parent = self.root / "out/validation/linux-debug/owner-loss/attempts"
+        deadline = time.monotonic() + 15
+        native = None
+        while time.monotonic() < deadline:
+            paths = list(parent.glob("windows-entry-*/process.seal.json"))
+            if paths:
+                try:
+                    native = json.loads(paths[0].with_name("process.json").read_text())
+                except (OSError, ValueError):
+                    pass
+            if native and native.get("drained"):
+                break
+            time.sleep(.02)
+        self.assertTrue(native and native.get("drained"))
+        self.assertEqual(native["status"], "interrupted")
+        before = marker.read_bytes()
+        time.sleep(.1)
+        self.assertEqual(marker.read_bytes(), before)
+        self.assertTrue((parent.parent / "running.lock").is_file())
+        self.assertTrue(list((self.root / "out/verification-locks").glob("*/owner.json")))
 
 
 class ReportTests(unittest.TestCase):
