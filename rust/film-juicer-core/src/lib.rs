@@ -27,6 +27,7 @@ pub mod scanner;
 pub mod frame;
 
 pub mod recipe;
+pub mod state;
 
 #[cfg(test)]
 #[path = "../tests/support/case_results.rs"]

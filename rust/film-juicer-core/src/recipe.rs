@@ -2049,15 +2049,19 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_cases::RowCases;
+pub(crate) mod test_support {
     use std::path::Path;
+    use std::sync::Weak;
 
-    fn assets() -> Assets {
+    use super::*;
+
+    pub(crate) fn assets() -> Assets {
         Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"))
     }
-    fn params(route: ScanRoute, method: i32) -> Params {
+    pub(crate) fn output_boundary_weak(state: &RenderState) -> Weak<crate::assets::OutputBoundary> {
+        Arc::downgrade(state.scanner.gamut.boundary.as_ref().unwrap())
+    }
+    pub(crate) fn params(route: ScanRoute, method: i32) -> Params {
         let diffusion = optics::DiffusionParams {
             active: false,
             family: 1,
@@ -2179,6 +2183,14 @@ mod tests {
             camera_filter_override: false,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::test_support::{assets, params};
+    use crate::test_cases::RowCases;
+
     #[test]
     fn all_routes_and_methods_complete_with_active_spatial_dir() {
         let assets = assets();

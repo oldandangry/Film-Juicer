@@ -468,6 +468,15 @@ and included-fixture freshness. CTest discovers/runs these built binaries withou
 invoking another build. For a focused Rust rebuild, select
 `cmake --build --preset <preset> --target juicer_rust_tests` before CTest.
 
+`Rust.Core` exercises safe `state::Publication` with real, resource-backed
+`recipe::prepare` results. Its cases cover supplied input identity (including
+zero and equivalent updates), all four routes, invalid controls, failed/obsolete
+preparation, concurrent admission, poisoned synchronization, and admitted holds
+surviving replacement/cache release through final-hold destruction. A test-only
+contention observation and bounded rendezvous establish overlapping admission;
+scoped workers join before completion. Production still uses native admission.
+These core tests do not establish OFX getter, UI callback or host reentrancy behavior.
+
 The presets use four CTest workers. GPU groups share `juicer_gpu`, the
 product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
 alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
