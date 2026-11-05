@@ -61,12 +61,18 @@ impl Color {
         if output.hash() == 0 {
             return Err(ColorError::Output);
         }
-        #[cfg(feature = "test-support")]
-        crate::film::input::testing::color_fault(3).map_err(|_| ColorError::Cat02Boundary)?;
-        let cat02 = color::cat02_matrix(color::Whites {
+        let cat02 = match color::checked_cat02_matrix(color::Whites {
             source_xyz: input.illuminant_xyz,
             destination_xyz: *output.white_xyz(),
-        });
+        }) {
+            Ok(matrix) => matrix,
+            #[cfg(feature = "test-support")]
+            Err(color::CheckedError::UnsupportedInput) => {
+                return Err(ColorError::Cat02Boundary);
+            }
+            #[cfg(not(feature = "test-support"))]
+            Err(error) => match error {},
+        };
         let encoding = hash::u64s(&[
             u64::from(input.output_space),
             u64::from(input.apply_cctf),
@@ -126,6 +132,7 @@ impl Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
 
     fn words(values: &[f32]) -> Value {
@@ -141,9 +148,22 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+        let rows = fixture["cases"].as_array().unwrap();
+        let mut cases = RowCases::new(
+            "scanner-color-inputs",
+            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        );
+        let successful = rows
+            .iter()
+            .filter(|row| row["input"]["illuminant_hash"].as_u64().unwrap() != 0)
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let mut result_cases = RowCases::new("scanner-color-results", successful);
         let mut held = Vec::new();
-        for row in fixture["cases"].as_array().unwrap() {
+        for row in rows {
             let i = &row["input"];
+            let id = row["id"].as_str().unwrap();
+            let case = cases.case(id);
             let input = ColorInput {
                 medium: i["medium"].as_u64().unwrap() as u8,
                 output_space: i["output_space"].as_u64().unwrap() as u8,
@@ -156,12 +176,16 @@ mod tests {
             };
             if input.illuminant_hash == 0 {
                 assert!(matches!(Color::new(input), Err(ColorError::Illuminant)));
+                case.passed();
                 continue;
             }
             let value = Color::new(input).unwrap();
-            held.push((value, row["expected"].clone()));
+            held.push((id.to_owned(), value, row["expected"].clone()));
+            case.passed();
         }
-        for (value, expected) in held {
+        cases.finish();
+        for (id, value, expected) in held {
+            let case = result_cases.case(id);
             assert_eq!(words(value.cat02()), expected["cat02"]);
             assert_eq!(words(value.xyz_to_rgb()), expected["xyz_to_rgb"]);
             assert_eq!(words(value.illuminant_xyz()), expected["illuminant_xyz"]);
@@ -188,7 +212,9 @@ mod tests {
                 words(value.dwg_to_output()),
                 expected["encoding"]["dwg_to_output"]
             );
+            case.passed();
         }
+        result_cases.finish();
     }
     #[cfg(feature = "test-support")]
     #[test]
@@ -202,10 +228,14 @@ mod tests {
             illuminant_hash: 1,
             active_gamut_recipe_hash: 0,
         };
-        for (operation, error) in [
+        let rows = [
             (11, ColorError::OutputBoundary),
             (3, ColorError::Cat02Boundary),
-        ] {
+        ];
+        let ids = ["output-boundary", "cat02-boundary"];
+        let mut cases = RowCases::new("scanner-color-faults", ids);
+        for ((operation, error), id) in rows.into_iter().zip(ids) {
+            let case = cases.case(id);
             testing::arm_color(operation, 2, 1);
             assert!(matches!(
                 Color::new(ColorInput {
@@ -221,6 +251,8 @@ mod tests {
             assert!(matches!(Color::new(input), Err(found) if found == error));
             assert!(Color::new(input).is_ok());
             testing::clear_color();
+            case.passed();
         }
+        cases.finish();
     }
 }

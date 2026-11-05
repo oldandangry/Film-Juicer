@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include "gtest_cases.h"
 #include "juicer_cuda_prepared.h"
 #include "prepared_descriptors.h"
 #include "Cuda/JuicerCudaHostViews.h"
@@ -151,7 +152,10 @@ namespace {
             {"scanner_spectra", [](auto& value) -> FjFloatSpan& {
                  return value.scanner_spectra.weighted_z;
              }}};
+        JuicerTests::GtestCohort film_scanner_cases("film-scanner-cases", std::size(cases));
+        std::size_t film_scanner_cases_index = 0;
         for (const auto& item : cases) {
+            auto film_scanner_cases_case = film_scanner_cases.case_event(std::to_string(film_scanner_cases_index++));
             SCOPED_TRACE(item.field);
             auto source = direct_input();
             item.select(source).data = nullptr;
@@ -164,6 +168,8 @@ namespace {
                 --item.select(source).count;
                 expect_rejected(source, item.field);
             }
+
+            film_scanner_cases_case.passed();
         }
     }
 
@@ -225,7 +231,10 @@ namespace {
 
     TEST(PreparedSpans, ExposureTripletLimitRejectsBeforeMultiplicationOrRead) {
         const auto limit = static_cast<std::size_t>(std::numeric_limits<int>::max()) / 3u;
+        JuicerTests::GtestCohort exposure_print_cases("exposure-print", 2u);
+        std::size_t exposure_print_index = 0;
         for (const bool print : {false, true}) {
+            auto exposure_print_case = exposure_print_cases.case_event(std::to_string(exposure_print_index++));
             auto source = print ? print_input() : direct_input();
             auto& axis = print ? source.print.log_exposure : source.film_development.log_exposure;
             const char* countField = print ? "print.log_exposure.count" : "film_development.log_exposure.count";
@@ -236,12 +245,17 @@ namespace {
             expect_rejected(source, densityField);
             axis.count = limit + 1u;
             expect_rejected(source, countField);
+
+            exposure_print_case.passed();
         }
     }
 
     TEST(PreparedSpans, EveryLayerAndDirAxisObeysItsActivationAndSampleCount) {
+        JuicerTests::GtestCohort layers_cases("layers", 9u);
+        std::size_t layers_index = 0;
         for (std::size_t layer = 0; layer < 3; ++layer) {
             for (std::size_t channel = 0; channel < 3; ++channel) {
+                auto layers_case = layers_cases.case_event(std::to_string(layers_index++));
                 SCOPED_TRACE(layer * 3u + channel);
                 auto source = direct_input();
                 source.film_development.density_layers[layer][channel] = {kAxis.data(), 2};
@@ -252,9 +266,14 @@ namespace {
                 expect_rejected(source, "film_development.density_layers");
                 source.film_development.density_layers[layer][channel] = {nullptr, 2};
                 expect_rejected(source, "film_development.density_layers");
+
+                layers_case.passed();
             }
         }
+        JuicerTests::GtestCohort dir_axes_cases("dir-axes", 3u);
+        std::size_t dir_axes_index = 0;
         for (std::size_t channel = 0; channel < 3; ++channel) {
+            auto dir_axes_case = dir_axes_cases.case_event(std::to_string(dir_axes_index++));
             auto source = direct_input();
             source.dir_couplers.compensated_axes_rgb[channel] = {kAxis.data(), 2};
             expect_rejected(source, "dir_couplers.compensated_axes_rgb");
@@ -267,6 +286,7 @@ namespace {
             expect_rejected(source, "dir_couplers.compensated_axes_rgb");
             source.dir_couplers.compensated_axes_rgb[channel] = {nullptr, 2};
             expect_rejected(source, "dir_couplers.compensated_axes_rgb");
+            dir_axes_case.passed();
         }
     }
 
@@ -283,7 +303,10 @@ namespace {
             {"print.density_cmy", &FjPrint::density_cmy},
             {"print.main_illuminant", &FjPrint::main_illuminant},
             {"print.preflash_illuminant", &FjPrint::preflash_illuminant}};
+        JuicerTests::GtestCohort print_fields_cases("print-fields", std::size(cases));
+        std::size_t print_fields_index = 0;
         for (const auto& item : cases) {
+            auto print_fields_case = print_fields_cases.case_event(std::to_string(print_fields_index++));
             SCOPED_TRACE(item.field);
             auto source = print_input();
             (source.print.*item.member).data = nullptr;
@@ -299,6 +322,8 @@ namespace {
             source = direct_input();
             source.print.*item.member = {kSamples.data(), 1};
             expect_rejected(source, item.field);
+
+            print_fields_case.passed();
         }
     }
 
@@ -310,7 +335,10 @@ namespace {
         const Case cases[] = {{"noise.stbn", &FjStaticNoise::stbn},
                               {"noise.wang_tiles", &FjStaticNoise::wang_tiles},
                               {"noise.wang_lut", &FjStaticNoise::wang_lut}};
+        JuicerTests::GtestCohort noise_fields_cases("noise-fields", std::size(cases));
+        std::size_t noise_fields_index = 0;
         for (const auto& item : cases) {
+            auto noise_fields_case = noise_fields_cases.case_event(std::to_string(noise_fields_index++));
             auto source = direct_input();
             enable_grain(source, false);
             --(source.noise.*item.member).count;
@@ -322,6 +350,8 @@ namespace {
             source = direct_input();
             source.noise.*item.member = {kNoise.data(), 0};
             expect_rejected(source, item.field);
+
+            noise_fields_case.passed();
         }
         auto source = direct_input();
         enable_grain(source, false);

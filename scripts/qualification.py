@@ -1,1360 +1,1049 @@
-"""Explicit native checkpoints; direct CTest groups and existing command records."""
+"""Pure native outcome and membership validation; standard library and bundles only."""
 
 from __future__ import annotations
 
+# Native result reading uses only the standard library and bundled bytes.
+# The complete module can be copied and run offline.
 import hashlib
 import json
-import os
-from pathlib import Path
-import re
-import shutil
-import subprocess
-import sys
+import stat
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import time
-import tomllib
-import uuid
+import xml.etree.ElementTree as ET
 
-from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, ctest_command, linker_tools, preparation_inventory, preparation_paths, prepare_build, registration_files
-from execution import Campaign, OutputLease, command_environment, digest, snapshot, tool_snapshot, write_json
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/ffi"))
-from grain_probe_contract import GRAIN_FRAME_CASE_COUNT, GRAIN_FRAME_CASE_IDS
-from effects_frame_probe_contract import EFFECTS_FRAME_CASE_COUNT, EFFECTS_FRAME_CASE_IDS
-
+OPTICS_FUNCTION = "optics::tests::matches_frozen_native_words_identities_and_failures"
+OPTICS_TESTS = ["Ffi.Host.SpatialOptics", "Rust.Core"]
+GPU_WITNESS_TEST = "Ffi.Gpu.PreparedBoundary.negative-direct"
+OPTICS_MEMBERS = {"candidate.json", "candidate.patch", "native-list.jsonl", "discovery.json",
+                  "nextest.xml", "ctest.xml", "rust.jsonl", "native.jsonl", "nextest.toml", "rust-execution.json"}
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
-GROUPS = {"product", "boundary", "tooling", "corpus", "production"}
-
-# CMake 4.3.1 LF/CRLF distributions: these bootstrap file() calls only convert
-# environment paths or create CTest directories. The script template is data for
-# configure_file, with an unsubstituted VERSION that prevents direct execution.
-# Unknown bytes keep the ordinary conservative scan; receipts always hash raw bytes.
-CMAKE_BOOTSTRAP_INPUTS = {
-    "Modules/CMakeGenericSystem.cmake": {
-        "51d5fba7b8e3492a6246ba29d192f8bb66888541ef987d1e41dff37213c2d2e9",
-        "996f5d82cf4776db17d5399c1475fd4e09f8b76aa15975d96ca9115ca45bcb15"},
-    "Modules/CTestTargets.cmake": {
-        "2a870c04ff090e2cbd1bd181bbc8d8cd82d393115bb71f6798b5dc602b95a9dc",
-        "b7d94b4ef08f50468cbafa0df58c5c0a0f9146c4c1afeca6c78c2df0f167f4d2"},
-    "Modules/Platform/WindowsPaths.cmake": {
-        "8228d73394f0945e64c966ebd8936a80d7ed76d066a6846a97b84c89c1981255",
-        "2bd1111c39c43d858dd108c12bd1c735cc69066a90bf611336b852a6f6578f7d"},
-    "Templates/CTestScript.cmake.in": {
-        "3ccc0724081d7df661ad80f1d2ac6427d3e5aef7473687f926b7a08155b16cb7",
-        "998a14031c9a14418d0a390d6328bdf5392ac3391a16132c30ffbe2da77146d6"},
-}
+GROUPS = {"product", "boundary", "tooling", "corpus"}
 
 
-def require_checkpoint(record):
-    # A completed selection can coexist with unrelated pending work. The collector
-    # checks current owners before admitting a complete aggregate.
-    selected = set(record.get("selection", ()))
-    expected = selected | ({"prepare", "quality"} if "product" in selected else set())
-    if (record.get("mode") != "checkpoint" or record.get("status") not in {"passed", "incomplete"}
-            or record.get("scope_status") != "passed" or not record.get("reason")
-            or not selected or selected - GROUPS or set(record.get("required", ())) != expected
-            or set(record.get("stages", {})) != expected
-            or any(s.get("status") != "passed" for s in record.get("stages", {}).values())):
-        raise ValueError("a completed explicit checkpoint is required; development/partial evidence is inadmissible")
+def optics_keys(rows):
+    keys = [(r["caller"], r["id"]) for r in rows]
+    if any(not all(isinstance(v, str) and v for v in k) for k in keys) or len(keys) != len(set(keys)):
+        raise ValueError("invalid or duplicate case membership")
+    return set(keys)
 
 
-def validate_ctest_report(report, names):
-    import xml.etree.ElementTree as ET
-    cases = list(ET.parse(report).getroot().iter("testcase"))
-    if sorted(c.get("name") for c in cases) != sorted(names) or any(
-            c.get("status") != "run" or any(c.find(n) is not None for n in ("failure", "error", "skipped"))
-            for c in cases):
-        raise ValueError("checkpoint CTest membership did not execute completely")
+def optics_discovery(document):
+    selected = []
+    filtered = set()
+    for binary, suite in document["rust-suites"].items():
+        for name, case in suite["testcases"].items():
+            if case["filter-match"]["status"] == "matches":
+                if case["ignored"]:
+                    raise ValueError("ignored pilot function")
+                selected.append((binary, name))
+            else:
+                filtered.add((binary, name))
+    if len(selected) != 1 or selected[0][1] != OPTICS_FUNCTION:
+        raise ValueError("missing or unexpected Rust function")
+    return selected[0], filtered
+
+
+def case_events(payload, expected=(), *, cohorts=0, functions=None):
+    """Validate independent cohort declarations and actual row terminals in one pass."""
+    if payload and not payload.endswith(b"\n"):
+        raise ValueError("truncated case output")
+    known = {(("native", caller), case_id) for caller, case_id in expected}
+    started, terminal, headers, finished, declared = set(), set(), {}, set(), set()
+    counts = {}
+    for line in payload.splitlines():
+        row = json.loads(line)
+        rust = "binary" in row
+        context = (("rust", row["binary"], row["function"], row["cohort"]) if rust else ("native", row["caller"]))
+        if rust and (row.get("caller") != "rust" or functions is None or (row["binary"], row["function"]) not in functions):
+            raise ValueError("unexpected Rust row context")
+        event = row["event"]
+        if event == "membership":
+            ids = row["ids"]
+            if context in headers or not ids or len(ids) != len(set(ids)) or any(not isinstance(i, str) or not i for i in ids):
+                raise ValueError("invalid or duplicate cohort membership")
+            header_keys = {(context, i) for i in ids}
+            if declared & header_keys:
+                raise ValueError("duplicate declared case")
+            headers[context] = header_keys
+            declared.update(header_keys)
+            known.update(header_keys)
+            if rust:
+                owner = row["binary"]
+            elif isinstance(cohorts, dict):
+                owners = [name for name in cohorts if row["caller"].startswith(name + "/")]
+                if len(owners) != 1:
+                    raise ValueError("unexpected GoogleTest row context")
+                owner = owners[0]
+            else:
+                owner = "native"
+            counts[owner] = counts.get(owner, 0) + 1
+            continue
+        if event == "cohort-terminal":
+            if context not in headers or context in finished or row["outcome"] != "passed" or not headers[context] <= terminal:
+                raise ValueError("failed, premature or duplicate cohort terminal")
+            finished.add(context)
+            continue
+        key = (context, row["id"])
+        if key not in known:
+            raise ValueError("unexpected case: " + repr(key))
+        if event == "start" and key not in started:
+            started.add(key)
+        elif event == "terminal" and key in started and key not in terminal:
+            if row["outcome"] != "passed":
+                raise ValueError("failed or skipped case: " + repr(key))
+            terminal.add(key)
+        else:
+            raise ValueError("duplicate or unordered case event: " + repr(key))
+    if terminal != known or started != known:
+        raise ValueError("missing case outcomes: " + repr(sorted(known - terminal)[:4]))
+    if any(context[0] == "rust" and context not in finished for context in headers):
+        raise ValueError("missing Rust cohort completion")
+    if isinstance(cohorts, int):
+        if len(headers) != cohorts:
+            raise ValueError("missing or unexpected required cohort")
+    elif {name: count for name, count in cohorts.items() if count} != counts:
+        raise ValueError("missing or unexpected required cohort context")
+    return len(known)
+
+
+def optics_events(payload, expected):
+    return case_events(payload, expected)
+
+
+def rust_case_events(payload, contract, functions):
+    binaries = {binary for binary, _ in functions}
+    packages = {binary.split("::", 1)[0] for binary in binaries}
+    if len(packages) != 1:
+        raise ValueError("Rust row selection must own one package")
+    package = next(iter(packages))
+    required = {binary: count for binary, count in contract["rust_cohorts"].items()
+                if binary.split("::", 1)[0] == package}
+    if set(required) != binaries:
+        raise ValueError("missing required Rust row binary")
+    return case_events(payload, cohorts=required, functions=functions)
+
+
+def _native_metadata(result):
+    if (result.get("schema") != "native-spatial-optics-v1"
+            or result.get("preset") not in ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
+            or result.get("status") not in ("passed", "failed")
+            or result.get("shipping_isolation") is not False):
+        raise ValueError("invalid native result metadata")
+    rows = result["membership"]["rows"]
+    if len(rows) != 553 or any(not isinstance(r, str) or not r for r in rows) or len(set(rows)) != 553:
+        raise ValueError("invalid 553-row membership")
+    operations = optics_keys(result["membership"]["native_operations"])
+    if (not operations and result["status"] == "passed") or any(c not in {"c11", "cpp"} for c, _ in operations):
+        raise ValueError("invalid native operation membership")
+    if result["membership"]["ctest"] not in (OPTICS_TESTS, ["Ffi.Host.SpatialOptics", "Rust.Core.SpatialOpticsPilot"]) or result["membership"]["rust_function"] != OPTICS_FUNCTION:
+        raise ValueError("invalid pilot selection")
+    members = result["members"]
+    required = OPTICS_MEMBERS if result["status"] == "passed" else {"candidate.json", "candidate.patch"}
+    allowed = OPTICS_MEMBERS
+    witness = result.get("gpu_witness")
+    if witness is not None:
+        if witness.get("test") != GPU_WITNESS_TEST or witness.get("scope") != "containment-and-shared-lock-only":
+            raise ValueError("invalid GPU portability witness")
+        allowed = allowed | {"gpu-witness.xml"}
+        if result["status"] == "passed":
+            required = required | {"gpu-witness.xml"}
+    if not required <= members.keys() or set(members) - allowed:
+        raise ValueError("missing required result members")
+    # Reject the full reference list before opening any payload.
+    for name, spec in members.items():
+        path = PurePosixPath(name)
+        if path.is_absolute() or path.parts != (name,) or any(c in name for c in "\\:") or name in {".", ".."}:
+            raise ValueError("unconfined bundle reference")
+        if type(spec["bytes"]) is not int or spec["bytes"] < 0 or len(spec["sha256"]) != 64:
+            raise ValueError("invalid member identity")
+    return rows, operations
+
+
+def validate_native_result(result, payloads):
+    """Validate captured bundle bytes; shared by publication and offline reading."""
+    rows, operations = _native_metadata(result)
+    if payloads.keys() != result["members"].keys():
+        raise ValueError("missing required result members")
+    for name, spec in result["members"].items():
+        data = payloads[name]
+        if len(data) != spec["bytes"] or hashlib.sha256(data).hexdigest() != spec["sha256"]:
+            raise ValueError("damaged bundle member: " + name)
+    candidate = json.loads(payloads["candidate.json"])
+    if candidate["preset"] != result["preset"] or candidate["head"] != result["candidate_head"]:
+        raise ValueError("candidate/configuration disagreement")
+    if result["status"] == "passed":
+        expected_type = "Debug" if result["preset"].endswith("debug") else "Release"
+        if candidate["configuration"].get("CMAKE_BUILD_TYPE") != expected_type or candidate["configuration"].get("BUILD_TESTING") != "ON":
+            raise ValueError("actual build configuration disagrees with preset")
+    if not candidate["inputs"] or candidate["fixtures"]["rows"] != rows:
+        raise ValueError("candidate fixture membership disagreement")
+    if not result["commands"] or any(c["drained"] is not True for c in result["commands"]):
+        raise ValueError("uncompleted descendant drainage")
+    if result["status"] == "passed":
+        if result.get("candidate_unchanged") is not True:
+            raise ValueError("candidate changed or completion comparison missing")
+        if any(c["returncode"] != 0 or c["process_status"] != "completed" for c in result["commands"]):
+            raise ValueError("failed command cannot pass")
+        native = [{"caller": c, "id": r} for c in ("c11", "cpp") for r in rows]
+        expected_native = optics_keys(native) | operations
+        if optics_keys([json.loads(line) for line in payloads["native-list.jsonl"].splitlines()]) != expected_native:
+            raise ValueError("native listing omitted caller/row/operation")
+        optics_events(payloads["rust.jsonl"], {("rust", r) for r in rows})
+        optics_events(payloads["native.jsonl"], expected_native)
+        rust_execution = json.loads(payloads["rust-execution.json"])
+        if len(rust_execution["commands"]) != 2 or any(c["returncode"] != 0 for c in rust_execution["commands"]):
+            raise ValueError("missing/failed nextest invocation")
+        selected, filtered = optics_discovery(json.loads(payloads["discovery.json"]))
+        seen = set()
+        for suite in ET.fromstring(payloads["nextest.xml"]).iter("testsuite"):
+            for case in suite.findall("testcase"):
+                key = (suite.get("name"), case.get("name"))
+                if key in seen or any(case.find(n) is not None for n in ("failure", "error", "flakyFailure", "flakyError")):
+                    raise ValueError("duplicate/failed Rust function terminal")
+                seen.add(key)
+                if key == selected:
+                    if case.find("skipped") is not None:
+                        raise ValueError("selected Rust function skipped")
+                elif key not in filtered or case.find("skipped") is None:
+                    raise ValueError("unexpected Rust function terminal")
+        if seen != filtered | {selected}:
+            raise ValueError("missing Rust function terminal")
+        cases = list(ET.fromstring(payloads["ctest.xml"]).iter("testcase"))
+        if sorted(c.get("name") for c in cases) != result["membership"]["ctest"] or any(
+                c.get("status") != "run" or any(c.find(n) is not None for n in ("failure", "error", "skipped")) for c in cases):
+            raise ValueError("missing/failed/skipped CTest case")
+    witness = result.get("gpu_witness")
+    if result["status"] == "passed" and witness is not None:
+        if witness.get("status") != "passed" or witness.get("contender_excluded") is not True or witness.get("drained_while_locked") is not True:
+            raise ValueError("GPU witness did not complete under shared exclusion")
+        if not any(name.startswith("Resources/") for name in candidate["inputs"]):
+            raise ValueError("GPU runtime resources missing from candidate")
+        cases = list(ET.fromstring(payloads["gpu-witness.xml"]).iter("testcase"))
+        if len(cases) != 1 or cases[0].get("name") != GPU_WITNESS_TEST or cases[0].get("status") != "run" or any(
+                cases[0].find(n) is not None for n in ("failure", "error", "skipped")):
+            raise ValueError("missing/failed GPU portability witness")
+    summary = {"status": result["status"], "preset": result["preset"],
+               "rust_rows": 553 if result["status"] == "passed" else 0,
+               "native_rows": 1106 if result["status"] == "passed" else 0,
+               "native_operations": len(operations), "shipping_isolation": False}
+    if witness is not None:
+        summary["gpu_witness"] = {"test": witness["test"], "scope": witness["scope"], "status": witness["status"]}
+    return summary
+
+
+def native_registration(contract, paths, registration, *, runtime="host", cuda_free=False):
+    """Check independent owning target counts before selecting execution."""
+    if cuda_free:
+        targets = {name: row for name, row in contract["targets"].items()
+                   if runtime == "host" and row.get("cuda_free") is True}
+        required = contract.get("cuda_free_required", []) if runtime == "host" else []
+        if runtime == "host" and (not targets or not required or not set(required) <= set(contract["required"])):
+            raise ValueError("missing CUDA-free host contract")
+        contract = {**contract, "targets": targets, "required": required}
+    if contract.get("schema") != f"native-{runtime}-contracts-v1" or set(paths) != set(contract["targets"]):
+        raise ValueError("invalid host target contract")
+    found = {}
+    counts = dict.fromkeys(paths, 0)
+    for test in registration["tests"]:
+        properties = {p["name"]: p["value"] for p in test["properties"]}
+        if runtime not in properties.get("LABELS", []):
+            continue
+        command = test.get("command", [])
+        if "native-case" not in command:
+            continue
+        split = command.index("--")
+        native = command[split + 1:]
+        owners = [target for target, path in paths.items() if path.replace("\\", "/").casefold() == native[0].replace("\\", "/").casefold()]
+        if len(owners) != 1:
+            raise ValueError("unowned native host executable")
+        target = owners[0]
+        if ({"host", "gpu"} & set(properties.get("LABELS", [])) != {runtime}
+                or properties.get("DISABLED")):
+            raise ValueError("disabled or incorrect native host runtime")
+        command_runtime = command[command.index("--runtime") + 1] if "--runtime" in command[:split] else "host"
+        if command_runtime != runtime:
+            raise ValueError("native launcher runtime disagrees with registration")
+        timeout = properties.get("TIMEOUT", 0)
+        if runtime == "gpu" and (type(timeout) not in (int, float) or not 0 < timeout < float("inf")
+                                 or properties.get("RESOURCE_LOCK") != ["juicer_gpu"]):
+            raise ValueError("GPU registration requires a finite timeout and physical-device lock")
+        if test["name"] in found:
+            raise ValueError("duplicate native host registration")
+        protocol = contract["targets"][target]["protocol"]
+        if command[command.index("--protocol") + 1] != protocol:
+            raise ValueError("native host protocol disagrees with target owner")
+        key = "host-" + hashlib.sha256(json.dumps(native, ensure_ascii=False).encode()).hexdigest()[:16]
+        found[test["name"]] = {"target": target, "protocol": protocol, "command": native, "key": key,
+                               "rows": test["name"] in contract["targets"][target].get("rows", [])}
+        counts[target] += 1
+    if counts != {t: s["registrations"] for t, s in contract["targets"].items()}:
+        raise ValueError("missing native host registration")
+    names = [t["name"] for t in registration["tests"]]
+    if not set(contract["required"]) <= set(names) or len(names) != len(set(names)):
+        raise ValueError("missing/duplicate required host contract")
+    return found
+
+
+def gtest_discovery(payload, *, excluded=frozenset()):
+    document = json.loads(payload)
+    names = []
+    for suite in document["testsuites"]:
+        for case in suite["testsuite"]:
+            key = (suite["name"], case["name"])
+            disabled = suite["name"].startswith("DISABLED_") or case["name"].startswith("DISABLED_")
+            if disabled != (key in excluded):
+                raise ValueError("disabled native host case")
+            names.append(key)
+    if not names or len(names) != len(set(names)):
+        raise ValueError("empty/duplicate GoogleTest selection")
+    return set(names)
+
+
+def native_cohort_count(contract, name, preset):
+    count = contract["native_cohorts"].get(name, 0)
+    if isinstance(count, dict):
+        count = count["windows" if preset.startswith("windows") else "linux"]
+    if type(count) is not int or count < 0:
+        raise ValueError("invalid native cohort count")
+    return count
+
+
+def framework_terminals(payload, expected, *, nextest=False, filtered=frozenset()):
+    seen = set()
+    for suite in ET.fromstring(payload).iter("testsuite"):
+        for case in suite.findall("testcase"):
+            key = (suite.get("name"), case.get("name"))
+            if key in seen or any(case.find(tag) is not None for tag in ("failure", "error", "flakyFailure", "flakyError")):
+                raise ValueError("duplicate/failed framework case")
+            seen.add(key)
+            if key in expected:
+                if case.find("skipped") is not None or (not nextest and case.get("status") != "run"):
+                    raise ValueError("required framework case skipped")
+            elif key not in filtered or (case.find("skipped") is None if nextest else
+                                         case.get("status") != "notrun" or case.get("result") != "suppressed"):
+                raise ValueError("unexpected framework terminal")
+    if seen != expected | filtered:
+        raise ValueError("missing framework case terminal")
+
+
+def rust_membership(document, package, cargo, binaries):
+    package_name = {"core": "film-juicer-core", "bridge": "film-juicer-plugin"}[package]
+    owners = [p for p in cargo["packages"] if p["name"] == package_name]
+    if len(owners) != 1:
+        raise ValueError("missing Rust package contract")
+    owner = owners[0]
+    expected = {(owner["id"], t["name"]) for t in owner["targets"]
+                if t.get("test") and set(t["kind"]) & {"test", "lib", "staticlib"}}
+    actual = {(b["package-id"], b["binary-name"]) for b in binaries["rust-binaries"].values()
+              if b["package-id"] == owner["id"]}
+    if not expected or expected != actual or set(document["rust-suites"]) != set(binaries["rust-binaries"]):
+        raise ValueError("missing or unexpected Rust test binary")
+    selected, filtered = set(), set()
+    for binary, suite in document["rust-suites"].items():
+        owned = binaries["rust-binaries"][binary]["package-id"] == owner["id"]
+        for name, case in suite["testcases"].items():
+            key = (binary, name)
+            matches = case["filter-match"]["status"] == "matches"
+            if matches != owned:
+                raise ValueError("missing or unexpected Rust package function")
+            if matches:
+                if case["ignored"]:
+                    raise ValueError("ignored required Rust function")
+                selected.add(key)
+            else:
+                filtered.add(key)
+    if not selected or (package == "core" and not any(n == OPTICS_FUNCTION for _, n in selected)):
+        raise ValueError("missing required Rust function")
+    return selected, filtered
+
+
+def domain_result_members(result):
+    runtime = "gpu" if result.get("schema") == "native-gpu-v1" else "host"
+    if (result.get("schema") not in {"native-host-v2", "native-gpu-v1"} or result.get("status") not in {"passed", "failed"}
+            or result.get("preset") not in {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"}
+            or result.get("shipping_isolation") is not False or result.get("scope") not in {"focused", runtime + "-domains"}):
+        raise ValueError("invalid host result metadata")
+    members = result["members"]
+    if not {"candidate.json", "candidate.patch", runtime + "-contracts.json", runtime + "-targets.json", "registration.json"} <= members.keys():
+        raise ValueError("missing required host metadata")
+    selection = result["selection"]
+    if not selection or len(selection) != len(set(selection)) or any(not isinstance(n, str) or not n for n in selection):
+        raise ValueError("invalid host selection")
+    required = {"candidate.json", "candidate.patch", runtime + "-contracts.json", runtime + "-targets.json", "registration.json"}
+    if result["status"] == "passed":
+        if runtime == "gpu":
+            required.add("gpu-exclusion.json")
+        required.add("ctest.xml")
+        required.add("target-discovery.json")
+        case_files = result["case_files"]
+        if set(case_files) != set(selection) - {"Rust.Core", "Rust.Bridge"}:
+            raise ValueError("missing host case file contract")
+        keys = set()
+        for entry in case_files.values():
+            key = entry["key"]
+            if (not key.startswith("host-") or len(key) != 21 or any(c not in "0123456789abcdef" for c in key[5:])
+                    or key in keys or entry["protocol"] not in {"gtest", "custom"} or not isinstance(entry["rows"], bool)):
+                raise ValueError("invalid host case file contract")
+            keys.add(key)
+            required.add(key + ".execution.json")
+            required.add(key + ".jsonl")
+            if entry["protocol"] == "gtest":
+                required.update({key + ".discovery.json", key + ".xml"})
+            if entry["protocol"] == "custom" or entry["rows"]:
+                required.add(key + ".list.jsonl")
+        for name in set(selection) & {"Rust.Core", "Rust.Bridge"}:
+            required.update(name + suffix for suffix in (".discovery.json", ".xml", ".execution.json", ".nextest.toml", ".rows.jsonl"))
+            required.update({"rust-cargo.json", "rust-binaries.json"})
+        if "Rust.Core" in selection and "optics_rows" in result:
+            # Earlier completed bundles used a second optics stream (offline only).
+            rows = result["optics_rows"]
+            if len(rows) != 553 or len(set(rows)) != 553 or any(not isinstance(r, str) or not r for r in rows):
+                raise ValueError("invalid Rust optics row membership")
+            required.add("rust.jsonl")
+    if not required <= members.keys():
+        raise ValueError("missing required host evidence")
+    for name, spec in members.items():
+        if PurePosixPath(name).parts != (name,) or any(c in name for c in "\\:") or name in {".", ".."} or PurePosixPath(name).is_absolute():
+            raise ValueError("unconfined host result reference")
+        if type(spec["bytes"]) is not int or spec["bytes"] < 0 or len(spec["sha256"]) != 64:
+            raise ValueError("invalid host member identity")
+    return members
+
+
+def validate_domain_result(result, payloads):
+    members = domain_result_members(result)
+    if members.keys() != payloads.keys():
+        raise ValueError("missing required host member")
+    for name, spec in members.items():
+        if len(payloads[name]) != spec["bytes"] or hashlib.sha256(payloads[name]).hexdigest() != spec["sha256"]:
+            raise ValueError("damaged host result member: " + name)
+    candidate = json.loads(payloads["candidate.json"])
+    if candidate["head"] != result["candidate_head"] or candidate["preset"] != result["preset"]:
+        raise ValueError("host candidate disagreement")
+    if result["status"] == "failed":
+        if any(c["drained"] is not True for c in result["commands"]):
+            raise ValueError("undrained host execution")
+        return {"status": "failed", "preset": result["preset"], "scope": result["scope"], "shipping_isolation": False}
+    runtime = "gpu" if result["schema"] == "native-gpu-v1" else "host"
+    contract = json.loads(payloads[runtime + "-contracts.json"])
+    native = native_registration(contract, json.loads(payloads[runtime + "-targets.json"]), json.loads(payloads["registration.json"]), runtime=runtime)
+    available = set(native) | ({"Rust.Core", "Rust.Bridge"} if runtime == "host" else set())
+    selected = set(result["selection"])
+    if not selected <= available or (result["scope"] == runtime + "-domains" and selected != available):
+        raise ValueError("missing selected host domain")
+    if not result["commands"] or any(c["drained"] is not True for c in result["commands"]):
+        raise ValueError("undrained host execution")
+    counts = {"rust_functions": 0, "native_functions": 0, "custom_cases": 0, "rust_cases": 0}
+    excluded_benchmarks = {tuple(n.split(".", 1)) for n in contract.get("excluded_gtest", {})}
+    excluded_seen = set()
+    if result["status"] == "passed":
+        expected_type = "Debug" if result["preset"].endswith("debug") else "Release"
+        if (candidate["configuration"].get("BUILD_TESTING") != "ON" or candidate["configuration"].get("CMAKE_BUILD_TYPE") != expected_type
+                or result.get("candidate_unchanged") is not True):
+            raise ValueError("changed/incorrect host candidate configuration")
+        if any(c["returncode"] != 0 or c["process_status"] != "completed" for c in result["commands"]):
+            raise ValueError("failed command cannot establish host success")
+        if runtime == "gpu":
+            if (result.get("physical_gpu") != {"contender_excluded": True, "drained_while_locked": True}
+                    or json.loads(payloads["gpu-exclusion.json"]) != {"physical_gpu": "excluded"}
+                    or not any(c["name"] == "gpu-exclusion" for c in result["commands"])
+                    or not any(name.startswith("Resources/") for name in candidate["inputs"])):
+                raise ValueError("GPU execution lacks physical-device exclusion/drainage or runtime resources")
+        ctest = list(ET.fromstring(payloads["ctest.xml"]).iter("testcase"))
+        if sorted(c.get("name") for c in ctest) != sorted(selected) or any(c.get("status") != "run" or any(c.find(t) is not None for t in ("failure", "error", "skipped")) for c in ctest):
+            raise ValueError("missing/failed/skipped host CTest case")
+        target_discovery = json.loads(payloads["target-discovery.json"])
+        target_seen = {target: set() for target in target_discovery}
+        for name in sorted(selected):
+            if name in {"Rust.Core", "Rust.Bridge"}:
+                package = "core" if name == "Rust.Core" else "bridge"
+                expected, filtered = rust_membership(json.loads(payloads[name + ".discovery.json"]), package,
+                                                      json.loads(payloads["rust-cargo.json"]), json.loads(payloads["rust-binaries.json"]))
+                framework_terminals(payloads[name + ".xml"], expected, nextest=True, filtered=filtered)
+                execution = json.loads(payloads[name + ".execution.json"])
+                if (len(execution["commands"]) != 2 or any(c["returncode"] != 0 for c in execution["commands"])
+                        or execution["doctests"]["status"] != "none" or execution["doctests"]["code_fence_sources"]
+                        or execution["doctests"]["source_files_scanned"] < 1):
+                    raise ValueError("incomplete Rust discovery/execution")
+                counts["rust_functions"] += len(expected)
+                counts["rust_cases"] += rust_case_events(payloads[name + ".rows.jsonl"], contract, expected)
+                if package == "core" and "optics_rows" in result:
+                    counts["rust_cases"] += optics_events(payloads["rust.jsonl"], {("rust", r) for r in result["optics_rows"]})
+                continue
+            entry = native[name]
+            if result["case_files"][name] != {k: entry[k] for k in ("key", "protocol", "rows")}:
+                raise ValueError("host case file contract disagrees with registration")
+            key = entry["key"]
+            execution = json.loads(payloads[key + ".execution.json"])
+            if execution["returncode"] != 0 or execution["command"] != entry["command"] or execution.get("outcomes_valid") is not True:
+                raise ValueError("failed/mismatched native host command")
+            if entry["protocol"] == "gtest":
+                discovered = gtest_discovery(payloads[key + ".discovery.json"], excluded=excluded_benchmarks)
+                filtered = discovered & excluded_benchmarks
+                expected = discovered - filtered
+                if not expected:
+                    raise ValueError("empty native framework selection")
+                excluded_seen.update(filtered)
+                framework_terminals(payloads[key + ".xml"], expected, filtered=filtered)
+                if entry["target"] not in target_seen or target_seen[entry["target"]] & expected:
+                    raise ValueError("missing target discovery or duplicate GoogleTest coverage")
+                target_seen[entry["target"]].update(expected)
+                counts["native_functions"] += len(expected)
+                cohorts = {s + "." + n: contract["gtest_cohorts"].get(s + "." + n, 0) for s, n in expected}
+            else:
+                cohorts = native_cohort_count(contract, name, result["preset"])
+            expected_rows = set()
+            if entry["protocol"] == "custom" or entry["rows"]:
+                expected_rows = optics_keys([json.loads(line) for line in payloads[key + ".list.jsonl"].splitlines()])
+                if not expected_rows:
+                    raise ValueError("empty custom host case selection")
+            counts["custom_cases"] += case_events(payloads[key + ".jsonl"], expected_rows, cohorts=cohorts)
+        for target, discovery in target_discovery.items():
+            expected = gtest_discovery(json.dumps(discovery), excluded=excluded_benchmarks) - excluded_benchmarks
+            if not target_seen[target] <= expected or (result["scope"] == runtime + "-domains" and target_seen[target] != expected):
+                raise ValueError("GoogleTest registration omitted required functions")
+    if runtime == "gpu":
+        if result["scope"] == "gpu-domains" and excluded_seen != excluded_benchmarks:
+            raise ValueError("missing declared benchmark discovery")
+        counts["excluded_benchmarks"] = sorted(".".join(n) for n in excluded_seen)
+        counts["unselected_registrations"] = sorted(available - selected)
+    return {"status": result["status"], "preset": result["preset"], "scope": result["scope"],
+            "ctest_cases": len(selected), **counts, "shipping_isolation": False}
+
+
+def read_native_result(bundle, *, result_bytes=None):
+    """Read each required member once, without tools or originating paths."""
+    started = time.perf_counter()
+    bundle = Path(bundle).resolve(strict=True)
+    result_path = bundle / "result.json"
+    def regular(path):
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            return None
+        return info
+    if regular(result_path) is None:
+        raise ValueError("linked result metadata")
+    raw = result_path.read_bytes() if result_bytes is None else result_bytes
+    result = json.loads(raw)
+    validators = {"native-tests-v1": (tests_result_members, validate_tests_result),
+                  "native-quality-v1": (quality_result_members, validate_quality_result),
+                  "native-build-v1": (build_result_members, validate_build_result)}
+    host = result.get("schema", "").startswith("native-host-") or result.get("schema") == "native-gpu-v1"
+    metadata, validate = validators.get(result.get("schema"),
+        (domain_result_members, validate_domain_result) if host else (_native_metadata, validate_native_result))
+    metadata(result)  # Reject incomplete/unconfined metadata before payload I/O.
+    for name, spec in result["members"].items():
+        target = bundle / name
+        info = regular(target)
+        if info is None:
+            raise ValueError("linked bundle member")
+        if info.st_size != spec["bytes"]:
+            raise ValueError("damaged bundle member size: " + name)
+    payloads = {name: (bundle / name).read_bytes() for name in result["members"]}
+    summary = validate(result, payloads)
+    candidate = json.loads(payloads["candidate.json"])
+    source = {key: candidate.get(key) for key in ("head", "inputs", "new_files_base64")}
+    summary["candidate_source"] = hashlib.sha256(
+        json.dumps(source, sort_keys=True, separators=(",", ":")).encode() + b"\0" + payloads["candidate.patch"]
+    ).hexdigest()
+    summary.update(bookkeeping_read_bytes=len(raw) + sum(map(len, payloads.values())),
+                   report_seconds=time.perf_counter() - started)
+    return summary
+
+
+def validate_python_result(discovery, functions_payload, rows_payload):
+    """Standard unittest function outcomes plus independently declared row tables."""
+    functions = discovery["functions"]
+    names = {test["id"]: test for test in functions}
+    if not names or len(names) != len(functions) or any(not isinstance(n, str) or not n for n in names):
+        raise ValueError("empty or duplicate Python function membership")
+    if functions_payload and not functions_payload.endswith(b"\n"):
+        raise ValueError("truncated Python function outcomes")
+    started, finished, skipped = set(), set(), set()
+    for line in functions_payload.splitlines():
+        event = json.loads(line)
+        name = event["id"]
+        if name not in names:
+            raise ValueError("unexpected Python function")
+        if event["event"] == "start" and name not in started:
+            started.add(name)
+        elif event["event"] == "terminal" and name in started and name not in finished:
+            intended = names[name]
+            if intended["skip"]:
+                if event["outcome"] != "skipped" or event.get("reason") != intended["skip_reason"]:
+                    raise ValueError("unexpected Python skip outcome")
+                skipped.add(name)
+            elif event["outcome"] != "passed":
+                raise ValueError("failed or unexpected skipped Python function")
+            finished.add(name)
+        else:
+            raise ValueError("duplicate or unordered Python function outcome")
+    if started != names.keys() or finished != names.keys():
+        raise ValueError("missing Python function outcomes")
+    rows = case_events(rows_payload, cohorts={name: 1 for name, test in names.items() if test["rows"] and name not in skipped})
+    return {"python_functions": len(names) - len(skipped), "python_rows": rows, "python_skips": sorted(skipped)}
 
 
 def membership(inventory, groups, runtime):
-    """CTest registration is the only source of relevance and runtime membership."""
-    result = {group: [] for group in groups if group != "production"}
-    seen = set()
-    scratch_owners = {}
-    for test in inventory.get("tests", []):
+    """Select current CTest relevance/runtime; no source or machine-path access."""
+    if not set(groups) <= GROUPS or not groups or runtime not in {"host", "gpu", "all"}:
+        raise ValueError("invalid checkpoint selection")
+    selected = {group: [] for group in groups}
+    seen, scratch = set(), {}
+    for test in inventory["tests"]:
         name = test["name"]
         if name in seen:
             raise ValueError("duplicate CTest registration: " + name)
         seen.add(name)
-        properties = {p["name"]: p["value"] for p in test.get("properties", [])}
-        labels = set(properties.get("LABELS", []))
-        relevance = labels & (GROUPS - {"production"})
-        if len(relevance) != 1 or len(labels & {"host", "gpu"}) != 1:
+        properties = {p["name"]: p["value"] for p in test.get("properties", ())}
+        labels = set(properties.get("LABELS", ()))
+        relevance, prerequisite = labels & GROUPS, labels & {"host", "gpu"}
+        if len(relevance) != 1 or len(prerequisite) != 1:
             raise ValueError("CTest group needs one relevance and a runtime prerequisite: " + name)
         group = next(iter(relevance))
-        if group in result and (runtime == "all" or "host" in labels):
-            if properties.get("DISABLED"):
-                raise ValueError("required CTest group is disabled: " + name)
-            if properties.get("RUN_SERIAL"):
-                raise ValueError("checkpoint group has unexplained global serialization; use owned scratch or a named resource lock: " + name)
-            command = test.get("command", [])
-            if "--scratch-root" in command:
-                index = command.index("--scratch-root")
-                if command.count("--scratch-root") != 1 or index + 1 == len(command):
-                    raise ValueError("checkpoint group needs one explicit scratch destination: " + name)
-                destination = Path(command[index + 1])
-                if not destination.is_absolute():
-                    raise ValueError("checkpoint scratch destination must be absolute: " + name)
-                scratch = os.path.normcase(str(destination.resolve()))
-                if scratch in scratch_owners:
-                    raise ValueError("checkpoint groups have colliding scratch roots: " + scratch_owners[scratch] + ", " + name)
-                scratch_owners[scratch] = name
-            result[group].append(name)
-    if any(not names for names in result.values()):
+        if group not in selected or runtime != "all" and runtime not in prerequisite:
+            continue
+        if properties.get("DISABLED") or properties.get("RUN_SERIAL"):
+            raise ValueError("required CTest group is disabled or globally serialized: " + name)
+        command = test.get("command", ())
+        if "--scratch-root" in command:
+            i = command.index("--scratch-root")
+            if command.count("--scratch-root") != 1 or i + 1 == len(command):
+                raise ValueError("checkpoint group needs one scratch root")
+            value = command[i + 1]
+            path = PureWindowsPath(value) if PureWindowsPath(value).drive else PurePosixPath(value)
+            if not path.is_absolute() or ".." in path.parts:
+                raise ValueError("checkpoint scratch root must be absolute")
+            key = path.as_posix().casefold() if isinstance(path, PureWindowsPath) else path.as_posix()
+            if key in scratch:
+                raise ValueError("checkpoint groups have colliding scratch roots")
+            scratch[key] = name
+        selected[group].append(name)
+    if any(not names for names in selected.values()):
         raise ValueError("required checkpoint selection is empty")
-    return {group: sorted(names) for group, names in result.items()}
+    return {group: sorted(names) for group, names in selected.items()}
 
 
-def ctest_identity(command):
-    identity = list(command)
-    identity[identity.index("--output-junit") + 1] = "<junit>"
-    return identity
-
-
-def artifact_membership(directories, resolve=Path):
-    return {str(directory): sorted(str(path) for path in resolve(str(directory)).rglob("*") if path.is_file())
-            if resolve(str(directory)).is_dir() else None for directory in directories}
-
-
-def ctest_artifacts(inventory, names, build):
-    """Bind registered runtime consumers, excluding explicit output destinations."""
-    files, directories = set(), set()
-    output_options = {"--target-dir", "--artifacts", "--scratch-root", "--output-dir", "--output-junit"}
+def python_registration(contract, inventory, preset, *, standalone=False, cuda_free=False):
+    if contract.get("schema") != "python-contracts-v1":
+        raise ValueError("invalid Python registration contract")
+    configuration = "Debug" if preset.endswith("debug") else "Release"
+    platform = "windows" if preset.startswith("windows") else "linux"
+    expected = {name: row for name, row in contract["registrations"].items()
+                if configuration in row.get("configurations", ["Debug", "Release"])
+                and platform in row.get("platforms", ["linux", "windows"])
+                and (not standalone or row.get("tooling", False))
+                and (not cuda_free or row.get("tooling", False) or row.get("cuda_free", False))}
+    actual = {}
     for test in inventory["tests"]:
-        if test["name"] not in names:
-            continue
-        properties = {prop["name"]: prop["value"] for prop in test.get("properties", [])}
-        working = Path(properties.get("WORKING_DIRECTORY", build))
-        if not working.is_absolute():
-            working = build / working
         command = test.get("command", [])
-        for index, operand in enumerate(command):
-            if (index and command[index - 1] in output_options
-                    or operand.split("=", 1)[0] in output_options
-                    or operand.startswith("CARGO_TARGET_DIR=")):
-                continue
-            path = Path(shutil.which(operand) or operand) if index == 0 else Path(operand)
-            path = Path(os.path.abspath(path if path.is_absolute() else working / path))
-            if not path.is_relative_to(build):
-                continue
-            if path.is_file():
-                files.add(str(path))
-            elif index and path.is_dir():
-                directories.add(str(path))
-                files.update(str(member) for member in path.rglob("*") if member.is_file())
-    return sorted(files), sorted(directories)
-
-
-def stage_receipts(result, resolve=Path):
-    return [resolve(result["receipt"]), *(resolve(p) for p in result.get("additional_receipts", {}))]
-
-
-def ctest_chunk(path, parts, commands, resolve=Path):
-    """Read an exact invocation; a failed invocation can still contain passed cases."""
-    import xml.etree.ElementTree as ET
-    raw = json.loads(resolve(str(path)).read_text())
-    command = raw["identity"]["command"]
-    role = "host" if "-LE" in command else "gpu"
-    if role not in parts:
-        raise ValueError("checkpoint runtime partition is unexpected")
-    report = resolve(command[command.index("--output-junit") + 1])
-    cases = list(ET.parse(report).getroot().iter("testcase"))
-    members = sorted(c.get("name") for c in cases)
-    if not members or len(members) != len(set(members)) or set(members) - set(parts[role]):
-        raise ValueError("checkpoint CTest partition membership is incomplete or duplicated")
-    expected = list(commands[list(parts).index(role)])
-    expected[expected.index("-R") + 1] = "^(" + "|".join(re.escape(n) for n in members) + ")$"
-    if ctest_identity(command) != expected:
-        raise ValueError("checkpoint CTest command does not bind its runtime partition")
-    passed = {c.get("name") for c in cases if c.get("status") == "run"
-              and not any(c.find(n) is not None for n in ("failure", "error", "skipped"))}
-    valid = (raw.get("status") == "passed" and raw.get("returncode") == 0 and passed == set(members)
-             or raw.get("status") == "failed" and raw.get("returncode") == 8 and passed != set(members)
-             and raw.get("process_tree", {}).get("status") == "completed")
-    if not valid or not raw.get("process_tree", {}).get("drained"):
-        raise ValueError("checkpoint CTest did not execute completely")
-    return role, passed, report
-
-
-def validate_ctest_stage(paths, parts, names, commands, resolve=Path):
-    """Compose exact passed cases while retaining original failed invocations."""
-    paths = paths if isinstance(paths, list) else [paths]
-    selected = [name for members in parts.values() for name in members]
-    if (not parts or list(parts) != [role for role in ("host", "gpu") if role in parts]
-            or any(not members for members in parts.values())
-            or len(selected) != len(set(selected)) or sorted(selected) != sorted(names)
-            or len(commands) != len(parts)):
-        raise ValueError("checkpoint runtime partition membership is incomplete or duplicated")
-    complete = set()
-    for path in paths:
-        role, passed, _ = ctest_chunk(path, parts, commands, resolve)
-        if role == "gpu" and set(parts.get("host", [])) - complete:
-            raise ValueError("checkpoint GPU partition precedes completed host cases")
-        if complete & passed:
-            raise ValueError("checkpoint CTest success is duplicated")
-        complete.update(passed)
-    if complete != set(names):
-        raise ValueError("checkpoint CTest membership did not execute completely")
-
-
-def run_ctest_parts(campaign, group, commands, roles, *, inputs, tools, environment,
-                    timeout, repeat_reason, state=None, state_path=None, reports=None):
-    # Normal qualification has no elapsed deadline. A finite timeout is only
-    # supplied by deliberate failure controls.
-    deadline = None if timeout is None else time.monotonic() + timeout
-    expected_inputs = snapshot(campaign.root, inputs)
-    present_tools = [p for p in tools if Path(p).is_file()]
-    expected_tools = tool_snapshot(present_tools)
-    chunks = state[group].setdefault("ctest_chunks", []) if state is not None else []
-    identities = [ctest_identity(command) for command in commands]
-    paths, complete, retained_reports = [], set(), []
-    from verify import check_receipt_payloads
-    for chunk in chunks:
-        path = Path(chunk["receipt"])
-        if digest(path) != chunk["sha256"] or digest(Path(chunk["report"])) != chunk["report_sha256"]:
-            raise ValueError("checkpoint partial result payload changed")
-        raw = check_receipt_payloads(campaign.root, path, allow_ctest_failure=True)
-        if (raw["identity"]["inputs"] != expected_inputs or raw["identity"]["tools"] != expected_tools):
-            raise ValueError("checkpoint partial result inputs changed")
-        role, passed, report = ctest_chunk(path, roles, identities)
-        if role == "gpu" and set(roles.get("host", [])) - complete:
-            raise ValueError("checkpoint GPU partition precedes completed host cases")
-        if passed & complete:
-            raise ValueError("checkpoint partial success is duplicated")
-        complete.update(passed)
-        paths.append(path)
-        retained_reports.append(report)
-    for role, command in zip(roles, commands, strict=True):
-        remaining = sorted(set(roles[role]) - complete)
-        if not remaining:
+        if "python-tests" not in command:
             continue
-        command = list(command)
-        command[command.index("-R") + 1] = "^(" + "|".join(re.escape(n) for n in remaining) + ")$"
-        def run():
-            if deadline is not None and time.monotonic() >= deadline:
-                raise TimeoutError("checkpoint CTest stage deadline expired")
-            return campaign.run(group, command, inputs=inputs, tools=present_tools,
-                expected_inputs=expected_inputs, expected_tools=expected_tools,
-                env=environment, timeout=None if deadline is None else deadline - time.monotonic(),
-                repeat_reason=repeat_reason)
-        failure = None
-        try:
-            if role == "gpu":
-                with OutputLease(campaign.root, timeout=None if deadline is None else max(0, deadline - time.monotonic())):
-                    path = run()
+        name = test["name"]
+        if name in actual or name not in expected:
+            raise ValueError("duplicate or unexpected Python registration: " + name)
+        original = command[command.index("--") + 1:]
+        owner = expected[name]["source"]
+        if "-m" in original and "unittest" in original:
+            if "-p" not in original or original[original.index("-p") + 1] != PurePosixPath(owner).name:
+                raise ValueError("Python registration changed its owning suite")
+            source = original[original.index("-s") + 1].replace("\\", "/")
+            if not source.endswith(PurePosixPath(owner).parent.as_posix()):
+                raise ValueError("Python registration changed its owning directory")
+        else:
+            script_arguments = original[1:]
+            while script_arguments and script_arguments[0] in {"-B", "-u"}:
+                script_arguments.pop(0)
+            if not script_arguments or script_arguments[0].replace("\\", "/").split("/")[-1] != PurePosixPath(owner).name:
+                raise ValueError("Python registration changed its owning script")
+        key = "host-" + hashlib.sha256(json.dumps(original, ensure_ascii=False).encode()).hexdigest()[:16]
+        actual[name] = {"command": original, "key": key, "protocol": "python", "rows": False}
+    if actual.keys() != expected.keys():
+        raise ValueError("missing required Python registration: " + ", ".join(sorted(expected.keys() - actual.keys())))
+    return actual
+
+
+def _flat_members(result, required):
+    if result.get("preset") not in PRESETS or result.get("status") not in {"passed", "failed"} or result.get("shipping_isolation") is not False:
+        raise ValueError("invalid native run metadata")
+    members = result["members"]
+    if not required <= members.keys():
+        raise ValueError("missing required native run members")
+    for name, spec in members.items():
+        if PurePosixPath(name).parts != (name,) or any(c in name for c in "\\:") or name in {".", ".."} or PurePosixPath(name).is_absolute():
+            raise ValueError("unconfined result reference")
+        if (type(spec["bytes"]) is not int or spec["bytes"] < 0 or len(spec["sha256"]) != 64
+                or any(c not in "0123456789abcdef" for c in spec["sha256"])):
+            raise ValueError("invalid result member identity")
+    return members
+
+
+def _payloads(result, payloads):
+    if payloads.keys() != result["members"].keys():
+        raise ValueError("missing result payload")
+    for name, data in payloads.items():
+        spec = result["members"][name]
+        if len(data) != spec["bytes"] or hashlib.sha256(data).hexdigest() != spec["sha256"]:
+            raise ValueError("result payload identity mismatch: " + name)
+    candidate = json.loads(payloads["candidate.json"])
+    if candidate["head"] != result["candidate_head"] or candidate["preset"] != result["preset"]:
+        raise ValueError("candidate metadata mismatch")
+    if result["status"] == "passed":
+        if (result.get("candidate_unchanged") is not True or not result["commands"]
+                or not isinstance(candidate.get("inputs"), dict) or not candidate["inputs"]):
+            raise ValueError("changed or incomplete native candidate")
+        if any(c.get("drained") is not True or c.get("returncode") != 0 or c.get("process_status") != "completed" for c in result["commands"]):
+            raise ValueError("failed or undrained native command")
+    return candidate
+
+
+def tests_result_members(result):
+    if result.get("scope") not in {"focused", "checkpoint"} or result.get("runtime") not in {"host", "gpu", "all"}:
+        raise ValueError("invalid native test scope")
+    required = {"candidate.json", "candidate.patch", "registration.json", "target-discovery.json"}
+    for runtime in ("host", "gpu", "python"):
+        required.update({runtime + "-contracts.json", runtime + "-targets.json"})
+    if result.get("rust_artifacts"):
+        required.add("rust-artifacts.json")
+    selected = result["selection"]
+    if result.get("build_kind") == "cuda-free" and result["scope"] != "focused":
+        raise ValueError("CUDA-free results must remain focused; they are not product checkpoints")
+    if (result.get("build_kind") not in {"product", "tooling", "cuda-free"}
+            or not set(result["groups"]) <= GROUPS
+            or len(selected) != len(set(selected)) or result["status"] == "passed" and not selected):
+        raise ValueError("invalid or empty native test membership")
+    if result["status"] == "passed":
+        required.add("ctest.xml")
+        quality_files = result.get("quality_files", [])
+        quality_commands = [command for command in result["commands"] if command["name"] == "quality"]
+        if bool(quality_files) != bool(quality_commands) or len(quality_commands) > 1:
+            raise ValueError("missing or unexpected selected-source quality execution")
+        if quality_files:
+            required.add("quality.checks.json")
+            required.update("quality-boundary" + suffix for suffix in
+                            (".execution.json", ".discovery.json", ".functions.jsonl", ".rows.jsonl"))
+        if result.get("physical_gpu"):
+            required.add("gpu-exclusion.json")
+        files = result["case_files"]
+        if files.keys() != set(selected) - {"Rust.Core", "Rust.Bridge"}:
+            raise ValueError("missing case file membership")
+        for entry in files.values():
+            key = entry["key"]
+            if not key.startswith("host-") or len(key) != 21 or any(c not in "0123456789abcdef" for c in key[5:]):
+                raise ValueError("invalid case member key")
+            required.add(key + ".execution.json")
+            if entry["protocol"] == "python":
+                required.update(key + suffix for suffix in (".discovery.json", ".functions.jsonl", ".rows.jsonl"))
+            elif entry["protocol"] in {"gtest", "custom"}:
+                required.add(key + ".jsonl")
+                if entry["protocol"] == "gtest":
+                    required.update({key + ".discovery.json", key + ".xml"})
+                if entry["protocol"] == "custom" or entry["rows"]:
+                    required.add(key + ".list.jsonl")
             else:
-                path = run()
-        except subprocess.CalledProcessError as error:
-            if error.returncode != 8:
-                raise
-            failure = error
-            raw = campaign.attempts(group)[-1]
-            path = (campaign.root / raw["output"]).with_name("result.json")
-        check_receipt_payloads(campaign.root, path, allow_ctest_failure=True)
-        if snapshot(campaign.root, inputs) != expected_inputs or tool_snapshot(present_tools) != expected_tools:
-            raise ValueError("checkpoint inputs changed during CTest")
-        _, passed, report = ctest_chunk(path, roles, identities)
-        complete.update(passed)
-        paths.append(path)
-        retained_reports.append(report)
-        chunks.append({"receipt": str(path), "sha256": digest(path),
-                       "report": str(report), "report_sha256": digest(report)})
-        if state_path is not None:
-            write_json(state_path, state)
-        if failure is not None:
-            raise failure
-    if reports is not None:
-        reports[:] = retained_reports
-    return paths
+                raise ValueError("unknown native case protocol")
+        for name in set(selected) & {"Rust.Core", "Rust.Bridge"}:
+            required.update(name + suffix for suffix in (".discovery.json", ".xml", ".execution.json", ".nextest.toml", ".rows.jsonl"))
+            required.update({"rust-cargo.json", "rust-binaries.json"})
+        if "Rust.Core" in selected and "optics_rows" in result:
+            # Earlier completed bundles used a second optics stream (offline only).
+            if len(result["optics_rows"]) != 553 or len(set(result["optics_rows"])) != 553:
+                raise ValueError("invalid optics membership")
+            required.add("rust.jsonl")
+    return _flat_members(result, required)
 
 
-def production_manifest_identity(receipt, *, root, resolve=Path):
-    """Read the identity emitted by the successful production process."""
-    record = json.loads(resolve(str(receipt)).read_text())
-    command = record["identity"]["command"]
-    if command.count("--artifacts") != 1:
-        raise ValueError("production command does not declare retained execution evidence")
-    output = resolve(str(root / record["output"]))
-    identities = re.findall(r"^PRODUCTION_MANIFEST_SHA256 ([0-9a-f]{64})$", output.read_text(), re.M)
-    if len(identities) != 1:
-        raise ValueError("production manifest lacks its execution-time identity; fresh execution required")
-    return resolve(command[command.index("--artifacts") + 1]) / "production.json", identities[0]
-
-
-def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, resolve=Path, retained=None):
-    """Recheck retained OFF execution files independently of the current ON tree."""
-    manifest = resolve(str(manifest))
-    if not manifest.is_file() or digest(manifest) != expected_manifest_sha256:
-        raise ValueError("production manifest execution identity changed")
-    document = json.loads(manifest.read_text())
-    probes = document.get("probes", [])
-    expected_names = {"film", "accepted-output-color"}
-    if len(probes) != 2 or {row["name"] for row in probes} != expected_names:
-        raise ValueError("production retained probe membership is incomplete or duplicated")
-    suffix = ".exe" if resolve(probes[0]["executable"]).suffix == ".exe" else ""
-    expected = {str(manifest): expected_manifest_sha256}
-
-    def admit(name, checksum):
-        path = resolve(name)
-        key = str(path)
-        if key in expected and expected[key] != checksum:
-            raise ValueError("production execution identities disagree: " + key)
-        if not path.is_file() or digest(path) != checksum:
-            raise ValueError("production execution payload missing or changed: " + key)
-        expected[key] = checksum
-
-    build = root / "out/build" / document["preset"]
-    declared = {str(resolve(str(root / name))): checksum for name, checksum in inputs.items()
-                if name.startswith("out/build/")}
-    copies = {str(resolve(name)): row for name, row in document.get("build_inputs", {}).items()}
-    if (not declared or set(copies) != set(declared)
-            or str(build / "CMakeCache.txt") not in declared
-            or not any(Path(name).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"} for name in declared)):
-        raise ValueError("production retained build-input membership is incomplete; fresh OFF execution required")
-    for name, checksum in declared.items():
-        row = copies[name]
-        destination = manifest.parent / "build" / Path(name).relative_to(build)
-        if resolve(row["file"]) != destination or row["sha256"] != checksum:
-            raise ValueError("production retained build-input execution identities disagree")
-        admit(row["file"], checksum)
-    cache = manifest.parent / "build/CMakeCache.txt"
-    if document.get("build_testing") != "OFF" or not re.search(r"^BUILD_TESTING:BOOL=OFF$", cache.read_text(), re.M):
-        raise ValueError("production retained configuration is not testing-OFF")
-
-    for row in probes:
-        name = row["name"]
-        executable = resolve(row["executable"])
-        source = resolve(row["source"])
-        if (executable != manifest.parent / (name + suffix)
-                or source != manifest.parent / (name + ".c")
-                or len({row["linked_sha256"], row["before_run_sha256"], row["after_run_sha256"]}) != 1):
-            raise ValueError("production probe execution identities disagree: " + name)
-        admit(row["executable"], row["after_run_sha256"])
-        admit(row["source"], row["source_sha256"])
-    consumed = document.get("consumed_inputs", {})
-    reference_consumed = {str(resolve(name)): checksum for name, checksum in consumed.items()}
-    for path in (root / "tests/ffi/grain_frame_abi_assertions.inc",
-                 root / "tests/ffi/grain_probe_contract.py",
-                 root / "tests/ffi/effects_frame_abi_assertions.inc",
-                 root / "tests/ffi/effects_frame_probe_contract.py"):
-        checksum = digest(path)
-        if (inputs.get(path.relative_to(root).as_posix()) != checksum
-                or reference_consumed.get(str(path)) != checksum):
-            raise ValueError("production grain C11 assertion input identity changed")
-    reference = document.get("reference_fixture", {})
-    reference_manifest = root / "tests/film/reference-fixtures/manifest.json"
-    spec = json.loads(reference_manifest.read_text())
-    reference_payload = reference_manifest.parent / spec["presets"][document["preset"]]
-    if (reference.get("logical_preset") != document["preset"]
-            or resolve(reference.get("manifest", "")) != reference_manifest
-            or resolve(reference.get("payload", "")) != reference_payload):
-        raise ValueError("production film-reference fixture membership is incomplete")
-    for path in (reference_manifest, reference_payload):
-        checksum = digest(path)
-        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum:
-            raise ValueError("production film-reference consumed fixture identity changed")
-    if digest(reference_payload) != spec["payload_sha256"][reference_payload.name]:
-        raise ValueError("production film-reference frozen payload changed")
-    expected_reference = []
-    for row in json.loads(reference_payload.read_text())["products"]:
-        if "input" not in row:
+def _native_cases(result, payloads, entries, contract, selected):
+    counts = {"rust_functions": 0, "native_functions": 0, "custom_cases": 0, "rust_cases": 0}
+    full_discovery = json.loads(payloads["target-discovery.json"])
+    excluded = {tuple(name.split(".", 1)) for name in contract.get("excluded_gtest", {})}
+    seen, excluded_seen = {}, set()
+    for name in sorted(selected):
+        if name in {"Rust.Core", "Rust.Bridge"}:
+            package = "core" if name == "Rust.Core" else "bridge"
+            expected, filtered = rust_membership(json.loads(payloads[name + ".discovery.json"]), package,
+                json.loads(payloads["rust-cargo.json"]), json.loads(payloads["rust-binaries.json"]))
+            framework_terminals(payloads[name + ".xml"], expected, nextest=True, filtered=filtered)
+            execution = json.loads(payloads[name + ".execution.json"])
+            if (len(execution["commands"]) != 2 or any(c["returncode"] != 0 for c in execution["commands"])
+                    or execution["doctests"]["status"] != "none" or execution["doctests"]["code_fence_sources"]
+                    or execution["doctests"]["source_files_scanned"] < 1):
+                raise ValueError("incomplete Rust execution")
+            counts["rust_functions"] += len(expected)
+            counts["rust_cases"] += rust_case_events(payloads[name + ".rows.jsonl"], contract, expected)
+            if package == "core" and "optics_rows" in result:
+                counts["rust_cases"] += optics_events(payloads["rust.jsonl"], {("rust", row) for row in result["optics_rows"]})
             continue
-        for case in range(8 if row["method"] == 1 else 7):
-            envelope = ([0, 0, 0, 0, 0, 0, 0] if case in (0, 5) else
-                        [2, 0, 0, 1, 0, 0, 0] if case in (1, 4) else
-                        [3, 0, 0, 2, 1, 0, 0] if case == 2 else
-                        [3, 0, 0, 2, 2, 1, 0] if case == 3 else
-                        [3, 0, 0, 3, 0, 7, 0] if case == 6 else
-                        [3, 0, 0, 4, 1, 8, 1])
-            expected_reference.append({"case": f"reference-{row['method']}-{case}",
-                                       "envelope": envelope, "hash": row["reference"]["hash"] if case in (0, 5) else 0,
-                                       "fields": "13-pass"})
-    if len(expected_reference) != 15 or document.get("reference_results") != expected_reference:
-        raise ValueError("production film-reference value/failure results are incomplete")
-    descriptor_manifest = root / "tests/scanner/descriptor-fixtures/manifest.json"
-    descriptor_spec = json.loads(descriptor_manifest.read_bytes())
-    logical = descriptor_spec["presets"][document["preset"]]["native"]
-    descriptor_payload = descriptor_manifest.parent / descriptor_spec["payloads"][logical]
-    descriptor_context = descriptor_manifest.parent / descriptor_spec["contexts"][logical]
-    descriptor = document.get("scanner_descriptor_fixture", {})
-    if (descriptor.get("logical_preset") != document["preset"] or
-            any(resolve(descriptor.get(key, "")) != path for key, path in
-                (("manifest", descriptor_manifest), ("payload", descriptor_payload), ("context", descriptor_context)))):
-        raise ValueError("production scanner descriptor fixture membership is incomplete")
-    for path in (descriptor_manifest, descriptor_payload, descriptor_context):
-        checksum = digest(path)
-        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum:
-            raise ValueError("production scanner descriptor consumed fixture identity changed")
-        if path != descriptor_manifest and checksum != descriptor_spec["sha256"][path.name]:
-            raise ValueError("production scanner descriptor frozen payload/context changed")
-    expected_descriptors = descriptor_spec["production_cases"] + descriptor_spec["production_malformed"]
-    if len(expected_descriptors) != 41 or document.get("scanner_descriptor_results") != expected_descriptors:
-        raise ValueError("production scanner descriptor value/failure results are incomplete")
-    post_manifest = root / "tests/scanner/post-effects-fixtures/manifest.json"
-    post_spec = json.loads(post_manifest.read_bytes())
-    logical = post_spec["presets"][document["preset"]]["native"]
-    post_payload = post_manifest.parent / post_spec["payloads"][logical]
-    post_context = post_manifest.parent / post_spec["contexts"][logical]
-    post = document.get("scanner_post_fixture", {})
-    if (post.get("logical_preset") != document["preset"] or
-            any(resolve(post.get(key, "")) != path for key, path in
-                (("manifest", post_manifest), ("payload", post_payload), ("context", post_context)))):
-        raise ValueError("production scanner post-effects fixture membership is incomplete")
-    for path in (post_manifest, post_payload, post_context):
-        checksum = digest(path)
-        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum:
-            raise ValueError("production scanner post-effects consumed fixture identity changed")
-        if path != post_manifest and checksum != post_spec["sha256"][path.name]:
-            raise ValueError("production scanner post-effects frozen payload/context changed")
-    expected_post = post_spec["production_cases"]
-    if len(expected_post) != 410 or document.get("scanner_post_results") != expected_post:
-        raise ValueError("production scanner post-effects value/failure results are incomplete")
-    gaussian_manifest = root / "tests/optics/gaussian-fixtures/manifest.json"
-    gaussian_spec = json.loads(gaussian_manifest.read_bytes())
-    logical = gaussian_spec["presets"][document["preset"]]["native"]
-    gaussian_payload = gaussian_manifest.parent / gaussian_spec["payloads"][logical]
-    gaussian_context = gaussian_manifest.parent / gaussian_spec["contexts"][logical]
-    gaussian = document.get("gaussian_fixture", {})
-    if gaussian.get("logical_preset") != document["preset"] or any(
-            resolve(gaussian.get(key, "")) != path for key, path in
-            (("manifest", gaussian_manifest), ("payload", gaussian_payload), ("context", gaussian_context))):
-        raise ValueError("production Gaussian fixture membership is incomplete")
-    for path in (gaussian_manifest, gaussian_payload, gaussian_context):
-        checksum = digest(path)
-        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum or (path != gaussian_manifest and checksum != gaussian_spec["sha256"][path.name]):
-            raise ValueError("production Gaussian consumed fixture changed")
-    expected_gaussian = []
-    for row in json.loads(gaussian_payload.read_bytes())["cases"]:
-        radius, sigma = row["radius"], row["sigma_bits"]
-        reason = 2 if radius < 1 or radius > 2048 else (3 if sigma & 0x80000000 or sigma == 0 or sigma >= 0x7f800000 else 0)
-        expected_gaussian.append({"case": row["name"], "envelope": [3 if reason else 0, 0, 0, reason],
-                                  "radius": 0 if reason else radius, "sigma_bits": 0 if reason else sigma,
-                                  "weights": [] if reason else row["weights"]})
-    for name in gaussian_spec["production_cases"][188:]:
-        reason = 2 if name == "radius-upper-reject" else (0 if name in {"zero-capacity", "null-release"} else 1)
-        expected_gaussian.append({"case": name, "envelope": [3 if reason == 2 else 2 if reason else 0, 0, 0, reason],
-                                  "radius": 0, "sigma_bits": 0, "weights": []})
-    if len(expected_gaussian) != 201 or document.get("gaussian_results") != expected_gaussian:
-        raise ValueError("production Gaussian full arrays/metadata/failure results are incomplete")
-
-    frame_manifest = root / "tests/frame/geometry-fixtures/manifest.json"
-    frame_spec = json.loads(frame_manifest.read_bytes())
-    frame_logical = frame_spec["presets"][document["preset"]]["native"]
-    frame_payload = frame_manifest.parent / frame_spec["payloads"][frame_logical]
-    frame_context = frame_manifest.parent / frame_spec["contexts"][frame_logical]
-    frame = document.get("frame_fixture", {})
-    if frame.get("logical_preset") != document["preset"] or any(
-            resolve(frame.get(key, "")) != path for key, path in
-            (("manifest", frame_manifest), ("payload", frame_payload), ("context", frame_context))):
-        raise ValueError("production frame geometry fixture membership is incomplete")
-    for path in (frame_manifest, frame_payload, frame_context, frame_manifest.parent / "inputs.json"):
-        checksum = digest(path)
-        if (inputs.get(path.relative_to(root).as_posix()) != checksum
-                or reference_consumed.get(str(path)) != checksum
-                or (path != frame_manifest and checksum != frame_spec["sha256"][path.name])):
-            raise ValueError("production frame geometry consumed fixture identity changed")
-    frame_expected = frame_spec["production_cases"]
-    if len(frame_expected) != 69 or len({row["case"] for row in frame_expected}) != 69 or document.get("frame_results") != frame_expected:
-        raise ValueError("production frame geometry full fields/words/failure results are incomplete")
-
-    halation_manifest = root / "tests/scatter_halation/frame-fixtures/manifest.json"
-    halation_spec = json.loads(halation_manifest.read_bytes())
-    halation_logical = halation_spec["presets"][document["preset"]]["native"]
-    halation_paths = {
-        "manifest": halation_manifest,
-        "payload": halation_manifest.parent / halation_spec["payloads"][halation_logical],
-        "context": halation_manifest.parent / halation_spec["contexts"][halation_logical],
-        "normative": halation_manifest.parent / halation_spec["checked"],
-        "input_spec": halation_manifest.parent / "inputs.json",
-    }
-    halation = document.get("halation_frame_fixture", {})
-    if halation.get("logical_preset") != document["preset"] or any(
-            resolve(halation.get(key, "")) != path for key, path in halation_paths.items()):
-        raise ValueError("production halation frame fixture membership is incomplete")
-    for path in halation_paths.values():
-        checksum = digest(path)
-        if (inputs.get(path.relative_to(root).as_posix()) != checksum
-                or reference_consumed.get(str(path)) != checksum
-                or (path != halation_manifest and checksum != halation_spec["sha256"][path.name])):
-            raise ValueError("production halation frame consumed fixture identity changed")
-    halation_expected = halation_spec["production_cases"]
-    if (len(halation_expected) != 86 or len({row["case"] for row in halation_expected}) != 86
-            or document.get("halation_frame_results") != halation_expected):
-        raise ValueError("production halation frame full fields/words/failure results are incomplete")
-
-    diffusion_manifest = root / "tests/diffusion/frame-fixtures/manifest.json"
-    diffusion_spec = json.loads(diffusion_manifest.read_bytes())
-    diffusion_logical = diffusion_spec["presets"][document["preset"]]["native"]
-    diffusion_paths = {
-        "manifest": diffusion_manifest,
-        "payload": diffusion_manifest.parent / diffusion_spec["payloads"][diffusion_logical],
-        "context": diffusion_manifest.parent / diffusion_spec["contexts"][diffusion_logical],
-        "normative": diffusion_manifest.parent / diffusion_spec["checked"],
-        "input_spec": diffusion_manifest.parent / "inputs.json",
-        "edges_input_spec": diffusion_manifest.parent / "edge-inputs.json",
-        "edges_payload": diffusion_manifest.parent / diffusion_spec["payloads"][diffusion_spec["presets"][document["preset"]]["edges"]],
-        "edges_context": diffusion_manifest.parent / diffusion_spec["contexts"][diffusion_spec["presets"][document["preset"]]["edges"]],
-    }
-    diffusion = document.get("diffusion_frame_fixture", {})
-    if diffusion.get("logical_preset") != document["preset"] or any(
-            resolve(diffusion.get(key, "")) != path for key, path in diffusion_paths.items()):
-        raise ValueError("production diffusion frame fixture membership is incomplete")
-    for path in diffusion_paths.values():
-        checksum = digest(path)
-        if (inputs.get(path.relative_to(root).as_posix()) != checksum
-                or reference_consumed.get(str(path)) != checksum
-                or (path != diffusion_manifest and checksum != diffusion_spec["sha256"][path.name])):
-            raise ValueError("production diffusion frame consumed fixture identity changed")
-    diffusion_expected = diffusion_spec["production_cases"]
-    if (len(diffusion_expected) != 507 or len({row["case"] for row in diffusion_expected}) != 507
-            or document.get("diffusion_frame_results") != diffusion_expected):
-        raise ValueError("production diffusion frame full fields/words/failure results are incomplete")
-
-    dir_manifest = root / "tests/dir/frame-fixtures/manifest.json"
-    dir_spec = json.loads(dir_manifest.read_bytes())
-    dir_logical = dir_spec["presets"][document["preset"]]["native"]
-    dir_paths = {
-        "manifest": dir_manifest,
-        "payload": dir_manifest.parent / dir_spec["payloads"][dir_logical],
-        "normative": dir_manifest.parent / dir_spec["checked"],
-        "input_spec": dir_manifest.parent / "inputs.json",
-    }
-    dir_frame = document.get("dir_frame_fixture", {})
-    if dir_frame.get("logical_preset") != document["preset"] or any(
-            resolve(dir_frame.get(key, "")) != path for key, path in dir_paths.items()):
-        raise ValueError("production DIR frame fixture membership is incomplete")
-    for path in dir_paths.values():
-        checksum = digest(path)
-        if (inputs.get(path.relative_to(root).as_posix()) != checksum
-                or reference_consumed.get(str(path)) != checksum
-                or (path != dir_manifest and checksum != dir_spec["sha256"][path.name])):
-            raise ValueError("production DIR frame consumed fixture identity changed")
-    dir_expected = dir_spec["production_cases"]
-    if (len(dir_expected) != 121 or len({row["case"] for row in dir_expected}) != 121
-            or document.get("dir_frame_results") != dir_expected):
-        raise ValueError("production DIR frame full fields/words/failure trace results are incomplete")
-
-    effects_manifest = root / "tests/film/effects-frame-fixtures/manifest.json"
-    effects_spec = json.loads(effects_manifest.read_bytes())
-    effects_logical = effects_spec["presets"][document["preset"]]["native"]
-    effects_paths = {
-        "manifest": effects_manifest,
-        "payload": effects_manifest.parent / effects_spec["payloads"][effects_logical],
-        "context": effects_manifest.parent / effects_spec["contexts"][effects_logical],
-        "normative": effects_manifest.parent / effects_spec["checked"],
-        "input_spec": effects_manifest.parent / "inputs.json",
-    }
-    effects = document.get("effects_frame_fixture", {})
-    if effects.get("logical_preset") != document["preset"] or any(
-            resolve(effects.get(key, "")) != path for key, path in effects_paths.items()):
-        raise ValueError("production effects frame fixture membership is incomplete")
-    for path in effects_paths.values():
-        checksum = digest(path)
-        if (inputs.get(path.relative_to(root).as_posix()) != checksum
-                or reference_consumed.get(str(path)) != checksum
-                or (path != effects_manifest and checksum != effects_spec["sha256"][path.name])):
-            raise ValueError("production effects frame consumed fixture identity changed")
-    effects_expected = effects_spec["production_cases"][document["preset"]]
-    if (tuple(row["case"] for row in effects_expected) != EFFECTS_FRAME_CASE_IDS
-            or len(effects_expected) != EFFECTS_FRAME_CASE_COUNT
-            or len({row["case"] for row in effects_expected}) != EFFECTS_FRAME_CASE_COUNT
-            or document.get("effects_frame_results") != effects_expected):
-        raise ValueError("production effects frame full values/failure/diagnostic results are incomplete")
-
-    grain_manifest = root / "tests/grain/frame-fixtures/manifest.json"
-    grain_spec = json.loads(grain_manifest.read_bytes())
-    grain_paths = {
-        "manifest": grain_manifest,
-        "payload": grain_manifest.parent / grain_spec["presets"][document["preset"]]["native"],
-        "normative": grain_manifest.parent / grain_spec["checked"],
-        "input_spec": grain_manifest.parent / "inputs.json",
-    }
-    grain = document.get("grain_frame_fixture", {})
-    if grain.get("logical_preset") != document["preset"] or any(
-            resolve(grain.get(key, "")) != path for key, path in grain_paths.items()):
-        raise ValueError("production grain frame fixture membership is incomplete")
-    for path in grain_paths.values():
-        checksum = digest(path)
-        if (inputs.get(path.relative_to(root).as_posix()) != checksum
-                or reference_consumed.get(str(path)) != checksum
-                or (path != grain_manifest and checksum != grain_spec["sha256"][path.name])):
-            raise ValueError("production grain frame consumed fixture identity changed")
-    grain_expected = grain_spec["production_cases"]
-    if (tuple(row["case"] for row in grain_expected) != GRAIN_FRAME_CASE_IDS
-            or len(grain_expected) != GRAIN_FRAME_CASE_COUNT
-            or len({row["case"] for row in grain_expected}) != GRAIN_FRAME_CASE_COUNT
-            or document.get("grain_frame_results") != grain_expected):
-        raise ValueError("production grain frame full values/metadata/failure/diagnostic results are incomplete")
-
-    boundary_manifest = root / "tests/dir/boundary-fixtures/manifest.json"
-    boundary_spec = json.loads(boundary_manifest.read_bytes())
-    boundary_logical = boundary_spec["presets"][document["preset"]]["native"]
-    boundary_paths = {
-        "manifest": boundary_manifest,
-        "payload": boundary_manifest.parent / boundary_logical,
-        "normative": boundary_manifest.parent / boundary_spec["checked"],
-        "input_spec": boundary_manifest.parent / "inputs.json",
-    }
-    boundary = document.get("dir_boundary_fixture", {})
-    if boundary.get("logical_preset") != document["preset"] or any(
-            resolve(boundary.get(key, "")) != path for key, path in boundary_paths.items()):
-        raise ValueError("production DIR boundary fixture membership is incomplete")
-    for path in boundary_paths.values():
-        checksum = digest(path)
-        if (inputs.get(path.relative_to(root).as_posix()) != checksum
-                or reference_consumed.get(str(path)) != checksum
-                or (path != boundary_manifest and checksum != boundary_spec["sha256"][path.name])):
-            raise ValueError("production DIR boundary consumed fixture identity changed")
-    boundary_expected = boundary_spec["production_cases"]
-    if (len(boundary_expected) != 171 or len({row["case"] for row in boundary_expected}) != 171
-            or document.get("dir_boundary_results") != boundary_expected):
-        raise ValueError("production DIR boundary full values/key/metadata/raw/lifetime results are incomplete")
-
-    headers = {name: checksum for name, checksum in consumed.items()
-               if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
-    if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
-        raise ValueError("production retained expectation header membership is incomplete")
-    for name, checksum in headers.items():
-        admit(name, checksum)
-    command_record = document["commands"]
-    if resolve(command_record["file"]) != manifest.parent / "commands.json":
-        raise ValueError("production retained command record is not the declared run")
-    admit(command_record["file"], command_record["sha256"])
-    commands = json.loads(resolve(command_record["file"]).read_text())
-    names = [row["name"] for row in commands]
-    if len(names) != len(set(names)) or not {name + role for name in expected_names for role in ("-compile", "-values")} <= set(names):
-        raise ValueError("production retained command membership is incomplete or duplicated")
-    outputs = {}
-    for row in commands:
-        if row["returncode"] != 0:
-            raise ValueError("production retained command did not succeed")
-        for extension in ("stdout", "stderr"):
-            name = str(manifest.parent / (row["name"] + "." + extension))
-            outputs[name] = row[extension + "_sha256"]
-        if row["name"] in {name + "-values" for name in expected_names}:
-            name = row["name"].removesuffix("-values")
-            if resolve(row["command"][0]) != manifest.parent / (name + suffix):
-                raise ValueError("production command did not execute the linked probe")
-    recorded_outputs = {str(resolve(name)): checksum for name, checksum in document.get("command_outputs", {}).items()}
-    if recorded_outputs != outputs:
-        raise ValueError("production retained detailed output membership is incomplete")
-    for name, checksum in outputs.items():
-        admit(name, checksum)
-    film_stdout = manifest.parent / "film-values.stdout"
-    effects_rows = [json.loads(line.removeprefix("EFFECTS_FRAME_RESULT "))
-                    for line in film_stdout.read_text(encoding="utf-8").splitlines()
-                    if line.startswith("EFFECTS_FRAME_RESULT ")]
-    if effects_rows != effects_expected:
-        raise ValueError("production effects frame executed stdout results disagree")
-    boundary_rows = [json.loads(line.removeprefix("DIR_BOUNDARY_RESULT "))
-                     for line in film_stdout.read_text(encoding="utf-8").splitlines()
-                     if line.startswith("DIR_BOUNDARY_RESULT ")]
-    if boundary_rows != boundary_expected:
-        raise ValueError("production DIR boundary executed stdout does not match frozen full results")
-    grain_rows = [json.loads(line.removeprefix("GRAIN_FRAME_RESULT "))
-                  for line in film_stdout.read_text(encoding="utf-8").splitlines() if line.startswith("GRAIN_FRAME_RESULT ")]
-    if grain_rows != grain_expected:
-        raise ValueError("production grain frame executed stdout results disagree")
-    dir_rows = [json.loads(line.removeprefix("DIR_FRAME_RESULT "))
-                for line in film_stdout.read_text().splitlines() if line.startswith("DIR_FRAME_RESULT ")]
-    if dir_rows != dir_expected:
-        raise ValueError("production DIR frame executed stdout results disagree")
-    diffusion_rows = [json.loads(line.removeprefix("DIFFUSION_FRAME_RESULT "))
-                      for line in film_stdout.read_text().splitlines() if line.startswith("DIFFUSION_FRAME_RESULT ")]
-    if diffusion_rows != diffusion_expected:
-        raise ValueError("production diffusion frame executed stdout results disagree")
-    if retained is not None and {str(resolve(name)): checksum for name, checksum in retained.items()} != expected:
-        raise ValueError("production retained payload membership or execution identities disagree; fresh execution required")
-    return expected
-
-
-def run_stage(campaign, state_path, state, name, command, *, inputs, tools, environment,
-          timeout, semantic_command=None, action=None, validate=None, payloads=(),
-          dependencies=(), repeat_reason="", refresh_inputs=None, admission_observations=None, ctest=False,
-          artifact_directories=()):
-    """Reuse the latest gate across attempt names; pending work is never a pass."""
-    campaign.check_run_request(name, command, inputs=inputs, timeout=timeout)
-    identity = {"command": list(semantic_command or command),
-                "inputs": snapshot(campaign.root, inputs), "tools": tool_snapshot(tools, allow_missing=True), "tool_paths": list(tools),
-                "environment": hashlib.sha256(json.dumps({k: v for k, v in command_environment(environment).items()
-                    if k not in {"JUICER_OUTPUT_LEASES", "JUICER_TEST_ARTIFACT_DIR"}}, sort_keys=True).encode()).hexdigest(),
-                "dependencies": list(dependencies)}
-    if artifact_directories:
-        identity["artifact_directories"] = artifact_membership(artifact_directories)
-    previous = state.get(name)
-    matching = previous and previous["identity"] == identity
-    if matching and previous["status"] != "passed" and not repeat_reason:
-        raise ValueError("pending checkpoint gate requires a relevant repair or a diagnosed repeat reason: " + name)
-    if matching and previous["status"] == "passed":
-        try:
-            from verify import check_receipt_payloads
-            paths = stage_receipts(previous)
-            for path, expected in zip(paths, [previous["sha256"], *previous.get("additional_receipts", {}).values()], strict=True):
-                if digest(path) != expected:
-                    raise ValueError("checkpoint command receipt changed")
-                check_receipt_payloads(campaign.root, path, allow_ctest_failure=ctest)
-            path = paths[0]
-            if name == "production" and payloads:
-                production_payloads(*production_manifest_identity(path, root=campaign.root),
-                                    root=campaign.root, inputs=previous["identity"]["inputs"],
-                                    retained=previous.get("payloads", {}))
-            if any(digest(Path(p)) != value for p, value in previous.get("payloads", {}).items()):
-                raise ValueError("checkpoint result payload changed")
-            if validate:
-                validate(paths if len(paths) > 1 else path)
-            if snapshot(campaign.root, inputs) != identity["inputs"] or tool_snapshot(tools, allow_missing=True) != identity["tools"]:
-                raise ValueError("checkpoint inputs changed during reuse")
-            if artifact_directories and artifact_membership(artifact_directories) != identity["artifact_directories"]:
-                raise ValueError("checkpoint runtime artifact membership changed during reuse")
-            print("Reused checkpoint gate:", name, path, flush=True)
-            return {**previous, "reused_from": str(path)}
-        except BaseException as error:
-            state[name] = {**previous, "status": "failed", "error": str(error)}
-            write_json(state_path, state)
-            raise
-    state[name] = {"status": "pending", "identity": identity}
-    if ctest and matching:
-        state[name]["ctest_chunks"] = previous.get("ctest_chunks", []).copy()
-    write_json(state_path, state)
-    try:
-        executed = action() if action else campaign.run(name, command, inputs=inputs, tools=[p for p in tools if Path(p).is_file()],
-            env=environment, timeout=timeout, repeat_reason=repeat_reason)
-        paths = executed if isinstance(executed, list) else [executed]
-        if not paths:
-            raise ValueError("checkpoint stage produced no command evidence")
-        if validate:
-            validate(paths if len(paths) > 1 else paths[0])
-        actual = snapshot(campaign.root, inputs)
-        # Preparation owns generated configuration; source/tool mutations still fail.
-        generated = set()
-        if name == "prepare" and action:
-            build = campaign.root / "out/build" / campaign.directory.parent.name
-            generated = {p for p in identity["inputs"] if (campaign.root / p).is_relative_to(build)}
-        if (any(actual.get(p) != value for p, value in identity["inputs"].items() if p not in generated)
-                or tool_snapshot(tools, allow_missing=True) != identity["tools"]):
-            raise ValueError("checkpoint relevant inputs changed")
-        if artifact_directories and artifact_membership(artifact_directories) != identity["artifact_directories"]:
-            raise ValueError("checkpoint runtime artifact membership changed")
-        refreshed = snapshot(campaign.root, refresh_inputs()) if refresh_inputs else actual
-        if name == "prepare" and action:
-            generated.update(p for p in refreshed if (campaign.root / p).is_relative_to(build))
-        if admission_observations is not None and any(
-                value != admission_observations.get(p) for p, value in refreshed.items()
-                if p not in identity["inputs"] and p not in generated):
-            raise ValueError("checkpoint newly discovered preparation inputs changed")
-        identity["inputs"] = refreshed
-        retained = (production_payloads(*production_manifest_identity(paths[0], root=campaign.root),
-                                       root=campaign.root, inputs=identity["inputs"])
-                    if name == "production" and payloads else {str(p): digest(Path(p)) for p in payloads})
-        result = {"status": "passed", "identity": identity, "receipt": str(paths[0]),
-                  "sha256": digest(paths[0]),
-                  "additional_receipts": {str(p): digest(p) for p in paths[1:]}, "payloads": retained}
-        if ctest:
-            result["ctest_chunks"] = state[name].get("ctest_chunks", [])
-        state[name] = result
-        write_json(state_path, state)
-        return result
-    except BaseException as error:
-        state[name].update(status="failed", error=str(error))
-        write_json(state_path, state)
-        raise
-
-
-def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None, resolve=Path):
-    from verify import is_documentation, source_snapshot
-
-    paths = {root / name for name in ("CMakeLists.txt", "CMakePresets.json", "tests/CMakeLists.txt",
-             "scripts/qualification.py", "scripts/execution.py", "scripts/process_tree.py")}
-    paths.add(build / "CMakeCache.txt")
-    if group == "production":
-        paths.update(build / name for name in ("build.ninja", "compile_commands.json", "cargo-features.txt"))
-        paths.update(root / name for name in (
-            "tests/ffi/production_contract.py",
-            "tests/ffi/production-film.c.in",
-            "tests/ffi/film_recipe_abi_c.c",
-            "tests/ffi/grain_frame_abi_assertions.inc",
-            "tests/ffi/grain_probe_contract.py",
-            "tests/ffi/effects_frame_abi_assertions.inc",
-            "tests/ffi/effects_frame_probe_contract.py",
-        ))
-    else:
-        paths.update(registration_files(build, allow_missing=True))
-    if group in {"boundary", "tooling"}:
-        paths.update(root / name for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "clippy.toml", "rustfmt.toml", "cmake/JuicerRust.cmake"))
-        paths.update(p for p in (root / "rust").rglob("*") if p.is_file())
-        paths.update(p for p in (root / ".cargo").glob("*") if p.is_file())
-        if group == "boundary":
-            paths.add(root / "scripts/check-quality.py")
-            for directory in ("src", "native"):
-                paths.update(p for p in (root / directory).rglob("*") if p.is_file() and p.suffix in {".h", ".cpp", ".cu", ".cuh"})
-            paths.add(root / "tests/ffi/color_preparation_test.cpp")
-            paths.update(root / "tests/ffi" / name for name in (
-                "film_recipe_test.cpp", "exposure_fixture.h", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "effects_frame_test.inc", "effects_frame_abi_assertions.inc", "effects_frame_probe_contract.py", "grain_frame_test.inc", "dir_frame_test.inc", "diffusion_frame_test.inc", "halation_frame_test.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
-            paths.update((root / "tests/film/effects-frame-fixtures").glob("*.json"))
-            paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
-            paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
-            paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
-            paths.update((root / "tests/print/balance-fixtures").glob("*.json"))
-            paths.update((root / "tests/scanner/correction-fixtures").glob("*.json"))
-            paths.update((root / "tests/scanner/lut-fixtures").glob("*.json"))
-            paths.update((root / "tests/scanner/descriptor-fixtures").glob("*.json"))
-            paths.update((root / "tests/scanner/post-effects-fixtures").glob("*.json"))
-            paths.update((root / "tests/optics/gaussian-fixtures").glob("*.json"))
-            paths.update((root / "tests/frame/geometry-fixtures").glob("*.json"))
-            paths.update((root / "tests/scatter_halation/frame-fixtures").glob("*.json"))
-            paths.update((root / "tests/diffusion/frame-fixtures").glob("*.json"))
-            paths.update((root / "tests/dir/frame-fixtures").glob("*.json"))
-            paths.update((root / "tests/grain/frame-fixtures").glob("*.json"))
-            paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
-            paths.update((root / "tests/quality").glob("test_rust_*.py"))
-            paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))
+        entry = entries[name]
+        if result["case_files"][name] != {k: entry[k] for k in ("key", "protocol", "rows")}:
+            raise ValueError("native case contract differs from registration")
+        key = entry["key"]
+        execution = json.loads(payloads[key + ".execution.json"])
+        if execution["returncode"] != 0 or execution["command"] != entry["command"] or execution.get("outcomes_valid") is not True:
+            raise ValueError("failed or mismatched native command")
+        if entry["protocol"] == "gtest":
+            discovered = gtest_discovery(payloads[key + ".discovery.json"], excluded=excluded)
+            filtered = discovered & excluded
+            expected = discovered - filtered
+            if not expected or seen.get(entry["target"], set()) & expected:
+                raise ValueError("empty or duplicate native function coverage")
+            framework_terminals(payloads[key + ".xml"], expected, filtered=filtered)
+            seen.setdefault(entry["target"], set()).update(expected)
+            excluded_seen.update(filtered)
+            counts["native_functions"] += len(expected)
+            cohorts = {suite + "." + function: contract["gtest_cohorts"].get(suite + "." + function, 0) for suite, function in expected}
         else:
-            for directory in ("scripts", "tests/quality", "tests/ctest"):
-                paths.update(p for p in (root / directory).rglob("*.py") if "__pycache__" not in p.parts)
-            paths.add(root / "tests/ffi/run_rust_build_contract.py")
-    else:
-        paths.update(root / name for name in (source_files if source_files is not None else source_snapshot(root)))
-        for directory in ("Resources", "tests"):
-            paths.update(p for p in (root / directory).rglob("*")
-                         if p.is_file() and "__pycache__" not in p.parts
-                         and not is_documentation(p.relative_to(root).as_posix()))
-    if group == "prepare":
-        paths = preparation_inputs(root, build, {p for p in paths if p.is_file()}, context=preparation, resolve=resolve)
-    return sorted(p.relative_to(root).as_posix() for p in paths if p.is_file())
+            cohorts = native_cohort_count(contract, name, result["preset"])
+        intended = set()
+        if entry["protocol"] == "custom" or entry["rows"]:
+            intended = optics_keys([json.loads(line) for line in payloads[key + ".list.jsonl"].splitlines()])
+            if not intended:
+                raise ValueError("empty custom case discovery")
+        counts["custom_cases"] += case_events(payloads[key + ".jsonl"], intended, cohorts=cohorts)
+    for target, actual in seen.items():
+        if target not in full_discovery:
+            raise ValueError("missing native target discovery")
+        expected = gtest_discovery(json.dumps(full_discovery[target]), excluded=excluded) - excluded
+        whole_target = {n for n, entry in entries.items() if entry["target"] == target} <= set(selected)
+        if not actual <= expected or whole_target and actual != expected:
+            raise ValueError("GoogleTest registration omitted required functions")
+    return counts, excluded_seen
 
 
-def has_opaque_configure_commands(paths, *, build=None, configuration=None, resolve=Path):
-    """File operations, processes and dynamic evaluation have no declared closure."""
-    sources = {path for path in paths if path.name == "CMakeLists.txt" or path.suffix == ".cmake"}
-    paths, bootstrap = set(sources), {}
-    if configuration is not None:
-        cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
-        match = re.search(r"^CMAKE_ROOT:INTERNAL=(.+)$", cache, re.M)
-        if match:
-            cmake_root = resolve(match[1].strip()).resolve()
-            bootstrap = {cmake_root / name: checksums for name, checksums in CMAKE_BOOTSTRAP_INPUTS.items()}
-        # include() accepts arbitrary filenames. Regeneration data that cannot
-        # be read safely as CMake text also keeps the preparation scope broad.
-        paths.update(resolve(name) for name in configuration["regeneration_mtimes"])
-    for path in paths:
-        content = path.read_bytes()
-        if path not in sources and hashlib.sha256(content).hexdigest() in bootstrap.get(path, ()):
-            continue
-        try:
-            text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            return True
-        if re.search(r"\b(?:file|execute_process|cmake_language)\s*\(", text, re.I):
-            return True
-    return False
+def validate_tests_result(result, payloads):
+    tests_result_members(result)
+    candidate = _payloads(result, payloads)
+    if bool(candidate.get("features", {}).get("rust_artifacts")) != bool(result.get("rust_artifacts")):
+        raise ValueError("missing separate Rust artifact description")
+    if result.get("rust_artifacts"):
+        artifacts = json.loads(payloads["rust-artifacts.json"])
+        variants = artifacts["variants"]
+        if (artifacts["schema"] != "rust-artifacts-v1" or set(variants) != {"production", "test-support"}
+                or variants["production"]["archive"] == variants["test-support"]["archive"]
+                or variants["production"]["target_dir"] == variants["test-support"]["target_dir"]
+                or variants["production"]["features"] != [] or variants["test-support"]["features"] != ["test-support"]
+                or candidate["features"].get("rust_artifacts") != "rust-artifacts.json"):
+            raise ValueError("invalid separate Rust artifact description")
+    if result["status"] == "failed":
+        return {"status": "failed", "preset": result["preset"], "scope": result["scope"],
+                "groups": result["groups"], "runtime": result["runtime"], "ctest_cases": 0,
+                "shipping_isolation": False, "error": result.get("error", "native execution failed")}
+    inventory = json.loads(payloads["registration.json"])
+    contracts = {runtime: json.loads(payloads[runtime + "-contracts.json"]) for runtime in ("host", "gpu", "python")}
+    standalone = result["build_kind"] == "tooling"
+    cuda_free = result["build_kind"] == "cuda-free"
+    native = {} if standalone else {runtime: native_registration(contracts[runtime], json.loads(payloads[runtime + "-targets.json"]), inventory, runtime=runtime, cuda_free=cuda_free) for runtime in ("host", "gpu")}
+    python = python_registration(contracts["python"], inventory, result["preset"], standalone=standalone, cuda_free=cuda_free)
+    available = set(python)
+    if not standalone:
+        available.update({"Rust.Core", "Rust.Bridge"})
+        available.update(native["host"])
+        available.update(native["gpu"])
+    registered = {test["name"] for test in inventory["tests"]}
+    if registered != available:
+        raise ValueError("missing or unowned public CTest registration")
+    selected = set(result["selection"])
+    if not selected <= available:
+        raise ValueError("unknown selected test")
+    requested = membership(inventory, result["groups"], result["runtime"]) if result["scope"] == "checkpoint" else None
+    if requested is not None and selected != {name for names in requested.values() for name in names}:
+        raise ValueError("checkpoint omitted required registration")
+    counts = {"rust_functions": 0, "native_functions": 0, "custom_cases": 0, "rust_cases": 0,
+              "python_functions": 0, "python_rows": 0, "python_skips": []}
+    excluded = set()
+    if result["status"] == "passed":
+        if (candidate["configuration"]["BUILD_TESTING"] != "ON"
+                or candidate["configuration"]["CMAKE_BUILD_TYPE"] != ("Debug" if result["preset"].endswith("debug") else "Release")):
+            raise ValueError("incorrect testing configuration")
+        cases = list(ET.fromstring(payloads["ctest.xml"]).iter("testcase"))
+        if sorted(c.get("name") for c in cases) != sorted(selected) or any(c.get("status") != "run" or any(c.find(t) is not None for t in ("failure", "error", "skipped")) for c in cases):
+            raise ValueError("missing, failed or skipped CTest outcomes")
+        gpu_selected = selected & set(native.get("gpu", {}))
+        if gpu_selected and (not any(name.startswith("Resources/") for name in candidate["inputs"])
+                or result.get("physical_gpu") != {"contender_excluded": True, "drained_while_locked": True}
+                or json.loads(payloads["gpu-exclusion.json"]) != {"physical_gpu": "excluded"}
+                or not any(command["name"] == "gpu-exclusion" for command in result["commands"])):
+            raise ValueError("missing shared physical GPU exclusion/drainage")
+        for runtime, entries in native.items():
+            chosen = selected & set(entries)
+            if runtime == "host":
+                chosen |= selected & {"Rust.Core", "Rust.Bridge"}
+            found, filtered = _native_cases(result, payloads, entries, contracts[runtime], chosen)
+            for name, number in found.items():
+                counts[name] += number
+            excluded.update(".".join(name) for name in filtered)
+        for name in selected & python.keys():
+            entry = python[name]
+            if result["case_files"][name] != {k: entry[k] for k in ("key", "protocol", "rows")}:
+                raise ValueError("Python case contract differs from registration")
+            key = entry["key"]
+            execution = json.loads(payloads[key + ".execution.json"])
+            if execution["command"] != entry["command"] or execution["returncode"] != 0 or execution.get("outcomes_valid") is not True:
+                raise ValueError("failed or mismatched Python execution")
+            found = validate_python_result(json.loads(payloads[key + ".discovery.json"]), payloads[key + ".functions.jsonl"], payloads[key + ".rows.jsonl"])
+            counts["python_functions"] += found["python_functions"]
+            counts["python_rows"] += found["python_rows"]
+            counts["python_skips"].extend(name + ":" + function for function in found["python_skips"])
+        if result.get("quality_files"):
+            checks = json.loads(payloads["quality.checks.json"])
+            if checks["selected"] != result["quality_files"] or checks["preset"] != result["preset"]:
+                raise ValueError("selected-source quality scope differs from execution")
+            validate_quality_checks(checks, payloads)
+    return {"status": result["status"], "preset": result["preset"], "scope": result["scope"],
+            "groups": result["groups"], "runtime": result["runtime"], "build_kind": result["build_kind"],
+            "ctest_cases": len(selected), **counts,
+            "excluded_benchmarks": sorted(excluded), "unselected_registrations": sorted(available - selected), "shipping_isolation": False}
 
 
-def preparation_inputs(root, build, paths, *, context=None, resolve=Path):
-    """Exclude only registered runtime files outside the owning build closure.
-
-    Collection uses the producer's sealed closure after validating its original
-    requirements. It never runs a foreign native tool or projects an old receipt.
-    """
-    from build_dependencies import NinjaGraph
-    from build_evidence import scoped_context
-
-    if not (build / "CTestTestfile.cmake").is_file():
-        return paths
-    runtime = set()
-    for registration in registration_files(build):
-        for line in registration.read_text(encoding="utf-8").splitlines():
-            # Generated CTest command operands are explicit runtime owners. Do
-            # not infer directory contents, manifest payloads or Python imports.
-            if not line.startswith("add_test("):
-                continue
-            for operand in re.findall(r'"([^"\\$;]+)"', line):
-                path = resolve(operand)
-                if path.is_absolute() and path.is_file() and path.is_relative_to(root / "tests"):
-                    runtime.add(path)
-    if not runtime or has_opaque_configure_commands(paths):
-        return paths
-    if context is None:
-        graph = NinjaGraph(build, ["all"])
-        context = scoped_context(root, root, build, graph, [], dict(os.environ))
-    if has_opaque_configure_commands(paths, build=build, configuration=context["configuration"], resolve=resolve):
-        return paths
-    # A custom build command may consume a script/file without a DEPENDS
-    # edge. Such operands are not proven runtime-only.
-    commands = context["commands"].replace("\\", "/").casefold()
-    runtime = {p for p in runtime if p.name.casefold() not in commands
-               and not any(re.search(re.escape(parent.as_posix().casefold()) + r'(?=["\s;]|$)', commands)
-                           for parent in p.parents if parent.is_relative_to(root / "tests"))}
-    protected = {resolve(name).resolve() for name in context["files"]}
-    protected.update((root / name).resolve() for name in context["configuration"]["inputs"])
-    # Cargo test embeddings/build scripts and configure-time file operations
-    # can escape Ninja's dependency graph. Unresolved consumers keep broad scope.
-    for path in paths:
-        if path.suffix == ".rs":
-            if path.name == "build.rs" or re.search(r"\binclude(?:_str|_bytes)?\s*!", path.read_text(encoding="utf-8")):
-                return paths
-            runtime.discard(path)
-        if path.name == "Cargo.toml":
-            if tomllib.loads(path.read_text(encoding="utf-8")).get("package", {}).get("build"):
-                return paths
-        if path.name != "CMakeLists.txt" and path.suffix != ".cmake":
-            continue
-        content = path.read_text(encoding="utf-8")
-        # A source-side configure/tool operand may be absent from Ninja. Only
-        # recognize ordinary add_test syntax; anything else stays conservative.
-        consumers = re.sub(r'\badd_test\s*\((?:"(?:[^"\\]|\\.)*"|[^()"])*\)', "", content, flags=re.I)
-        runtime = {p for p in runtime if p.name.casefold() not in consumers.casefold()}
-    return {p for p in paths if p not in runtime or p.resolve() in protected}
+def quality_result_members(result):
+    required = {"candidate.json", "candidate.patch", "quality.checks.json"}
+    if result["status"] == "passed":
+        required.update("quality-boundary" + suffix for suffix in
+                        (".execution.json", ".discovery.json", ".functions.jsonl", ".rows.jsonl"))
+    return _flat_members(result, required)
 
 
-def checkpoint_tools(build, environment, group=None):
-    tools = {Path(sys.executable)}
-    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
-    tools.update(linker_tools(build, cache, environment))
-    tools.update(Path(value) for value in re.findall(r"^(?:CMAKE_(?:(?:C|CXX|CUDA|CUDA_HOST)_COMPILER|LINKER|AR|RANLIB)|JUICER_CARGO_EXECUTABLE):[^=]+=(.+)$", cache, re.M))
-    for name in ("cmake", "ctest", "cargo", "rustc"):
-        value = shutil.which(name, path=environment.get("PATH"))
-        if value:
-            tools.add(Path(value))
-    if group in {None, "product", "tooling", "production"}:
-        llvm = Path("C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin") if os.name == "nt" else Path("/usr/lib/llvm-22/bin")
-        suffix = ".exe" if os.name == "nt" else ""
-        for name in ("clang-format", "clang-tidy", "clang", "clang-cl", "llvm-nm"):
-            choices = [environment["JUICER_" + name.upper().replace("-", "_")]] if "JUICER_" + name.upper().replace("-", "_") in environment else [name + "-22", name, str(llvm / (name + suffix))]
-            for choice in choices:
-                resolved = shutil.which(choice, path=environment.get("PATH"))
-                if resolved or Path(choice).is_file():
-                    tools.add(Path(resolved or choice))
-                    break
-        if group == "production":
-            tools.add(llvm / ("llvm-nm" + suffix))
-            if os.name == "nt":
-                tools.update(llvm / name for name in ("clang-cl.exe", "llvm-readobj.exe", "llvm-pdbutil.exe"))
-    configs = {directory / ".cargo" / name for directory in (build.parents[2], *build.parents[2].parents)
-               for name in ("config", "config.toml")}
-    for probe in (("rust-naming", "rust-boundaries") if group in {None, "boundary", "tooling"} else ()):
-        artifact = build.parents[2] / "out/validation" / build.name / "quality" / probe
-        configs.update(parent / ".cargo" / name for parent in (artifact, *artifact.parents)
-                       for name in ("config", "config.toml"))
-    configs.update(Path(environment.get("CARGO_HOME", Path.home() / ".cargo")) / name for name in ("config", "config.toml"))
-    configs.add(Path(environment.get("RUSTUP_HOME", Path.home() / ".rustup")) / "settings.toml")
-    tools.update(configs)
-    def bind(value, directory=None):
-        if value:
-            candidate = Path(value)
-            if not candidate.is_absolute() and candidate.parent != Path(".") and directory:
-                candidate = directory / candidate
-            resolved = shutil.which(str(candidate), path=environment.get("PATH"))
-            tools.add(Path(resolved) if resolved else candidate)
-    for name, value in environment.items():
-        if name in {"RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTDOC", "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"} or name.startswith("CARGO_TARGET_") and name.endswith("_LINKER"):
-            bind(value)
-    for path in configs:
-        if not path.is_file() or path.name == "settings.toml":
-            continue
-        config = tomllib.loads(path.read_text())
-        for name in ("rustc", "rustc-wrapper", "rustc-workspace-wrapper", "rustdoc"):
-            bind(config.get("build", {}).get(name), path.parent.parent)
-        for target in config.get("target", {}).values():
-            bind(target.get("linker"), path.parent.parent)
-    rustup = shutil.which("rustup", path=environment.get("PATH"))
-    if rustup:
-        for name in ("cargo", "rustc", "clippy-driver"):
-            tools.add(Path(subprocess.check_output([rustup, "which", name], env=environment, text=True, timeout=None).strip()))
-    return [str(p.absolute()) for p in sorted(tools)]
+def validate_quality_checks(checks, payloads=None):
+    if (checks.get("schema") != "native-quality-checks-v1" or checks["status"] != "passed"
+            or not checks["expected_checks"] or checks.get("python_cases") != ["quality-boundary"]):
+        raise ValueError("failed or empty quality checks")
+    expected = checks["expected_checks"]
+    completed = checks["completed_checks"]
+    commands = checks["commands"]
+    planned = checks["expected_commands"]
+    if (len(expected) != len(set(expected)) or set(expected) != set(completed) or len(completed) != len(expected)
+            or len(planned) != len(set(planned)) or {command["name"] for command in commands} != set(planned) or len(commands) != len(planned)):
+        raise ValueError("missing or duplicate quality operation")
+    if any(command.get("returncode") != 0 or command.get("drained") is not True or command.get("process_status") != "completed" for command in commands):
+        raise ValueError("failed or undrained quality operation")
+    counts = {"quality_checks": len(expected), "python_functions": 0, "python_rows": 0}
+    if checks.get("python_cases"):
+        if payloads is None:
+            raise ValueError("missing quality Python outcomes")
+        for key in checks["python_cases"]:
+            execution = json.loads(payloads[key + ".execution.json"])
+            if execution["returncode"] != 0 or execution.get("outcomes_valid") is not True:
+                raise ValueError("failed quality Python execution")
+            found = validate_python_result(json.loads(payloads[key + ".discovery.json"]), payloads[key + ".functions.jsonl"], payloads[key + ".rows.jsonl"])
+            counts["python_functions"] += found["python_functions"]
+            counts["python_rows"] += found["python_rows"]
+    return counts
 
 
-def qualify(root, args):
-    if args is None or not args.reason.strip() or not args.selection or set(args.selection) - GROUPS:
-        raise ValueError("checkpoint reason and explicit required selections are mandatory")
-    if args.preset not in PRESETS or args.runtime not in {"host", "all"}:
-        raise ValueError("checkpoint requires a supported native preset and explicit host/all runtime")
-    if args.preset.startswith("windows") != (os.name == "nt"):
-        raise ValueError("checkpoint must execute on its named native platform")
-    build = root / "out/build" / args.preset
-    with OutputLease(root, build):
-        return _qualify_owned(root, build, args)
+def validate_quality_result(result, payloads):
+    quality_result_members(result)
+    _payloads(result, payloads)
+    checks = json.loads(payloads["quality.checks.json"])
+    if (checks["preset"] != result["preset"] or checks["selected"] != result["selected"]
+            or checks["excluded"] != result["excluded"] or checks["commands"] != result["commands"]):
+        raise ValueError("quality result differs from its executed checks")
+    counts = validate_quality_checks(checks, payloads) if result["status"] == "passed" else {"quality_checks": 0}
+    return {"status": result["status"], "preset": result["preset"], "scope": "quality", **counts, "shipping_isolation": False}
 
 
-def prepare_checkpoint(campaign, build, state_path, state, environment, *, repeat_reason="", timeout=None,
-                       source_files=None, allow_build=False):
-    """Admit completed preparation; building requires explicit authorization."""
-    admitted = None
+def validate_production_contract(preset, payloads):
+    """Read the completed OFF gate's assertions, never its original file paths."""
+    report = json.loads(payloads["production-contract.json"])
+    commands_data = payloads["production-commands.json"]
+    commands = json.loads(commands_data)
+    if (preset not in {"linux-release", "windows-clang-release"}
+            or report.get("schema") != "production-contract-v1" or report.get("preset") != preset
+            or report.get("build_testing") != "OFF" or report.get("test_support") != "OFF"
+            or report.get("exports") != ["OfxGetNumberOfPlugins", "OfxGetPlugin"]
+            or report.get("hidden_device_load") is not True):
+        raise ValueError("incomplete production OFF assertions")
+    expected = {"native-symbols", "rust-symbols", "module-exports", "film-compile", "film-values",
+                "accepted-output-color-compile", "accepted-output-color-values", "prepared-render",
+                "pdb-symbols" if preset.startswith("windows") else "module-symbols"}
+    if (len(commands) != len(expected) or {row["name"] for row in commands} != expected
+            or any(type(row["returncode"]) is not int or row["returncode"] != 0 for row in commands)
+            or hashlib.sha256(commands_data).hexdigest() != report["commands"]["sha256"]):
+        raise ValueError("missing or failed production command")
+    if len(report["scanned"]) != 4 or any(row["symbols_and_fault_strings_absent"] is not True for row in report["scanned"]):
+        raise ValueError("incomplete production isolation scan")
+    probes = report["probes"]
+    if (len(probes) != 2 or {row["name"] for row in probes} != {"film", "accepted-output-color"}
+            or any(row["linked_sha256"] != row["before_run_sha256"] or row["linked_sha256"] != row["after_run_sha256"] for row in probes)):
+        raise ValueError("changed or missing production C11 probe")
+    prepared = report["prepared_render"]
+    if (prepared["executable_sha256_before"] != prepared["executable_sha256_after"]
+            or [row["case_id"] for row in prepared["rows"]] != [
+                "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"]
+            or any(row["accepted_fixture_match"] is not True or row["diagnostic"] != ""
+                   or any(type(row[key]) is not int or row[key] != 0 for key in ("status", "api", "native_code"))
+                   for row in prepared["rows"])):
+        raise ValueError("incomplete or failed production prepared rendering")
+    return {"production_off": True, "prepared_render_cases": len(prepared["rows"])}
+
+
+def build_result_members(result):
+    required = {"candidate.json", "candidate.patch"}
+    if result.get("production_contract") is True and result["status"] == "passed":
+        required.update({"production-contract.json", "production-commands.json"})
+    return _flat_members(result, required)
+
+
+def validate_build_result(result, payloads):
+    build_result_members(result)
+    candidate = _payloads(result, payloads)
+    assertions = {}
+    if result.get("production_contract") is True and result["status"] == "passed":
+        if candidate["configuration"]["BUILD_TESTING"] != "OFF":
+            raise ValueError("production contract requires a testing-OFF candidate")
+        assertions = validate_production_contract(result["preset"], payloads)
+    return {"status": result["status"], "preset": result["preset"], "scope": "build", "shipping_isolation": False, **assertions}
+
+
+def collect_bundles(args):
+    """Read named completed runs; never assemble a checkpoint from focused passes."""
+    if args.output.exists():
+        raise ValueError("retain the existing report and use a new output path")
+    summaries = [read_native_result(bundle) for bundle in args.bundles]
+    status = "passed" if summaries and all(summary["status"] == "passed" for summary in summaries) else "failed"
+    requested = set(getattr(args, "selection", None) or ())
+    if requested:
+        expected_presets = set(getattr(args, "presets", None) or (summary["preset"] for summary in summaries))
+        if {summary["preset"] for summary in summaries} != expected_presets:
+            raise ValueError("missing requested native preset")
+        for preset in expected_presets:
+            complete = [summary for summary in summaries if summary["preset"] == preset
+                        and summary["scope"] == "checkpoint" and requested <= set(summary["groups"])
+                        and (summary["runtime"] == "all" or summary["runtime"] == args.runtime)]
+            if len(complete) != 1:
+                raise ValueError("requested checkpoint requires one complete fresh execution per preset")
+        if len({summary["candidate_source"] for summary in summaries}) != 1:
+            raise ValueError("requested checkpoint contains different source candidates")
+    result = {"status": status, "scope": "checkpoint" if requested else "reported-runs",
+              "shipping_isolation": False, "results": summaries}
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("x", encoding="utf-8") as output:
+        output.write(json.dumps(result, indent=2) + "\n")
+    print("Offline result report:", args.output)
+    return 0 if status == "passed" else 1
+
+
+def collection_main(arguments):
+    import argparse
+    parser = argparse.ArgumentParser(description="Offline reading of named native bundles")
+    parser.add_argument("--bundles", type=Path, nargs="+", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--selection", nargs="+", choices=sorted(GROUPS))
+    parser.add_argument("--runtime", choices=("host", "gpu", "all"), default="host")
+    parser.add_argument("--presets", nargs="+", choices=PRESETS)
     try:
-        baseline, pending = preparation_paths(build, ["all"])
-        if pending.exists():
-            raise ValueError("pending preparation still owns the build outputs")
-        owner = json.loads(baseline.read_text())
-        admitted = Path(owner["producer"])
-        proof = check_scoped_preparation(campaign, build, admitted, environment)["scoped_preparation"]
-        from build_dependencies import file_identities
-        if file_identities([Path(name) for name in proof["outputs"]]) != proof["output_identities"]:
-            raise ValueError("completed preparation artifact bytes changed")
-        if proof["targets"] != ["all"] or proof["configure_args"] != ["-DBUILD_TESTING=ON"]:
-            raise ValueError("checkpoint requires all-target testing-ON preparation")
-        required = checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files,
-                                     preparation=proof["context"])
-        missing = [name for name in required if not name.startswith("out/build/")
-                   and str((campaign.root / name).resolve()) not in proof["context"]["files"]]
-        if missing:
-            raise ValueError("preparation input membership is incomplete: " + ", ".join(missing[:5]))
-    except (OSError, ValueError, KeyError) as error:
-        admitted = None
-        if not allow_build:
-            raise ValueError(f"preparation admission failed without changing outputs: {error}; "
-                             f"inspect the difference, then explicitly run verify.py prepare --preset {build.name} "
-                             "--targets all --testing ON if a build is needed") from error
-    inputs = checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files)
-    outputs = []
-    prepared_context = None
-    admission_observations = {}
-    previous = state.get("prepare")
-    def prepare():
-        if admitted is not None:
-            return admitted
-        if previous and previous.get("payloads"):
-            try:
-                path = Path(previous["receipt"])
-                if digest(path) != previous["sha256"]:
-                    raise ValueError("checkpoint preparation receipt changed")
-                try:
-                    check_preparation_owner(build, path)
-                except ValueError:
-                    pass  # A superseded/missing owner still needs ordinary preparation.
-                else:
-                    from verify import check_receipt_payloads
-                    check_receipt_payloads(campaign.root, path)
-                    try:
-                        check_scoped_preparation(campaign, build, path, environment)
-                    except ValueError:
-                        # Changed inputs or missing outputs require the real producer.
-                        pass
-                    else:
-                        if any(digest(Path(p)) != checksum for p, checksum in previous["payloads"].items()):
-                            raise ValueError("checkpoint preparation artifacts changed under the completed producer")
-            except BaseException:
-                # Keep the original artifact facts attached to failed admission.
-                state["prepare"] = previous.copy()
-                raise
-        # A reconfigure can reveal a previously unseen consumer. Observe omitted
-        # candidates before commands, but bind them only if refresh admits them.
-        candidates = set(checkpoint_inputs(campaign.root, build, "product", source_files=source_files)) - set(inputs)
-        admission_observations.update(snapshot(campaign.root, sorted(candidates)))
-        configuration = preparation_inventory(campaign.root, build, environment) if (build / "CMakeCache.txt").is_file() else None
-        return prepare_build(campaign, "prepare", source=campaign.root, build=build,
-            inputs=[p for p in inputs if not p.startswith("out/build/")], timeout=timeout,
-            targets=["all"], configure_args=["-DBUILD_TESTING=ON"], env=environment, checkpoint=True,
-            reconfigure=has_opaque_configure_commands((campaign.root / name for name in inputs), build=build,
-                configuration=configuration))[1]
-    def validate(path):
-        nonlocal prepared_context
-        record = check_scoped_preparation(campaign, build, path, environment)
-        outputs[:] = record["scoped_preparation"]["outputs"]
-        prepared_context = record["scoped_preparation"]["context"]
-    return run_stage(campaign, state_path, state, "prepare", ["cmake", "--build", str(build)],
-        inputs=inputs, tools=checkpoint_tools(build, environment, "product"), environment=environment,
-        timeout=timeout, repeat_reason=repeat_reason,
-        action=prepare,
-        admission_observations=admission_observations,
-        refresh_inputs=lambda: checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files,
-                                                 preparation=prepared_context),
-        validate=validate, payloads=outputs)
+        return collect_bundles(parser.parse_args(arguments))
+    except (ValueError, KeyError, TypeError, OSError, ET.ParseError) as error:
+        parser.exit(1, f"Invalid/incomplete offline report: {error}\n")
 
 
-def preparation_identity(build, stage, *, resolve=Path):
-    """Bind admitted artifact facts; producer provenance remains in the original receipt.
-
-    Callers validate raw command/process evidence through run_stage or collection.
-    The artifact owner and exact output bytes must still match at consumption.
-    """
-    path = resolve(stage["receipt"])
-    if digest(path) != stage["sha256"]:
-        raise ValueError("checkpoint preparation receipt changed")
-    record = check_preparation_owner(build, path, resolve=resolve)
-    if record.get("status") != "passed" or record.get("returncode") != 0 or not record.get("process_tree", {}).get("drained"):
-        raise ValueError("checkpoint preparation lacks successful process completion")
-    proof = record["scoped_preparation"]
-    check_preparation_inputs(build, proof, resolve=resolve)
-    artifacts = stage.get("payloads", {})
-    if not artifacts or set(artifacts) != set(proof["outputs"]):
-        raise ValueError("checkpoint preparation lacks exact artifact identities; repeat preparation")
-    if any(digest(resolve(p)) != checksum for p, checksum in artifacts.items()):
-        raise ValueError("checkpoint preparation artifact bytes changed")
-    facts = {name: value for name, value in proof.items()
-             if name not in {"producer", "invalidated", "rust_invalidated_packages"}}
-    return hashlib.sha256(json.dumps({"preparation": facts, "checkpoint": stage["identity"],
-                                     "artifacts": artifacts}, sort_keys=True).encode()).hexdigest()
-
-
-def _qualify_owned(root, build, args):
-    from verify import source_snapshot
-    cache = (build / "CMakeCache.txt").read_text()
-    home = re.search(r"^CMAKE_HOME_DIRECTORY:[^=]+=(.+)$", cache, re.M)
-    if not home or Path(home[1]).resolve() != root.resolve():
-        raise ValueError("configured checkpoint tree belongs to another source directory")
-    groups = set(args.selection)
-    if "product" in groups and not args.base:
-        raise ValueError("product checkpoints require the accepted diff base")
-    if "production" in groups and (not args.preset.endswith("release") or groups != {"production"}):
-        raise ValueError("production isolation is a separate explicit Release checkpoint on a testing-OFF tree")
-    required = (["prepare", "quality"] if "product" in groups else []) + sorted(groups)
-    print(json.dumps({"reason": args.reason, "preset": args.preset, "runtime": args.runtime,
-                      "required_stages": required, "scope": "explicit preset checkpoint; full phase/release acceptance requires all retained native/profile and production gates"}, indent=2), flush=True)
-    campaign = Campaign(root, args.preset, args.campaign or "qualification-" + uuid.uuid4().hex, required)
-    state_path = build / "verification-checkpoint.json"
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
-    current = source_snapshot(root)
-    record = {"mode": "checkpoint", "status": "running", "scope_status": "running", "reason": args.reason,
-              "preset": args.preset, "runtime": args.runtime, "selection": sorted(groups), "required": required,
-              "source": current, "stages": {}}
-    receipt = campaign.directory / "qualification.json"
-    if receipt.exists():
-        raise ValueError("checkpoint attempt already exists; retain it and use a new attempt name")
-    started = time.monotonic()
-    environment = dict(os.environ)
-    def run(name, command, inputs, *, tools=None, **kwargs):
-        if tools is None:
-            tools = checkpoint_tools(build, environment, name if name in GROUPS else "product")
-        result = run_stage(campaign, state_path, state, name, command, inputs=inputs, tools=tools,
-                       environment=environment, timeout=None, repeat_reason=args.repeat_reason, **kwargs)
-        record["stages"][name] = result
-        return result
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Offline native result reader (stdlib only).")
+    parser.add_argument("--bundle", type=Path, required=True)
+    options = parser.parse_args()
     try:
-        built = None
-        prepared_identity = None
-        if "product" in groups:
-            built = prepare_checkpoint(campaign, build, state_path, state, environment,
-                                       repeat_reason=args.repeat_reason, source_files=current,
-                                       allow_build=getattr(args, "prepare", False))
-            record["stages"]["prepare"] = built
-            prepared_identity = preparation_identity(build, built)
-            inputs = checkpoint_inputs(root, build, "product", source_files=current)
-            run("quality", [sys.executable, "-B", "scripts/check-quality.py", "--preset", args.preset,
-                "--qualification", "--base", args.base], inputs, dependencies=[prepared_identity])
-        if groups != {"production"}:
-            query = subprocess.check_output(["ctest", "--test-dir", str(build), "--show-only=json-v1"], cwd=root, env=environment, text=True, timeout=None)
-            inventory = json.loads(query)
-            selected = membership(inventory, groups, args.runtime)
-            gpu_tests = {test["name"] for test in inventory["tests"]
-                         if any(p["name"] == "LABELS" and "gpu" in p["value"] for p in test.get("properties", []))}
-            record["membership"] = selected
-            print("CTest membership:", json.dumps(selected, sort_keys=True), flush=True)
-            record["runtime_membership"] = {}
-            for group, names in selected.items():
-                parts = {role: [n for n in names if (n in gpu_tests) == (role == "gpu")]
-                         for role in ("host", "gpu")}
-                parts = {role: members for role, members in parts.items() if members}
-                record["runtime_membership"][group] = parts
-                commands, reports = [], []
-                for role, members in parts.items():
-                    junit = campaign.directory / (group + "-" + role + ".xml")
-                    pattern = "^(" + "|".join(re.escape(n) for n in members) + ")$"
-                    commands.append([*ctest_command(root, build), "-R", pattern,
-                        "-LE" if role == "host" else "-L", "gpu", "--no-tests=error",
-                        "--output-on-failure", "--output-junit", str(junit)])
-                    reports.append(junit)
-                identities = [ctest_identity(command) for command in commands]
-                def validate(paths, parts=parts, names=names, identities=identities, group=group):
-                    validate_ctest_stage(paths, parts, names, identities)
-                    if group == "product":
-                        check_scoped_preparation(campaign, build, Path(built["receipt"]))
-                inputs = checkpoint_inputs(root, build, group, source_files=current)
-                tools = checkpoint_tools(build, environment, group)
-                artifacts, directories = ctest_artifacts(inventory, names, build) if group != "product" else ([], [])
-                tools = sorted(set(tools) | set(artifacts))
-                run(group, commands[0], inputs, tools=tools, semantic_command=identities,
-                    action=lambda group=group, commands=commands, parts=parts, inputs=inputs, tools=tools:
-                        run_ctest_parts(campaign, group, commands, parts, inputs=inputs, tools=tools,
-                            environment=environment, timeout=None, repeat_reason=args.repeat_reason,
-                            state=state, state_path=state_path, reports=reports),
-                    validate=validate, payloads=reports,
-                    ctest=True, artifact_directories=directories,
-                    dependencies=[prepared_identity] if built and group == "product" else [])
-        else:
-            cache = (build / "CMakeCache.txt").read_text()
-            if not re.search(r"^BUILD_TESTING:BOOL=OFF$", cache, re.M):
-                raise ValueError("production isolation requires a separately prepared testing-OFF Release tree")
-            from build_dependencies import NinjaGraph
-            artifacts = sorted(p for n in NinjaGraph(build, ["juicer"], environment).outputs
-                               if (p := Path(n)).is_file() and p.suffix.lower() in {".a", ".lib", ".ofx", ".pdb"})
-            # TARGET_PDB is not a Ninja output. Its removal changes membership;
-            # the harness then fails under the existing pending stage owner.
-            pdb = build / "juicer.pdb"
-            if os.name == "nt" and pdb.is_file():
-                artifacts = sorted(set(artifacts) | {pdb})
-            if not artifacts:
-                raise ValueError("final production artifacts are missing")
-            out = campaign.directory / "production"
-            inputs = checkpoint_inputs(root, build, "production", source_files=current) + [p.relative_to(root).as_posix() for p in artifacts]
-            command = [sys.executable, "-B", "tests/ffi/production_contract.py", "--preset", args.preset, "--artifacts", str(out)]
-            run("production", command, inputs, semantic_command=[*command[:-1], "<artifacts>"], payloads=[out / "production.json"])
-        if built:
-            try:
-                if preparation_identity(build, built) != prepared_identity:
-                    raise ValueError("checkpoint preparation changed during consumption")
-            except BaseException as error:
-                state["prepare"] = {**built, "status": "failed", "error": str(error)}
-                write_json(state_path, state)
-                raise
-        if source_snapshot(root) != current:
-            raise ValueError("checkpoint source changed during execution")
-        record["scope_status"] = "passed"
-        record["pending"] = sorted(name for name, value in state.items() if value["status"] != "passed")
-        record["status"] = "incomplete" if record["pending"] else "passed"
-    except BaseException as error:
-        record.update(status="failed", error=str(error))
-        raise
-    finally:
-        record["seconds"] = time.monotonic() - started
-        write_json(receipt, record)
-    print("Checkpoint receipt:", receipt, flush=True)
-    return receipt
-
-
-def collect_qualification(root, paths):
-    """Full phase/release aggregation is explicit; scoped passes cannot stand in."""
-    if not paths:
-        raise ValueError("all native/profile checkpoint receipts are required")
-    from contextlib import ExitStack
-    with ExitStack() as leases:
-        for preset in PRESETS:
-            leases.enter_context(OutputLease(root, root / "out/build" / preset))
-        return _collect_owned(root, paths)
-
-
-def _collect_owned(root, paths):
-    def local(name):
-        normalized = str(name).replace("\\", "/")
-        if Path(name).is_absolute():
-            return Path(name)
-        if "/out/" in normalized:
-            return root / "out" / normalized.split("/out/", 1)[1]
-        if os.name != "nt" and re.match(r"^[A-Za-z]:/", normalized):
-            return Path(subprocess.check_output(["wslpath", "-u", normalized], text=True).strip())
-        return Path(normalized)
-    records = [json.loads(Path(p).read_text()) for p in paths]
-    for record in records:
-        require_checkpoint(record)
-    from verify import source_snapshot
-    observed_source = source_snapshot(root) if all("source" in record for record in records) else None
-    if observed_source is not None and any(record["source"] != observed_source for record in records):
-        raise ValueError("checkpoint records do not bind one current candidate")
-    stages = [stage for record in records for stage in record["stages"].values()]
-    source_paths = sorted({p for stage in stages for p in stage["identity"]["inputs"]
-                           if not p.startswith("out/build/")})
-    tool_paths = sorted({str(local(p)) for stage in stages
-                         for p in [*stage["identity"]["tool_paths"], *stage["identity"]["tools"]]})
-    def observe_tools():
-        bindings = {p: str(Path(p).resolve()) for p in tool_paths}
-        values = tool_snapshot(tool_paths, allow_missing=True)
-        if (set(values) != set(bindings.values())
-                or bindings != {p: str(Path(p).resolve()) for p in tool_paths}):
-            raise ValueError("checkpoint tool paths changed during collection")
-        return bindings, values
-    # One read-only operation shares reads, never facts from an earlier attempt.
-    # The terminal scan seals content and lexical-to-resolved path bindings.
-    bindings, tools = observe_tools()
-    inputs = snapshot(root, source_paths)
-    members, preparations, artifact_seals = {}, {}, []
-    for record in records:
-        owner = root / "out/build" / record["preset"] / "verification-checkpoint.json"
-        state = json.loads(owner.read_text())
-        if any(value.get("status") != "passed" for value in state.values()):
-            raise ValueError("pending checkpoint work prevents aggregate collection")
-        for name, result in record["stages"].items():
-            current = state.get(name, {})
-            if current.get("status") != "passed" or any(current.get(key) != result.get(key)
-                    for key in ("sha256", "identity", "additional_receipts", "payloads")):
-                raise ValueError("pending or newer checkpoint ownership prevents collection: " + name)
-            directories = result["identity"].get("artifact_directories", {})
-            expected_directories = {str(local(directory)): sorted(str(local(path)) for path in paths) if paths is not None else None
-                                    for directory, paths in directories.items()}
-            if artifact_membership(expected_directories) != expected_directories:
-                raise ValueError("checkpoint runtime artifact membership changed")
-            artifact_seals.append(expected_directories)
-            raw_paths = stage_receipts(result, local)
-            for path, expected in zip(raw_paths, [result["sha256"], *result.get("additional_receipts", {}).values()], strict=True):
-                if digest(path) != expected:
-                    raise ValueError("checkpoint command receipt changed")
-                command = json.loads(path.read_text())
-                process = json.loads(local(command["process_tree"]["receipt"]).read_text())
-                ctest_failure = (name in record.get("membership", {}) and command.get("status") == "failed"
-                                 and command.get("returncode") == 8 and process.get("status") == "completed")
-                if (not ctest_failure and (command.get("status") != "passed" or command.get("returncode") != 0)
-                        or not process.get("drained") or any(command["process_tree"].get(k) != v for k, v in process.items())
-                        or digest(root / command["output"]) != command["output_sha256"]):
-                    raise ValueError("checkpoint terminal evidence is invalid")
-            if name == "production":
-                production_payloads(*production_manifest_identity(raw_paths[0], root=root, resolve=local),
-                                    root=root, inputs=result["identity"]["inputs"],
-                                    resolve=local, retained=result.get("payloads", {}))
-            for path, expected in result.get("payloads", {}).items():
-                if digest(local(path)) != expected:
-                    raise ValueError("checkpoint result payload changed")
-            if name in record.get("membership", {}):
-                validate_ctest_stage(raw_paths, record.get("runtime_membership", {}).get(name, {}),
-                    record["membership"][name], result["identity"]["command"], local)
-            declared = result["identity"]["inputs"]
-            source_inputs = {path: checksum for path, checksum in declared.items() if not path.startswith("out/build/")}
-            if {p: inputs[p] for p in source_inputs} != source_inputs:
-                raise ValueError("checkpoint declared source/data inputs changed")
-            group = name if name in GROUPS | {"prepare"} else "product"
-            if name == "prepare":
-                preparation_identity(root / "out/build" / record["preset"], result, resolve=local)
-                preparations[record["preset"]] = json.loads(raw_paths[0].read_text())["scoped_preparation"]["context"]
-            expected_members = {path for path in declared if not path.startswith("out/build/")}
-            key = record["preset"], group
-            if key not in members:
-                discovery = {"source_files": observed_source}
-                if group == "prepare":
-                    discovery.update(preparation=preparations[record["preset"]], resolve=local)
-                members[key] = {path for path in checkpoint_inputs(root, root / "out/build" / record["preset"], group,
-                                                                  **discovery)
-                                if not path.startswith("out/build/")}
-            actual_members = members[key]
-            if expected_members != actual_members:
-                raise ValueError("checkpoint source/data membership changed")
-            expected_tools = {bindings[str(local(path))]: value for path, value in result["identity"]["tools"].items()}
-            actual_tools = {bindings[str(local(p))]: tools[bindings[str(local(p))]]
-                            for p in result["identity"]["tool_paths"]}
-            if actual_tools != expected_tools:
-                raise ValueError("checkpoint toolchain/configuration changed")
-
-        if "product" in record["selection"]:
-            identity = preparation_identity(root / "out/build" / record["preset"], record["stages"]["prepare"], resolve=local)
-            if any(record["stages"][name]["identity"]["dependencies"] != [identity] for name in ("quality", "product")):
-                raise ValueError("checkpoint stages do not bind the current preparation artifacts")
-    if observe_tools() != (bindings, tools):
-        raise ValueError("checkpoint toolchain/configuration changed during collection")
-    if any(artifact_membership(expected) != expected for expected in artifact_seals):
-        raise ValueError("checkpoint runtime artifact membership changed during collection")
-    if snapshot(root, source_paths) != inputs:
-        raise ValueError("checkpoint declared source/data inputs changed during collection")
-    current = source_snapshot(root) if observed_source is not None else None
-    if observed_source is not None and current != observed_source:
-        raise ValueError("checkpoint source/data membership changed during collection")
-    # Git selection omits ignored test/resource inputs that checkpoint_inputs owns.
-    # Seal each shared membership observation independently of that selection.
-    for (preset, group), expected in members.items():
-        discovery = {"source_files": current}
-        if group == "prepare":
-            discovery.update(preparation=preparations[preset], resolve=local)
-        actual_members = {path for path in checkpoint_inputs(root, root / "out/build" / preset, group,
-                                                            **discovery)
-                          if not path.startswith("out/build/")}
-        if actual_members != expected:
-            raise ValueError("checkpoint source/data membership changed during collection")
-    required = {(p, group) for p in PRESETS for group in ("product", "boundary")}
-    required |= {(p, "tooling") for p in ("linux-debug", "windows-clang-debug")}
-    required |= {(p, "production") for p in ("linux-release", "windows-clang-release")}
-    actual = [(r["preset"], g) for r in records for g in r["selection"] if g != "corpus"]
-    if len(actual) != len(set(actual)) or set(actual) != required or sum("corpus" in r["selection"] for r in records) != 1:
-        raise ValueError("full checkpoint membership is incomplete or duplicated")
-    if any(r["runtime"] != "all" for r in records if "product" in r["selection"]):
-        raise ValueError("host-only product checks do not establish full qualification")
-    if current is None:
-        current = source_snapshot(root)
-    if any(r["source"] != current for r in records):
-        raise ValueError("checkpoint records do not bind one current candidate")
-    return {"mode": "qualification", "status": "passed", "source": current,
-            "receipts": {str(p): digest(Path(p)) for p in paths}, "scope": "explicit complete retained checkpoint; independent review and host acceptance remain separate"}
+        summary = read_native_result(options.bundle)
+        print(json.dumps(summary, indent=2))
+        raise SystemExit(0 if summary["status"] == "passed" else 1)
+    except (ValueError, KeyError, TypeError, OSError, ET.ParseError) as error:
+        parser.exit(1, f"Invalid/incomplete native result: {error}\n")

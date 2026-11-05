@@ -323,6 +323,7 @@ impl Lut {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use serde_json::Value;
 
     fn fixture() -> Value {
@@ -396,12 +397,24 @@ mod tests {
     #[test]
     fn whole_native_lut_words_and_failures() {
         let captured = fixture();
-        for row in captured["cases"]
-            .as_array()
-            .unwrap()
+        let input_rows = captured["cases"].as_array().unwrap();
+        let product_rows = captured["products"].as_array().unwrap();
+        let expected_ids = input_rows
             .iter()
-            .chain(captured["products"].as_array().unwrap())
+            .map(|row| format!("case/{}", row["id"].as_str().unwrap()))
+            .chain(
+                product_rows
+                    .iter()
+                    .map(|row| format!("product/{}", row["id"].as_str().unwrap())),
+            )
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new("scanner-lut", expected_ids);
+        for (group, row) in input_rows
+            .iter()
+            .map(|row| ("case", row))
+            .chain(product_rows.iter().map(|row| ("product", row)))
         {
+            let case = cases.case(format!("{group}/{}", row["id"].as_str().unwrap()));
             let result = construct(&row["input"]);
             let expected = &row["native"];
             if expected["success"].as_bool().unwrap() {
@@ -446,11 +459,19 @@ mod tests {
                     _ => panic!("unexpected native failure {error:?}"),
                 }
             }
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn separate_native_slope_branches() {
-        for row in fixture()["slopes"].as_array().unwrap() {
+        let rows = fixture()["slopes"].as_array().unwrap().clone();
+        let mut cases = RowCases::new(
+            "scanner-lut-slopes",
+            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        );
+        for row in &rows {
+            let case = cases.case(row["id"].as_str().unwrap());
             let input: Vec<_> = row["input"]
                 .as_array()
                 .unwrap()
@@ -468,19 +489,39 @@ mod tests {
                 .map(|v| v.as_u64().unwrap())
                 .collect();
             assert_eq!(words, expected, "{}", row["id"]);
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn capacity_checks_precede_allocation() {
+        let mut cases = RowCases::new(
+            "scanner-lut-capacity-boundaries",
+            [
+                "zero-resolution",
+                "resolution-one",
+                "max-resolution",
+                "regular-resolution",
+            ],
+        );
+        let case = cases.case("zero-resolution");
         assert_eq!(Lut::check_capacity(0), Err(LutError::Resolution));
+        case.passed();
+        let case = cases.case("resolution-one");
         assert_eq!(Lut::check_capacity(1), Err(LutError::Resolution));
+        case.passed();
+        let case = cases.case("max-resolution");
         assert_eq!(
             Lut::check_capacity(u32::MAX),
             Err(LutError::Size { buffer: 1 })
         );
+        case.passed();
+        let case = cases.case("regular-resolution");
         assert_eq!(
             dimensions(128).unwrap(),
             [128, 3 * 128usize.pow(3), 3 * 127usize.pow(3)]
         );
+        case.passed();
+        cases.finish();
     }
 }

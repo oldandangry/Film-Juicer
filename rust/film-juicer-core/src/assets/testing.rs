@@ -272,6 +272,17 @@ impl Drop for EntryObservation {
 }
 
 impl Assets {
+    /// Permanently poison this scratch owner's actual noise-cache mutex.
+    /// Recovery is by constructing a fresh `Assets` owner; this hook does not
+    /// clear or replace the cache lock.
+    pub fn poison_noise_cache_for_test(&self) -> bool {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.noise.lock().expect("fresh noise cache mutex");
+            panic!("injected noise-cache mutex poison");
+        }));
+        self.noise.is_poisoned()
+    }
+
     pub fn arm_illuminant_operation(
         &self,
         operation: IlluminantOperation,

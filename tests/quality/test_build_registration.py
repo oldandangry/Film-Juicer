@@ -1,444 +1,697 @@
-"""Real selected CTest admission and launcher contracts, without runtime sealing."""
+"""Shared tooling registration and native CTest discovery contracts."""
+
 from __future__ import annotations
-from contextlib import nullcontext
+
+import contextlib
+import io
 import json
+import hashlib
+import math
 import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
 import sys
+import subprocess
 import tempfile
-import traceback
+import textwrap
+import time
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/ctest"))
-from control_artifacts import MARKER, record_fixture
-import build_evidence
 import execution
+import qualification
+from control_artifacts import record_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# Independently declared registration membership. Keep synchronized with the
+# owning CMake contract when a quality command is added or removed.
 TOOLING_TESTS = (
+    "Quality.NativeResults", "Quality.HostResults", "Quality.GpuResults",
     "Quality.Dispatcher", "Quality.ToolingLint", "Quality.Execution", "Quality.BuildEvidence",
-    "Quality.BuildRegistration", "Quality.Verify", "Quality.Checkpoint", "Quality.PreparationRenewal",
+    "Quality.BuildRegistration", "Quality.Verify", "Quality.Checkpoint",
     "Ctest.Host.Report", "Ctest.Host.Repetition", "Ffi.Host.RustBuild",
 )
+WINDOWS_TOOLING_SHARDS = {
+    "core": {
+        "Quality.NativeResults", "Quality.HostResults", "Quality.GpuResults", "Quality.Dispatcher",
+        "Quality.ToolingLint", "Quality.Execution", "Quality.BuildRegistration", "Quality.Verify",
+        "Ctest.Host.Report", "Ctest.Host.Repetition", "Ffi.Host.RustBuild",
+    },
+    "BuildEvidence": {"Quality.BuildEvidence"},
+    "Checkpoint": {"Quality.Checkpoint"},
+}
 
 
-class BuildTests(unittest.TestCase):
-    def run(self, result=None):
-        try:
-            return super().run(result)
-        except KeyboardInterrupt:
-            self.interrupted = True
-            self.retain = True
-            if hasattr(self, "lease") and self.lease.path in execution.OutputLease.held:
-                self.lease.blocked = True
-            while self._cleanups:
-                try:
-                    self.doCleanups()
-                except BaseException:
-                    # Cancellation clears unittest's outcome; keep draining callbacks
-                    # if its error reporter cannot attach a cleanup failure.
-                    traceback.print_exc(file=sys.stderr)
-            raise
-
+class RegistrationTests(unittest.TestCase):
     def setUp(self):
-        preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
-        artifact_root = os.environ.get("JUICER_TEST_ARTIFACT_DIR")
-        parent = (Path(artifact_root) if artifact_root else ROOT / "out/validation" / preset) / "registration-controls"
+        self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset)) / "registration-controls"
         parent.mkdir(parents=True, exist_ok=True)
-        self.temporary = tempfile.TemporaryDirectory(dir=parent, delete=False)
+        self.temporary = tempfile.TemporaryDirectory(prefix="registration controls ü ", dir=parent, delete=False)
         self.root = Path(self.temporary.name).resolve()
-        self.retain = bool(os.environ.get("JUICER_TEST_RETAIN_FIXTURES"))
-
-        def finish_fixture():
-            outcome = record_fixture(self.root, self)
-            failed = outcome != "passed"
-            owners = list(self.root.glob("out/verification-locks/*/owner.json"))
-            if failed or self.retain or owners:
-                print(f"Retained registration fixture: {self.root} test={self.id()}", file=sys.stderr, flush=True)
-            else:
-                try:
-                    self.temporary.cleanup()
-                except BaseException:
-                    record_fixture(self.root, self, "failed")
-                    print(f"Registration cleanup failed; remaining fixture: {self.root}", file=sys.stderr, flush=True)
-                    raise
-
-        self.addCleanup(finish_fixture)
-        record_fixture(self.root, self, "running")
-        if self.retain:
-            print("Registration fixture:", self.root, file=sys.stderr, flush=True)
-        self.source = self.root / "source"
-        self.source.mkdir()
-        self.build = self.root / "build"
-        self.python = str(Path(sys.base_prefix) / "python.exe") if os.name == "nt" else sys.executable
-        cmake = ('cmake_minimum_required(VERSION 3.24)\nproject(Admission NONE)\nenable_testing()\n'
-                 'add_custom_target(prepared COMMAND "${CMAKE_COMMAND}" -E copy_if_different '
-                 '"${CMAKE_CURRENT_SOURCE_DIR}/required.txt" "${CMAKE_BINARY_DIR}/material.txt" '
-                 'DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/required.txt" BYPRODUCTS "${CMAKE_BINARY_DIR}/material.txt")\n'
-                 'add_test(NAME behavior COMMAND "${PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/case.py" '
-                 '"${CMAKE_CURRENT_SOURCE_DIR}/required.txt" "${CMAKE_BINARY_DIR}/trace.log")\n')
-        (self.source / "CMakeLists.txt").write_text(cmake)
-        (self.source / "required.txt").write_text("expected")
-        (self.source / "case.py").write_text("from pathlib import Path\nimport sys\nassert Path(sys.argv[1]).read_text()=='expected'\nPath(sys.argv[2]).write_text('trace')\n")
-        self.inputs = [str(p.relative_to(self.root)) for p in self.source.iterdir()]
-        self.campaign = execution.Campaign(self.root, preset, "admission", ["prepare", "tests"])
+        self.addCleanup(self.finish_fixture)
+        self.build = self.root / "out/build" / self.preset
+        self.build.mkdir(parents=True)
+        self.directory = self.root / "out/validation" / self.preset / "results/registration"
+        self.directory.mkdir(parents=True)
+        self.artifacts = self.root / "routed artifacts"
+        self.checkout = self.root / "checkout"
+        (self.checkout / "tests/tooling").mkdir(parents=True)
+        (self.checkout / "tests/ToolingTests.cmake").write_text(
+            (ROOT / "tests/ToolingTests.cmake").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        (self.checkout / "tests/tooling/CMakeLists.txt").write_text(
+            (ROOT / "tests/tooling/CMakeLists.txt").read_text(encoding="utf-8"), encoding="utf-8"
+        )
         self.lease = execution.OutputLease(self.root, self.build)
         self.lease.__enter__()
         self.addCleanup(self.lease.__exit__, None, None, None)
+        self.native_run = execution.NativeRun(self.root, self.directory)
 
-    def test_shared_tooling_entry_has_exact_members_and_rejects_an_omission(self):
+    def finish_fixture(self):
+        outcome = record_fixture(self.root, self)
+        owners = list((self.root / "out/verification-locks").glob("*/owner.json"))
+        if outcome == "passed" and not owners and not os.environ.get("JUICER_TEST_RETAIN_FIXTURES"):
+            try:
+                self.temporary.cleanup()
+            except BaseException:
+                record_fixture(self.root, self, "failed")
+                print("Registration cleanup failed; retained:", self.root, file=sys.stderr)
+                raise
+        else:
+            print("Retained registration evidence:", self.root, file=sys.stderr)
+
+    @property
+    def cmake(self):
+        return shutil.which("cmake")
+
+    @property
+    def ctest(self):
+        return shutil.which("ctest")
+
+    def configure(self, *, source=None, build=None, artifacts=None):
+        source = source or self.checkout / "tests/tooling"
+        build = build or self.build
+        artifacts = artifacts or self.artifacts
+        python = Path(sys.executable)
+        cargo = shutil.which("cargo")
+        ninja = shutil.which("ninja")
+        compiler = shutil.which("clang-cl" if os.name == "nt" else "gcc-13")
+        self.assertTrue(self.cmake and self.ctest and cargo and ninja and compiler,
+                        "shared tooling configure requires CMake, CTest, Cargo, Ninja and the native C compiler")
+        environment = dict(os.environ)
+        self.native_run.command("configure", [
+            self.cmake, "-S", str(source), "-B", str(build), "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Debug", "-DPython3_EXECUTABLE=" + str(python),
+            "-DJUICER_TOOLING_CARGO=" + cargo,
+            "-DJUICER_TOOLING_ROOT=" + str(self.checkout),
+            "-DJUICER_TOOLING_ARTIFACT_ROOT=" + str(artifacts),
+            "-DCMAKE_C_COMPILER=" + compiler,
+        ], env=environment, timeout=120,
+            vctip_executable=execution.windows_vctip(environment))
+        listing = self.directory / "registration.json"
+        self.native_run.command("discovery", [self.ctest, "--test-dir", str(build), "--show-only=json-v1"],
+                         timeout=30, stdout_only=True)
+        # CTest's JSON is also retained as the direct stdout of the discovery command.
+        log = self.directory / "discovery.log"
+        listing.write_bytes(log.read_bytes())
+        return json.loads(listing.read_text(encoding="utf-8"))
+
+    def test_shared_tooling_registration_membership_and_artifact_routing(self):
         product_entry = ROOT / "tests/CMakeLists.txt"
         standalone_entry = ROOT / "tests/tooling/CMakeLists.txt"
-        shared_module = ROOT / "tests/ToolingTests.cmake"
         self.assertIn('include("${CMAKE_CURRENT_SOURCE_DIR}/ToolingTests.cmake")', product_entry.read_text())
         self.assertIn('include("${JUICER_TOOLING_ROOT}/tests/ToolingTests.cmake")', standalone_entry.read_text())
         self.assertIn("juicer_register_tooling_tests(", product_entry.read_text())
         self.assertIn("juicer_register_tooling_tests(", standalone_entry.read_text())
-        self.assertIn('"${JUICER_TEST_ARTIFACT_ROOT}" CACHE PATH "Tooling test artifact root"', product_entry.read_text())
-        self.assertIn('ARTIFACT_ROOT "${JUICER_TOOLING_ARTIFACT_ROOT}"', product_entry.read_text())
 
-        cmake = shutil.which("cmake")
-        ctest = shutil.which("ctest")
-        ninja = shutil.which("ninja")
-        self.assertTrue(cmake and ctest and ninja, "standalone registration needs CMake, CTest and Ninja")
+        inventory = self.configure()
+        tests = inventory["tests"]
+        names = [test["name"] for test in tests]
+        self.assertCountEqual(names, TOOLING_TESTS)
+        self.assertEqual(len(names), len(set(names)))
+        labels_by_name = {}
+        for test in tests:
+            properties = {row["name"]: row["value"] for row in test.get("properties", [])}
+            labels = properties.get("LABELS", [])
+            labels_by_name[test["name"]] = set(labels)
+            self.assertIn("host", labels, test["name"])
+            self.assertIn("tooling", labels, test["name"])
+            timeout = properties.get("TIMEOUT")
+            self.assertIsInstance(timeout, (int, float), test["name"])
+            self.assertTrue(math.isfinite(timeout) and timeout > 0, test["name"])
+            expected_timeout = 120 if test["name"] in {
+                "Quality.NativeResults", "Quality.HostResults", "Quality.GpuResults"
+            } else 600
+            self.assertEqual(timeout, expected_timeout, test["name"])
+            tooling_labels = {label for label in labels if label.startswith("tooling-")}
+            self.assertEqual(len(tooling_labels), 1, test["name"])
+            if test["name"].startswith("Quality."):
+                environment = properties.get("ENVIRONMENT", [])
+                artifact_values = [value.partition("=")[2] for value in environment
+                                   if value.startswith("JUICER_TEST_ARTIFACT_DIR=")]
+                if artifact_values:
+                    self.assertEqual(len(artifact_values), 1, test["name"])
+                    self.assertTrue(Path(artifact_values[0]).is_relative_to(self.artifacts), test["name"])
+        rust_build = next(test for test in tests if test["name"] == "Ffi.Host.RustBuild")
+        self.assertEqual(Path(rust_build["command"][rust_build["command"].index("--artifacts") + 1]),
+                         self.artifacts / "ffi/rust-build")
 
-        def tooling_members(module_text, *, override_artifacts=False):
-            with tempfile.TemporaryDirectory(dir=self.root) as directory:
-                checkout = Path(directory) / "checkout"
-                (checkout / "tests/tooling").mkdir(parents=True)
-                (checkout / "tests/ToolingTests.cmake").write_text(module_text)
-                (checkout / "tests/tooling/CMakeLists.txt").write_text(standalone_entry.read_text())
-                build = Path(directory) / "build"
-                artifacts = Path(directory) / "routed-artifacts"
-                subprocess.run(
-                    [cmake, "-S", str(checkout / "tests/tooling"), "-B", str(build), "-G", "Ninja",
-                     "-DCMAKE_BUILD_TYPE=Debug", "-DPython3_EXECUTABLE=" + sys.executable,
-                     "-DCMAKE_C_COMPILER=" + ("clang-cl.exe" if os.name == "nt" else "/usr/bin/gcc-13"),
-                     "-DJUICER_TOOLING_CARGO=" + sys.executable, "-DJUICER_TOOLING_ROOT=" + str(checkout)]
-                    + (["-DJUICER_TOOLING_ARTIFACT_ROOT=" + str(artifacts)] if override_artifacts else []),
-                    check=True, capture_output=True, text=True, timeout=120)
-                inventory = json.loads(subprocess.check_output(
-                    [ctest, "--test-dir", str(build), "--show-only=json-v1"],
-                    text=True, timeout=30))
-                members = {test["name"] for test in inventory["tests"]}
-                partitions = {}
-                for shard in ("core", "BuildEvidence", "Checkpoint", "PreparationRenewal"):
-                    selected = json.loads(subprocess.check_output(
-                        [ctest, "--test-dir", str(build), "--show-only=json-v1",
-                         "-L", "^tooling-" + shard + "$"], text=True, timeout=30))
-                    names = {test["name"] for test in selected["tests"]}
-                    self.assertTrue(names, "empty tooling shard: " + shard)
-                    self.assertFalse(set().union(*partitions.values()) & names,
-                                     "tooling test assigned to multiple shards")
-                    partitions[shard] = names
-                    if shard != "core":
-                        self.assertEqual(names, {"Quality." + shard})
-                self.assertEqual(set().union(*partitions.values()), members)
-                if override_artifacts:
-                    routed = set()
-                    for test in inventory["tests"]:
-                        properties = {row["name"]: row["value"] for row in test.get("properties", [])}
-                        for variable in properties.get("ENVIRONMENT", []):
-                            if variable.startswith("JUICER_TEST_ARTIFACT_DIR="):
-                                self.assertTrue(Path(variable.split("=", 1)[1]).is_relative_to(artifacts))
-                                routed.add(test["name"])
-                        if test["name"] == "Ffi.Host.RustBuild":
-                            command = test["command"]
-                            self.assertEqual(Path(command[command.index("--artifacts") + 1]), artifacts / "ffi/rust-build")
-                    self.assertEqual(routed, {"Quality.Execution", "Quality.BuildEvidence", "Quality.BuildRegistration",
-                                              "Quality.Verify", "Quality.Checkpoint", "Quality.PreparationRenewal", "Ctest.Host.Repetition"})
-                return {
-                    test["name"] for test in inventory["tests"]
-                    if "tooling" in next((property_["value"] for property_ in test.get("properties", [])
-                                          if property_["name"] == "LABELS"), [])
-                }
+        for shard, expected_names in WINDOWS_TOOLING_SHARDS.items():
+            selected = sorted(name for name in names if f"tooling-{shard}" in labels_by_name[name])
+            self.assertCountEqual(selected, expected_names, f"Windows tooling shard {shard}")
 
-        source = shared_module.read_text()
-        self.assertEqual(tooling_members(source), set(TOOLING_TESTS))
-        self.assertEqual(tooling_members(source, override_artifacts=True), set(TOOLING_TESTS))
-        omitted_source = source.replace("    list(APPEND tooling_tests Ctest.Host.Report)\n", "", 1)
-        self.assertNotEqual(omitted_source, source)
+        self.native_run.command("selected-discovery", [self.ctest, "--test-dir", str(self.build),
+                           "--show-only=json-v1", "-R", "^Quality.BuildRegistration$"],
+                         stdout_only=True)
+        selected = json.loads((self.directory / "selected-discovery.log").read_text())
+        self.assertEqual([test["name"] for test in selected["tests"]], ["Quality.BuildRegistration"])
+        self.native_run.publish({"schema": "native-run-v1", "registration": names})
+
+    def test_actual_shared_cmake_omission_fails_independent_membership(self):
+        source = self.checkout / "tests/ToolingTests.cmake"
+        original = source.read_text(encoding="utf-8")
+        omission = re.sub(
+            r"(?ms)^\s*juicer_add_python_test\(NAME Ctest\.Host\.Report\b.*?^\s*list\(APPEND tooling_tests Ctest\.Host\.Report\)\s*$",
+            "", original, count=1,
+        )
+        self.assertNotEqual(omission, original, "the expected Python test wrapper must have one owning definition")
+        source.write_text(omission, encoding="utf-8")
+        inventory = self.configure(build=self.root / "omitted-build")
+        names = [test["name"] for test in inventory["tests"]]
         with self.assertRaises(AssertionError):
-            self.assertEqual(tooling_members(omitted_source), set(TOOLING_TESTS))
+            self.assertCountEqual(names, TOOLING_TESTS)
+        self.assertNotIn("Ctest.Host.Report", names)
 
-    def test_gtest_discovery_retains_slow_startup_and_exact_membership(self):
-        entry = (ROOT / "tests/CMakeLists.txt").read_text()
-        discoveries = re.findall(r"(?ms)^gtest_discover_tests\((\w+)\n(.*?)\)\n", entry)
-        self.assertCountEqual([target for target, _ in discoveries],
-                              ["JuicerHashContractTests", "JuicerScatterHalationHostTests"])
-        (self.source / "discovery.cpp").write_text(
-            '#include <chrono>\n#include <cstdio>\n#include <cstring>\n#include <thread>\n'
-            'int main(int argc, char** argv) {\n'
-            '  if (argc > 1 && std::strcmp(argv[1], "--gtest_list_tests") == 0) {\n'
-            '    std::puts("RegistrationProbe.\\n  SlowStartup");\n'
-            '    std::fflush(stdout);\n'
-            '    std::this_thread::sleep_for(std::chrono::seconds(6));\n'
-            '  }\n  return 0;\n}\n')
-        cmake = ('cmake_minimum_required(VERSION 3.24)\n'
-                 'project(DiscoveryProbe LANGUAGES CXX)\nenable_testing()\ninclude(GoogleTest)\n'
-                 'set(JUICER_TEST_ARTIFACT_ROOT "${CMAKE_BINARY_DIR}/artifacts")\n')
-        # Consume the production calls verbatim, including prefixes and properties.
-        for target, arguments in discoveries:
-            cmake += (f'add_executable({target} discovery.cpp)\n'
-                      f'gtest_discover_tests({target}\n{arguments})\n')
-        (self.source / "CMakeLists.txt").write_text(cmake)
-        subprocess.run(["cmake", "-S", str(self.source), "-B", str(self.build), "-G", "Ninja",
-                        "-DCMAKE_CXX_COMPILER=" + ("clang-cl.exe" if os.name == "nt" else "/usr/bin/g++-13")],
-                       check=True, capture_output=True, text=True, timeout=60)
-        for target, _ in discoveries:
-            commands = subprocess.check_output(["ninja", "-C", str(self.build), "-t", "commands", target],
-                                               text=True, timeout=30)
-            deadlines = re.findall(r"\bTEST_DISCOVERY_TIMEOUT=([0-9.]+)\b", commands)
-            self.assertEqual(len(deadlines), 1, commands)
-            self.assertGreaterEqual(float(deadlines[0]), 30,
-                                    "zero silently restores CMake's five-second discovery default")
-        built = subprocess.run(["cmake", "--build", str(self.build), "--parallel", "2"],
-                               capture_output=True, text=True, timeout=90)
-        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
-        inventory = json.loads(subprocess.check_output(
-            ["ctest", "--test-dir", str(self.build), "--show-only=json-v1"], text=True, timeout=30))
-        expected = {prefix + "RegistrationProbe.SlowStartup" for prefix in ("Hash.Host.", "ScatterHalation.Host.")}
-        self.assertCountEqual([test["name"] for test in inventory["tests"]], expected)
-        for test in inventory["tests"]:
-            properties = {row["name"]: row["value"] for row in test["properties"]}
-            self.assertCountEqual(properties["LABELS"], ["host", "product"])
-            self.assertEqual(properties["TIMEOUT"], 0)
-        report = self.root / "discovery.xml"
-        subprocess.run(["ctest", "--test-dir", str(self.build), "--no-tests=error", "--output-junit", str(report)],
-                       check=True, capture_output=True, text=True, timeout=30)
-        from xml.etree import ElementTree
-        cases = ElementTree.parse(report).getroot().findall("testcase")
-        self.assertCountEqual([case.get("name") for case in cases], expected)
-        for case in cases:
-            self.assertEqual(case.get("status"), "run")
-            self.assertIsNone(case.find("failure"))
-            self.assertIsNone(case.find("skipped"))
+    def resource_fixture(self):
+        source = self.checkout / "resource staging ü"
+        source.mkdir()
+        inputs = source / "inputs"
+        payloads = {
+            "profiles/film.json": b'{"film": "original"}\n',
+            "spectral/table.bin": bytes(range(256)),
+            "obsolete.txt": b"removed runtime member\n",
+        }
+        for name, data in payloads.items():
+            path = inputs / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        membership = source / "membership.txt"
+        membership.write_text("\n".join(payloads) + "\n", encoding="utf-8")
+        stage = self.build / "Resources"
+        (source / "CMakeLists.txt").write_text(
+            'cmake_minimum_required(VERSION 4.3)\nproject(ResourceStaging NONE)\n'
+            f'include("{(ROOT / "tests/ResourceStaging.cmake").as_posix()}")\n'
+            'set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS '
+            '"${CMAKE_CURRENT_SOURCE_DIR}/membership.txt")\n'
+            'file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/membership.txt" JUICER_RUNTIME_RESOURCES ENCODING UTF-8)\n'
+            'juicer_stage_test_resources("${CMAKE_CURRENT_SOURCE_DIR}/inputs" '
+            '"${CMAKE_BINARY_DIR}/Resources" "${CMAKE_BINARY_DIR}/resources.stamp")\n',
+            encoding="utf-8",
+        )
+        ninja = shutil.which("ninja")
+        self.assertTrue(self.cmake and ninja, "resource staging requires CMake and Ninja")
+        self.native_run.command("resource-configure", [self.cmake, "-S", source, "-B", self.build,
+                                "-G", "Ninja", "-DCMAKE_MAKE_PROGRAM=" + ninja], timeout=60)
+        return source, inputs, membership, stage, payloads
 
-    def test_passed_output_preserves_initial_diagnostics_and_duration_tail(self):
-        from xml.etree import ElementTree
+    def resource_snapshot(self, stage):
+        return {path.relative_to(stage).as_posix():
+                (path.read_bytes(), path.stat().st_size, path.stat().st_mtime_ns)
+                for path in stage.rglob("*") if path.is_file()}
 
-        presets = json.loads((ROOT / "CMakePresets.json").read_text())
-        output = next(p for p in presets["testPresets"] if p["name"] == "test-base")["output"]
-        (self.source / "case.py").write_text(
-            "print('initial-diagnostic')\n"
-            + "print('x'*" + str(output["maxPassedTestOutputSize"] * 2) + ")\n"
-            + "print('final-duration-summary')\n")
-        (self.source / "CMakePresets.json").write_text(json.dumps({
-            "version": 6, "configurePresets": [{"name": "control", "generator": "Ninja",
-                "binaryDir": str(self.build), "cacheVariables": {"PYTHON": self.python}}],
-            "testPresets": [{"name": "control", "configurePreset": "control", "output": output}]}))
-        subprocess.run(["cmake", "--preset", "control"], cwd=self.source,
-                       check=True, capture_output=True, timeout=30)
-        report = self.root / "passed-output.xml"
-        subprocess.run(["ctest", "--preset", "control", "--no-tests=error", "--output-junit", str(report)],
-                       cwd=self.source, check=True, capture_output=True, timeout=30)
-        case = ElementTree.parse(report).getroot().find("testcase")
-        self.assertEqual(case.get("status"), "run")
-        self.assertIsNone(case.find("failure"))
-        retained = case.findtext("system-out")
-        self.assertIn("initial-diagnostic", retained)
-        self.assertIn("final-duration-summary", retained)
-        self.assertLess(len(retained), output["maxPassedTestOutputSize"] * 2)
+    def resource_build(self, name):
+        started = time.perf_counter()
+        log = self.native_run.command(name, [self.cmake, "--build", self.build,
+                                      "--target", "juicer_test_resources"], timeout=60)
+        return log.read_text(encoding="utf-8"), time.perf_counter() - started
 
-    def prepare(self):
-        _, self.prepared = build_evidence.prepare_build(self.campaign, "prepare", source=self.source,
-            build=self.build, inputs=self.inputs, timeout=30, targets=["prepared"],
-            configure_args=["-G", "Ninja", "-DPYTHON=" + self.python])
+    def test_resource_staging_updates_only_selected_members(self):
+        self.subtest_cases = self.test_resource_staging_updates_only_selected_members.subtest_cases
+        source, inputs, membership, stage, payloads = self.resource_fixture()
+        observations = {}
+        with self.subTest(case="initial"):
+            _, seconds = self.resource_build("resource-initial")
+            before = self.resource_snapshot(stage)
+            self.assertEqual({name: data[0] for name, data in before.items()}, payloads)
+            observations["initial"] = {"payload_files": len(before),
+                                       "payload_bytes": sum(len(data) for data in payloads.values()),
+                                       "seconds": seconds}
+        with self.subTest(case="noop"):
+            log, seconds = self.resource_build("resource-noop")
+            self.assertEqual(self.resource_snapshot(stage), before)
+            self.assertNotIn("Copying runtime test resource", log)
+            observations["noop"] = {"payload_files": 0, "payload_bytes": 0, "seconds": seconds}
+        with self.subTest(case="changed"):
+            payloads["profiles/film.json"] = b'{"film": "changed"}\n'
+            (inputs / "profiles/film.json").write_bytes(payloads["profiles/film.json"])
+            self.assertGreater((inputs / "profiles/film.json").stat().st_mtime_ns,
+                               before["profiles/film.json"][2])
+            log, seconds = self.resource_build("resource-changed")
+            after = self.resource_snapshot(stage)
+            self.assertEqual([name for name in before if before[name] != after[name]], ["profiles/film.json"])
+            self.assertEqual(after["profiles/film.json"][0], payloads["profiles/film.json"])
+            self.assertEqual(log.count("Copying runtime test resource"), 1)
+            observations["changed"] = {"payload_files": 1, "payload_bytes": len(payloads["profiles/film.json"]),
+                                       "seconds": seconds}
+            before = after
+        with self.subTest(case="removed"):
+            (inputs / "obsolete.txt").unlink()
+            del payloads["obsolete.txt"]
+            membership.write_text("\n".join(payloads) + "\n", encoding="utf-8")
+            log, seconds = self.resource_build("resource-removed")
+            self.assertFalse((stage / "obsolete.txt").exists())
+            self.assertEqual(self.resource_snapshot(stage), {name: before[name] for name in payloads})
+            self.assertNotIn("Copying runtime test resource", log)
+            observations["removed"] = {"payload_files": 0, "payload_bytes": 0, "seconds": seconds}
+            before = self.resource_snapshot(stage)
+        with self.subTest(case="added"):
+            payloads["filters/new.bin"] = b"new selected member\n"
+            (inputs / "filters").mkdir()
+            (inputs / "filters/new.bin").write_bytes(payloads["filters/new.bin"])
+            membership.write_text("\n".join(payloads) + "\n", encoding="utf-8")
+            log, seconds = self.resource_build("resource-added")
+            after = self.resource_snapshot(stage)
+            self.assertEqual({name: after[name] for name in before}, before)
+            self.assertEqual(after["filters/new.bin"][0], payloads["filters/new.bin"])
+            self.assertEqual(log.count("Copying runtime test resource"), 1)
+            observations["added"] = {"payload_files": 1, "payload_bytes": len(payloads["filters/new.bin"]),
+                                     "seconds": seconds}
+            before = after
+        with self.subTest(case="configuration"):
+            with (source / "CMakeLists.txt").open("a", encoding="utf-8") as stream:
+                stream.write("# A configuration change does not invalidate resource payloads.\n")
+            log, seconds = self.resource_build("resource-configuration")
+            self.assertEqual(self.resource_snapshot(stage), before)
+            self.assertNotIn("Copying runtime test resource", log)
+            observations["configuration"] = {"payload_files": 0, "payload_bytes": 0, "seconds": seconds}
+        with self.subTest(case="mutation"):
+            original = (inputs / "profiles/film.json").read_bytes()
+            self.assertFalse((stage / "profiles/film.json").samefile(inputs / "profiles/film.json"))
+            (stage / "profiles/film.json").write_bytes(b"mutated isolated package fixture\n")
+            self.assertEqual((inputs / "profiles/film.json").read_bytes(), original)
+            self.assertEqual((inputs / "spectral/table.bin").read_bytes(), payloads["spectral/table.bin"])
+        with self.subTest(case="missing-output"):
+            (stage / "profiles/film.json").unlink()
+            log, seconds = self.resource_build("resource-recreate")
+            after = self.resource_snapshot(stage)
+            self.assertEqual({name: value[0] for name, value in after.items()}, payloads)
+            self.assertEqual({name: after[name] for name in before if name != "profiles/film.json"},
+                             {name: value for name, value in before.items() if name != "profiles/film.json"})
+            self.assertEqual(log.count("Copying runtime test resource"), 1)
+            observations["missing-output"] = {"payload_files": 1, "payload_bytes": len(original), "seconds": seconds}
+        print("Resource staging observations (logical payload changes):", json.dumps(observations, sort_keys=True))
 
-    def execute(self):
-        return build_evidence.run_ctest(self.campaign, "tests", build=self.build,
-            prepared=self.prepared, inputs=self.inputs, timeout=30, tests=["behavior"])
-
-    def test_selected_membership_executes_without_recursive_runtime_inventory(self):
-        self.prepare()
-        path = self.execute()
-        record = json.loads(path.read_text())
-        self.assertEqual(record["status"], "passed")
-        self.assertTrue(record["process_tree"]["drained"])
-        self.assertIn("1/1 Test", (path.parent / "output.log").read_text())
-        self.assertEqual(record["identity"]["tools"], {})
-
-    def test_local_admission_rejects_gpu_without_checkpoint_escape(self):
-        cmake = self.source / "CMakeLists.txt"
-        cmake.write_text(cmake.read_text() + '\nset_tests_properties(behavior PROPERTIES LABELS "gpu")\n')
-        self.prepare()
-        with patch.object(self.campaign, "run") as run, self.assertRaisesRegex(ValueError, "GPU tests require explicit checkpoint"):
-            self.execute()
-        run.assert_not_called()
-        with self.assertRaisesRegex(TypeError, "checkpoint"):
-            build_evidence.run_ctest(self.campaign, "tests", build=self.build, prepared=self.prepared,
-                inputs=self.inputs, timeout=30, tests=["behavior"], checkpoint=True)
-
-    def test_registration_change_rejects_before_test_launch(self):
-        self.prepare()
-        registration = self.build / "CTestTestfile.cmake"
-        registration.write_text(registration.read_text() + '\nset(CHANGED true)\n')
-        with patch.object(self.campaign, "run") as run, self.assertRaises(ValueError):
-            self.execute()
-        run.assert_not_called()
-
-    def test_discovery_mutation_rejects_before_execution(self):
-        self.prepare()
-        original = subprocess.check_output
-        def mutate(*args, **kwargs):
-            result = original(*args, **kwargs)
-            if "--show-only=json-v1" in args[0]:
-                (self.source / "required.txt").write_text("changed")
-            return result
-        with patch.object(build_evidence.subprocess, "check_output", side_effect=mutate), patch.object(self.campaign, "run") as run, self.assertRaises(ValueError):
-            self.execute()
-        run.assert_not_called()
-
-    def test_trace_output_replacement_is_not_an_input_or_a_failed_test(self):
-        self.prepare()
-        self.execute()
-        (self.build / "trace.log").write_text("previous output")
-        self.execute()
-        self.assertEqual((self.build / "trace.log").read_text(), "trace")
-        (self.source / "case.py").write_text("raise SystemExit(2)\n")
-        self.prepare()
+    def test_resource_staging_missing_input_preserves_existing_payloads(self):
+        _, inputs, _, stage, _ = self.resource_fixture()
+        self.resource_build("resource-prepare-failure")
+        before = self.resource_snapshot(stage)
+        (inputs / "profiles/film.json").unlink()
         with self.assertRaises(subprocess.CalledProcessError):
-            self.execute()
-
-    def test_explicit_trace_input_mutation_cannot_pass(self):
-        trace = self.source / "trace.txt"
-        trace.write_text("input")
-        self.inputs.append(str(trace.relative_to(self.root)))
-        case = self.source / "case.py"
-        case.write_text(case.read_text() + "Path(__file__).with_name('trace.txt').write_text('changed')\n")
-        self.prepare()
-        with self.assertRaisesRegex(ValueError, "changed"):
-            self.execute()
-
-    def test_missing_or_disabled_registered_case_cannot_pass(self):
-        self.prepare()
-        path = self.build / "CTestTestfile.cmake"
-        path.write_text(path.read_text() + '\nset_tests_properties(behavior PROPERTIES DISABLED TRUE)\n')
-        with self.assertRaises(ValueError):
-            self.execute()
-        (self.source / "case.py").unlink()
-        with self.assertRaises((ValueError, OSError)):
-            self.execute()
-
-    def test_python_file_launcher_resolves_sibling_imports_and_test_selection(self):
-        (self.source / "sibling.py").write_text("VALUE=42\n")
-        test = self.source / "test_import.py"
-        test.write_text("import sibling,unittest\nclass ImportTest(unittest.TestCase):\n def test_value(self): self.assertEqual(sibling.VALUE,42)\nif __name__=='__main__': unittest.main()\n")
-        result = subprocess.run(execution.python_command(test, "ImportTest.test_value", python=self.python),
-                                cwd=self.root, capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Ran 1 test", result.stderr)
-
-    def test_unsupported_registration_is_not_silently_omitted(self):
-        self.prepare()
-        path = self.build / "CTestTestfile.cmake"
-        path.write_text(path.read_text() + '\ninclude("${UNRESOLVED}/tests.cmake")\n')
-        with self.assertRaisesRegex(ValueError, "unsupported generated test include"):
-            build_evidence.registration_files(self.build)
-
-    @unittest.skipUnless(os.name == "nt", "Windows linker contract")
-    def test_direct_rustc_uses_cargo_linker_and_rejects_override(self):
-        linker = os.environ["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"]
-        self.assertEqual(execution.rustc_command(["--version"])[1:3], ["-C", "linker=" + linker])
-        with self.assertRaisesRegex(ValueError, "override"):
-            execution.rustc_command(["-Clinker=other"])
-        with self.assertRaisesRegex(ValueError, "qualified linker is missing"):
-            execution.rustc_command(["--version"], env={})
+            self.resource_build("resource-missing-input")
+        self.assertEqual(self.resource_snapshot(stage), before)
 
 
-class FixtureLifetimeTests(unittest.TestCase):
-    def run_fixture(self, body, *, retain=False):
-        case = BuildTests("test_selected_membership_executes_without_recursive_runtime_inventory")
-        setattr(case, case._testMethodName, lambda: body(case))
-        result = unittest.TestResult()
-        interrupted = False
-        with patch.dict(os.environ, {"JUICER_TEST_RETAIN_FIXTURES": "1" if retain else ""}):
+RegistrationTests.test_resource_staging_updates_only_selected_members.required_subtests = True
+RegistrationTests.test_resource_staging_updates_only_selected_members.subtest_cases = (
+    "initial", "noop", "changed", "removed", "added", "configuration", "mutation", "missing-output"
+)
+
+
+class WorkflowResultTests(unittest.TestCase):
+    """Execute the actual required-status Python guards against child results."""
+
+    PLATFORMS = ("linux", "windows")
+    ROLES = ("product-debug", "product-release", "tooling")
+    CASES = ("layout", "success", "unexpected", "malformed") + tuple(
+        role + ":" + outcome for role in ROLES
+        for outcome in ("failure", "cancelled", "skipped", "missing")
+    )
+
+    def guard(self, platform):
+        path = ROOT / f".github/workflows/tests-{platform}-host.yml"
+        source = path.read_text(encoding="utf-8")
+        # Only extract this source-owned Python step; actionlint validates YAML.
+        job = re.search(rf"(?ms)^  {platform}-debug-host:\n(.*?)(?=^  [\w-]+:|\Z)", source)
+        self.assertIsNotNone(job, "the established required host status must remain")
+        body = job.group(1)
+        needs = re.search(r"(?m)^    needs:\n((?:      - [\w-]+\n)+)", body)
+        self.assertIsNotNone(needs)
+        script = re.search(r"(?m)^        run: \|\n((?:          [^\n]*\n|\n)+)", body)
+        self.assertIsNotNone(script)
+        self.assertRegex(body, r"(?m)^    if: always\(\)$")
+        self.assertIn("${{ toJSON(needs) }}", body)
+        return path, {line.strip()[2:] for line in needs.group(1).splitlines()}, textwrap.dedent(script.group(1))
+
+    def test_required_host_status_propagates_every_child_outcome(self):
+        self.subtest_cases = self.test_required_host_status_propagates_every_child_outcome.subtest_cases
+        for platform in self.PLATFORMS:
+            path, needs, script = self.guard(platform)
+            expected = {f"{platform}-{role}" for role in self.ROLES}
+            code = compile(script, str(path), "exec")
+            for case in self.CASES:
+                with self.subTest(case=platform + ":" + case):
+                    if case == "layout":
+                        self.assertEqual(needs, expected)
+                        continue
+                    results = {name: {"result": "success"} for name in expected}
+                    if case == "unexpected":
+                        results[f"{platform}-analysis"] = {"result": "success"}
+                    elif ":" in case:
+                        role, outcome = case.split(":")
+                        if outcome == "missing":
+                            del results[f"{platform}-{role}"]
+                        else:
+                            results[f"{platform}-{role}"]["result"] = outcome
+                    value = "{" if case == "malformed" else json.dumps(results)
+                    status = 0
+                    with patch.dict(os.environ, {"REQUIRED_RESULTS": value}), \
+                            contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        try:
+                            exec(code, {"__name__": "__main__"})
+                        except SystemExit as error:
+                            status = error.code
+                    self.assertEqual(status, 0 if case == "success" else 1)
+
+
+WorkflowResultTests.test_required_host_status_propagates_every_child_outcome.required_subtests = True
+WorkflowResultTests.test_required_host_status_propagates_every_child_outcome.subtest_cases = tuple(
+    platform + ":" + case for platform in WorkflowResultTests.PLATFORMS for case in WorkflowResultTests.CASES
+)
+
+
+class MembershipRecordTests(unittest.TestCase):
+    def test_required_group_and_runtime_membership_are_checked_as_values(self):
+        inventory = {"tests": [
+            {"name": "product.case", "command": ["python", "--scratch-root", "/tmp/product"],
+             "properties": [{"name": "LABELS", "value": ["host", "product"]}]},
+            {"name": "tool.case", "command": ["python"],
+             "properties": [{"name": "LABELS", "value": ["host", "tooling"]}]},
+            {"name": "device.case", "command": ["python"],
+             "properties": [{"name": "LABELS", "value": ["gpu", "product"]}]},
+        ]}
+        host = qualification.membership(inventory, ["product"], "host")
+        all_runtime = qualification.membership(inventory, ["product"], "all")
+        self.assertEqual(host, {"product": ["product.case"]})
+        self.assertEqual(all_runtime, {"product": ["device.case", "product.case"]})
+
+    def test_duplicate_disabled_and_colliding_scratch_registrations_reject(self):
+        def row(name, command, labels=("host", "product"), disabled=False):
+            properties = [{"name": "LABELS", "value": list(labels)}]
+            if disabled:
+                properties.append({"name": "DISABLED", "value": True})
+            return {"name": name, "command": command, "properties": properties}
+
+        cases = (
+            [row("same", ["python"]), row("same", ["python"])],
+            [row("disabled", ["python"], disabled=True)],
+            [row("first", ["python", "--scratch-root", "/tmp/shared"]),
+             row("second", ["python", "--scratch-root", "/tmp/shared"], labels=("host", "boundary"))],
+        )
+        self.subtest_cases = ("duplicate", "disabled", "scratch-collision")
+        for case_id, inventory in zip(self.subtest_cases, cases):
+            with self.subTest(case=case_id), self.assertRaises(ValueError):
+                qualification.membership({"tests": inventory}, ["product", "boundary"], "host")
+
+
+MembershipRecordTests.test_duplicate_disabled_and_colliding_scratch_registrations_reject.required_subtests = True
+MembershipRecordTests.test_duplicate_disabled_and_colliding_scratch_registrations_reject.subtest_cases = (
+    "duplicate", "disabled", "scratch-collision"
+)
+
+
+@unittest.skipUnless(os.environ.get("JUICER_CUDA_FREE_BUILD"),
+                     "requires the configured preset CUDA-free host test tree")
+class CudaFreeBuildRegistrationTests(unittest.TestCase):
+    """Actual selected closures and owner guards for the shared preset Cargo tree."""
+
+    HOST_TARGETS = (
+        "JuicerCudaAbiTests", "JuicerProfileOwnerTests", "JuicerSpectralOwnerTests",
+        "JuicerRouteBridgeTests", "JuicerHashContractTests", "JuicerRenderAssertionTests",
+    )
+    GPU_ONLY_TARGETS = (
+        "JuicerPinnedUploadTests", "JuicerGaussianKernelTests", "JuicerScannerLutResourceTests",
+        "JuicerDeferredDestroyTests", "JuicerCudaInspectGpuTests", "JuicerProfileCudaSafetyTests",
+        "JuicerScatterHalationGpuTests", "JuicerGrainDeltaTests", "JuicerScannerOutputTests",
+    )
+    CARGO_FILES = (
+        "production/features.txt", "production/build.stamp", "production/CACHEDIR.TAG",
+        "test-support/features.txt", "test-support/build.stamp", "test-support/CACHEDIR.TAG",
+        "test-support/metadata/binaries.json", "test-support/metadata/cargo.json",
+        "test-support/metadata/preparation-timings.json",
+    )
+
+    def setUp(self):
+        host_build = Path(os.environ["JUICER_CUDA_FREE_BUILD"]).resolve()
+        self.preset = host_build.parent.name
+        self.assertIn(self.preset, qualification.PRESETS)
+        self.preset_build = (ROOT / "out/build" / self.preset).resolve()
+        self.host_build = self.preset_build / "host-tests"
+        self.assertEqual(host_build, self.host_build.resolve())
+        self.assertEqual(host_build.parent, self.preset_build)
+        self.lease = execution.OutputLease(ROOT, self.preset_build, timeout=0)
+        self.lease.__enter__()
+        self.addCleanup(self.lease.__exit__, None, None, None)
+        self.assertIn(self.lease.role, ("delegated", "nested"),
+                      "the verifier must already hold this preset's canonical owner")
+        artifact_root = Path(os.environ.get(
+            "JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset
+        )).resolve() / "cuda-free-build-controls"
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        self.scratch = Path(tempfile.mkdtemp(prefix="selected closures ", dir=artifact_root))
+        self.addCleanup(self.finish_scratch)
+        self.logs = self.scratch / "commands"
+        self.logs.mkdir()
+        self.native_run = execution.NativeRun(ROOT, self.logs)
+        self.cmake = shutil.which("cmake")
+        self.python = Path(sys.executable)
+        self.verify = ROOT / "scripts/verify.py"
+        self.assertTrue(self.cmake, "CMake is required for selected build evidence")
+        self.assertTrue(self.verify.is_file())
+
+    def finish_scratch(self):
+        outcome = record_fixture(self.scratch, self)
+        owners = list((self.scratch / "out/verification-locks").glob("*/owner.json"))
+        if outcome == "passed" and not owners and not os.environ.get("JUICER_TEST_RETAIN_FIXTURES"):
             try:
-                case.run(result)
-            except KeyboardInterrupt:
-                interrupted = True
-        return case, result, interrupted
+                shutil.rmtree(self.scratch)
+            except BaseException:
+                record_fixture(self.scratch, self, "failed")
+                print("CUDA-free build evidence cleanup failed; retained:", self.scratch, file=sys.stderr)
+                raise
+        else:
+            print("Retained CUDA-free build evidence:", self.scratch, file=sys.stderr)
 
-    def test_routing_cleans_success_and_opt_in_retains(self):
-        for retain in (False, True):
-            with self.subTest(retain=retain):
-                case, result, interrupted = self.run_fixture(lambda case: None, retain=retain)
-                self.assertTrue(result.wasSuccessful(), result.errors)
-                self.assertFalse(interrupted)
-                self.assertEqual(case.root.exists(), retain)
-                self.assertNotIn(case.lease.path, execution.OutputLease.held)
-                case.temporary.cleanup()
+    def cargo_snapshot(self):
+        cargo = self.preset_build / "cargo"
+        profile = "release" if self.preset.endswith("release") else "debug"
+        if os.name == "nt":
+            target, archive = "x86_64-pc-windows-msvc", "film_juicer_plugin.lib"
+        else:
+            target, archive = "x86_64-unknown-linux-gnu", "libfilm_juicer_plugin.a"
+        files = set(self.CARGO_FILES)
+        for variant in ("production", "test-support"):
+            files.add(f"{variant}/{target}/{profile}/{archive}")
+        if profile == "release":
+            files = {name.replace("/debug/", "/release/") for name in files}
+        snapshot = {}
+        for relative in files:
+            path = cargo / relative
+            snapshot[relative] = ((path.stat().st_size, path.stat().st_mtime_ns)
+                                  if path.is_file() else None)
+        return snapshot
 
-    def test_failures_setup_cleanup_errors_and_missing_result_retain(self):
-        def fail(case):
-            case.fail("outer lifecycle failure")
+    def query_commands(self, name, build, *targets):
+        cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+        configured = re.search(r"^CMAKE_MAKE_PROGRAM:[^=]+=(.+)$", cache, re.MULTILINE)
+        self.assertIsNotNone(configured, "the configuration must select Ninja")
+        ninja = configured.group(1)
+        self.assertTrue(Path(ninja).is_file())
+        return self.native_run.command(
+            name, [ninja, "-C", str(build), "-t", "commands", *targets],
+            timeout=60, cwd=ROOT,
+        ).read_text(encoding="utf-8", errors="replace").replace("\\", "/")
 
-        def subtest(case):
-            with case.subTest(control="outer failure"):
-                case.fail("outer subtest failure")
+    def assert_no_test_metadata(self, commands):
+        lower = commands.casefold().replace("\\", "/")
+        for forbidden in ("nextest list", "--workspace --tests", "metadata/binaries.json",
+                          "metadata/cargo.json", "preparation-timings.json"):
+            self.assertNotIn(forbidden, lower)
 
-        def cleanup(case):
-            def error():
-                raise RuntimeError("cleanup lifecycle error")
-            case.addCleanup(error)
 
-        def failure_and_cleanup(case):
-            cleanup(case)
-            fail(case)
+    def test_check_owner_borrows_only_the_inherited_canonical_preset_token(self):
+        before = self.cargo_snapshot()
+        environment = dict(os.environ)
+        inherited = json.loads(environment.get("JUICER_OUTPUT_LEASES", "{}"))
+        lease = execution.OutputLease(ROOT, self.preset_build)
+        key = hashlib.sha256(os.path.normcase(str(lease.path)).encode()).hexdigest()
+        self.assertIn(key, inherited, "this test must run under the canonical preset owner")
 
-        for name, body, failures, errors in (("assertion", fail, 1, 0), ("subtest", subtest, 1, 0),
-                                             ("cleanup", cleanup, 0, 1), ("both", failure_and_cleanup, 1, 1),
-                                             ("setup", lambda case: None, 0, 1), ("disposal", lambda case: None, 0, 1)):
-            with self.subTest(outcome=name):
-                fault = nullcontext()
-                if name == "setup":
-                    fault = patch.object(execution, "Campaign", side_effect=RuntimeError("setup lifecycle error"))
-                elif name == "disposal":
-                    fault = patch.object(tempfile.TemporaryDirectory, "cleanup", side_effect=OSError("disposal lifecycle error"))
-                with fault:
-                    case, result, _ = self.run_fixture(body)
-                self.assertEqual(len(result.failures), failures)
-                self.assertEqual(len(result.errors), errors)
-                self.assertTrue(case.root.exists())
-                self.assertEqual(json.loads((case.root / MARKER).read_text())["outcome"], "failed")
-                case.temporary.cleanup()
-        case = BuildTests("test_selected_membership_executes_without_recursive_runtime_inventory")
-        case.setUp()
-        case.doCleanups()
-        self.assertTrue(case.root.exists())
-        case.temporary.cleanup()
+        self.native_run.command("owner-delegated", [self.python, "-B", self.verify,
+                                "check-owner", "--preset", self.preset],
+                                env=environment, timeout=10)
 
-    def test_interruption_and_blocked_owner_retain_fixture(self):
-        previous = os.environ.get("JUICER_OUTPUT_LEASES")
-        for mode in ("before-command", "after-command", "blocked", "cleanup-error"):
-            with self.subTest(mode=mode):
-                def body(case):
-                    if mode == "cleanup-error":
-                        def error():
-                            raise OSError("cancelled fixture cleanup error")
-                        case.addCleanup(error)
-                    if mode == "after-command":
-                        case.prepare()
-                    if mode == "blocked":
-                        # No child is launched: this is the existing owner's unproved state.
-                        case.lease.blocked = True
-                    else:
-                        raise KeyboardInterrupt
-                case, result, interrupted = self.run_fixture(body)
-                self.assertEqual(interrupted, mode != "blocked")
-                self.assertTrue(result.wasSuccessful(), result.errors)
-                self.assertTrue(case.root.exists())
-                self.assertEqual(json.loads((case.lease.path / "owner.json").read_text())["status"], "blocked")
-                self.assertNotIn(case.lease.path, execution.OutputLease.held)
-                self.assertEqual(os.environ.get("JUICER_OUTPUT_LEASES"), previous)
-                # Any real prepare command has drained before the synthetic cancellation.
-                case.temporary.cleanup()
+        missing = dict(environment)
+        missing.pop("JUICER_OUTPUT_LEASES", None)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.native_run.command("owner-missing-token", [self.python, "-B", self.verify,
+                                         "check-owner", "--preset", self.preset],
+                                         env=missing, timeout=10)
+
+        wrong = dict(environment)
+        wrong_tokens = dict(inherited)
+        wrong_tokens[key] = "wrong-owner-token"
+        wrong["JUICER_OUTPUT_LEASES"] = json.dumps(wrong_tokens, sort_keys=True)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.native_run.command("owner-wrong-token", [self.python, "-B", self.verify,
+                                       "check-owner", "--preset", self.preset],
+                                       env=wrong, timeout=10)
+        self.assertEqual(self.cargo_snapshot(), before)
+
+    def test_unowned_rust_test_target_fails_before_touching_shared_cargo(self):
+        before = self.cargo_snapshot()
+        environment = dict(os.environ)
+        environment.pop("JUICER_OUTPUT_LEASES", None)
+        with self.assertRaises(subprocess.CalledProcessError) as failure:
+            self.native_run.command("unowned-rust-tests", [self.cmake, "--build", str(self.host_build),
+                                        "--target", "juicer_rust_tests"],
+                                        env=environment, timeout=30, cwd=ROOT)
+        self.assertNotEqual(failure.exception.returncode, 0)
+        self.assertEqual(self.cargo_snapshot(), before)
+        log = (self.logs / "unowned-rust-tests.log").read_text(encoding="utf-8", errors="replace")
+        self.assertRegex(log.casefold(), "owner|lease")
+
+    def test_unowned_configuration_rejects_before_touching_shared_cargo(self):
+        before = self.cargo_snapshot()
+        environment = dict(os.environ)
+        environment.pop("JUICER_OUTPUT_LEASES", None)
+        try:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.native_run.command("unowned-configuration",
+                    [self.cmake, "-S", str(ROOT / "tests/host"), "-B", str(self.host_build)],
+                    env=environment, timeout=30)
+            self.assertEqual(self.cargo_snapshot(), before)
+        finally:
+            self.native_run.command("restore-configuration",
+                [self.cmake, "--build", str(self.host_build), "--target", "help"], timeout=60)
+
+    def test_shared_resource_stage_requires_owner_and_preserves_a_noop(self):
+        command = [self.cmake, "--build", str(self.host_build), "--target", "juicer_test_resources"]
+        self.native_run.command("resource-stage-prepare", command, timeout=120)
+        stage = self.preset_build / "tests/Resources"
+        stamp = self.preset_build / "tests/resources.stamp"
+        members = (self.host_build / "tests/resource-members.txt").read_text(encoding="utf-8").splitlines()
+        self.assertCountEqual([path.relative_to(stage).as_posix() for path in stage.rglob("*") if path.is_file()],
+                              members)
+
+        def identities():
+            return {str(path): (path.stat().st_size, path.stat().st_mtime_ns)
+                    for path in (stamp, *stage.rglob("*")) if path.is_file()}
+
+        before = identities()
+        environment = dict(os.environ)
+        environment.pop("JUICER_OUTPUT_LEASES", None)
+        # Force both shared producers to need work. A warm rejected target alone
+        # would not prove that membership pruning and payload copies are guarded.
+        missing = stage / "illuminants/D50.csv"
+        missing.unlink()
+        stamp.unlink()
+        try:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.native_run.command("resource-stage-unowned", command, env=environment, timeout=30)
+            self.assertFalse(missing.exists())
+            self.assertFalse(stamp.exists())
+            self.assertEqual(identities(), {name: value for name, value in before.items()
+                                           if name not in {str(missing), str(stamp)}})
+        finally:
+            self.native_run.command("resource-stage-restore", command, timeout=60)
+        self.assertEqual(missing.read_bytes(), (ROOT / "Resources/illuminants/D50.csv").read_bytes())
+        before = identities()
+        self.native_run.command("resource-stage-noop", command, timeout=60)
+        self.assertEqual(identities(), before, "owner checks must not force resource payload writes")
+        self.assertNotIn("Copying runtime test resource", (self.logs / "resource-stage-noop.log").read_text())
+        commands = self.query_commands("resource-stage-commands", self.host_build, "juicer_test_resources")
+        self.assertIn("check-owner", commands)
+        print("Shared resource stage no-op: zero payload commands and writes; files=", len(before) - 1)
+
+    def test_host_configuration_and_selected_six_target_closure_are_cuda_free(self):
+        cache_path = self.host_build / "CMakeCache.txt"
+        self.assertTrue(cache_path.is_file())
+        cache = cache_path.read_text(encoding="utf-8", errors="replace")
+        cache_rows = {match.group(1): match.group(2) for match in
+                      re.finditer(r"^([^#/:]+):[^=]*=(.*)$", cache, re.MULTILINE)}
+        self.assertEqual(cache_rows.get("BUILD_TESTING"), "ON")
+        self.assertEqual(cache_rows.get("CMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit"), "TRUE")
+        self.assertIn(cache_rows.get("CMAKE_CUDA_COMPILER"), (None, "", "CMAKE_CUDA_COMPILER-NOTFOUND"))
+        self.assertFalse(list((self.host_build / "CMakeFiles").rglob("CMakeCUDACompiler.cmake")))
+
+        compile_db = self.host_build / "compile_commands.json"
+        self.assertTrue(compile_db.is_file())
+        compile_rows = json.loads(compile_db.read_bytes())
+        self.assertTrue(compile_rows)
+        self.assertTrue(all(not Path(row["file"]).suffix.casefold() == ".cu" for row in compile_rows))
+
+        selected = self.query_commands("host-selected-commands", self.host_build, *self.HOST_TARGETS)
+        for source in ("cuda_abi_c.c", "profile_owner_test.cpp", "spectral_owner_test.cpp",
+                       "route_bridge_test.cpp", "ScanRoute.cpp", "hash_contract_test.cpp",
+                       "render_assertions_test.cpp"):
+            self.assertIn(source, selected)
+        self.assertIn("/out/build/" + self.preset + "/cargo/test-support", selected)
+        self.assertIn("/out/build/" + self.preset + "/cargo/production", selected)
+        self.assertNotIn("/host-tests/cargo/", selected)
+        self.assertNotIn("nvcc", selected.casefold())
+        self.assertNotIn("cufft", selected.casefold())
+        self.assertNotIn("/src/Cuda/", selected)
+        self.assertNotIn("ResourceStaging.cmake", selected,
+                         "immutable explicit-root consumers must not prepare the staged package tree")
+        self.assert_no_test_metadata(selected)
+
+        all_commands = self.query_commands("host-all-commands", self.host_build)
+        self.assertEqual(all_commands.strip(), "", "the CUDA-free default target must not compile tests")
+        for source in ("cuda_abi_c.c", "profile_owner_test.cpp", "spectral_owner_test.cpp",
+                       "route_bridge_test.cpp", "hash_contract_test.cpp", "render_assertions_test.cpp"):
+            self.assertNotIn(source, all_commands)
+        self.assert_no_test_metadata(all_commands)
+
+    @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_BUILD"),
+                         "requires an explicitly configured testing-ON product graph")
+    def test_product_analysis_inputs_have_their_ordinary_producers(self):
+        commands = self.query_commands("product-analysis-commands", self.preset_build, "juicer_analysis_inputs")
+        for source in ("JuicerCudaResources.cpp", "JuicerState.cpp", "JuicerEffect.cpp", "JuicerCudaFilmPipeline.cu"):
+            self.assertIn(source, commands)
+        self.assertIn("/cargo/production", commands)
+        self.assertNotIn("/cargo/test-support", commands)
+        self.assertIn("generate_host_cases.py", commands)
+        self.assertNotIn("profile_owner_test.cpp", commands)
+        self.assert_no_test_metadata(commands)
+
+    @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_BUILD"),
+                         "requires an explicitly configured testing-ON product graph")
+    def test_product_failure_consumer_and_default_all_have_separate_closures(self):
+        self.assertEqual(Path(os.environ["JUICER_PRODUCT_BUILD"]).resolve(), self.preset_build)
+        cache = (self.preset_build / "CMakeCache.txt").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("BUILD_TESTING:BOOL=ON", cache)
+        selected = self.query_commands("product-failure-commands", self.preset_build,
+                                       "JuicerCudaFailureTests")
+        self.assertIn("cuda_failure_test.cpp", selected)
+        self.assertIn("JuicerCudaExecutor.cpp", selected)
+        self.assertIn("JuicerCudaFilmPipeline.cu", selected)
+        self.assertIn("cufft", selected.casefold())
+        for target in self.GPU_ONLY_TARGETS:
+            self.assertNotIn(target, selected)
+
+        all_commands = self.query_commands("product-all-commands", self.preset_build)
+        for source in ("cuda_failure_test.cpp", "film_recipe_test.cpp", "pinned_upload_test.cpp",
+                       "hash_contract_test.cpp", "render_assertions_test.cpp"):
+            self.assertNotIn(source, all_commands)
+        lower = all_commands.casefold().replace("\\", "/")
+        self.assertIn("/cargo/production", lower)
+        self.assertNotIn("/cargo/test-support", lower)
+        self.assert_no_test_metadata(all_commands)
 
 
 if __name__ == "__main__":

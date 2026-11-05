@@ -15,6 +15,35 @@ namespace EffectsFrameTest {
             frame = JuicerTestSupport::effects_frame_input(v, recipe);
         }
     };
+    FjEffectsFrameInput product_input(const Json& v, const FjPhysicalEffectsRecipe& recipe) {
+        const auto e = [](const Json& value) {
+            return FjExtent{value.at(0), value.at(1), value.at(2), value.at(3)};
+        };
+        FjEffectsFrameInput out{};
+        out.active = recipe.active;
+        out.render_extent = e(v.at("render_extent"));
+        out.pixel_definition = e(v.at("pixel_definition"));
+        out.pixel_size_um = scalar(v.at("pixel_size_um"));
+        out.film_format_long_edge_mm = scalar(v.at("film_format_long_edge_mm"));
+        out.canonical_x = wide(v.at("canonical_x"));
+        out.canonical_y = wide(v.at("canonical_y"));
+        out.canonical_width = wide(v.at("canonical_width"));
+        out.canonical_height = wide(v.at("canonical_height"));
+        out.scale_x = wide(v.at("scale_x"));
+        out.scale_y = wide(v.at("scale_y"));
+        out.pixel_aspect_ratio = wide(v.at("pixel_aspect_ratio"));
+        out.frame_time = wide(v.at("frame_time"));
+        out.frame_rate = wide(v.at("frame_rate"));
+        out.gate_weave_amount = recipe.gate_weave_amount;
+        out.session_seed = v.at("session_seed");
+        out.clip_token = v.at("clip_token");
+        out.recipe_hash = recipe.hash;
+        out.film_dust = recipe.film_dust;
+        out.film_scratch = recipe.film_scratch;
+        out.gate_dust = recipe.gate_dust;
+        out.gate_scratch = recipe.gate_scratch;
+        return out;
+    }
     Json policy(const DefectDustRecipe& v) {
         return {{"cell_width_mm", std::bit_cast<std::uint32_t>(v.cellWidthMm)},
                 {"cell_height_mm", std::bit_cast<std::uint32_t>(v.cellHeightMm)},
@@ -97,13 +126,97 @@ namespace EffectsFrameTest {
                 {"strength_min", std::bit_cast<std::uint32_t>(v.strengthMin)},
                 {"strength_max", std::bit_cast<std::uint32_t>(v.strengthMax)}};
     }
-    Json product_rows(const std::filesystem::path& resources, const Json& inputs) {
+    Json policy(const FjDust& v) {
+        return {{"cell_width_mm", std::bit_cast<std::uint32_t>(v.cell_width_mm)},
+                {"cell_height_mm", std::bit_cast<std::uint32_t>(v.cell_height_mm)},
+                {"slot_probability", std::bit_cast<std::uint32_t>(v.slot_probability)},
+                {"softness_min_mm", std::bit_cast<std::uint32_t>(v.softness_min_mm)},
+                {"softness_max_mm", std::bit_cast<std::uint32_t>(v.softness_max_mm)},
+                {"softness_size_cap_fraction", std::bit_cast<std::uint32_t>(v.softness_size_cap_fraction)},
+                {"support_x_mm", std::bit_cast<std::uint32_t>(v.support_x_mm)},
+                {"support_y_mm", std::bit_cast<std::uint32_t>(v.support_y_mm)},
+                {"fiber_fraction", std::bit_cast<std::uint32_t>(v.fiber_fraction)},
+                {"fiber_drift_fraction", std::bit_cast<std::uint32_t>(v.fiber_drift_fraction)},
+                {"fiber_first_knot_min", std::bit_cast<std::uint32_t>(v.fiber_first_knot_min)},
+                {"fiber_first_knot_max", std::bit_cast<std::uint32_t>(v.fiber_first_knot_max)},
+                {"fiber_second_knot_min", std::bit_cast<std::uint32_t>(v.fiber_second_knot_min)},
+                {"fiber_second_knot_max", std::bit_cast<std::uint32_t>(v.fiber_second_knot_max)},
+                {"fiber_interior_width_min_fraction", std::bit_cast<std::uint32_t>(v.fiber_interior_width_min_fraction)},
+                {"fiber_interior_width_max_fraction", std::bit_cast<std::uint32_t>(v.fiber_interior_width_max_fraction)},
+                {"diameter_min_mm", std::bit_cast<std::uint32_t>(v.diameter_min_mm)},
+                {"diameter_bulk_max_mm", std::bit_cast<std::uint32_t>(v.diameter_bulk_max_mm)},
+                {"diameter_max_mm", std::bit_cast<std::uint32_t>(v.diameter_max_mm)},
+                {"diameter_tail_fraction", std::bit_cast<std::uint32_t>(v.diameter_tail_fraction)},
+                {"fiber_length_min_mm", std::bit_cast<std::uint32_t>(v.fiber_length_min_mm)},
+                {"fiber_length_max_mm", std::bit_cast<std::uint32_t>(v.fiber_length_max_mm)},
+                {"fiber_width_min_mm", std::bit_cast<std::uint32_t>(v.fiber_width_min_mm)},
+                {"fiber_width_max_mm", std::bit_cast<std::uint32_t>(v.fiber_width_max_mm)},
+                {"opacity_faint_cumulative", std::bit_cast<std::uint32_t>(v.opacity_faint_cumulative)},
+                {"opacity_intermediate_cumulative", std::bit_cast<std::uint32_t>(v.opacity_intermediate_cumulative)},
+                {"compact_opacity_min", std::bit_cast<std::uint32_t>(v.compact_opacity_min)},
+                {"compact_opacity_faint_end", std::bit_cast<std::uint32_t>(v.compact_opacity_faint_end)},
+                {"compact_opacity_intermediate_end", std::bit_cast<std::uint32_t>(v.compact_opacity_intermediate_end)},
+                {"compact_opacity_max", std::bit_cast<std::uint32_t>(v.compact_opacity_max)},
+                {"fiber_opacity_min", std::bit_cast<std::uint32_t>(v.fiber_opacity_min)},
+                {"fiber_opacity_faint_end", std::bit_cast<std::uint32_t>(v.fiber_opacity_faint_end)},
+                {"fiber_opacity_intermediate_end", std::bit_cast<std::uint32_t>(v.fiber_opacity_intermediate_end)},
+                {"fiber_opacity_max", std::bit_cast<std::uint32_t>(v.fiber_opacity_max)},
+                {"compact_dominant_aspect_min", std::bit_cast<std::uint32_t>(v.compact_dominant_aspect_min)},
+                {"compact_dominant_aspect_max", std::bit_cast<std::uint32_t>(v.compact_dominant_aspect_max)},
+                {"compact_subsidiary_scale_min", std::bit_cast<std::uint32_t>(v.compact_subsidiary_scale_min)},
+                {"compact_subsidiary_scale_max", std::bit_cast<std::uint32_t>(v.compact_subsidiary_scale_max)},
+                {"compact_subsidiary_aspect_min", std::bit_cast<std::uint32_t>(v.compact_subsidiary_aspect_min)},
+                {"compact_subsidiary_aspect_max", std::bit_cast<std::uint32_t>(v.compact_subsidiary_aspect_max)},
+                {"compact_subsidiary_offset_max", std::bit_cast<std::uint32_t>(v.compact_subsidiary_offset_max)},
+                {"compact_subsidiary_angle_max_radians", std::bit_cast<std::uint32_t>(v.compact_subsidiary_angle_max_radians)}};
+    }
+    Json policy(const FjScratch& v) {
+        return {{"cell_width_mm", std::bit_cast<std::uint32_t>(v.cell_width_mm)},
+                {"cell_height_mm", std::bit_cast<std::uint32_t>(v.cell_height_mm)},
+                {"slot_probability", std::bit_cast<std::uint32_t>(v.slot_probability)},
+                {"softness_min_mm", std::bit_cast<std::uint32_t>(v.softness_min_mm)},
+                {"softness_max_mm", std::bit_cast<std::uint32_t>(v.softness_max_mm)},
+                {"softness_size_cap_fraction", std::bit_cast<std::uint32_t>(v.softness_size_cap_fraction)},
+                {"support_x_mm", std::bit_cast<std::uint32_t>(v.support_x_mm)},
+                {"support_y_mm", std::bit_cast<std::uint32_t>(v.support_y_mm)},
+                {"length_min_mm", std::bit_cast<std::uint32_t>(v.length_min_mm)},
+                {"length_bulk_max_mm", std::bit_cast<std::uint32_t>(v.length_bulk_max_mm)},
+                {"length_max_mm", std::bit_cast<std::uint32_t>(v.length_max_mm)},
+                {"length_tail_fraction", std::bit_cast<std::uint32_t>(v.length_tail_fraction)},
+                {"width_min_mm", std::bit_cast<std::uint32_t>(v.width_min_mm)},
+                {"width_bulk_max_mm", std::bit_cast<std::uint32_t>(v.width_bulk_max_mm)},
+                {"width_max_mm", std::bit_cast<std::uint32_t>(v.width_max_mm)},
+                {"width_tail_fraction", std::bit_cast<std::uint32_t>(v.width_tail_fraction)},
+                {"drift_fraction", std::bit_cast<std::uint32_t>(v.drift_fraction)},
+                {"first_knot_min", std::bit_cast<std::uint32_t>(v.first_knot_min)},
+                {"first_knot_max", std::bit_cast<std::uint32_t>(v.first_knot_max)},
+                {"second_knot_min", std::bit_cast<std::uint32_t>(v.second_knot_min)},
+                {"second_knot_max", std::bit_cast<std::uint32_t>(v.second_knot_max)},
+                {"interior_width_min_fraction", std::bit_cast<std::uint32_t>(v.interior_width_min_fraction)},
+                {"interior_width_max_fraction", std::bit_cast<std::uint32_t>(v.interior_width_max_fraction)},
+                {"interior_depth_min_fraction", std::bit_cast<std::uint32_t>(v.interior_depth_min_fraction)},
+                {"interior_depth_max_fraction", std::bit_cast<std::uint32_t>(v.interior_depth_max_fraction)},
+                {"endpoint_abrupt_probability", std::bit_cast<std::uint32_t>(v.endpoint_abrupt_probability)},
+                {"interruption_probability", std::bit_cast<std::uint32_t>(v.interruption_probability)},
+                {"gap_center_min", std::bit_cast<std::uint32_t>(v.gap_center_min)},
+                {"gap_center_max", std::bit_cast<std::uint32_t>(v.gap_center_max)},
+                {"gap_span_min", std::bit_cast<std::uint32_t>(v.gap_span_min)},
+                {"gap_span_max", std::bit_cast<std::uint32_t>(v.gap_span_max)},
+                {"scuff_probability", std::bit_cast<std::uint32_t>(v.scuff_probability)},
+                {"scuff_length_max_mm", std::bit_cast<std::uint32_t>(v.scuff_length_max_mm)},
+                {"scuff_angle_max_radians", std::bit_cast<std::uint32_t>(v.scuff_angle_max_radians)},
+                {"strength_min", std::bit_cast<std::uint32_t>(v.strength_min)},
+                {"strength_max", std::bit_cast<std::uint32_t>(v.strength_max)}};
+    }
+    Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         Json rows = Json::array();
+        std::size_t expectedIndex = 0;
         for (unsigned route = 0; route < 4; ++route) {
             for (const auto& spec : inputs.at("products")) {
+                const auto caseId = std::to_string(route) + "/" + spec.at("id").get<std::string>();
+                JuicerTests::CaseEvent caseEvent("cpp", caseId);
                 ParamSnapshot params;
                 params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
                 params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
@@ -116,26 +229,39 @@ namespace EffectsFrameTest {
                 params.gateDustAmount = scalar(spec.at("amounts")[2]);
                 params.gateScratchAmount = scalar(spec.at("amounts")[3]);
                 params.gateWeaveAmount = wide(spec.at("weave"));
-                FocusedRenderStateBuildProduct product;
-                std::string diagnostic;
-                require(route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic), diagnostic.c_str());
+                auto product = JuicerTestSupport::prepare_product(params);
+                FjPreparedStateView view{};
+                FjErrorBuffer viewError{};
+                status(product.view(view, viewError));
+                const auto& effects = view.effects;
                 Json literal = inputs.at("cases")[0];
                 literal.update(spec.at("overrides"));
-                literal["id"] = std::to_string(route) + "/" + spec.at("id").get<std::string>();
-                const auto& recipe = product.recipe.filmJuicerEffects;
-                literal["active"] = recipe.active;
-                literal["recipe_hash"] = recipe.hash;
-                literal["gate_weave_amount"] = std::bit_cast<std::uint64_t>(recipe.gateWeaveAmount);
-                literal["film_dust"] = policy(recipe.filmDust);
-                literal["film_scratch"] = policy(recipe.filmScratch);
-                literal["gate_dust"] = policy(recipe.gateDust);
-                literal["gate_scratch"] = policy(recipe.gateScratch);
-                Input input(literal);
-                Spektrafilm::FilmJuicerEffectsFrameDescriptor out;
-                const bool success = JuicerTestSupport::prepare_effects_frame(input.frame, out, diagnostic);
-                rows.push_back({{"route", route}, {"spec", spec}, {"input", literal}, {"success", success}, {"diagnostic", diagnostic}, {"native", JuicerTestSupport::effects_frame_fields(out)}});
+                literal["id"] = caseId;
+                literal["active"] = effects.active != 0;
+                literal["recipe_hash"] = effects.hash;
+                literal["gate_weave_amount"] = std::bit_cast<std::uint64_t>(effects.gate_weave_amount);
+                literal["film_dust"] = policy(effects.film_dust);
+                literal["film_scratch"] = policy(effects.film_scratch);
+                literal["gate_dust"] = policy(effects.gate_dust);
+                literal["gate_scratch"] = policy(effects.gate_scratch);
+                const auto raw = product_input(literal, effects);
+                FjEffectsFrameMath math{};
+                FjEffectsFrameFailure failure{};
+                std::array<char, 256> text{};
+                FjErrorBuffer error{text.data(), text.size(), 0};
+                const auto result = fj_test_effects_frame_prepare(&raw, &math, &failure, &error);
+                Spektrafilm::FilmJuicerEffectsFrameDescriptor descriptor{};
+                if (result.category == FJ_STATUS_SUCCESS) {
+                    std::string diagnostic;
+                    require(JuicerEffects::compose_frame_descriptor(math, effects.film_dust, effects.film_scratch, effects.gate_dust, effects.gate_scratch, descriptor, diagnostic), diagnostic.c_str());
+                }
+                auto row = Json{{"route", route}, {"spec", spec}, {"input", literal}, {"success", result.category == FJ_STATUS_SUCCESS}, {"diagnostic", std::string(text.data(), error.length)}, {"native", JuicerTestSupport::effects_frame_fields(descriptor)}};
+                require_equal(row, expectedRows.at(expectedIndex++), "completed effects product row matches captured fixture");
+                rows.push_back(std::move(row));
+                caseEvent.passed();
             }
         }
+        require(expectedIndex == expectedRows.size(), "complete effects product fixture membership");
         return rows;
     }
     FjEffectsFrameMath expected_math(const Json& row) {
@@ -171,6 +297,7 @@ namespace EffectsFrameTest {
     void value_rows(const Json& rows) {
         const auto defaults = JuicerTestSupport::effects_frame_fields({});
         for (const auto& row : rows) {
+            const auto caseId = row.at("input").at("id").get<std::string>();
             Input input(row.at("input"));
             const bool success = row.at("success");
             const auto expected = expected_math(row);
@@ -180,17 +307,21 @@ namespace EffectsFrameTest {
             FjEffectsFrameInput raw{};
             std::string diagnostic;
             if (JuicerEffects::project_input(input.frame, raw, diagnostic)) {
+                JuicerTests::CaseEvent c11Event("c11", row.at("input").at("id").get<std::string>());
                 for (unsigned facade = 0; facade < 2; ++facade)
                     require(fj_test_effects_frame_c_check(facade, &raw, &expected, envelope, failure, row.at("diagnostic").get<std::string>().c_str()) != 0, ("strict C11 full effects frame " + row.at("input").at("id").get<std::string>()).c_str());
+                c11Event.passed();
             } else {
                 require(!success && diagnostic == row.at("diagnostic").get<std::string>(), "required effects native pointer guard precedes inactive");
             }
+            JuicerTests::CaseEvent cppEvent("cpp", caseId);
             for (bool facade : {false, true}) {
                 Spektrafilm::FilmJuicerEffectsFrameDescriptor out;
                 const bool actual = facade ? JuicerTestSupport::prepare_effects_frame(input.frame, out, diagnostic) : JuicerEffects::prepare_frame(input.frame, out, diagnostic);
                 require(actual == success && diagnostic == row.at("diagnostic").get<std::string>(), ("effects outcome " + row.at("input").at("id").get<std::string>()).c_str());
                 require(JuicerTestSupport::effects_frame_fields(out) == (success ? row.at("native") : defaults), ("effects complete native fields/policies/hash " + row.at("input").at("id").get<std::string>()).c_str());
             }
+            cppEvent.passed();
         }
     }
     void values(const Json& captured, const Json& checked) {
@@ -205,16 +336,27 @@ namespace EffectsFrameTest {
         value_rows(captured.at("products"));
     }
     void raw_and_faults(const Json& captured) {
+        JuicerTests::CaseEvent caseEvent("cpp", "effects-frame/raw-and-faults");
         Input input(captured.at("cases")[0].at("input"));
         FjEffectsFrameInput raw{};
         std::string diagnostic;
         require(JuicerEffects::project_input(input.frame, raw, diagnostic), "effects raw baseline input");
         const auto expected = expected_math(captured.at("cases")[0]);
-        for (unsigned facade = 0; facade < 2; ++facade) {
+        std::vector<std::string> mode_ids;
+        for (unsigned facade = 0; facade < 2; ++facade)
             for (unsigned mode = 0; mode < 20; ++mode)
+                mode_ids.emplace_back("caller-" + std::to_string(facade) + "/mode-" + std::to_string(mode));
+        JuicerTests::Cohort raw_modes("effects_frame.raw_mode", mode_ids);
+        for (unsigned facade = 0; facade < 2; ++facade) {
+            for (unsigned mode = 0; mode < 20; ++mode) {
+                auto row_event = raw_modes.case_event("caller-" + std::to_string(facade) + "/mode-" + std::to_string(mode));
                 require(fj_test_effects_frame_c_raw(facade, &raw, mode, &expected) != 0, ("C11 raw effects mode " + std::to_string(mode)).c_str());
+                row_event.passed();
+            }
         }
+        JuicerTests::Cohort frame_faults("effects_frame.frame_fault", 6);
         for (unsigned fault = 1; fault <= 6; ++fault) {
+            auto row_event = frame_faults.case_event(std::to_string(fault - 1));
             Input attempt(captured.at("cases")[fault == 6 ? 7 : 0].at("input"));
             if (fault == 6) {
                 attempt.recipe.active = false;
@@ -225,6 +367,7 @@ namespace EffectsFrameTest {
             require(!JuicerTestSupport::prepare_effects_frame(attempt.frame, out, diagnostic), "malformed completed effects result is unusable");
             require(diagnostic == (fault == 1 ? "physical effects frame preparation panicked" : "ResourceDescriptorMismatch phase=effects_descriptor field=rust_result") && JuicerTestSupport::effects_frame_fields(out) == JuicerTestSupport::effects_frame_fields({}), "effects panic/result fault clears native default");
             require(JuicerTestSupport::prepare_effects_frame(attempt.frame, out, diagnostic), "effects fault consumes once");
+            row_event.passed();
         }
         status(fj_test_effects_frame_fault(1));
         status(fj_test_effects_frame_fault(7), 2);
@@ -243,6 +386,7 @@ namespace EffectsFrameTest {
         status(fj_test_grain_frame_prepare(&grain, &grainMath, &grainFailure, nullptr), 8);
         require(grainFailure.reason == 3, "effects cannot consume grain faults");
         status(fj_test_effects_frame_fault(0));
+        caseEvent.passed();
     }
 
 } // namespace EffectsFrameTest

@@ -8,6 +8,31 @@ use film_juicer_core::frame::Domain;
 use film_juicer_core::profile::Polarity;
 use crate::cuda::sys::{FjErrorBuffer, FjExtent, FjFloatSpan, FjGrainGaussian, FjStatus};
 
+/// The shared checked grain-plan operation. The layer reader stays lazy: the
+/// injected layer panic occurs only when the consumer requests a real cell.
+pub(crate) fn checked_plan<'a, F>(
+    input: frame::Input,
+    mut read_layer: F,
+    fault: u32,
+) -> Result<Option<Plan>, frame::Error>
+where
+    F: FnMut(usize, usize) -> Result<&'a [f32], LayerAccessError>,
+{
+    #[cfg(feature = "test-support")]
+    if fault == 1 {
+        panic!("visual grain frame fixture entry panic");
+    }
+    let plan = Plan::new(input, |row, channel| {
+        #[cfg(feature = "test-support")]
+        if fault == 2 {
+            panic!("visual grain frame fixture layer panic");
+        }
+        read_layer(row, channel)
+    });
+    let _ = fault;
+    plan
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct FjGrainFrameInput {
@@ -383,7 +408,7 @@ fn gaussian(v: &Gaussian) -> FjGrainGaussian {
         hash: v.hash(),
     }
 }
-fn projection(p: &Plan) -> FjGrainFrameMath {
+pub(crate) fn projection(p: &Plan) -> FjGrainFrameMath {
     FjGrainFrameMath {
         present: 1,
         capture_polarity: match p.capture_polarity() {
@@ -444,6 +469,14 @@ const MESSAGES: [&str; 14] = [
     "ResourceDescriptorMismatch phase=grain_descriptor field=layer_particle_count",
     "UnsupportedMode phase=grain_descriptor field=partial_frame",
 ];
+
+pub(crate) fn failure_diagnostic(field: Field) -> &'static str {
+    MESSAGES[field as usize]
+}
+
+pub(crate) fn empty_math() -> FjGrainFrameMath {
+    EMPTY_MATH
+}
 fn status(category: u32) -> FjStatus {
     FjStatus {
         category,
@@ -533,11 +566,7 @@ pub(crate) unsafe fn prepare(
             return status(2);
         }
         let input = input.unwrap();
-        #[cfg(feature = "test-support")]
-        if fault == 1 {
-            panic!("visual grain frame fixture entry panic");
-        }
-        let result = Plan::new(
+        let result = checked_plan(
             frame::Input {
                 active: input.active != 0,
                 sublayers_active: input.sublayers_active != 0,
@@ -570,12 +599,18 @@ pub(crate) unsafe fn prepare(
                 film_layers_hash: input.film_layers_hash,
             },
             |row, channel| {
-                #[cfg(feature = "test-support")]
-                if fault == 2 {
-                    panic!("visual grain frame fixture layer panic");
-                }
                 // SAFETY: Borrow is created only for the requested cell, after all earlier checks.
                 unsafe { layer(input.layer_curves[row][channel]) }
+            },
+            {
+                #[cfg(feature = "test-support")]
+                {
+                    fault
+                }
+                #[cfg(not(feature = "test-support"))]
+                {
+                    0
+                }
             },
         );
         match result {
@@ -676,7 +711,7 @@ pub(crate) mod faults {
         PENDING.with(|pending| pending.set(fault));
         status(0)
     }
-    pub(super) fn take() -> u32 {
+    pub(crate) fn take() -> u32 {
         PENDING.with(|pending| pending.replace(0))
     }
     pub(super) fn corrupt(mut wire: FjGrainFrameMath, fault: u32) -> FjGrainFrameMath {

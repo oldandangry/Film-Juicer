@@ -208,7 +208,18 @@ fn read_bytes(
         });
     }
     let mut bytes = Vec::new();
-    reserve(&mut bytes, count).map_err(|_| ErrorKind::Capacity)?;
+    #[cfg(feature = "test-support")]
+    let reservation = if testing::take_reservation_failure() {
+        // Exercise the same fallible reservation category without attempting a
+        // large allocation. This runs only after the payload structure and
+        // exact byte length have been accepted.
+        bytes.try_reserve_exact(usize::MAX)
+    } else {
+        reserve(&mut bytes, count)
+    };
+    #[cfg(not(feature = "test-support"))]
+    let reservation = reserve(&mut bytes, count);
+    reservation.map_err(|_| ErrorKind::Capacity)?;
     bytes.resize(count, 0);
     for chunk in bytes.chunks_mut(8192) {
         reader.read_exact(chunk).map_err(|error| {
@@ -220,6 +231,39 @@ fn read_bytes(
         })?;
     }
     Ok(bytes)
+}
+
+#[cfg(feature = "test-support")]
+pub mod testing {
+    use std::cell::Cell;
+
+    thread_local! {
+        static RESERVATION_FAILURE: Cell<(bool, bool)> = const { Cell::new((false, false)) };
+    }
+
+    /// Arm one failure at the next real STBN or Wang byte-buffer reservation.
+    pub fn arm_reservation_failure() {
+        RESERVATION_FAILURE.set((true, false));
+    }
+
+    pub fn clear_reservation_failure() {
+        RESERVATION_FAILURE.set((false, false));
+    }
+
+    /// Reports whether the armed failure reached the decoder's reservation step.
+    pub fn reservation_failure_consumed() -> bool {
+        RESERVATION_FAILURE.get().1
+    }
+
+    pub(super) fn take_reservation_failure() -> bool {
+        let (armed, _) = RESERVATION_FAILURE.get();
+        if armed {
+            RESERVATION_FAILURE.set((false, true));
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // Derived records also accept sequences; Wang records require named members.
@@ -366,6 +410,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use std::io::Cursor;
 
     fn reservation_failure(bytes: &mut Vec<u8>, _: usize) -> Result<(), TryReserveError> {
@@ -374,22 +419,41 @@ mod tests {
 
     #[test]
     fn rejects_size_and_capacity_overflow() {
-        for (dimensions, expected) in [
+        let inputs = [
             (vec![usize::MAX, 2], ErrorKind::Size),
             (vec![isize::MAX as usize + 1], ErrorKind::Capacity),
-        ] {
+        ];
+        let ids = ["size-overflow", "capacity-overflow"];
+        let mut cases = RowCases::new("noise-size-overflow", ids);
+        for ((dimensions, expected), id) in inputs.into_iter().zip(ids) {
+            let case = cases.case(id);
             let result = read_bytes(&mut io::empty(), 0, &dimensions, |_, _| {
                 panic!("invalid products must not reach reservation")
             });
             assert_eq!(result.unwrap_err(), expected);
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
     fn rejects_wrong_lengths_before_reservation() {
-        for dimensions in [STBN_DIMENSIONS, WANG_DIMENSIONS] {
+        let dimensions = [("stbn", STBN_DIMENSIONS), ("wang", WANG_DIMENSIONS)];
+        let ids = dimensions
+            .iter()
+            .flat_map(|(name, _)| {
+                ["empty", "short", "long"].map(move |length| format!("{name}/{length}"))
+            })
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new("noise-wrong-lengths", ids);
+        for (name, dimensions) in dimensions {
             let count = byte_count(&dimensions).unwrap();
-            for actual in [0, count as u64 - 1, count as u64 + 1] {
+            for (length, actual) in [
+                ("empty", 0),
+                ("short", count as u64 - 1),
+                ("long", count as u64 + 1),
+            ] {
+                let case = cases.case(format!("{name}/{length}"));
                 let result = read_bytes(&mut io::empty(), actual, &dimensions, |_, _| {
                     panic!("wrong length must not reserve")
                 });
@@ -400,23 +464,31 @@ mod tests {
                         actual
                     }
                 );
+                case.passed();
             }
         }
+        cases.finish();
     }
 
     #[test]
     fn reservation_failure_publishes_no_noise() {
+        let mut cases = RowCases::new("noise-reservation-failures", ["stbn", "wang"]);
+        let stbn_case = cases.case("stbn");
         let mut reader = Cursor::new([9u8; 1]);
         assert_eq!(
             read_stbn(&mut reader, 67_108_864, reservation_failure).unwrap_err(),
             ErrorKind::Capacity
         );
         assert_eq!(reader.position(), 0);
+        stbn_case.passed();
+        let wang_case = cases.case("wang");
         assert_eq!(
             read_wang(&mut reader, 1_048_576, [0; 16], reservation_failure).unwrap_err(),
             ErrorKind::Capacity
         );
         assert_eq!(reader.position(), 0);
+        wang_case.passed();
+        cases.finish();
     }
 
     struct ChunkReader {
@@ -460,10 +532,14 @@ mod tests {
 
     #[test]
     fn read_failure_publishes_no_noise() {
-        for (fail_after, expected) in [
+        let inputs = [
             (Some(9000), ErrorKind::Read(io::ErrorKind::PermissionDenied)),
             (None, ErrorKind::ShortRead),
-        ] {
+        ];
+        let ids = ["permission-error", "short-read"];
+        let mut cases = RowCases::new("noise-read-failures", ids);
+        for ((fail_after, expected), id) in inputs.into_iter().zip(ids) {
+            let case = cases.case(id);
             let reader = || ChunkReader {
                 input: Cursor::new(vec![7; 9000]),
                 chunk_size: 3,
@@ -477,7 +553,9 @@ mod tests {
                 read_wang(&mut reader(), 1_048_576, [0; 16], Vec::try_reserve_exact).unwrap_err(),
                 expected
             );
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -497,14 +575,21 @@ mod tests {
             build_lut(read_metadata(reader()).unwrap()).unwrap(),
             [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]
         );
+        let mut cases = RowCases::new(
+            "noise-metadata-short-reads",
+            ["offset-0", "offset-2", "offset-10"],
+        );
         for position in [0, 2, 10] {
+            let case = cases.case(format!("offset-{position}"));
             let mut reader = reader();
             reader.fail_after = Some(position);
             assert_eq!(
                 read_metadata(reader).unwrap_err(),
                 ErrorKind::Read(io::ErrorKind::PermissionDenied)
             );
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn metadata_reader_preserves_reported_oom_before_and_after_prefix() {
@@ -522,12 +607,19 @@ mod tests {
                 Ok(count)
             }
         }
+        let mut cases = RowCases::new(
+            "noise-metadata-oom",
+            ["remaining-0", "remaining-1", "remaining-3", "remaining-64"],
+        );
         for remaining in [0, 1, 3, 64] {
+            let case = cases.case(format!("remaining-{remaining}"));
             assert_eq!(
                 read_metadata(OomReader { remaining }).unwrap_err(),
                 ErrorKind::Read(io::ErrorKind::OutOfMemory)
             );
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]

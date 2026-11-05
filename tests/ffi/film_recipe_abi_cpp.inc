@@ -589,7 +589,6 @@ static_assert(offsetof(FjSpatialOpticsFailure, field) == 8);
 static_assert(std::is_same_v<decltype(FjSpatialOpticsFailure::channel), uint32_t>);
 static_assert(offsetof(FjSpatialOpticsFailure, channel) == 12);
 static_assert(sizeof(FjSpatialOpticsFailure) == 16 && alignof(FjSpatialOpticsFailure) == 4);
-static_assert(std::is_same_v<decltype(&fj_legacy_spatial_optics_prepare), FjStatus (*)(const FjSpatialOpticsParams*, FjSpatialOpticsRecipe*, FjSpatialOpticsFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_spatial_optics_prepare), FjStatus (*)(const FjSpatialOpticsParams*, FjSpatialOpticsRecipe*, FjSpatialOpticsFailure*, FjErrorBuffer*)>);
 
 static_assert(sizeof(bool) == 1 && sizeof(float) == 4 && sizeof(double) == 8);
@@ -623,7 +622,6 @@ static_assert(FJ_PRINT_ILLUMINANT_REASON_RAW == 1);
 static_assert(FJ_PRINT_ILLUMINANT_REASON_SAMPLE == 2);
 static_assert(FJ_PRINT_ILLUMINANT_REASON_ENERGY == 3);
 static_assert(FJ_PRINT_ILLUMINANT_REASON_PANIC == 4);
-static_assert(std::is_same_v<decltype(&fj_legacy_print_illuminant_prepare), FjStatus (*)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_print_illuminant_prepare), FjStatus (*)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*)>);
 
 static_assert(sizeof(FjPrintPreflashInput) == 48 && alignof(FjPrintPreflashInput) == 8);
@@ -645,7 +643,6 @@ static_assert(FJ_PRINT_PREFLASH_REASON_NONE == 0);
 static_assert(FJ_PRINT_PREFLASH_REASON_RAW == 1);
 static_assert(FJ_PRINT_PREFLASH_REASON_CHANNEL == 2);
 static_assert(FJ_PRINT_PREFLASH_REASON_PANIC == 3);
-static_assert(std::is_same_v<decltype(&fj_legacy_print_preflash_prepare), FjStatus (*)(const FjPrintPreflashInput*, FjPrintPreflashRaw*, FjPrintPreflashFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_print_preflash_prepare), FjStatus (*)(const FjPrintPreflashInput*, FjPrintPreflashRaw*, FjPrintPreflashFailure*, FjErrorBuffer*)>);
 
 static_assert(sizeof(FjPrintBalanceInput) == 104 && alignof(FjPrintBalanceInput) == 8);
@@ -879,9 +876,6 @@ static_assert(std::is_same_v<decltype(FjScannerLutFailure::reason), uint32_t>);
 static_assert(std::is_same_v<decltype(FjScannerLutFailure::channel), uint32_t>);
 static_assert(std::is_same_v<decltype(FjScannerLutFailure::index), uint64_t>);
 static_assert(std::is_same_v<decltype(FjScannerLutFailure::buffer), uint32_t>);
-static_assert(std::is_same_v<decltype(&fj_legacy_scanner_lut_acquire), FjStatus (*)(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_scanner_lut_view), FjStatus (*)(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_scanner_lut_release), FjStatus (*)(FjScannerLutOwner*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_lut_acquire), FjStatus (*)(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_lut_view), FjStatus (*)(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_lut_release), FjStatus (*)(FjScannerLutOwner*, FjErrorBuffer*)>);
@@ -974,9 +968,9 @@ static_assert(std::is_same_v<decltype(FjGaussianKernelView::radius), int32_t>);
 static_assert(std::is_same_v<decltype(FjGaussianKernelView::sigma_px), float>);
 static_assert(std::is_same_v<decltype(FjGaussianKernelView::weights), FjFloatSpan>);
 static_assert(std::is_same_v<decltype(FjGaussianKernelFailure::reason), uint32_t>);
-static_assert(std::is_same_v<decltype(&fj_legacy_gaussian_kernel_acquire), FjStatus (*)(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_gaussian_kernel_view), FjStatus (*)(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_gaussian_kernel_release), FjStatus (*)(FjGaussianKernelOwner*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_gaussian_kernel_acquire), FjStatus (*)(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_gaussian_kernel_view), FjStatus (*)(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_gaussian_kernel_release), FjStatus (*)(FjGaussianKernelOwner*, FjErrorBuffer*)>);
 
 static_assert(sizeof(FjDiffusionSampleInput) == 88 && alignof(FjDiffusionSampleInput) == 8);
 static_assert(offsetof(FjDiffusionSampleInput, family) == 0 && std::is_same_v<decltype(FjDiffusionSampleInput::family), uint32_t>);

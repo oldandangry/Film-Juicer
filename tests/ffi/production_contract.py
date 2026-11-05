@@ -8,10 +8,11 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 
-from shared_fixture import load_shared_fixture, original_capture_bytes
+from shared_fixture import load_shared_fixture
 from effects_frame_probe_contract import (
     EFFECTS_FRAME_CASE_COUNT, EFFECTS_FRAME_CASE_IDS,
     EFFECTS_FRAME_INPUT_WORD_COUNT, EFFECTS_FRAME_OUTPUT_WORD_COUNT,
@@ -28,25 +29,133 @@ from grain_probe_contract import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from execution import digest
 
 root = Path(__file__).resolve().parents[2]
 fixtures = Path(__file__).resolve().parent
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument(
-    "--preset", choices=["linux-release", "windows-clang-release"], required=True
-)
-parser.add_argument("--artifacts", type=Path, required=True)
-arguments = parser.parse_args()
+arguments = None
 windows = os.name == "nt"
 suffix = ".exe" if windows else ""
-build = root / "out/build" / arguments.preset
+build = None
 llvm = (
     Path("C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin")
     if windows
     else Path("/usr/lib/llvm-22/bin")
 )
 
+
+PRODUCTION_FORBIDDEN_SYMBOLS = re.compile(
+    "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
+)
+PRODUCTION_FORBIDDEN_SYMBOLS = re.compile(
+    PRODUCTION_FORBIDDEN_SYMBOLS.pattern
+    + r"|reconstruction::testing::|film::reference::testing::"
+    + r"|SpectralAllocationProbe::|gaussian_faults::|halation_frame_faults::|diffusion_frame_faults::|dir_frame_faults::|DirFrameObservation|rejectNativeAllocation|rejectedNativeBytes"
+    + r"|WorkspaceTransitionObservation|WorkspaceCandidateObservation|WorkspaceRejection"
+)
+PRODUCTION_FORBIDDEN_STRINGS = [
+    b"workspace candidate capacity rejection",
+    b"workspace candidate invalid-value rejection",
+    b"workspace candidate context-loss rejection",
+    b"--workspace-transitions",
+    b"spatial DIR boundary fixture panic",
+    b"spatial DIR boundary candidate rendezvous canceled",
+    b"JUICER_DIR_BOUNDARY_TEST_HOOK",
+    b"DirBoundaryTest::",
+    b"fj_test_dir_boundary",
+    b"capture-dir-boundaries",
+    b"visual grain frame fixture entry panic",
+    b"visual grain frame fixture layer panic",
+    b"JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK",
+    b"JuicerGrainCapture",
+    b"GrainFrameObservation",
+    b"EffectsFrameObservation",
+    b"physical effects frame fixture entry panic",
+    b"fj_test_effects_frame",
+    b"capture-effects-frames",
+    b"JUICER_EFFECTS_FRAME_CAPTURE_TEST_HOOK",
+    b"--effects-frame",
+    b"fj_test_grain_frame",
+    b"capture-grain-frames",
+    b"--grain-frame",
+    b"spatial DIR frame fixture panic",
+    b"DirFrameObservation",
+    b"fj_test_dir_frame",
+    b"capture-dir-frames",
+    b"--dir-frame",
+    b"scatter/halation frame fixture panic",
+    b"HalationObservation",
+    b"DiffusionObservation",
+    b"diffusion construction fixture panic",
+    b"fj_test_diffusion_",
+    b"capture-diffusion-frames",
+    b"fj_test_scatter_halation_frame",
+    b"capture-halation-frames",
+    b"frame geometry fixture panic",
+    b"FrameGeometryTest",
+    b"--capture-frame-geometry",
+    b"--frame-geometry",
+    b"film input boundary fixture panic",
+    b"film development acquire fixture panic",
+    b"film development view fixture panic",
+    b"film development release fixture panic",
+    b"film development retain fixture panic",
+    b"visual grain fixture panic",
+    b"physical effects fixture panic",
+    b"spatial optics fixture panic",
+    b"print illuminant fixture panic",
+    b"print preflash fixture panic",
+    b"print balance fixture panic",
+    b"scanner correction fixture panic",
+    b"scanner LUT fixture panic",
+    b"scanner LUT descriptor fixture panic",
+    b"scanner post-effects fixture panic",
+    b"Gaussian kernel fixture panic",
+    b"Gaussian kernel fixture rendezvous canceled",
+    b"film DIR acquire fixture panic",
+    b"film DIR view fixture panic",
+    b"film DIR release fixture panic",
+    b"film density bounds fixture panic",
+    b"film recipe diagnostic fixture panic",
+    b"film reference dependency boundary fault",
+    b"film reference dependency allocation failed",
+    b"output gamut boundary fault",
+    b"closed operation-specific output gamut fault",
+    b"input hull boundary fault",
+    b"closed input hull fault",
+    b"fixed spectrum fixture fault",
+    b"fixed exposure preparation category fault",
+    b"direct color facade fault",
+    b"exposure production boundary fault",
+    b"CAT16 production boundary fault",
+    b"color production boundary fault",
+    b"illuminant injected panic",
+    b"illuminant fixture-only fault",
+    b"spectral injected panic",
+    b"spectral fixture-only fault",
+    b"TC production boundary fault",
+    b"TC fixture-only fault",
+]
+PRODUCTION_MODULE_EXPORTS = ("OfxGetNumberOfPlugins", "OfxGetPlugin")
+
+# Count the bytes already read for identity checks; no second inventory pass.
+IO_COSTS = {"hash_read_bytes": 0, "hash_reads": 0, "copy_read_bytes": 0,
+            "copy_write_bytes": 0, "command_output_write_bytes": 0}
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            IO_COSTS["hash_read_bytes"] += len(block)
+            value.update(block)
+    IO_COSTS["hash_reads"] += 1
+    return value.hexdigest()
+
+
+def production_module_export_names(output, windows):
+    if windows:
+        return re.findall(r"^\s*Name: (.+)$", output, re.MULTILINE)
+    return [line.split()[-1] for line in output.splitlines() if line.strip()]
 
 def execute(arguments):
     out = arguments.artifacts.resolve()
@@ -67,19 +176,24 @@ def execute(arguments):
             }
         )
         (out / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+        IO_COSTS["command_output_write_bytes"] += len(result.stdout) + len(result.stderr)
         result.check_returncode()
         return result.stdout.decode("utf-8", errors="replace")
 
     build_hashes = {
         str(build / name): digest(build / name)
-        for name in ["CMakeCache.txt", "build.ninja", "compile_commands.json", "cargo-features.txt"]
+        for name in ["CMakeCache.txt", "build.ninja", "compile_commands.json"]
     }
 
     def check_build_inputs():
         assert {path: digest(Path(path)) for path in build_hashes} == build_hashes, "production build input changed"
 
     assert "BUILD_TESTING:BOOL=OFF" in (build / "CMakeCache.txt").read_text()
-    assert (build / "cargo-features.txt").read_text().strip() == "test-support=OFF"
+    production_features = build / "cargo" / "production" / "features.txt"
+    production_stamp = build / "cargo" / "production" / "build.stamp"
+    assert production_features.is_file()
+    assert production_features.read_text().splitlines()[0] == "features=none"
+    assert production_stamp.is_file()
     compdb = json.loads((build / "compile_commands.json").read_text())
     assert not any(
         (re.search("JUICER_\\w*TEST_HOOK", row["command"]) for row in compdb)
@@ -90,12 +204,13 @@ def execute(arguments):
         if "--package film-juicer-plugin" in line
     ]
     assert cargo and all(
-        ("--no-default-features" in line and "--features" not in line for line in cargo)
+        ("--no-default-features" in line and "--features" not in line
+         and "/cargo/production" in line.replace("\\", "/") for line in cargo)
     )
-    check_build_inputs()
     archive = (
         build
         / "cargo"
+        / "production"
         / (
             "x86_64-pc-windows-msvc/release/film_juicer_plugin.lib"
             if windows
@@ -104,100 +219,21 @@ def execute(arguments):
     )
     native = build / ("juicer_core.lib" if windows else "libjuicer_core.a")
     module = build / "juicer.ofx"
+    prepared_executable = build / "tests/bin" / ("JuicerProductionPreparedRenderProbe" + suffix)
     build_hashes.update({
         str(path): digest(path)
-        for path in [native, archive, module, *([build / "juicer.pdb"] if windows else [])]
+        for path in [production_features, production_stamp, native, archive, module, prepared_executable,
+                     *([build / "juicer.pdb"] if windows else [])]
     })
-    forbidden = re.compile(
-        "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
-    )
-    forbidden = re.compile(forbidden.pattern + r"|reconstruction::testing::|film::reference::testing::")
-    forbidden = re.compile(forbidden.pattern + r"|SpectralAllocationProbe::|gaussian_faults::|halation_frame_faults::|diffusion_frame_faults::|dir_frame_faults::|DirFrameObservation|rejectNativeAllocation|rejectedNativeBytes")
-    forbidden = re.compile(forbidden.pattern + r"|WorkspaceTransitionObservation|WorkspaceCandidateObservation|WorkspaceRejection")
-    strings = [
-        b"workspace candidate capacity rejection",
-        b"workspace candidate invalid-value rejection",
-        b"workspace candidate context-loss rejection",
-        b"--workspace-transitions",
-        b"spatial DIR boundary fixture panic",
-        b"spatial DIR boundary candidate rendezvous canceled",
-        b"JUICER_DIR_BOUNDARY_TEST_HOOK",
-        b"DirBoundaryTest::",
-        b"fj_test_dir_boundary",
-        b"capture-dir-boundaries",
-        b"visual grain frame fixture entry panic",
-        b"visual grain frame fixture layer panic",
-        b"JUICER_GRAIN_FRAME_CAPTURE_TEST_HOOK",
-        b"JuicerGrainCapture",
-        b"GrainFrameObservation",
-        b"EffectsFrameObservation",
-        b"physical effects frame fixture entry panic",
-        b"fj_test_effects_frame",
-        b"capture-effects-frames",
-        b"JUICER_EFFECTS_FRAME_CAPTURE_TEST_HOOK",
-        b"--effects-frame",
-        b"fj_test_grain_frame",
-        b"capture-grain-frames",
-        b"--grain-frame",
-        b"spatial DIR frame fixture panic",
-        b"DirFrameObservation",
-        b"fj_test_dir_frame",
-        b"capture-dir-frames",
-        b"--dir-frame",
-        b"scatter/halation frame fixture panic",
-        b"HalationObservation",
-        b"DiffusionObservation",
-        b"diffusion construction fixture panic",
-        b"fj_test_diffusion_",
-        b"capture-diffusion-frames",
-        b"fj_test_scatter_halation_frame",
-        b"capture-halation-frames",
-        b"frame geometry fixture panic",
-        b"FrameGeometryTest",
-        b"--capture-frame-geometry",
-        b"--frame-geometry",
-        b"film input boundary fixture panic",
-        b"film development acquire fixture panic",
-        b"film development view fixture panic",
-        b"film development release fixture panic",
-        b"film development retain fixture panic",
-        b"visual grain fixture panic",
-        b"physical effects fixture panic",
-        b"spatial optics fixture panic",
-        b"print illuminant fixture panic",
-        b"print preflash fixture panic",
-        b"print balance fixture panic",
-        b"scanner correction fixture panic",
-        b"scanner LUT fixture panic",
-        b"scanner LUT descriptor fixture panic",
-        b"scanner post-effects fixture panic",
-        b"Gaussian kernel fixture panic",
-        b"Gaussian kernel fixture rendezvous canceled",
-        b"film DIR acquire fixture panic",
-        b"film DIR view fixture panic",
-        b"film DIR release fixture panic",
-        b"film density bounds fixture panic",
-        b"film recipe diagnostic fixture panic",
-        b"film reference dependency boundary fault",
-        b"film reference dependency allocation failed",
-        b"output gamut boundary fault",
-        b"closed operation-specific output gamut fault",
-        b"input hull boundary fault",
-        b"closed input hull fault",
-        b"fixed spectrum fixture fault",
-        b"fixed exposure preparation category fault",
-        b"direct color facade fault",
-        b"exposure production boundary fault",
-        b"CAT16 production boundary fault",
-        b"color production boundary fault",
-        b"illuminant injected panic",
-        b"illuminant fixture-only fault",
-        b"spectral injected panic",
-        b"spectral fixture-only fault",
-        b"TC production boundary fault",
-        b"TC fixture-only fault",
-    ]
-    consumed_paths = [root / "native/juicer_legacy_api.h", fixtures / "production-film.c.in",
+    processor_fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{arguments.preset}.dat"
+    print_updates = root / "tests/print/illuminant-fixtures/product-updates.json"
+    consumed_paths = [root / "native/juicer_legacy_api.h", root / "native/juicer_cuda_call_scope.h",
+                      root / "native/juicer_cuda_frame_values.h",
+                      root / "CMakeLists.txt", fixtures / "production-prepared-render.cpp",
+                      fixtures / "prepared_call_abi_facts.inc",
+                      root / "tests/ofx/fixtures/exposure/manifest.json", processor_fixture,
+                      root / "tests/print/illuminant-fixtures/manifest.json", print_updates,
+                      fixtures / "production-film.c.in",
                       fixtures / "production-output-color.c.in", fixtures / "grain_frame_abi_assertions.inc",
                       fixtures / "grain_probe_contract.py", Path(__file__),
                       out / "production-film-expected.h"]
@@ -214,24 +250,8 @@ def execute(arguments):
     effects_payload = effects_directory / effects_spec["presets"][arguments.preset]["literal"]
     assert digest(effects_payload) == effects_spec["payload_sha256"][effects_payload.name]
     consumed_paths.extend([effects_manifest, effects_payload])
-    optics_directory = root / "tests/film/optics-fixtures"
-    optics_manifest = optics_directory / "manifest.json"
-    optics_spec = json.loads(optics_manifest.read_text())
-    optics_payload = optics_directory / optics_spec["presets"][arguments.preset]["literal"]
-    assert digest(optics_payload) == optics_spec["payload_sha256"][optics_payload.name]
-    consumed_paths.extend([optics_manifest, optics_payload])
     reference_manifest, reference_payload, _ = reference_fixture(arguments.preset)
     consumed_paths.extend([reference_manifest, reference_payload])
-    print_directory = root / "tests/print/illuminant-fixtures"
-    print_manifest = print_directory / "rust-manifest.json"
-    print_spec = json.loads(print_manifest.read_text())
-    print_payload = print_directory / print_spec["presets"][arguments.preset]["literal"]
-    assert digest(print_payload) == print_spec["files"][print_payload.name]["sha256"]
-    native_print_manifest = print_directory / print_spec["native_manifest"]["path"]
-    assert digest(native_print_manifest) == print_spec["native_manifest"]["sha256"]
-    consumed_paths.extend([print_manifest, print_payload, native_print_manifest])
-    preflash_manifest, preflash_payload, _, _, _ = preflash_fixture(arguments.preset)
-    consumed_paths.extend([preflash_manifest, preflash_payload])
     balance_manifest, balance_payload, _, _, _ = balance_fixture(arguments.preset)
     consumed_paths.extend([balance_manifest, balance_payload])
     descriptor_manifest, descriptor_payload, descriptor_context, _, _ = scanner_descriptor_fixture(arguments.preset)
@@ -257,13 +277,9 @@ def execute(arguments):
                            fixtures / "effects_frame_probe_contract.py"])
     dir_manifest, dir_payload, dir_checked, _, dir_spec = dir_frame_fixture(arguments.preset)
     consumed_paths.extend([dir_manifest, dir_payload, dir_checked, dir_manifest.parent / "inputs.json"])
-    gaussian_manifest, gaussian_payload, gaussian_context, _, _ = gaussian_fixture(arguments.preset)
-    consumed_paths.extend([gaussian_manifest, gaussian_payload, gaussian_context])
     consumed_paths.extend([post_manifest, post_payload, post_context])
     consumed_paths.extend([descriptor_manifest, descriptor_payload, descriptor_context])
-    lut_manifest, lut_payload, lut_context, lut_checked, _ = scanner_lut_fixture(arguments.preset)
-    consumed_paths.extend([lut_manifest, lut_payload, lut_context, lut_checked, fixtures / "shared_fixture.py",
-                           fixtures / "compact_exposure_fixtures.py"])
+    consumed_paths.extend([fixtures / "shared_fixture.py", fixtures / "compact_exposure_fixtures.py"])
     correction_manifest, correction_payload, correction_checked, _, _, _ = scanner_correction_fixture(arguments.preset)
     consumed_paths.extend([correction_manifest, correction_payload, correction_checked])
     color_manifest, color_payload, color_checked, _, _ = scanner_color_fixture(arguments.preset)
@@ -277,11 +293,11 @@ def execute(arguments):
 
     def scan(path, name, tool, flags):
         text = run(name, [str(llvm / (tool + suffix)), *flags, str(path)])
-        match = forbidden.search(text)
+        match = PRODUCTION_FORBIDDEN_SYMBOLS.search(text)
         assert match is None, (name, match.group(0) if match else None)
         raw = path.read_bytes()
-        assert not any((value in raw for value in strings)), name
-        assert digest(path) == build_hashes[str(path)], "production build input changed during scan"
+        assert not any((value in raw for value in PRODUCTION_FORBIDDEN_STRINGS)), name
+        assert hashlib.sha256(raw).hexdigest() == build_hashes[str(path)], "production build input changed during scan"
         scanned.append(
             {
                 "file": str(path),
@@ -318,9 +334,6 @@ def execute(arguments):
         "fj_legacy_film_density_bounds_prepare",
         "fj_legacy_visual_grain_prepare",
         "fj_legacy_physical_effects_prepare",
-        "fj_legacy_spatial_optics_prepare",
-        "fj_legacy_print_illuminant_prepare",
-        "fj_legacy_print_preflash_prepare",
         "fj_legacy_print_balance_prepare",
         "fj_legacy_scanner_direct_correction_prepare",
         "fj_legacy_scanner_print_correction_prepare",
@@ -330,21 +343,22 @@ def execute(arguments):
         "fj_legacy_scanner_post_describe",
         "fj_legacy_frame_domain_prepare",
         "fj_legacy_frame_geometry_prepare",
-        "fj_legacy_gaussian_kernel_acquire",
-        "fj_legacy_gaussian_kernel_view",
-        "fj_legacy_gaussian_kernel_release",
-        "fj_legacy_scanner_lut_acquire",
-        "fj_legacy_scanner_lut_view",
-        "fj_legacy_scanner_lut_release",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
         "fj_legacy_resolve_route",
     ]:
         assert re.search("\\b" + name + "\\b", symbols), name
+    for domain in ("scanner_lut", "gaussian_kernel"):
+        for operation in ("acquire", "view", "release"):
+            name = f"fj_legacy_{domain}_{operation}"
+            assert re.search(r"\b" + name + r"\b", symbols) is None, name
+    for name in ("fj_legacy_spatial_optics_prepare", "fj_legacy_print_illuminant_prepare",
+                 "fj_legacy_print_preflash_prepare"):
+        assert re.search(r"\b" + name + r"\b", symbols) is None, name
     if windows:
         exports = scan(module, "module-exports", "llvm-readobj", ["--coff-exports"])
-        module_export_names = re.findall("^\\s*Name: (.+)$", exports, re.M)
+        module_export_names = production_module_export_names(exports, windows)
         scan(
             build / "juicer.pdb",
             "pdb-symbols",
@@ -355,9 +369,9 @@ def execute(arguments):
         exports = scan(
             module, "module-exports", "llvm-nm", ["--dynamic", "--defined-only"]
         )
-        module_export_names = [line.split()[-1] for line in exports.splitlines() if line.strip()]
+        module_export_names = production_module_export_names(exports, windows)
         scan(module, "module-symbols", "llvm-nm", ["--defined-only", "--demangle"])
-    assert sorted(module_export_names) == ["OfxGetNumberOfPlugins", "OfxGetPlugin"], module_export_names
+    assert sorted(module_export_names) == sorted(PRODUCTION_MODULE_EXPORTS), module_export_names
     probes = [
         ("film", fixtures / "production-film.c.in"),
         ("accepted-output-color", fixtures / "production-output-color.c.in"),
@@ -365,17 +379,12 @@ def execute(arguments):
     probe_records = []
     grain_results = []
     effects_results = []
-    optics_results = []
-    print_illuminant_results = []
-    preflash_results = []
     balance_results = []
     scanner_correction_results = []
     scanner_demand_results = []
-    scanner_lut_results = []
     scanner_color_results = []
     scanner_descriptor_results = []
     scanner_post_results = []
-    gaussian_results = []
     frame_results = []
     halation_frame_results = []
     diffusion_frame_results = []
@@ -438,11 +447,8 @@ def execute(arguments):
                 "-o",
                 str(executable),
             ]
-        check_consumed()
         run(name + "-compile", command)
         linked = digest(executable)
-        assert digest(archive) == next(row["sha256"] for row in scanned if row["file"] == str(archive))
-        check_consumed()
         before = digest(executable)
         assert before == linked
         output = run(
@@ -453,12 +459,11 @@ def execute(arguments):
         after = digest(executable)
         assert after == before
         assert digest(source) == source_sha256, "generated probe source changed during execution"
-        check_consumed()
         probe_records.append({"name": name, "executable": str(executable),
                               "linked_sha256": linked, "before_run_sha256": before,
                               "after_run_sha256": after, "source": str(source),
                               "source_sha256": source_sha256, "archive": str(archive),
-                              "archive_sha256": digest(archive)})
+                              "archive_sha256": build_hashes[str(archive)]})
         if name == "film":
             prepared_state_results = [json.loads(line.removeprefix("PREPARED_STATE_RESULT "))
                                       for line in output.splitlines() if line.startswith("PREPARED_STATE_RESULT ")]
@@ -535,57 +540,6 @@ def execute(arguments):
                 effects_results.append({"case": case, "category": actual[0], "api": actual[1],
                                         "native_code": actual[2], "reason": actual[3],
                                         "channel": actual[4], "sample": actual[5], "fields": "156-pass"})
-            optics_pattern = r"^OPTICS_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) component=(\d+) field=(\d+) channel=(\d+) fields=pass$"
-            optics_case_names = ["optics-active-print", "optics-active-direct", "optics-inactive",
-                     "optics-inactive-negative-zero", "optics-lens-only", "optics-direct-ignored-enlarger",
-                     "optics-off-invalid-camera", "optics-family-before-disabled", "optics-print-invalid-enlarger",
-                     "optics-camera-before-lens", "optics-lens-before-halation", "optics-halation-total-strength",
-                     "optics-diffusion-centers", "optics-raw-boolean", "optics-raw-params"]
-            envelopes = [[0, 0, 0, 0, 0, 0, 3]] * 6 + [
-                [3, 0, 0, 2, 1, 2, 3], [3, 0, 0, 2, 1, 1, 3], [3, 0, 0, 2, 4, 1, 3],
-                [3, 0, 0, 2, 1, 2, 3], [3, 0, 0, 3, 2, 15, 3], [3, 0, 0, 4, 3, 16, 0],
-                [3, 0, 0, 2, 1, 13, 3], [2, 0, 0, 1, 0, 0, 3], [2, 0, 0, 1, 0, 0, 3]]
-            lines = [line for line in output.splitlines() if line.startswith("OPTICS_CASE")]
-            assert len(lines) == 15, lines
-            for line, case, expected_envelope in zip(lines, optics_case_names, envelopes):
-                match = re.fullmatch(optics_pattern, line)
-                assert match is not None and match[1] == case, line
-                actual = [int(value) for value in match.groups()[1:]]
-                assert actual == expected_envelope, line
-                optics_results.append({"case": case, "category": actual[0], "api": actual[1],
-                                       "native_code": actual[2], "reason": actual[3],
-                                       "component": actual[4], "field": actual[5], "channel": actual[6],
-                                       "fields": "pass"})
-            print_pattern = r"^PRINT_ILLUMINANT_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) sample=(\d+) fields=81-pass$"
-            names = ["print-illum-neutral", "print-illum-main", "print-illum-preflash",
-                     "print-illum-negative-zero", "print-illum-sample-negative", "print-illum-sample-nan",
-                     "print-illum-sample-infinite", "print-illum-computed-sample", "print-illum-energy-zero",
-                     "print-illum-energy-overflow", "print-illum-raw-params", "print-illum-raw-span"]
-            envelopes = [[0, 0, 0, 0, 4294967295]] * 4 + [
-                [3, 0, 0, 2, 0], [3, 0, 0, 2, 37], [3, 0, 0, 2, 80],
-                [3, 0, 0, 2, 24], [3, 0, 0, 3, 4294967295], [3, 0, 0, 3, 4294967295],
-                [2, 0, 0, 1, 4294967295], [2, 0, 0, 1, 4294967295]]
-            lines = [line for line in output.splitlines() if line.startswith("PRINT_ILLUMINANT_CASE")]
-            assert len(lines) == 12, lines
-            for line, case, envelope in zip(lines, names, envelopes, strict=True):
-                match = re.fullmatch(print_pattern, line)
-                assert match is not None and match[1] == case, line
-                actual = [int(value) for value in match.groups()[1:]]
-                assert actual == envelope, line
-                print_illuminant_results.append({"case": case, "category": actual[0], "api": actual[1],
-                                                  "native_code": actual[2], "reason": actual[3],
-                                                  "sample": actual[4], "fields": "81-pass"})
-            _, _, names, _, envelopes = preflash_fixture(arguments.preset)
-            lines = [line for line in output.splitlines() if line.startswith("PRINT_PREFLASH_CASE")]
-            assert len(lines) == 12, lines
-            for line, case, envelope in zip(lines, names, envelopes, strict=True):
-                match = re.fullmatch(r"PRINT_PREFLASH_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) fields=3-pass", line)
-                assert match is not None and match[1] == case, line
-                actual = [int(value) for value in match.groups()[1:]]
-                assert actual == [envelope[0], 0, 0, envelope[1], envelope[2]], line
-                preflash_results.append({"case": case, "category": actual[0], "api": actual[1],
-                                        "native_code": actual[2], "reason": actual[3],
-                                        "channel": actual[4], "fields": "3-pass"})
             _, _, names, _, envelopes = balance_fixture(arguments.preset)
             lines = [line for line in output.splitlines() if line.startswith("PRINT_BALANCE_CASE")]
             assert len(lines) == 16, lines
@@ -610,16 +564,6 @@ def execute(arguments):
                     assert actual == [expected[0], 0, 0, expected[1]], line
                     results.append({"case": case, "category": actual[0], "api": actual[1],
                                     "native_code": actual[2], "reason": actual[3], "fields": "pass"})
-            lut_names = ["LUT-A2", "LUT-A3", "LUT-FAIL-RESOLUTION-1", "LUT-FAIL-CAPACITY", "LUT-FAIL-MISSING-SPAN", "LUT-FAIL-MISMATCHED-SPAN", "LUT-FAIL-MEDIUM-256", "LUT-FAIL-BOOLEAN-2", "LUT-MEDIUM-K0", "LUT-SPECTRAL-EARLY-X", "LUT-SPECTRAL-EARLY-Y", "LUT-SPECTRAL-EARLY-Z", "LUT-FAIL-NULL-VIEW", "LUT-FAIL-INDEPENDENT-OUTPUT-CLEAR", "LUT-FAIL-MALFORMED-DIAGNOSTIC", "LUT-LIFE-NULL-RELEASE", "LUT-LIFE-CONSUMED-INVALID-DIAGNOSTIC"]
-            lines = [line for line in output.splitlines() if line.startswith("SCANNER_LUT_CASE ")]
-            assert len(lines) == len(lut_names)
-            envelopes = [(0, 0, 2**32-1, 2**64-1, 0)] * 2 + [(3, 2, 2**32-1, 2**64-1, 0), (4, 3, 2**32-1, 2**64-1, 1)] + [(2, 1, 2**32-1, 2**64-1, 0)] * 4 + [(3, 5, 0, 0, 0)] + [(3, 5, channel, 0, 0) for channel in range(3)] + [(2, 1, 2**32-1, 2**64-1, 0)] * 3 + [(0, 0, 2**32-1, 2**64-1, 0), (2, 0, 2**32-1, 2**64-1, 0)]
-            for line, name, envelope in zip(lines, lut_names, envelopes, strict=True):
-                match = re.fullmatch(r"SCANNER_LUT_CASE (\S+) category=(\d+) api=(\d+) native_code=(-?\d+) reason=(\d+) channel=(\d+) index=(\d+) buffer=(\d+) fields=pass", line)
-                assert match and match[1] == name, line
-                actual = [int(x) for x in match.groups()[1:]]
-                assert actual == [envelope[0], 0, 0, *envelope[1:]], line
-                scanner_lut_results.append({"case": name, "fields": actual})
             _, _, _, _, color_cases = scanner_color_fixture(arguments.preset)
             lines = [line for line in output.splitlines() if line.startswith("SCANNER_COLOR_CASE ")]
             assert len(lines) == len(color_cases)
@@ -653,14 +597,39 @@ def execute(arguments):
                 actual = json.loads(line.removeprefix("FRAME_CASE "))
                 assert actual == expected, actual["case"]
                 frame_results.append(actual)
-            _, _, _, _, gaussian_cases = gaussian_fixture(arguments.preset)
-            lines = [line for line in output.splitlines() if line.startswith("GAUSSIAN_CASE ")]
-            assert len(lines) == len(gaussian_cases)
-            for line, expected in zip(lines, gaussian_cases, strict=True):
-                actual = json.loads(line.removeprefix("GAUSSIAN_CASE "))
-                assert actual == expected, actual["case"]
-                gaussian_results.append(actual)
-    check_build_inputs()
+    prepared_before = digest(prepared_executable)
+    prepared_command = [str(prepared_executable), str(root / "Resources"), str(processor_fixture),
+                        arguments.preset, str(print_updates)]
+    prepared_output = run("prepared-render", prepared_command)
+    prepared_after = digest(prepared_executable)
+    assert prepared_before == prepared_after == build_hashes[str(prepared_executable)], "prepared executable changed"
+    raw_document = json.loads(prepared_output)
+    assert set(raw_document) == {"rows"}, "prepared render stdout schema"
+    raw_rows = raw_document["rows"]
+    assert [row["case_id"] for row in raw_rows] == [
+        "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"
+    ], "prepared render exact row membership"
+
+    def word_hash(words):
+        assert isinstance(words, list) and all(type(word) is int and 0 <= word <= 0xffffffff for word in words)
+        return hashlib.sha256(b"".join(struct.pack("<I", word) for word in words)).hexdigest()
+
+    prepared_rows = []
+    for raw in raw_rows:
+        row = dict(raw)
+        row["input_sha256"] = word_hash(row.pop("input_f32_words"))
+        row["output_f32_words_sha256"] = word_hash(row.pop("output_f32_words"))
+        assert all(type(row[name]) is int and row[name] == 0 for name in ("status", "api", "native_code"))
+        assert row["accepted_fixture_match"] is True and row["diagnostic"] == ""
+        prepared_rows.append(row)
+    retained_prepared = out / "build" / prepared_executable.relative_to(build)
+    prepared_render = {
+        "executable": str(retained_prepared), "executable_sha256_before": prepared_before,
+        "executable_sha256_after": prepared_after, "command": prepared_command,
+        "fixture": str(processor_fixture), "fixture_sha256": digest(processor_fixture),
+        "stdout_sha256": digest(out / "prepared-render.stdout"),
+        "stderr_sha256": digest(out / "prepared-render.stderr"), "rows": prepared_rows,
+    }
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
         cuda = Path(os.environ["CUDA_PATH_V13_2"])
@@ -674,95 +643,88 @@ def execute(arguments):
     loaded.OfxGetPlugin.argtypes = [ctypes.c_int]
     loaded.OfxGetPlugin.restype = ctypes.c_void_p
     assert loaded.OfxGetNumberOfPlugins() == 1 and loaded.OfxGetPlugin(0)
-    check_consumed()
     retained_build_inputs = {}
     for original, expected in build_hashes.items():
         path = Path(original)
         retained = out / "build" / path.relative_to(build)
         retained.parent.mkdir(parents=True, exist_ok=True)
-        assert digest(path) == expected, "production build input changed before retention"
         shutil.copyfile(path, retained)
+        IO_COSTS["copy_read_bytes"] += path.stat().st_size
+        IO_COSTS["copy_write_bytes"] += retained.stat().st_size
         assert digest(retained) == expected, "production build input changed during retention"
         retained_build_inputs[original] = {"file": str(retained), "sha256": expected}
+        if path == prepared_executable:
+            assert retained == retained_prepared, "prepared executable retention path changed"
     check_consumed()
     check_build_inputs()
-    (out / "production.json").write_text(
-        json.dumps(
-            {
-                "preset": arguments.preset,
-                "build_testing": "OFF",
-                "test_support": "OFF",
-                "scanned": scanned,
-                "build_inputs": retained_build_inputs,
-                "consumed_inputs": consumed,
-                "grain_fixture": {"manifest": str(grain_manifest), "payload": str(grain_payload),
-                                  "logical_preset": arguments.preset},
-                "probes": probe_records,
-                "grain_results": grain_results,
-                "effects_results": effects_results,
-                "optics_results": optics_results,
-                "print_illuminant_results": print_illuminant_results,
-                "preflash_results": preflash_results,
-                "balance_results": balance_results,
-                "scanner_correction_results": scanner_correction_results,
-                "scanner_demand_results": scanner_demand_results,
-                "scanner_lut_results": scanner_lut_results,
-                "scanner_color_results": scanner_color_results,
-                "scanner_descriptor_results": scanner_descriptor_results,
-                "scanner_post_results": scanner_post_results,
-                "frame_results": frame_results,
-                "dir_boundary_results": dir_boundary_results,
-                "dir_boundary_fixture": {"manifest": str(dir_boundary_manifest), "payload": str(dir_boundary_payload), "normative": str(dir_boundary_checked),
-                                         "input_spec": str(dir_boundary_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-                "grain_frame_results": grain_frame_results,
-                "effects_frame_results": effects_frame_results,
-                "effects_frame_fixture": {"manifest": str(effects_frame_manifest), "payload": str(effects_frame_payload),
-                                          "context": str(effects_frame_context), "normative": str(effects_frame_checked),
-                                          "input_spec": str(effects_frame_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-                "grain_frame_fixture": {"manifest": str(grain_frame_manifest), "payload": str(grain_frame_payload), "normative": str(grain_frame_checked),
-                                        "input_spec": str(grain_frame_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-                "dir_frame_results": dir_frame_results,
-                "dir_frame_fixture": {"manifest": str(dir_manifest), "payload": str(dir_payload), "normative": str(dir_checked),
-                                      "input_spec": str(dir_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-                "diffusion_frame_results": diffusion_frame_results,
-                "diffusion_frame_fixture": {"edges_payload": str(diffusion_edges_payload), "edges_context": str(diffusion_edges_context), "edges_input_spec": str(diffusion_edges_inputs), "manifest": str(diffusion_manifest), "payload": str(diffusion_payload), "context": str(diffusion_context),
-                                            "normative": str(diffusion_checked), "input_spec": str(diffusion_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-                "halation_frame_results": halation_frame_results,
-                "halation_frame_fixture": {"manifest": str(halation_manifest), "payload": str(halation_payload), "context": str(halation_context),
-                                           "normative": str(halation_checked), "input_spec": str(halation_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
-                "frame_fixture": {"manifest": str(frame_manifest), "payload": str(frame_payload), "context": str(frame_context), "logical_preset": arguments.preset},
-                "gaussian_results": gaussian_results,
-                "gaussian_fixture": {"manifest": str(gaussian_manifest), "payload": str(gaussian_payload), "context": str(gaussian_context), "logical_preset": arguments.preset},
-                "scanner_post_fixture": {"manifest": str(post_manifest), "payload": str(post_payload), "context": str(post_context), "logical_preset": arguments.preset},
-                "scanner_descriptor_fixture": {"manifest": str(descriptor_manifest), "payload": str(descriptor_payload), "context": str(descriptor_context), "logical_preset": arguments.preset},
-                "prepared_state_results": prepared_state_results,
-                "reference_results": reference_results,
-                "reference_fixture": {"manifest": str(reference_manifest), "payload": str(reference_payload), "logical_preset": arguments.preset},
-                "scanner_color_fixture": {"manifest": str(color_manifest), "payload": str(color_payload), "normative": str(color_checked), "logical_preset": arguments.preset},
-                "scanner_lut_fixture": {"manifest": str(lut_manifest), "payload": str(lut_payload), "context": str(lut_context), "normative": str(lut_checked), "logical_preset": arguments.preset},
-                "scanner_correction_fixture": {"manifest": str(correction_manifest), "payload": str(correction_payload),
-                                               "normative": str(correction_checked), "logical_preset": arguments.preset},
-                "balance_fixture": {"manifest": str(balance_manifest), "payload": str(balance_payload), "logical_preset": arguments.preset},
-                "preflash_fixture": {"manifest": str(preflash_manifest), "payload": str(preflash_payload),
-                                     "logical_preset": arguments.preset},
-                "print_illuminant_fixture": {"manifest": str(print_manifest), "payload": str(print_payload),
-                                             "logical_preset": arguments.preset},
-                "optics_fixture": {"manifest": str(optics_manifest), "payload": str(optics_payload),
-                                   "logical_preset": arguments.preset},
-                "effects_fixture": {"manifest": str(effects_manifest), "payload": str(effects_payload),
-                                    "logical_preset": arguments.preset},
-                "commands": {"file": str(out / "commands.json"), "sha256": digest(out / "commands.json")},
-                "command_outputs": {str(out / (row["name"] + suffix)): digest(out / (row["name"] + suffix))
-                                    for row in commands for suffix in [".stdout", ".stderr"]},
-                "loaded_module": {"file": str(module), "sha256": build_hashes[str(module)]},
-                "exports": sorted(module_export_names),
-                "hidden_device_load": True,
-                "limitation": "CUDA_VISIBLE_DEVICES=-1 checks hidden discovery; an absent installed driver is not established.",
-            },
-            indent=2,
-        )
-        + "\n"
-    )
+    report = {
+        "schema": "production-contract-v1",
+        "io_costs": IO_COSTS,
+        "preset": arguments.preset,
+        "build_testing": "OFF",
+        "test_support": "OFF",
+        "scanned": scanned,
+        "build_inputs": retained_build_inputs,
+        "consumed_inputs": consumed,
+        "grain_fixture": {"manifest": str(grain_manifest), "payload": str(grain_payload),
+                          "logical_preset": arguments.preset},
+        "probes": probe_records,
+        "grain_results": grain_results,
+        "effects_results": effects_results,
+        "balance_results": balance_results,
+        "scanner_correction_results": scanner_correction_results,
+        "scanner_demand_results": scanner_demand_results,
+        "scanner_color_results": scanner_color_results,
+        "scanner_descriptor_results": scanner_descriptor_results,
+        "scanner_post_results": scanner_post_results,
+        "frame_results": frame_results,
+        "dir_boundary_results": dir_boundary_results,
+        "dir_boundary_fixture": {"manifest": str(dir_boundary_manifest), "payload": str(dir_boundary_payload), "normative": str(dir_boundary_checked),
+                                 "input_spec": str(dir_boundary_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
+        "grain_frame_results": grain_frame_results,
+        "effects_frame_results": effects_frame_results,
+        "effects_frame_fixture": {"manifest": str(effects_frame_manifest), "payload": str(effects_frame_payload),
+                                  "context": str(effects_frame_context), "normative": str(effects_frame_checked),
+                                  "input_spec": str(effects_frame_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
+        "grain_frame_fixture": {"manifest": str(grain_frame_manifest), "payload": str(grain_frame_payload), "normative": str(grain_frame_checked),
+                                "input_spec": str(grain_frame_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
+        "dir_frame_results": dir_frame_results,
+        "dir_frame_fixture": {"manifest": str(dir_manifest), "payload": str(dir_payload), "normative": str(dir_checked),
+                              "input_spec": str(dir_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
+        "diffusion_frame_results": diffusion_frame_results,
+        "diffusion_frame_fixture": {"edges_payload": str(diffusion_edges_payload), "edges_context": str(diffusion_edges_context), "edges_input_spec": str(diffusion_edges_inputs), "manifest": str(diffusion_manifest), "payload": str(diffusion_payload), "context": str(diffusion_context),
+                                    "normative": str(diffusion_checked), "input_spec": str(diffusion_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
+        "halation_frame_results": halation_frame_results,
+        "halation_frame_fixture": {"manifest": str(halation_manifest), "payload": str(halation_payload), "context": str(halation_context),
+                                   "normative": str(halation_checked), "input_spec": str(halation_manifest.parent / "inputs.json"), "logical_preset": arguments.preset},
+        "frame_fixture": {"manifest": str(frame_manifest), "payload": str(frame_payload), "context": str(frame_context), "logical_preset": arguments.preset},
+        "scanner_post_fixture": {"manifest": str(post_manifest), "payload": str(post_payload), "context": str(post_context), "logical_preset": arguments.preset},
+        "scanner_descriptor_fixture": {"manifest": str(descriptor_manifest), "payload": str(descriptor_payload), "context": str(descriptor_context), "logical_preset": arguments.preset},
+        "prepared_state_results": prepared_state_results,
+        "prepared_render": prepared_render,
+        "reference_results": reference_results,
+        "reference_fixture": {"manifest": str(reference_manifest), "payload": str(reference_payload), "logical_preset": arguments.preset},
+        "scanner_color_fixture": {"manifest": str(color_manifest), "payload": str(color_payload), "normative": str(color_checked), "logical_preset": arguments.preset},
+        "scanner_correction_fixture": {"manifest": str(correction_manifest), "payload": str(correction_payload),
+                                       "normative": str(correction_checked), "logical_preset": arguments.preset},
+        "balance_fixture": {"manifest": str(balance_manifest), "payload": str(balance_payload), "logical_preset": arguments.preset},
+        "effects_fixture": {"manifest": str(effects_manifest), "payload": str(effects_payload),
+                            "logical_preset": arguments.preset},
+        "commands": {"file": str(out / "commands.json"), "sha256": digest(out / "commands.json")},
+        "command_outputs": {str(out / (row["name"] + suffix)): digest(out / (row["name"] + suffix))
+                            for row in commands for suffix in [".stdout", ".stderr"]},
+        "loaded_module": {"file": str(module), "sha256": build_hashes[str(module)]},
+        "exports": sorted(module_export_names),
+        "hidden_device_load": True,
+        "limitation": "CUDA_VISIBLE_DEVICES=-1 checks hidden discovery; an absent installed driver is not established.",
+    }
+    for field in (
+        "scanner_lut_results", "scanner_lut_fixture", "gaussian_results", "gaussian_fixture",
+        "optics_results", "optics_fixture", "print_illuminant_results",
+        "print_illuminant_fixture", "preflash_results", "preflash_fixture",
+    ):
+        assert field not in report, "production retired mathematical owner field remains: " + field
+    (out / "production.json").write_text(json.dumps(report, indent=2) + "\n")
     print("PRODUCTION_MANIFEST_SHA256", digest(out / "production.json"), flush=True)
     print(
         "PASS complete OFF film and retained output-color gate, archive/module/PDB isolation, two exports and hidden-device loading",
@@ -938,114 +900,6 @@ def expected_film_header(out):
         stream.write("static const uint32_t effects_coefficients[9][156] = {" + ",".join("{" + ",".join(str(word) + "U" for family in ["film_dust", "film_scratch", "gate_dust", "gate_scratch"] for word in row["recipe"][family]) + "}" for row in rows) + "};\n")
 
 
-    optics_directory = root / "tests/film/optics-fixtures"
-    optics_manifest = json.loads((optics_directory / "manifest.json").read_text())
-    optics_payload = optics_directory / optics_manifest["presets"][arguments.preset]["literal"]
-    assert digest(optics_payload) == optics_manifest["payload_sha256"][optics_payload.name]
-    captured = json.loads(optics_payload.read_text())["cases"]
-    names = ["optics-active-print", "optics-active-direct", "optics-inactive",
-             "optics-inactive-negative-zero", "optics-lens-only", "optics-direct-ignored-enlarger",
-             "optics-off-invalid-camera", "optics-family-before-disabled", "optics-print-invalid-enlarger",
-             "optics-camera-before-lens", "optics-lens-before-halation", "optics-halation-total-strength",
-             "optics-diffusion-centers", "optics-raw-boolean", "optics-raw-params"]
-    rows = [next(row for row in captured if row["id"] == name) for name in names[:13]]
-    # Raw admission clearing is the normative ABI contract; no old partial native failure output is used.
-    rows += [{**rows[0], "input": {**rows[0]["input"],
-                                 "camera": {**rows[0]["input"]["camera"], "active": 2}}, "success": False},
-             {**rows[0], "success": False}]
-    arrays = {name: [] for name in ["input_doubles", "input_floats", "input_flags",
-                                  "doubles", "floats", "flags", "hashes"]}
-    for row in rows:
-        v = row["input"]
-        arrays["input_doubles"].append(v["camera"]["f64"] + v["enlarger"]["f64"])
-        arrays["input_floats"].append([v["lens_f32"]] + v["halation_f32"] + v["first_sigma_f32"] + v["primary_f32"])
-        arrays["input_flags"].append([int(v["camera"]["active"]), v["camera"]["family"],
-                                     int(v["enlarger"]["active"]), v["enlarger"]["family"],
-                                     int(v["halation_active"]), int(v["print"])])
-        if row["success"]:
-            recipe = row["recipe"]
-            c = recipe["camera"]
-            e = recipe["enlarger"]
-            h = recipe["halation"]
-            arrays["doubles"].append(c["f64"] + e["f64"])
-            arrays["floats"].append([recipe["lens_f32"]] + h["f32"])
-            arrays["flags"].append([c["domain"], int(c["active"]), c["family"], e["domain"],
-                                    int(e["active"]), e["family"], int(h["scatter_active"]), int(h["back_reflection_active"])])
-            arrays["hashes"].append([c["resolved_hash"], c["hash"], e["resolved_hash"], e["hash"], recipe["lens_hash"], h["hash"], recipe["hash"]])
-        else:
-            for key, count in [("doubles", 18), ("floats", 10), ("flags", 8), ("hashes", 7)]:
-                arrays[key].append([0] * count)
-    with (out / "production-film-expected.h").open("a") as stream:
-        stream.write("static const char* optics_names[15] = {" + ",".join(json.dumps(name) for name in names) + "};\n")
-        for name, data in arrays.items():
-            wide = name in {"input_doubles", "doubles", "hashes"}
-            def literal(word):
-                return "UINT64_C(" + str(word) + ")" if wide else str(word) + "U"
-            stream.write("static const " + ("uint64_t" if wide else "uint32_t") + " optics_" + name
-                         + "[15][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(literal(word) for word in row) + "}" for row in data) + "};\n")
-
-    print_directory = root / "tests/print/illuminant-fixtures"
-    print_manifest = json.loads((print_directory / "rust-manifest.json").read_text())
-    print_payload = print_directory / print_manifest["presets"][arguments.preset]["literal"]
-    assert digest(print_payload) == print_manifest["files"][print_payload.name]["sha256"]
-    literals = json.loads(print_payload.read_text())["cases"]
-    names = ["print-illum-neutral", "print-illum-main", "print-illum-preflash",
-             "print-illum-negative-zero", "print-illum-sample-negative", "print-illum-sample-nan",
-             "print-illum-sample-infinite", "print-illum-computed-sample", "print-illum-energy-zero",
-             "print-illum-energy-overflow", "print-illum-raw-params", "print-illum-raw-span"]
-    rows = []
-    for name in names[:10]:
-        matched = [row for row in literals if row["id"] == name]
-        assert len(matched) == 1, name
-        rows.append(matched[0])
-    rows += [rows[0], rows[0]]
-    # Owner-approved pinned-erff words are frozen separately from native evidence.
-    # Header generation evaluates neither Rust nor native mathematics.
-    envelopes = [[0, 0, 4294967295]] * 4 + [[3, 2, 0], [3, 2, 37], [3, 2, 80],
-                  [3, 2, 24], [3, 3, 4294967295], [3, 3, 4294967295],
-                  [2, 1, 4294967295], [2, 1, 4294967295]]
-    with (out / "production-film-expected.h").open("a") as stream:
-        stream.write("static const char* print_illuminant_names[12] = {" + ",".join(json.dumps(name) for name in names) + "};\n")
-        for name, data in [("edges", [row["edges_nm"] for row in rows]),
-                           ("transitions", [row["transitions_nm"] for row in rows]),
-                           ("cmy", [row["cmy_cc"] for row in rows]),
-                           ("source", [row["source"] for row in rows]),
-                           ("samples", [row["samples"] if i < 4 else [0] * 81 for i, row in enumerate(rows)]),
-                           ("envelopes", envelopes)]:
-            stream.write("static const uint32_t print_illuminant_" + name + "[12][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(str(word) + "U" for word in row) + "}" for row in data) + "};\n")
-
-
-def preflash_fixture(preset):
-    directory = root / "tests/print/preflash-fixtures"
-    manifest = directory / "manifest.json"
-    spec = json.loads(manifest.read_text())
-    payload = directory / spec["presets"][preset]["native"]
-    assert digest(payload) == spec["files"][payload.name]["sha256"]
-    literals = json.loads(payload.read_text())["cases"]
-    names = ["preflash-unit", "preflash-channels", "preflash-pattern", "preflash-zero",
-             "preflash-light-nan", "preflash-sensitivity-skip", "preflash-narrow-overflow",
-             "preflash-negative-m", "preflash-nonfinite-y", "preflash-raw-input",
-             "preflash-raw-count", "preflash-raw-pointer"]
-    rows = []
-    for name in names[:9]:
-        selected = [row for row in literals if row["id"] == name]
-        assert len(selected) == 1, name
-        rows.append(selected[0])
-    rows += [rows[0]] * 3
-    envelopes = [[0, 0, 4294967295] for _ in range(7)] + [[3, 2, 1], [3, 2, 2]] + [[2, 1, 4294967295] for _ in range(3)]
-    return manifest, payload, names, rows, envelopes
-
-
-def expected_preflash_header(out):
-    _, _, names, rows, envelopes = preflash_fixture(arguments.preset)
-    with (out / "production-film-expected.h").open("a") as stream:
-        stream.write("static const char* preflash_names[12] = {" + ",".join(json.dumps(name) for name in names) + "};\n")
-        for name, data in [("base", [row["film_base_density"] for row in rows]),
-                           ("light", [row["filtered_illuminant"] for row in rows]),
-                           ("sensitivity", [row["print_sensitivity_cmy"] for row in rows]),
-                           ("raw", [row["raw"] if i < 7 else [0] * 3 for i, row in enumerate(rows)]),
-                           ("envelopes", envelopes)]:
-            stream.write("static const uint32_t preflash_" + name + "[12][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(str(word) + "U" for word in row) + "}" for row in data) + "};\n")
 
 
 def balance_fixture(preset):
@@ -1151,36 +1005,6 @@ def correction_demand(name, row):
     if route in ((1, 3) if row["spec"]["print"] else (2,)):
         return [0, 0], 1
     return [3, 7 if row["spec"]["print"] else 2], 0
-
-
-def scanner_lut_fixture(preset):
-    directory = root / "tests/scanner/lut-fixtures"
-    manifest = directory / "manifest.json"
-    spec = json.loads(manifest.read_text())
-    entry = spec["presets"][preset]
-    logical = entry["native"]
-    payload = directory / spec["payloads"][logical]
-    context = directory / spec["contexts"][logical]
-    for path in (payload, context):
-        assert digest(path) == spec["storage_files"][path.name]
-    native = load_shared_fixture(directory / logical)
-    assert native["preset"] == preset
-    assert hashlib.sha256(original_capture_bytes(native, spec["original_line_endings"][logical])).hexdigest() == entry["sha256"]
-    checked = directory / "checked.json"
-    normative = json.loads(checked.read_text())
-    assert normative["failure_defaults"] == {"reason": 0, "channel": 2**32 - 1, "index": 2**64 - 1, "buffer": 0}
-    assert normative["reasons"] == {"RAW": [2, 0, 0], "RESOLUTION": [3, 0, 0], "SIZE": [4, 0, 0], "ALLOCATION": [4, 0, 0], "NONFINITE": [3, 0, 0], "PANIC": [8, 0, 0]}
-    rows = [next(row for row in native["cases"] if row["id"] == name) for name in ("LUT-A2", "LUT-A3")]
-    for row in rows:
-        r = row["input"]["resolution"]
-        assert row["native"]["success"] and row["native"]["resolution"] == r
-        for i, name in enumerate(("log2_xyz", "slope_c", "slope_m", "slope_y", "cell_min", "cell_max")):
-            side = r if i < 4 else r - 1
-            words = row["native"][name]
-            assert len(words) == 3 * side ** 3 and all(type(word) is int and 0 <= word < 2**32 for word in words)
-        assert row["native"]["diagnostic"] == ""
-        assert row["native"]["failed_voxel"] == 2**64 - 1 and row["native"]["failed_channel"] == 2**32 - 1
-    return manifest, payload, context, checked, rows
 
 
 def scanner_color_fixture(preset):
@@ -1532,41 +1356,6 @@ def expected_frame_header(out):
         stream.write("};\n")
 
 
-def gaussian_fixture(preset):
-    directory = root / "tests/optics/gaussian-fixtures"
-    manifest = directory / "manifest.json"
-    spec = json.loads(manifest.read_bytes())
-    logical = spec["presets"][preset]["native"]
-    payload, context = (directory / spec[k][logical] for k in ("payloads", "contexts"))
-    assert all(digest(path) == spec["sha256"][path.name] for path in (payload, context))
-    captured = load_shared_fixture(directory / logical)
-    assert captured["preset"] == preset and len(captured["cases"]) == 188
-    cases = []
-    for row in captured["cases"]:
-        radius, sigma = row["radius"], row["sigma_bits"]
-        reason = 2 if radius < 1 or radius > 2048 else (3 if sigma & 0x80000000 or sigma == 0 or sigma >= 0x7f800000 else 0)
-        cases.append({"case": row["name"], "envelope": [3 if reason else 0, 0, 0, reason],
-                      "radius": 0 if reason else radius, "sigma_bits": 0 if reason else sigma,
-                      "weights": [] if reason else row["weights"]})
-    for name in spec["production_cases"][188:]:
-        reason = 2 if name == "radius-upper-reject" else (0 if name in {"zero-capacity", "null-release"} else 1)
-        cases.append({"case": name, "envelope": [3 if reason == 2 else 2 if reason else 0, 0, 0, reason],
-                      "radius": 0, "sigma_bits": 0, "weights": []})
-    assert [v["case"] for v in cases] == spec["production_cases"]
-    return manifest, payload, context, captured, cases
-
-
-def expected_gaussian_header(out):
-    _, _, _, captured, cases = gaussian_fixture(arguments.preset)
-    with (out / "production-film-expected.h").open("a") as stream:
-        for i, row in enumerate(captured["cases"]):
-            stream.write(f"static const uint32_t gaussian_words_{i}[] = {{" + ",".join(str(w) + "U" for w in row["weights"] or [0]) + "};\n")
-        stream.write("static const struct { const char* name; int32_t radius; uint32_t sigma, reason; size_t count; const uint32_t* words; } gaussian_rows[] = {\n")
-        for i, (row, expected) in enumerate(zip(captured["cases"], cases[:188], strict=True)):
-            stream.write("{%s,%d,%dU,%dU,%d,gaussian_words_%d},\n" % (json.dumps(row["name"]), row["radius"], row["sigma_bits"], expected["envelope"][3], len(expected["weights"]), i))
-        stream.write("};\n")
-
-
 def scanner_post_fixture(preset):
     directory = root / "tests/scanner/post-effects-fixtures"
     manifest = directory / "manifest.json"
@@ -1652,21 +1441,6 @@ def expected_scanner_descriptor_header(out):
         array("descriptor_envelopes", [v["envelope"] for v in cases])
 
 
-def expected_scanner_lut_header(out):
-    _, _, _, _, rows = scanner_lut_fixture(arguments.preset)
-    first = rows[0]["input"]
-    assert {k: val for k, val in first.items() if k != "resolution"} == {k: val for k, val in rows[1]["input"].items() if k != "resolution"}
-    with (out / "production-film-expected.h").open("a") as stream:
-        def words(name, values):
-            stream.write("static const uint32_t " + name + "[] = {" + ",".join(str(word) + "U" for word in values) + "};\n")
-        for field in ("eps_c", "eps_m", "eps_y", "weighted_x", "weighted_y", "weighted_z", "baseline", "range_min_cmy", "inverse_span_cmy"):
-            words("lut_input_" + field, first[field])
-        words("lut_input_inv_yn", [first["inv_yn"]])
-        for row in rows:
-            for field in ("log2_xyz", "slope_c", "slope_m", "slope_y", "cell_min", "cell_max"):
-                words("lut_" + str(row["input"]["resolution"]) + "_" + field, row["native"][field])
-
-
 def expected_scanner_correction_header(out):
     _, _, _, names, rows, envelopes = scanner_correction_fixture(arguments.preset)
     inputs = [row["input"] for row in rows]
@@ -1711,17 +1485,22 @@ def expected_scanner_correction_header(out):
                          ",".join("UINT64_C(" + str(word) + ")" for word in data) + "};\n")
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--preset", choices=["linux-release", "windows-clang-release"], required=True
+    )
+    parser.add_argument("--artifacts", type=Path, required=True)
+    global arguments, build
+    arguments = parser.parse_args(argv)
+    build = root / "out/build" / arguments.preset
     arguments.artifacts.mkdir(parents=True, exist_ok=True)
     expected_film_header(arguments.artifacts)
-    expected_preflash_header(arguments.artifacts)
     expected_balance_header(arguments.artifacts)
     expected_scanner_correction_header(arguments.artifacts)
-    expected_scanner_lut_header(arguments.artifacts)
     expected_scanner_color_header(arguments.artifacts)
     expected_scanner_descriptor_header(arguments.artifacts)
     expected_scanner_post_header(arguments.artifacts)
-    expected_gaussian_header(arguments.artifacts)
     expected_frame_header(arguments.artifacts)
     expected_halation_frame_header(arguments.artifacts)
     expected_diffusion_frame_header(arguments.artifacts)
@@ -1730,3 +1509,7 @@ if __name__ == "__main__":
     expected_dir_frame_header(arguments.artifacts)
     expected_dir_boundary_header(arguments.artifacts)
     execute(arguments)
+
+
+if __name__ == "__main__":
+    main()

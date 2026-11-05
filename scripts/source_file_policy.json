@@ -8,7 +8,7 @@
   "verifierIndependentExtensions": [".cpp", ".cu", ".rs"],
   "verifierRequiredPaths": [
     "src/ScanRoute.cpp",
-    "src/RenderRecipe.cpp",
+    "src/RenderValues.cpp",
     "rust/film-juicer-core/src/route.rs",
     "rust/film-juicer-core/src/color/output.rs"
   ],

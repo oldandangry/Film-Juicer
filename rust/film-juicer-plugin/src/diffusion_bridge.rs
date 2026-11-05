@@ -159,6 +159,20 @@ fn status(category: u32) -> FjStatus {
     }
 }
 
+/// Shared checked frame-set construction for the raw edge and held owner.
+/// Faults that corrupt fixed ABI records remain in `frame_build` only.
+pub(crate) fn checked_frame_set(
+    input: diffusion_frame::FrameInput,
+    fault: u32,
+) -> Result<Option<FrameSet>, diffusion_frame::Error> {
+    #[cfg(feature = "test-support")]
+    if fault == 1 {
+        panic!("diffusion construction fixture panic");
+    }
+    let _ = fault;
+    FrameSet::new(input)
+}
+
 /// # Safety
 /// Required records are initialized/aligned/live; writable peers and diagnostics
 /// are exclusive and disjoint. `empty` clears every semantic field of fixed O.
@@ -205,7 +219,7 @@ unsafe fn checked<I: Copy, O: Copy>(
         #[cfg(not(feature = "test-support"))]
         let fault = 0;
         #[cfg(feature = "test-support")]
-        if fault == 1 {
+        if fault == 1 && !matches!(operation, Operation::Frame) {
             panic!("diffusion construction fixture panic");
         }
         // SAFETY: All numeric admissions succeeded; caller supplies live aligned initialized input.
@@ -383,13 +397,16 @@ fn frame_build(
     _fault: u32,
 ) -> Result<FjDiffusionFrameSet, diffusion_frame::Error> {
     let f = input.full_frame;
-    let frame = FrameSet::new(diffusion_frame::FrameInput {
-        route: input.route,
-        full_frame: [f.x, f.y, f.width, f.height],
-        pixel_size_um: input.pixel_size_um,
-        camera: stage_input(input.camera),
-        enlarger: stage_input(input.enlarger),
-    })?;
+    let frame = checked_frame_set(
+        diffusion_frame::FrameInput {
+            route: input.route,
+            full_frame: [f.x, f.y, f.width, f.height],
+            pixel_size_um: input.pixel_size_um,
+            camera: stage_input(input.camera),
+            enlarger: stage_input(input.enlarger),
+        },
+        _fault,
+    )?;
     let mut wire = empty_frame();
     if let Some(frame) = frame {
         wire.route = frame.route();
@@ -489,7 +506,7 @@ pub(crate) mod diffusion_frame_faults {
         });
         status(0)
     }
-    pub(super) fn take(operation: u32) -> u32 {
+    pub(crate) fn take(operation: u32) -> u32 {
         let (selected, fault) = NEXT.get();
         if selected == operation {
             NEXT.set((0, 0));

@@ -178,14 +178,23 @@ fn reconstruct(
             let matrices = color::input_matrices(color::InputSpace::SrgbRec709);
             visit(exposure, Operation::LinearSrgb)?;
             let xyz = color::linear_srgb_to_xyz([source; 3]);
-            visit(exposure, Operation::Cat16)?;
-            let projected = color::adapt_cat16(
+            let projected = color::checked_adapt_cat16(
                 xyz,
                 color::Whites {
                     source_xyz: matrices.d65_white_xyz,
                     destination_xyz: *projection_white_xyz,
                 },
-            );
+            )
+            .map_err(|error| -> Error {
+                match error {
+                    #[cfg(feature = "test-support")]
+                    color::CheckedError::UnsupportedInput => Error::Dependency {
+                        exposure,
+                        operation: Operation::Cat16,
+                        category: Category::Unsupported,
+                    },
+                }
+            })?;
             visit(exposure, Operation::TcSample)?;
             reconstruction::sample_tc_lut(samples, projected)
                 .map_err(|_| failure(Some(Operation::TcSample)))?
@@ -230,8 +239,12 @@ impl Reference {
             let compensated_log =
                 (compensated_raw_rgb[channel] * meter_scale + 1.0e-10_f32).log10();
             let gamma = development.gamma_rgb()[channel];
+            let baseline_query = baseline_log * gamma;
+            #[cfg(feature = "test-support")]
+            let baseline_query =
+                testing::density_lookup_query(baseline_query, Exposure::Baseline, channel);
             let baseline_density = sample_density(
-                baseline_log * gamma,
+                baseline_query,
                 development.log_exposure(),
                 development.authored_curves_cmy(),
                 channel,
@@ -292,6 +305,46 @@ impl Reference {
 
 #[cfg(feature = "test-support")]
 pub mod testing {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DENSITY_LOOKUP_FAULT: Cell<(bool, bool)> = const { Cell::new((false, false)) };
+    }
+
+    /// Arm or clear the next actual baseline/channel-zero lookup query substitution.
+    pub fn arm_density_lookup_fault(armed: bool) {
+        DENSITY_LOOKUP_FAULT.set((armed, false));
+    }
+
+    /// Replace only the actual baseline/channel-zero query when armed.
+    pub(super) fn density_lookup_query(
+        query: f32,
+        exposure: super::Exposure,
+        channel: usize,
+    ) -> f32 {
+        if exposure != super::Exposure::Baseline || channel != 0 {
+            return query;
+        }
+        DENSITY_LOOKUP_FAULT.with(|fault| {
+            let (armed, _) = fault.get();
+            if armed {
+                fault.set((false, true));
+                f32::NAN
+            } else {
+                query
+            }
+        })
+    }
+
+    /// Take and reset the observation that the real target lookup consumed the fault.
+    pub fn take_density_lookup_fault_consumed() -> bool {
+        DENSITY_LOOKUP_FAULT.with(|fault| {
+            let (armed, consumed) = fault.get();
+            fault.set((armed, false));
+            consumed
+        })
+    }
+
     /// Uses the production lookup with caller-supplied test-ingress shape.
     pub fn sample_density(
         query: f32,
@@ -309,6 +362,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
 
     #[test]
     fn synthetic_lookup_preserves_endpoint_and_upper_bound_selection() {
@@ -327,12 +381,24 @@ mod tests {
             sample_density(0.0, &[-1.0, -0.0, 0.0, 1.0], &curves, 0),
             Some(8.0)
         );
-        for query in [f32::NEG_INFINITY, 0.0, f32::INFINITY] {
+        let queries = [
+            ("negative-infinity", f32::NEG_INFINITY),
+            ("zero", 0.0),
+            ("positive-infinity", f32::INFINITY),
+        ];
+        let mut cases = RowCases::new(
+            "film-reference-singleton-query",
+            queries.iter().map(|(id, _)| *id),
+        );
+        for (id, query) in queries {
+            let case = cases.case(id);
             assert_eq!(
                 sample_density(query, &[2.0], &[[7.0, 8.0, 9.0]], 2),
                 Some(9.0)
             );
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -380,8 +446,22 @@ mod tests {
                 }),
             )
         };
-        for (selector, operation) in [(5, Operation::Source), (6, Operation::MallettRaw)] {
-            for (index, exposure) in [(1, Exposure::Baseline), (2, Exposure::Compensated)] {
+        let cases_expected = [
+            "source/baseline",
+            "source/compensated",
+            "mallett-raw/baseline",
+            "mallett-raw/compensated",
+        ];
+        let mut cases = RowCases::new("film-reference-exposure-faults", cases_expected);
+        for (selector, operation, operation_id) in [
+            (5, Operation::Source, "source"),
+            (6, Operation::MallettRaw, "mallett-raw"),
+        ] {
+            for (index, exposure, exposure_id) in [
+                (1, Exposure::Baseline, "baseline"),
+                (2, Exposure::Compensated, "compensated"),
+            ] {
+                let case = cases.case(format!("{operation_id}/{exposure_id}"));
                 film::input::testing::arm_exposure(selector, index, 3);
                 assert_eq!(
                     prepare().err(),
@@ -394,7 +474,9 @@ mod tests {
                 assert!(film::input::testing::exposure_consumed(selector, 3));
                 assert!(!film::input::testing::exposure_consumed(selector, 3));
                 assert!(prepare().is_ok());
+                case.passed();
             }
         }
+        cases.finish();
     }
 }

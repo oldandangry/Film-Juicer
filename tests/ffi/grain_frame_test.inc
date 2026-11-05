@@ -3,24 +3,21 @@ namespace GrainFrameTest {
     float scalar(const Json& v) {
         return std::bit_cast<float>(v.get<std::uint32_t>());
     }
+    double wide(const Json& v) {
+        return std::bit_cast<double>(v.get<std::uint64_t>());
+    }
     Spektrafilm::VisualGrainFrameExtent extent(const Json& v) {
         return {v.at(0), v.at(1), v.at(2), v.at(3)};
     }
-    struct Input {
-        Spektrafilm::VisualGrainRecipe recipe;
-        Spektrafilm::FilmDevelopRecipe film;
-        Spektrafilm::VisualGrainFrameDescriptorInput frame;
-        explicit Input(const Json& v) {
-            frame = JuicerTestSupport::grain_frame_input(v, recipe, film);
-        }
-    };
-    Json product_rows(const std::filesystem::path& resources, const Json& inputs) {
+    Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
         Json products = Json::array();
+        std::size_t expectedIndex = 0;
         for (unsigned route = 0; route < 4; ++route) {
+            std::size_t specIndex = 0;
             for (const auto& spec : inputs.at("products")) {
+                JuicerTests::CaseEvent caseEvent("cpp", "grain-frame/product/" + std::to_string(route) + "/" + std::to_string(specIndex++));
                 ParamSnapshot params;
                 params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
                 params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
@@ -31,18 +28,28 @@ namespace GrainFrameTest {
                 params.grainControls.amplitude = scalar(spec.value("amplitude", Json(1065353216u)));
                 params.grainControls.particleAreaUm2 = scalar(spec.value("area", Json(1051428127u)));
                 params.cameraExposureCompensationEv = spec.value("ev", 0.0);
-                FocusedRenderStateBuildProduct product;
-                std::string diagnostic;
-                require(route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic), diagnostic.c_str());
-                Input input(inputs.at("cases")[0]);
-                input.frame.recipe = &product.recipe.visualGrain;
-                input.frame.filmDevelop = &product.recipe.filmDevelop;
-                input.frame.capturePolarity = product.recipe.filmDevelop.polarity;
-                Spektrafilm::VisualGrainFrameDescriptor out;
-                const bool success = JuicerTestSupport::prepare_grain_frame(input.frame, out, diagnostic);
-                products.push_back({{"route", route}, {"spec", spec}, {"success", success}, {"diagnostic", diagnostic}, {"native", JuicerTestSupport::grain_frame_fields(out)}});
+                auto product = JuicerTestSupport::prepare_product(params);
+                FjPreparedStateView view{};
+                FjErrorBuffer viewError{};
+                status(product.view(view, viewError));
+                auto facts = JuicerTestSupport::grain_frame_input(inputs.at("cases")[0]);
+                const auto raw = JuicerTestSupport::grain_frame_input(view, facts.bind());
+                FjGrainFrameMath math{};
+                FjGrainFrameFailure failure{};
+                std::array<char, 256> diagnostic{};
+                FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+                const auto result = fj_test_grain_frame_prepare(&raw, &math, &failure, &error);
+                Spektrafilm::VisualGrainFrameDescriptor out{};
+                std::string compositionDiagnostic;
+                const bool composed = result.category == FJ_STATUS_SUCCESS && Spektrafilm::compose_visual_grain_frame_descriptor(JuicerTestSupport::grain_coefficients(view.grain), static_cast<Spektrafilm::ProfilePolarity>(view.polarity), math, out, compositionDiagnostic);
+                require(composed, "complete prepared-state grain frame composition");
+                auto row = Json{{"route", route}, {"spec", spec}, {"success", result.category == FJ_STATUS_SUCCESS}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"native", JuicerTestSupport::grain_frame_fields(out)}};
+                require_equal(row, expectedRows.at(expectedIndex++), "completed grain product row matches captured fixture");
+                products.push_back(std::move(row));
+                caseEvent.passed();
             }
         }
+        require(expectedIndex == expectedRows.size(), "complete grain product fixture membership");
         return products;
     }
     FjGrainFrameMath expected_math(const Json& native) {
@@ -114,40 +121,50 @@ namespace GrainFrameTest {
     void values(const Json& captured) {
         require(captured.at("cases").size() == 153, "complete grain frame literal cohort");
         const auto defaults = JuicerTestSupport::grain_frame_fields({});
+        std::size_t representableRows = 0;
+        std::size_t retiredPointerRows = 0;
         for (const auto& row : captured.at("cases")) {
             const auto& v = row.at("input");
-            Input input(v);
             const bool success = row.at("success");
-            const auto field = v.at("expected_field").get<std::uint32_t>();
-            FjGrainFrameInput raw{};
             std::string diagnostic;
-            const bool projected = JuicerGrain::project_input(input.frame, raw, diagnostic);
-            if (projected) {
-                const auto expected = success ? expected_math(row.at("native")) : FjGrainFrameMath{};
-                const FjGrainFrameFailure failure{success ? 0u : 2u, field, v.at("expected_layer"), v.at("expected_channel")};
-                for (unsigned facade = 0; facade < 2; ++facade)
-                    require(fj_test_grain_frame_c_check(facade, &raw, &expected, {success ? 0u : 3u, 0, 0}, failure, row.at("diagnostic").get<std::string>().c_str()) != 0, ("strict C11 grain complete values/failures: " + v.at("name").get<std::string>()).c_str());
-            } else {
-                require(!success && diagnostic == row.at("diagnostic").get<std::string>(), "native required pointers precede inactive");
+            const auto name = v.at("name").get<std::string>();
+            if (name == "missing-recipe" || name == "missing-film" || name == "missing-inactive") {
+                ++retiredPointerRows;
+                continue;
             }
-            for (bool facade : {false, true}) {
-                Spektrafilm::VisualGrainFrameDescriptor out;
-                const bool actual = facade ? JuicerTestSupport::prepare_grain_frame(input.frame, out, diagnostic) : JuicerGrain::prepare_frame(input.frame, out, diagnostic);
-                require(actual == success && diagnostic == row.at("diagnostic").get<std::string>(), ("grain native wrapper outcome: " + v.at("name").get<std::string>()).c_str());
-                require(JuicerTestSupport::grain_frame_fields(out) == (success ? row.at("native") : defaults), ("complete grain native math/composition/hash/default: " + v.at("name").get<std::string>()).c_str());
-            }
+
+            ++representableRows;
+            const auto input = JuicerTestSupport::grain_frame_input(v);
+            const FjGrainFrameInput raw = input.bind();
+            const auto expected = success ? expected_math(row.at("native")) : FjGrainFrameMath{};
+            const FjGrainFrameFailure failure{success ? 0u : 2u, v.at("expected_field").get<std::uint32_t>(), v.at("expected_layer").get<std::uint32_t>(), v.at("expected_channel").get<std::uint32_t>()};
+            JuicerTests::CaseEvent c11Event("c11", name);
+            for (unsigned facade = 0; facade < 2; ++facade)
+                require(fj_test_grain_frame_c_check(facade, &raw, &expected, {success ? 0u : 3u, 0, 0}, failure, row.at("diagnostic").get<std::string>().c_str()) != 0,
+                        ("strict C11 grain complete values/failures: " + v.at("name").get<std::string>()).c_str());
+            c11Event.passed();
+
+            JuicerTests::CaseEvent cppEvent("cpp", name);
+            Spektrafilm::VisualGrainFrameDescriptor out;
+            const bool actual = JuicerTestSupport::prepare_grain_frame(input, out, diagnostic);
+            require(actual == success && diagnostic == row.at("diagnostic").get<std::string>(),
+                    ("raw grain descriptor outcome: " + v.at("name").get<std::string>()).c_str());
+            require(JuicerTestSupport::grain_frame_fields(out) == (success ? row.at("native") : defaults),
+                    ("raw grain math/composition/hash/default: " + v.at("name").get<std::string>()).c_str());
+            cppEvent.passed();
         }
+        require(representableRows == 150 && retiredPointerRows == 3,
+                "150 representable raw cases and three retired native pointer-adapter observations");
     }
 
     void raw_and_faults(const Json& captured) {
-        Input input(captured.at("cases")[0].at("input"));
-        FjGrainFrameInput raw{};
+        JuicerTests::CaseEvent caseEvent("cpp", "grain-frame/raw-and-faults");
+        const auto input = JuicerTestSupport::grain_frame_input(captured.at("cases")[0].at("input"));
+        FjGrainFrameInput raw = input.bind();
         std::string diagnostic;
-        require(JuicerGrain::project_input(input.frame, raw, diagnostic), "valid grain frame fixture input");
-        FjGrainFrameInput layered{};
-        input.recipe.sublayersActive = true;
-        require(JuicerGrain::project_input(input.frame, layered, diagnostic), "valid layered projection");
-        input.recipe.sublayersActive = false;
+        FjGrainFrameInput layered = raw;
+        layered.sublayers_active = 1;
+        layered.layer_curves_required = 1;
         const auto cleared = expected_math(Json{{"active", false}});
         const auto check = [&](const FjGrainFrameInput* source, unsigned category, FjGrainFrameFailure expected, const char* text) {
             for (unsigned facade = 0; facade < 2; ++facade)
@@ -195,13 +212,17 @@ namespace GrainFrameTest {
         };
         FjGrainFrameMath out{};
         FjGrainFrameFailure failure{};
+        const std::vector<std::string> capacity_ids{"0", "1", "7", std::to_string(std::strlen(kRaw)), std::to_string(std::strlen(kRaw) + 1)};
+        JuicerTests::Cohort diagnostic_capacities("grain_frame.diagnostic_capacity", capacity_ids);
         for (const std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{7}, std::strlen(kRaw), std::strlen(kRaw) + 1}) {
+            auto row_event = diagnostic_capacities.case_event(std::to_string(capacity));
             std::array<char, 128> text{};
             text.fill('Z');
             FjErrorBuffer error{capacity ? text.data() : nullptr, capacity, 99};
             status(invoke(nullptr, &out, &failure, &error), 2);
             const auto count = capacity ? std::min(std::strlen(kRaw), capacity - 1) : 0;
             require(error.length == count && (capacity ? text[count] == '\0' && std::memcmp(text.data(), kRaw, count) == 0 && text[capacity] == 'Z' : text[0] == 'Z'), "written-byte diagnostic capacities");
+            row_event.passed();
         }
         status(invoke(nullptr, &out, &failure, nullptr), 2);
         require(failure.reason == 1 && failure.field == 0 && failure.layer == 3 && failure.channel == 3, "optional diagnostic metadata");
@@ -212,9 +233,12 @@ namespace GrainFrameTest {
         status(invoke(&raw, &out, nullptr, nullptr), 2);
         alignas(8) std::array<unsigned char, sizeof(FjGrainFrameInput) + 8> misaligned{};
         status(invoke(reinterpret_cast<const FjGrainFrameInput*>(misaligned.data() + 1), &out, &failure, nullptr), 2);
+        JuicerTests::Cohort raw_faults("grain_frame.raw_fault", {"entry-panic", "layer-panic"});
         for (unsigned fault : {1u, 2u}) {
+            auto row_event = raw_faults.case_event(fault == 1 ? "entry-panic" : "layer-panic");
             status(fj_test_grain_frame_fault(fault));
             require(fj_test_grain_frame_c_check(1, fault == 2 ? &layered : &raw, &cleared, {8, 0, 0}, {3, 0, 3, 3}, "visual grain frame preparation panicked") != 0, "contained entry/layer panic");
+            row_event.passed();
         }
         status(fj_test_grain_frame_fault(1));
         status(fj_test_grain_frame_fault(99), 2);
@@ -225,15 +249,22 @@ namespace GrainFrameTest {
         status(fj_test_grain_frame_fault(2));
         status(invoke(&raw, &out, &failure, nullptr));
         status(invoke(&layered, &out, &failure, nullptr));
+        JuicerTests::Cohort projection_faults("grain_frame.native_projection_fault", 4);
         for (unsigned fault = 3; fault <= 6; ++fault) {
+            auto row_event = projection_faults.case_event(std::to_string(fault - 3));
             status(fj_test_grain_frame_fault(fault));
             Spektrafilm::VisualGrainFrameDescriptor descriptor;
-            require(!JuicerTestSupport::prepare_grain_frame(input.frame, descriptor, diagnostic) && diagnostic == "ResourceDescriptorMismatch phase=grain_descriptor field=rust_result" && JuicerTestSupport::grain_frame_fields(descriptor) == JuicerTestSupport::grain_frame_fields({}), "corrupt completed result is unusable");
-            require(JuicerTestSupport::prepare_grain_frame(input.frame, descriptor, diagnostic), "fault consumed once and recovery");
+            require(!JuicerTestSupport::prepare_grain_frame(input, descriptor, diagnostic) &&
+                        diagnostic == "ResourceDescriptorMismatch phase=grain_descriptor field=rust_result" &&
+                        JuicerTestSupport::grain_frame_fields(descriptor) == JuicerTestSupport::grain_frame_fields({}),
+                    "corrupt raw result fails composition and clears descriptor");
+            require(JuicerTestSupport::prepare_grain_frame(input, descriptor, diagnostic), "fault consumed once and recovery");
+            row_event.passed();
         }
         // A non-sublayer result ignores even numerically invalid layer spans.
         bad = raw;
         bad.layer_curves[0][0] = {&canary, SIZE_MAX};
         status(invoke(&bad, &out, &failure, nullptr));
+        caseEvent.passed();
     }
 } // namespace GrainFrameTest

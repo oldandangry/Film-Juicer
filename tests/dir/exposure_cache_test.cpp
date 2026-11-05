@@ -29,7 +29,10 @@
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/juicer_test_api.h"
-#include "../ffi/spatial_optics_fixture.h"
+#include "../ffi/prepared_frame_fixture.h"
+#include "../ffi/prepared_product_fixture.h"
+#include "../ffi/case_results.h"
+#include "../ffi/gtest_cases.h"
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(const JuicerCuda::DirectPipelineRunParams*, JuicerCuda::SpatialDirBuildRequest);
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(const JuicerCuda::DirectPipelineRunParams*, float*, float*, float*, void*);
@@ -44,6 +47,11 @@ extern "C" cudaError_t juicer_cuda_print_focused_capture_density_from_camera_fil
 
 namespace {
     using Frame = JuicerProcess::Root::PreparedCudaFrame;
+    namespace FrameFixture = JuicerCudaTest::PreparedFrameFixture;
+
+    std::string route_case_key(Spektrafilm::ScanRoute route) {
+        return "route-" + std::to_string(static_cast<int>(route));
+    }
 
     void require(bool ok, const std::string& detail) {
         if (!ok) {
@@ -69,55 +77,124 @@ namespace {
     };
 
     struct Inputs {
-        FocusedRenderStateBuildProduct product;
-        Scanner::ScannerSpectralLutDescriptor scanner;
+        PreparedState state;
         Spektrafilm::SpatialDirDescriptor dir;
+        JuicerCuda::FilmPayloadInput filmPayload{};
+        std::uint64_t uploadCoreHash = 0;
+        std::uint64_t scannerHash = 0;
+        std::uint64_t dirRecipeHash = 0;
+        float pixelSizeUm = 0.0f;
         int width;
         int height;
 
         Inputs(Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method, float pixelSize, Spektrafilm::DirFrameExtent extent, float tailWeight = 0.03f)
-            : width(extent.width), height(extent.height) {
-            ParamSnapshot controls;
-            controls.scanRoute = route;
-            controls.spectralUpsamplingMode = static_cast<int>(method);
-            controls.grainControls.active = false;
-            controls.scatterHalationControls = {};
-            if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive) {
-                controls.filmProfileKey = "fujifilm_provia_100f";
-            }
-            controls.dirCouplers.diffusionSizeUm = 20.0f;
-            controls.dirCouplers.diffusionTailUm = 200.0f;
-            controls.dirCouplers.diffusionTailWeight = tailWeight;
-            std::string error;
-            const bool print = Spektrafilm::scan_route_is_print(route);
-            require(print ? build_print_render_state_product(controls, product, error)
-                          : build_direct_render_state_product(controls, product, error),
-                    error);
-            require(print ? Scanner::build_print_scanner_spectral_lut_descriptor(
-                                {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error)
-                          : Scanner::build_direct_scanner_spectral_lut_descriptor(
-                                {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error),
-                    error);
-            require(JuicerTestSupport::prepare_dir_frame(product.recipe.dirCouplers, pixelSize, extent, extent, "dir-exposure-cache-test", dir), "DIR descriptor failed");
+            : state(JuicerTestSupport::prepare_product(controls(route, method, tailWeight))),
+              pixelSizeUm(pixelSize), width(extent.width), height(extent.height) {
+            FrameFixture::FrameFacts facts;
+            facts.renderExtent = {extent.x, extent.y, extent.width, extent.height};
+            facts.fullFrameExtent = facts.renderExtent;
+            facts.pixelDefinition = facts.renderExtent;
+            facts.pixelSizeUm = pixelSize;
+            Capture captured{};
+            std::string diagnostic;
+            require(FrameFixture::with_prepared_frame_inputs(
+                        state, facts, &captured, &capture_values, diagnostic),
+                    diagnostic);
+            dir = captured.dir;
+            filmPayload = captured.filmPayload;
+            uploadCoreHash = captured.uploadCoreHash;
+            scannerHash = captured.scannerHash;
+            dirRecipeHash = captured.dirRecipeHash;
         }
 
-        JuicerProcess::Root::CudaFramePreparationRequest request() const {
-            JuicerProcess::Root::CudaFramePreparationRequest r;
-            r.recipe = &product.recipe;
-            r.exposureTables = &product.payload.exposureTables;
-            r.filmRawConfig = &product.payload.filmRawConfig;
-            r.filmTcLut = product.payload.filmTcLut ? &*product.payload.filmTcLut : nullptr;
-            r.printMainIlluminant = product.payload.printMainIlluminant ? &*product.payload.printMainIlluminant : nullptr;
-            r.scannerTables = &product.payload.scannerTables;
-            r.scannerColor = &product.payload.scannerColor;
-            r.scannerLutDescriptor = &scanner;
-            r.outputBoundaryTable = product.payload.outputBoundaryTable.get();
-            r.spatialDirDescriptor = &dir;
-            r.requestedWidth = width;
-            r.requestedHeight = height;
-            return r;
+        static ParamSnapshot controls(Spektrafilm::ScanRoute route,
+                                      Spektrafilm::RgbToRawMethod method,
+                                      float tailWeight) {
+            ParamSnapshot result;
+            result.scanRoute = route;
+            result.spectralUpsamplingMode = static_cast<int>(method);
+            result.grainControls.active = false;
+            result.scatterHalationControls = {};
+            if (Spektrafilm::scan_route_metadata(route).capturePolarity ==
+                Spektrafilm::ProfilePolarity::Positive) {
+                result.filmProfileKey = "fujifilm_provia_100f";
+            }
+            result.dirCouplers.diffusionSizeUm = 20.0f;
+            result.dirCouplers.diffusionTailUm = 200.0f;
+            result.dirCouplers.diffusionTailWeight = tailWeight;
+            return result;
+        }
+
+        struct Capture {
+            Spektrafilm::SpatialDirDescriptor dir;
+            JuicerCuda::FilmPayloadInput filmPayload;
+            std::uint64_t uploadCoreHash = 0;
+            std::uint64_t scannerHash = 0;
+            std::uint64_t dirRecipeHash = 0;
+        };
+
+        static bool capture_values(void* user,
+                                   const FrameFixture::Inputs& prepared,
+                                   std::string&) {
+            auto& out = *static_cast<Capture*>(user);
+            out.dir = prepared.descriptors.spatialDir;
+            out.filmPayload = prepared.filmPayload;
+            out.uploadCoreHash = prepared.state.upload_core_hash;
+            out.scannerHash = prepared.state.scanner_hash;
+            out.dirRecipeHash = prepared.state.dir_recipe.hash;
+            return true;
         }
     };
+
+    struct RootFrameCall {
+        const Inputs* inputs = nullptr;
+        const JuicerCuda::ResourceManager::DeviceContextKey* key = nullptr;
+        const JuicerCuda::ResourceManager::SubmissionSnapshot* snapshot = nullptr;
+        cudaStream_t stream = nullptr;
+        JuicerCuda::Failure failure;
+        Frame frame;
+    };
+
+    bool prepare_root_frame(void* user,
+                            const FrameFixture::Inputs& prepared,
+                            std::string& diagnostic) {
+        auto& call = *static_cast<RootFrameCall*>(user);
+        JuicerProcess::Root& root = JuicerProcess::root();
+        Frame frame = root.prepare_cuda_frame(
+            *call.key, *call.snapshot, prepared.preparation, {}, call.stream, call.failure, prepared.hostPreparation);
+        if (!frame.active()) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        if (!frame.prepare_spatial_dir_resources(
+                call.inputs->dir, frame.workspace_lease(), call.stream, call.failure, prepared.hostPreparation)) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        call.frame = std::move(frame);
+        return true;
+    }
+
+    Frame prepare_frame(const Inputs& inputs,
+                        const JuicerCuda::ResourceManager::DeviceContextKey& key,
+                        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+                        cudaStream_t stream,
+                        JuicerCuda::Failure& failure) {
+        RootFrameCall call{&inputs, &key, &snapshot, stream, {}, {}};
+        std::string diagnostic;
+        const bool ready = FrameFixture::with_prepared_frame_inputs(
+            inputs.state,
+            {{0, 0, inputs.width, inputs.height},
+             {0, 0, inputs.width, inputs.height},
+             {0, 0, inputs.width, inputs.height},
+             inputs.pixelSizeUm},
+            &call,
+            &prepare_root_frame,
+            diagnostic);
+        failure = call.failure;
+        require(ready, diagnostic.empty() ? failure.diagnostic : diagnostic);
+        return std::move(call.frame);
+    }
 
     void bind_filter(JuicerCuda::SpatialDirFilterSpec& out,
                      const Spektrafilm::DirGaussianComponentPlan& plan,
@@ -281,12 +358,10 @@ namespace {
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
-            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
             JuicerCuda::Failure failure;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, failure);
-            require(frame.active(), failure.diagnostic);
-            require(frame.prepare_spatial_dir_resources(inputs.dir, frame.workspace_lease(), stream, failure), failure.diagnostic);
-            return frame;
+            return prepare_frame(inputs, key, snapshot, stream, failure);
         }
         JuicerCuda::Resources& boundary_owner() {
             Inputs inputs(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Hanatos2025, 1.0f, {0, 0, 64, 48});
@@ -310,18 +385,17 @@ namespace {
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-                inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
+                inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
             JuicerCuda::Failure error;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, error);
-            require(frame.active(), error.diagnostic);
+            auto frame = prepare_frame(inputs, key, snapshot, stream, error);
             const auto lease = frame.workspace_lease();
-            require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error.diagnostic);
             const auto scratch = frame.spatial_dir_scratch(lease);
             const auto resources = frame.spatial_dir_resources(lease, inputs.dir.hash);
             require(scratch.active && resources.active && scratch.rawCorrectionM && scratch.rawCorrectionC, "Missing three-channel DIR workspace");
             JuicerCuda::FilmPayloadPack payload;
-            const auto& recipe = inputs.product.recipe;
-            require(JuicerCuda::pack_film_payloads(recipe.filmRaw, recipe.filmDevelop, recipe.dirCouplers, recipe.densityBounds, frame.focused_resources().film, nullptr, 1.25f, payload, error.diagnostic), error.diagnostic);
+            require(JuicerCuda::pack_film_payloads(
+                        inputs.filmPayload, frame.focused_resources().film, nullptr, 1.25f, payload, error.diagnostic),
+                    error.diagnostic);
             const std::size_t count = static_cast<std::size_t>(inputs.width) * inputs.height;
             const std::size_t bytes = count * sizeof(float);
             DeviceBuffer source(4 * bytes), camera(3 * bytes), fusedCache(3 * bytes), separateCache(3 * bytes), actualDensity(3 * bytes), expectedDensity(3 * bytes), failures(sizeof(int));
@@ -470,20 +544,28 @@ namespace {
     };
 
     TEST_F(ExposureCache, GaussianFirArraysMatchFrozenWordsAndWarmHitsDoNoConstruction) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             Inputs inputs(route, Spektrafilm::RgbToRawMethod::Hanatos2025, 12.0f, {0, 0, 64, 48});
             JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
             snapshot.instanceToken.value = 0x4741555353ull;
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
-            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
             JuicerCuda::Failure error;
             const auto prepareFir = [&] {
-                auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, error);
-                require(frame.active(), error.diagnostic);
-                require(frame.prepare_spatial_dir_resources(inputs.dir, frame.workspace_lease(), stream, error), error.diagnostic);
-                return frame;
+                return prepare_frame(inputs, key, snapshot, stream, error);
             };
             auto frame = prepareFir();
             const auto prepared = frame.spatial_dir_resources(frame.workspace_lease(), inputs.dir.hash);
@@ -502,6 +584,7 @@ namespace {
             EXPECT_EQ(fj_test_gaussian_kernel_acquires(), acquisitions);
             EXPECT_EQ(warm.spatial_dir_resources(warm.workspace_lease(), inputs.dir.hash).gaussian.weights, prepared.gaussian.weights);
             require(warm.finish(stream, error), error.diagnostic);
+            row.passed();
         }
     }
 
@@ -521,7 +604,17 @@ namespace {
             Case{Spektrafilm::ScanRoute::PositivePrintScan, 100.0f, 0.03f, 64, 48},
             Case{Spektrafilm::ScanRoute::NegativePrintScan, 200.0f, 0.03f, 64, 48},
             Case{Spektrafilm::ScanRoute::PositiveDirectScan, 8.0f, 0.03f, 65, 63}};
-        for (const auto& spec : cases) {
+        std::vector<std::string> ids;
+        ids.reserve(cases.size());
+        for (const auto& spec : cases)
+            ids.push_back(route_case_key(spec.route) + "/pixel-" +
+                          std::to_string(std::bit_cast<std::uint32_t>(spec.pixel)) + "/tail-" +
+                          std::to_string(std::bit_cast<std::uint32_t>(spec.tail)) + "/" +
+                          std::to_string(spec.width) + "x" + std::to_string(spec.height));
+        JuicerTests::GtestCohort case_rows("fixture-row", ids);
+        for (std::size_t caseIndex = 0; caseIndex < cases.size(); ++caseIndex) {
+            const auto& spec = cases[caseIndex];
+            auto row = case_rows.case_event(ids[caseIndex]);
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(spec.route) << " pixel=" << spec.pixel << " tail=" << spec.tail << " width=" << spec.width);
             Inputs inputs(spec.route, Spektrafilm::RgbToRawMethod::Hanatos2025, spec.pixel, {0, 0, spec.width, spec.height}, spec.tail);
             auto frame = prepare_boundary(inputs);
@@ -546,10 +639,18 @@ namespace {
                 require(actual.boundaries[slot].horizontalWeights == reused.boundaries[slot].horizontalWeights, "warm Root reuses each device binding");
             warm.abort();
             require(fj_test_dir_boundary_count(3) == 0, "abort retains no Rust host owner");
+            row.passed();
         }
     }
 
     TEST_F(ExposureCache, ReflectedBoundaryFailuresStagingAndIndependentEpoch) {
+        const std::array faults{std::pair{1u, 1u}, std::pair{1u, 2u}, std::pair{2u, 1u}, std::pair{2u, 9u}, std::pair{2u, 10u}, std::pair{2u, 11u}, std::pair{2u, 12u}};
+        std::vector<std::string> faultIds;
+        faultIds.reserve(faults.size() + 3);
+        for (const auto& [operation, fault] : faults)
+            faultIds.push_back("operation-" + std::to_string(operation) + "/fault-" + std::to_string(fault));
+        faultIds.insert(faultIds.end(), {"upload-rejection", "successful-staging", "independent-epoch"});
+        JuicerTests::GtestCohort faultRows("publication-failure-and-staging", faultIds);
         auto& resources = boundary_owner();
         const auto fixture = boundary_fixture();
         auto& binding = resources.spatialDirBoundaries[0];
@@ -567,7 +668,9 @@ namespace {
         const auto& candidate = fixture.at("cases").at(7);
         const auto component = JuicerCuda::DirBoundaryTest::component(candidate.at("input").at("component"));
         const auto identity = candidate.at("key").get<std::uint64_t>();
-        for (const auto& [operation, fault] : std::array<std::pair<unsigned, unsigned>, 7>{{{1, 1}, {1, 2}, {2, 1}, {2, 9}, {2, 10}, {2, 11}, {2, 12}}}) {
+        for (std::size_t faultIndex = 0; faultIndex < faults.size(); ++faultIndex) {
+            const auto [operation, fault] = faults[faultIndex];
+            auto row = faultRows.case_event(faultIds[faultIndex]);
             const auto releases = fj_test_dir_boundary_count(2);
             require(fj_test_dir_boundary_fault(operation, fault).category == 0, "arm bounded real boundary failure");
             if (operation == 2)
@@ -578,8 +681,10 @@ namespace {
             require(failure.status.category == expectedCategory && failure.status.api == 0 && failure.status.native_code == 0, "primary boundary status survives release panic");
             same_binding(binding, old);
             require(fj_test_dir_boundary_count(3) == 0 && fj_test_dir_boundary_count(2) == releases + (operation == 2 ? 1u : 0u), "real miss consumes its only host owner once");
+            row.passed();
         }
         {
+            auto row = faultRows.case_event("upload-rejection");
             const auto before = resources.deviceLedger->snapshot();
             JuicerCuda::DirBoundaryTest::Controls controls(resources, identity);
             controls.participants[0].failUpload = true;
@@ -593,8 +698,10 @@ namespace {
             const auto after = resources.deviceLedger->snapshot();
             require(after.chargedBytes == before.chargedBytes && after.reservedBytes == before.reservedBytes && after.recordCount == before.recordCount, "failed upload preserves physical accounting");
             require(fj_test_dir_boundary_count(3) == 0, "failed upload releases host boundary");
+            row.passed();
         }
         {
+            auto row = faultRows.case_event("successful-staging");
             JuicerCuda::DirBoundaryTest::Controls controls(resources, identity);
             {
                 JuicerCuda::DirBoundaryTest::Binding observe(controls, 0);
@@ -605,7 +712,9 @@ namespace {
             require(fj_test_dir_boundary_count(3) == 0, "successful ensure releases host owner before later native staging read");
             require(boundary_words(p.stagedWeights.data(), p.stagedWeights.size()) == expected_weights(candidate) && boundary_words(p.staging, p.stagedWeights.size()) == expected_weights(candidate), "actual staged bytes remain intact after host owner release");
             compare_boundary(boundary_view(binding), candidate);
+            row.passed();
         }
+        auto epochRow = faultRows.case_event("independent-epoch");
         acquires = fj_test_dir_boundary_count(0);
         std::unique_ptr<JuicerCuda::Resources, decltype(&JuicerCuda::destroy)> epoch(
             JuicerCuda::create(key, resources.contextEpoch + 1, resources.deviceLedger, failure), &JuicerCuda::destroy);
@@ -615,9 +724,12 @@ namespace {
         compare_boundary(boundary_view(epoch->spatialDirBoundaries[0]), candidate);
         require(JuicerCuda::drain_for_context_retire(*epoch, failure), failure.diagnostic);
         require(epoch->deviceAllocationRecords.empty(), "independent epoch drains all physical records");
+        epochRow.passed();
     }
 
     TEST_F(ExposureCache, ReflectedBoundarySameKeyRaceAndPrepublicationCancellation) {
+        const std::vector<std::string> ids{"same-key-race", "prepublication-cancellation"};
+        JuicerTests::GtestCohort cases("publication-transition", ids);
         auto& resources = boundary_owner();
         auto& target = resources.spatialDirBoundaries[0];
         const auto fixture = boundary_fixture();
@@ -627,6 +739,7 @@ namespace {
         const auto old = target;
         const auto acquires = fj_test_dir_boundary_count(0);
         {
+            auto row = cases.case_event("same-key-race");
             JuicerCuda::DirBoundaryTest::Controls controls(resources, identity);
             controls.rendezvous = true;
             BoundaryWorkers workers(controls, target, component, {9, 6}, stream);
@@ -644,7 +757,9 @@ namespace {
             require(target.weights == winner.candidate && target.identity == identity && winner.frees == 0 && loser.frees == 1 && loser.freed == loser.candidate && loser.freeSucceeded, "publication keeps winner and physically frees the actual losing allocation");
             require(fj_test_dir_boundary_count(3) == 0 && fj_test_dir_boundary_count(0) == acquires + 2, "same-key race releases both host owners");
             compare_boundary(boundary_view(target), candidate);
+            row.passed();
         }
+        auto cancellation = cases.case_event("prepublication-cancellation");
         const auto& next = fixture.at("cases").at(6);
         const auto nextComponent = JuicerCuda::DirBoundaryTest::component(next.at("input").at("component"));
         const auto current = target;
@@ -659,6 +774,7 @@ namespace {
         require(!rejected.success && rejected.frees == 1 && rejected.freed == rejected.candidate && rejected.freeSucceeded, "prepublication cancellation frees candidate");
         same_binding(target, current);
         require(target.weights != old.weights && fj_test_dir_boundary_count(3) == 0, "race replacement and cancellation preserve native ownership");
+        cancellation.passed();
     }
 
     TEST_F(ExposureCache, ReflectedBoundarySecondOwnerValidationRejectsQuarantinedPublication) {
@@ -686,23 +802,56 @@ namespace {
     }
 
     TEST_F(ExposureCache, SourceBuildMatchesSeparateCacheAndDevelopedDensityBitForBit) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
-            for (auto method : {Spektrafilm::RgbToRawMethod::Hanatos2025, Spektrafilm::RgbToRawMethod::Mallett2019, Spektrafilm::RgbToRawMethod::Arctic2026beta04}) {
-                for (float pixelSize : {6.0f, 200.0f}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array methods{Spektrafilm::RgbToRawMethod::Hanatos2025,
+                                 Spektrafilm::RgbToRawMethod::Mallett2019,
+                                 Spektrafilm::RgbToRawMethod::Arctic2026beta04};
+        const std::array pixelSizes{6.0f, 200.0f};
+        const std::array carrierModes{false, true};
+        const std::array cachePlaneCounts{2, 3};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * methods.size() * pixelSizes.size() * carrierModes.size() * cachePlaneCounts.size());
+        for (const auto route : routes)
+            for (const auto method : methods)
+                for (const auto pixelSize : pixelSizes)
+                    for (const auto carrier : carrierModes)
+                        for (const auto cachePlanes : cachePlaneCounts)
+                            ids.push_back(route_case_key(route) + "/method-" +
+                                          std::to_string(static_cast<int>(method)) + "/pixel-" +
+                                          std::to_string(std::bit_cast<std::uint32_t>(pixelSize)) +
+                                          "/carrier-" + (carrier ? "on" : "off") +
+                                          "/cache-planes-" + std::to_string(cachePlanes));
+        JuicerTests::GtestCohort sourceRows("route-method-pixel-carrier-cache", ids);
+        std::size_t sourceIndex = 0;
+        for (auto route : routes) {
+            for (auto method : methods) {
+                for (float pixelSize : pixelSizes) {
                     Inputs inputs(route, method, pixelSize, {0, 0, 64, 48});
-                    for (bool carrier : {false, true}) {
-                        for (int cachePlanes : {2, 3}) {
+                    for (bool carrier : carrierModes) {
+                        for (int cachePlanes : cachePlaneCounts) {
+                            const auto id = route_case_key(route) + "/method-" +
+                                            std::to_string(static_cast<int>(method)) + "/pixel-" +
+                                            std::to_string(std::bit_cast<std::uint32_t>(pixelSize)) +
+                                            "/carrier-" + (carrier ? "on" : "off") +
+                                            "/cache-planes-" + std::to_string(cachePlanes);
+                            ASSERT_EQ(ids.at(sourceIndex++), id);
+                            auto row = sourceRows.case_event(id);
                             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " method=" << static_cast<int>(method) << " pixelSize=" << pixelSize << " carrier=" << carrier << " cachePlanes=" << cachePlanes);
                             if (Spektrafilm::scan_route_is_print(route)) {
                                 compare<JuicerCuda::PrintPipelineRunParams>(inputs, carrier, cachePlanes);
                             } else {
                                 compare<JuicerCuda::DirectPipelineRunParams>(inputs, carrier, cachePlanes);
                             }
+                            row.passed();
                         }
                     }
                 }
             }
         }
+        ASSERT_EQ(sourceIndex, ids.size());
     }
 
     // Explicit CUDA-event measurement; never part of ordinary CTest.
@@ -712,12 +861,17 @@ namespace {
     }
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
+    testing::InitGoogleTest(&argc, argv);
+    if (testing::GTEST_FLAG(list_tests))
+        return RUN_ALL_TESTS();
     JuicerCuda::Owner cudaOwner;
     cudaOwner.create(JuicerProcess::data_directory());
-    testing::InitGoogleTest(&argc, argv);
-    JuicerProcess::root().ensure_bootstrap();
+    JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
+    case_log.finish();
     const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
     return closed.category == FJ_STATUS_SUCCESS ? result : 1;
+} catch (...) {
+    return 1;
 }

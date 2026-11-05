@@ -1,5 +1,7 @@
 #include "prepared_boundary.h"
+#include "prepared_raw_render_fixture.h"
 #include "juicer_test_api.h"
+#include "juicer_cuda_call_scope.h"
 
 #include <algorithm>
 #include <array>
@@ -13,149 +15,16 @@
 #include <string_view>
 
 #include "prepared_descriptors.h"
+#include "prepared_frame_fixture.h"
 #include "spatial_optics_fixture.h"
 #include "juicer_cuda_owner.h"
 #include "Cuda/JuicerCudaHostViews.h"
-#include "FocusedRenderPayload.h"
 #include "ResourceAssetLibrary.h"
-#include "ColorTransforms.h"
 
 namespace {
 
-    FjFloatSpan project(std::span<const float> source) {
-        return source.empty() ? FjFloatSpan{} : FjFloatSpan{source.data(), source.size()};
-    }
-
-    FjFloatSpan project(const JuicerCuda::ThreeChannelSamplesView& source) {
-        // Transport the contiguous scalar representation without indexing it as
-        // a float array. The native decoder reads fixed triplets through bytes.
-        const auto bytes = source.object_bytes();
-        return bytes.empty() ? FjFloatSpan{} : FjFloatSpan{reinterpret_cast<const float*>(bytes.data()), source.scalar_count()};
-    }
-
-
-    FjStringView project(std::string_view source) {
-        return source.empty() ? FjStringView{} : FjStringView{source.data(), source.size()};
-    }
-
-    FjRect project(const JuicerCuda::FrameRect& source) {
-        return {source.x1, source.y1, source.x2, source.y2};
-    }
-
-    void encode_bounds(const DensityBoundsRecipe& source, FjDensityBounds& out) {
-        std::copy(source.dataMinCmy.begin(), source.dataMinCmy.end(), out.min_cmy);
-        std::copy(source.invSpanCmy.begin(), source.invSpanCmy.end(), out.inv_span_cmy);
-        out.hash = source.hash;
-    }
-
-    void encode_film(const RenderRecipe& recipe, const FocusedRenderPayload& payload, const JuicerCuda::FocusedRouteResourceInput& focused, FjPreparedHostData& out) {
-        auto& exposure = out.film_exposure;
-        exposure.input_color_space = static_cast<std::uint32_t>(recipe.filmRaw.inputColorSpace);
-        exposure.method = static_cast<std::uint32_t>(recipe.filmRaw.rgbToRawMethod);
-        exposure.flags = (recipe.filmRaw.inputCctfDecoding ? FJ_FILM_DECODE_CCTF : 0u) |
-                         (payload.filmRawConfig.applyInputChromaticAdapt ? FJ_FILM_ADAPT_INPUT : 0u) |
-                         (recipe.filmRaw.autoExposureEnabled ? FJ_FILM_AUTO_EXPOSURE : 0u);
-        exposure.manual_exposure_ev = recipe.filmRaw.manualExposureCompensationEv;
-        exposure.route_correction_scale = Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute)
-                                              ? 1.0f
-                                              : out.scanner_correction.exposure_scale;
-        exposure.mallett_green_midgray_scale = recipe.filmRaw.mallettGreenMidgrayScale;
-        std::copy_n(payload.filmRawConfig.inputRGBToXYZ.m, 9, exposure.input_rgb_to_xyz);
-        std::copy_n(payload.filmRawConfig.inputXYZAdapt.m, 9, exposure.input_xyz_adapt);
-        std::copy_n(payload.filmRawConfig.xyzToLinearSrgb.m, 9, exposure.xyz_to_linear_srgb);
-        exposure.sensitivity_rgb = project(focused.filmRaw.finalSensitivityRgb);
-        if (recipe.filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
-            exposure.mallett_illuminant = project(focused.exposureIlluminant);
-            exposure.mallett_basis = project(focused.mallettBasis);
-        } else {
-            exposure.tc_lut_rgba = project(focused.filmTcLut);
-        }
-        exposure.sensitivity_hash = recipe.filmRaw.finalSensitivityHash;
-        exposure.tc_lut_hash = recipe.filmRaw.tcLutHash;
-        exposure.hash = recipe.filmRaw.hash;
-        auto& development = out.film_development;
-        development.log_exposure = project(focused.filmDevelop.logExposure);
-        development.density_rgb = project(focused.filmDevelop.normalizedDensityCurvesRgb);
-        if (focused.wantDensityLayers) {
-            for (std::size_t layer = 0; layer < 3; ++layer) {
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    development.density_layers[layer][channel] = project(focused.filmDevelop.densityCurvesLayers[layer][channel]);
-                }
-            }
-            development.density_layers_hash = recipe.filmDevelop.densityCurvesLayersHash;
-        }
-        std::copy(recipe.filmDevelop.densityCurveGamma.begin(), recipe.filmDevelop.densityCurveGamma.end(), development.gamma_rgb);
-        development.density_curves_hash = recipe.filmDevelop.normalizedDensityCurvesHash;
-        development.hash = recipe.filmDevelop.hash;
-        if (recipe.dirCouplers.active) {
-            auto& dir = out.dir_couplers;
-            dir.mode = static_cast<std::uint32_t>(recipe.dirCouplers.nonlinearMode);
-            for (std::size_t channel = 0; channel < 3; ++channel) {
-                std::copy(recipe.dirCouplers.matrixRgb[channel].begin(), recipe.dirCouplers.matrixRgb[channel].end(), dir.matrix_rgb + channel * 3u);
-                dir.compensated_axes_rgb[channel] = project(focused.dirCouplers.compensatedDensityCurveAxesRgb[channel]);
-            }
-            std::copy(recipe.dirCouplers.densityMaxRgb.begin(), recipe.dirCouplers.densityMaxRgb.end(), dir.density_max_rgb);
-            std::copy(recipe.dirCouplers.densityRefRgb.begin(), recipe.dirCouplers.densityRefRgb.end(), dir.density_ref_rgb);
-            std::copy(recipe.dirCouplers.donorKRgb.begin(), recipe.dirCouplers.donorKRgb.end(), dir.donor_k_rgb);
-            std::copy(recipe.dirCouplers.receiverCRefRgb.begin(), recipe.dirCouplers.receiverCRefRgb.end(), dir.receiver_c_ref_rgb);
-            std::copy(recipe.dirCouplers.receiverKrRgb.begin(), recipe.dirCouplers.receiverKrRgb.end(), dir.receiver_kr_rgb);
-            dir.compensated_axes_hash = recipe.dirCouplers.compensatedDensityCurveAxesHash;
-            dir.hash = recipe.dirCouplers.hash;
-        }
-    }
-
-    void encode_print(const JuicerCuda::PrintResourceInput& source, const PrintExposureRecipe& exposure, FjPrint& out) {
-        out.film_density_cmy = project(source.filmChannelDensityCmy);
-        out.film_base_density = project(source.filmBaseDensity);
-        out.sensitivity_cmy = project(source.printSensitivityCmy);
-        out.log_exposure = project(source.printLogExposure);
-        out.density_cmy = project(source.printDensityCurvesCmy);
-        out.main_illuminant = project(source.mainIlluminant);
-        const auto& descriptors = source.descriptors;
-        if (descriptors.preflashActive) {
-            out.flags = FJ_PRINT_PREFLASH;
-            out.preflash_illuminant = project(source.preflashIlluminant);
-            std::copy(source.preflashRawCmy.begin(), source.preflashRawCmy.end(), out.preflash_raw_cmy);
-        }
-        out.main_cc_cmy[0] = descriptors.mainIlluminant.cmyCc.c;
-        out.main_cc_cmy[1] = descriptors.mainIlluminant.cmyCc.m;
-        out.main_cc_cmy[2] = descriptors.mainIlluminant.cmyCc.y;
-        out.preflash_cc_cmy[0] = descriptors.preflashIlluminant.cmyCc.c;
-        out.preflash_cc_cmy[1] = descriptors.preflashIlluminant.cmyCc.m;
-        out.preflash_cc_cmy[2] = descriptors.preflashIlluminant.cmyCc.y;
-        out.exposure = exposure.printExposure;
-        out.preflash_exposure = exposure.preflashExposure;
-        out.normalizer = source.normalizer;
-        out.film_density_hash = descriptors.filmDensityTables.hash;
-        out.profile_tables_hash = descriptors.profileTables.hash;
-        out.main_illuminant_hash = descriptors.mainIlluminant.hash;
-        out.preflash_illuminant_hash = descriptors.preflashIlluminant.hash;
-        out.preflash_raw_hash = descriptors.preflashRaw.hash;
-        out.balance_hash = descriptors.balance.hash;
-        out.hash = descriptors.hash;
-    }
-
-} // namespace
-
-namespace JuicerCudaTest {
-
-    bool execute_prepared_state(FjAssets* assets, const ParamSnapshot& params, const FjFrame& frame, std::uint64_t instanceToken, bool contract, bool lifetime, std::string& diagnostic, StateLifetimeCase lifetimeCase) {
-        FjStatus status{};
-        auto owner = prepare_state(assets, params, status, diagnostic);
-        if (status.category != FJ_STATUS_SUCCESS)
-            return false;
-        std::array<char, 2048> message{};
-        FjErrorBuffer error{message.data(), message.size(), 0};
-        FjPreparedStateView state{};
-        if (fj_test_prepared_state_view(owner.get(), &state, &error).category != FJ_STATUS_SUCCESS) {
-            diagnostic.assign(message.data(), error.length);
-            return false;
-        }
-        if (state.optics.hash != 0 || state.grain.hash != 0 || state.effects.hash != 0 || state.dir_recipe.hash == 0) {
-            diagnostic = "held-state fixture requires active DIR and disabled frame effects";
-            return false;
-        }
-        FjPreparedHostData prepared{};
+    void bind_state(const FjPreparedStateView& state, FjPreparedHostData& prepared) {
+        prepared = {};
         prepared.route = state.route;
         prepared.capture_polarity = state.polarity;
         prepared.film_profile_key = state.film_profile_key;
@@ -195,6 +64,107 @@ namespace JuicerCudaTest {
         prepared.scanner_post = {post.glare_active ? FJ_POST_GLARE : 0u, post.glare_percent, post.glare_roughness, post.glare_blur_sigma_px, post.glare_blur_radius, post.lens_blur_sigma_px, post.lens_blur_radius, post.unsharp_sigma_px, post.unsharp_radius, post.unsharp_amount, post.hash};
         prepared.output_color = state.output_color;
         prepared.print = state.print;
+    }
+
+} // namespace
+
+namespace JuicerCudaTest {
+
+    namespace {
+        bool render_held_state(FjAssets* assets, const PreparedState& owner, const FjPreparedStateView& state, const FjFrame& frame, const FjSubmission& expected, std::uint64_t expectedRecipeHash, FjErrorBuffer& error, std::string& diagnostic) {
+            const auto frameFloor = std::floor(frame.time_frames);
+            if (state.recipe_hash != expectedRecipeHash || state.upload_core_hash != expected.upload_core_hash ||
+                state.dir_recipe.hash != expected.dir_hash || state.scanner_hash != expected.scanner_hash || expected.instance_token == 0 ||
+                !std::isfinite(frameFloor) || frameFloor < -0x1p63 || frameFloor >= 0x1p63 ||
+                expected.frame_token != static_cast<std::uint64_t>(static_cast<std::int64_t>(frameFloor))) {
+                diagnostic = "held-state render identity does not match its frame submission";
+                return false;
+            }
+            error.length = 0;
+            if (error.capacity != 0 && error.data != nullptr)
+                error.data[0] = '\0';
+            const FjExtent full{frame.full_frame_extent.x1, frame.full_frame_extent.y1, frame.full_frame_extent.x2 - frame.full_frame_extent.x1, frame.full_frame_extent.y2 - frame.full_frame_extent.y1};
+            FjPreparedFramePolicy policy{};
+            const auto policyStatus = owner.frame_policy(full, policy, error);
+            if (policyStatus.category != FJ_STATUS_SUCCESS) {
+                diagnostic.assign(error.data, error.length);
+                return false;
+            }
+            struct Completion {
+                unsigned calls = 0;
+                bool ordered = false;
+            } completion;
+            JuicerCuda::CallScope scope(JuicerCuda::borrowed_owner(), state.route, [](void* user, const FjCallCompletionInput* input) noexcept -> FjCallCompletionResult {
+                auto& observed = *static_cast<Completion*>(user);
+                ++observed.calls;
+                try {
+                    // The real provider must release its admission before completion.
+                    JuicerCuda::check_native_call_admission(JuicerCuda::borrowed_owner());
+                    observed.ordered = input->render_outcome_valid == 1 &&
+                                       input->has_inspected_context == 1 && input->recovery_scope_entered == 1 &&
+                                       input->force_fatal == 0 && input->abort_failed == 0;
+                } catch (...) {
+                    observed.ordered = false;
+                }
+                return {input->outcome, observed.ordered && input->outcome.status.category == FJ_STATUS_SUCCESS ? 0u : 1u};
+            },
+                                        &completion);
+            struct Selection {
+                unsigned calls = 0;
+                FjSubmission expected{};
+                bool matched = true;
+            } selection;
+            selection.expected = expected;
+            const FjSubmissionAccess latch{expected.instance_token,
+                                           expected.frame_token,
+                                           &selection,
+                                           [](void* user, const FjCudaContext*, const FjSubmission* requested, FjSubmission* out, FjErrorBuffer*) -> FjStatus {
+                                               auto& selected = *static_cast<Selection*>(user);
+                                               ++selected.calls;
+                                               selected.matched = requested &&
+                                                                  requested->instance_token == selected.expected.instance_token &&
+                                                                  requested->frame_token == selected.expected.frame_token &&
+                                                                  requested->upload_core_hash == selected.expected.upload_core_hash &&
+                                                                  requested->dir_hash == selected.expected.dir_hash &&
+                                                                  requested->scanner_hash == selected.expected.scanner_hash &&
+                                                                  requested->auto_exposure_hash == selected.expected.auto_exposure_hash;
+                                               if (!selected.matched)
+                                                   return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
+                                               *out = *requested;
+                                               out->submission_id = selected.expected.submission_id;
+                                               return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+                                           }};
+            const auto result = owner.render(assets, scope.access(), frame, policy, latch, {}, error);
+            if (result.outcome.status.category != FJ_STATUS_SUCCESS || result.fatal != 0 ||
+                completion.calls != 1 || !completion.ordered || selection.calls != 1 || !selection.matched || scope.recovery().pending) {
+                diagnostic = scope.diagnostic().empty() ? std::string(error.data, error.length) : scope.diagnostic();
+                if (diagnostic.empty())
+                    diagnostic = "held rendering completion/selection order failed";
+                return false;
+            }
+            return true;
+        }
+    } // namespace
+
+    bool execute_prepared_state(FjAssets* assets, const ParamSnapshot& params, const FjFrame& frame, std::uint64_t instanceToken, bool contract, bool lifetime, std::string& diagnostic, StateLifetimeCase lifetimeCase) {
+        FjStatus status{};
+        auto owner = prepare_state(assets, params, status, diagnostic);
+        if (status.category != FJ_STATUS_SUCCESS)
+            return false;
+        std::array<char, 2048> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjPreparedStateView state{};
+        if (owner->view(state, error).category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(message.data(), error.length);
+            return false;
+        }
+        if (state.optics.hash != 0 || state.grain.hash != 0 || state.effects.hash != 0 || state.dir_recipe.hash == 0) {
+            diagnostic = "held-state fixture requires active DIR and disabled frame effects";
+            return false;
+        }
+        FjPreparedHostData prepared{};
+        bind_state(state, prepared);
+        const auto& dir = state.dir_recipe;
         const auto extent = [](FjRect rect) {
             return FjExtent{rect.x1, rect.y1, rect.x2 - rect.x1, rect.y2 - rect.y1};
         };
@@ -214,141 +184,135 @@ namespace JuicerCudaTest {
             return false;
         }
         const FjSubmission submission{instanceToken, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(frame.time_frames))), 1, state.upload_core_hash, dir.hash, state.scanner_hash, meter.hash};
-        check_frame_bindings(JuicerCuda::borrowed_owner(), context, frame, submission, prepared);
+        const auto invocationContext = std::string("held-route-") + std::to_string(state.route) + "-instance-" + std::to_string(instanceToken) +
+                                       "-frame-" + std::to_string(submission.frame_token) + "-contract-" + (contract ? "yes" : "no") +
+                                       "-lifetime-" + (lifetime ? "yes" : "no") + "-case-" + std::to_string(static_cast<unsigned>(lifetimeCase));
+        check_frame_bindings(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &state, nullptr, invocationContext);
         const bool success = (contract || (lifetime && lifetimeCase == StateLifetimeCase::SuppliedStream))
-                                 ? check_render_contract(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &error).category == FJ_STATUS_SUCCESS
-                                 : fj_test_execute_prepared_c(JuicerCuda::borrowed_owner(), &prepared, &frame, &context, &submission, &error) != 0;
+                                 ? check_render_contract(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &error, invocationContext).category == FJ_STATUS_SUCCESS
+                                 : render_raw_prepared(JuicerCuda::borrowed_owner(), frame, submission, prepared, {}, &error).status.category == FJ_STATUS_SUCCESS;
         if (!success) {
             diagnostic.assign(message.data(), error.length);
             return false;
         }
         if (lifetime)
             check_prepared_state_lifetime(owner, assets, JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &error, lifetimeCase);
+        else if (!render_held_state(assets, *owner, state, frame, submission, state.recipe_hash, error, diagnostic))
+            return false;
         return true;
     }
 
     bool execute_boundary(
-        const RenderRecipe& recipe,
-        const FocusedRenderPayload& payload,
-        const JuicerCuda::ExecutionFrame& frame,
+        const PreparedState& owner,
+        const FjFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
-        const JuicerCuda::PreparedDescriptors& descriptors,
-        std::string& diagnostic) {
+        std::string& diagnostic,
+        const std::string& invocationPhase) {
         diagnostic.clear();
-        const auto sourceBaseline = fj_test_noise_acquisition_count();
-        JuicerCuda::PreparedDescriptors preparedDescriptors = descriptors;
-        JuicerCuda::FocusedRouteResourceInput focused;
-        const JuicerCuda::FocusedRouteResourcePreparation request{
-            &recipe, &payload.exposureTables, &payload.filmRawConfig, payload.filmTcLut ? &*payload.filmTcLut : nullptr, &payload.scannerTables, &payload.scannerColor, &preparedDescriptors.scanner, payload.outputBoundaryTable.get()};
-        if (!JuicerCuda::build_focused_route_resource_input(request, focused, diagnostic)) {
+        std::array<char, 2048> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjPreparedStateView state{};
+        if (owner.view(state, error).category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(message.data(), error.length);
             return false;
         }
-        const bool print = Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute);
-        std::array<float, 81> preflashIlluminant{};
-        JuicerCuda::PrintResourceInput printInput;
-        if (print) {
-            if (!JuicerCuda::build_print_resource_input(
-                    {&recipe, &JuicerProcess::root().assets(), payload.printMainIlluminant ? &*payload.printMainIlluminant : nullptr},
-                    printInput,
-                    preflashIlluminant,
-                    diagnostic)) {
-                return false;
-            }
-            const Scanner::PrintCorrectionDerivationInput correction{
-                &recipe, &payload.scannerTables, printInput.mainIlluminant.data(), 81, printInput.preflashRawCmy.data(), printInput.normalizer};
-            if (!Scanner::build_print_scanner_color_correction_descriptor(correction, preparedDescriptors.correction, diagnostic)) {
-                return false;
-            }
-        }
-        struct NoiseRelease {
-            void operator()(FjNoise* owner) const noexcept {
-                (void)fj_test_noise_release(owner, nullptr);
-            }
+        const auto extent = [](FjRect rect) {
+            return FjExtent{rect.x1, rect.y1, rect.x2 - rect.x1, rect.y2 - rect.y1};
         };
-        std::unique_ptr<FjNoise, NoiseRelease> noiseOwner;
-        FjStaticNoise noise{};
-        if (recipe.visualGrain.active) {
-            constexpr std::string_view root = JUICER_TEST_RESOURCE_DIR;
-            std::array<char, 512> message{};
-            FjErrorBuffer error{message.data(), message.size(), 0};
-            FjNoise* acquired = nullptr;
-            const auto result = fj_test_noise_acquire({root.data(), root.size()}, &acquired, &error);
-            noiseOwner.reset(acquired);
-            if (result.category != FJ_STATUS_SUCCESS ||
-                fj_test_noise_view(noiseOwner.get(), &noise, &error).category != FJ_STATUS_SUCCESS) {
-                diagnostic = message.data();
-                return false;
-            }
-        }
-        if (fj_test_noise_acquisition_count() != sourceBaseline + (recipe.visualGrain.active ? 1u : 0u)) {
+        PreparedFrameFixture::FrameFacts facts;
+        facts.renderExtent = extent(frame.render_window);
+        facts.fullFrameExtent = extent(frame.full_frame_extent);
+        facts.pixelDefinition = frame.effects_geometry.pixel_definition;
+        facts.pixelSizeUm = frame.pixel_size_um;
+        facts.filmFormatLongEdgeMm = state.input_policy.film_format_long_edge_mm;
+        facts.canonicalX = frame.effects_geometry.canonical_x;
+        facts.canonicalY = frame.effects_geometry.canonical_y;
+        facts.canonicalWidth = frame.effects_geometry.canonical_width;
+        facts.canonicalHeight = frame.effects_geometry.canonical_height;
+        facts.scaleX = frame.effects_geometry.scale_x;
+        facts.scaleY = frame.effects_geometry.scale_y;
+        facts.pixelAspectRatio = frame.effects_geometry.pixel_aspect_ratio;
+        facts.frameTime = frame.time_frames;
+        facts.frameRate = frame.frame_rate;
+        facts.sessionSeed = frame.session_seed;
+        facts.clipToken = frame.clip_token;
+        struct Invocation {
+            const PreparedState& owner;
+            const FjFrame& frame;
+            JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;
+            const std::string& phase;
+        } invocation{owner, frame, snapshot, invocationPhase};
+        const auto baseline = fj_test_noise_acquisition_count();
+        const bool success = PreparedFrameFixture::with_prepared_frame_inputs(
+            owner, facts, &invocation, [](void* user, const PreparedFrameFixture::Inputs& inputs, std::string& diagnostic) {
+                const auto& invocation = *static_cast<Invocation*>(user);
+                const auto& frame = invocation.frame;
+                const auto& snapshot = invocation.snapshot;
+                const auto& state = inputs.state;
+                const JuicerCuda::FrameRect bounds{frame.source.bounds.x1, frame.source.bounds.y1, frame.source.bounds.x2, frame.source.bounds.y2};
+                const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(
+                    bounds, bounds, static_cast<Spektrafilm::AutoExposureMethod>(state.input_policy.meter));
+                if (snapshot.instanceToken.value == 0 || snapshot.snapshotId == 0 ||
+                    snapshot.keyDigests.uploadCoreHash != state.upload_core_hash ||
+                    snapshot.keyDigests.dirHash != state.dir_recipe.hash ||
+                    snapshot.keyDigests.scannerHash != state.scanner_hash ||
+                    snapshot.keyDigests.autoExposureHash != meter.hash ||
+                    inputs.descriptors.route != static_cast<Spektrafilm::ScanRoute>(state.route)) {
+                    diagnostic = "held-state boundary identity differs from its submission";
+                    return false;
+                }
+                FjPreparedHostData prepared{};
+                bind_state(state, prepared);
+                encode_prepared_descriptors(inputs.descriptors, prepared);
+                // The fixed-value writer preserves frame values; large spans borrow the held state.
+                prepared.output_color = state.output_color;
+                prepared.auto_exposure = {{meter.sourceX1, meter.sourceY1, meter.sourceX2, meter.sourceY2},
+                                          {meter.meterX1, meter.meterY1, meter.meterX2, meter.meterY2},
+                                          meter.previewWidth,
+                                          meter.previewHeight,
+                                          static_cast<std::uint32_t>(meter.method),
+                                          meter.hash};
+                if (state.grain.active != 0) {
+                    const auto& noise = *inputs.preparation.noise;
+                    prepared.noise = {{noise.stbn.data(), noise.stbn.size()},
+                                      noise.stbnWidth,
+                                      noise.stbnHeight,
+                                      noise.stbnFrames,
+                                      {noise.wangTiles.data(), noise.wangTiles.size()},
+                                      {noise.wangLut.data(), noise.wangLut.size()},
+                                      noise.wangWidth,
+                                      noise.wangHeight,
+                                      static_cast<std::size_t>(noise.wangCount),
+                                      noise.wangColors};
+                }
+                const FjCudaContext context{snapshot.deviceContextKey.deviceId, reinterpret_cast<std::uintptr_t>(snapshot.deviceContextKey.contextOpaque)};
+                const FjSubmission submission{snapshot.instanceToken.value, snapshot.frameToken.value, snapshot.snapshotId, snapshot.keyDigests.uploadCoreHash, snapshot.keyDigests.dirHash, snapshot.keyDigests.scannerHash, snapshot.keyDigests.autoExposureHash};
+                std::array<char, 2048> message{};
+                FjErrorBuffer error{message.data(), message.size(), 0};
+                const auto acquisitions = fj_test_noise_acquisition_count();
+                const auto invocationContext = std::string("boundary-route-") + std::to_string(state.route) + "-instance-" + std::to_string(snapshot.instanceToken.value) +
+                                               "-frame-" + std::to_string(snapshot.frameToken.value) + "-snapshot-" + std::to_string(snapshot.snapshotId) +
+                                               "-time-" + std::to_string(frame.time_frames) + "-phase-" + invocation.phase;
+                check_frame_bindings(JuicerCuda::borrowed_owner(), context, frame, submission, prepared, &state, inputs.hostPreparation, invocationContext);
+                const auto result = render_raw_prepared(JuicerCuda::borrowed_owner(), frame, submission, prepared, {}, &error, inputs.hostPreparation);
+                if (result.status.category != FJ_STATUS_SUCCESS) {
+                    diagnostic.assign(message.data(), error.length);
+                    return false;
+                }
+                if (!render_held_state(JuicerProcess::root().assets().borrow_rust_assets(), invocation.owner, state, frame, submission, state.recipe_hash, error, diagnostic))
+                    return false;
+                if (fj_test_noise_acquisition_count() != acquisitions) {
+                    diagnostic = "held-state boundary performed a native noise fallback acquisition";
+                    return false;
+                }
+                return true;
+            },
+            diagnostic);
+        if (success && fj_test_noise_acquisition_count() != baseline + (state.grain.active ? 1u : 0u)) {
             diagnostic = "noise fixture activity acquisition count changed";
             return false;
         }
-        FjPreparedHostData prepared{};
-        encode_prepared_descriptors(preparedDescriptors, prepared);
-        prepared.film_profile_key = project(recipe.profileRoute.filmProfileKey);
-        prepared.print_profile_key = print ? project(recipe.profileRoute.printProfileKey) : FjStringView{};
-        prepared.film_profile_asset_version = recipe.profileRoute.filmProfileAssetVersionToken;
-        prepared.print_profile_asset_version = print ? recipe.profileRoute.printProfileAssetVersionToken : 0;
-        prepared.recipe_hash = recipe.hash;
-        encode_film(recipe, payload, focused, prepared);
-        encode_bounds(recipe.densityBounds, prepared.scanner_bounds);
-        if (print) {
-            encode_bounds(recipe.enlargerFilmBounds, prepared.enlarger_film_bounds);
-            encode_print(printInput, recipe.print.exposure, prepared.print);
-        }
-        const auto& scanner = focused.scannerTables;
-        prepared.scanner_spectra = {project(scanner.epsY), project(scanner.epsM), project(scanner.epsC), project(scanner.Ax), project(scanner.Ay), project(scanner.Az), scanner.hasBaseline ? project(scanner.baseDensityMin) : FjFloatSpan{}, scanner.invYn};
-        if (focused.outputGamut.enabled) {
-            prepared.output_color.gamut_cmax = project(focused.outputGamut.cmax);
-            prepared.output_color.gamut_table_hash = focused.outputGamut.tableHash;
-        }
-        if (recipe.visualGrain.active) {
-            prepared.noise = noise;
-        }
-        const auto& meter = frame.autoExposureDescriptor;
-        prepared.auto_exposure = {{meter.sourceX1, meter.sourceY1, meter.sourceX2, meter.sourceY2},
-                                  {meter.meterX1, meter.meterY1, meter.meterX2, meter.meterY2},
-                                  meter.previewWidth,
-                                  meter.previewHeight,
-                                  static_cast<std::uint32_t>(meter.method),
-                                  meter.hash};
-        const auto& geometry = frame.effectsGeometry;
-        const FjFrame projectedFrame{
-            {reinterpret_cast<std::uintptr_t>(frame.sourceBase), project(frame.sourceBounds), frame.sourceRowBytes, static_cast<std::uint32_t>(frame.components), FJ_DEPTH_FLOAT32},
-            {reinterpret_cast<std::uintptr_t>(frame.destination), project(frame.renderWindow), frame.destinationRowBytes, static_cast<std::uint32_t>(frame.components), FJ_DEPTH_FLOAT32},
-            project(frame.renderWindow),
-            project(frame.fullFrameExtent),
-            reinterpret_cast<std::uintptr_t>(frame.stream),
-            FJ_FRAME_STREAM_PRESENT | (frame.traceInfo ? FJ_FRAME_TRACE_INFO : 0u) | (frame.traceVerbose ? FJ_FRAME_TRACE_VERBOSE : 0u),
-            frame.pixelSizeUm,
-            frame.timeFrames,
-            frame.frameRate,
-            frame.sessionSeed,
-            frame.clipToken,
-            {{geometry.pixelDefinition.x, geometry.pixelDefinition.y, geometry.pixelDefinition.width, geometry.pixelDefinition.height},
-             geometry.canonicalX,
-             geometry.canonicalY,
-             geometry.canonicalWidth,
-             geometry.canonicalHeight,
-             geometry.scaleX,
-             geometry.scaleY,
-             geometry.pixelAspectRatio}};
-        const FjCudaContext context{snapshot.deviceContextKey.deviceId, reinterpret_cast<std::uintptr_t>(snapshot.deviceContextKey.contextOpaque)};
-        const FjSubmission submission{snapshot.instanceToken.value, snapshot.frameToken.value, snapshot.snapshotId, snapshot.keyDigests.uploadCoreHash, snapshot.keyDigests.dirHash, snapshot.keyDigests.scannerHash, snapshot.keyDigests.autoExposureHash};
-        std::array<char, 2048> message{};
-        FjErrorBuffer error{message.data(), message.size(), 0};
-        const auto sourceAcquisitions = fj_test_noise_acquisition_count();
-        check_frame_bindings(JuicerCuda::borrowed_owner(), context, projectedFrame, submission, prepared, &recipe);
-        const int result = fj_test_execute_prepared_c(JuicerCuda::borrowed_owner(), &prepared, &projectedFrame, &context, &submission, &error);
-        if (fj_test_noise_acquisition_count() != sourceAcquisitions) {
-            diagnostic = "supplied noise performed a fallback acquisition";
-            return false;
-        }
-        if (result == 0) {
-            diagnostic.assign(message.data(), error.length);
-        }
-        return result != 0;
+        return success;
     }
 
 } // namespace JuicerCudaTest

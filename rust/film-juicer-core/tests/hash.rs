@@ -8,6 +8,9 @@ use std::path::Path;
 use serde::Deserialize;
 
 use film_juicer_core::hash;
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 
 #[derive(Deserialize)]
 struct Vector {
@@ -21,7 +24,12 @@ fn native_float_and_mask_vectors_match() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/profile/fixtures/hash.json");
     let vectors: Vec<Vector> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(vectors.len(), 16);
+    let mut cases = RowCases::new(
+        "native-float-mask-vectors",
+        vectors.iter().map(|vector| &vector.id),
+    );
     for vector in vectors {
+        let row = cases.case(&vector.id);
         let samples: Vec<f32> = vector.bits.into_iter().map(f32::from_bits).collect();
         let finite = hash::finite_f32s(&samples);
         if let Some(index) = samples.iter().position(|v| !v.is_finite()) {
@@ -46,7 +54,9 @@ fn native_float_and_mask_vectors_match() {
             "{}",
             vector.id
         );
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
@@ -125,7 +135,12 @@ fn independent_resource_vectors_match_without_changing_samples() {
         .join("../../tests/profile/fixtures/resource-hash.json");
     let vectors: Vec<ResourceVector> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(vectors.len(), 13);
+    let mut cases = RowCases::new(
+        "independent-resource-vectors",
+        vectors.iter().map(|vector| &vector.id),
+    );
     for vector in vectors {
+        let row = cases.case(&vector.id);
         let bits = vector.bits.repeat(vector.repeat);
         let samples: Vec<f32> = bits.iter().copied().map(f32::from_bits).collect();
         assert_eq!(
@@ -137,33 +152,59 @@ fn independent_resource_vectors_match_without_changing_samples() {
         for (sample, bits) in samples.iter().zip(bits) {
             assert_eq!(sample.to_bits(), bits, "{}", vector.id);
         }
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
 fn resource_hash_preserves_existing_native_finite_vectors() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/profile/fixtures/hash.json");
     let vectors: Vec<Vector> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let finite: Vec<_> = vectors
+        .iter()
+        .filter(|vector| {
+            vector
+                .bits
+                .iter()
+                .all(|bits| f32::from_bits(*bits).is_finite())
+        })
+        .collect();
+    let mut cases = RowCases::new(
+        "existing-native-finite-resource-vectors",
+        finite.iter().map(|vector| &vector.id),
+    );
     for vector in vectors {
         let samples: Vec<f32> = vector.bits.into_iter().map(f32::from_bits).collect();
         if samples.iter().all(|sample| sample.is_finite()) {
+            let row = cases.case(&vector.id);
             assert_eq!(
                 hash::resource_f32s(&samples),
                 vector.expected[0],
                 "{}",
                 vector.id
             );
+            row.passed();
         }
     }
+    cases.finish();
 }
 
 #[test]
 fn resource_equivalence_keeps_nan_zero_and_infinity_distinctions() {
     assert_eq!(hash::resource_f32s(&[0.0]), hash::resource_f32s(&[-0.0]));
     let nan = hash::resource_f32s(&[f32::from_bits(0x7fc00001)]);
-    for bits in [0x7f800001, 0x7fffffff, 0xff800001, 0xffc54321] {
+    let ids = ["0x7f800001", "0x7fffffff", "0xff800001", "0xffc54321"];
+    let mut cases = RowCases::new("nan-payload-equivalence", ids);
+    for (bits, id) in [0x7f800001, 0x7fffffff, 0xff800001, 0xffc54321]
+        .into_iter()
+        .zip(ids)
+    {
+        let row = cases.case(id);
         assert_eq!(nan, hash::resource_f32s(&[f32::from_bits(bits)]));
+        row.passed();
     }
+    cases.finish();
     assert_ne!(nan, hash::resource_f32s(&[0.0]));
     assert_ne!(
         hash::resource_f32s(&[f32::INFINITY]),

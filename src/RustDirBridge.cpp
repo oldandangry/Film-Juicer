@@ -219,17 +219,6 @@ namespace JuicerDir {
         return active_shape(input, math) ? MathOutcome(input, Active{math}) : reject();
     }
 
-    MathOutcome prepare_math(
-        const DirCouplersRecipe& recipe, float pixelSizeUm, Spektrafilm::DirFrameExtent renderExtent, Spektrafilm::DirFrameExtent fullFrameExtent) {
-        const FjDirFrameInput input{
-            recipe.active ? 1u : 0u, recipe.diffusionSizeUm, recipe.diffusionTailUm, recipe.diffusionTailWeight, pixelSizeUm, {renderExtent.x, renderExtent.y, renderExtent.width, renderExtent.height}, {fullFrameExtent.x, fullFrameExtent.y, fullFrameExtent.width, fullFrameExtent.height}, recipe.hash};
-        FjDirFrameMath math{};
-        FjDirFrameFailure failure{};
-        std::array<char, 256> text{};
-        FjErrorBuffer error{text.data(), text.size(), 0};
-        const auto status = fj_legacy_dir_frame_prepare(&input, &math, &failure, &error);
-        return MathOutcome::admit(input, status, math, failure, error, text);
-    }
 } // namespace JuicerDir
 
 namespace {

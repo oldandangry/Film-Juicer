@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 
 #include "JuicerState.h"
@@ -202,25 +203,18 @@ namespace {
             return;
         }
         const auto& descriptor = *source.grain;
-        const auto& recipe = source.grainRecipe;
-        out.flags = FJ_GRAIN_ACTIVE;
-        if (recipe.sublayersActive) {
-            out.flags |= FJ_GRAIN_SUBLAYERS;
-        }
+        const auto& payload = source.grainPayload;
+        const auto& coefficients = payload.coefficients;
+        out.flags = coefficients.flags;
         if (descriptor.requiresFullFrame) {
             out.flags |= FJ_GRAIN_FULL_FRAME;
         }
-        constexpr std::uint32_t kAxisFlags[] = {
-            FJ_GRAIN_AXIS_FINITE_C, FJ_GRAIN_AXIS_FINITE_M, FJ_GRAIN_AXIS_FINITE_Y};
-        for (std::size_t channel = 0; channel < recipe.grainLayerAxisFinite.size(); ++channel) {
-            if (recipe.grainLayerAxisFinite[channel]) {
-                out.flags |= kAxisFlags[channel];
-            }
-            std::copy(recipe.grainLayerAxisBlockPrefixMax[channel].begin(),
-                      recipe.grainLayerAxisBlockPrefixMax[channel].end(),
+        for (std::size_t channel = 0; channel < std::size(coefficients.layer_axis_block_prefix_max); ++channel) {
+            std::copy(std::begin(coefficients.layer_axis_block_prefix_max[channel]),
+                      std::end(coefficients.layer_axis_block_prefix_max[channel]),
                       out.layer_axis_block_prefix_max[channel]);
         }
-        out.debug_view = static_cast<std::uint32_t>(recipe.debugView);
+        out.debug_view = coefficients.debug_view;
         out.render_extent = encode_extent(descriptor.renderExtent);
         out.full_frame_extent = encode_extent(descriptor.fullFrameExtent);
         out.pixel_size_um = descriptor.pixelSizeUm;
@@ -244,16 +238,16 @@ namespace {
         out.size_mix_weights[1] = descriptor.effectiveMidWeight;
         out.size_mix_weights[2] = descriptor.effectiveCoarseWeight;
         out.size_mix_gain = descriptor.sizeMixGain;
-        out.sublayer_count = static_cast<std::size_t>(recipe.nSubLayers);
-        std::copy(recipe.microStructure.begin(), recipe.microStructure.end(), out.micro_structure);
-        out.clump_temporal_mix = recipe.clumpTemporalMix;
-        out.size_mix_scale = recipe.sizeMixScale;
-        out.amplitude = recipe.amplitude;
-        out.chroma_mix = recipe.chromaMix;
-        out.chroma_shared_weight = recipe.chromaSharedWeight;
-        out.chroma_independent_weight = recipe.chromaIndependentWeight;
-        std::copy(recipe.visualParticleDensityMinCmy.begin(), recipe.visualParticleDensityMinCmy.end(), out.particle_density_min_cmy);
-        std::copy(recipe.uniformityCmy.begin(), recipe.uniformityCmy.end(), out.uniformity_cmy);
+        out.sublayer_count = coefficients.sublayer_count;
+        std::copy(std::begin(coefficients.micro_structure), std::end(coefficients.micro_structure), out.micro_structure);
+        out.clump_temporal_mix = coefficients.clump_temporal_mix;
+        out.size_mix_scale = coefficients.size_mix_scale;
+        out.amplitude = coefficients.amplitude;
+        out.chroma_mix = coefficients.chroma_mix;
+        out.chroma_shared_weight = coefficients.chroma_shared_weight;
+        out.chroma_independent_weight = coefficients.chroma_independent_weight;
+        std::copy(std::begin(coefficients.particle_density_min_cmy), std::end(coefficients.particle_density_min_cmy), out.particle_density_min_cmy);
+        std::copy(std::begin(coefficients.uniformity_cmy), std::end(coefficients.uniformity_cmy), out.uniformity_cmy);
         std::copy(descriptor.densityMaxCmy.begin(), descriptor.densityMaxCmy.end(), out.density_max_cmy);
         std::copy(descriptor.nParticlesCmy.begin(), descriptor.nParticlesCmy.end(), out.n_particles_cmy);
         std::copy(descriptor.odParticleCmy.begin(), descriptor.odParticleCmy.end(), out.od_particle_cmy);
@@ -267,8 +261,8 @@ namespace {
                 out.dye_cloud[layer][channel] = encode_grain_gaussian(descriptor.dyeCloud[layer][channel]);
             }
         }
-        out.recipe_hash = descriptor.recipeHash;
-        out.density_layers_hash = descriptor.densityCurvesLayersHash;
+        out.recipe_hash = payload.recipeHash;
+        out.density_layers_hash = payload.densityLayersHash;
         out.hash = descriptor.hash;
     }
 
@@ -400,87 +394,12 @@ namespace JuicerCudaTest {
 
 } // namespace JuicerCudaTest
 
-FjPreparationParams JuicerCudaTest::preparation_params(const ParamSnapshot& p) {
-    FjPreparationParams out{};
-    out.print_exposure = p.printExposure;
-    out.print_preflash_exposure = p.printPreflashExposure;
-    out.print_gamma_factor = p.printGammaFactor;
-    out.preflash_m_filter_cc = p.preflashMFilterCc;
-    out.preflash_y_filter_cc = p.preflashYFilterCc;
-    out.print_shadow_compensation_factor = p.printShadowCompensationFactor;
-    out.print_shadow_compensation_density = p.printShadowCompensationDensity;
-    out.print_shadow_compensation_transition = p.printShadowCompensationTransition;
-    out.glare_percent = p.glarePercent;
-    out.glare_roughness = p.glareRoughness;
-    out.glare_blur_sigma_px = p.glareBlurSigmaPx;
-    out.camera_exposure_compensation_ev = p.cameraExposureCompensationEv;
-    out.camera_film_format_long_edge_mm = p.cameraFilmFormatLongEdgeMm;
-    out.film_gamma_factor = p.filmGammaFactor;
-    out.scanner_lens_blur_sigma_px = p.scannerLensBlurSigmaPx;
-    out.scanner_black_level = p.scannerBlackLevel;
-    out.scanner_white_level = p.scannerWhiteLevel;
-    out.gate_weave_amount = p.gateWeaveAmount;
-    std::copy(p.scannerUnsharpMask.begin(), p.scannerUnsharpMask.end(), out.scanner_unsharp_mask);
-    std::copy(p.printUiYmcCc.begin(), p.printUiYmcCc.end(), out.print_ui_ymc_cc);
-    std::copy(p.cameraFilterUV.begin(), p.cameraFilterUV.end(), out.camera_filter_uv);
-    std::copy(p.cameraFilterIR.begin(), p.cameraFilterIR.end(), out.camera_filter_ir);
-    const auto diffusion = [](const Spektrafilm::DiffusionFilterAuthoredControls& controls) {
-        return FjDiffusionParams{controls.active ? 1u : 0u, static_cast<std::uint32_t>(controls.family), controls.strength, controls.spatialScale, controls.haloWarmth, controls.coreIntensity, controls.coreSize, controls.haloIntensity, controls.haloSize, controls.bloomIntensity, controls.bloomSize};
-    };
-    out.camera_diffusion = diffusion(p.cameraDiffusion);
-    out.enlarger_diffusion = diffusion(p.enlargerDiffusion);
-    const auto& dir = p.dirCouplers;
-    out.dir_couplers = {dir.active ? 1u : 0u, dir.amount, dir.inhibitionSameLayer, dir.inhibitionInterlayer, dir.diffusionSizeUm, dir.diffusionTailUm, dir.diffusionTailWeight, dir.gammaUseStock ? 1u : 0u, {}, {}, {}, {}, {}, {}};
-    std::copy(dir.gammaSameLayerRgb.begin(), dir.gammaSameLayerRgb.end(), out.dir_couplers.gamma_same_layer_rgb);
-    std::copy(dir.gammaInterlayerRToGb.begin(), dir.gammaInterlayerRToGb.end(), out.dir_couplers.gamma_interlayer_r_to_gb);
-    std::copy(dir.gammaInterlayerGToRb.begin(), dir.gammaInterlayerGToRb.end(), out.dir_couplers.gamma_interlayer_g_to_rb);
-    std::copy(dir.gammaInterlayerBToRg.begin(), dir.gammaInterlayerBToRg.end(), out.dir_couplers.gamma_interlayer_b_to_rg);
-    std::copy(dir.langmuirDonorKRgb.begin(), dir.langmuirDonorKRgb.end(), out.dir_couplers.langmuir_donor_k_rgb);
-    std::copy(dir.langmuirReceiverKRgb.begin(), dir.langmuirReceiverKRgb.end(), out.dir_couplers.langmuir_receiver_k_rgb);
-    out.film_profile_key = {p.filmProfileKey.data(), p.filmProfileKey.size()};
-    out.print_profile_key = {p.printProfileKey.data(), p.printProfileKey.size()};
-    out.spectral_upsampling_mode = p.spectralUpsamplingMode;
-    out.ref_ill = p.refIll;
-    out.enl_ill = p.enlIll;
-    out.normalize_print_exposure = p.normalizePrintExposure != 0;
-    out.print_exposure_compensation = p.printExposureCompensation != 0;
-    out.input_color_space = p.inputColorSpace;
-    out.input_cctf_decoding = p.inputCctfDecoding != 0;
-    out.input_compression_enabled = p.inputCompressionEnabled != 0;
-    out.hanatos2025_adaptation_window = p.hanatos2025AdaptationWindow != 0;
-    out.hanatos2025_adaptation_surface = p.hanatos2025AdaptationSurface != 0;
-    out.camera_auto_exposure_enabled = p.cameraAutoExposureEnabled != 0;
-    out.camera_metering_method = p.cameraMeteringMethod;
-    const auto& halation = p.scatterHalationControls;
-    out.scatter_halation = {halation.active ? 1u : 0u, halation.scatterAmount, halation.scatterSpatialScale, halation.halationAmount, halation.halationSpatialScale};
-    out.scanner_black_correction = p.scannerBlackCorrection != 0;
-    out.scanner_white_correction = p.scannerWhiteCorrection != 0;
-    out.scanner_lut_resolution = p.scannerLutResolution;
-    out.output_color_space = p.outputColorSpace;
-    out.output_cctf_encoding = p.outputCctfEncoding != 0;
-    out.output_gamut_compression_enabled = p.outputGamutCompressionEnabled != 0;
-    const auto& grain = p.grainControls;
-    out.grain = {grain.active ? 1u : 0u, grain.sublayersActive ? 1u : 0u, grain.particleAreaUm2, {}, {}, {}, {}, grain.correlationSigmaPx, grain.dyeCloudBlurUm, {}, grain.nSubLayers, grain.amplitude, grain.chromaMix, grain.chromaSharedWeight, grain.chromaIndependentWeight, grain.coarseWeight, grain.midWeight, grain.sizeMixScale, grain.clumpTemporalMix, grain.clumpMorphPeriodSec, grain.debugView};
-    std::copy(grain.particleScaleCmy.begin(), grain.particleScaleCmy.end(), out.grain.particle_scale_cmy);
-    std::copy(grain.particleScaleLayers.begin(), grain.particleScaleLayers.end(), out.grain.particle_scale_layers);
-    std::copy(grain.visualParticleDensityMinCmy.begin(), grain.visualParticleDensityMinCmy.end(), out.grain.particle_density_min_cmy);
-    std::copy(grain.uniformityCmy.begin(), grain.uniformityCmy.end(), out.grain.uniformity_cmy);
-    std::copy(grain.microStructure.begin(), grain.microStructure.end(), out.grain.micro_structure);
-    out.film_dust_amount = p.filmDustAmount;
-    out.film_scratch_amount = p.filmScratchAmount;
-    out.gate_dust_amount = p.gateDustAmount;
-    out.gate_scratch_amount = p.gateScratchAmount;
-    out.scan_route = static_cast<std::uint32_t>(p.scanRoute);
-    out.glare_active = p.glareActive ? 1u : 0u;
-    out.camera_filter_override = p.cameraFilterOverride ? 1u : 0u;
-    return out;
-}
 
-void JuicerCudaTest::PreparedStateDeleter::operator()(FjPreparedState* owner) const noexcept {
+void JuicerCudaTest::RawPreparedStateDeleter::operator()(FjPreparedState* owner) const noexcept {
     (void)fj_test_prepared_state_release(owner, nullptr);
 }
 
-JuicerCudaTest::PreparedStateHold JuicerCudaTest::prepare_state(FjAssets* assets, const ParamSnapshot& snapshot, FjStatus& status, std::string& diagnostic) {
+JuicerCudaTest::RawPreparedStateHold JuicerCudaTest::prepare_raw_state(FjAssets* assets, const ParamSnapshot& snapshot, FjStatus& status, std::string& diagnostic) {
     diagnostic.clear();
     const auto params = preparation_params(snapshot);
     std::array<char, 1024> text{};
@@ -488,5 +407,15 @@ JuicerCudaTest::PreparedStateHold JuicerCudaTest::prepare_state(FjAssets* assets
     FjPreparedState* owner = nullptr;
     status = fj_test_prepared_state_create(assets, &params, &owner, &error);
     diagnostic.assign(text.data(), error.length);
-    return PreparedStateHold(owner);
+    return RawPreparedStateHold(owner);
+}
+
+std::optional<PreparedState> JuicerCudaTest::prepare_state(FjAssets* assets, const ParamSnapshot& snapshot, FjStatus& status, std::string& diagnostic) {
+    diagnostic.clear();
+    std::array<char, 1024> text{};
+    FjErrorBuffer error{text.data(), text.size(), 0};
+    std::optional<PreparedState> owner;
+    status = ::prepare_state(assets, snapshot, owner, error);
+    diagnostic.assign(text.data(), error.length);
+    return owner;
 }

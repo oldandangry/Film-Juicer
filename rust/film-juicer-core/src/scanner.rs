@@ -680,6 +680,7 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_cases::RowCases;
     use super::*;
     use serde_json::Value;
 
@@ -838,12 +839,24 @@ mod tests {
         let checked = read("checked-expectations.json");
         assert_eq!(captured["cases"].as_array().unwrap().len(), 150);
         assert_eq!(captured["products"].as_array().unwrap().len(), 48);
-        for row in captured["cases"].as_array().unwrap() {
+        let case_rows = captured["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| {
+                !checked["cases"][row["id"].as_str().unwrap()]["native_only"]
+                    .as_bool()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new(
+            "scanner-correction-cases",
+            case_rows.iter().map(|row| row["id"].as_str().unwrap()),
+        );
+        for row in &case_rows {
             let id = row["id"].as_str().unwrap();
+            let case = cases.case(id);
             let normative = &checked["cases"][id];
-            if normative["native_only"].as_bool().unwrap() {
-                continue;
-            }
             match construct(&row["input"], row["spec"]["print"].as_bool().unwrap()) {
                 Ok(value) => {
                     assert_eq!(normative["reason"], 0, "{id}");
@@ -874,19 +887,46 @@ mod tests {
                     }
                 }
             }
+            case.passed();
         }
-        for row in captured["products"].as_array().unwrap() {
+        cases.finish();
+        let product_rows = captured["products"].as_array().unwrap();
+        let mut products = RowCases::new(
+            "scanner-correction-products",
+            product_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| format!("{}/row-{index}", row["id"].as_str().unwrap()))
+                .collect::<Vec<_>>(),
+        );
+        for (index, row) in product_rows.iter().enumerate() {
             let id = row["id"].as_str().unwrap();
+            let case = products.case(format!("{id}/row-{index}"));
             compare(
                 construct(&row["input"], row["print"].as_bool().unwrap()).unwrap(),
                 &row["native"]["descriptor"],
                 id,
             );
+            case.passed();
         }
+        products.finish();
     }
 
     #[test]
     fn demand_precedes_missing_storage_for_every_byte_and_flag_pair() {
+        let ids = (0u32..=255)
+            .flat_map(|route| {
+                (0u32..4).flat_map(move |flags| {
+                    [false, true].map(move |print| {
+                        format!(
+                            "route/{route}/flags/{flags}/{}",
+                            if print { "print" } else { "direct" }
+                        )
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new("scanner-demand-byte-flag-route", ids);
         for route in 0..=255 {
             for flags in 0..4 {
                 let params = Params {
@@ -897,6 +937,11 @@ mod tests {
                     white_level: f32::NAN,
                 };
                 for print in [false, true] {
+                    let id = format!(
+                        "route/{route}/flags/{flags}/{}",
+                        if print { "print" } else { "direct" }
+                    );
+                    let case = cases.case(id);
                     let demand = if print {
                         params.print_inputs_required()
                     } else {
@@ -922,9 +967,11 @@ mod tests {
                         }
                         assert_eq!(reason(result.unwrap_err()), if print { 7 } else { 2 });
                     }
+                    case.passed();
                 }
             }
         }
+        cases.finish();
     }
 
     #[test]

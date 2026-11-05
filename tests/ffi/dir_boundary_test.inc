@@ -48,6 +48,7 @@ namespace DirBoundaryTest {
             const auto getView = useC ? fj_test_dir_boundary_c_view : fj_test_dir_boundary_view;
             const auto release = useC ? fj_test_dir_boundary_c_release : fj_test_dir_boundary_release;
             for (const auto& row : captured.at("cases")) {
+                JuicerTests::CaseEvent caseEvent(useC ? "c11" : "cpp", row.at("input").at("name").get<std::string>());
                 const auto raw = input(row.at("input"));
                 const auto& expected = checked.at("ordinary").at(row.at("input").at("name").get<std::string>());
                 FjDirBoundaryFailure failure{};
@@ -74,6 +75,7 @@ namespace DirBoundaryTest {
                 } else {
                     require(!owner, "failed acquire clears owner");
                 }
+                caseEvent.passed();
             }
         }
         require(fj_test_dir_boundary_count(3) == 0, "no leaked complete owners");
@@ -81,11 +83,13 @@ namespace DirBoundaryTest {
     void products(const Json& captured) {
         static_assert(!std::is_copy_constructible_v<JuicerDirBoundary::Boundary>);
         for (const auto& row : captured.at("cases")) {
+            JuicerTests::CaseEvent caseEvent("cpp", row.at("input").at("name").get<std::string>());
             JuicerCuda::Failure failure;
             const auto raw = input(row.at("input"));
             std::uint64_t key = 777;
             if (!JuicerDirBoundary::describe(raw, key, failure)) {
                 require(!row.at("success").get<bool>() && failure.diagnostic == row.at("diagnostic").get<std::string>(), "native outer adapter failure");
+                caseEvent.passed();
                 continue;
             }
             require(key == row.at("key"), "native adapter key");
@@ -95,18 +99,25 @@ namespace DirBoundaryTest {
                 compare(owner->view(), row);
             else
                 require(failure.diagnostic == row.at("diagnostic").get<std::string>(), "original native numerical diagnostic including stream formatting");
+            caseEvent.passed();
         }
         const auto& row = captured.at("cases").at(7);
+        JuicerTests::CaseEvent productFaults("cpp", "dir-boundary/product-faults");
+        JuicerTests::Cohort product_fault_rows("dir_boundary.product_view_fault", {"fault-9", "fault-10", "fault-11", "fault-12"});
         for (unsigned fault = 9; fault <= 12; ++fault) {
+            auto row_event = product_fault_rows.case_event("fault-" + std::to_string(fault));
             const auto releases = fj_test_dir_boundary_count(2);
             status(fj_test_dir_boundary_fault(2, fault));
             JuicerCuda::Failure failure;
             require(!JuicerDirBoundary::Boundary::acquire(input(row.at("input")), row.at("key"), failure), "malformed view rejected");
             require(failure.status.category == 3 && failure.status.api == 0 && failure.status.native_code == 0 && failure.diagnostic == "spatial DIR reflected-boundary view is invalid", "native invalid-view envelope");
             require(fj_test_dir_boundary_count(2) == releases + 1 && fj_test_dir_boundary_count(3) == 0, "exactly one release on native rejection");
+            row_event.passed();
         }
+        productFaults.passed();
     }
     void boundary(const Json& captured) {
+        JuicerTests::CaseEvent caseEvent("cpp", "dir-boundary/raw-and-faults");
         const auto raw = input(captured.at("cases").at(7).at("input"));
         const Json defaults = Json::array({0, 0, 3, 0, 0, 0, 0});
         FjDirBoundaryFailure failure{};
@@ -132,7 +143,10 @@ namespace DirBoundaryTest {
         status(fj_test_dir_boundary_describe(reinterpret_cast<const FjDirBoundaryInput*>(overflow), &key, &failure, &error), 2);
         require(key == 0 && failure.reason == 1, "overflowing record admission without dereference");
         const std::string message = "spatial DIR reflected-boundary arguments are invalid";
+        const std::vector<std::string> capacity_ids{"0", "1", "7", std::to_string(message.size()), std::to_string(message.size() + 1)};
+        JuicerTests::Cohort diagnostic_capacities("dir_boundary.diagnostic_capacity", capacity_ids);
         for (const std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{7}, message.size(), message.size() + 1}) {
+            auto row_event = diagnostic_capacities.case_event(std::to_string(capacity));
             text.fill('x');
             FjErrorBuffer bounded{capacity ? text.data() : reinterpret_cast<char*>(std::uintptr_t{1}), capacity, 999};
             owner = reinterpret_cast<FjDirBoundaryOwner*>(std::uintptr_t{1});
@@ -144,6 +158,7 @@ namespace DirBoundaryTest {
                 require(text[written] == '\0' && std::string_view(text.data(), written) == std::string_view(message).substr(0, written) && text[capacity] == 'x', "bounded diagnostic NUL and guard byte");
             else
                 require(text[0] == 'x', "zero capacity ignores backing");
+            row_event.passed();
         }
         FjErrorBuffer malformed{nullptr, 1, 999};
         status(fj_test_dir_boundary_acquire(&raw, &owner, &failure, &malformed), 2);
@@ -154,7 +169,9 @@ namespace DirBoundaryTest {
         malformed = {reinterpret_cast<char*>(overflow), 16, 999};
         status(fj_test_dir_boundary_describe(&raw, &key, &failure, &malformed), 2);
         require(!key && failure.reason == 1 && malformed.length == 0, "overflowing diagnostic span");
+        JuicerTests::Cohort panic_operations("dir_boundary.boundary_panic_operation", 4);
         for (unsigned operation = 0; operation < 4; ++operation) {
+            auto row_event = panic_operations.case_event(std::to_string(operation));
             status(fj_test_dir_boundary_fault(operation, 1));
             if (operation == 0) {
                 status(fj_test_dir_boundary_describe(&raw, &key, &failure, &error), 8);
@@ -175,8 +192,11 @@ namespace DirBoundaryTest {
                 }
             }
             require(fj_test_dir_boundary_count(3) == 0, "panic leaves no escaped owner");
+            row_event.passed();
         }
+        JuicerTests::Cohort allocation_faults("dir_boundary.boundary_allocation_fault", 7);
         for (unsigned fault = 2; fault <= 8; ++fault) {
+            auto row_event = allocation_faults.case_event(std::to_string(fault - 2));
             status(fj_test_dir_boundary_fault(1, fault));
             status(fj_test_dir_boundary_acquire(&raw, &owner, &failure, &error), 4);
             require(!owner && failure.reason == 12 && failure.axis == (fault <= 4 ? 1u : fault <= 7 ? 2u
@@ -187,8 +207,11 @@ namespace DirBoundaryTest {
                     "reservation axis metadata");
             status(fj_test_dir_boundary_acquire(&raw, &owner, &failure, nullptr));
             status(fj_test_dir_boundary_release(owner, nullptr));
+            row_event.passed();
         }
+        JuicerTests::Cohort rejected_fault_operations("dir_boundary.rejected_fault_operation", 4);
         for (unsigned operation = 0; operation < 4; ++operation) {
+            auto row_event = rejected_fault_operations.case_event(std::to_string(operation));
             status(fj_test_dir_boundary_fault(operation, 1));
             status(fj_test_dir_boundary_fault(operation, 99), 2);
             if (operation == 0)
@@ -205,6 +228,7 @@ namespace DirBoundaryTest {
             status(fj_test_dir_boundary_acquire(&raw, &owner, &failure, nullptr));
             status(fj_test_dir_boundary_view(owner, &view, &failure, nullptr));
             status(fj_test_dir_boundary_release(owner, nullptr));
+            row_event.passed();
         }
         FjDirBoundaryOwner* independent = nullptr;
         {
@@ -237,5 +261,6 @@ namespace DirBoundaryTest {
         status(fj_test_dir_boundary_acquire(&oversized, &owner, &failure, nullptr), 3);
         require(!owner && failure.reason == 4 && failure.axis == 1, "horizontal policy precedes later axis size");
         require(fj_test_dir_boundary_count(3) == 0, "boundary lifetime closure");
+        caseEvent.passed();
     }
 } // namespace DirBoundaryTest

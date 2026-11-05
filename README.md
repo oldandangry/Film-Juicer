@@ -335,7 +335,8 @@ path machine-independent. When CUDA 13.2 is not the system default, select it
 with `CUDACXX` and `CUDAToolkit_ROOT` as documented in
 [tests/README.md](tests/README.md). WSL and native Linux should use separate
 checkouts or build caches. Build `bundle-archive` in a configured tree to
-produce a compressed platform bundle.
+produce the complete bundle and matching compressed package together under
+`out/stage/<preset>/` (or the configured install prefix).
 
 The maintained public CMake/CTest suite, Python 3.13 setup, host/GPU labels,
 fixture boundaries, and exact test commands are documented in

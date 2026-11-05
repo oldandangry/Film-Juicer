@@ -33,6 +33,11 @@ impl NoiseOwner {
             wang_colors: self.bundle.wang().colors(),
         }
     }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn arc_references(&self) -> usize {
+        Arc::strong_count(&self.bundle)
+    }
 }
 
 #[cfg(test)]

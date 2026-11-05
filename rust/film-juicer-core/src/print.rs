@@ -665,6 +665,7 @@ impl Illuminant {
 #[cfg(test)]
 mod tests {
     use super::{Error, FilterParams, Illuminant};
+    use crate::test_cases::RowCases;
     use serde_json::Value;
 
     #[cfg(all(target_os = "linux", debug_assertions))]
@@ -690,7 +691,15 @@ mod tests {
         let document: Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let mut differences = Vec::new();
-        for row in document["cases"].as_array().unwrap() {
+        let rows = document["cases"].as_array().unwrap();
+        let mut cases = RowCases::new(
+            "print-illuminant-cases",
+            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        );
+        for row in rows {
+            let id = row["id"].as_str().unwrap();
+            let case = cases.case(id);
+            let before = differences.len();
             let params = FilterParams {
                 edges_nm: floats(&row["edges_nm"]),
                 transitions_nm: floats(&row["transitions_nm"]),
@@ -699,7 +708,6 @@ mod tests {
             let source = floats(&row["source"]);
             let expected = floats::<81>(&row["samples"]);
             let result = Illuminant::new(params, &source);
-            let id = row["id"].as_str().unwrap();
             if row["success"].as_bool().unwrap() {
                 match result {
                     Ok(value) => {
@@ -728,7 +736,11 @@ mod tests {
                     differences.push(format!("{id} expected {failure:?}"));
                 }
             }
+            if differences.len() == before {
+                case.passed();
+            }
         }
+        cases.finish();
         assert!(
             differences.is_empty(),
             "exact owner-approved print policy gate failed:\n{}",
@@ -740,6 +752,7 @@ mod tests {
 #[cfg(test)]
 mod preflash_tests {
     use super::{PreflashError, PreflashRaw};
+    use crate::test_cases::RowCases;
     use serde_json::Value;
 
     #[cfg(all(target_os = "linux", debug_assertions))]
@@ -774,7 +787,13 @@ mod preflash_tests {
         .unwrap();
         assert_eq!(captured["cases"].as_array().unwrap().len(), 19);
         assert_eq!(captured["products"].as_array().unwrap().len(), 72);
-        for row in captured["cases"].as_array().unwrap() {
+        let rows = captured["cases"].as_array().unwrap();
+        let mut cases = RowCases::new(
+            "print-preflash-cases",
+            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        );
+        for row in rows {
+            let case = cases.case(row["id"].as_str().unwrap());
             let base = floats(&row["film_base_density"]);
             let light = floats(&row["filtered_illuminant"]);
             let flat = floats::<243>(&row["print_sensitivity_cmy"]);
@@ -795,22 +814,48 @@ mod preflash_tests {
                     "{id}"
                 );
             }
+            case.passed();
         }
-        for row in captured["products"].as_array().unwrap() {
-            if row["raw"].is_null() {
-                continue;
-            }
-            let base = floats(&row["film_base_density"]);
-            let light = floats(&row["light"]);
-            let flat = floats::<243>(&row["print_sensitivity_cmy"]);
-            let sensitivity = std::array::from_fn(|i| std::array::from_fn(|c| flat[i * 3 + c]));
-            assert_eq!(
-                PreflashRaw::new(&base, &light, &sensitivity)
-                    .unwrap()
-                    .cmy()
-                    .map(f32::to_bits),
-                floats::<3>(&row["raw"]).map(f32::to_bits)
+        cases.finish();
+        let products = captured["products"].as_array().unwrap();
+        let checked_products = products
+            .iter()
+            .filter(|row| !row["raw"].is_null())
+            .collect::<Vec<_>>();
+        if !checked_products.is_empty() {
+            let mut product_cases = RowCases::new(
+                "print-preflash-products",
+                checked_products.iter().map(|row| {
+                    format!(
+                        "route/{}/mode/{}/variant/{}",
+                        row["route"].as_u64().unwrap(),
+                        row["mode"].as_u64().unwrap(),
+                        row["variant"].as_u64().unwrap()
+                    )
+                }),
             );
+            for row in checked_products {
+                let id = format!(
+                    "route/{}/mode/{}/variant/{}",
+                    row["route"].as_u64().unwrap(),
+                    row["mode"].as_u64().unwrap(),
+                    row["variant"].as_u64().unwrap()
+                );
+                let case = product_cases.case(id);
+                let base = floats(&row["film_base_density"]);
+                let light = floats(&row["light"]);
+                let flat = floats::<243>(&row["print_sensitivity_cmy"]);
+                let sensitivity = std::array::from_fn(|i| std::array::from_fn(|c| flat[i * 3 + c]));
+                assert_eq!(
+                    PreflashRaw::new(&base, &light, &sensitivity)
+                        .unwrap()
+                        .cmy()
+                        .map(f32::to_bits),
+                    floats::<3>(&row["raw"]).map(f32::to_bits)
+                );
+                case.passed();
+            }
+            product_cases.finish();
         }
     }
 

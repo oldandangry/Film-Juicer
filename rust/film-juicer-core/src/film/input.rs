@@ -125,6 +125,20 @@ fn leaf<T>(operation: Operation, call: impl FnOnce() -> T) -> Result<T, Error> {
     .map_err(|_| Error::Panic(operation))?
 }
 
+fn color_leaf<T>(
+    operation: Operation,
+    call: impl FnOnce() -> Result<T, color::CheckedError>,
+) -> Result<T, Error> {
+    match catch_unwind(AssertUnwindSafe(call)) {
+        Ok(Ok(value)) => Ok(value),
+        #[cfg(feature = "test-support")]
+        Ok(Err(color::CheckedError::UnsupportedInput)) => Err(Error::Boundary(operation, 2)),
+        #[cfg(not(feature = "test-support"))]
+        Ok(Err(error)) => match error {},
+        Err(_) => Err(Error::Panic(operation)),
+    }
+}
+
 fn narrow_filter(values: [f64; 3], active: bool) -> [f32; 3] {
     [
         if active { values[0] as f32 } else { 0.0 },
@@ -220,9 +234,9 @@ impl Recipe {
             destination_xyz: projection_white,
         };
         let adaptation = if tc {
-            leaf(Operation::Cat16, || color::cat16_matrix(whites))?
+            color_leaf(Operation::Cat16, || color::checked_cat16_matrix(whites))?
         } else {
-            leaf(Operation::Cat02, || color::cat02_matrix(whites))?
+            color_leaf(Operation::Cat02, || color::checked_cat02_matrix(whites))?
         };
         let compression = tc && params.input_compression;
         if compression && resources.input_hull_hash == 0 {
@@ -504,6 +518,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use std::path::Path;
 
     fn profile() -> profile::FilmProfile {
@@ -652,10 +667,24 @@ mod tests {
         ));
         let complete = profile();
         let white = [0.95, 1.0, 1.09];
-        for (reference, kind) in [
-            ([-1.0; 81], exposure::ErrorKind::ReferenceIlluminant),
-            ([0.0; 81], exposure::ErrorKind::BandPassResponse),
-        ] {
+        let rows = [
+            (
+                "negative-reference",
+                [-1.0; 81],
+                exposure::ErrorKind::ReferenceIlluminant,
+            ),
+            (
+                "zero-reference",
+                [0.0; 81],
+                exposure::ErrorKind::BandPassResponse,
+            ),
+        ];
+        let mut cases = RowCases::new(
+            "film-input-reference-failures",
+            rows.iter().map(|(id, _, _)| *id),
+        );
+        for (id, reference, kind) in rows {
+            let case = cases.case(id);
             let mut borrowed = resources(&reference);
             borrowed.reference_white_xyz = Some(&white);
             borrowed.tc_source_hash = 1;
@@ -665,7 +694,9 @@ mod tests {
                 panic!("reference computation must precede missing reconstruction");
             };
             assert_eq!(error.kind(), kind);
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn identity_matrices_are_completed_values() {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 
 namespace {
@@ -299,6 +300,9 @@ namespace {
         constexpr std::uint32_t kGrainFlags =
             FJ_GRAIN_ACTIVE | FJ_GRAIN_SUBLAYERS | FJ_GRAIN_FULL_FRAME |
             FJ_GRAIN_AXIS_FINITE_C | FJ_GRAIN_AXIS_FINITE_M | FJ_GRAIN_AXIS_FINITE_Y;
+        constexpr std::uint32_t kCoefficientFlags =
+            FJ_GRAIN_ACTIVE | FJ_GRAIN_SUBLAYERS | FJ_GRAIN_AXIS_FINITE_C |
+            FJ_GRAIN_AXIS_FINITE_M | FJ_GRAIN_AXIS_FINITE_Y;
         if ((source.flags & ~kGrainFlags) != 0 ||
             source.debug_view > FJ_GRAIN_DEBUG_MEAN_DENSITY ||
             source.sublayer_count > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -311,27 +315,26 @@ namespace {
         if (source.hash == 0 || source.recipe_hash == 0) {
             return invalid_descriptor(diagnostic, "grain.identity");
         }
-        Spektrafilm::VisualGrainRecipe& recipe = out.grainRecipe;
-        recipe.active = true;
-        recipe.sublayersActive = (source.flags & FJ_GRAIN_SUBLAYERS) != 0;
-        recipe.debugView = static_cast<int>(source.debug_view);
-        recipe.nSubLayers = static_cast<int>(source.sublayer_count);
-        recipe.hash = source.recipe_hash;
-        recipe.densityCurvesLayersHash = source.density_layers_hash;
-        std::copy_n(source.micro_structure, 2, recipe.microStructure.begin());
-        recipe.clumpTemporalMix = source.clump_temporal_mix;
-        recipe.sizeMixScale = source.size_mix_scale;
-        recipe.amplitude = source.amplitude;
-        recipe.chromaMix = source.chroma_mix;
-        recipe.chromaSharedWeight = source.chroma_shared_weight;
-        recipe.chromaIndependentWeight = source.chroma_independent_weight;
-        std::copy_n(source.particle_density_min_cmy, 3, recipe.visualParticleDensityMinCmy.begin());
-        std::copy_n(source.uniformity_cmy, 3, recipe.uniformityCmy.begin());
+        JuicerCuda::VisualGrainPayloadInput& payload = out.grainPayload;
+        payload.recipeHash = source.recipe_hash;
+        payload.densityLayersHash = source.density_layers_hash;
+        FjGrainCoefficients& coefficients = payload.coefficients;
+        coefficients.flags = source.flags & kCoefficientFlags;
+        coefficients.debug_view = source.debug_view;
+        coefficients.sublayer_count = source.sublayer_count;
+        std::copy_n(source.micro_structure, 2, coefficients.micro_structure);
+        coefficients.clump_temporal_mix = source.clump_temporal_mix;
+        coefficients.size_mix_scale = source.size_mix_scale;
+        coefficients.amplitude = source.amplitude;
+        coefficients.chroma_mix = source.chroma_mix;
+        coefficients.chroma_shared_weight = source.chroma_shared_weight;
+        coefficients.chroma_independent_weight = source.chroma_independent_weight;
+        std::copy_n(source.particle_density_min_cmy, 3, coefficients.particle_density_min_cmy);
+        std::copy_n(source.uniformity_cmy, 3, coefficients.uniformity_cmy);
         constexpr std::uint32_t kAxisFlags[] = {
             FJ_GRAIN_AXIS_FINITE_C, FJ_GRAIN_AXIS_FINITE_M, FJ_GRAIN_AXIS_FINITE_Y};
-        for (std::size_t channel = 0; channel < recipe.grainLayerAxisFinite.size(); ++channel) {
-            recipe.grainLayerAxisFinite[channel] = (source.flags & kAxisFlags[channel]) != 0;
-            std::copy_n(source.layer_axis_block_prefix_max[channel], 16, recipe.grainLayerAxisBlockPrefixMax[channel].begin());
+        for (std::size_t channel = 0; channel < std::size(kAxisFlags); ++channel) {
+            std::copy_n(source.layer_axis_block_prefix_max[channel], 16, coefficients.layer_axis_block_prefix_max[channel]);
         }
         Spektrafilm::VisualGrainFrameDescriptor descriptor{};
         descriptor.active = true;
@@ -363,7 +366,7 @@ namespace {
         descriptor.recipeHash = source.recipe_hash;
         descriptor.densityCurvesLayersHash = source.density_layers_hash;
         descriptor.hash = source.hash;
-        descriptor.scratchShape = Spektrafilm::visual_grain_scratch_shape(recipe);
+        descriptor.scratchShape = Spektrafilm::visual_grain_scratch_shape(coefficients);
         std::copy_n(source.density_max_cmy, 3, descriptor.densityMaxCmy.begin());
         std::copy_n(source.n_particles_cmy, 3, descriptor.nParticlesCmy.begin());
         std::copy_n(source.od_particle_cmy, 3, descriptor.odParticleCmy.begin());

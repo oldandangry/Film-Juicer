@@ -1,4 +1,4 @@
-//! SF_TEMP_BRIDGE_SPATIAL_OPTICS: checked fixed completed recipes; remove S4.E.
+//! Checked optics values and call-local host preparation.
 use std::fmt::{self, Write};
 use std::mem::{align_of, size_of};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -7,33 +7,61 @@ use crate::cuda::sys::{
     FjStatus, FjErrorBuffer, FJ_API_NONE, FJ_STATUS_SUCCESS, FJ_STATUS_UNSUPPORTED_INPUT,
     FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_INTERNAL_FAILURE,
 };
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_NONE: u32 = 0;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_RAW: u32 = 1;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_DIFFUSION: u32 = 2;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_LENS_BLUR: u32 = 3;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_HALATION: u32 = 4;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_REASON_PANIC: u32 = 5;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_NONE: u32 = 0;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_CAMERA_DIFFUSION: u32 = 1;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_CAMERA_LENS_BLUR: u32 = 2;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_SCATTER_HALATION: u32 = 3;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_COMPONENT_ENLARGER_DIFFUSION: u32 = 4;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_NONE: u32 = 0;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_FAMILY: u32 = 1;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_STRENGTH: u32 = 2;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_SPATIAL_SCALE: u32 = 3;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_HALO_WARMTH: u32 = 4;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_CORE_INTENSITY: u32 = 5;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_CORE_SIZE: u32 = 6;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_HALO_INTENSITY: u32 = 7;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_HALO_SIZE: u32 = 8;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_BLOOM_INTENSITY: u32 = 9;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_BLOOM_SIZE: u32 = 10;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_SCATTER_FRACTION: u32 = 11;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_GROUP_WEIGHTS: u32 = 12;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_GROUP_CENTERS: u32 = 13;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_RESOLVED_HASH: u32 = 14;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_SIGMA_UM: u32 = 15;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_OPTICS_FIELD_TOTAL_STRENGTH: u32 = 16;
 
 #[repr(C)]
@@ -68,6 +96,7 @@ pub(crate) struct FjHalationParams {
 const _: () = assert!(size_of::<FjHalationParams>() == 44 && align_of::<FjHalationParams>() == 4);
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(feature = "test-support")]
 pub(crate) struct FjSpatialOpticsParams {
     pub(crate) camera_diffusion: FjDiffusionParams,
     pub(crate) camera_lens_blur_um: f32,
@@ -76,6 +105,7 @@ pub(crate) struct FjSpatialOpticsParams {
     pub(crate) print_domain: u32,
 }
 
+#[cfg(feature = "test-support")]
 const _: () =
     assert!(size_of::<FjSpatialOpticsParams>() == 216 && align_of::<FjSpatialOpticsParams>() == 8);
 #[repr(C)]
@@ -131,6 +161,7 @@ const _: () =
     assert!(size_of::<FjSpatialOpticsRecipe>() == 288 && align_of::<FjSpatialOpticsRecipe>() == 8);
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(feature = "test-support")]
 pub(crate) struct FjSpatialOpticsFailure {
     pub(crate) reason: u32,
     pub(crate) component: u32,
@@ -138,6 +169,7 @@ pub(crate) struct FjSpatialOpticsFailure {
     pub(crate) channel: u32,
 }
 
+#[cfg(feature = "test-support")]
 const _: () =
     assert!(size_of::<FjSpatialOpticsFailure>() == 16 && align_of::<FjSpatialOpticsFailure>() == 4);
 
@@ -213,6 +245,7 @@ impl Write for Diagnostic {
         Ok(())
     }
 }
+#[cfg(feature = "test-support")]
 fn none() -> FjSpatialOpticsFailure {
     FjSpatialOpticsFailure {
         reason: FJ_OPTICS_REASON_NONE,
@@ -221,10 +254,12 @@ fn none() -> FjSpatialOpticsFailure {
         channel: 3,
     }
 }
+#[cfg(feature = "test-support")]
 struct Failure {
     category: u32,
     details: FjSpatialOpticsFailure,
 }
+#[cfg(feature = "test-support")]
 impl Failure {
     fn raw() -> Self {
         Self {
@@ -292,6 +327,7 @@ impl Failure {
         }
     }
 }
+#[cfg(feature = "test-support")]
 fn diffusion_params(v: &FjDiffusionParams) -> optics::DiffusionParams {
     optics::DiffusionParams {
         active: v.active != 0,
@@ -307,6 +343,7 @@ fn diffusion_params(v: &FjDiffusionParams) -> optics::DiffusionParams {
         bloom_size: v.bloom_size,
     }
 }
+#[cfg(feature = "test-support")]
 fn project_diffusion(v: &optics::Diffusion) -> FjDiffusionRecipe {
     FjDiffusionRecipe {
         domain: match v.domain() {
@@ -329,6 +366,7 @@ fn project_diffusion(v: &optics::Diffusion) -> FjDiffusionRecipe {
         hash: v.hash(),
     }
 }
+#[cfg(feature = "test-support")]
 fn project(v: &optics::Recipe) -> FjSpatialOpticsRecipe {
     let lens = v.camera_lens_blur();
     let halation = v.scatter_halation();
@@ -357,6 +395,7 @@ fn project(v: &optics::Recipe) -> FjSpatialOpticsRecipe {
 /// and optional diagnostic record/backing are mutually disjoint and disjoint
 /// from immutable input through synchronous return. No borrow escapes. Numeric
 /// pointer admission does not establish those allocation/lifetime obligations.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn prepare(
     params: *const FjSpatialOpticsParams,
     out: *mut FjSpatialOpticsRecipe,
@@ -451,35 +490,34 @@ pub(crate) unsafe fn prepare(
         }
     }
 }
-/// # Safety
-/// The checked operation's live, initialized, aligned and disjoint record contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_spatial_optics_prepare(
-    params: *const FjSpatialOpticsParams,
-    out: *mut FjSpatialOpticsRecipe,
-    failure: *mut FjSpatialOpticsFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Identical checked synchronous operation with no retained pointer.
-    unsafe { prepare(params, out, failure, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjSpatialOpticsParams,
-    *mut FjSpatialOpticsRecipe,
-    *mut FjSpatialOpticsFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_spatial_optics_prepare;
 
-// SF_TEMP_BRIDGE_GAUSSIAN_KERNEL: miss-local owned coefficients; remove S4.E.
+// Gaussian input and borrowed coefficients for call-local host preparation.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct FjGaussianKernelInput {
     pub(crate) radius: i32,
     pub(crate) sigma_px: f32,
 }
+#[cfg(feature = "test-support")]
 #[repr(C)]
 pub(crate) struct FjGaussianKernelOwner {
     _private: [u8; 0],
+}
+pub(crate) struct HostGaussianCandidate {
+    kernel: optics::GaussianKernel,
+}
+impl HostGaussianCandidate {
+    fn new(kernel: optics::GaussianKernel) -> Self {
+        #[cfg(feature = "test-support")]
+        gaussian_faults::LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { kernel }
+    }
+}
+impl Drop for HostGaussianCandidate {
+    fn drop(&mut self) {
+        #[cfg(feature = "test-support")]
+        gaussian_faults::LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -489,7 +527,7 @@ pub(crate) struct FjGaussianKernelView {
     pub(crate) weights: crate::cuda::sys::FjFloatSpan,
 }
 impl FjGaussianKernelView {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             radius: 0,
             sigma_px: 0.0,
@@ -498,6 +536,34 @@ impl FjGaussianKernelView {
                 count: 0,
             },
         }
+    }
+}
+
+/// Clear a callback view when the preceding acquire failed.
+///
+/// # Safety
+/// A nonnull `out` points to one writable, aligned, live view record.
+pub(crate) unsafe fn clear_host_gaussian_view(out: *mut FjGaussianKernelView) {
+    if valid_extent(out, 1) {
+        // SAFETY: The caller supplied the writable view record admitted above.
+        unsafe { out.write(FjGaussianKernelView::empty()) };
+    }
+}
+
+/// Clear a callback output and initialize its failure reason.
+///
+/// # Safety
+/// Each nonnull record points to writable, aligned, live storage.
+pub(crate) unsafe fn fail_host_gaussian_view(
+    out: *mut FjGaussianKernelView,
+    failure: *mut FjGaussianKernelFailure,
+    reason: u32,
+) {
+    // SAFETY: The callback's caller supplies the initialized output records.
+    unsafe { clear_host_gaussian_view(out) };
+    if valid_extent(failure, 1) {
+        // SAFETY: The failure record was admitted above.
+        unsafe { failure.write(FjGaussianKernelFailure { reason }) };
     }
 }
 #[repr(C)]
@@ -510,6 +576,9 @@ enum GaussianRejection {
     Raw,
     Core(optics::GaussianKernelError),
     Panic,
+    // The callback candidate-vector reserve has a distinct message but uses
+    // the existing allocation reason/category in the Gaussian failure record.
+    BackingAllocation,
 }
 impl GaussianRejection {
     fn fields(self) -> (u32, u32, &'static str) {
@@ -538,6 +607,11 @@ impl GaussianRejection {
                 5,
                 FJ_STATUS_INTERNAL_FAILURE,
                 "Gaussian kernel preparation panicked",
+            ),
+            Self::BackingAllocation => (
+                4,
+                crate::cuda::sys::FJ_STATUS_ALLOCATION_FAILURE,
+                "Gaussian kernel candidate storage allocation failed",
             ),
         }
     }
@@ -610,6 +684,12 @@ fn gaussian_fault(operation: usize) -> u32 {
         0
     }
 }
+pub(crate) fn take_host_gaussian_acquire_fault() -> u32 {
+    let fault = gaussian_fault(0);
+    #[cfg(feature = "test-support")]
+    gaussian_faults::ACQUIRES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    fault
+}
 fn gaussian_panic(fault: u32) {
     #[cfg(feature = "test-support")]
     if fault == 1 {
@@ -618,18 +698,121 @@ fn gaussian_panic(fault: u32) {
     #[cfg(not(feature = "test-support"))]
     let _ = fault;
 }
+
+fn construct_gaussian(
+    radius: u32,
+    sigma_px: f32,
+    fault: u32,
+) -> Result<optics::GaussianKernel, GaussianRejection> {
+    #[cfg(feature = "test-support")]
+    optics::test_support::reject_gaussian_reservation(fault == 2);
+    #[cfg(not(feature = "test-support"))]
+    let _ = fault;
+    optics::GaussianKernel::new(radius, sigma_px).map_err(GaussianRejection::Core)
+}
+
+fn view_gaussian(
+    kernel: &optics::GaussianKernel,
+    fault: u32,
+) -> Result<FjGaussianKernelView, GaussianRejection> {
+    gaussian_panic(fault);
+    let view = FjGaussianKernelView {
+        radius: kernel.radius() as i32,
+        sigma_px: kernel.sigma_px(),
+        weights: crate::cuda::sys::FjFloatSpan {
+            data: kernel.weights().as_ptr(),
+            count: kernel.weights().len(),
+        },
+    };
+    #[cfg(feature = "test-support")]
+    {
+        Ok(gaussian_faults::corrupt(view, fault))
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = fault;
+        Ok(view)
+    }
+}
+
+/// Build and retain one Gaussian candidate for a native cache miss.
+///
+/// # Safety
+/// The input and outputs follow the initialized, live, disjoint contract of
+/// `gaussian_acquire` and `gaussian_view`.
+pub(crate) unsafe fn prepare_host_gaussian(
+    input: *const FjGaussianKernelInput,
+    out: *mut FjGaussianKernelView,
+    failure: *mut FjGaussianKernelFailure,
+    error: *mut FjErrorBuffer,
+    candidates: &mut Vec<HostGaussianCandidate>,
+    acquire_fault: u32,
+) -> FjStatus {
+    // Admit the actual callback output and its peers before running optics math.
+    // The acquire fault/count were already taken by the callback entry point.
+    // SAFETY: `gaussian_call` independently clears and validates caller records.
+    let admission = unsafe {
+        gaussian_call(
+            out,
+            FjGaussianKernelView::empty(),
+            failure,
+            error,
+            false,
+            || Ok(FjGaussianKernelView::empty()),
+        )
+    };
+    if admission.category != FJ_STATUS_SUCCESS {
+        return admission;
+    }
+    let mut acquired = 0u32;
+    // Preserve the legacy acquire/view fault boundary and its separate admission.
+    // SAFETY: Admission and acquire use the existing checked Gaussian ABI helper;
+    // `input`, output, failure and error storage are supplied by the native callback.
+    let acquire_status = unsafe {
+        gaussian_call(&mut acquired, 0, failure, error, false, || {
+            if !valid_extent(input, 1) {
+                return Err(GaussianRejection::Raw);
+            }
+            gaussian_panic(acquire_fault);
+            let input = &*input;
+            candidates
+                .try_reserve(1)
+                .map_err(|_| GaussianRejection::BackingAllocation)?;
+            let kernel = construct_gaussian(input.radius as u32, input.sigma_px, acquire_fault)?;
+            candidates.push(HostGaussianCandidate::new(kernel));
+            Ok(0)
+        })
+    };
+    if acquire_status.category != FJ_STATUS_SUCCESS {
+        return acquire_status;
+    }
+    let view_fault = gaussian_fault(1);
+    let candidate = candidates.last().expect("successful Gaussian acquire");
+    // SAFETY: Candidate storage remains owned through native return; the view
+    // call independently admits and clears its output/failure/error peers.
+    unsafe {
+        gaussian_call(
+            out,
+            FjGaussianKernelView::empty(),
+            failure,
+            error,
+            false,
+            || view_gaussian(&candidate.kernel, view_fault),
+        )
+    }
+}
+
 /// # Safety
 /// Live initialized input and disjoint exclusive output/failure/diagnostics stay
 /// valid through return. Successful ownership transfers to matching release.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn gaussian_acquire(
     input: *const FjGaussianKernelInput,
     out: *mut *mut FjGaussianKernelOwner,
     failure: *mut FjGaussianKernelFailure,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
-    let fault = gaussian_fault(0);
-    #[cfg(feature = "test-support")]
-    gaussian_faults::ACQUIRES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let fault = take_host_gaussian_acquire_fault();
     // SAFETY: Common admission clears valid peers before borrowing the immutable input.
     unsafe {
         gaussian_call(out, std::ptr::null_mut(), failure, error, false, || {
@@ -638,10 +821,7 @@ pub(crate) unsafe fn gaussian_acquire(
             }
             gaussian_panic(fault);
             let input = &*input;
-            #[cfg(feature = "test-support")]
-            optics::test_support::reject_gaussian_reservation(fault == 2);
-            let kernel = optics::GaussianKernel::new(input.radius as u32, input.sigma_px)
-                .map_err(GaussianRejection::Core)?;
+            let kernel = construct_gaussian(input.radius as u32, input.sigma_px, fault)?;
             // Box allocation retains the established infallible allocator-abort limitation.
             let owner = Box::new(kernel);
             #[cfg(feature = "test-support")]
@@ -653,6 +833,7 @@ pub(crate) unsafe fn gaussian_acquire(
 /// # Safety
 /// Borrow one legitimate live owner excluding release. Exclusive initialized
 /// output/failure/diagnostic storage is disjoint; all spans expire at release.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn gaussian_view(
     owner: *const FjGaussianKernelOwner,
     out: *mut FjGaussianKernelView,
@@ -672,19 +853,8 @@ pub(crate) unsafe fn gaussian_view(
                 if !valid_extent(owner.cast::<optics::GaussianKernel>(), 1) {
                     return Err(GaussianRejection::Raw);
                 }
-                gaussian_panic(fault);
                 let kernel = &*owner.cast::<optics::GaussianKernel>();
-                let view = FjGaussianKernelView {
-                    radius: kernel.radius() as i32,
-                    sigma_px: kernel.sigma_px(),
-                    weights: crate::cuda::sys::FjFloatSpan {
-                        data: kernel.weights().as_ptr(),
-                        count: kernel.weights().len(),
-                    },
-                };
-                #[cfg(feature = "test-support")]
-                let view = gaussian_faults::corrupt(view, fault);
-                Ok(view)
+                view_gaussian(kernel, fault)
             },
         )
     }
@@ -692,6 +862,7 @@ pub(crate) unsafe fn gaussian_view(
 /// # Safety
 /// NULL or one matching live owner transfers exactly once, excluding views.
 /// Malformed diagnostics and contained unwind still consume an admitted owner.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn gaussian_release(
     owner: *mut FjGaussianKernelOwner,
     error: *mut FjErrorBuffer,
@@ -720,40 +891,6 @@ pub(crate) unsafe fn gaussian_release(
             Ok(0)
         })
     }
-}
-/// # Safety
-/// Same initialized/disjoint input and ownership transfer contract as gaussian_acquire.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_gaussian_kernel_acquire(
-    input: *const FjGaussianKernelInput,
-    out: *mut *mut FjGaussianKernelOwner,
-    failure: *mut FjGaussianKernelFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical checked ownership contract.
-    unsafe { gaussian_acquire(input, out, failure, error) }
-}
-/// # Safety
-/// Same legitimate owner/borrow expiry/disjoint output contract as gaussian_view.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_gaussian_kernel_view(
-    owner: *const FjGaussianKernelOwner,
-    out: *mut FjGaussianKernelView,
-    failure: *mut FjGaussianKernelFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical checked borrowing contract.
-    unsafe { gaussian_view(owner, out, failure, error) }
-}
-/// # Safety
-/// Same once-only matching ownership transfer contract as gaussian_release.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_gaussian_kernel_release(
-    owner: *mut FjGaussianKernelOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical checked consuming contract.
-    unsafe { gaussian_release(owner, error) }
 }
 #[cfg(feature = "test-support")]
 pub(crate) mod gaussian_faults {
@@ -806,21 +943,6 @@ pub(crate) mod gaussian_faults {
         view
     }
 }
-
-const _: unsafe extern "C" fn(
-    *const FjGaussianKernelInput,
-    *mut *mut FjGaussianKernelOwner,
-    *mut FjGaussianKernelFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_gaussian_kernel_acquire;
-const _: unsafe extern "C" fn(
-    *const FjGaussianKernelOwner,
-    *mut FjGaussianKernelView,
-    *mut FjGaussianKernelFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_gaussian_kernel_view;
-const _: unsafe extern "C" fn(*mut FjGaussianKernelOwner, *mut FjErrorBuffer) -> FjStatus =
-    fj_legacy_gaussian_kernel_release;
 
 // SF_TEMP_BRIDGE_HALATION_FRAME: remove at the final native frame-preparation
 // caller, no later than S6.D. State integration remains S4.E's responsibility.
@@ -1009,10 +1131,6 @@ unsafe fn halation_frame_body(
         }
         #[cfg(feature = "test-support")]
         let fault = halation_frame_faults::take();
-        #[cfg(feature = "test-support")]
-        if fault == 1 {
-            panic!("scatter/halation frame fixture panic");
-        }
         let input_recipe = optics::HalationFrameInput {
             scatter_active: h.scatter_active != 0,
             back_reflection_active: h.back_reflection_active != 0,
@@ -1023,8 +1141,17 @@ unsafe fn halation_frame_body(
             total_strength: h.total_strength,
             recipe_hash: h.hash,
         };
-        let frame = optics::HalationFrame::new(input_recipe, input.pixel_size_um)
-            .map_err(HalationFrameRejection::Core)?;
+        let frame = checked_halation_frame(input_recipe, input.pixel_size_um, {
+            #[cfg(feature = "test-support")]
+            {
+                fault
+            }
+            #[cfg(not(feature = "test-support"))]
+            {
+                0
+            }
+        })
+        .map_err(HalationFrameRejection::Core)?;
         let wire = frame
             .as_ref()
             .map_or_else(empty_halation_frame, halation_frame_projection);
@@ -1054,6 +1181,21 @@ unsafe fn halation_frame_body(
             status(category)
         }
     }
+}
+
+/// Shared checked Hanatos frame construction used by the raw fixed-record
+/// adapter and the complete held-state projection. ABI corruption stays raw.
+pub(crate) fn checked_halation_frame(
+    recipe: optics::HalationFrameInput,
+    pixel_size_um: f32,
+    fault: u32,
+) -> Result<Option<optics::HalationFrame>, optics::HalationFrameError> {
+    #[cfg(feature = "test-support")]
+    if fault == 1 {
+        panic!("scatter/halation frame fixture panic");
+    }
+    let _ = fault;
+    optics::HalationFrame::new(recipe, pixel_size_um)
 }
 
 /// # Safety
@@ -1114,7 +1256,7 @@ pub(crate) mod halation_frame_faults {
         NEXT.set(fault);
         status(FJ_STATUS_SUCCESS)
     }
-    pub(super) fn take() -> u32 {
+    pub(crate) fn take() -> u32 {
         NEXT.replace(0)
     }
     pub(super) fn corrupt(

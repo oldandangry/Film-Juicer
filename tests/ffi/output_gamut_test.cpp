@@ -19,6 +19,7 @@
 #include "GamutCompression.h"
 #include "RustGamutBridge.h"
 #include "juicer_test_api.h"
+#include "case_results.h"
 
 #define FJ_GAMUT_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
 #define FJ_GAMUT_FIELD(type, field, offset) static_assert(offsetof(type, field) == offset);
@@ -68,6 +69,9 @@ namespace {
         decode(out.d65_xyz_to_native_rgb, row["transform"]["exit"]);
         out.transform_hash = row["transform"]["hash"].get<std::uint64_t>();
         return out;
+    }
+    std::string row_id(const Json& row) {
+        return "tag-" + std::to_string(row.at("tag").get<unsigned>()) + "/variant-" + std::to_string(row.at("variant").get<unsigned>());
     }
     template <typename T>
     struct Guarded {
@@ -171,6 +175,19 @@ namespace {
     void diagnostics(const Json& fixture) {
         const auto input = source(fixture["rows"][0]);
         const auto boundary = boundary_source(fixture["rows"][0]);
+        std::vector<std::string> diagnostic_ids;
+        for (unsigned operation : {1u, 2u})
+            for (unsigned facade : {0u, 1u})
+                for (unsigned fault = 0; fault <= (operation == 1 ? 5u : 7u); ++fault)
+                    for (const std::size_t capacity : {0u, 1u, 7u, 512u})
+                        diagnostic_ids.emplace_back("op-" + std::to_string(operation) + "/caller-" + std::to_string(facade) + "/fault-" + std::to_string(fault) + "/capacity-" + std::to_string(capacity));
+        JuicerTests::Cohort diagnostic_rows("output_gamut.diagnostic_fault_capacity", diagnostic_ids);
+        std::vector<std::string> zero_form_ids;
+        for (unsigned operation : {1u, 2u})
+            for (unsigned fault = 0; fault <= (operation == 1 ? 5u : 7u); ++fault)
+                for (unsigned zero : {0u, 1u})
+                    zero_form_ids.emplace_back("op-" + std::to_string(operation) + "/fault-" + std::to_string(fault) + "/form-" + std::to_string(zero));
+        JuicerTests::Cohort zero_forms("output_gamut.zero_form", zero_form_ids);
         for (unsigned operation : {1u, 2u})
             for (unsigned facade : {0u, 1u})
                 for (unsigned fault = 0; fault <= (operation == 1 ? 5u : 7u); ++fault) {
@@ -195,6 +212,7 @@ namespace {
                     invoke(null, nullptr);
                     require(null.fields(operation) == fields, "D1 null diagnostic exact status/defined fields");
                     for (std::size_t capacity : {0u, 1u, 7u, 512u}) {
+                        auto row_event = diagnostic_rows.case_event("op-" + std::to_string(operation) + "/caller-" + std::to_string(facade) + "/fault-" + std::to_string(fault) + "/capacity-" + std::to_string(capacity));
                         Result actual;
                         Diagnostic text(capacity);
                         invoke(actual, &text.record);
@@ -204,9 +222,11 @@ namespace {
                             const std::string complete(full.bytes.data() + 1, full.record.length);
                             require(std::string(text.bytes.data() + 1, text.record.length) == complete.substr(0, capacity - 1), "D3 exact bounded prefix");
                         }
+                        row_event.passed();
                     }
                     if (facade == 0)
                         for (unsigned zero : {0u, 1u}) {
+                            auto row_event = zero_forms.case_event("op-" + std::to_string(operation) + "/fault-" + std::to_string(fault) + "/form-" + std::to_string(zero));
                             Result actual;
                             std::size_t length = 99;
                             if (fault)
@@ -216,11 +236,19 @@ namespace {
                             require(length == 0 && actual.fields(operation) == fields, "actual C11 distinct null/zero-capacity forms");
                             if (fault)
                                 require(fj_test_output_gamut_fault_consumed(operation, 0, fault) == 1, "C11 fault consumed");
+                            row_event.passed();
                         }
                 }
+        std::vector<std::string> malformed_error_ids;
+        for (unsigned operation : {1u, 2u})
+            for (unsigned facade : {0u, 1u})
+                for (unsigned malformed = 0; malformed < 5; ++malformed)
+                    malformed_error_ids.emplace_back("op-" + std::to_string(operation) + "/caller-" + std::to_string(facade) + "/malformed-" + std::to_string(malformed));
+        JuicerTests::Cohort malformed_errors("output_gamut.malformed_error", malformed_error_ids);
         for (unsigned operation : {1u, 2u})
             for (unsigned facade : {0u, 1u})
                 for (unsigned malformed = 0; malformed < 5; ++malformed) {
+                    auto row_event = malformed_errors.case_event("op-" + std::to_string(operation) + "/caller-" + std::to_string(facade) + "/malformed-" + std::to_string(malformed));
                     FaultScope scope;
                     Result out;
                     Diagnostic valid(32);
@@ -250,11 +278,20 @@ namespace {
                     status(call({operation, facade}, &input, &boundary, out, &later.record), FJ_STATUS_INTERNAL_FAILURE);
                     require(fj_test_output_gamut_fault_consumed(operation, facade, 2) == 1, "D4 armed fault survives malformed entry");
                     out.cleared(operation);
+                    row_event.passed();
                 }
+        std::vector<std::string> invalid_table_ids;
+        for (unsigned operation : {1u, 2u})
+            for (unsigned facade : {0u, 1u})
+                for (unsigned diagnostic = 0; diagnostic < 3; ++diagnostic)
+                    for (int invalid = 0; invalid < (operation == 1 ? 5 : 10); ++invalid)
+                        invalid_table_ids.emplace_back("op-" + std::to_string(operation) + "/caller-" + std::to_string(facade) + "/diagnostic-" + std::to_string(diagnostic) + "/invalid-" + std::to_string(invalid));
+        JuicerTests::Cohort invalid_tables("output_gamut.invalid_table", invalid_table_ids);
         for (unsigned operation : {1u, 2u})
             for (unsigned facade : {0u, 1u})
                 for (int diagnostic = 0; diagnostic < 3; ++diagnostic)
                     for (int invalid = 0; invalid < (operation == 1 ? 5 : 10); ++invalid) {
+                        auto row_event = invalid_tables.case_event("op-" + std::to_string(operation) + "/caller-" + std::to_string(facade) + "/diagnostic-" + std::to_string(diagnostic) + "/invalid-" + std::to_string(invalid));
                         FaultScope scope;
                         Result out;
                         Diagnostic text(diagnostic == 1 ? 0 : 32);
@@ -316,14 +353,17 @@ namespace {
                         Result later;
                         status(call({operation, facade}, &input, &boundary, later, error), FJ_STATUS_INTERNAL_FAILURE);
                         require(fj_test_output_gamut_fault_consumed(operation, facade, 2) == 1, "D5 fault remains armed for a valid call");
+                        row_event.passed();
                     }
         std::puts("A9 D1-D5 both exports/facades and actual C11 null/zero-capacity forms PASS");
     }
     void boundary(const Json& fixture, const std::filesystem::path& tablePath) {
         std::ifstream data(tablePath, std::ios::binary);
         for (const auto& row : fixture["rows"]) {
+            const auto id = row_id(row);
             const auto input = source(row);
             for (unsigned facade : {0u, 1u}) {
+                JuicerTests::CaseEvent event("output_gamut.boundary", std::string(facade ? "facade/" : "legacy/") + id);
                 Result out;
                 Diagnostic text(512);
                 const bool expected = row["transform_ok"];
@@ -332,6 +372,7 @@ namespace {
                 out.check();
                 if (!expected) {
                     out.cleared(1);
+                    event.passed();
                     continue;
                 }
                 require(bits(out.transform.value.native_rgb_to_d65_xyz) == row["transform"]["entry"] && bits(out.transform.value.d65_xyz_to_native_rgb) == row["transform"]["exit"], "C11/facade exact transform words");
@@ -342,6 +383,7 @@ namespace {
                 text.check();
                 if (!built) {
                     out.cleared(2, {2});
+                    event.passed();
                     continue;
                 }
                 require(out.identity.value.hash == row["boundary_hash"].get<std::uint64_t>() && out.identity.value.transform_hash == out.transform.value.hash && out.identity.value.contract_hash == out.transform.value.contract_hash, "C11/facade exact table identities");
@@ -352,13 +394,17 @@ namespace {
                 require(bool(data), "complete frozen table read");
                 for (std::size_t i = 0; i < words.size(); ++i)
                     require(std::bit_cast<std::uint32_t>(out.cmax()[i]) == words[i], "C11/facade every Cmax word");
+                event.passed();
             }
         }
+        JuicerTests::CaseEvent diagnostics_event("output_gamut.boundary", "diagnostic_fault_contract");
         diagnostics(fixture);
+        diagnostics_event.passed();
     }
     void binding(const Json& fixture) {
         for (const auto& row : fixture["rows"])
             if (row["variant"] == 0) {
+                JuicerTests::CaseEvent event("output_gamut.binding", row_id(row));
                 Gamut::OutputGamutTransform transform;
                 std::string diagnostic;
                 require(JuicerGamut::output_transform(static_cast<OutputEncoding::ColorSpace>(row["tag"].get<int>()), transform, diagnostic), diagnostic);
@@ -366,9 +412,11 @@ namespace {
                 auto table = std::make_unique<Gamut::OutputBoundaryTable>();
                 require(JuicerGamut::output_boundary(transform, *table), table->diagnostic);
                 require(table->hash == row["boundary_hash"].get<std::uint64_t>(), "native binding complete table identity");
+                event.passed();
             }
         for (unsigned operation : {1u, 2u})
             for (unsigned fault : {2u, 3u, 4u, 5u}) {
+                JuicerTests::CaseEvent event("output_gamut.binding_fault", std::to_string(operation) + "/" + std::to_string(fault));
                 FaultScope scope;
                 Gamut::OutputGamutTransform transform;
                 std::string diagnostic;
@@ -388,12 +436,36 @@ namespace {
                 }
                 require((fault >= 4 && ordinary) || (fault < 4 && caught), "typed native ordinary/exceptional separation");
                 require(fj_test_output_gamut_fault_consumed(operation, 0, fault) == 1, "native fault consumed once");
+                event.passed();
             }
         std::puts("A9 native fixed carrier/math/failure binding PASS");
     }
 } // namespace
 int main(int argc, char** argv) {
     try {
+        JuicerTests::CaseLog case_log;
+        if (argc == 5 && std::string_view(argv[argc - 1]) == "--list-cases") {
+            std::ifstream manifestFile(argv[2]);
+            const auto manifest = Json::parse(manifestFile);
+            const auto& member = manifest["preset_membership"].at(argv[3]);
+            const auto directory = std::filesystem::path(argv[2]).parent_path();
+            std::ifstream records(directory / member["records"].get<std::string>());
+            const Json listed = Json::parse(records);
+            if (std::string_view(argv[1]) == "boundary") {
+                for (const auto& row : listed["rows"])
+                    for (const char* caller : {"legacy", "facade"})
+                        JuicerTests::list_case("output_gamut.boundary", std::string(caller) + "/" + row_id(row));
+                JuicerTests::list_case("output_gamut.boundary", "diagnostic_fault_contract");
+            } else {
+                for (const auto& row : listed["rows"])
+                    if (row["variant"] == 0)
+                        JuicerTests::list_case("output_gamut.binding", row_id(row));
+                for (unsigned operation : {1u, 2u})
+                    for (unsigned fault : {2u, 3u, 4u, 5u})
+                        JuicerTests::list_case("output_gamut.binding_fault", std::to_string(operation) + "/" + std::to_string(fault));
+            }
+            return 0;
+        }
         require(argc == 4, "case, fixture manifest, preset");
         std::ifstream input(argv[2]);
         Json manifest;
@@ -410,6 +482,7 @@ int main(int argc, char** argv) {
             binding(fixture);
         else
             throw std::runtime_error("unknown output gamut case");
+        case_log.finish();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());

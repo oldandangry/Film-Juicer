@@ -623,6 +623,7 @@ impl Recipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
     use std::path::PathBuf;
 
@@ -730,18 +731,31 @@ mod tests {
         let rows = captured["cases"].as_array().unwrap();
         assert_eq!(rows.len(), 553);
         let mut mismatches = Vec::new();
+        let mut cases = RowCases::new(
+            "optics-frozen-native-words-identities-failures",
+            rows.iter().map(|row| row["id"].as_str().unwrap()),
+        );
         for row in rows {
+            let id = row["id"].as_str().unwrap();
+            let case = cases.case(id);
             match Recipe::new(params(&row["input"])) {
                 Ok(recipe) => {
-                    if row["success"] != true || project(&recipe) != row["recipe"] {
-                        mismatches.push(json!({"id":row["id"],"expected":row["recipe"],"actual":project(&recipe)}));
+                    let actual = project(&recipe);
+                    if row["success"] != true || actual != row["recipe"] {
+                        mismatches
+                            .push(json!({"id":row["id"],"expected":row["recipe"],"actual":actual}));
+                    } else {
+                        case.passed();
                     }
                 }
                 Err(error) => {
-                    if row["success"] != false
-                        || diagnostic(error) != row["diagnostic"].as_str().unwrap()
-                    {
-                        mismatches.push(json!({"id":row["id"],"error":diagnostic(error),"expected":row["diagnostic"]}));
+                    let actual = diagnostic(error);
+                    if row["success"] != false || actual != row["diagnostic"].as_str().unwrap() {
+                        mismatches.push(
+                            json!({"id":row["id"],"error":actual,"expected":row["diagnostic"]}),
+                        );
+                    } else {
+                        case.passed();
                     }
                 }
             }
@@ -757,19 +771,38 @@ mod tests {
             "{} frozen native optics mismatches",
             mismatches.len()
         );
+        cases.finish();
     }
     #[test]
     fn completed_profile_defaults_are_copied_and_owned() {
         let captured = fixture("defaults");
         let rows = captured["completed_profile_defaults"].as_array().unwrap();
         assert_eq!(rows.len(), 12);
+        let mut cases = RowCases::new(
+            "optics-completed-profile-defaults",
+            rows.iter().map(|row| {
+                format!(
+                    "{}/print={}",
+                    row["key"].as_str().unwrap(),
+                    row["input"]["print"].as_bool().unwrap()
+                )
+            }),
+        );
         for row in rows {
+            let id = format!(
+                "{}/print={}",
+                row["key"].as_str().unwrap(),
+                row["input"]["print"].as_bool().unwrap()
+            );
+            let case = cases.case(id);
             let recipe = {
                 let input = params(&row["input"]);
                 Recipe::new(input).unwrap()
             };
             assert_eq!(project(&recipe), row["recipe"], "{}", row["key"]);
+            case.passed();
         }
+        cases.finish();
     }
     #[test]
     fn real_resolved_hash_guard_is_call_bounded_and_thread_local() {

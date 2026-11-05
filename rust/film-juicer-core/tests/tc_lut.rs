@@ -1,4 +1,7 @@
 use film_juicer_core::reconstruction::{self, Input, Method, TcError};
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 
 fn constant_lut(negative: bool) -> reconstruction::FilmTcLut {
     let mut spectra = vec![0.0; reconstruction::SPECTRA_SAMPLE_COUNT];
@@ -23,7 +26,13 @@ fn constant_lut(negative: bool) -> reconstruction::FilmTcLut {
 }
 #[test]
 fn owned_result_survives_source_expiry_and_preserves_signed_exposure() {
-    for negative in [false, true] {
+    let polarities = [(false, "negative"), (true, "positive")];
+    let mut cases = RowCases::new(
+        "tc-lut-polarity-results",
+        polarities.iter().map(|(_, id)| *id),
+    );
+    for (negative, id) in polarities {
+        let row = cases.case(id);
         let lut = constant_lut(negative);
         let expected = if negative {
             [-1.0_f32, -2.0, -4.0]
@@ -51,7 +60,9 @@ fn owned_result_survives_source_expiry_and_preserves_signed_exposure() {
             }
         });
         std::thread::spawn(move || drop(lut)).join().unwrap();
+        row.passed();
     }
+    cases.finish();
 }
 #[test]
 fn consuming_transfer_preserves_original_allocation() {

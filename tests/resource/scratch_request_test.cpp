@@ -4,6 +4,7 @@
 #include <type_traits>
 #include <variant>
 
+#include "gtest_cases.h"
 #include "gtest/gtest.h"
 
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -81,9 +82,14 @@ namespace {
                                                                       {DirScratchTier::Tier2, {3, 3, 3, 0}},
                                                                       {DirScratchTier::Unsupported, {3, 3, 3, 3}},
                                                                       {DirScratchTier::Tier0, {3, -3, 0, 0}}}};
+        JuicerTests::GtestCohort invalid_layouts_cases("invalid-layouts", std::size(invalidLayouts));
+        std::size_t invalid_layouts_index = 0;
         for (const auto& invalid : invalidLayouts) {
+            auto invalid_layouts_case = invalid_layouts_cases.case_event(std::to_string(invalid_layouts_index++));
             EXPECT_FALSE(ActiveDirScratch::create(kDescriptorHash, invalid, kCached));
             EXPECT_FALSE(ActiveDirScratch::create(kDescriptorHash, kYvv, invalid));
+
+            invalid_layouts_case.passed();
         }
     }
 
@@ -109,8 +115,13 @@ namespace {
     TEST(ScratchRequest, FrameExtentMustBePositive) {
         ScratchRequestAttachments attachments;
         attachments.needOptics = true;
+        JuicerTests::GtestCohort frame_extents_cases("frame-extents", 4u);
+        std::size_t frame_extents_index = 0;
         for (const ScratchRequestExtent extent : {ScratchRequestExtent{0, 1080}, {-1, 1080}, {1920, 0}, {1920, -1}}) {
+            auto frame_extents_case = frame_extents_cases.case_event(std::to_string(frame_extents_index++));
             EXPECT_FALSE(make_scratch_request_descriptor(extent, std::monostate{}, attachments));
+
+            frame_extents_case.passed();
         }
     }
 
@@ -118,10 +129,15 @@ namespace {
         ScratchRequestAttachments attachments;
         attachments.needOptics = true;
         attachments.needGateTransmittance = true;
+        JuicerTests::GtestCohort gate_extents_cases("gate-extents", 4u);
+        std::size_t gate_extents_index = 0;
         for (const ScratchRequestExtent extent : {ScratchRequestExtent{0, 720}, {-1, 720}, {1280, 0}, {1280, -1}}) {
+            auto gate_extents_case = gate_extents_cases.case_event(std::to_string(gate_extents_index++));
             attachments.gateWidth = extent.requestedWidth;
             attachments.gateHeight = extent.requestedHeight;
             EXPECT_FALSE(make_scratch_request_descriptor(kExtent, std::monostate{}, attachments));
+
+            gate_extents_case.passed();
         }
         attachments.gateWidth = 1280;
         attachments.gateHeight = 720;
@@ -158,13 +174,18 @@ namespace {
                                                                             &ScratchRequestAttachments::needGrainShared,
                                                                             &ScratchRequestAttachments::needGateTransmittance,
                                                                             &ScratchRequestAttachments::needFilmDustTransmittance}};
+        JuicerTests::GtestCohort optics_flags_cases("optics-flags", std::size(opticsFlags));
+        std::size_t optics_flags_index = 0;
         for (auto flag : opticsFlags) {
+            auto optics_flags_case = optics_flags_cases.case_event(std::to_string(optics_flags_index++));
             ScratchRequestAttachments attachments;
             attachments.needSharedTmp = true;
             attachments.gateWidth = 1280;
             attachments.gateHeight = 720;
             attachments.*flag = true;
             EXPECT_FALSE(make_scratch_request_descriptor(kExtent, *active, attachments));
+
+            optics_flags_case.passed();
         }
     }
 
@@ -194,7 +215,10 @@ namespace {
                                                        {"print-yvv-single-temp", {DirScratchTier::Tier1IChannels, {3, 3, 1, 0}}, {DirScratchTier::Tier2, {3, 3, 1, 3}}, false, true, 12556773535806495577ull},
                                                        {"direct-yvv-streamed", {DirScratchTier::Tier1IChannels, {1, 3, 1, 0}}, {DirScratchTier::Tier1IChannels, {1, 3, 1, 0}}, true, false, 13344895294117419568ull},
                                                        {"print-yvv-bg-cache", {DirScratchTier::Tier2, {3, 3, 3, 2}}, {DirScratchTier::Tier2, {3, 3, 3, 2}}, true, true, 15096511039551998049ull}}};
+        JuicerTests::GtestCohort compositions_cases("compositions", std::size(compositions));
+        std::size_t compositions_index = 0;
         for (const auto& composition : compositions) {
+            auto compositions_case = compositions_cases.case_event(std::to_string(compositions_index++));
             SCOPED_TRACE(composition.name);
             const auto active = ActiveDirScratch::create(kDescriptorHash, composition.source, composition.target);
             ASSERT_TRUE(active);
@@ -226,6 +250,8 @@ namespace {
             EXPECT_EQ(request->spatialDirTargetPlaneRoles.filterTempPlanes, composition.target.roles.filterTempPlanes);
             EXPECT_EQ(request->spatialDirTargetPlaneRoles.cachedLogRawPlanes, composition.target.roles.cachedLogRawPlanes);
             EXPECT_EQ(request->generation, composition.generation);
+
+            compositions_case.passed();
         }
     }
 
@@ -237,7 +263,10 @@ namespace {
         attachments.needSharedTmp = true;
         attachments.aliasScannerRgbFromSpatialDirFiltered = true;
         const std::array shapes{VisualGrainScratchShape::Streamed, VisualGrainScratchShape::StreamedShared, VisualGrainScratchShape::StreamedLayers, VisualGrainScratchShape::StreamedLayersShared};
+        JuicerTests::GtestCohort grain_shapes_cases("grain-shapes", shapes.size());
+        std::size_t grain_shapes_index = 0;
         for (std::size_t index = 0; index < shapes.size(); ++index) {
+            auto grain_shapes_case = grain_shapes_cases.case_event(std::to_string(grain_shapes_index++));
             const auto layout = WorkspaceLayout::create(kExtent, *dir, attachments, shapes[index]);
             ASSERT_TRUE(layout);
             EXPECT_EQ(layout->grain_shape(), shapes[index]);
@@ -260,6 +289,8 @@ namespace {
             EXPECT_TRUE(streamed->allocation().needAux);
             EXPECT_EQ(streamed->allocation().needGrainLayerWork, index >= 2);
             EXPECT_EQ(streamed->allocation().needGrainShared, index % 2 == 1);
+
+            grain_shapes_case.passed();
         }
     }
 
@@ -313,10 +344,15 @@ namespace {
         EXPECT_TRUE(scratch_request_descriptor_is_valid({}));
         const std::array<int ScratchRequestDescriptor::*, 4> extents{
             &ScratchRequestDescriptor::requestedWidth, &ScratchRequestDescriptor::requestedHeight, &ScratchRequestDescriptor::gateWidth, &ScratchRequestDescriptor::gateHeight};
+        JuicerTests::GtestCohort raw_extents_cases("raw-extents", std::size(extents));
+        std::size_t raw_extents_index = 0;
         for (auto field : extents) {
+            auto raw_extents_case = raw_extents_cases.case_event(std::to_string(raw_extents_index++));
             ScratchRequestDescriptor invalid;
             invalid.*field = 1;
             EXPECT_FALSE(scratch_request_descriptor_is_valid(invalid));
+
+            raw_extents_case.passed();
         }
         ScratchRequestDescriptor invalid;
         invalid.spatialDirDescriptorHash = 1;

@@ -29,6 +29,11 @@ use crate::cuda::sys::FJ_PATH_UNIX_BYTES;
 #[cfg(target_os = "windows")]
 use crate::cuda::sys::FJ_PATH_WINDOWS_WIDE;
 
+#[cfg(all(feature = "test-support", target_os = "linux"))]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(all(feature = "test-support", target_os = "windows"))]
+use std::os::windows::ffi::OsStrExt;
+
 const FJ_PROFILE_ROLE_FILM: u32 = 0;
 const FJ_PROFILE_ROLE_PRINT: u32 = 1;
 
@@ -520,6 +525,59 @@ unsafe fn path(view: FjPathView) -> Result<std::path::PathBuf, Failure> {
     })
 }
 
+/// # Safety
+/// The initialized platform-native path view and diagnostic storage are caller-authorized.
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_mallett_source_override(
+    view: FjPathView,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: `path` checks the platform encoding, extent, alignment and NUL rules.
+    unsafe {
+        crate::asset_illuminant::run(error, || {
+            let path = path(view)?;
+            let result = {
+                #[cfg(target_os = "linux")]
+                {
+                    film_juicer_core::assets::arm_mallett_source_override(
+                        path.as_os_str().as_bytes(),
+                    )
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    film_juicer_core::assets::arm_mallett_source_override(
+                        path.as_os_str().encode_wide(),
+                    )
+                }
+            };
+            result.map_err(|error| match error {
+                film_juicer_core::assets::MallettSourceOverrideError::InvalidPath => {
+                    Failure::Input("invalid Mallett source override path")
+                }
+                film_juicer_core::assets::MallettSourceOverrideError::AlreadyArmed => {
+                    Failure::Input("Mallett source override already armed")
+                }
+                film_juicer_core::assets::MallettSourceOverrideError::Allocation(error) => {
+                    Failure::Capacity(error)
+                }
+            })
+        })
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_mallett_source_clear() {
+    film_juicer_core::assets::clear_mallett_source_override();
+}
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_mallett_source_consumed() -> u32 {
+    u32::from(film_juicer_core::assets::mallett_source_override_consumed())
+}
+
 // FJ_TEMP_BRIDGE: asset conversion; remove S4.E.
 /// # Safety
 /// Inputs have the documented initialized extent. Nonnull outputs/diagnostics
@@ -728,6 +786,7 @@ extern "C" fn fj_test_catalog_live_owners() -> usize {
 mod tests {
     use super::*;
     use std::mem::{align_of, offset_of, size_of};
+    use crate::test_cases::RowCases;
 
     #[test]
     fn layouts_and_explicit_tags() {
@@ -806,10 +865,16 @@ mod tests {
         let assets =
             Assets::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
         let borrowed = (&raw const assets).cast::<FjAssets>();
-        for (fault, expected) in [
-            (1, FJ_STATUS_INTERNAL_FAILURE),
-            (2, FJ_STATUS_ALLOCATION_FAILURE),
-        ] {
+        let faults = [
+            ("panic", 1, FJ_STATUS_INTERNAL_FAILURE),
+            ("capacity", 2, FJ_STATUS_ALLOCATION_FAILURE),
+        ];
+        let mut cases = RowCases::new(
+            "catalog-acquisition-faults",
+            faults.iter().map(|(id, _, _)| *id),
+        );
+        for (id, fault, expected) in faults {
+            let row = cases.case(id);
             FAULT.set(fault);
             let mut owner = std::ptr::null_mut();
             let mut counts = FjCatalogCounts {
@@ -828,12 +893,14 @@ mod tests {
             assert_eq!(result.category, expected);
             assert!(owner.is_null());
             assert_eq!((counts.film_count, counts.print_count), (0, 0));
+            row.passed();
         }
         let snapshot = assets.catalog().unwrap();
         assert!(std::sync::Arc::ptr_eq(
             &snapshot,
             &assets.catalog().unwrap()
         ));
+        cases.finish();
     }
 }
 
@@ -1861,6 +1928,7 @@ unsafe extern "C" fn fj_legacy_cmf_release(
 mod spectral_tests {
     use super::*;
     use std::mem::{align_of, offset_of, size_of};
+    use crate::test_cases::RowCases;
     #[test]
     fn production_spectral_signatures() {
         let _: unsafe extern "C" fn(
@@ -1932,7 +2000,7 @@ mod spectral_tests {
             ),
             (0, 16)
         );
-        for kind in [
+        let read_errors = [
             ReadErrorKind::Capacity,
             ReadErrorKind::Size,
             ReadErrorKind::Open(std::io::ErrorKind::NotFound),
@@ -1946,8 +2014,19 @@ mod spectral_tests {
                 reason: "dtype",
             },
             ReadErrorKind::CsvLineTooLong { line: 1 },
-        ] {
+        ];
+        let ids: Vec<String> = (0..read_errors.len())
+            .flat_map(|index| {
+                ["reconstruction", "cmf"].map(move |source| format!("read-error/{index}/{source}"))
+            })
+            .collect();
+        let mut rows = RowCases::new("spectral-read-error-statuses", &ids);
+        for (index, kind) in read_errors.into_iter().enumerate() {
             for cmf in [false, true] {
+                let row = rows.case(format!(
+                    "read-error/{index}/{}",
+                    if cmf { "cmf" } else { "reconstruction" }
+                ));
                 let error = std::sync::Arc::new(film_juicer_core::data_io::ReadError {
                     path: "spectral-source".into(),
                     kind,
@@ -1965,8 +2044,10 @@ mod spectral_tests {
                         FJ_STATUS_PREPARATION_FAILURE
                     }
                 );
+                row.passed();
             }
         }
+        rows.finish();
     }
 }
 
@@ -2245,16 +2326,28 @@ extern "C" fn fj_test_calibration_probes() -> usize {
 #[cfg(test)]
 mod illuminant_calibration_tests {
     use super::*;
+    use crate::test_cases::RowCases;
     #[test]
     fn source_categories_and_signatures() {
         use film_juicer_core::data_io::ReadError;
-        for (kind, category) in [
-            (ReadErrorKind::Capacity, FJ_STATUS_ALLOCATION_FAILURE),
+        let cases = [
             (
+                "capacity",
+                ReadErrorKind::Capacity,
+                FJ_STATUS_ALLOCATION_FAILURE,
+            ),
+            (
+                "missing-source",
                 ReadErrorKind::Open(std::io::ErrorKind::NotFound),
                 FJ_STATUS_PREPARATION_FAILURE,
             ),
-        ] {
+        ];
+        let mut rows = RowCases::new(
+            "calibration-source-statuses",
+            cases.iter().map(|(id, _, _)| *id),
+        );
+        for (id, kind, category) in cases {
+            let row = rows.case(id);
             assert_eq!(
                 Failure::Asset(AssetError::CsvSource {
                     source: CsvSource::D65,
@@ -2266,7 +2359,9 @@ mod illuminant_calibration_tests {
                 .category(),
                 category
             );
+            row.passed();
         }
+        rows.finish();
         assert_eq!(
             Failure::Asset(AssetError::CsvCachePoisoned {
                 source: CsvSource::D65
@@ -2514,16 +2609,23 @@ extern "C" fn fj_test_noise_acquisition_count() -> usize {
 #[cfg(test)]
 mod noise_tests {
     use super::*;
+    use crate::test_cases::RowCases;
     #[test]
     fn explicit_noise_statuses_do_not_define_cache_retry() {
-        for kind in [
+        let allocation = [
             noise::ErrorKind::Capacity,
             noise::ErrorKind::Open(std::io::ErrorKind::OutOfMemory),
             noise::ErrorKind::Read(std::io::ErrorKind::OutOfMemory),
-        ] {
+        ];
+        let allocation_ids = ["capacity", "open-out-of-memory", "read-out-of-memory"];
+        let mut allocation_rows = RowCases::new("noise-allocation-statuses", allocation_ids);
+        for (kind, id) in allocation.into_iter().zip(allocation_ids) {
+            let row = allocation_rows.case(id);
             assert_eq!(noise_category(kind), FJ_STATUS_ALLOCATION_FAILURE);
+            row.passed();
         }
-        for kind in [
+        allocation_rows.finish();
+        let preparation = [
             noise::ErrorKind::Missing,
             noise::ErrorKind::ShortRead,
             noise::ErrorKind::Json,
@@ -2536,9 +2638,25 @@ mod noise_tests {
             },
             noise::ErrorKind::Open(std::io::ErrorKind::PermissionDenied),
             noise::ErrorKind::Read(std::io::ErrorKind::UnexpectedEof),
-        ] {
+        ];
+        let preparation_ids = [
+            "missing",
+            "short-read",
+            "json",
+            "metadata",
+            "dimensions",
+            "size",
+            "length",
+            "open-permission-denied",
+            "read-unexpected-eof",
+        ];
+        let mut preparation_rows = RowCases::new("noise-preparation-statuses", preparation_ids);
+        for (kind, id) in preparation.into_iter().zip(preparation_ids) {
+            let row = preparation_rows.case(id);
             assert_eq!(noise_category(kind), FJ_STATUS_PREPARATION_FAILURE);
+            row.passed();
         }
+        preparation_rows.finish();
         assert_eq!(
             Failure::Asset(AssetError::NoiseCachePoisoned).category(),
             FJ_STATUS_INTERNAL_FAILURE

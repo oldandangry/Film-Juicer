@@ -959,7 +959,7 @@ const _: fn(FjScannerCorrectionTrace) = |value| {
     let _: u64 = value.hash;
 };
 
-// SF_TEMP_BRIDGE_SCANNER_LUT: immutable owner/view transport; remove S4.E.
+// Scanner LUT input and borrowed output for call-local host preparation.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct FjScannerLutInput {
@@ -978,9 +978,26 @@ pub(crate) struct FjScannerLutInput {
     pub(crate) medium: u32,
     pub(crate) resolution: u32,
 }
+#[cfg(feature = "test-support")]
 #[repr(C)]
 pub(crate) struct FjScannerLutOwner {
     _private: [u8; 0],
+}
+pub(crate) struct HostLutCandidate {
+    lut: scanner::Lut,
+}
+impl HostLutCandidate {
+    fn new(lut: scanner::Lut) -> Self {
+        #[cfg(feature = "test-support")]
+        lut_faults::LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { lut }
+    }
+}
+impl Drop for HostLutCandidate {
+    fn drop(&mut self) {
+        #[cfg(feature = "test-support")]
+        lut_faults::LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -994,7 +1011,7 @@ pub(crate) struct FjScannerLutView {
     pub(crate) cell_max: FjFloatSpan,
 }
 impl FjScannerLutView {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         let empty = FjFloatSpan {
             data: std::ptr::null(),
             count: 0,
@@ -1025,6 +1042,36 @@ impl FjScannerLutView {
         }
     }
 }
+
+/// Clear a callback view when the preceding acquire failed.
+///
+/// # Safety
+/// A nonnull `out` points to one writable, aligned, live view record.
+pub(crate) unsafe fn clear_host_lut_view(out: *mut FjScannerLutView) {
+    if valid_extent(out, 1) {
+        // SAFETY: The caller supplied the writable view record admitted above.
+        unsafe { out.write(FjScannerLutView::empty()) };
+    }
+}
+
+/// Clear a callback output and initialize its failure reason.
+///
+/// # Safety
+/// Each nonnull record points to writable, aligned, live storage.
+pub(crate) unsafe fn fail_host_lut_view(
+    out: *mut FjScannerLutView,
+    failure: *mut FjScannerLutFailure,
+    reason: u32,
+) {
+    // SAFETY: The callback's caller supplies the initialized output records.
+    unsafe { clear_host_lut_view(out) };
+    if valid_extent(failure, 1) {
+        let mut fields = FjScannerLutFailure::empty();
+        fields.reason = reason;
+        // SAFETY: The failure record was admitted above.
+        unsafe { failure.write(fields) };
+    }
+}
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct FjScannerLutFailure {
@@ -1046,6 +1093,9 @@ impl FjScannerLutFailure {
 enum LutRejection {
     Core(scanner::LutError),
     Panic,
+    // Buffer 11 names the callback's fallible candidate-vector backing; core
+    // LUT allocations retain their established buffer identities 1 through 10.
+    BackingAllocation,
 }
 impl LutRejection {
     fn fields(&self) -> (FjStatus, FjScannerLutFailure) {
@@ -1068,6 +1118,10 @@ impl LutRejection {
                 fields.channel = *channel;
                 (5, FJ_STATUS_PREPARATION_FAILURE)
             }
+            Self::BackingAllocation => {
+                fields.buffer = 11;
+                (4, crate::cuda::sys::FJ_STATUS_ALLOCATION_FAILURE)
+            }
             Self::Panic => (6, FJ_STATUS_INTERNAL_FAILURE),
         };
         (status(category), fields)
@@ -1078,6 +1132,9 @@ impl fmt::Display for LutRejection {
         match self {
             Self::Core(e) => e.fmt(f),
             Self::Panic => f.write_str("scanner LUT preparation panicked"),
+            Self::BackingAllocation => {
+                f.write_str("scanner LUT candidate storage allocation failed")
+            }
         }
     }
 }
@@ -1196,6 +1253,9 @@ fn lut_fault(operation: u32) -> u32 {
         0
     }
 }
+pub(crate) fn take_host_lut_acquire_fault() -> u32 {
+    lut_fault(0)
+}
 fn lut_panic(fault: u32) {
     #[cfg(feature = "test-support")]
     if fault == 1 {
@@ -1204,24 +1264,92 @@ fn lut_panic(fault: u32) {
     #[cfg(not(feature = "test-support"))]
     let _ = fault;
 }
+
+fn construct_lut(input: scanner::LutInput<'_>, fault: u32) -> Result<scanner::Lut, LutRejection> {
+    #[cfg(feature = "test-support")]
+    scanner::test_support::reject_lut_reservation(if fault >= 2 { fault - 1 } else { 0 });
+    #[cfg(not(feature = "test-support"))]
+    let _ = fault;
+    scanner::Lut::new(input).map_err(LutRejection::Core)
+}
+
+fn view_lut(lut: &scanner::Lut, fault: u32) -> Result<FjScannerLutView, LutRejection> {
+    lut_panic(fault);
+    Ok(FjScannerLutView::new(lut))
+}
+
+/// Build and retain one scanner LUT candidate for a native cache miss.
+///
+/// # Safety
+/// The wire input, outputs, diagnostics and backing slices follow the same
+/// initialized, live, disjoint contract as `lut_acquire` and `lut_view`.
+pub(crate) unsafe fn prepare_host_lut(
+    input: *const FjScannerLutInput,
+    out: *mut FjScannerLutView,
+    failure: *mut FjScannerLutFailure,
+    error: *mut FjErrorBuffer,
+    candidates: &mut Vec<HostLutCandidate>,
+    acquire_fault: u32,
+) -> FjStatus {
+    // Admit the actual callback output and its peers before running scanner math.
+    // The acquire fault was already taken by the callback entry point.
+    // SAFETY: `lut_call` independently clears and validates the caller records.
+    let admission = unsafe {
+        lut_call(out, FjScannerLutView::empty(), failure, error, || {
+            Ok(FjScannerLutView::empty())
+        })
+    };
+    if admission.category != FJ_STATUS_SUCCESS {
+        return admission;
+    }
+    let mut acquired = 0u32;
+    // Keep acquire and view as separate checked operations so each fault retains
+    // the same admission and visit timing as the original owner/view pair.
+    // SAFETY: Admission and acquire use the existing checked scanner ABI helper;
+    // `input`, output, failure and error storage are supplied by the native callback.
+    let acquire_status = unsafe {
+        lut_call(&mut acquired, 0, failure, error, || {
+            lut_panic(acquire_fault);
+            let input = lut_input(input)?;
+            candidates
+                .try_reserve(1)
+                .map_err(|_| LutRejection::BackingAllocation)?;
+            let lut = construct_lut(input, acquire_fault)?;
+            candidates.push(HostLutCandidate::new(lut));
+            Ok(0)
+        })
+    };
+    if acquire_status.category != FJ_STATUS_SUCCESS {
+        return acquire_status;
+    }
+    let view_fault = lut_fault(1);
+    let candidate = candidates.last().expect("successful scanner LUT acquire");
+    // SAFETY: Candidate storage remains owned through native return; `lut_call`
+    // independently admits and clears the output/failure/error peers.
+    unsafe {
+        lut_call(out, FjScannerLutView::empty(), failure, error, || {
+            view_lut(&candidate.lut, view_fault)
+        })
+    }
+}
+
 /// # Safety
 /// Same live/disjoint synchronous contract as lut_call; input backing expires
 /// on return. A successful unique handle transfers to its matching release.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn lut_acquire(
     input: *const FjScannerLutInput,
     out: *mut *mut FjScannerLutOwner,
     failure: *mut FjScannerLutFailure,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
-    let fault = lut_fault(0);
+    let fault = take_host_lut_acquire_fault();
     // SAFETY: Common admission clears each output before accessing foreign inputs.
     unsafe {
         lut_call(out, std::ptr::null_mut(), failure, error, || {
             lut_panic(fault);
             let input = lut_input(input)?;
-            #[cfg(feature = "test-support")]
-            scanner::test_support::reject_lut_reservation(if fault >= 2 { fault - 1 } else { 0 });
-            let lut = Box::new(scanner::Lut::new(input).map_err(LutRejection::Core)?);
+            let lut = Box::new(construct_lut(input, fault)?);
             #[cfg(feature = "test-support")]
             lut_faults::LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(Box::into_raw(lut).cast())
@@ -1231,6 +1359,7 @@ pub(crate) unsafe fn lut_acquire(
 /// # Safety
 /// The caller holds a legitimate live unique owner, excludes release and owns
 /// the disjoint output records. Borrowed view storage expires at release.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn lut_view(
     owner: *const FjScannerLutOwner,
     out: *mut FjScannerLutView,
@@ -1244,14 +1373,14 @@ pub(crate) unsafe fn lut_view(
             if !valid_extent(owner.cast::<scanner::Lut>(), 1) {
                 return Err(lut_raw());
             }
-            lut_panic(fault);
-            Ok(FjScannerLutView::new(&*owner.cast::<scanner::Lut>()))
+            view_lut(&*owner.cast::<scanner::Lut>(), fault)
         })
     }
 }
 /// # Safety
 /// NULL or one legitimate live matching owner transfers exactly once, excluding
 /// all views. Invalid diagnostics still consume an admitted nonnull owner.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn lut_release(
     owner: *mut FjScannerLutOwner,
     error: *mut FjErrorBuffer,
@@ -1283,55 +1412,6 @@ pub(crate) unsafe fn lut_release(
         })
     }
 }
-
-/// # Safety
-/// Same acquire contract as lut_acquire.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_scanner_lut_acquire(
-    input: *const FjScannerLutInput,
-    out: *mut *mut FjScannerLutOwner,
-    failure: *mut FjScannerLutFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked owner operation scopes all raw access.
-    unsafe { lut_acquire(input, out, failure, error) }
-}
-/// # Safety
-/// Same live-owner/view exclusion contract as lut_view.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_scanner_lut_view(
-    owner: *const FjScannerLutOwner,
-    out: *mut FjScannerLutView,
-    failure: *mut FjScannerLutFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked view operation scopes all raw access.
-    unsafe { lut_view(owner, out, failure, error) }
-}
-/// # Safety
-/// Same consuming live-owner contract as lut_release.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_scanner_lut_release(
-    owner: *mut FjScannerLutOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked release consumes matching ownership on every outcome.
-    unsafe { lut_release(owner, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjScannerLutInput,
-    *mut *mut FjScannerLutOwner,
-    *mut FjScannerLutFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_lut_acquire;
-const _: unsafe extern "C" fn(
-    *const FjScannerLutOwner,
-    *mut FjScannerLutView,
-    *mut FjScannerLutFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_scanner_lut_view;
-const _: unsafe extern "C" fn(*mut FjScannerLutOwner, *mut FjErrorBuffer) -> FjStatus =
-    fj_legacy_scanner_lut_release;
 
 #[cfg(feature = "test-support")]
 pub(crate) mod lut_faults {

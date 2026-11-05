@@ -1,17 +1,25 @@
 namespace FilmReferenceTest {
     thread_local unsigned nextProjection = 0;
     thread_local bool observeHold = false;
-    thread_local InstanceState* supersedingState = nullptr;
-    thread_local const ParamSnapshot* supersedingParams = nullptr;
-    Json project(const SyntheticFilmReferenceRecipe& reference) {
-        return {{"baseline_raw_rgb", words(reference.baselineRawRgb.data(), 3)},
-                {"compensated_raw_rgb", words(reference.compensatedRawRgb.data(), 3)},
-                {"baseline_density_cmy", words(reference.baselineDensityCmy.data(), 3)},
-                {"compensated_density_cmy", words(reference.compensatedDensityCmy.data(), 3)},
-                {"meter_scale", std::bit_cast<std::uint32_t>(reference.baselineMeterScale)},
-                {"hash", reference.hash}};
+
+    struct PendingCaptureSupersession {
+        const ParamSnapshot* latest = nullptr;
+        bool fired = false;
+    };
+
+    void supersede_at_pending_capture(InstanceState& state, void* opaque) {
+        auto& supersession = *static_cast<PendingCaptureSupersession*>(opaque);
+        require(supersession.latest != nullptr && !supersession.fired,
+                "pending-capture supersession is armed once with a complete snapshot");
+        std::lock_guard<std::mutex> lock(state.pending.m);
+        state.pending.value = PendingParamsState::Valid{
+            *supersession.latest,
+            hash_params(*supersession.latest)};
+        supersession.fired = true;
+        set_pending_capture_test_hook(nullptr, nullptr);
     }
 
+    Json project(const FjFilmReference& reference);
     ParamSnapshot controls(unsigned method, Spektrafilm::ScanRoute route, unsigned variant) {
         ParamSnapshot params;
         params.scanRoute = route;
@@ -26,117 +34,53 @@ namespace FilmReferenceTest {
         return params;
     }
 
-    Json products(const std::filesystem::path& resources) {
+    Json products(const std::filesystem::path& resources, const Json& expectedProducts) {
         JuicerCuda::Owner owner;
         owner.create(resources);
-        JuicerProcess::root().ensure_bootstrap();
         Json rows = Json::array();
         for (unsigned method = 0; method < 3; ++method)
             for (unsigned route = 0; route < 4; ++route)
                 for (unsigned variant = 0; variant < 3; ++variant) {
+                    JuicerTests::CaseEvent case_event("cpp", "film-reference/" + std::to_string(route) + "/" + std::to_string(method) + "/" + std::to_string(variant));
                     const auto params = controls(method, static_cast<Spektrafilm::ScanRoute>(route), variant);
-                    FocusedRenderStateBuildProduct product;
-                    std::string diagnostic;
-                    const bool built = route % 2 ? build_print_render_state_product(params, product, diagnostic) : build_direct_render_state_product(params, product, diagnostic);
-                    require(built, diagnostic.c_str());
-                    const auto& reference = product.recipe.scannerOutput.syntheticFilmReference;
+                    auto state = JuicerTestSupport::prepare_product(params);
+                    FjPreparedStateView product{};
+                    FjErrorBuffer error{};
+                    status(state.view(product, error));
+                    const auto& reference = product.film_reference;
                     Json queries = Json::array();
                     for (unsigned exposure = 0; exposure < 2; ++exposure) {
-                        const auto& raw = exposure == 0 ? reference.baselineRawRgb : reference.compensatedRawRgb;
+                        const auto* raw = exposure == 0 ? reference.baseline_raw_rgb : reference.compensated_raw_rgb;
                         for (unsigned channel = 0; channel < 3; ++channel) {
-                            const float productValue = raw[channel] * reference.baselineMeterScale;
+                            const float productValue = raw[channel] * reference.meter_scale;
                             const float argument = productValue + 1.0e-10f;
                             const float nativeLog = std::log10(argument);
                             std::array<float, 6> rust{};
                             std::array<double, 3> rustDouble{};
                             fj_test_scanner_correction_primitive(argument, 0, 1, rust.data(), rustDouble.data());
-                            queries.push_back({{"product", std::bit_cast<std::uint32_t>(productValue)}, {"argument", std::bit_cast<std::uint32_t>(argument)}, {"native_log10", std::bit_cast<std::uint32_t>(nativeLog)}, {"rust_log10", std::bit_cast<std::uint32_t>(rust[1])}, {"query", std::bit_cast<std::uint32_t>(nativeLog * product.recipe.filmDevelop.densityCurveGamma[channel])}});
+                            queries.push_back({{"product", std::bit_cast<std::uint32_t>(productValue)}, {"argument", std::bit_cast<std::uint32_t>(argument)}, {"native_log10", std::bit_cast<std::uint32_t>(nativeLog)}, {"rust_log10", std::bit_cast<std::uint32_t>(rust[1])}, {"query", std::bit_cast<std::uint32_t>(nativeLog * product.film_development.gamma_rgb[channel])}});
                         }
                     }
-                    Json row{{"method", method}, {"route", route}, {"variant", variant}, {"reference", project(reference)}, {"queries", queries}, {"snapshot_hash", hash_params(params)}, {"development_hash", product.recipe.filmDevelop.hash}, {"scanner_hash", product.recipe.scannerOutput.hash}, {"balance_hash", product.recipe.print.balance.hash}, {"print_hash", product.recipe.print.hash}, {"final_hash", product.recipe.hash}, {"upload_hash", product.payload.uploadCoreHash}, {"payload_scanner_hash", product.payload.scannerHash}};
+                    Json row{{"method", method}, {"route", route}, {"variant", variant}, {"reference", project(reference)}, {"queries", queries}, {"snapshot_hash", hash_params(params)}, {"development_hash", product.film_development.hash}, {"scanner_hash", product.scanner_recipe_hash}, {"balance_hash", product.print_balance.hash}, {"print_hash", product.print_recipe_hash}, {"final_hash", product.recipe_hash}, {"upload_hash", product.upload_core_hash}, {"payload_scanner_hash", product.scanner_hash}};
                     if (route == 0 && ((method == 0 && variant == 0) || (method == 1 && variant == 1))) {
-                        const auto& raw = product.recipe.filmRaw;
-                        const auto& basis = Spectral::context().mallettBasis;
-                        Json sensitivity = Json::array();
-                        for (const auto& sample : raw.finalSensitivity)
-                            for (float value : sample)
-                                sensitivity.push_back(std::bit_cast<std::uint32_t>(value));
-                        row["input"] = {{"key", params.filmProfileKey}, {"gamma", words(product.recipe.filmDevelop.densityCurveGamma.data(), 3)}, {"manual_ev", std::bit_cast<std::uint32_t>(raw.manualExposureCompensationEv)}, {"auto", raw.autoExposureEnabled}, {"green_scale", std::bit_cast<std::uint32_t>(raw.mallettGreenMidgrayScale)}, {"white", words(raw.projectionWhiteXYZ.data(), 3)}, {"basis", method == 1 ? words(basis.data.data(), basis.data.size()) : Json::array()}, {"illuminant", words(product.payload.exposureTables.illum.data(), 81)}, {"sensitivity", sensitivity}, {"tc", product.payload.filmTcLut ? words(product.payload.filmTcLut->samples().data(), product.payload.filmTcLut->samples().size()) : Json::array()}};
+                        const auto& raw = product.film_exposure;
+                        const std::size_t basisCount = method == 1 ? raw.mallett_basis.count : 0;
+                        row["input"] = {{"key", params.filmProfileKey}, {"gamma", words(product.film_development.gamma_rgb, 3)}, {"manual_ev", std::bit_cast<std::uint32_t>(raw.manual_exposure_ev)}, {"auto", (raw.flags & FJ_FILM_AUTO_EXPOSURE) != 0}, {"green_scale", std::bit_cast<std::uint32_t>(raw.mallett_green_midgray_scale)}, {"white", words(product.input_policy.projection_white_xyz, 3)}, {"basis", words(raw.mallett_basis.data, basisCount)}, {"illuminant", words(product.exposure_tables.illuminant.data, product.exposure_tables.illuminant.count)}, {"sensitivity", words(raw.sensitivity_rgb.data, raw.sensitivity_rgb.count)}, {"tc", words(raw.tc_lut_rgba.data, raw.tc_lut_rgba.count)}};
                     }
                     rows.push_back(std::move(row));
+                    require(rows.back() == expectedProducts.at(rows.size() - 1), "per-case complete film reference product");
+                    case_event.passed();
                 }
         return rows;
     }
 
     void check_primitives(const Json& captured) {
+        JuicerTests::CaseEvent primitive_event("cpp", "film-reference/primitives");
         require(captured.at("products").size() == 36, "complete reference cohort membership");
         for (const auto& row : captured.at("products"))
             for (const auto& query : row.at("queries"))
                 require(query.at("native_log10") == query.at("rust_log10"), "reference log10 primitive differs; owner decision required");
-    }
-
-    Json numerical_failures(const std::filesystem::path& resources) {
-        JuicerCuda::Owner owner;
-        owner.create(resources);
-        JuicerProcess::root().ensure_bootstrap();
-        auto params = controls(1, Spektrafilm::ScanRoute::NegativeDirectScan, 0);
-        FocusedRenderStateBuildProduct product;
-        std::string diagnostic;
-        require(build_direct_render_state_product(params, product, diagnostic), diagnostic.c_str());
-        JuicerAssets::AssetBridge assets(resources);
-        require(assets.load_catalog().valid, "reference completed-profile catalog");
-        const auto source = assets.film_source(params.filmProfileKey);
-        auto development = source->prepare_development(params.scanRoute, params.filmGammaFactor, false);
-        struct BasisScope {
-            Spectral::MallettBasis saved = Spectral::gMallettBasis;
-            bool available = Spectral::mallett_available();
-            ~BasisScope() {
-                Spectral::gMallettBasis = std::move(saved);
-                Spectral::gMallettAvailable.store(available);
-            }
-        } basis;
-        Spectral::gMallettBasis.rows = 81;
-        Spectral::gMallettBasis.cols = 3;
-        Spectral::gMallettBasis.data.assign(243, 1.0f);
-        std::array<float, 81> light{};
-        light.fill(1);
-        Json rows = Json::array();
-        for (unsigned mutation = 0; mutation < 9; ++mutation) {
-            auto recipe = product.recipe;
-            auto& raw = recipe.filmRaw;
-            raw.mallettGreenMidgrayScale = 1;
-            raw.manualExposureCompensationEv = 0;
-            raw.autoExposureEnabled = true;
-            for (auto& sample : raw.finalSensitivity)
-                sample = {1, 1, 1};
-            if (mutation == 0)
-                raw.manualExposureCompensationEv = std::numeric_limits<float>::infinity();
-            if (mutation == 1)
-                raw.manualExposureCompensationEv = std::numeric_limits<float>::quiet_NaN();
-            if (mutation == 2)
-                raw.mallettGreenMidgrayScale = -1;
-            if (mutation == 3)
-                raw.mallettGreenMidgrayScale = std::numeric_limits<float>::max();
-            if (mutation == 4)
-                for (auto& sample : raw.finalSensitivity)
-                    sample = {0, 0, 0};
-            if (mutation == 5)
-                raw.mallettGreenMidgrayScale = 3.0e36f;
-            if (mutation == 6)
-                for (auto& sample : raw.finalSensitivity)
-                    sample = {0, 1.0e-40f, 0};
-            if (mutation == 7)
-                Spectral::gMallettBasis.rows = 80;
-            if (mutation == 8) {
-                Spectral::gMallettBasis.rows = 81;
-                Spectral::gMallettAvailable = false;
-            }
-            const auto before = project(recipe.scannerOutput.syntheticFilmReference);
-            const auto scanner = recipe.scannerOutput.hash, final = recipe.hash;
-            const bool success = Spektrafilm::finish_synthetic_reference_recipes(recipe, development.hold, nullptr, light, nullptr, diagnostic);
-            rows.push_back({{"mutation", mutation}, {"success", success}, {"diagnostic", diagnostic}, {"reference_unchanged", project(recipe.scannerOutput.syntheticFilmReference) == before}, {"scanner_unchanged", recipe.scannerOutput.hash == scanner}, {"final_unchanged", recipe.hash == final}, {"result", project(recipe.scannerOutput.syntheticFilmReference)}});
-        }
-        return rows;
+        primitive_event.passed();
     }
 
     Json project(const FjFilmReference& reference) {
@@ -171,18 +115,51 @@ namespace FilmReferenceTest {
         check_primitives(captured);
         JuicerCuda::Owner owner;
         owner.create(resources);
-        JuicerProcess::root().ensure_bootstrap();
         Assets assets(resources);
+        const auto case_base = [](const Json& row) {
+            return std::to_string(row.at("route").get<unsigned>()) + "/" + std::to_string(row.at("method").get<unsigned>()) + "/" + std::to_string(row.at("variant").get<unsigned>());
+        };
+        std::vector<std::string> raw_ids, fault_ids, numerical_ids;
+        for (const auto& row : captured.at("products")) {
+            if (!row.contains("input"))
+                continue;
+            const auto base = case_base(row);
+            const auto method = row.at("method").get<unsigned>();
+            for (const auto* api : {"legacy", "facade", "c11"}) {
+                for (unsigned malformed = 0; malformed < 28; ++malformed)
+                    raw_ids.emplace_back(base + "/" + api + "/" + std::to_string(malformed));
+                const std::vector<unsigned> operations = method == 1 ? std::vector<unsigned>{1, 6} : std::vector<unsigned>{1, 2, 3, 4, 5};
+                for (unsigned operation : operations)
+                    for (unsigned exposure = 1; exposure <= 2; ++exposure)
+                        for (unsigned fault = 1; fault <= 4; ++fault) {
+                            if ((operation >= 2 && operation <= 4 && fault > 2) || (fault == 3 && operation != 5))
+                                continue;
+                            fault_ids.emplace_back(base + "/" + api + "/" + std::to_string(operation) + "/" + std::to_string(exposure) + "/" + std::to_string(fault));
+                        }
+            }
+            if (method == 1)
+                for (const auto* api : {"legacy", "facade", "c11"})
+                    for (const auto& expected : captured.at("numerical_failures"))
+                        numerical_ids.emplace_back(base + "/" + api + "/mutation-" + std::to_string(expected.at("mutation").get<unsigned>()));
+        }
+        JuicerTests::Cohort raw_inputs("film_reference.raw_input", raw_ids);
+        JuicerTests::Cohort operation_faults("film_reference.operation_fault", fault_ids);
+        JuicerTests::Cohort numerical_failures("film_reference.numerical_failure", numerical_ids);
         unsigned count = 0;
         for (const auto& row : captured.at("products")) {
             if (!row.contains("input"))
                 continue;
+            JuicerTests::CaseEvent case_event("cpp", "film-reference/" + std::to_string(row.at("route").get<unsigned>()) + "/" + std::to_string(row.at("method").get<unsigned>()) + "/" + std::to_string(row.at("variant").get<unsigned>()));
             ++count;
             auto developmentSpec = row.at("input");
             developmentSpec["route"] = row.at("route");
-            JuicerAssets::DevelopmentHold development{assets.development(developmentSpec)};
+            const auto releaseDevelopment = [](FjFilmDevelopmentOwner* held) {
+                (void)fj_legacy_film_development_release(held, nullptr);
+            };
+            std::unique_ptr<FjFilmDevelopmentOwner, decltype(releaseDevelopment)> development{assets.development(developmentSpec), releaseDevelopment};
             Inputs inputs(row);
-            for (Prepare prepare : {fj_legacy_film_reference_prepare, fj_test_film_reference_prepare, fj_test_film_reference_c_prepare}) {
+            const std::array<std::pair<Prepare, const char*>, 3> preparers{{{fj_legacy_film_reference_prepare, "legacy"}, {fj_test_film_reference_prepare, "facade"}, {fj_test_film_reference_c_prepare, "c11"}}};
+            for (const auto& [prepare, api] : preparers) {
                 FjFilmReference out{};
                 FjFilmReferenceFailure failure{99, 98, 97, 96};
                 std::array<char, 512> text{};
@@ -198,6 +175,7 @@ namespace FilmReferenceTest {
                 status(prepare(development.get(), &unusedScalars, &out, &failure, &error));
                 require(project(out) == row.at("reference"), "method-local scalar dependencies preserve frozen output when unused values change");
                 for (unsigned malformed = 0; malformed < 28; ++malformed) {
+                    auto row_event = raw_inputs.case_event(case_base(row) + "/" + api + "/" + std::to_string(malformed));
                     auto input = inputs.wire;
                     const FjFilmReferenceInput* argument = &input;
                     const FjFilmDevelopmentOwner* owner = development.get();
@@ -270,6 +248,7 @@ namespace FilmReferenceTest {
                     if (details == &failure)
                         require(failure.reason == 1 && failure.exposure == 0 && failure.operation == 0 && failure.channel == 0, "independent RAW failure clearing");
                     error = {text.data(), text.size(), 0};
+                    row_event.passed();
                 }
                 const std::vector<unsigned> operations = inputs.wire.method == 1 ? std::vector<unsigned>{1, 6} : std::vector<unsigned>{1, 2, 3, 4, 5};
                 for (unsigned operation : operations)
@@ -281,6 +260,7 @@ namespace FilmReferenceTest {
                             // the core hook covers that category without changing it.
                             if (fault == 3 && operation != 5)
                                 continue;
+                            auto fault_event = operation_faults.case_event(case_base(row) + "/" + api + "/" + std::to_string(operation) + "/" + std::to_string(exposure) + "/" + std::to_string(fault));
                             if (operation == 1 || operation == 6)
                                 status(fj_test_exposure_arm_fault(operation == 1 ? 5u : 6u, exposure, fault));
                             else if (operation == 5)
@@ -306,6 +286,7 @@ namespace FilmReferenceTest {
                                     "exact composite fault diagnostic");
                             status(prepare(development.get(), &inputs.wire, &out, &failure, nullptr));
                             require(project(out) == row.at("reference"), "one-shot composite recovery");
+                            fault_event.passed();
                         }
                     }
                 auto missing = inputs.wire;
@@ -329,11 +310,34 @@ namespace FilmReferenceTest {
                 status(prepare(development.get(), &inputs.wire, &out, &failure, &zeroCapacity));
                 require(zeroCapacity.length == 0 && project(out) == row.at("reference"), "zero-capacity diagnostic and owning result");
                 if (inputs.wire.method == 1) {
+                    // This independent complete state stays held while raw
+                    // numerical mutations exercise their source/development
+                    // facade. No borrowed projection becomes a second owner.
+                    auto heldState = JuicerTestSupport::prepare_product(
+                        controls(row.at("method"), Spektrafilm::ScanRoute::NegativeDirectScan, row.at("variant")));
+                    FjPreparedStateView heldBefore{};
+                    std::array<char, 2048> heldText{};
+                    FjErrorBuffer heldError{heldText.data(), heldText.size(), 0};
+                    status(heldState.view(heldBefore, heldError));
+                    const auto heldReference = project(heldBefore.film_reference);
+                    const auto heldRecipeHash = heldBefore.recipe_hash;
+                    const auto heldScannerHash = heldBefore.scanner_recipe_hash;
+                    const auto heldViewUnchanged = [&] {
+                        FjPreparedStateView current{};
+                        heldError.length = 0;
+                        heldText[0] = 0;
+                        status(heldState.view(current, heldError));
+                        require(project(current.film_reference) == heldReference &&
+                                    current.recipe_hash == heldRecipeHash &&
+                                    current.scanner_recipe_hash == heldScannerHash,
+                                "raw literal reference mutation leaves the actual held complete-state identities/words unchanged");
+                    };
                     std::array<float, 243> basis{}, sensitivity{};
                     std::array<float, 81> light{};
                     basis.fill(1);
                     light.fill(1);
                     for (const auto& expected : captured.at("numerical_failures")) {
+                        auto numerical_event = numerical_failures.case_event(case_base(row) + "/" + api + "/mutation-" + std::to_string(expected.at("mutation").get<unsigned>()));
                         const unsigned mutation = expected.at("mutation");
                         auto input = inputs.wire;
                         input.basis_rgb = {basis.data(), basis.size()};
@@ -364,6 +368,7 @@ namespace FilmReferenceTest {
                         if (mutation == 7)
                             input.basis_rgb = {};
                         status(prepare(development.get(), &input, &out, &failure, &error), expected.at("success").get<bool>() ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
+                        heldViewUnchanged();
                         require(std::string(text.data(), error.length) == expected.at("diagnostic").get<std::string>(), "independently frozen native numerical diagnostic");
                         if (expected.at("success").get<bool>()) {
                             require(project(out) == expected.at("result"), "independent native literal reference and identity");
@@ -379,31 +384,11 @@ namespace FilmReferenceTest {
                                                                                         : 0u;
                             require(failure.reason == reason && failure.exposure == exposure && failure.operation == operation && failure.channel == (mutation == 6 ? 1u : 0u), "first numerical failure details retain stage/exposure/channel");
                         }
+                        numerical_event.passed();
                     }
                 }
             }
-            FocusedRenderStateBuildProduct product;
-            std::string diagnostic;
-            require(build_direct_render_state_product(controls(row.at("method"), Spektrafilm::ScanRoute::NegativeDirectScan, row.at("variant")), product, diagnostic), diagnostic.c_str());
-            std::array<float, 81> light{};
-            std::copy_n(product.payload.exposureTables.illum.begin(), 81, light.begin());
-            SyntheticFilmReferenceRecipe reference;
-            std::array<std::size_t, 2> before{}, after{};
-            status(fj_test_tc_lut_allocation_counts(before.data()));
-            require(JuicerAssets::prepare_film_reference(development, product.recipe.filmRaw, product.payload.filmTcLut ? &*product.payload.filmTcLut : nullptr, light, reference, diagnostic), diagnostic.c_str());
-            status(fj_test_tc_lut_allocation_counts(after.data()));
-            require(before == after, "synchronous reference neither transfers nor releases the existing TC allocation");
-            require(project(reference) == row.at("reference"), "native adapter projects the complete safe reference");
-            for (unsigned fault = 1; fault <= 10; ++fault) {
-                nextProjection = fault;
-                bool rejected = false;
-                try {
-                    JuicerAssets::prepare_film_reference(development, product.recipe.filmRaw, product.payload.filmTcLut ? &*product.payload.filmTcLut : nullptr, light, reference, diagnostic);
-                } catch (const JuicerCuda::ExecutionFailure& error) {
-                    rejected = error.failure.status.category == FJ_STATUS_INTERNAL_FAILURE && error.failure.diagnostic == "film reference projection invalid";
-                }
-                require(rejected && nextProjection == 0 && project(reference) == row.at("reference"), "native integrity rejects corrupt envelopes without mutating the prior reference");
-            }
+            case_event.passed();
             status(fj_legacy_assets_release_cached_payloads(assets.value, nullptr));
             FjFilmReference detached{};
             FjFilmReferenceFailure failure{};
@@ -416,29 +401,45 @@ namespace FilmReferenceTest {
     void callers(const std::filesystem::path& resources) {
         JuicerCuda::Owner owner;
         owner.create(resources);
-        JuicerProcess::root().ensure_bootstrap();
+        std::vector<std::string> caller_fault_ids, supersession_ids;
+        for (unsigned method = 0; method < 3; ++method)
+            for (unsigned route = 0; route < 4; ++route) {
+                const std::vector<unsigned> operations = method == 1 ? std::vector<unsigned>{5, 6} : std::vector<unsigned>{2};
+                for (unsigned operation : operations)
+                    for (unsigned index : {1u, 2u})
+                        for (unsigned fault : {1u, 2u, 3u, 4u}) {
+                            if (method == 1 && fault == 3)
+                                continue;
+                            caller_fault_ids.emplace_back("method-" + std::to_string(method) + "/route-" + std::to_string(route) + "/operation-" + std::to_string(operation) + "/index-" + std::to_string(index) + "/fault-" + std::to_string(fault));
+                        }
+                supersession_ids.emplace_back("method-" + std::to_string(method) + "/route-" + std::to_string(route));
+            }
+        JuicerTests::Cohort caller_faults("film_reference.actual_caller_fault", caller_fault_ids);
+        JuicerTests::Cohort caller_supersessions("film_reference.actual_caller_supersession", supersession_ids);
         for (unsigned method = 0; method < 3; ++method) {
             for (unsigned route = 0; route < 4; ++route) {
+                JuicerTests::CaseEvent case_event("cpp", "film-reference/caller/" + std::to_string(method) + "/" + std::to_string(route));
                 auto params = controls(method, static_cast<Spektrafilm::ScanRoute>(route), 0);
                 InstanceState state;
                 const auto pending = [&](const ParamSnapshot& value) {
                     std::lock_guard<std::mutex> lock(state.pending.m);
                     state.pending.value = PendingParamsState::Valid{value, hash_params(value)};
                 };
-                const auto recipe = [&](const PendingRenderAdmissionResult& value) -> const RenderRecipe& {
+                const auto publication_view = [&](const PendingRenderAdmissionResult& value) {
                     require(route % 2 ? bool(value.printState) : bool(value.directState), "complete reference publication");
-                    return route % 2 ? value.printState->recipe : value.directState->recipe;
+                    return JuicerTestSupport::published_view(value);
                 };
                 pending(params);
                 auto current = admit_pending_render_state(state);
                 const auto original = current;
-                const auto originalReference = project(recipe(original).scannerOutput.syntheticFilmReference);
+                const auto originalReference = project(publication_view(original).film_reference);
                 const auto operations = method == 1 ? std::vector<unsigned>{5, 6} : std::vector<unsigned>{2};
                 for (unsigned operation : operations) {
                     for (unsigned index : {1u, 2u}) {
                         for (unsigned fault : {1u, 2u, 3u, 4u}) {
                             if (method == 1 && fault == 3)
                                 continue; // Existing fixed A7 arm contract rejects allocation injection.
+                            auto row_event = caller_faults.case_event("method-" + std::to_string(method) + "/route-" + std::to_string(route) + "/operation-" + std::to_string(operation) + "/index-" + std::to_string(index) + "/fault-" + std::to_string(fault));
                             const bool tc = method != 1;
                             status(tc ? fj_test_tc_lut_arm_fault(operation, index + 1, fault) : fj_test_exposure_arm_fault(operation, index, fault));
                             const auto counter = state.buildCounterNext.load(), lastHash = state.lastHash.load();
@@ -463,23 +464,33 @@ namespace FilmReferenceTest {
                             const bool selectedPresent = route % 2 ? bool(JuicerAtomic::load_shared_ptr(&state.activePrintState)) : bool(JuicerAtomic::load_shared_ptr(&state.activeDirectState));
                             require(selectedPresent == (fault != 4), "ordinary false clears the selected slot; exceptions preserve the prior publication");
                             current = admit_pending_render_state(state);
-                            recipe(current);
+                            publication_view(current);
                             require(state.buildCounterNext.load() == counter + 1 && fj_test_film_development_live_owners() == 0, "one-shot reference recovery publishes once and releases the hold");
-                            require(project(recipe(original).scannerOutput.syntheticFilmReference) == originalReference, "admitted immutable reference remains readable through failures and recovery");
+                            require(project(publication_view(original).film_reference) == originalReference, "admitted immutable reference remains readable through failures and recovery");
+                            row_event.passed();
                         }
                     }
                 }
+                auto supersession_event = caller_supersessions.case_event("method-" + std::to_string(method) + "/route-" + std::to_string(route));
                 params.cameraExposureCompensationEv += .125;
                 pending(params);
                 auto latest = params;
                 latest.cameraExposureCompensationEv += .125;
-                supersedingState = &state;
-                supersedingParams = &latest;
                 const auto counter = state.buildCounterNext.load();
+                const auto retained = current;
+                const auto retainedReference = project(publication_view(retained).film_reference);
+                PendingCaptureSupersession supersession{&latest, false};
+                set_pending_capture_test_hook(supersede_at_pending_capture, &supersession);
                 status(fj_test_exposure_arm_fault(5, 2, 4));
                 current = admit_pending_render_state(state);
-                require(!supersedingState && !supersedingParams && hash_params(current.snapshot) == hash_params(latest) && state.lastHash.load() == hash_params(latest) && state.buildCounterNext.load() == counter + 1, "superseded reference failure recovers to the latest complete snapshot");
+                set_pending_capture_test_hook(nullptr, nullptr);
+                require(supersession.fired && hash_params(current.snapshot) == hash_params(latest) && state.lastHash.load() == hash_params(latest) && state.buildCounterNext.load() == counter + 1, "superseded reference failure recovers to the latest complete snapshot");
+                publication_view(current);
+                require(project(publication_view(retained).film_reference) == retainedReference,
+                        "superseded admitted reference remains readable through failed construction and latest recovery");
                 require(fj_test_exposure_fault_consumed(5, 4) == 1 && fj_test_film_development_live_owners() == 0, "supersession releases its moved hold and consumes only the failed visit");
+                supersession_event.passed();
+                case_event.passed();
             }
         }
     }
@@ -489,12 +500,6 @@ namespace JuicerAssets::RecipeTest {
     void film_reference(FjStatus& status, FjFilmReferenceFailure& failure, FjFilmReference&, FjErrorBuffer& error) {
         if (FilmReferenceTest::observeHold)
             require(fj_test_film_development_live_owners() == 1, "one original Development hold survives to synchronous reference completion");
-        if (FilmReferenceTest::supersedingState) {
-            auto* state = std::exchange(FilmReferenceTest::supersedingState, nullptr);
-            const auto* params = std::exchange(FilmReferenceTest::supersedingParams, nullptr);
-            std::lock_guard<std::mutex> lock(state->pending.m);
-            state->pending.value = PendingParamsState::Valid{*params, hash_params(*params)};
-        }
         switch (std::exchange(FilmReferenceTest::nextProjection, 0u)) {
             case 1:
                 status.api = 1;

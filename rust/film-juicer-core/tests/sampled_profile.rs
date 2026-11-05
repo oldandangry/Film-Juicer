@@ -16,6 +16,9 @@ use film_juicer_core::profile::{
     ProfileCompletionError, ProfileCompletionErrorKind, ProfileInfo, ProfileSource, ProfileTables,
     Role, load_catalog, load_film_source, load_print_source,
 };
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -170,153 +173,167 @@ fn all_bundled_profiles_match_independent_completed_fields_and_approved_density(
         fs::read(repository().join("tests/profile/fixtures/density-samples.bin")).unwrap();
     let catalog = load_catalog(&repository().join("Resources")).unwrap();
     let mut count = 0;
-    for (role, entries) in [
-        (Role::Film, catalog.films()),
-        (Role::Print, catalog.prints()),
-    ] {
-        for entry in entries {
-            let key = entry.key();
-            let source = match role {
-                Role::Film => load_film_source(entry.source_path()),
-                Role::Print => load_print_source(entry.source_path()),
-            }
+    let entries: Vec<_> = catalog
+        .films()
+        .iter()
+        .map(|entry| ("film", entry))
+        .chain(catalog.prints().iter().map(|entry| ("print", entry)))
+        .collect();
+    let ids: Vec<String> = entries
+        .iter()
+        .map(|(role, entry)| format!("{role}/{}", entry.key()))
+        .collect();
+    let mut cases = RowCases::new("bundled-completed-profiles", &ids);
+    for ((role_name, entry), id) in entries.iter().zip(&ids) {
+        let row = cases.case(id);
+        let role = if *role_name == "film" {
+            Role::Film
+        } else {
+            Role::Print
+        };
+        let key = entry.key();
+        let source = match role {
+            Role::Film => load_film_source(entry.source_path()),
+            Role::Print => load_print_source(entry.source_path()),
+        }
+        .unwrap();
+        let axis_ptr = source.samples().log_exposure().as_ptr();
+        let stock_ptr = source.info().stock().as_ptr();
+        let completed = Completed::new(source, role).unwrap();
+        assert_eq!(completed.info().stock(), key);
+        assert_eq!(completed.info().name(), entry.label());
+        assert_eq!(
+            (
+                completed.info().support(),
+                completed.info().stage(),
+                completed.info().polarity()
+            ),
+            (entry.support(), entry.stage(), entry.polarity())
+        );
+        assert_eq!(
+            completed.info().stock().as_ptr(),
+            stock_ptr,
+            "stock moves without allocation"
+        );
+        let tables = completed.tables();
+        assert_eq!(
+            tables.authored_log_exposure().as_ptr(),
+            axis_ptr,
+            "f64 axis moves without allocation"
+        );
+        let fields = &expected["profiles"][key]["fields"];
+        for (name, samples) in [
+            ("wavelengths", bits(*tables.wavelengths())),
+            (
+                "log_sensitivity",
+                bits(tables.log_sensitivity().iter().flatten().copied()),
+            ),
+            (
+                "channel_density",
+                bits(tables.channel_density().iter().flatten().copied()),
+            ),
+            ("base_density", bits(*tables.base_density())),
+            (
+                "log_exposure",
+                bits(tables.interpolation_log_exposure().iter().copied()),
+            ),
+        ] {
+            assert_eq!(samples, expected_bits(&fields[name]), "{key} {name}");
+        }
+        let linear = if cfg!(windows) {
+            "linear_windows"
+        } else {
+            "linear_linux"
+        };
+        assert_eq!(
+            bits(tables.linear_sensitivity().iter().flatten().copied()),
+            expected_bits(&expected["profiles"][key][linear]),
+            "{key} sensitivity"
+        );
+        let window = tables
+            .hanatos2025_adaptation_window_params()
+            .map(|v| bits(*v));
+        let surface = tables
+            .hanatos2025_adaptation_surface_params()
+            .map(|v| bits(v.iter().flatten().copied()));
+        assert_eq!(
+            window,
+            serde_json::from_value::<Option<Vec<u32>>>(fields["window"].clone()).unwrap(),
+            "{key} window"
+        );
+        assert_eq!(
+            surface,
+            serde_json::from_value::<Option<Vec<u32>>>(fields["surface"].clone()).unwrap(),
+            "{key} surface"
+        );
+        let case = density
+            .cases
+            .iter()
+            .find(|c| c.id == format!("{key}/gamma-1.0"))
             .unwrap();
-            let axis_ptr = source.samples().log_exposure().as_ptr();
-            let stock_ptr = source.info().stock().as_ptr();
-            let completed = Completed::new(source, role).unwrap();
-            assert_eq!(completed.info().stock(), key);
-            assert_eq!(completed.info().name(), entry.label());
-            assert_eq!(
-                (
-                    completed.info().support(),
-                    completed.info().stage(),
-                    completed.info().polarity()
-                ),
-                (entry.support(), entry.stage(), entry.polarity())
-            );
-            assert_eq!(
-                completed.info().stock().as_ptr(),
-                stock_ptr,
-                "stock moves without allocation"
-            );
-            let tables = completed.tables();
-            assert_eq!(
-                tables.authored_log_exposure().as_ptr(),
-                axis_ptr,
-                "f64 axis moves without allocation"
-            );
-            let fields = &expected["profiles"][key]["fields"];
-            for (name, samples) in [
-                ("wavelengths", bits(*tables.wavelengths())),
-                (
-                    "log_sensitivity",
-                    bits(tables.log_sensitivity().iter().flatten().copied()),
-                ),
-                (
-                    "channel_density",
-                    bits(tables.channel_density().iter().flatten().copied()),
-                ),
-                ("base_density", bits(*tables.base_density())),
-                (
-                    "log_exposure",
-                    bits(tables.interpolation_log_exposure().iter().copied()),
-                ),
-            ] {
-                assert_eq!(samples, expected_bits(&fields[name]), "{key} {name}");
-            }
-            let linear = if cfg!(windows) {
-                "linear_windows"
-            } else {
-                "linear_linux"
-            };
-            assert_eq!(
-                bits(tables.linear_sensitivity().iter().flatten().copied()),
-                expected_bits(&expected["profiles"][key][linear]),
-                "{key} sensitivity"
-            );
-            let window = tables
-                .hanatos2025_adaptation_window_params()
-                .map(|v| bits(*v));
-            let surface = tables
-                .hanatos2025_adaptation_surface_params()
-                .map(|v| bits(v.iter().flatten().copied()));
-            assert_eq!(
-                window,
-                serde_json::from_value::<Option<Vec<u32>>>(fields["window"].clone()).unwrap(),
-                "{key} window"
-            );
-            assert_eq!(
-                surface,
-                serde_json::from_value::<Option<Vec<u32>>>(fields["surface"].clone()).unwrap(),
-                "{key} surface"
-            );
-            let case = density
-                .cases
+        assert_eq!(
+            tables
+                .authored_log_exposure()
                 .iter()
-                .find(|c| c.id == format!("{key}/gamma-1.0"))
-                .unwrap();
-            assert_eq!(
-                tables
-                    .authored_log_exposure()
-                    .iter()
-                    .map(|v| v.to_bits())
-                    .collect::<Vec<_>>(),
-                density.axes[case.axis],
-                "{key} f64 axis"
-            );
-            assert_eq!(
-                completed.model().centers().map(|r| r.map(f64::to_bits)),
-                case.model.centers
-            );
-            assert_eq!(
-                completed.model().amplitudes().map(|r| r.map(f64::to_bits)),
-                case.model.amplitudes
-            );
-            assert_eq!(
-                completed.model().sigmas().map(|r| r.map(f64::to_bits)),
-                case.model.sigmas
-            );
-            assert_eq!(
-                tables.density_curves().len(),
-                tables.interpolation_log_exposure().len()
-            );
-            for (i, total) in tables.density_curves().iter().enumerate() {
-                let offset = (case.sample_start.unwrap() + i) * 49;
-                assert_eq!(payload[offset], 1);
-                let row: [u32; 12] = std::array::from_fn(|j| {
-                    u32::from_le_bytes(
-                        payload[offset + 1 + j * 4..offset + 5 + j * 4]
-                            .try_into()
-                            .unwrap(),
-                    )
-                });
-                assert_eq!(total.map(f32::to_bits), row[..3], "{key} total {i}");
-                for layer in 0..3 {
-                    for channel in 0..3 {
-                        let curve = &tables.density_curves_layers()[layer][channel];
-                        assert_eq!(curve.len(), tables.interpolation_log_exposure().len());
-                        assert_eq!(
-                            curve[i].to_bits(),
-                            row[3 + layer * 3 + channel],
-                            "{key} layer {layer} channel {channel} row {i}"
-                        );
-                    }
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            density.axes[case.axis],
+            "{key} f64 axis"
+        );
+        assert_eq!(
+            completed.model().centers().map(|r| r.map(f64::to_bits)),
+            case.model.centers
+        );
+        assert_eq!(
+            completed.model().amplitudes().map(|r| r.map(f64::to_bits)),
+            case.model.amplitudes
+        );
+        assert_eq!(
+            completed.model().sigmas().map(|r| r.map(f64::to_bits)),
+            case.model.sigmas
+        );
+        assert_eq!(
+            tables.density_curves().len(),
+            tables.interpolation_log_exposure().len()
+        );
+        for (i, total) in tables.density_curves().iter().enumerate() {
+            let offset = (case.sample_start.unwrap() + i) * 49;
+            assert_eq!(payload[offset], 1);
+            let row: [u32; 12] = std::array::from_fn(|j| {
+                u32::from_le_bytes(
+                    payload[offset + 1 + j * 4..offset + 5 + j * 4]
+                        .try_into()
+                        .unwrap(),
+                )
+            });
+            assert_eq!(total.map(f32::to_bits), row[..3], "{key} total {i}");
+            for layer in 0..3 {
+                for channel in 0..3 {
+                    let curve = &tables.density_curves_layers()[layer][channel];
+                    assert_eq!(curve.len(), tables.interpolation_log_exposure().len());
+                    assert_eq!(
+                        curve[i].to_bits(),
+                        row[3 + layer * 3 + channel],
+                        "{key} layer {layer} channel {channel} row {i}"
+                    );
                 }
             }
-            assert_eq!(
-                completed.token(),
-                expected["profiles"][key]["asset_token"].as_u64().unwrap(),
-                "{key} native replay token"
-            );
-            if let Completed::Film(film) = &completed {
-                assert_processing_defaults(
-                    film.processing_defaults(),
-                    &expected["profiles"][key]["digest"],
-                );
-            }
-            count += 1;
         }
+        assert_eq!(
+            completed.token(),
+            expected["profiles"][key]["asset_token"].as_u64().unwrap(),
+            "{key} native replay token"
+        );
+        if let Completed::Film(film) = &completed {
+            assert_processing_defaults(
+                film.processing_defaults(),
+                &expected["profiles"][key]["digest"],
+            );
+        }
+        count += 1;
+        row.passed();
     }
+    cases.finish();
     assert_eq!(count, 28);
 }
 
@@ -338,7 +355,15 @@ fn case_document(fixture: &Value, case: &Value) -> Value {
 fn synthetic_completions_match_frozen_identity_composition_and_digests() {
     let expected = fixture("completed.json");
     let directory = Directory::new();
-    for case in expected["cases"].as_array().unwrap() {
+    let fixture_cases = expected["cases"].as_array().unwrap();
+    let mut cases = RowCases::new(
+        "synthetic-completed-profile-cases",
+        fixture_cases
+            .iter()
+            .map(|case| case["id"].as_str().unwrap()),
+    );
+    for case in fixture_cases {
+        let row = cases.case(case["id"].as_str().unwrap());
         let document = case_document(&expected, case);
         let role = if document["info"]["stage"] == "printing" {
             Role::Print
@@ -368,20 +393,39 @@ fn synthetic_completions_match_frozen_identity_composition_and_digests() {
         if let Completed::Film(film) = &completed {
             assert_processing_defaults(film.processing_defaults(), &case["digest"]);
         }
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
 fn interpolation_structure_is_established_only_after_f32_narrowing() {
     let base = fixture("completed.json")["base"].clone();
     let directory = Directory::new();
-    for role in [Role::Film, Role::Print] {
-        for axis in [
-            vec![0.0_f64],
-            vec![-1.0, -0.0, 0.0, 0.0, 1.0],
-            vec![1.00000002, 1.00000001],
-            vec![-1e40, -1e40, 0.0, 1e40, 1e40],
-        ] {
+    let axes = [
+        vec![0.0_f64],
+        vec![-1.0, -0.0, 0.0, 0.0, 1.0],
+        vec![1.00000002, 1.00000001],
+        vec![-1e40, -1e40, 0.0, 1e40, 1e40],
+    ];
+    let ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| (0..axes.len()).map(move |axis| format!("{role}/axis/{axis}")))
+        .chain(
+            ["film/descending-axis", "print/descending-axis"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .collect();
+    let mut cases = RowCases::new("interpolation-axis-structure", &ids);
+    for role_name in ["film", "print"] {
+        let role = if role_name == "film" {
+            Role::Film
+        } else {
+            Role::Print
+        };
+        for (axis_index, axis) in axes.iter().cloned().enumerate() {
+            let row = cases.case(format!("{role_name}/axis/{axis_index}"));
             let mut document = base.clone();
             if role == Role::Print {
                 document["info"]["stage"] = json!("printing");
@@ -413,7 +457,9 @@ fn interpolation_structure_is_established_only_after_f32_narrowing() {
                 assert_eq!(tables.density_curves()[0], [0.0; 3]);
                 assert_eq!(tables.density_curves()[axis.len() - 1], [6.0; 3]);
             }
+            row.passed();
         }
+        let row = cases.case(format!("{role_name}/descending-axis"));
         let mut document = base.clone();
         if role == Role::Print {
             document["info"]["stage"] = json!("printing");
@@ -428,21 +474,40 @@ fn interpolation_structure_is_established_only_after_f32_narrowing() {
         );
         assert_eq!(error.stock, "authored");
         assert_eq!(error.role, role);
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
 fn unusual_models_reach_complete_film_and_print_sampling() {
     let base = fixture("completed.json")["base"].clone();
     let directory = Directory::new();
-    for role in [Role::Film, Role::Print] {
-        for (field, value, exposure, total) in [
-            ("sigmas", -1.0_f64, 0.0, 3.0),
-            ("sigmas", 0.0, 1.0, 6.0),
-            ("sigmas", 1e-50, 1.0, 6.0),
-            ("sigmas", 1e40, 0.0, 3.0),
-            ("centers", 1e40, 0.0, 0.0),
-        ] {
+    let parameters = [
+        ("sigmas", -1.0_f64, 0.0, 3.0),
+        ("sigmas", 0.0, 1.0, 6.0),
+        ("sigmas", 1e-50, 1.0, 6.0),
+        ("sigmas", 1e40, 0.0, 3.0),
+        ("centers", 1e40, 0.0, 0.0),
+    ];
+    let ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| {
+            parameters
+                .iter()
+                .enumerate()
+                .map(move |(i, _)| format!("{role}/model/{i}"))
+        })
+        .collect();
+    let mut cases = RowCases::new("unusual-profile-model-sampling", &ids);
+    for role_name in ["film", "print"] {
+        let role = if role_name == "film" {
+            Role::Film
+        } else {
+            Role::Print
+        };
+        for (i, (field, value, exposure, total)) in parameters.iter().enumerate() {
+            let row = cases.case(format!("{role_name}/model/{i}"));
             let mut document = base.clone();
             if role == Role::Print {
                 document["info"]["stage"] = json!("printing");
@@ -450,8 +515,8 @@ fn unusual_models_reach_complete_film_and_print_sampling() {
             document["data"]["log_exposure"] = json!([exposure]);
             document["data"]["density_curves_model"][field] = json!(([[value; 3]; 3]));
             let profile = Completed::new(directory.source(&document, role), role).unwrap();
-            assert_eq!(profile.tables().density_curves(), [[total; 3]]);
-            let coefficients = if field == "sigmas" {
+            assert_eq!(profile.tables().density_curves(), [[*total; 3]]);
+            let coefficients = if *field == "sigmas" {
                 profile.model().sigmas()
             } else {
                 profile.model().centers()
@@ -462,49 +527,68 @@ fn unusual_models_reach_complete_film_and_print_sampling() {
                     .flatten()
                     .all(|v| v.to_bits() == value.to_bits())
             );
+            row.passed();
         }
     }
+    cases.finish();
 }
 
 #[test]
 fn completion_reports_computed_failure_after_prior_successful_samples() {
     let directory = Directory::new();
-    for role in [Role::Film, Role::Print] {
-        for (field, value, axis, expected) in [
-            (
-                "sigmas",
-                0.0,
-                vec![-1.0, 0.0, 1.0],
-                ProfileCompletionErrorKind::Density {
-                    index: 1,
-                    source: DensitySampleError::NonfiniteLayer {
-                        channel: 0,
-                        layer: 0,
-                    },
+    let parameters = [
+        (
+            "sigmas",
+            0.0,
+            vec![-1.0, 0.0, 1.0],
+            ProfileCompletionErrorKind::Density {
+                index: 1,
+                source: DensitySampleError::NonfiniteLayer {
+                    channel: 0,
+                    layer: 0,
                 },
-            ),
-            (
-                "amplitudes",
-                1e40,
-                vec![0.0],
-                ProfileCompletionErrorKind::Density {
-                    index: 0,
-                    source: DensitySampleError::NonfiniteLayer {
-                        channel: 0,
-                        layer: 0,
-                    },
+            },
+        ),
+        (
+            "amplitudes",
+            1e40,
+            vec![0.0],
+            ProfileCompletionErrorKind::Density {
+                index: 0,
+                source: DensitySampleError::NonfiniteLayer {
+                    channel: 0,
+                    layer: 0,
                 },
-            ),
-            (
-                "amplitudes",
-                3e38,
-                vec![-1e40, 1e40],
-                ProfileCompletionErrorKind::Density {
-                    index: 1,
-                    source: DensitySampleError::NonfiniteTotal { channel: 0 },
-                },
-            ),
-        ] {
+            },
+        ),
+        (
+            "amplitudes",
+            3e38,
+            vec![-1e40, 1e40],
+            ProfileCompletionErrorKind::Density {
+                index: 1,
+                source: DensitySampleError::NonfiniteTotal { channel: 0 },
+            },
+        ),
+    ];
+    let ids: Vec<String> = ["film", "print"]
+        .into_iter()
+        .flat_map(|role| {
+            parameters
+                .iter()
+                .enumerate()
+                .map(move |(i, _)| format!("{role}/failure/{i}"))
+        })
+        .collect();
+    let mut cases = RowCases::new("computed-profile-completion-failures", &ids);
+    for role_name in ["film", "print"] {
+        let role = if role_name == "film" {
+            Role::Film
+        } else {
+            Role::Print
+        };
+        for (i, (field, value, axis, expected)) in parameters.iter().enumerate() {
+            let row = cases.case(format!("{role_name}/failure/{i}"));
             let mut document = fixture("completed.json")["base"].clone();
             if role == Role::Print {
                 document["info"]["stage"] = json!("printing");
@@ -514,15 +598,28 @@ fn completion_reports_computed_failure_after_prior_successful_samples() {
             let error = Completed::new(directory.source(&document, role), role)
                 .err()
                 .unwrap();
-            assert_eq!(error.kind, expected);
+            assert_eq!(error.kind, *expected);
+            row.passed();
         }
     }
+    cases.finish();
 }
 
 #[test]
 fn optional_adaptation_and_null_samples_survive_completion() {
     let directory = Directory::new();
+    let mut cases = RowCases::new(
+        "optional-adaptation-profile-variants",
+        [
+            "film/empty",
+            "print/empty",
+            "print/null",
+            "film/authored",
+            "print/authored",
+        ],
+    );
     for role in [Role::Film, Role::Print] {
+        let role_id = if role == Role::Film { "film" } else { "print" };
         let mut document = fixture("completed.json")["base"].clone();
         if role == Role::Print {
             document["info"]["stage"] = json!("printing");
@@ -531,9 +628,11 @@ fn optional_adaptation_and_null_samples_survive_completion() {
             .unwrap()
             .token();
         for missing in [Value::Array(vec![]), Value::Null] {
-            if role == Role::Film && missing.is_null() {
+            let variant = if missing.is_null() { "null" } else { "empty" };
+            if role == Role::Film && variant == "null" {
                 continue;
             }
+            let row = cases.case(format!("{role_id}/{variant}"));
             for key in [
                 "hanatos2025_adaptation_window_params",
                 "hanatos2025_adaptation_surface_params",
@@ -557,7 +656,9 @@ fn optional_adaptation_and_null_samples_survive_completion() {
             assert!(completed.tables().log_sensitivity()[0][0].is_nan());
             assert!(completed.tables().base_density().iter().all(|v| v.is_nan()));
             assert_eq!(completed.tables().linear_sensitivity()[0], [0.0, 1.0, 10.0]);
+            row.passed();
         }
+        let row = cases.case(format!("{role_id}/authored"));
         document["data"]["hanatos2025_adaptation_window_params"] =
             json!([380.0, -100.0, 780.0, 1e40]);
         document["data"]["hanatos2025_adaptation_surface_params"] = json!(([[1e40; 15]; 3]));
@@ -587,7 +688,9 @@ fn optional_adaptation_and_null_samples_survive_completion() {
                 .all(|v| v.is_infinite())
         );
         assert_eq!(completed.tables().linear_sensitivity()[0], [0.0; 3]);
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
@@ -637,14 +740,17 @@ fn identity_retains_f64_distinctions_and_canonicalizes_only_f32_zero_signs() {
     let expected = fixture("completed.json");
     let directory = Directory::new();
     let baseline = FilmProfile::new(directory.source(&expected["base"], Role::Film)).unwrap();
-    for id in [
+    let ids = [
         "axis-f64",
         "axis-minus-zero",
         "center-f64",
         "center-minus-zero",
         "amplitude-f64",
         "sigma-f64",
-    ] {
+    ];
+    let mut cases = RowCases::new("authored-profile-identity-changes", ids);
+    for id in ids {
+        let row = cases.case(id);
         let case = expected["cases"]
             .as_array()
             .unwrap()
@@ -693,7 +799,9 @@ fn identity_retains_f64_distinctions_and_canonicalizes_only_f32_zero_signs() {
                 .sigmas()
                 .map(|r| r.map(|v| v as f32))
         );
+        row.passed();
     }
+    cases.finish();
     let mut changed = expected["base"].clone();
     changed["data"]["log_sensitivity"][0][1] = json!(0.0);
     changed["data"]["channel_density"][0][0] = json!(-0.0);

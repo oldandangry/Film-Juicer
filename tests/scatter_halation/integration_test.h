@@ -1,13 +1,21 @@
 #pragma once
 
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "DiffusionHostBehavior.h"
 #include "ProcessRoot.h"
+#include "RenderControls.h"
 #include "ScatterHalation.h"
+#include "../ffi/prepared_frame_fixture.h"
+
+namespace JuicerTests {
+    class CaseEvent;
+}
 
 namespace ScatterHalationValidation {
 
@@ -27,17 +35,17 @@ namespace ScatterHalationValidation {
         PreparedRouteInputs(const PreparedRouteInputs&) = delete;
         PreparedRouteInputs& operator=(const PreparedRouteInputs&) = delete;
 
-        [[nodiscard]] JuicerProcess::Root::CudaFramePreparationRequest request(
-            ImageExtent extent) const;
-        [[nodiscard]] JuicerCuda::ResourceManager::SubmissionSnapshot
-        submission_snapshot(
+        [[nodiscard]] JuicerProcess::Root::PreparedCudaFrame prepare_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
-            std::uint64_t identity) const;
+            std::uint64_t identity,
+            ImageExtent extent,
+            void* stream,
+            JuicerCuda::Failure& failure,
+            std::uint64_t expectedScatterHash = 0) const;
         [[nodiscard]] const ScatterHalationFrameDescriptor*
         scatter_descriptor() const noexcept;
         [[nodiscard]] const Spektrafilm::DiffusionFrameSetDescriptor*
         diffusion_frame_set() const noexcept;
-        [[nodiscard]] const RenderRecipe& recipe() const noexcept;
 
     private:
         std::unique_ptr<Impl> _impl;
@@ -82,11 +90,16 @@ namespace ScatterHalationValidation {
 
     class Results final {
     public:
+        explicit Results(bool listing = false);
+        ~Results();
+        bool expect(std::string_view caller, const std::vector<std::string>& names);
         void record(std::string name, bool passed, std::string detail);
         [[nodiscard]] int failure_count() const noexcept;
         [[nodiscard]] const std::vector<CaseResult>& cases() const noexcept;
 
     private:
+        bool _listing;
+        std::map<std::string, std::unique_ptr<JuicerTests::CaseEvent>> _namedEvents;
         std::vector<CaseResult> _cases;
     };
 
@@ -103,5 +116,8 @@ namespace ScatterHalationValidation {
     void run_zero_work_rows(const Arguments& arguments, Results& results);
     void run_lifecycle_rows(const Arguments& arguments, Results& results);
     void run_performance_rows(const Arguments& arguments, Results& results);
+    void list_case_memberships(
+        const Arguments& arguments,
+        std::string_view group);
 
 } // namespace ScatterHalationValidation

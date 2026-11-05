@@ -3,44 +3,21 @@
 #include <algorithm>
 #include <array>
 #include <span>
-#include <mutex>
-#include <exception>
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <new>
 #include <string_view>
 #include <utility>
 
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaExecutor.h"
+#include "GamutCompression.h"
 #include "Logging.h"
-#include "RenderRecipe.h"
-#include "ResourceAssetLibrary.h"
 
 namespace JuicerAssets {
     FjAssets* AssetBridge::borrow_assets() const noexcept {
         return _assets;
-    }
-
-    namespace {
-        constexpr Spectral::SpectralShape kIlluminantAxis{};
-        IlluminantCurveView curve_view(FjFloatSpan samples) noexcept {
-            return {samples.count ? std::span<const float>(kIlluminantAxis.wavelengths) : std::span<const float>{}, {samples.data, samples.count}};
-        }
-    } // namespace
-
-    Spectral::Curve IlluminantCurveView::copy_curve() const {
-        Spectral::Curve curve;
-        if (!linear.empty()) {
-            curve.lambda_nm.assign(lambda_nm.begin(), lambda_nm.end());
-            curve.linear.assign(linear.begin(), linear.end());
-        }
-        return curve;
-    }
-    IlluminantFilterCurveSet::IlluminantFilterCurveSet(FjIlluminantsOwner* owner, const FjIlluminantsView& view) noexcept
-        : d65(curve_view(view.d65)), d55(curve_view(view.d55)), d50(curve_view(view.d50)), tungsten(curve_view(view.tungsten)), kinoton75P(curve_view(view.k75p)), tungstenKg3(curve_view(view.tungsten_kg3)), tungstenKg3Lens(curve_view(view.tungsten_kg3_lens)), entryIdentity(view.entry_identity), _owner(owner) {}
-    IlluminantFilterCurveSet::~IlluminantFilterCurveSet() {
-        (void)fj_legacy_illuminants_release(_owner, nullptr);
     }
 
     namespace {
@@ -66,11 +43,6 @@ namespace JuicerAssets {
                 }
             }
         }
-        struct IlluminantsDeleter {
-            void operator()(FjIlluminantsOwner* owner) const noexcept {
-                report_cleanup(fj_legacy_illuminants_release(owner, nullptr));
-            }
-        };
         struct HullDeleter {
             void operator()(FjInputHullOwner* owner) const noexcept {
                 report_cleanup(fj_legacy_input_hull_release(owner, nullptr));
@@ -81,163 +53,9 @@ namespace JuicerAssets {
                 report_cleanup(fj_legacy_output_boundary_release(owner, nullptr));
             }
         };
-        struct NoiseDeleter {
-            void operator()(FjNoise* owner) const noexcept {
-#if defined(JUICER_NOISE_TEST_HOOK)
-                NoiseTest::observe(NoiseTest::Operation::Release);
-#endif
-                report_cleanup(fj_legacy_noise_release(owner, nullptr));
-            }
-        };
-        struct FilmDeleter {
-            void operator()(FjFilmProfile* owner) const noexcept {
-                report_cleanup(fj_legacy_film_profile_release(owner, nullptr));
-            }
-        };
-        struct PrintDeleter {
-            void operator()(FjPrintProfile* owner) const noexcept {
-                report_cleanup(fj_legacy_print_profile_release(owner, nullptr));
-            }
-        };
-        struct DensityDeleter {
-            void operator()(FjPrintDensityCurves* owner) const noexcept {
-                report_cleanup(fj_legacy_print_density_release(owner, nullptr));
-            }
-        };
-        struct SpectraDeleter {
-            void operator()(FjSpectraLut* owner) const noexcept {
-                report_cleanup(fj_legacy_spectra_lut_release(owner, nullptr));
-            }
-        };
-        struct MallettDeleter {
-            void operator()(FjMallettBasis* owner) const noexcept {
-                report_cleanup(fj_legacy_mallett_release(owner, nullptr));
-            }
-        };
-        struct CmfDeleter {
-            void operator()(FjCmf* owner) const noexcept {
-                report_cleanup(fj_legacy_cmf_release(owner, nullptr));
-            }
-        };
-        struct CsvDeleter {
-            void operator()(FjCsvPairs* owner) const noexcept {
-                report_cleanup(fj_legacy_csv_release(owner, nullptr));
-            }
-        };
-        std::uint32_t csv_tag(CsvSource source) {
-            switch (source) {
-                case CsvSource::D65:
-                    return FJ_CSV_D65;
-                case CsvSource::D55:
-                    return FJ_CSV_D55;
-                case CsvSource::D50:
-                    return FJ_CSV_D50;
-                case CsvSource::T:
-                    return FJ_CSV_T;
-                case CsvSource::K75p:
-                    return FJ_CSV_K75P;
-                case CsvSource::Kg3:
-                    return FJ_CSV_KG3;
-                case CsvSource::Canon24F28Is:
-                    return FJ_CSV_CANON_24_F28_IS;
-            }
-            fail({FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "unsupported native CSV source");
-        }
         [[noreturn]] void invalid_view() {
             fail({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "invalid Rust asset view shape, tag or token");
         }
-        std::span<const float> float_span(FjFloatSpan view) {
-            if (view.count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / sizeof(float) ||
-                (view.count == 0 ? view.data != nullptr : !view.data || reinterpret_cast<std::uintptr_t>(view.data) % alignof(float) != 0)) {
-                invalid_view();
-            }
-            return {view.data, view.count};
-        }
-        void copy_fixed(FjFloatSpan view, std::span<float> target) {
-            const auto values = float_span(view);
-            if (values.size() != target.size()) {
-                invalid_view();
-            }
-            std::copy(values.begin(), values.end(), target.begin());
-        }
-        template <std::size_t Rows, std::size_t Channels>
-        void copy_rows(FjFloatSpan view, std::array<std::array<float, Channels>, Rows>& target) {
-            const auto values = float_span(view);
-            if (values.size() != Rows * Channels) {
-                invalid_view();
-            }
-            for (std::size_t row = 0; row < Rows; ++row) {
-                std::copy_n(values.data() + row * Channels, Channels, target[row].begin());
-            }
-        }
-        // FJ_TEMP_BRIDGE: spectral source conversion; remove S4.E.
-        Spectral::ReconstructionLut copy_lut(
-            const FjAssets* assets,
-            FjStatus (*acquire)(const FjAssets*, FjSpectraLut**, FjErrorBuffer*),
-            const char* family) {
-            std::array<char, 512> diagnostic{};
-            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-            FjSpectraLut* acquired = nullptr;
-            const FjStatus result = acquire(assets, &acquired, &error);
-            const std::unique_ptr<FjSpectraLut, SpectraDeleter> owner(acquired);
-            if (result.category != FJ_STATUS_SUCCESS) {
-                fail(result, {diagnostic.data(), error.length});
-            }
-            FjSpectraLutView view{};
-            const FjStatus viewed = fj_legacy_spectra_lut_view(owner.get(), &view, &error);
-            if (viewed.category != FJ_STATUS_SUCCESS) {
-                fail(viewed, {diagnostic.data(), error.length});
-            }
-#if defined(JUICER_SPECTRAL_TEST_HOOK)
-            SpectralTest::lut_view(family, view);
-#else
-            (void)family;
-#endif
-            const auto samples = float_span(view.samples);
-            constexpr std::size_t kCount = std::size_t{192} * 192u * 81u;
-            if (samples.size() != kCount || view.asset_hash == 0) {
-                invalid_view();
-            }
-            Spectral::ReconstructionLut copy;
-            if (samples.size() > copy.data.max_size()) {
-                invalid_view();
-            }
-            copy.data.resize(kCount);
-#if defined(JUICER_SPECTRAL_TEST_HOOK)
-            SpectralTest::copy_allocated(family, copy.data.capacity());
-#endif
-            std::copy(samples.begin(), samples.end(), copy.data.begin());
-            copy.size = 192;
-            copy.numSamples = 81;
-            copy.assetHash = view.asset_hash;
-#if defined(JUICER_SPECTRAL_TEST_HOOK)
-            SpectralTest::copy_complete(family, copy.data.size(), copy.data.capacity());
-#endif
-            return copy;
-        }
-
-        Profiles::ProfileIlluminant copy_illuminant(FjIlluminantView view);
-
-        template <typename Samples>
-        void copy_tables(FjProfileTablesView view, Samples& data) {
-            copy_rows(view.linear_sensitivity_rgb, data.linearSensitivity);
-            copy_rows(view.channel_density_cmy, data.channelDensity);
-            copy_fixed(view.base_density, data.baseDensity);
-            const auto axis = float_span(view.log_exposure);
-            const auto totals = float_span(view.density_curves_cmy);
-            if (axis.empty() || axis.size() > std::numeric_limits<std::size_t>::max() / 3 || totals.size() != axis.size() * 3) {
-                invalid_view();
-            }
-            if (axis.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) || axis.size() > data.logExposure.max_size() || axis.size() > data.densityCurves.max_size()) {
-                fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "profile exposure count exceeds native representation");
-            }
-            data.logExposure.assign(axis.begin(), axis.end());
-            data.densityCurves.resize(axis.size());
-            for (std::size_t row = 0; row < axis.size(); ++row) {
-                std::copy_n(totals.data() + row * 3, 3, data.densityCurves[row].begin());
-            }
-        }
-
         struct CatalogDeleter {
             void operator()(FjCatalog* catalog) const noexcept {
                 report_cleanup(fj_legacy_catalog_release(catalog, nullptr));
@@ -252,18 +70,6 @@ namespace JuicerAssets {
                 fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "profile text exceeds native representation");
             }
             return view.count == 0 ? std::string() : std::string(view.data, view.count);
-        }
-
-        Profiles::ProfileIlluminant copy_illuminant(FjIlluminantView view) {
-            auto label = copy_text(view.label);
-            switch (view.kind) {
-                case FJ_ILLUMINANT_NAMED:
-                    return {std::move(label), Profiles::NamedIlluminant{}};
-                case FJ_ILLUMINANT_BLACKBODY:
-                    return {std::move(label), Profiles::BlackbodyIlluminant{view.temperature_kelvin}};
-                default:
-                    invalid_view();
-            }
         }
 
         void escaped_unit(unsigned unit, std::string& out, char prefix) {
@@ -294,191 +100,6 @@ namespace JuicerAssets {
             }
         }
     } // namespace
-
-    FilmSource::FilmSource(FjFilmProfile* owner, std::shared_ptr<const Profiles::FilmProfile> profile)
-        : _owner(owner), _profile(std::move(profile)) {
-    }
-
-    FilmSource::~FilmSource() {
-        report_cleanup(close());
-    }
-
-    FjStatus FilmSource::close(FjErrorBuffer* error) const noexcept {
-        return _owner ? fj_legacy_film_profile_release(std::exchange(_owner, nullptr), error) : FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-    }
-
-    const std::shared_ptr<const Profiles::FilmProfile>& FilmSource::profile() const noexcept {
-        return _profile;
-    }
-
-    DevelopmentHold::DevelopmentHold(FjFilmDevelopmentOwner* owner) noexcept : _owner(owner) {
-    }
-
-    DevelopmentHold::~DevelopmentHold() {
-        if (_owner)
-            report_cleanup(fj_legacy_film_development_release(_owner, nullptr));
-    }
-
-    DevelopmentHold::DevelopmentHold(DevelopmentHold&& source) noexcept
-        : _owner(std::exchange(source._owner, nullptr)) {
-    }
-
-    DevelopmentHold& DevelopmentHold::operator=(DevelopmentHold&& source) noexcept {
-        if (this != &source) {
-            if (_owner)
-                report_cleanup(fj_legacy_film_development_release(_owner, nullptr));
-            _owner = std::exchange(source._owner, nullptr);
-        }
-        return *this;
-    }
-
-    FilmDevelopment FilmSource::prepare_development(Spektrafilm::ScanRoute route, float gamma, bool layersRequired) const {
-        struct Deleter {
-            void operator()(FjFilmDevelopmentOwner* owner) const noexcept {
-                report_cleanup(fj_legacy_film_development_release(owner, nullptr));
-            }
-        };
-        std::array<char, 1024> message{};
-        FjErrorBuffer error{message.data(), message.size(), 0};
-        FjFilmDevelopmentOwner* acquired = nullptr;
-        auto result = fj_legacy_film_development_acquire(_owner, static_cast<std::uint32_t>(route), gamma, layersRequired ? 1u : 0u, &acquired, &error);
-        std::unique_ptr<FjFilmDevelopmentOwner, Deleter> owner(acquired);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {message.data(), error.length});
-        }
-        FjFilmDevelopmentView view{};
-        result = fj_legacy_film_development_view(owner.get(), &view, &error);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {message.data(), error.length});
-        }
-#if defined(JUICER_FILM_DEVELOPMENT_TEST_HOOK)
-        DevelopmentTest::view(view);
-#endif
-        const auto checked_span = [](FjFloatSpan source) {
-            const auto address = reinterpret_cast<std::uintptr_t>(source.data);
-            if (source.count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / sizeof(float) ||
-                source.count * sizeof(float) > std::numeric_limits<std::uintptr_t>::max() - address) {
-                invalid_view();
-            }
-            return float_span(source);
-        };
-        const auto axis = checked_span(view.log_exposure);
-        FilmDevelopRecipe recipe;
-        const auto n = axis.size();
-        if (n == 0 || n > recipe.logExposure.max_size() ||
-            n > recipe.authoredDensityCurves.max_size() || n > recipe.normalizedDensityCurves.max_size() ||
-            n > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / (3u * sizeof(float)) ||
-            view.route > 3 || view.route != static_cast<std::uint32_t>(route) ||
-            view.polarity > 1 || view.layers_required > 1 || view.layers_required != (layersRequired ? 1u : 0u) ||
-            view.normalized_curves_hash == 0 || view.hash == 0 || (!layersRequired && view.layers_hash != 0)) {
-            invalid_view();
-        }
-        const auto authored = checked_span(view.authored_curves_cmy);
-        const auto normalized = checked_span(view.normalized_curves_cmy);
-        if (authored.size() != 3u * n || normalized.size() != 3u * n) {
-            invalid_view();
-        }
-        std::array<std::array<std::span<const float>, 3>, 3> layers;
-        for (std::size_t layer = 0; layer < 3; ++layer) {
-            for (std::size_t channel = 0; channel < 3; ++channel) {
-                layers[layer][channel] = checked_span(view.density_curves_layers[layer][channel]);
-                if (layers[layer][channel].size() != (layersRequired ? n : 0) ||
-                    layers[layer][channel].size() > recipe.densityCurvesLayers[layer][channel].max_size()) {
-                    invalid_view();
-                }
-            }
-        }
-        recipe.polarity = view.polarity == 0 ? Spektrafilm::ProfilePolarity::Negative : Spektrafilm::ProfilePolarity::Positive;
-        if (recipe.polarity != _profile->info.type) {
-            invalid_view();
-        }
-        recipe.logExposure.assign(axis.begin(), axis.end());
-        recipe.authoredDensityCurves.resize(n);
-        recipe.normalizedDensityCurves.resize(n);
-        for (std::size_t row = 0; row < n; ++row) {
-            std::copy_n(authored.data() + 3u * row, 3, recipe.authoredDensityCurves[row].begin());
-            std::copy_n(normalized.data() + 3u * row, 3, recipe.normalizedDensityCurves[row].begin());
-        }
-        if (layersRequired) {
-            for (std::size_t layer = 0; layer < 3; ++layer) {
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    recipe.densityCurvesLayers[layer][channel].assign(layers[layer][channel].begin(), layers[layer][channel].end());
-                }
-            }
-        }
-        recipe.densityCurvesLayersRequired = layersRequired;
-        std::copy_n(view.gamma_rgb, 3, recipe.densityCurveGamma.begin());
-        std::copy_n(view.minimum_cmy, 3, recipe.authoredMinCmy.begin());
-        std::copy_n(view.maximum_cmy, 3, recipe.authoredMaxCmy.begin());
-        recipe.normalizedDensityCurvesHash = view.normalized_curves_hash;
-        recipe.densityCurvesLayersHash = view.layers_hash;
-        recipe.hash = view.hash;
-        FjFilmDevelopmentOwner* retained = nullptr;
-        result = fj_legacy_film_development_retain(owner.get(), &retained, &error);
-        DevelopmentHold hold(retained);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {message.data(), error.length});
-        }
-        if (!retained)
-            invalid_view();
-        result = fj_legacy_film_development_release(owner.release(), &error);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {message.data(), error.length});
-        }
-        return {static_cast<Spektrafilm::ScanRoute>(view.route), std::move(recipe), std::move(hold)};
-    }
-
-    NoiseSource::NoiseSource(FjNoise* owner, const FjStaticNoise& view) noexcept
-        : _owner(owner), _view(view) {
-    }
-
-    NoiseSource::NoiseSource(NoiseSource&& source) noexcept
-        : _owner(std::exchange(source._owner, nullptr)), _view(source._view) {
-    }
-
-    NoiseSource::~NoiseSource() {
-        if (_owner) {
-            NoiseDeleter{}(_owner);
-        }
-    }
-
-    JuicerCuda::StaticNoiseInput NoiseSource::view() const& {
-        return {{_view.stbn.data, _view.stbn.count}, {_view.wang_tiles.data, _view.wang_tiles.count}, {_view.wang_lut.data, _view.wang_lut.count}, _view.stbn_width, _view.stbn_height, _view.stbn_frames, _view.wang_width, _view.wang_height, static_cast<int>(_view.wang_tile_count), _view.wang_colors};
-    }
-
-    NoiseSource AssetBridge::noise() {
-        std::array<char, 512> message{};
-        FjErrorBuffer error{message.data(), message.size(), 0};
-        FjNoise* acquired = nullptr;
-#if defined(JUICER_NOISE_TEST_HOOK)
-        NoiseTest::observe(NoiseTest::Operation::Acquire);
-#endif
-        const auto result = fj_legacy_noise_acquire(_assets, &acquired, &error);
-        std::unique_ptr<FjNoise, NoiseDeleter> owner(acquired);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, message.data());
-        }
-        FjStaticNoise view{};
-#if defined(JUICER_NOISE_TEST_HOOK)
-        NoiseTest::observe(NoiseTest::Operation::View);
-#endif
-        const auto viewed = fj_legacy_noise_view(owner.get(), &view, &error);
-        if (viewed.category != FJ_STATUS_SUCCESS) {
-            fail(viewed, message.data());
-        }
-#if defined(JUICER_NOISE_TEST_HOOK)
-        NoiseTest::view(view);
-#endif
-        if (!owner || view.stbn_width != 512 || view.stbn_height != 512 || view.stbn_frames != 256 ||
-            !view.stbn.data || view.stbn.count != std::size_t{512} * 512 * 256 ||
-            view.wang_width != 256 || view.wang_height != 256 || view.wang_tile_count != 16 ||
-            view.wang_tile_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) || view.wang_colors != 2 ||
-            !view.wang_tiles.data || view.wang_tiles.count != std::size_t{256} * 256 * 16 ||
-            !view.wang_lut.data || view.wang_lut.count != 16) {
-            fail({FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "invalid complete Rust noise view extent");
-        }
-        return NoiseSource(owner.release(), view);
-    }
 
     NativePathArgument::NativePathArgument(const std::filesystem::path& path)
 #if !defined(_WIN32)
@@ -600,281 +221,48 @@ namespace JuicerAssets {
         return readable;
     }
 
-    struct AssetBridge::ConversionSlots {
-        std::mutex mutex;
-        std::vector<std::string> filmKeys;
-        std::vector<std::string> printKeys;
-        std::vector<std::shared_ptr<const FilmSource>> films;
-        std::vector<std::shared_ptr<const PrintProfileSource>> prints;
-    };
+    FjStatus AssetBridge::film_defaults(
+        const std::string& key,
+        FjFilmDigest& out,
+        FjErrorBuffer& error) {
+        out = FjFilmDigest{};
 
-    PrintProfileSource::PrintProfileSource(FjPrintProfile* owner, std::shared_ptr<const Profiles::PrintProfile> profile)
-        : _owner(owner), _profile(std::move(profile)) {}
-    PrintProfileSource::~PrintProfileSource() {
-        report_cleanup(close());
-    }
-    const std::shared_ptr<const Profiles::PrintProfile>& PrintProfileSource::profile() const noexcept {
-        return _profile;
-    }
-    FjStatus PrintProfileSource::close(FjErrorBuffer* error) const noexcept {
-        return _owner ? fj_legacy_print_profile_release(std::exchange(_owner, nullptr), error) : FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-    }
-    Profiles::PrintDensityCurves PrintProfileSource::sample_density_curves(double gamma) const {
-        std::array<char, 1024> message{};
-        FjErrorBuffer error{message.data(), message.size(), 0};
-        FjPrintDensityCurves* acquired = nullptr;
-        auto result = fj_legacy_print_profile_sample_density(_owner, gamma, &acquired, &error);
-        std::unique_ptr<FjPrintDensityCurves, DensityDeleter> owner(acquired);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {message.data(), error.length});
+        FjFilmProfile* owner = nullptr;
+        FjStatus status = fj_legacy_film_profile_acquire(
+            _assets,
+            {key.empty() ? nullptr : key.data(), key.size()},
+            &owner,
+            &error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            if (owner) {
+                FjErrorBuffer ignored{nullptr, 0, 0};
+                (void)fj_legacy_film_profile_release(owner, &ignored);
+            }
+            return status;
         }
-        FjPrintDensityView view{};
-        result = fj_legacy_print_density_view(owner.get(), &view, &error);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {message.data(), error.length});
+        if (!owner) {
+            return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
         }
-        const auto totals = float_span(view.totals_cmy);
-        if (totals.size() != _profile->data.logExposure.size() * 3 || view.hash == 0) {
-            invalid_view();
-        }
-        Profiles::PrintDensityCurves curves;
-        curves.totals.resize(_profile->data.logExposure.size());
-        for (std::size_t row = 0; row < curves.totals.size(); ++row) {
-            std::copy_n(totals.data() + row * 3, 3, curves.totals[row].begin());
-        }
-        curves.hash = view.hash;
-        result = fj_legacy_print_density_release(owner.release(), &error);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {message.data(), error.length});
-        }
-        return curves;
-    }
 
-    std::shared_ptr<const Profiles::FilmProfile> AssetBridge::film(const std::string& key) {
-        return film_source(key)->profile();
-    }
+        FjFilmProfileView view{};
+        status = fj_legacy_film_profile_view(owner, &view, &error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            FjErrorBuffer ignored{nullptr, 0, 0};
+            (void)fj_legacy_film_profile_release(owner, &ignored);
+            return status;
+        }
 
-    std::shared_ptr<const FilmSource> AssetBridge::film_source(const std::string& key) {
-        if (!_slots) {
-            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "film catalog unavailable");
+        const FjFilmDigest defaults = view.digest;
+        status = fj_legacy_film_profile_release(owner, &error);
+        if (status.category == FJ_STATUS_SUCCESS) {
+            out = defaults;
         }
-        const auto found = std::find(_slots->filmKeys.begin(), _slots->filmKeys.end(), key);
-        if (found == _slots->filmKeys.end()) {
-            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "missing selected film profile key");
-        }
-        const auto index = static_cast<std::size_t>(found - _slots->filmKeys.begin());
-        std::shared_ptr<const FilmSource> winner;
-        {
-            std::lock_guard<std::mutex> lock(_slots->mutex);
-            winner = _slots->films[index];
-        }
-        if (winner) {
-            return winner;
-        }
-        std::shared_ptr<const FilmSource> candidate;
-        try {
-            std::array<char, 1024> message{};
-            FjErrorBuffer error{message.data(), message.size(), 0};
-            FjFilmProfile* acquired = nullptr;
-            auto result = fj_legacy_film_profile_acquire(_assets, {key.empty() ? nullptr : key.data(), key.size()}, &acquired, &error);
-            std::unique_ptr<FjFilmProfile, FilmDeleter> owner(acquired);
-            if (result.category != FJ_STATUS_SUCCESS) {
-                fail(result, {message.data(), error.length});
-            }
-            FjFilmProfileView view{};
-            result = fj_legacy_film_profile_view(owner.get(), &view, &error);
-            if (result.category != FJ_STATUS_SUCCESS) {
-                fail(result, {message.data(), error.length});
-            }
-#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
-            ProfileTest::film_view(view);
-#endif
-            if (!view.asset_token || view.support != FJ_PROFILE_SUPPORT_FILM || view.stage != FJ_PROFILE_STAGE_FILMING) {
-                invalid_view();
-            }
-            auto profile = std::make_shared<Profiles::FilmProfile>();
-            profile->info.stock = copy_text(view.stock);
-            profile->info.referenceIlluminant = copy_illuminant(view.reference_illuminant);
-            profile->info.viewingIlluminant = copy_illuminant(view.viewing_illuminant);
-            switch (view.polarity) {
-                case FJ_POLARITY_NEGATIVE:
-                    profile->info.type = Spektrafilm::ProfilePolarity::Negative;
-                    break;
-                case FJ_POLARITY_POSITIVE:
-                    profile->info.type = Spektrafilm::ProfilePolarity::Positive;
-                    break;
-                default:
-                    invalid_view();
-            }
-            copy_tables(view.tables, profile->data);
-#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
-            ProfileTest::after_tables();
-#endif
-            copy_fixed(view.wavelengths, profile->data.wavelengths);
-            for (std::size_t layer = 0; layer < 3; ++layer) {
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    const auto values = float_span(view.density_curves_layers[layer][channel]);
-                    auto& target = profile->data.densityCurvesLayers[layer][channel];
-                    if (values.size() != profile->data.logExposure.size()) {
-                        invalid_view();
-                    }
-                    if (values.size() > target.max_size()) {
-                        fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "profile layer count exceeds native representation");
-                    }
-                    target.assign(values.begin(), values.end());
-                }
-            }
-            auto& data = profile->data;
-            if (view.hanatos_window.count != 0) {
-                copy_fixed(view.hanatos_window, data.hanatos2025AdaptationWindowParams);
-                data.hasHanatos2025AdaptationWindowParams = true;
-            } else {
-                (void)float_span(view.hanatos_window);
-            }
-            if (view.hanatos_surface_rgb.count != 0) {
-                copy_rows(view.hanatos_surface_rgb, data.hanatos2025AdaptationSurfaceParams);
-                data.hasHanatos2025AdaptationSurfaceParams = true;
-            } else {
-                (void)float_span(view.hanatos_surface_rgb);
-            }
-            auto& digest = profile->digest;
-            std::copy_n(view.digest.gamma_samelayer_rgb, 3, digest.gammaSamelayerRgb.begin());
-            std::copy_n(view.digest.gamma_interlayer_r_to_gb, 2, digest.gammaInterlayerRToGb.begin());
-            std::copy_n(view.digest.gamma_interlayer_g_to_rb, 2, digest.gammaInterlayerGToRb.begin());
-            std::copy_n(view.digest.gamma_interlayer_b_to_rg, 2, digest.gammaInterlayerBToRg.begin());
-            std::copy_n(view.digest.halation_first_sigma_um, 3, digest.halationFirstSigmaUm.begin());
-            std::copy_n(view.digest.halation_primary_amount, 3, digest.halationPrimaryAmount.begin());
-            digest.hanatosSpectralGaussianBlurDefault = view.digest.hanatos_spectral_gaussian_blur_default;
-            profile->assetVersionToken = view.asset_token;
-            candidate = std::shared_ptr<const FilmSource>(new FilmSource(owner.release(), std::move(profile)));
-#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
-            ProfileTest::before_publication();
-#endif
-        } catch (...) {
-            {
-                std::lock_guard<std::mutex> lock(_slots->mutex);
-                winner = _slots->films[index];
-            }
-            if (winner) {
-                return winner;
-            }
-            throw;
-        }
-        {
-            std::lock_guard<std::mutex> lock(_slots->mutex);
-            if (!_slots->films[index]) {
-                _slots->films[index] = candidate;
-            }
-            winner = _slots->films[index];
-        }
-        return winner;
-    }
-
-    std::shared_ptr<const PrintProfileSource> AssetBridge::print(const std::string& key) {
-        if (!_slots) {
-            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "print catalog unavailable");
-        }
-        const auto found = std::find(_slots->printKeys.begin(), _slots->printKeys.end(), key);
-        if (found == _slots->printKeys.end()) {
-            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "missing selected print profile key");
-        }
-        const auto index = static_cast<std::size_t>(found - _slots->printKeys.begin());
-        std::shared_ptr<const PrintProfileSource> winner;
-        {
-            std::lock_guard<std::mutex> lock(_slots->mutex);
-            winner = _slots->prints[index];
-        }
-        if (winner) {
-            return winner;
-        }
-        std::shared_ptr<PrintProfileSource> candidate;
-        try {
-            std::array<char, 1024> message{};
-            FjErrorBuffer error{message.data(), message.size(), 0};
-            FjPrintProfile* acquired = nullptr;
-            auto result = fj_legacy_print_profile_acquire(_assets, {key.empty() ? nullptr : key.data(), key.size()}, &acquired, &error);
-            std::unique_ptr<FjPrintProfile, PrintDeleter> owner(acquired);
-            if (result.category != FJ_STATUS_SUCCESS) {
-                fail(result, {message.data(), error.length});
-            }
-            FjPrintProfileView view{};
-            result = fj_legacy_print_profile_view(owner.get(), &view, &error);
-            if (result.category != FJ_STATUS_SUCCESS) {
-                fail(result, {message.data(), error.length});
-            }
-#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
-            ProfileTest::print_view(view);
-#endif
-            if (!view.asset_token || view.stage != FJ_PROFILE_STAGE_PRINTING) {
-                invalid_view();
-            }
-            auto profile = std::make_shared<Profiles::PrintProfile>();
-            profile->info.stock = copy_text(view.stock);
-            profile->info.viewingIlluminant = copy_illuminant(view.viewing_illuminant);
-            copy_tables(view.tables, profile->data);
-#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
-            ProfileTest::after_tables();
-#endif
-            profile->assetVersionToken = view.asset_token;
-            candidate = std::shared_ptr<PrintProfileSource>(new PrintProfileSource(nullptr, std::move(profile)));
-            candidate->_owner = owner.release();
-#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
-            ProfileTest::before_publication();
-#endif
-        } catch (...) {
-            {
-                std::lock_guard<std::mutex> lock(_slots->mutex);
-                winner = _slots->prints[index];
-            }
-            if (winner) {
-                return winner;
-            }
-            throw;
-        }
-        {
-            std::lock_guard<std::mutex> lock(_slots->mutex);
-            if (!_slots->prints[index]) {
-                _slots->prints[index] = candidate;
-            }
-            winner = _slots->prints[index];
-        }
-        return winner;
+        return status;
     }
 
     FjStatus AssetBridge::release_cached_payloads(FjErrorBuffer* error) noexcept {
-        // Rust keeps both cache owners. The retained native conversion phase
-        // stays between derived and source cleanup to preserve first failure.
+        // Rust owns the derived and source caches; preserve their cleanup order.
         FjStatus first = fj_legacy_assets_release_derived_payloads(_assets, error);
-        try {
-            ConversionSlots* slots = nullptr;
-            {
-                std::lock_guard<std::mutex> lock(_slotsMutex);
-                slots = _slots.get();
-            }
-            // Published slots remain fixed until terminal close excludes readers.
-            if (slots) {
-                std::vector<std::shared_ptr<const FilmSource>> films(slots->films.size());
-                std::vector<std::shared_ptr<const PrintProfileSource>> prints(slots->prints.size());
-                {
-                    std::lock_guard<std::mutex> lock(slots->mutex);
-                    for (std::size_t i = 0; i < films.size(); ++i) {
-                        films[i].swap(slots->films[i]);
-                    }
-                    for (std::size_t i = 0; i < prints.size(); ++i) {
-                        prints[i].swap(slots->prints[i]);
-                    }
-                }
-            }
-        } catch (const std::bad_alloc&) {
-            if (first.category == FJ_STATUS_SUCCESS)
-                first = JuicerCuda::write_status({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "native profile cache detachment allocation failed", error);
-        } catch (const std::exception& detail) {
-            if (first.category == FJ_STATUS_SUCCESS)
-                first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), error);
-        } catch (...) {
-            if (first.category == FJ_STATUS_SUCCESS)
-                first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "native profile cache detachment failed", error);
-        }
         const auto sources = fj_legacy_assets_release_source_payloads(_assets, first.category == FJ_STATUS_SUCCESS ? error : nullptr);
         if (first.category == FJ_STATUS_SUCCESS)
             first = sources;
@@ -903,20 +291,6 @@ namespace JuicerAssets {
             }
         };
         // Terminal close excludes all host builds, source leases and views.
-        auto slots = std::move(_slots);
-        if (slots) {
-            for (const auto& film : slots->films) {
-                if (film) {
-                    collect(film->close(first.category == FJ_STATUS_SUCCESS ? error : nullptr));
-                }
-            }
-            for (const auto& print : slots->prints) {
-                if (print) {
-                    collect(print->close(first.category == FJ_STATUS_SUCCESS ? error : nullptr));
-                }
-            }
-        }
-        slots.reset();
         if (_catalog) {
             collect(fj_legacy_catalog_release(std::exchange(_catalog, nullptr), first.category == FJ_STATUS_SUCCESS ? error : nullptr));
         }
@@ -978,173 +352,15 @@ namespace JuicerAssets {
         candidate.valid = true;
         candidate.defaultFilmPresent = true;
         candidate.defaultPrintPresent = true;
-        auto slots = std::make_unique<ConversionSlots>();
-        slots->filmKeys.reserve(candidate.filmProfiles.size());
-        slots->printKeys.reserve(candidate.printProfiles.size());
-        for (const auto& entry : candidate.filmProfiles) {
-            slots->filmKeys.push_back(entry.key);
-        }
-        for (const auto& entry : candidate.printProfiles) {
-            slots->printKeys.push_back(entry.key);
-        }
-        slots->films.resize(candidate.filmProfiles.size());
-        slots->prints.resize(candidate.printProfiles.size());
 #if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
         ProfileTest::before_catalog_publication();
 #endif
-        {
-            std::lock_guard<std::mutex> lock(_slotsMutex);
-            _slots.swap(slots);
-        }
         _catalog = owner.release();
         return candidate;
     }
 } // namespace JuicerAssets
 
 namespace JuicerAssets {
-    Spectral::ReconstructionLut AssetBridge::copy_hanatos_lut() {
-        return copy_lut(_assets, fj_legacy_hanatos_acquire, "hanatos");
-    }
-    Spectral::ReconstructionLut AssetBridge::copy_arctic_lut() {
-        return copy_lut(_assets, fj_legacy_arctic_acquire, "arctic");
-    }
-    Spectral::MallettBasis AssetBridge::copy_mallett_basis() {
-        std::array<char, 512> diagnostic{};
-        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-        FjMallettBasis* acquired = nullptr;
-        const auto result = fj_legacy_mallett_acquire(_assets, &acquired, &error);
-        const std::unique_ptr<FjMallettBasis, MallettDeleter> owner(acquired);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {diagnostic.data(), error.length});
-        }
-        FjFloatSpan view{};
-        const auto viewed = fj_legacy_mallett_view(owner.get(), &view, &error);
-        if (viewed.category != FJ_STATUS_SUCCESS) {
-            fail(viewed, {diagnostic.data(), error.length});
-        }
-#if defined(JUICER_SPECTRAL_TEST_HOOK)
-        SpectralTest::mallett_view(view);
-#endif
-        const auto samples = float_span(view);
-        if (samples.size() != 243u) {
-            invalid_view();
-        }
-        Spectral::MallettBasis copy;
-        copy.data.resize(243u);
-#if defined(JUICER_SPECTRAL_TEST_HOOK)
-        SpectralTest::copy_allocated("mallett", copy.data.capacity());
-#endif
-        std::copy(samples.begin(), samples.end(), copy.data.begin());
-        copy.rows = 81;
-        copy.cols = 3;
-#if defined(JUICER_SPECTRAL_TEST_HOOK)
-        SpectralTest::copy_complete("mallett", copy.data.size(), copy.data.capacity());
-#endif
-        return copy;
-    }
-    Spectral::CMFTriplets AssetBridge::copy_cmf_triplets() {
-        std::array<char, 512> diagnostic{};
-        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-        FjCmf* acquired = nullptr;
-        const auto result = fj_legacy_cmf_acquire(_assets, &acquired, &error);
-        const std::unique_ptr<FjCmf, CmfDeleter> owner(acquired);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {diagnostic.data(), error.length});
-        }
-        FjFloatSpan view{};
-        const auto viewed = fj_legacy_cmf_view(owner.get(), &view, &error);
-        if (viewed.category != FJ_STATUS_SUCCESS) {
-            fail(viewed, {diagnostic.data(), error.length});
-        }
-#if defined(JUICER_SPECTRAL_TEST_HOOK)
-        SpectralTest::cmf_view(view);
-#endif
-        const auto samples = float_span(view);
-        if (samples.size() % 4u != 0) {
-            invalid_view();
-        }
-        const auto rows = samples.size() / 4u;
-        Spectral::CMFTriplets copy;
-        if (rows > copy.xbar.max_size()) {
-            invalid_view();
-        }
-        for (auto* channel : {&copy.xbar, &copy.ybar, &copy.zbar}) {
-            channel->resize(rows);
-#if defined(JUICER_SPECTRAL_TEST_HOOK)
-            SpectralTest::copy_allocated("cmf", channel->capacity());
-#endif
-        }
-        for (std::size_t row = 0; row < rows; ++row) {
-            const auto base = row * 4u;
-            copy.xbar[row] = {samples[base], samples[base + 1u]};
-            copy.ybar[row] = {samples[base], samples[base + 2u]};
-            copy.zbar[row] = {samples[base], samples[base + 3u]};
-        }
-#if defined(JUICER_SPECTRAL_TEST_HOOK)
-        SpectralTest::copy_complete("cmf", rows * 3u, copy.xbar.capacity() + copy.ybar.capacity() + copy.zbar.capacity());
-#endif
-        return copy;
-    }
-
-    CsvRows::CsvRows(FjCsvPairs* owner, FjFloatSpan view) noexcept : _owner(owner), _view(view) {}
-    CsvRows::CsvRows(CsvRows&& rows) noexcept : _owner(std::exchange(rows._owner, nullptr)), _view(std::exchange(rows._view, FjFloatSpan{})) {}
-    CsvRows::~CsvRows() {
-        if (_owner) {
-            report_cleanup(fj_legacy_csv_release(_owner, nullptr));
-        }
-    }
-    FjFloatSpan CsvRows::view() const& noexcept {
-        return _view;
-    }
-
-    CsvRows AssetBridge::csv_rows(CsvSource source) {
-#if defined(JUICER_ILLUMINANT_TEST_HOOK)
-        IlluminantTest::before_csv_acquisition(source);
-#endif
-        std::array<char, 512> diagnostic{};
-        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-        FjCsvPairs* acquired = nullptr;
-        const auto result = fj_legacy_csv_acquire(_assets, csv_tag(source), &acquired, &error);
-        std::unique_ptr<FjCsvPairs, CsvDeleter> owner(acquired);
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {diagnostic.data(), error.length});
-        }
-        FjFloatSpan view{};
-        const auto viewed = fj_legacy_csv_view(owner.get(), &view, &error);
-        if (viewed.category != FJ_STATUS_SUCCESS) {
-            fail(viewed, {diagnostic.data(), error.length});
-        }
-#if defined(JUICER_ILLUMINANT_TEST_HOOK)
-        IlluminantTest::csv_view(source, view);
-#endif
-        const auto samples = float_span(view);
-        if (samples.size() % 2u != 0) {
-            invalid_view();
-        }
-        return CsvRows(owner.release(), view);
-    }
-
-    std::vector<std::pair<float, float>> AssetBridge::copy_csv_pairs(CsvSource source) {
-        const auto sourceRows = csv_rows(source);
-        const auto samples = float_span(sourceRows.view());
-        const auto rows = samples.size() / 2u;
-        std::vector<std::pair<float, float>> copy;
-        if (rows > copy.max_size()) {
-            invalid_view();
-        }
-#if defined(JUICER_ILLUMINANT_TEST_HOOK)
-        IlluminantTest::before_csv_copy(source, rows);
-#endif
-        copy.resize(rows);
-        for (std::size_t row = 0; row < rows; ++row) {
-            copy[row] = {samples[row * 2u], samples[row * 2u + 1u]};
-        }
-#if defined(JUICER_ILLUMINANT_TEST_HOOK)
-        IlluminantTest::after_csv_copy(source, rows, copy.capacity());
-#endif
-        return copy;
-    }
-
     NeutralPrintCalibrationResult AssetBridge::neutral_print_calibration(const std::string& printStock,
                                                                          const std::string& illuminant,
                                                                          const std::string& filmStock) {
@@ -1212,21 +428,6 @@ namespace JuicerAssets {
 } // namespace JuicerAssets
 
 namespace JuicerAssets {
-    std::shared_ptr<const IlluminantFilterCurveSet> AssetBridge::illuminants() {
-        FjIlluminantsOwner* raw = nullptr;
-        std::array<char, 1024> bytes{};
-        FjErrorBuffer error{bytes.data(), bytes.size(), 0};
-        const auto result = fj_legacy_assets_illuminants_acquire(_assets, &raw, &error);
-        if (result.category != FJ_STATUS_SUCCESS)
-            throw JuicerCuda::ExecutionFailure{{result, std::string(bytes.data(), error.length)}};
-        std::unique_ptr<FjIlluminantsOwner, IlluminantsDeleter> hold(raw);
-        FjIlluminantsView view{};
-        const auto projected = fj_legacy_illuminants_view(raw, &view, &error);
-        if (projected.category != FJ_STATUS_SUCCESS)
-            fail(projected, std::string_view(bytes.data(), error.length));
-        return std::shared_ptr<const IlluminantFilterCurveSet>(new IlluminantFilterCurveSet(hold.release(), view));
-    }
-
     std::shared_ptr<const Gamut::InputHullHold> AssetBridge::input_hull() {
         FjInputHullOwner* raw = nullptr;
         std::array<char, 1024> bytes{};

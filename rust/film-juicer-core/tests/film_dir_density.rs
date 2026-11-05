@@ -7,10 +7,23 @@ use film_juicer_core::assets::Assets;
 use film_juicer_core::film::{self, density, dir};
 use film_juicer_core::profile::Polarity;
 use film_juicer_core::route::ScanRoute;
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 use serde_json::{Value, json};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn original_exposure_case_id(case: &serde_json::Value) -> String {
+    format!(
+        "{}/kind-{}/mode-{}/polarity-{}",
+        case["case"].as_str().unwrap(),
+        case["kind"].as_u64().unwrap(),
+        case["mode"].as_u64().unwrap(),
+        case["polarity"].as_u64().unwrap()
+    )
 }
 fn fixture(name: &str) -> Value {
     let platform = if cfg!(target_os = "windows") {
@@ -77,7 +90,19 @@ fn exact_native_dir_and_bounds() {
     let captured = fixture("");
     let cases = captured["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 64);
-    for case in cases {
+    let ids: Vec<String> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, case)| {
+            case["id"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("case/{i}"))
+        })
+        .collect();
+    let mut rows = RowCases::new("native-dir-density-cases", &ids);
+    for (case, id) in cases.iter().zip(&ids) {
+        let row = rows.case(id);
         let development = film::Development::new(
             assets.film(case["key"].as_str().unwrap()).unwrap(),
             film::Params {
@@ -98,14 +123,20 @@ fn exact_native_dir_and_bounds() {
             "authored_minimum":bits(bounds.authored_minimum_cmy()),"authored_maximum":bits(bounds.authored_maximum_cmy()),"hash":bounds.hash()});
         assert_eq!(v, case["bounds"]);
         assert_eq!(bounds.route(), development.route());
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
 fn original_exposure_spans_and_bypasses() {
     let default_controls = fixture("")["cases"][2]["controls"].clone();
     let captured = fixture("-f1");
-    for case in captured.as_array().unwrap() {
+    let cases = captured.as_array().unwrap();
+    let ids: Vec<String> = cases.iter().map(original_exposure_case_id).collect();
+    let mut rows = RowCases::new("original-exposure-span-bypasses", &ids);
+    for (case, id) in cases.iter().zip(&ids) {
+        let row = rows.case(id);
         let name = case["case"].as_str().unwrap();
         let resources = if matches!(name, "duplicates" | "singleton") {
             root().join("tests/film/fixtures/synthetic").join(name)
@@ -157,7 +188,9 @@ fn original_exposure_spans_and_bypasses() {
                 _ => assert!(matches!(error, dir::Error::LogExposure { sample: 1 })),
             }
         }
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
@@ -166,19 +199,53 @@ fn minimum_keeps_zero_sign_and_rejects_before_clamp() {
         bits(density::Minimum::new([-0.0, 0.0, 2.0]).unwrap().cmy()),
         json!([2147483648_u32, 0, 1065353216])
     );
-    for value in [-0.1, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+    let values = [
+        ("negative", -0.1),
+        ("nan", f32::NAN),
+        ("positive-infinity", f32::INFINITY),
+        ("negative-infinity", f32::NEG_INFINITY),
+    ];
+    let mut rows = RowCases::new(
+        "invalid-density-minimum-values",
+        values.iter().map(|(id, _)| *id),
+    );
+    for (id, value) in values {
+        let row = rows.case(id);
         assert!(matches!(
             density::Minimum::new([value, 0.0, 0.0]),
             Err(density::Error::Minimum)
         ));
+        row.passed();
     }
+    rows.finish();
 }
 
 #[test]
 fn focused_native_conditionals_and_minima() {
     let assets = Assets::new(root().join("Resources"));
     let base = fixture("");
-    for case in fixture("-focused").as_array().unwrap() {
+    let cases = fixture("-focused");
+    let cases = cases.as_array().unwrap();
+    let ids: Vec<String> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, case)| {
+            case["key"]
+                .as_str()
+                .map(|key| {
+                    format!(
+                        "{key}/{}/{i}",
+                        case["kind"]
+                            .as_u64()
+                            .unwrap_or_else(|| case["minimum_kind"].as_u64().unwrap_or(0))
+                    )
+                })
+                .unwrap_or_else(|| format!("minimum/{i}"))
+        })
+        .collect();
+    let mut rows = RowCases::new("focused-dir-conditionals-and-minima", &ids);
+    for (case, id) in cases.iter().zip(&ids) {
+        let row = rows.case(id);
         let key = case["key"].as_str().unwrap();
         let selected = if key == "kodak_portra_400" {
             ScanRoute::NegativeDirect
@@ -259,7 +326,9 @@ fn focused_native_conditionals_and_minima() {
                 assert_eq!(json!(bounds.hash()), case["hash"]);
             }
         }
+        row.passed();
     }
+    rows.finish();
 }
 
 #[cfg(feature = "test-support")]
@@ -305,7 +374,13 @@ fn spans_precede_knees_and_axis_reservation() {
         dir::Recipe::new(&ordinary, params(&controls)),
         Err(dir::Error::Allocation)
     ));
-    for fault in [1, 2, 3] {
+    let faults = [(1, "size"), (2, "allocation"), (3, "zero-identity")];
+    let mut rows = RowCases::new(
+        "spatial-dir-axis-reservation-faults",
+        faults.iter().map(|(_, id)| *id),
+    );
+    for (fault, id) in faults {
+        let row = rows.case(id);
         dir::test_support::reject_next(fault);
         let result = dir::Recipe::new(&ordinary, params(&controls));
         assert!(matches!(
@@ -314,5 +389,7 @@ fn spans_precede_knees_and_axis_reservation() {
                 | (2, Err(dir::Error::Allocation))
                 | (3, Err(dir::Error::ZeroIdentity))
         ));
+        row.passed();
     }
+    rows.finish();
 }

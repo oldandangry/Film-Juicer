@@ -34,7 +34,7 @@ span `log_exposure`; the fixture ABI additionally calls the authored span
 `data.log_exposure` keep their single authored meaning.
 
 `CmfRows` and `load_cmf_csv` describe decoded source rows
-`[wavelength_nm,x_bar,y_bar,z_bar]`, before native axis/curve preparation.
+`[wavelength_nm,x_bar,y_bar,z_bar]`, before complete Rust curve preparation.
 `profile::Role` selects film/print use in the catalog and loader;
 `profile::Support` is the authored photographic substrate, film or paper;
 `profile::Stage` is the authored filming/printing step. Printing can use either
@@ -46,7 +46,7 @@ Identity terms have separate scopes and encodings:
 | --- | --- | --- |
 | `hash::{bytes,u64s,finite_f32s,resource_f32s,f32s_with_nan_mask}` / `FloatSpanHash` | FNV-1a primitives with each function's byte, signed-zero and NaN rules; no final zero remapping. `FloatSpanHash` has separate value and NaN-mask streams. | Raw encoding building blocks, not asset identities by themselves. |
 | `SpectraLut::asset_hash()` | Decoded reconstruction sample bits; signed zeros and NaNs canonicalized in one stream, final zero mapped to one. No path, metadata or evaluator version. | `FjSpectraLutView.asset_hash`, native reconstruction reuse. |
-| `FilmProfile::asset_token()` / `PrintProfile::asset_token()` | Stock and consumed metadata, tagged sampled tables/adaptation presence, authored exposure/model bits and density evaluator version; final zero mapped to one. Display name, file path and JSON formatting do not contribute. | Profile views' `asset_token`, native `assetVersionToken` and downstream recipe identities. |
+| `FilmProfile::asset_token()` / `PrintProfile::asset_token()` | Stock and consumed metadata, tagged sampled tables/adaptation presence, authored exposure/model bits and density evaluator version; final zero mapped to one. Display name, file path and JSON formatting do not contribute. | Profile views' `asset_token` and downstream complete-state identities. |
 | `profile_token` / `finish_asset_token` | Private producer and zero finalizer for that same completed-profile token. | No second identity contract or process-handle allocation. |
 | `PrintDensityCurves::hash()` | Count, raw narrowed-axis bits and gamma-adjusted CMY total bits, in order; zero is rejected, never remapped. | `FjPrintDensityView.hash`, native print development. |
 
@@ -56,7 +56,7 @@ interchangeable across domains, and do not promise equal numerical outputs on
 different platforms. Equal profile tokens do not imply equal gamma-adjusted
 curve hashes, and a raw sample hash cannot substitute for a profile token.
 
-Generated CUDA bindings additionally transport native-owned recipe, descriptor,
+Generated CUDA bindings additionally transport completed recipe, descriptor,
 table and submission hashes unchanged. Each enclosing ABI record establishes
 the component and its native producer/zero contract. Their `clip_token`,
 `instance_token` and `frame_token` instead identify clip/session/frame lifetime
@@ -247,8 +247,8 @@ patch is removed with the support library's compiled consumer at S6.
 
 `JuicerPreparedStateTests` registers `Ffi.Host.PreparedState` and
 `Prepare.Host.StateProducts`. The C11 helper and C++ reader compare every declared
-layout fact with Rust. The product reader uses accepted family fixtures and the
-native composition to check all four routes with Hanatos, Mallett and Arctic,
+layout fact with Rust. The product reader compares the complete Rust state with
+31 ordered frozen expectations across all four routes with Hanatos, Mallett and Arctic,
 plus contributing/ignored controls, Boolean snapshot casts, signed zero, failure
 order and final identities. Its six competing-failure cases also check visitation
 and nonconsumption of a later fault. Checked-in expectations are never regenerated
@@ -279,7 +279,10 @@ post-preparation cancellation checkpoints, actual pinned allocation/copy/event
 failures, quarantine, idle retirement and actual deferred destruction/drain after
 Rust expiry. Rust
 holds do not replace native staging, frame fences, finish/abort or retirement.
-Production callback publication remains native during this boundary's adoption.
+Native immutable route publications retain one move-only `PreparedState` and a
+build counter. Production borrows that same Rust state through its private render
+projection; native staging, frame work and exact-context resources retain their
+existing ownership.
 
 ```sh
 cmake --build --preset <preset> --target JuicerPreparedStateTests JuicerPreparedBoundaryProbe
@@ -388,21 +391,20 @@ remains confined to the test executable.
 
 ## Native asset lookup safety
 
-`Assets.Host.LookupSafety` runs the real private synthetic density, Scanner
-interpolation/density and Hanatos window helpers through dedicated test objects.
-`JUICER_ASSET_LOOKUP_TEST_HOOK` is defined only on those objects and their test
-executable. Product objects and normal Release modules contain no wrappers.
-The existing admission and context-drain seams are independent and unchanged.
+`Assets.Host.LookupSafety` runs literal synthetic-density, Scanner lookup and
+Hanatos-window cases in the actual test consumer. The window helper lives in
+`asset_lookup_test.cpp`; its former product hook/object is removed. The existing
+admission and context-drain seams are independent and unchanged.
 
 The group checks finite endpoints/interpolation, distinct duplicate selection,
 ascending/descending Scanner traversal, singleton axes, ordered infinities,
-NaN/shape/channel failures, and public direct/print/synthetic builder failure
-propagation before reference or descriptor publication. It performs no CUDA
+NaN/shape/channel failures, and actual complete-state constructor/publication
+failure with prior-state retention and recovery. It performs no CUDA
 runtime or driver operation. CUDA linking/build prerequisites remain required.
 [Independent expectations and provenance](asset_lookup_expectations.md) explain
 why synthetic invalid brackets are unreachable for admitted axes and define the
-three Hanatos formula cases The production-profile consumer group now also reaches those three formula cases
-with adaptation enabled through selected-profile recipe construction.
+three Hanatos formula cases. The production-profile consumer group also reaches
+those cases with adaptation enabled through complete Rust preparation.
 
 ```sh
 cmake --preset linux-debug -DBUILD_TESTING=ON
@@ -451,7 +453,7 @@ numerical oracle remain independent of the production profile records.
 `Ffi.Host.CatalogOwner` checks the private production catalog ABI in C11,
 C++20 and Rust, the retained-owner lifetime, failure-output clearing,
 concurrent acquisition, source-error stickiness and native conversion retry.
-It calls the actual native option accessors and selected film/print loaders.
+It calls the actual native option accessors and Rust-owned catalog/source boundary.
 `FjCatalogEntryView` contains key, label and polarity only
 (40 bytes, alignment 8 on both supported x64 targets). Counts are role-local
 entry counts; indices are zero-based. Text is length-delimited UTF-8, including
@@ -490,7 +492,7 @@ active host borrows and its blocked graph; it is not legal reader-excluded
 terminal completion. Registration is checked before dereference. Under legal
 terminal exclusion, Library detachment is allocation-free and precedes throwing
 owner admission. It stays alive through the single native close attempt, then
-Rust owners and native host copies are consumed outside every native lock.
+Rust owners and native catalog values are consumed outside every native lock.
 Native failure keeps precedence over host/diagnostic cleanup failure; cleanup
 never retries uncertain CUDA teardown. The retained native graph has no Library,
 Rust owner or borrowed Rust/OFX storage, and asset access fails after detachment.
@@ -501,8 +503,9 @@ locks. Terminal construction/reentry/lock-failure tests use isolated API objects
 catalog conversion seams and Rust owner/fault probes are test-only.
 
 The catalog path transport/Windows encoding/native selected-profile opening
-bridge has been removed. Native root-path transport remains an actual consumer. Asset conversion is removed in S4.E; native host Library ownership
-is removed in S5.C. These are distinct boundaries. The fallible cache-clear export invokes the existing Rust cache-release operation.
+bridge has been removed. Native root-path transport remains an actual consumer.
+I7 removed the native asset conversions; bounded Library/Root forwarding remains
+assigned to S5.C. The fallible cache-clear export invokes the existing Rust cache-release operation.
 Later-family production acquisition remains outside this boundary. Installed Resolve acceptance remains
 separate from these automated ABI, host and GPU checks.
 
@@ -515,13 +518,11 @@ profiles and the accepted gamma cohort are compared with immutable public
 captures. Owned gamma totals survive print release, and retained profiles survive
 Assets release/destruction. Safe projections share the core Arc and borrow tables.
 
-Native conversions publish one complete copy per finite catalog slot. Concurrent
-cold candidates copy outside the slot mutex; losers release after unlock. A failed
-attempt rechecks a concurrent winner. Warm requests reuse the published copy.
-The print build carries one `PrintProfileSource` lease and samples that exact Rust
-owner, including across cache release and source-file changes. Recipes and CUDA
-state retain independently allocated native values. Cold-copy, Arc retention and
-gamma-overlap capacity measurements exclude allocator/RSS claims.
+Selected profiles and development remain Rust-owned. Raw holders and actual
+complete-state publications retain their source backing across cache release and
+source-file changes. Native ConversionSlots, selected-profile wrappers and copied
+profile/development models are removed. Raw Arc retention and gamma-overlap
+capacity observations remain distinct from native allocation or RSS claims.
 
 The consumer cases cover typed original-decimal BB values, preserved named
 illuminants, canonical positional wavelengths, authored-label hash encoding,
@@ -547,16 +548,14 @@ wavelength-major 81×RGB; CMF rows are `[wavelength_nm,x_bar,y_bar,z_bar]`.
 The fixture checks output clearing, diagnostic bounds, consuming release,
 independent source failures, source sharing, concurrent views and owner expiry.
 
-`Assets.Host.SpectralBootstrap` and `Assets.Host.SpectralCopy` use the actual
-Library/Root bootstrap and native copy implementations. Isolated test objects
-observe copy extents and inject structural/copy faults; an executable-local
-allocator verifies partial-copy cleanup and actual CMF construction failure.
-Product objects contain neither hook. Fresh resource roots cover supported NPY
+`Assets.Host.SpectralBootstrap` uses explicit raw CMF, Hanatos, Arctic and Mallett
+source holds and actual complete-state consumers. The copy-only process, native
+spectral globals, Root bootstrap and copy adapters are removed. Fresh resource roots cover supported NPY
 widths, equivalent headers, signed special values, narrowing overflow, malformed
 sources and native platform paths. Source bits and identities have independent
-expectations before selected computation. Sequential Root success/failure must
-clear stale CMFs and reconstruction records. Warm bootstrap makes no copies;
-native bytes survive consuming Library destruction.
+expectations before selected computation. Lazy acquisition distinguishes an
+unselected malformed source from a selected construction failure. Raw retained
+owners survive cache release and runtime destruction without native source copies.
 
 The independent processor pixels cover Hanatos negative-direct and positive-print,
 Mallett negative-print and Arctic positive-direct, plus Hanatos combined/glare
@@ -569,16 +568,16 @@ remain separate evidence.
 After configuring/building with tests ON, run the affected host groups with
 `ctest --preset <preset> -R 'Spectral|Rust.Bridge|Quality.RustBoundaries|NativeBoundary'`.
 Capacity receipts report requested payload bytes and actual capacities, excluding
-allocator metadata/RSS. Each LUT has one 11,943,936-byte Rust source and one equally
-sized native copy. Projections duplicate no samples; each opaque Box holds an
-8-byte Arc. CMF triplets expire after complete curve publication. Source math moves
-in S4.A; conversion/global storage is removed in S4.E and remaining Library/Root
-forwarding in S5.C. Installed Resolve and real recovery qualification stay separate.
+allocator metadata/RSS. Each LUT has one 11,943,936-byte Rust source; opaque raw
+holds retain its backing without an equally sized native copy. Source and
+complete-state views borrow their owners. Native conversion/global storage is
+removed; remaining Library/Root forwarding stays assigned to S5.C. Installed
+Resolve and real recovery qualification stay separate.
 
 
 ## Illuminant and calibration source boundary
 
-`Assets.Host.IlluminantAbi`, `IlluminantCopy`, `IlluminantLibrary`, `IlluminantMath`,
+`Assets.Host.IlluminantAbi`, `IlluminantLibrary`, `IlluminantMath`,
 `CalibrationAbi`, `CalibrationNative` and `IlluminantNative` exercise the private
 production CSV and selected calibration calls. All require no driver/device at
 runtime. The C11/C++20/Rust boundary asserts fixed layouts, explicit tags and
@@ -587,24 +586,23 @@ native producer at the manifest's revision; exact target-local float bits are
 compared, with no new tolerance. Existing raw CSV and 160-entry CMY captures retain
 their independent frozen expectations.
 
-The immutable native curve snapshot holds independently allocated derived data.
-Seven successful Rust CSV cache slots retain source rows; call-local opaque owners
-expire after synchronous Rust curve construction. Independent C8 copy tests retain their explicit elementwise-copy binding. No raw rows or calibration JSON cache is
-retained in native code. Complete sets alone are published; ordinary unavailable
-sources return uncached partial snapshots. Allocation/internal errors abort cold
-construction. Retained readers survive cache release; candidates build and losing
-or old snapshots destruct outside cache locks. Executable-local allocation probes
-measure requested native bytes and exercise reentrant release during actual
-snapshot/loser destruction. They do not measure Rust heap or RSS.
+The Rust seven-curve cache owns derived data and CSV source rows. Scoped raw
+illuminant holders expose borrowed views; retained readers survive cache release.
+Cold construction, partial retry, concurrent winners, late publication, reentry
+and reclamation are observed at the actual Rust owner. Native curve snapshots,
+CSV copies, copy-only tests and wrapper-allocation probes are removed. The derived
+illuminant visited set remains part of cold construction: an unrelated required
+source failure is not reinterpreted as selected-source laziness. Capacity metrics
+describe their actual scoped storage, not allocator metadata or RSS.
 
 Only explicit `test-support` enables the core classifier read/probe fault seam;
 normal Release builds exclude it. F1 tests inject errors at the actual core read
 boundary, observe probe bypass and sticky first-outcome caching, then verify ABI
-allocation failure with cleared results and native print `bad_alloc` before any
-recipe fallback. The CSV category probe injects a typed reader-capacity/poison
+allocation failure with cleared results and actual complete-state failure before
+publication. The CSV category probe injects a typed reader-capacity/poison
 error at the raw edge; accepted core reader/cache tests cover their owning
-behavior. Native view/copy/publication hooks are confined to test object targets.
-Their qualification/removal boundary is S4.E when native conversions move.
+behavior. Native copy/view hooks are removed; retained calibration and catalog
+publication observations remain confined to their actual test providers.
 
 ## CAT16 preparation
 
@@ -720,12 +718,12 @@ the matrix producer.
 Every other numerical/identity obligation and existing fixture/limit is unchanged.
 Ordinary tests read only public fixtures and never generate expectations.
 
-The unready native carrier has plain identity matrices; completed producers bind
-all three consumed matrices before use. Host input mathematics are value-only Rust
-operations with synchronous, exclusive/disjoint foreign outputs. Wrappers propagate
-operation-specific typed construction failure through the existing admission path.
-The temporary value bridge is removed at S4.E; native enum/labels/plain storage and
-CUDA decoding/execution retain their assigned responsibilities.
+Complete Rust preparation supplies all three consumed matrices and the adaptation
+flag. Prepared decoding copies them directly into focused resource inputs and
+frame-owned values; the former default-identity `FilmRawConfig` carrier is removed.
+Host input mathematics remain value-only Rust operations with synchronous,
+exclusive/disjoint foreign outputs. Native enum/labels, closed execution values
+and CUDA decoding/execution retain their assigned responsibilities.
 
 `Color.Gpu.ScannerReuse` additionally checks decoded BT.2020 and sRGB Mallett states
 on negative direct/print routes. Cold, output-CCTF-only and warm preparation reuse
@@ -737,7 +735,7 @@ These are GPU checks; host groups introduce no eager CUDA-driver dependency.
 ## Illuminant construction
 
 `Assets.Host.IlluminantConstruction` compares raw production C calls, the direct
-safe-core fixture facade, native wrappers and real direct/print callers against
+safe-core fixture facade and actual held direct/print callers against
 four frozen accepted-parent captures. `fixtures/illuminants/construction-manifest.json`
 records exact provenance; existing seven-curve fixtures remain immutable. It covers
 41 BB cases, direct/Akima boundaries, all 270 caller outcomes and 144 complete
@@ -748,12 +746,12 @@ classification contract; no tolerance is introduced.
 
 The seven production math operations use required bounded diagnostics and cleared
 failure outputs. Lens finish/release take and clear the owner before validating
-other descriptors. Scoped `CsvRows` borrows retain Rust sources through synchronous
-calls and cache/Assets release; production makes zero native source-row copies.
-The native seven-curve cache remains the only derived cache. Existing order,
+other descriptors. Scoped raw CSV acquire/view/release holds retain Rust sources
+through synchronous calls and cache/Assets release, without native source-row copies.
+The Rust seven-curve cache remains the derived owner. Existing order,
 partial retry, decoded-empty, concurrent winner, late-publication, retained
-snapshot and reentrant destructor cases remain active. Printed native capacities
-and Rust Akima Vec capacities are actual scoped observations, excluding allocator
+view and reentry cases remain active. Printed Rust source/cache and Akima Vec
+capacities are actual scoped observations, excluding allocator
 metadata/RSS; Rust capacities are cumulative allocations, not a live high-water mark.
 
 Closed TLS fault selectors prove intended raw-export consumption and independence
@@ -763,11 +761,11 @@ Box/Arc allocator abort. Compiler probes reject default/field construction and
 mutation of private `LensInput`; the safe core exposes only slice/value APIs.
 
 Construction/admission tests retain old publications while rejecting failed
-replacement and allow subsequent recovery. EQUAL projection failures prove no
-native submission and preserve the actual published print state. The separate
-`Ffi.Gpu.CudaRender.negative-print` rows enter real native Root print preparation,
-observe prepared-frame abort, verify actual absent-stream completion and its
-existing error precedence, and reuse resources after clearing the fault. The
+replacement and allow subsequent recovery. EQUAL construction fails before
+publication and preserves the prior print state. The separate
+`Ffi.Gpu.CudaRender.negative-print` rows exercise actual native prepared execution,
+prepared-frame abort, absent-stream completion and its existing error precedence,
+then reuse resources after clearing the fault. The
 completion override is isolated test code following the physical synchronization;
 it does not establish real driver failure or Resolve recovery acceptance.
 All host groups remain free of driver/device runtime requirements. Normal Release
@@ -814,11 +812,12 @@ Normal Release excludes fault slots, facade exports and fixture allocators.
 
 `Exposure.Host.Reference`, `.Sensitivity`, `.Products`, `.Admission` and
 `Ffi.Host.ExposurePreparation` check A5 reconstruction, final film sensitivity,
-recipe Mallett scale, both C11 exports, direct-core facade, actual native callers,
+recipe Mallett scale, both C11 exports, direct-core facade, actual complete-state callers,
 and publication/retained-owner behavior. The 68 reference cases and 544 sensitivity
 cases retain exact finite bits and classify arithmetic NaNs. Complete products
 cover 420 attempts across methods, routes, profiles, illuminants, windows, surfaces
-and UV/IR activation; surfaces and TC construction remain native A6 work.
+and UV/IR activation. Reconstruction and TC construction are Rust-owned; native
+execution borrows completed values.
 
 The four numerical cohorts share `fixtures/exposure/numerical.json`; only public
 consumer inputs and expectations are stored there. Intermediate native and
@@ -861,7 +860,8 @@ original authority. Ordinary tests do not regenerate any fixture.
 The tensor is borrowed synchronously and no foreign source survives the call.
 Completed core results have private readonly fields and no Default. Checked
 kernel sizes and real fallible reservation distinguish impossible layouts from
-allocation failure; the native binding maps AllocationFailure to `std::bad_alloc`.
+allocation failure. Raw APIs return the typed status; actual complete-state
+publication retains its existing allocation-failure exception mapping.
 Closed raw/facade fault slots prove consumption before cleanup or recovery and
 are absent from normal Release. Tests cover malformed consumed spans, ignored
 inactive spans, panic containment, cleared outputs/metadata, concurrent calls,
@@ -878,7 +878,7 @@ is automated numerical capture; no visual comparison images are generated.
 
 ## Output gamut construction
 
-`Gamut.Host.Output.Math` checks all nine transforms and complete 64×720 boundary
+`Rust.Core` (the `output_gamut` integration binary) checks all nine transforms and complete 64×720 boundary
 arrays against the four-preset native characterizations, including ordered
 primitives, intermediate cubics, platform libm bits and raw identities.
 `Gamut.Host.Output.boundary` checks both production exports and direct facades,
@@ -894,8 +894,8 @@ observations qualify the changed cache contract; they are not native parity.
 Library destruction still excludes active host readers. Existing production
 CUDA groups retain their route, disabled-work and asynchronous staging witnesses.
 
-The synchronous value bridges/fixed native carriers retire at S4.E; Library
-forwarding retires at S5.C. Rust privately owns complete immutable mathematical
+Native bindings expose completed fixed values; bounded Library forwarding
+remains assigned to S5.C. Rust privately owns complete immutable mathematical
 values and one fallibly reserved temporary table, copied once per successful
 cold candidate. Warm Library hits introduce no foreign call, table copy or
 rehash. Test-support copy timings are absent from ordinary production builds.
@@ -1048,14 +1048,16 @@ Its resources are synchronous fixed-array borrows and existing identities; the
 result retains no profile or resource pointer. Explicit-operand color leaves
 remain separate, including the accepted inverse-B conversion fixtures.
 
-`fj_legacy_film_input_prepare` is temporary fixed-value transport through S4.E.
-The native foundation calls it through its captured `FilmSource` after the
-existing route/resource/selector checks. The direct fixture facade shares the
+`fj_legacy_film_input_prepare` remains the raw fixed-value ABI/fixture transport.
+Actual complete Rust preparation constructs the input recipe after its existing
+control/source checks; the native foundation and `FilmSource` adapter are removed.
+The direct fixture facade shares the
 safe constructor and fixed projector. Both outputs are required; diagnostics
 are optional. The legacy header documents numeric storage admission, caller
 lifetime/disjointness obligations, inactive defaults, clearing and diagnostic
 bounds. Failure dispatch uses the closed status/origin/reason envelope and
-sensitivity metadata, preserving native return/throw and publication behavior.
+sensitivity metadata. Raw status/clearing and actual complete-state publication
+failure remain separate witnesses; the vanished C++ translator is not recreated.
 The raw result is complete input preparation, not a completed render state.
 
 `Ffi.Host.FilmInput` and `Film.Host.InputProducts` own ABI/value/failure and actual
@@ -1069,13 +1071,12 @@ for fixture/fault isolation. No per-frame preparation or CPU pixel path is added
 
 ## Capture-film DIR and density bounds
 
-The temporary `SF_TEMP_BRIDGE_FILM_DIR_DENSITY` boundary retains one additional
-shared development hold for synchronous foundation preparation. Retain returns
-the same address with a separate consuming obligation. The original explicit
-release still precedes return from development preparation; move-only native
-holds end after route construction. DIR owns only derived fixed values and three
-RGB axes; native publications/staging copy and own later CUDA inputs. The temporary
-hold, value carriers and exports retain their S4.E last-use removal obligation.
+The raw development retain/release protocol returns the same address with a
+separate consuming obligation; its fixture holders exercise actual ownership and
+borrow expiry. Complete Rust preparation owns the development and DIR products.
+The native foundation/DevelopmentHold model is removed. Native execution binds
+completed DIR arrays and fixed values, with native staging owning later
+asynchronous CUDA inputs.
 
 Minimum, DIR and film bounds retain their distinct construction positions and
 failure priority. The safe bounds constructor borrows a completed minimum; its
@@ -1087,34 +1088,39 @@ policy remains native.
 Raw prepare/acquire/view results and failure records are independently cleared.
 Success commits `{NONE,3,UINT64_MAX}`. `LOG_EXPOSURE=16` is legal only for DIR
 acquire with PreparationFailure, API_NONE, native code zero, channel 3 and the
-first failing sample in `[1,N)`. Native translation returns the exact ordinary
-strictly-increasing exposure diagnostic; impossible envelopes become integrity
-failures. Pointer checks do not establish actual lifetime, extent or disjointness:
+first failing sample in `[1,N)`. Raw and complete-state cases retain the exact
+strictly-increasing exposure diagnostic and typed envelope. Pointer checks do not
+establish actual lifetime, extent or disjointness:
 callers authorize initialized live storage, and views expire on consuming release.
 
 See [immutable native characterization](../film/dir-fixtures/README.md).
-`Ffi.Host.FilmRecipes` covers the raw/facade/native owner boundary and
+`Ffi.Host.FilmRecipes` covers raw/C11/facade ownership and
 `Film.Host.DirDensityProducts` covers complete callers/admission. Construction
 compiler controls reject Default, partial field assembly, private storage access
 and mutation. Both normal Release production probes cover the new symbols,
 C11 values/failures and absence of test fault/facade code in final artifacts.
 
 The spatial-optics owner is `film_juicer_core::optics::Recipe`: a complete fixed
-value with private storage and named read-only getters. Its synchronous
-`fj_legacy_spatial_optics_prepare` transport copies authored f64 diffusion,
-already captured f32 halation/lens values, completed-profile defaults and print
-selection. It commits all fields or clears independently admitted outputs;
-`FjSpatialOpticsFailure` preserves typed component/field/channel failures. The
-native adapter translates those tags and projects named fields without recipe
-math. The transport retires at S4.E. `fj_test_spatial_optics_prepare` forwards to
-the identical checked operation for existing native fixture preparation.
+value with private storage and named read-only getters. Actual complete-state
+preparation constructs it in Rust. The native adapter and legacy export are
+removed. `fj_test_spatial_optics_prepare` and its existing C11 consumer invoke the
+checked raw operation for literal fixtures, copying authored f64 diffusion,
+captured f32 halation/lens values, defaults and print selection. It commits all
+fields or clears independently admitted outputs; `FjSpatialOpticsFailure`
+preserves typed component/field/channel failures.
 Stage 9 adds a one-shot panic and a zero substitution at the real resolved-hash
 guard; all controls and strings remain testing-only. Raw cleared family/domain
 zero differs from a successful inactive recipe's BlackProMist/film defaults.
 See `Ffi.Host.SpatialOptics`, `Film.Host.SpatialOpticsProducts` and the immutable
-[optics characterization](../film/optics-fixtures/README.md). Both native Release
-OFF gates retain the earlier film/output, six grain and nine effects cases and
-add all 15 optics cases, archive/module/PDB isolation and hidden-device loading.
+[optics characterization](../film/optics-fixtures/README.md). The three superseded
+optics/print-illuminant/preflash legacy exports and their 39 standalone OFF rows
+are removed. ON raw C11/facade fixtures and actual complete-state products remain.
+The current collector rejects their six retired report fields, including null
+values; historical reports and captures retain their original bytes. Final I8
+requires positive complete-state direct/print execution in both native Release
+testing-OFF configurations, followed by ordered ON restoration and broad
+qualification. Current test registration or miniature protocol checks do not
+establish those gates.
 
 ## Diffusion sample, frame and component preparation
 
@@ -1133,9 +1139,9 @@ support absent/zero-capacity backing and bounded NUL-terminated truncation.
 See the [exact native characterization](../diffusion/frame-fixtures/README.md),
 `Ffi.Host.DiffusionFrame` and `Optics.Host.DiffusionFrameProducts`. The strict C11
 Release OFF probe requires all three exports and executes 507 complete frozen
-value/failure results in addition to all earlier production contracts. Native
-sample/frame projections retire at their last caller by S6.D; native-resource
-component conversion retires with S4.E's final execution-input conversion.
+value/failure results alongside the retained production contracts. Native
+sample/frame bindings retire at their last native caller by S6.D. They bind
+completed values and do not reconstruct the removed owning recipe graph.
 
 ## Spatial DIR mathematical frames
 
@@ -1153,9 +1159,9 @@ record. Optional diagnostics use bounded NUL-terminated truncation. The complete
 operation, including projection, contains panic. The testing facade shares that
 same checked body; its one-shot fault controls are absent from production.
 
-The closed native `JuicerDir::MathOutcome` binds current pixel/input facts to
-checked results. Both the public builder and fixture facade use one native
-composer, which retains scratch tiers, plane roles/aliases and the existing sole
+The closed native `JuicerDir::MathOutcome` admits completed raw mathematics for
+native workspace composition. The fixture and prepared decoder retain the same
+scratch tiers, plane roles/aliases and the existing sole
 final descriptor hash. Native allocation, resources and lifetime are unchanged.
 The zero-weight component target-tier difference in prepared decoding remains
 intentional; its unconsumed representation is not repaired and the carried hash
@@ -1164,13 +1170,13 @@ the permanent prepared boundary's existing identity admission.
 
 See the [four-context native characterization](../dir/frame-fixtures/README.md),
 `Ffi.Host.DirFrame`, `Film.Host.DirFrameProducts` and `Ofx.Gpu.DirFrame`.
-The last group observes both actual legacy execution entries before their
+The last group observes both actual prepared direct/print schedules before their
 existing failure branches, and uses the existing GPU lock and 180-second limit.
 Both native Release OFF C11 probes execute all 121 mathematical/default/failure
-rows, retaining every earlier production row and artifact/isolation check.
-`SF_TEMP_BRIDGE_DIR_FRAME` retires at its last native model caller by S6.D;
-S4.E integration remains later work. Reflected-YVV boundary construction is
-described below.
+rows, retaining the other current production rows and artifact/isolation checks.
+`SF_TEMP_BRIDGE_DIR_FRAME` retires at its last native transport consumer by S6.D.
+Its current execution inputs are narrowed to completed values. Reflected-YVV
+boundary construction is described below.
 
 ## Spatial DIR reflected boundaries
 
@@ -1201,7 +1207,7 @@ abort limitation.
 See [the independent four-profile characterizations](../dir/boundary-fixtures/README.md),
 `Ffi.Host.DirBoundary`, `Film.Host.DirBoundaryProducts` and the existing
 `Dir.Gpu.ExposureCache`. Strict C11 Release OFF probes require all four exports
-and all 171 boundary rows, alongside every older probe and artifact/isolation
+and all 171 boundary rows, alongside retained probes and artifact/isolation
 check. `SF_TEMP_BRIDGE_DIR_BOUNDARY` narrows with S4.E execution inputs and retires
 at its last native model caller, no later than S6.D.
 
@@ -1218,8 +1224,9 @@ unchanged.
 
 `FjGrainFrameInput`, `FjGrainFrameMath` and `FjGrainFrameFailure` form the checked
 synchronous temporary edge. Layer spans are admitted only when their ordered
-reduction is reached. An inactive request ignores scalar/tag/span facts after
-required native recipe/film guards. Every independently admitted raw output clears
+reduction is reached. Raw admission and inactive-work behavior are checked
+independently; vanished model-pointer-only outcomes remain historical capture
+dispositions. Every independently admitted raw output clears
 before other admission. Failure carries no partial executable mathematics; native
 failed output returns its documented default. Optional diagnostics report written
 bytes, with zero-capacity backing ignored and positive capacity reserving NUL.
@@ -1232,7 +1239,7 @@ See [the independent fixtures](../grain/frame-fixtures/README.md),
 The C11 reader checks all fixed field/layout/signature facts and complete results.
 R1 requires C layer0/count failure before M total0 after all nine reductions;
 its cleared output, reason2/field12/layer0/channel0 and diagnostic are exact.
-Both Release OFF probes retain all 188 grain rows plus every predecessor result
+Both Release OFF probes retain all 188 grain rows plus the retained predecessor results
 and archive/module/PDB/fault/facade/export isolation check.
 `SF_TEMP_BRIDGE_GRAIN_FRAME` narrows at S4.E and retires at its last native model
 caller no later than S6.D. Independent review and phase acceptance are separate.
@@ -1242,7 +1249,7 @@ fixed physical-effects mathematical frame. The real ON reader and generated OFF
 reader share `effects_frame_abi_assertions.inc`; `effects_frame_probe_contract.py`
 owns the 180/40/1 codec dimensions and independent ordered common-ABI case IDs.
 C projection remains explicit. Static 42-member dust and 36-member scratch policy
-is copied from the same native recipe when a complete frame is present. Raw
+is bound from the completed prepared C record when a complete frame is present. Raw
 failed/inactive results clear to zero; native defaults retain cosine one. A
 present active zero-work result may have hash zero. The native bridge does not
 repeat Root's later resource admission policy.

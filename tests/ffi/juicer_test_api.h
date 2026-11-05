@@ -7,6 +7,18 @@
 extern "C" {
 #endif
 
+typedef struct FjHostPreparation FjHostPreparation;
+typedef FjStatus (*FjHostPreparationConsumer)(void*, const FjHostPreparation*, FjErrorBuffer*);
+/* Test-support only: backing expires after this synchronous consumer returns.
+ * The consumer must contain all exceptions and retain no pointer or callback.
+ * Preparation callbacks run serially on the calling thread. */
+FjStatus fj_test_with_host_preparation(void*, FjHostPreparationConsumer, FjErrorBuffer*);
+FjStatus fj_test_mallett_source_override(FjPathView, FjErrorBuffer*);
+void fj_test_mallett_source_clear(void);
+uint32_t fj_test_mallett_source_consumed(void);
+FjStatus fj_test_film_reference_lookup_fault(uint32_t mode);
+uint32_t fj_test_film_reference_lookup_fault_consumed(void);
+
 /* Owner-bound complete preparation/cache facade, sharing private construction
  * and projection with production. Same synchronous and consuming contracts as
  * the sole held-state section in juicer_legacy_api.h. */
@@ -22,6 +34,17 @@ FjStatus fj_test_output_boundary_release(FjOutputBoundaryOwner*, FjErrorBuffer*)
 FjStatus fj_test_prepared_state_create(FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
 FjStatus fj_test_prepared_state_view(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*);
 FjStatus fj_test_prepared_state_release(FjPreparedState*, FjErrorBuffer*);
+/* Test-only borrowed observation immediately before a complete prepared state
+ * is released. The callback runs outside the observer lock, receives the
+ * state's TC LUT samples or null, and must not retain the pointer. Passing null
+ * clears the callback. */
+void fj_test_prepared_state_release_observer(void (*)(const float*));
+/* One-shot, arming-thread observation after actual profile/hull selection and
+ * before complete preparation. Spans are borrowed only during the callback;
+ * it contains all foreign exceptions, runs outside cache locks and supplies no
+ * policy. Null clears the observation. Address identities may be copied for
+ * comparison with a subsequently admitted held state, never dereferenced alone. */
+void fj_test_prepared_input_observer(void (*)(FjFloatSpan profile_axis, uint64_t profile_token, FjFloatSpan hull_xy, uint64_t hull_hash));
 const size_t* fj_test_prepared_state_abi_facts(size_t* count);
 size_t fj_test_prepared_live_states(void);
 
@@ -256,6 +279,11 @@ FjStatus fj_test_film_development_view(const FjFilmDevelopmentOwner* development
                                        FjErrorBuffer* error);
 FjStatus fj_test_film_development_release(FjFilmDevelopmentOwner* development, FjErrorBuffer* error);
 FjStatus fj_test_film_development_fault(uint32_t operation, uint32_t fault);
+/* Arm checked Film::Development::new. Faults 2 and 3 reject normalized/final identity. */
+FjStatus fj_test_development_construction_fault(uint32_t fault);
+/* Actual Rust normalized-curve observation: 0 live, 1 successful reservations,
+ * 2 drops. Sample only outside concurrent construction/destruction. */
+size_t fj_test_development_curve_count(uint32_t metric);
 size_t fj_test_film_development_live_owners(void);
 const size_t* fj_test_film_development_abi_facts(size_t* count);
 
@@ -360,6 +388,41 @@ void fj_test_noise_fault(uint32_t fault);
 size_t fj_test_noise_acquisition_count(void);
 size_t fj_test_live_noise_owners(void);
 
+/* Calling-thread observation of the real Rust prepared-render CallGuard.
+ * Counters reset independently of Assets cache state. The call-local source
+ * result is sampled at completion before it is dropped. */
+typedef struct FjPreparedNoiseObservation {
+    uint32_t sequence;
+    uint32_t precheck_order;
+    uint32_t acquisition_order;
+    uint32_t admission_order;
+    uint32_t inspection_order;
+    uint32_t release_order;
+    uint32_t complete_order;
+    uint32_t drop_order;
+    uint32_t native_render_order;
+    uint32_t acquisition_attempts;
+    uint32_t successful_results;
+    uint32_t preparation_failures;
+    uint32_t allocation_failures;
+    uint32_t internal_failures;
+    uint32_t held_at_complete;
+    uint32_t complete_calls;
+    uint32_t drops_after_complete;
+    uint32_t native_render_calls;
+    size_t arc_references_at_complete;
+} FjPreparedNoiseObservation;
+void fj_test_prepared_noise_observation_reset(void);
+FjStatus fj_test_prepared_noise_observation(FjPreparedNoiseObservation* out);
+/* Calling-thread one-shot at the real noise decoder reservation step. */
+FjStatus fj_test_noise_reservation_failure(uint32_t active);
+uint32_t fj_test_noise_reservation_consumed(void);
+/* Permanently poison only an isolated, quiescent scratch Assets noise cache. */
+FjStatus fj_test_assets_poison_noise(const FjAssets*, FjErrorBuffer*);
+/* Shorten only the call-local literal STBN view; the real bundle stays held. */
+FjStatus fj_test_prepared_noise_short_view(uint32_t active);
+uint32_t fj_test_prepared_noise_short_view_consumed(void);
+
 /* Direct-core TC facade: same live-span and one-allocation ownership contract
  * as juicer_legacy_api.h; no legacy export is called. Separate facade fault
  * observes actual direct-core entry. Release has no injected work/failure policy. */
@@ -462,6 +525,9 @@ FjStatus fj_test_print_illuminant_prepare(
     FjPrintIlluminantFailure* out_failure,
     FjErrorBuffer* error);
 FjStatus fj_test_film_recipe_fault(uint32_t stage, uint32_t fault);
+/* Arm one-shot failures in the actual Rust recipe producer, not its legacy C facade. */
+FjStatus fj_test_prepared_effects_probability_fault(void);
+FjStatus fj_test_prepared_optics_resolved_hash_fault(void);
 size_t fj_test_film_dir_live_owners(void);
 const size_t* fj_test_film_recipe_abi_facts(size_t* count);
 FjStatus fj_test_scanner_direct_correction_prepare(

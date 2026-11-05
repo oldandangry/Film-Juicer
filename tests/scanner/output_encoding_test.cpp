@@ -22,13 +22,16 @@
 #include "gtest/gtest.h"
 
 #include "ColorTransforms.h"
-#include "CudaRenderProjection.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "output_encoding_oracle.h"
 #include "../ffi/exposure_fixture.h"
+#include "../ffi/prepared_frame_fixture.h"
+#include "../ffi/prepared_product_fixture.h"
+#include "../ffi/case_results.h"
+#include "../ffi/gtest_cases.h"
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(const JuicerCuda::DirectPipelineRunParams*, void*);
 extern "C" cudaError_t juicer_cuda_print_focused_pipeline(const JuicerCuda::PrintPipelineRunParams*, void*);
@@ -41,6 +44,10 @@ namespace {
     constexpr double kMaximumError = 1.0e-6;
     constexpr double kMeanError = 1.0e-7;
     constexpr std::uint32_t kPadding = 0xa5a5a5a5u;
+
+    std::string route_case_key(Spektrafilm::ScanRoute route) {
+        return "route-" + std::to_string(static_cast<int>(route));
+    }
 
     void require(bool ok, const std::string& message) {
         if (!ok) {
@@ -302,15 +309,33 @@ namespace {
         const auto values = transfer_inputs(image.count);
         image.planes.upload(values);
         auto p = image.params<Params>();
+        const std::string pipeline = std::is_same_v<Params, JuicerCuda::DirectPipelineRunParams>
+                                         ? "direct"
+                                         : "print";
+        std::vector<std::string> ids;
+        ids.reserve(static_cast<std::size_t>(OutputEncoding::ColorSpace::Count) * 4);
+        for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space)
+            for (const bool cctf : {false, true})
+                for (const bool inputIsOutput : {false, true})
+                    ids.push_back("components-" + std::to_string(components) + "/" + pipeline +
+                                  "/space-" + std::to_string(space) + "/cctf-" + (cctf ? "on" : "off") +
+                                  "/identity-" + (inputIsOutput ? "on" : "off"));
+        JuicerTests::GtestCohort cases("transfer-" + pipeline + "-components-" +
+                                           std::to_string(components),
+                                       ids);
         for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space) {
             for (bool cctf : {false, true}) {
                 for (bool inputIsOutput : {false, true}) {
+                    auto row = cases.case_event("components-" + std::to_string(components) + "/" + pipeline +
+                                                "/space-" + std::to_string(space) + "/cctf-" + (cctf ? "on" : "off") +
+                                                "/identity-" + (inputIsOutput ? "on" : "off"));
                     SCOPED_TRACE(testing::Message() << "space=" << space << " cctf=" << cctf << " identity=" << inputIsOutput << " components=" << components);
                     const OutputEncoding::Params settings{OutputEncoding::colorSpaceFromIndex(space), cctf, inputIsOutput};
                     p.scanStage.scanColor.encoding = encoding(settings);
                     image.clear_output();
                     launch_post(p, image.planes.get());
                     image.compare(image.output.download(), image.oracle(values, settings), !cctf && inputIsOutput);
+                    row.passed();
                 }
             }
         }
@@ -359,20 +384,45 @@ namespace {
                 }
             }
         }
+        std::vector<std::string> ids;
+        ids.reserve(static_cast<std::size_t>(OutputEncoding::ColorSpace::Count));
+        for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space)
+            ids.push_back("space-" + std::to_string(space));
+        JuicerTests::GtestCohort cases("output-space", ids);
         for (int space = 0; space < static_cast<int>(OutputEncoding::ColorSpace::Count); ++space) {
+            auto row = cases.case_event("space-" + std::to_string(space));
             const OutputEncoding::Params settings{OutputEncoding::colorSpaceFromIndex(space), true, true};
             p.scanStage.scanColor.encoding = encoding(settings);
             image.planes.upload(values);
             image.clear_output();
             launch_post(p, image.planes.get(), effects);
             image.compare(image.output.download(), image.oracle(observed, settings), false);
+            row.passed();
         }
     }
 
+    using Frame = JuicerProcess::Root::PreparedCudaFrame;
+    namespace FrameFixture = JuicerCudaTest::PreparedFrameFixture;
+
     struct RouteInputs {
-        FocusedRenderStateBuildProduct product;
+        std::optional<PreparedState> state;
+        ParamSnapshot controls;
         Scanner::ScannerSpectralLutDescriptor scanner;
+        Scanner::ColorRuntime scannerColor;
+        Scanner::ScannerColorCorrectionDescriptor correction;
+        OutputGamutRecipe outputGamut;
         std::optional<Scanner::ScannerPostEffectsDescriptor> post;
+        JuicerCuda::FilmPayloadInput filmPayload;
+        float printExposure = 0.0f;
+        float preflashExposure = 0.0f;
+        float filmRouteCorrectionScale = 1.0f;
+        std::uint32_t route = 0;
+        std::uint64_t recipeHash = 0;
+        std::uint64_t scannerRecipeHash = 0;
+        std::uint64_t uploadCoreHash = 0;
+        std::uint64_t scannerHash = 0;
+        std::uint64_t dirHash = 0;
+
         static ParamSnapshot controls_for_route(Spektrafilm::ScanRoute route) {
             ParamSnapshot controls;
             controls.scanRoute = route;
@@ -390,30 +440,77 @@ namespace {
             if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive) {
                 controls.filmProfileKey = "fujifilm_provia_100f";
             }
-            const bool print = Spektrafilm::scan_route_is_print(route);
-            std::string error;
-            require(print ? build_print_render_state_product(controls, product, error) : build_direct_render_state_product(controls, product, error), error);
-            require(print ? Scanner::build_print_scanner_spectral_lut_descriptor({&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error)
-                          : Scanner::build_direct_scanner_spectral_lut_descriptor({&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error),
-                    error);
+            this->controls = controls;
+            state.emplace(JuicerTestSupport::prepare_product(this->controls));
+
+            FrameFixture::FrameFacts facts;
+            facts.renderExtent = {0, 0, 17, 9};
+            facts.fullFrameExtent = facts.renderExtent;
+            facts.pixelDefinition = facts.renderExtent;
+            facts.filmFormatLongEdgeMm = this->controls.cameraFilmFormatLongEdgeMm;
+            facts.pixelSizeUm = facts.filmFormatLongEdgeMm * 1000.0f / 17.0f;
+            facts.canonicalWidth = facts.filmFormatLongEdgeMm;
+            facts.canonicalHeight = facts.filmFormatLongEdgeMm * 9.0 / 17.0;
+            facts.scaleX = 1.0;
+            facts.scaleY = 1.0;
+            facts.frameRate = 24.0;
+            std::string diagnostic;
+            require(FrameFixture::with_prepared_frame_inputs(
+                        *state, facts, this, &capture_metadata, diagnostic),
+                    diagnostic);
         }
-        JuicerProcess::Root::CudaFramePreparationRequest request(const Image& image) const {
-            JuicerProcess::Root::CudaFramePreparationRequest r;
-            r.recipe = &product.recipe;
-            r.exposureTables = &product.payload.exposureTables;
-            r.filmRawConfig = &product.payload.filmRawConfig;
-            r.filmTcLut = product.payload.filmTcLut ? &*product.payload.filmTcLut : nullptr;
-            r.printMainIlluminant = product.payload.printMainIlluminant ? &*product.payload.printMainIlluminant : nullptr;
-            r.scannerTables = &product.payload.scannerTables;
-            r.scannerColor = &product.payload.scannerColor;
-            r.scannerLutDescriptor = &scanner;
-            r.scannerPostEffects = post ? &*post : nullptr;
-            r.outputBoundaryTable = product.payload.outputBoundaryTable.get();
-            r.requestedWidth = image.width;
-            r.requestedHeight = image.height;
-            return r;
+
+    private:
+        static bool capture_metadata(void* user,
+                                     const FrameFixture::Inputs& prepared,
+                                     std::string&) {
+            auto& out = *static_cast<RouteInputs*>(user);
+            out.scanner = prepared.descriptors.scanner;
+            out.scannerColor = prepared.descriptors.color;
+            out.correction = prepared.descriptors.correction;
+            out.outputGamut = prepared.descriptors.outputGamut;
+            if (prepared.descriptors.post.hash != 0)
+                out.post = prepared.descriptors.post;
+            out.filmPayload = prepared.filmPayload;
+            out.printExposure = prepared.printExposure;
+            out.preflashExposure = prepared.preflashExposure;
+            out.filmRouteCorrectionScale = prepared.filmRouteCorrectionScale;
+            out.route = prepared.state.route;
+            out.recipeHash = prepared.state.recipe_hash;
+            out.scannerRecipeHash = prepared.state.scanner_recipe_hash;
+            out.uploadCoreHash = prepared.state.upload_core_hash;
+            out.scannerHash = prepared.state.scanner_hash;
+            out.dirHash = prepared.state.dir_recipe.hash;
+            return true;
         }
     };
+
+    struct RootFrameCall {
+        const JuicerCuda::ResourceManager::DeviceContextKey* key = nullptr;
+        const JuicerCuda::ResourceManager::SubmissionSnapshot* snapshot = nullptr;
+        cudaStream_t stream = nullptr;
+        JuicerCuda::Failure failure;
+        Frame frame;
+    };
+
+    bool prepare_root_frame(void* user,
+                            const FrameFixture::Inputs& prepared,
+                            std::string& diagnostic) {
+        auto& call = *static_cast<RootFrameCall*>(user);
+        call.frame = JuicerProcess::root().prepare_cuda_frame(
+            *call.key, *call.snapshot, prepared.preparation, {}, call.stream, call.failure, prepared.hostPreparation);
+        if (!call.frame.active()) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        if (prepared.descriptors.post.hash != 0 &&
+            !call.frame.stage_optical_workspace(
+                call.frame.workspace_lease(), call.stream, call.failure)) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        return true;
+    }
 
     void bind_scanner(JuicerCuda::ScanStagePayload& scan, const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared, const OutputGamutRecipe& gamut) {
         const auto& range = *prepared.scanRange;
@@ -459,18 +556,14 @@ namespace {
         const Image& image) {
         const auto prepared = frame.focused_resources();
         require(prepared.active, "Focused scanner resources are not active");
-        const auto& recipe = inputs.product.recipe;
         std::string error;
         JuicerCuda::FilmPayloadPack film;
         require(
             JuicerCuda::pack_film_payloads(
-                recipe.filmRaw,
-                recipe.filmDevelop,
-                recipe.dirCouplers,
-                recipe.densityBounds,
+                inputs.filmPayload,
                 prepared.film,
                 nullptr,
-                1.0f,
+                inputs.filmRouteCorrectionScale,
                 film,
                 error),
             error);
@@ -482,7 +575,8 @@ namespace {
             JuicerCuda::PrintCudaPayloadPack print;
             require(
                 JuicerCuda::pack_print_cuda_payloads(
-                    recipe.print,
+                    inputs.printExposure,
+                    inputs.preflashExposure,
                     frame.print_resources(),
                     1.0f,
                     print,
@@ -494,7 +588,7 @@ namespace {
         bind_scanner(
             params.scanStage,
             prepared,
-            recipe.scannerOutput.outputGamut);
+            inputs.outputGamut);
         return params;
     }
 
@@ -570,26 +664,30 @@ namespace {
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-                inputs.product.payload.uploadCoreHash,
-                inputs.product.recipe.dirCouplers.hash,
-                inputs.product.payload.scannerHash,
+                inputs.uploadCoreHash,
+                inputs.dirHash,
+                inputs.scannerHash,
                 0);
-            JuicerCuda::Failure error;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(
-                key,
-                snapshot,
-                inputs.request(image),
-                {},
-                nullptr,
-                error);
-            require(frame.active(), error.diagnostic);
-            if (inputs.post && inputs.post->active()) {
-                const auto lease = frame.workspace_lease();
-                require(!frame.scanner_post_effects_resources(lease, inputs.post->hash).active,
-                        "Post resources require the execution workspace stage");
-                require(frame.stage_optical_workspace(lease, nullptr, error), error.diagnostic);
-            }
-            return frame;
+            RootFrameCall call{&key, &snapshot, nullptr, {}, {}};
+            FrameFixture::FrameFacts facts;
+            facts.renderExtent = {0, 0, image.width, image.height};
+            facts.fullFrameExtent = facts.renderExtent;
+            facts.pixelDefinition = facts.renderExtent;
+            facts.filmFormatLongEdgeMm = inputs.controls.cameraFilmFormatLongEdgeMm;
+            facts.pixelSizeUm = facts.filmFormatLongEdgeMm * 1000.0f /
+                                static_cast<float>(std::max(image.width, image.height));
+            facts.canonicalWidth = facts.filmFormatLongEdgeMm;
+            facts.canonicalHeight = facts.filmFormatLongEdgeMm *
+                                    static_cast<double>(image.height) /
+                                    static_cast<double>(image.width);
+            facts.scaleX = 1.0;
+            facts.scaleY = 1.0;
+            facts.frameRate = 24.0;
+            std::string diagnostic;
+            require(FrameFixture::with_prepared_frame_inputs(
+                        *inputs.state, facts, &call, &prepare_root_frame, diagnostic),
+                    diagnostic.empty() ? call.failure.diagnostic : diagnostic);
+            return std::move(call.frame);
         }
         template <typename Params>
         void check_route(const RouteInputs& inputs) {
@@ -608,7 +706,7 @@ namespace {
                 ASSERT_TRUE(std::isfinite(v));
             }
             for (bool cctf : {false, true}) {
-                const OutputEncoding::Params settings{inputs.product.payload.scannerColor.encoding.colorSpace, cctf, true};
+                const OutputEncoding::Params settings{inputs.scannerColor.encoding.colorSpace, cctf, true};
                 p.scanStage.scanColor.encoding = encoding(settings);
                 image.clear_output();
                 launch_pipeline(p);
@@ -648,7 +746,14 @@ namespace {
             }
         }
         template <typename Params>
-        void check_required_lut_failures(const RouteInputs& inputs) {
+        void check_required_lut_failures(const RouteInputs& inputs, const std::string& caller) {
+            const std::array<const char*, 7> faultIds = {
+                "log2_xyz", "slope_c", "slope_m", "slope_y", "cell_min", "cell_max", "resolution"};
+            std::vector<std::string> ids;
+            ids.reserve(faultIds.size());
+            for (const auto* id : faultIds)
+                ids.emplace_back(id);
+            JuicerTests::GtestCohort cases("required-lut-failure-" + caller, ids);
             Image image({17, 9}, 4);
             auto frame = prepare_route(inputs, image);
             auto params = make_bound_params<Params>(inputs, frame, image);
@@ -663,16 +768,9 @@ namespace {
             Buffer densities(3u * image.count);
             Buffer scanOutput(3u * image.count);
             densities.upload(std::vector<float>(3u * image.count, 0.25f));
-            const std::array<const char*, 7> cases = {
-                "log2_xyz",
-                "slope_c",
-                "slope_m",
-                "slope_y",
-                "cell_min",
-                "cell_max",
-                "resolution"};
-            for (std::size_t failure = 0; failure < cases.size(); ++failure) {
-                SCOPED_TRACE(cases[failure]);
+            for (std::size_t failure = 0; failure < faultIds.size(); ++failure) {
+                auto row = cases.case_event(faultIds[failure]);
+                SCOPED_TRACE(faultIds[failure]);
                 auto broken = params;
                 switch (failure) {
                     case 0:
@@ -720,6 +818,7 @@ namespace {
                 for (float value : scanOutput.download()) {
                     EXPECT_EQ(std::bit_cast<std::uint32_t>(value), 0u);
                 }
+                row.passed();
             }
 
             clear_device_flag(params.scanStage.scanErrorFlag);
@@ -772,9 +871,8 @@ namespace {
             auto frame = prepare_route(inputs, image);
             CorrectionCapture result;
             result.lut = capture_lut(*frame.focused_resources().scanLut);
-            const auto& recipe = inputs.product.recipe;
-            std::string diagnostic;
-            if (Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute)) {
+            if (Spektrafilm::scan_route_is_print(
+                    static_cast<Spektrafilm::ScanRoute>(inputs.route))) {
                 const auto print = frame.print_resources();
                 require(print.active && print.mainIlluminantHost, "prepared print resources remain available for correction");
                 result.printHashes = {print.filmDensityTablesHash, print.profileTablesHash, print.mainIlluminantHash, print.preflashIlluminantHash, print.preflashRawHash, print.balanceHash, print.preparationHash};
@@ -790,67 +888,121 @@ namespace {
                 address(print.preflashIlluminant);
                 address(print.filmDensityTables.epsC);
                 result.printValues = {std::bit_cast<std::uint32_t>(print.preflashRawCmy[0]), std::bit_cast<std::uint32_t>(print.preflashRawCmy[1]), std::bit_cast<std::uint32_t>(print.preflashRawCmy[2]), std::bit_cast<std::uint32_t>(print.normalizer)};
-                if (derive)
-                    require(Scanner::build_print_scanner_color_correction_descriptor({&recipe, &inputs.product.payload.scannerTables, print.mainIlluminantHost, print.spectralSampleCount, print.preflashRawCmy, print.normalizer}, result.correction, diagnostic), diagnostic);
-            } else if (derive) {
-                require(Scanner::build_direct_scanner_color_correction_descriptor(recipe, inputs.product.payload.scannerTables, result.correction, diagnostic), diagnostic);
             }
+            if (derive)
+                result.correction = inputs.correction;
             JuicerCuda::Failure failure;
             require(frame.finish(nullptr, failure), failure.diagnostic);
             return result;
         }
-        FjStatus execute_correction(const RouteInputs& inputs, Image& image, bool projection, std::string& diagnostic) {
-            std::cout << "scanner correction caller route=" << static_cast<int>(inputs.product.recipe.profileRoute.scanRoute)
-                      << " projection=" << projection << " correction=" << inputs.product.recipe.scannerOutput.blackCorrection
-                      << "/" << inputs.product.recipe.scannerOutput.whiteCorrection << '\n';
+        struct PreparedExecutionCall {
+            JuicerCuda::ResourceManager::DeviceContextKey* key = nullptr;
+            Image* image = nullptr;
+            FrameFixture::FrameFacts facts{};
+            std::uint64_t snapshotId = 0;
+            FjStatus status{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+            std::string diagnostic;
+            bool recoveryPending = false;
+        };
+
+        static bool execute_prepared_scanner(void* user,
+                                             const FrameFixture::Inputs& prepared,
+                                             std::string&) {
+            auto& call = *static_cast<PreparedExecutionCall*>(user);
+            auto& image = *call.image;
+            const JuicerCuda::FrameRect bounds{
+                0, 0, image.width, image.height};
+            const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(
+                bounds,
+                bounds,
+                static_cast<Spektrafilm::AutoExposureMethod>(prepared.state.input_policy.meter));
+            const auto rowBytes = static_cast<std::ptrdiff_t>(image.stride * sizeof(float));
+            const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
+            const JuicerCuda::ExecutionFrame frame{
+                bounds,
+                bounds,
+                bounds,
+                reinterpret_cast<const unsigned char*>(image.input.get()),
+                reinterpret_cast<const unsigned char*>(image.input.get()),
+                reinterpret_cast<unsigned char*>(image.output.get()),
+                rowBytes,
+                rowBytes,
+                image.components,
+                nullptr,
+                prepared.descriptors.diffusion,
+                prepared.descriptors.halation,
+                geometry,
+                call.facts.pixelSizeUm,
+                call.facts.frameTime,
+                call.facts.frameRate,
+                call.facts.sessionSeed,
+                static_cast<std::uintptr_t>(call.facts.clipToken),
+                meter,
+                false,
+                false};
+            JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+            snapshot.instanceToken.value = 0x5343414e4e4552ull;
+            snapshot.frameToken.value = static_cast<std::uint64_t>(
+                static_cast<std::int64_t>(std::floor(call.facts.frameTime)));
+            snapshot.snapshotId = call.snapshotId;
+            snapshot.deviceContextKey = *call.key;
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                prepared.state.upload_core_hash,
+                prepared.state.dir_recipe.hash,
+                prepared.state.scanner_hash,
+                meter.hash);
+            const JuicerCuda::PreparedExecutionInput input{
+                prepared.preparation,
+                prepared.descriptors,
+                prepared.filmPayload,
+                prepared.filmRouteCorrectionScale,
+                prepared.printExposure,
+                prepared.preflashExposure,
+                prepared.state.recipe_hash,
+                (prepared.state.film_exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0,
+                frame,
+                snapshot,
+                prepared.hostPreparation};
+            JuicerCuda::PendingContextLossRecovery recovery;
+            try {
+                JuicerCuda::execute_prepared(input, recovery);
+            } catch (const JuicerCuda::ExecutionFailure& failure) {
+                call.status = failure.failure.status;
+                call.diagnostic = failure.failure.diagnostic;
+            }
+            call.recoveryPending = recovery.pending;
+            check_cuda(cudaDeviceSynchronize());
+            return true;
+        }
+
+        FjStatus execute_correction(const RouteInputs& inputs, Image& image, std::string& diagnostic) {
             image.clear_output();
             auto preparation = JuicerProcess::root().begin_frame_preparation();
             require(preparation.active(), "scanner actual-caller frame preparation admission");
-            const auto& recipe = inputs.product.recipe;
-            const auto& payload = inputs.product.payload;
-            const JuicerCuda::FrameRect bounds{0, 0, image.width, image.height};
-            const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(bounds, bounds, recipe.filmRaw.autoExposureMethod);
-            const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
-            const std::optional<ScatterHalationFrameDescriptor> halation;
-            const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
-            const auto rowBytes = static_cast<std::ptrdiff_t>(image.stride * sizeof(float));
-            const JuicerCuda::ExecutionFrame frame{bounds, bounds, bounds, reinterpret_cast<const unsigned char*>(image.input.get()), reinterpret_cast<const unsigned char*>(image.input.get()), reinterpret_cast<unsigned char*>(image.output.get()), rowBytes, rowBytes, image.components, nullptr, diffusion, halation, geometry, 100.0f, 0.0, 24.0, 0x534334, 0x5343414e, meter, false, false};
-            JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
-            snapshot.instanceToken.value = 0x5343414e4e4552ull;
-            snapshot.frameToken.value = 0; // floor(frame.timeFrames), independent of snapshot identity.
-            snapshot.snapshotId = nextIdentity++;
-            snapshot.deviceContextKey = key;
-            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
-            JuicerCuda::PendingContextLossRecovery recovery;
-            FjStatus status{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-            diagnostic.clear();
-            if (projection) {
-                FjFrame raw{};
-                raw.source = {reinterpret_cast<std::uintptr_t>(image.input.get()), {0, 0, image.width, image.height}, rowBytes, static_cast<std::uint32_t>(image.components), FJ_DEPTH_FLOAT32};
-                raw.destination = raw.source;
-                raw.destination.address = reinterpret_cast<std::uintptr_t>(image.output.get());
-                raw.render_window = raw.full_frame_extent = raw.source.bounds;
-                raw.flags = FJ_FRAME_STREAM_PRESENT;
-                JuicerCuda::NativeCall call(JuicerCuda::borrowed_owner());
-                FjCudaContext context{};
-                require(call.inspect(&raw, &context, nullptr).category == FJ_STATUS_SUCCESS && context.device_id == key.deviceId && reinterpret_cast<void*>(context.context) == key.contextOpaque, "scanner projection exact context");
-                const auto outcome = JuicerCuda::project_and_render(call, recipe, payload, frame, raw, snapshot, recovery, {}, nullptr, {}, diagnostic);
-                status = outcome.status;
-                EXPECT_EQ(outcome.flags, 0u);
-            } else {
-                try {
-                    if (Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute))
-                        JuicerCuda::execute_print({recipe, payload, frame, snapshot}, recovery);
-                    else
-                        JuicerCuda::execute_direct({recipe, payload, frame, snapshot}, recovery);
-                } catch (const JuicerCuda::ExecutionFailure& failure) {
-                    status = failure.failure.status;
-                    diagnostic = failure.failure.diagnostic;
-                }
-            }
-            EXPECT_FALSE(recovery.pending);
-            check_cuda(cudaDeviceSynchronize());
-            return status;
+            PreparedExecutionCall call;
+            call.key = &key;
+            call.image = &image;
+            call.snapshotId = nextIdentity++;
+            call.facts.renderExtent = {0, 0, image.width, image.height};
+            call.facts.fullFrameExtent = call.facts.renderExtent;
+            call.facts.pixelDefinition = call.facts.renderExtent;
+            call.facts.pixelSizeUm = 100.0f;
+            call.facts.filmFormatLongEdgeMm = inputs.controls.cameraFilmFormatLongEdgeMm;
+            call.facts.canonicalWidth = inputs.controls.cameraFilmFormatLongEdgeMm;
+            call.facts.canonicalHeight =
+                call.facts.canonicalWidth * static_cast<double>(image.height) / image.width;
+            call.facts.scaleX = 1.0;
+            call.facts.scaleY = 1.0;
+            call.facts.frameTime = 0.0;
+            call.facts.frameRate = 24.0;
+            call.facts.sessionSeed = 0x534334;
+            call.facts.clipToken = 0x5343414e;
+            require(FrameFixture::with_prepared_frame_inputs(
+                        *inputs.state, call.facts, &call, &execute_prepared_scanner, diagnostic),
+                    diagnostic);
+            diagnostic = call.diagnostic;
+            EXPECT_FALSE(call.recoveryPending);
+            return call.status;
         }
         void check_correction_output(const Image& image, const std::vector<float>& output) {
             for (int y = 0; y < image.height; ++y)
@@ -869,7 +1021,17 @@ namespace {
     };
 
     TEST_F(ScannerRoutes, CorrectionRoutes) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (const auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.glareActive = false;
@@ -877,8 +1039,8 @@ namespace {
             RouteInputs off(controls, 0, true);
             controls.scannerBlackCorrection = controls.scannerWhiteCorrection = 1;
             RouteInputs held(controls, 0, true);
-            const auto heldHash = held.product.recipe.hash;
-            const auto heldScannerHash = held.product.recipe.scannerOutput.hash;
+            const auto heldHash = held.recipeHash;
+            const auto heldScannerHash = held.scannerRecipeHash;
             Image image({31, 19}, 4);
             const auto before = correction_resources(off, image);
             const auto active = correction_resources(held, image);
@@ -891,45 +1053,46 @@ namespace {
             const bool correctionActive = route != Spektrafilm::ScanRoute::NegativeDirectScan;
             EXPECT_EQ(active.correction.active, correctionActive);
             EXPECT_EQ(active.correction.hash != 0, correctionActive);
-            EXPECT_NE(off.product.recipe.hash, heldHash);
-            EXPECT_NE(off.product.recipe.scannerOutput.hash, heldScannerHash);
+            EXPECT_NE(off.recipeHash, heldHash);
+            EXPECT_NE(off.scannerRecipeHash, heldScannerHash);
             std::string diagnostic;
-            require(execute_correction(off, image, false, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            require(execute_correction(off, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
             const auto offWords = bit_patterns(image.output.download());
-            require(execute_correction(held, image, false, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-            const auto legacy = image.output.download();
-            check_correction_output(image, legacy);
-            require(execute_correction(held, image, true, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-            EXPECT_EQ(bit_patterns(legacy), bit_patterns(image.output.download()));
-            require(execute_correction(held, image, false, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-            EXPECT_EQ(bit_patterns(legacy), bit_patterns(image.output.download()));
+            require(execute_correction(held, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            const auto corrected = image.output.download();
+            check_correction_output(image, corrected);
             if (correctionActive)
-                EXPECT_NE(offWords, bit_patterns(legacy));
+                EXPECT_NE(offWords, bit_patterns(corrected));
             else
-                EXPECT_EQ(offWords, bit_patterns(legacy));
+                EXPECT_EQ(offWords, bit_patterns(corrected));
 
             if (correctionActive) {
-                controls.scannerBlackLevel = controls.scannerWhiteLevel = 0.0;
-                RouteInputs failed(controls, 0, true);
-                for (bool projection : {false, true}) {
-                    const auto status = execute_correction(failed, image, projection, diagnostic);
-                    EXPECT_EQ(status.category, FJ_STATUS_PREPARATION_FAILURE);
-                    EXPECT_EQ(status.api, FJ_API_NONE);
-                    EXPECT_EQ(status.native_code, 0);
-                    EXPECT_EQ(diagnostic, Spektrafilm::scan_route_is_print(route) ? "MalformedRequiredProfileData phase=8B print corrected midgray" : "MalformedRequiredProfileData phase=8B direct corrected midgray");
-                    for (const auto word : bit_patterns(image.output.download()))
-                        EXPECT_EQ(word, kPadding); // No output submission after the computed failure.
-                }
-                const auto operation = Spektrafilm::scan_route_is_print(route) ? 1u : 0u;
-                require(fj_test_scanner_correction_fault(operation, 1).category == FJ_STATUS_SUCCESS, "arm independent scanner constructor fault");
-                (void)correction_resources(held, image, false);
-                EXPECT_EQ(execute_correction(held, image, false, diagnostic).category, FJ_STATUS_INTERNAL_FAILURE);
-                EXPECT_EQ(diagnostic, "scanner correction contained panic");
-                for (const auto word : bit_patterns(image.output.download()))
-                    EXPECT_EQ(word, kPadding);
+                auto failedControls = held.controls;
+                failedControls.scannerBlackLevel = failedControls.scannerWhiteLevel = 0.0;
+
+                std::optional<PreparedState> rejectedState;
+                std::array<char, 1024> text{};
+                FjErrorBuffer error{text.data(), text.size(), 0};
+                auto* const assets = JuicerProcess::root().assets().borrow_rust_assets();
+                ASSERT_NE(assets, nullptr);
+                const auto status = prepare_state(
+                    assets,
+                    failedControls,
+                    rejectedState,
+                    error);
+                EXPECT_EQ(status.category, FJ_STATUS_PREPARATION_FAILURE);
+                EXPECT_EQ(status.api, FJ_API_NONE);
+                EXPECT_EQ(status.native_code, 0);
+                EXPECT_FALSE(rejectedState.has_value());
+                const std::string preparedDiagnostic(
+                    text.data(), std::min(error.length, text.size()));
+                EXPECT_EQ(preparedDiagnostic,
+                          Spektrafilm::scan_route_is_print(route)
+                              ? "MalformedRequiredProfileData phase=8B print corrected midgray"
+                              : "MalformedRequiredProfileData phase=8B direct corrected midgray");
             }
-            require(execute_correction(held, image, true, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-            EXPECT_EQ(bit_patterns(legacy), bit_patterns(image.output.download()));
+            require(execute_correction(held, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            EXPECT_EQ(bit_patterns(corrected), bit_patterns(image.output.download()));
             const auto restored = correction_resources(held, image);
             EXPECT_EQ(restored.correction.hash, active.correction.hash);
             EXPECT_EQ(restored.lut.addresses, active.lut.addresses);
@@ -937,21 +1100,36 @@ namespace {
             EXPECT_EQ(restored.printHashes, active.printHashes);
             EXPECT_EQ(restored.printAddresses, active.printAddresses);
             EXPECT_EQ(restored.printValues, active.printValues);
-            EXPECT_EQ(held.product.recipe.hash, heldHash);
-            EXPECT_EQ(held.product.recipe.scannerOutput.hash, heldScannerHash);
+            EXPECT_EQ(held.recipeHash, heldHash);
+            EXPECT_EQ(held.scannerRecipeHash, heldScannerHash);
+            row.passed();
         }
     }
 
-    TEST_F(ScannerRoutes, GamutSwitchKeepsPreparedAndLegacyRenderingEquivalent) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+    TEST_F(ScannerRoutes, GamutSwitchKeepsPreparedRenderingStable) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * 4);
+        for (const auto route : routes) {
+            for (std::size_t pass = 0; pass < 4; ++pass) {
+                const bool enabled = pass % 2 == 1;
+                ids.push_back(route_case_key(route) + "/pass-" + std::to_string(pass) +
+                              "/gamut-" + (enabled ? "on" : "off"));
+            }
+        }
+        JuicerTests::GtestCohort cases("route-gamut-pass", ids);
+        for (const auto route : routes) {
             auto controls = RouteInputs::controls_for_route(route);
             controls.glareActive = false;
             controls.scannerLutResolution = 17;
             controls.scannerBlackCorrection = controls.scannerWhiteCorrection = 1;
             RouteInputs disabled(controls, 0, false);
             RouteInputs enabled(controls, 0, true);
-            const auto disabledHash = disabled.product.recipe.scannerOutput.outputGamut.hash;
-            const auto enabledHash = enabled.product.recipe.scannerOutput.outputGamut.hash;
+            const auto disabledHash = disabled.outputGamut.hash;
+            const auto enabledHash = enabled.outputGamut.hash;
             ASSERT_NE(disabledHash, 0u);
             ASSERT_NE(enabledHash, 0u);
             EXPECT_NE(disabledHash, enabledHash);
@@ -959,8 +1137,13 @@ namespace {
             Image image({31, 19}, 4);
             const auto initial = correction_resources(disabled, image);
             std::array<std::vector<std::uint32_t>, 2> expected;
-            for (const auto* inputs : {&disabled, &enabled, &disabled, &enabled}) {
-                const auto& gamut = inputs->product.recipe.scannerOutput.outputGamut;
+            const std::array inputsByPass{&disabled, &enabled, &disabled, &enabled};
+            for (std::size_t pass = 0; pass < inputsByPass.size(); ++pass) {
+                const auto* inputs = inputsByPass[pass];
+                auto row = cases.case_event(route_case_key(route) + "/pass-" +
+                                            std::to_string(pass) + "/gamut-" +
+                                            (inputs->outputGamut.enabled ? "on" : "off"));
+                const auto& gamut = inputs->outputGamut;
                 SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " gamut=" << gamut.enabled);
                 std::cout << "prepared gamut route=" << static_cast<int>(route) << " enabled=" << gamut.enabled << '\n';
                 {
@@ -975,12 +1158,9 @@ namespace {
                     require(frame.finish(nullptr, failure), failure.diagnostic);
                 }
                 std::string diagnostic;
-                require(execute_correction(*inputs, image, false, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-                const auto legacy = image.output.download();
-                check_correction_output(image, legacy);
-                require(execute_correction(*inputs, image, true, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                require(execute_correction(*inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
                 const auto projected = bit_patterns(image.output.download());
-                EXPECT_EQ(projected, bit_patterns(legacy));
+                check_correction_output(image, image.output.download());
                 auto& previous = expected[gamut.enabled ? 1u : 0u];
                 if (previous.empty()) {
                     previous = projected;
@@ -995,25 +1175,37 @@ namespace {
                 EXPECT_EQ(reused.printHashes, initial.printHashes);
                 EXPECT_EQ(reused.printAddresses, initial.printAddresses);
                 EXPECT_EQ(reused.printValues, initial.printValues);
+                if (pass + 1 == inputsByPass.size()) {
+                    EXPECT_EQ(disabled.outputGamut.hash, disabledHash);
+                    EXPECT_EQ(enabled.outputGamut.hash, enabledHash);
+                }
+                row.passed();
             }
-            EXPECT_EQ(disabled.product.recipe.scannerOutput.outputGamut.hash, disabledHash);
-            EXPECT_EQ(enabled.product.recipe.scannerOutput.outputGamut.hash, enabledHash);
         }
     }
 
     TEST_F(ScannerRoutes, PostConstructorResourcesReuseRebuildRejectAndRecover) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
-            RouteInputs inputs(route, 0, false);
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (const auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
+            auto controls = RouteInputs::controls_for_route(route);
+            controls.glareActive = true;
+            controls.glarePercent = 2.0f;
+            controls.glareRoughness = 0.3f;
+            controls.glareBlurSigmaPx = 0.75f;
+            controls.scannerLensBlurSigmaPx = 0.75f;
+            controls.scannerUnsharpMask = {0.75, 0.8};
+            RouteInputs inputs(controls, 0, false);
             Image image({17, 9}, 4);
-            auto& output = inputs.product.recipe.scannerOutput;
-            output.glareActive = true;
-            output.glarePercent = 2.0f;
-            output.glareRoughness = 0.3f;
-            output.glareBlurSigmaPx = output.lensBlurSigmaPx = output.unsharpSigmaPx = 0.75f;
-            output.unsharpAmount = 0.8f;
-            std::string diagnostic;
-            inputs.post.emplace();
-            ASSERT_TRUE(Scanner::build_scanner_post_effects_descriptor(output, *inputs.post, diagnostic)) << diagnostic;
+            ASSERT_TRUE(inputs.post);
             const auto original = *inputs.post;
             auto first = prepare_route(inputs, image);
             auto view = first.scanner_post_effects_resources(first.workspace_lease(), original.hash);
@@ -1051,10 +1243,12 @@ namespace {
             ASSERT_TRUE(view.active);
             EXPECT_EQ(view.lensBlur.weights, retained);
             require(warm.finish(nullptr, failure), failure.diagnostic);
-            output.lensBlurSigmaPx = 1.25f;
-            ASSERT_TRUE(Scanner::build_scanner_post_effects_descriptor(output, *inputs.post, diagnostic)) << diagnostic;
-            auto changed = prepare_route(inputs, image);
-            view = changed.scanner_post_effects_resources(changed.workspace_lease(), inputs.post->hash);
+            auto changedControls = controls;
+            changedControls.scannerLensBlurSigmaPx = 1.25f;
+            RouteInputs changedInputs(changedControls, 0, false);
+            ASSERT_TRUE(changedInputs.post);
+            auto changed = prepare_route(changedInputs, image);
+            view = changed.scanner_post_effects_resources(changed.workspace_lease(), changedInputs.post->hash);
             ASSERT_TRUE(view.active);
             EXPECT_EQ(view.lensBlur.radius, 4);
             check(view.lensBlur);
@@ -1064,35 +1258,69 @@ namespace {
             EXPECT_EQ(capture_lut(*changed.focused_resources().scanLut).content, lut.content);
             // A failed descriptor cannot replace resources bound by a live frame.
             ASSERT_EQ(fj_test_scanner_post_fault(1).category, FJ_STATUS_SUCCESS);
-            Scanner::ScannerPostEffectsDescriptor rejected;
-            EXPECT_FALSE(Scanner::build_scanner_post_effects_descriptor(output, rejected, diagnostic));
+            const FjScannerPostEffectsInput raw{
+                static_cast<std::uint32_t>(route), 1u, 2.0f, 0.3f, 0.75f, 1.25f, 0.75f, 0.8f};
+            FjScannerPostEffectsDescriptor rejected{};
+            FjScannerPostEffectsFailure rejectedFailure{};
+            std::array<char, 256> text{};
+            FjErrorBuffer error{text.data(), text.size(), 0};
+            const auto status = fj_test_scanner_post_describe(
+                &raw, &rejected, &rejectedFailure, &error);
+            EXPECT_EQ(status.category, FJ_STATUS_PREPARATION_FAILURE);
+            EXPECT_EQ(status.api, FJ_API_NONE);
+            EXPECT_EQ(status.native_code, 0);
+            EXPECT_EQ(rejectedFailure.reason, 4u);
+            EXPECT_EQ(rejectedFailure.lane, 0u);
             EXPECT_EQ(rejected.hash, 0u);
-            EXPECT_TRUE(changed.scanner_post_effects_resources(changed.workspace_lease(), inputs.post->hash).active);
+            EXPECT_TRUE(changed.scanner_post_effects_resources(
+                                   changed.workspace_lease(), changedInputs.post->hash)
+                            .active);
             require(changed.finish(nullptr, failure), failure.diagnostic);
-            EXPECT_FALSE(changed.scanner_post_effects_resources(changed.workspace_lease(), inputs.post->hash).active);
-            inputs.post = original;
+            EXPECT_FALSE(changed.scanner_post_effects_resources(
+                                    changed.workspace_lease(), changedInputs.post->hash)
+                             .active);
             auto restored = prepare_route(inputs, image);
             view = restored.scanner_post_effects_resources(restored.workspace_lease(), original.hash);
             ASSERT_TRUE(view.active);
             EXPECT_EQ(view.lensBlur.weights, retained);
             require(restored.finish(nullptr, failure), failure.diagnostic);
-            output.glareActive = false;
-            output.lensBlurSigmaPx = output.unsharpSigmaPx = output.unsharpAmount = 0.0f;
-            ASSERT_TRUE(Scanner::build_scanner_post_effects_descriptor(output, *inputs.post, diagnostic)) << diagnostic;
-            EXPECT_EQ(inputs.post->hash, 0u);
+            auto offControls = controls;
+            offControls.glareActive = false;
+            offControls.glarePercent = 0.0f;
+            offControls.glareRoughness = 0.0f;
+            offControls.glareBlurSigmaPx = 0.0f;
+            offControls.scannerLensBlurSigmaPx = 0.0f;
+            offControls.scannerUnsharpMask = {0.0, 0.0};
+            RouteInputs offInputs(offControls, 0, false);
+            EXPECT_FALSE(offInputs.post);
             const auto offAcquires = fj_test_gaussian_kernel_acquires();
-            auto off = prepare_route(inputs, image);
+            auto off = prepare_route(offInputs, image);
             EXPECT_EQ(fj_test_gaussian_kernel_acquires(), offAcquires);
             EXPECT_FALSE(off.scanner_post_effects_resources(off.workspace_lease(), 0).active);
             EXPECT_FALSE(off.scanner_workspace(off.workspace_lease()).active);
             require(off.finish(nullptr, failure), failure.diagnostic);
+            row.passed();
         }
     }
 
     TEST_F(ScannerRoutes, FusedAndSeparateOutputMatchOnAllFourRoutes) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * 2 * 2);
+        for (const auto route : routes)
+            for (const bool gamut : {false, true})
+                for (const int space : {0, 7})
+                    ids.push_back(route_case_key(route) + "/gamut-" + (gamut ? "on" : "off") +
+                                  "/space-" + std::to_string(space));
+        JuicerTests::GtestCohort cases("route-gamut-space", ids);
+        for (auto route : routes) {
             for (bool gamut : {false, true}) {
                 for (int space : {0, 7}) {
+                    auto row = cases.case_event(route_case_key(route) + "/gamut-" +
+                                                (gamut ? "on" : "off") + "/space-" + std::to_string(space));
                     SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " space=" << space << " gamut=" << gamut);
                     RouteInputs inputs(route, space, gamut);
                     if (Spektrafilm::scan_route_is_print(route)) {
@@ -1100,32 +1328,50 @@ namespace {
                     } else {
                         check_route<JuicerCuda::DirectPipelineRunParams>(inputs);
                     }
+                    row.passed();
                 }
             }
         }
     }
 
     TEST_F(ScannerRoutes, RequiredLutFailuresAreReportedByBothScannerCallers) {
+        JuicerTests::GtestCohort cases("caller", {"direct", "print"});
+        auto directRow = cases.case_event("direct");
         RouteInputs direct(
             Spektrafilm::ScanRoute::NegativeDirectScan,
             0,
             false);
-        check_required_lut_failures<JuicerCuda::DirectPipelineRunParams>(direct);
+        check_required_lut_failures<JuicerCuda::DirectPipelineRunParams>(direct, "direct");
+        directRow.passed();
 
+        auto printRow = cases.case_event("print");
         RouteInputs print(
             Spektrafilm::ScanRoute::PositivePrintScan,
             0,
             false);
-        check_required_lut_failures<JuicerCuda::PrintPipelineRunParams>(print);
+        check_required_lut_failures<JuicerCuda::PrintPipelineRunParams>(print, "print");
+        printRow.passed();
     }
 
     TEST_F(ScannerRoutes, DeferredDirFailureComesFromReadbackBits) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array bitsCases{0, 1, (1 << 8) | (2 << 9), 1 | (1 << 8) | (7 << 9)};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * bitsCases.size());
+        for (const auto route : routes)
+            for (const int bits : bitsCases)
+                ids.push_back(route_case_key(route) + "/readback-" + std::to_string(bits));
+        JuicerTests::GtestCohort cases("route-readback-bits", ids);
+        for (const auto route : routes) {
             RouteInputs inputs(route, 0, false);
             Image image({17, 9}, 4);
             // Product readback contract: bit 0 is scanner RGB; bit 8 is DIR,
             // with the failed DIR channels in bits 9-11.
-            for (const int bits : {0, 1, (1 << 8) | (2 << 9), 1 | (1 << 8) | (7 << 9)}) {
+            for (const int bits : bitsCases) {
+                auto row = cases.case_event(route_case_key(route) + "/readback-" + std::to_string(bits));
                 SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " bits=" << bits);
                 JuicerCuda::Failure error;
                 auto submitted = prepare_route(inputs, image);
@@ -1154,12 +1400,23 @@ namespace {
                 // Inactive-frame failure cannot retain the prior DIR disposition.
                 EXPECT_EQ(next.prepare_scan_error_stage(flag, nullptr, error), JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed);
                 EXPECT_EQ(flag, nullptr);
+                row.passed();
             }
         }
     }
 
     TEST_F(ScannerRoutes, ResolutionTransitionRestoresLutContentAndOutput) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (const auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             const bool print = Spektrafilm::scan_route_is_print(route);
             ParamSnapshot controls17 = RouteInputs::controls_for_route(route);
@@ -1197,10 +1454,14 @@ namespace {
             EXPECT_EQ(initial.lut.content, restored.lut.content);
             EXPECT_EQ(initial.output, retained.output);
             EXPECT_EQ(initial.output, restored.output);
+            row.passed();
         }
     }
 
     TEST_F(ScannerRoutes, PrintResourceCacheAcceptsPublishedValuesAcrossDescriptorChanges) {
+        const std::vector<std::string> scenarios{
+            "retained-default", "retained-gamma", "illuminant-change", "main-filter-change", "preflash-enabled", "preflash-disabled", "normalization-disabled", "normalization-enabled", "print-profile-change"};
+        JuicerTests::GtestCohort cases("print-cache-scenario", scenarios);
         ParamSnapshot defaultControls =
             RouteInputs::controls_for_route(Spektrafilm::ScanRoute::NegativePrintScan);
         ParamSnapshot gammaControls = defaultControls;
@@ -1210,94 +1471,128 @@ namespace {
 
         auto check_print = [&](const char* scenario, ParamSnapshot controls) {
             SCOPED_TRACE(scenario);
+            auto row = cases.case_event(scenario);
             RouteInputs inputs(std::move(controls), 0, false);
             check_route<JuicerCuda::PrintPipelineRunParams>(inputs);
+            row.passed();
         };
 
         {
             SCOPED_TRACE("retained default publication");
+            auto row = cases.case_event("retained-default");
             check_route<JuicerCuda::PrintPipelineRunParams>(retainedDefault);
             check_route<JuicerCuda::PrintPipelineRunParams>(retainedDefault);
+            row.passed();
         }
         {
             SCOPED_TRACE("retained gamma publication");
+            auto row = cases.case_event("retained-gamma");
             check_route<JuicerCuda::PrintPipelineRunParams>(retainedGamma);
+            row.passed();
         }
 
         ParamSnapshot illuminantControls = defaultControls;
         illuminantControls.enlIll = 0;
-        check_print("illuminant change", illuminantControls);
+        check_print("illuminant-change", illuminantControls);
 
         ParamSnapshot filterControls = defaultControls;
         filterControls.printUiYmcCc = {4.0, -3.0, 2.0};
-        check_print("main filter change", filterControls);
+        check_print("main-filter-change", filterControls);
 
         ParamSnapshot preflashControls = defaultControls;
         preflashControls.printPreflashExposure = 0.1;
         preflashControls.preflashMFilterCc = 3.0;
         preflashControls.preflashYFilterCc = -2.0;
-        check_print("preflash enabled", preflashControls);
-        check_print("preflash disabled", defaultControls);
+        check_print("preflash-enabled", preflashControls);
+        check_print("preflash-disabled", defaultControls);
 
         ParamSnapshot unnormalizedControls = defaultControls;
         unnormalizedControls.normalizePrintExposure = 0;
-        check_print("normalization disabled", unnormalizedControls);
-        check_print("normalization enabled", defaultControls);
+        check_print("normalization-disabled", unnormalizedControls);
+        check_print("normalization-enabled", defaultControls);
 
         ParamSnapshot profileControls = defaultControls;
         profileControls.printProfileKey = "kodak_supra_endura";
-        check_print("print profile change", profileControls);
+        check_print("print-profile-change", profileControls);
     }
     TEST_F(ScannerRoutes, LutConstructionFailuresPreserveCategoryAndCache) {
-        for (const bool projection : {false, true}) {
-            SCOPED_TRACE(testing::Message() << "projection=" << projection);
-            for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
-                SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
-                auto controls = RouteInputs::controls_for_route(route);
-                controls.scannerLutResolution = 17;
-                RouteInputs inputs(controls, 0, false);
-                Image image({31, 19}, 4);
-                std::string diagnostic;
-                const auto reject = [&](const RouteInputs& selected, std::uint32_t category, const char* message) {
-                    const auto result = execute_correction(selected, image, projection, diagnostic);
-                    EXPECT_EQ(result.category, category);
-                    EXPECT_EQ(result.api, FJ_API_NONE);
-                    EXPECT_EQ(result.native_code, 0);
-                    EXPECT_EQ(diagnostic, std::string(message) + " route=" + Spektrafilm::scan_route_metadata(route).key);
-                    EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
-                    for (const auto word : bit_patterns(image.output.download()))
-                        EXPECT_EQ(word, kPadding);
-                };
-                for (unsigned buffer = 1; buffer <= 10; ++buffer) {
-                    SCOPED_TRACE(testing::Message() << "buffer=" << buffer);
-                    ASSERT_EQ(fj_test_scanner_lut_fault(0, buffer + 1).category, FJ_STATUS_SUCCESS);
-                    reject(inputs, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
-                }
-                require(execute_correction(inputs, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-                const auto original = bit_patterns(image.output.download());
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * 13);
+        for (const auto route : routes) {
+            for (unsigned buffer = 1; buffer <= 10; ++buffer)
+                ids.push_back(route_case_key(route) + "/buffer-" + std::to_string(buffer));
+            ids.push_back(route_case_key(route) + "/cache-hit-armed-fault");
+            for (const unsigned operation : {0u, 1u})
+                ids.push_back(route_case_key(route) + "/operation-" + std::to_string(operation));
+        }
+        JuicerTests::GtestCohort cases("route-fault", ids);
+        for (const auto route : routes) {
+            SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
+            auto controls = RouteInputs::controls_for_route(route);
+            controls.scannerLutResolution = 17;
+            RouteInputs inputs(controls, 0, false);
+            Image image({31, 19}, 4);
+            std::string diagnostic;
+            const auto reject = [&](const RouteInputs& selected, std::uint32_t category, const char* message) {
+                const auto result = execute_correction(selected, image, diagnostic);
+                EXPECT_EQ(result.category, category);
+                EXPECT_EQ(result.api, FJ_API_NONE);
+                EXPECT_EQ(result.native_code, 0);
+                EXPECT_EQ(diagnostic, std::string(message) + " route=" + Spektrafilm::scan_route_metadata(route).key);
+                EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
+                for (const auto word : bit_patterns(image.output.download()))
+                    EXPECT_EQ(word, kPadding);
+            };
+            for (unsigned buffer = 1; buffer <= 10; ++buffer) {
+                auto row = cases.case_event(route_case_key(route) + "/buffer-" + std::to_string(buffer));
+                SCOPED_TRACE(testing::Message() << "buffer=" << buffer);
+                ASSERT_EQ(fj_test_scanner_lut_fault(0, buffer + 1).category, FJ_STATUS_SUCCESS);
+                reject(inputs, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
+                row.passed();
+            }
+            require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            const auto original = bit_patterns(image.output.download());
+            controls.scannerLutResolution = 33;
+            RouteInputs replacement(controls, 0, false);
+            {
+                auto row = cases.case_event(route_case_key(route) + "/cache-hit-armed-fault");
                 ASSERT_EQ(fj_test_scanner_lut_fault(0, 2).category, FJ_STATUS_SUCCESS);
-                require(execute_correction(inputs, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
                 EXPECT_EQ(bit_patterns(image.output.download()), original);
-                controls.scannerLutResolution = 33;
-                RouteInputs replacement(controls, 0, false);
                 // A cache hit must leave the armed constructor fault for this miss.
                 reject(replacement, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
-                for (unsigned operation : {0u, 1u}) {
-                    ASSERT_EQ(fj_test_scanner_lut_fault(operation, 1).category, FJ_STATUS_SUCCESS);
-                    reject(replacement, FJ_STATUS_INTERNAL_FAILURE, "scanner LUT preparation panicked");
-                }
-                require(execute_correction(inputs, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-                EXPECT_EQ(bit_patterns(image.output.download()), original);
-                require(execute_correction(replacement, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-                require(execute_correction(inputs, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
-                EXPECT_EQ(bit_patterns(image.output.download()), original);
-                EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
+                row.passed();
             }
+            for (const unsigned operation : {0u, 1u}) {
+                auto row = cases.case_event(route_case_key(route) + "/operation-" + std::to_string(operation));
+                ASSERT_EQ(fj_test_scanner_lut_fault(operation, 1).category, FJ_STATUS_SUCCESS);
+                reject(replacement, FJ_STATUS_INTERNAL_FAILURE, "scanner LUT preparation panicked");
+                row.passed();
+            }
+            require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            EXPECT_EQ(bit_patterns(image.output.download()), original);
+            require(execute_correction(replacement, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            EXPECT_EQ(bit_patterns(image.output.download()), original);
+            EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
         }
     }
 
     TEST_F(ScannerRoutes, LutIdentityTracksSelectedProfileBoundsAndIlluminant) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (const auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.filmProfileKey = "kodak_portra_400";
@@ -1325,6 +1620,7 @@ namespace {
             EXPECT_EQ(restored.lut.hash, before.lut.hash);
             EXPECT_EQ(restored.lut.content, before.lut.content);
             EXPECT_EQ(restored.output, before.output);
+            row.passed();
         }
     }
 
@@ -1342,7 +1638,17 @@ namespace {
         const auto directory = std::filesystem::path(__FILE__).parent_path() / "lut-fixtures";
         const auto frozen = load_shared_fixture(directory / (preset + ".json"), "manifest.json");
         ASSERT_EQ(frozen.at("preset"), preset);
-        for (const auto& row : frozen.at("products")) {
+        std::vector<std::string> ids;
+        ids.reserve(frozen.at("products").size());
+        for (std::size_t index = 0; index < frozen.at("products").size(); ++index) {
+            const auto& row = frozen.at("products").at(index);
+            ids.push_back("product-" + std::to_string(index) + "/route-" +
+                          std::to_string(row.at("route").get<unsigned>()));
+        }
+        JuicerTests::GtestCohort products("native-lut-product", ids);
+        for (std::size_t index = 0; index < frozen.at("products").size(); ++index) {
+            const auto& row = frozen.at("products").at(index);
+            auto product = products.case_event(ids[index]);
             const auto route = static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>());
             ParamSnapshot controls;
             controls.scanRoute = route;
@@ -1354,15 +1660,7 @@ namespace {
             controls.printPreflashExposure = 0.125;
             controls.scannerLutResolution = 17;
             RouteInputs inputs(controls, 0, false);
-            std::string diagnostic;
             const bool print = Spektrafilm::scan_route_is_print(route);
-            require(print ? build_print_render_state_product(controls, inputs.product, diagnostic)
-                          : build_direct_render_state_product(controls, inputs.product, diagnostic),
-                    diagnostic);
-            const auto& recipe = inputs.product.recipe;
-            require(print ? Scanner::build_print_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, inputs.scanner, diagnostic)
-                          : Scanner::build_direct_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, inputs.scanner, diagnostic),
-                    diagnostic);
             ASSERT_EQ(inputs.scanner.hash, row.at("descriptor_hash").get<std::uint64_t>());
             const auto capture = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs);
             std::vector<std::uint32_t> expected;
@@ -1371,16 +1669,22 @@ namespace {
                     expected.push_back(word.get<std::uint32_t>());
             EXPECT_EQ(capture.lut.content, expected);
             EXPECT_EQ(capture.lut.bytes, expected.size() * sizeof(float));
+            product.passed();
         }
     }
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
+    testing::InitGoogleTest(&argc, argv);
+    if (testing::GTEST_FLAG(list_tests))
+        return RUN_ALL_TESTS();
     JuicerCuda::Owner cudaOwner;
     cudaOwner.create(JuicerProcess::data_directory());
-    testing::InitGoogleTest(&argc, argv);
-    JuicerProcess::root().ensure_bootstrap();
+    JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
+    case_log.finish();
     const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
     return closed.category == FJ_STATUS_SUCCESS ? result : 1;
+} catch (...) {
+    return 1;
 }

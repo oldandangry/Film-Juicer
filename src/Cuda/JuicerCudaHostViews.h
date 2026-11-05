@@ -61,12 +61,22 @@ namespace JuicerCuda {
         bool enabled = false;
     };
 
+    struct DensityBoundsInput {
+        std::array<float, 3> dataMinCmy{};
+        std::array<float, 3> invSpanCmy{};
+        std::uint64_t hash = 0;
+    };
+
     struct FocusedRouteResourceInput {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         FilmExposureResourceInput filmRaw;
         FilmDevelopmentResourceInput filmDevelop;
         DirResourceInput dirCouplers;
-        DensityBoundsRecipe densityBounds;
+        DensityBoundsInput densityBounds;
+        std::array<float, 9> inputRgbToXyz{};
+        std::array<float, 9> inputXyzAdapt{};
+        std::array<float, 9> xyzToLinearSrgb{};
+        bool applyInputChromaticAdapt = false;
         Scanner::ScannerSpectralLutDescriptor scannerLutDescriptor;
         Scanner::SpectralTablesView scannerTables;
         std::span<const float> exposureIlluminant;
@@ -107,19 +117,5 @@ namespace JuicerCuda {
         int wangCount = 0;
         int wangColors = 0;
     };
-
-    bool build_focused_route_resource_input(
-        const FocusedRouteResourcePreparation& request,
-        FocusedRouteResourceInput& input,
-        std::string& outError);
-
-
-    // The returned illuminant span borrows the caller's storage through the immediate call.
-    // Production preparation invokes this derivation only for missing resource descriptors.
-    bool build_print_resource_input(
-        const PrintResourcePreparation& request,
-        PrintResourceInput& input,
-        std::array<float, 81>& preflashIlluminant,
-        std::string& outError);
 
 } // namespace JuicerCuda

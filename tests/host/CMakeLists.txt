@@ -1,0 +1,65 @@
+cmake_minimum_required(VERSION 4.3)
+
+if(CMAKE_HOST_WIN32)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+    set(CMAKE_MSVC_RUNTIME_CHECKS "")
+endif()
+project(FilmJuicerHostTests LANGUAGES C CXX)
+
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR
+   NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64)$" OR
+   NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    message(FATAL_ERROR "Film-Juicer host tests require native Windows or Linux x86-64")
+endif()
+if(NOT CMAKE_BUILD_TYPE MATCHES "^(Debug|Release)$")
+    message(FATAL_ERROR "Select the native Debug or Release preset profile")
+endif()
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+foreach(language IN ITEMS C CXX)
+    string(REGEX REPLACE "(^| )[/-]DNDEBUG( |$)" " "
+        CMAKE_${language}_FLAGS_RELEASE "${CMAKE_${language}_FLAGS_RELEASE}")
+    set(CMAKE_${language}_FLAGS_DEBUG "${CMAKE_${language}_FLAGS_RELEASE}")
+    if(NOT WIN32)
+        string(APPEND CMAKE_${language}_FLAGS_DEBUG " -g")
+    endif()
+endforeach()
+
+get_filename_component(JUICER_TEST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+string(TOLOWER "${CMAKE_BUILD_TYPE}" configuration)
+if(WIN32)
+    set(preset "windows-clang-${configuration}")
+else()
+    set(preset "linux-${configuration}")
+endif()
+set(JUICER_PRESET_BUILD_DIR "${JUICER_TEST_ROOT}/out/build/${preset}")
+if(NOT CMAKE_BINARY_DIR STREQUAL "${JUICER_PRESET_BUILD_DIR}/host-tests")
+    message(FATAL_ERROR "Use the preset's host-tests configuration through verify.py --cuda-free")
+endif()
+find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Interpreter)
+execute_process(COMMAND "${Python3_EXECUTABLE}" -B "${JUICER_TEST_ROOT}/scripts/verify.py"
+    check-owner --preset "${preset}" COMMAND_ERROR_IS_FATAL ANY)
+add_custom_target(juicer_host_owner
+    COMMAND "${Python3_EXECUTABLE}" -B "${JUICER_TEST_ROOT}/scripts/verify.py"
+        check-owner --preset "${preset}"
+    VERBATIM)
+
+set(BUILD_TESTING ON CACHE BOOL "Build CUDA-independent public tests" FORCE)
+set(JUICER_CUDA_FREE_TESTS ON)
+set(JUICER_RUST_SOURCE_DIR "${JUICER_TEST_ROOT}")
+include("${JUICER_TEST_ROOT}/cmake/JuicerRust.cmake")
+set(JUICER_SETTINGS_ROOT "${JUICER_TEST_ROOT}")
+include("${JUICER_TEST_ROOT}/cmake/JuicerSettings.cmake")
+foreach(target IN ITEMS juicer_rust_production_build juicer_rust_test_support_build juicer_rust_tests)
+    add_dependencies(${target} juicer_host_owner)
+endforeach()
+include("${JUICER_TEST_ROOT}/cmake/JuicerResources.cmake")
+# Share the pinned fetched sources, while this configuration owns its C++ objects.
+if(NOT FETCHCONTENT_SOURCE_DIR_GOOGLETEST AND EXISTS "${JUICER_PRESET_BUILD_DIR}/_deps/googletest-src/CMakeLists.txt")
+    set(FETCHCONTENT_SOURCE_DIR_GOOGLETEST "${JUICER_PRESET_BUILD_DIR}/_deps/googletest-src")
+endif()
+include(CTest)
+add_subdirectory("${JUICER_TEST_ROOT}/tests" "${CMAKE_BINARY_DIR}/tests" EXCLUDE_FROM_ALL)

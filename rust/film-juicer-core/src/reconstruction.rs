@@ -74,6 +74,53 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckedReferenceWhiteError {
+    #[cfg(feature = "test-support")]
+    BoundaryUnsupported,
+    Preparation(Error),
+    Reconstruction(Error),
+}
+
+impl fmt::Display for CheckedReferenceWhiteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            #[cfg(feature = "test-support")]
+            Self::BoundaryUnsupported => f.write_str("exposure production boundary fault"),
+            Self::Preparation(error) | Self::Reconstruction(error) => error.fmt(f),
+        }
+    }
+}
+impl std::error::Error for CheckedReferenceWhiteError {}
+
+pub fn check_reference_white_boundary() -> Result<(), CheckedReferenceWhiteError> {
+    #[cfg(feature = "test-support")]
+    if let Some(fault) = crate::film::input::testing::exposure_fault(1) {
+        return match fault {
+            1 => Err(CheckedReferenceWhiteError::BoundaryUnsupported),
+            2 => panic!("exposure production boundary fault"),
+            3 => Err(CheckedReferenceWhiteError::Reconstruction(
+                Error::AllocationFailure,
+            )),
+            4 => Err(CheckedReferenceWhiteError::Preparation(
+                Error::InvalidKernel,
+            )),
+            _ => unreachable!("closed exposure fault"),
+        };
+    }
+    Ok(())
+}
+
+pub fn checked_reference_white(
+    spectra: &[f32; SPECTRA_SAMPLE_COUNT],
+    spectral_blur: f32,
+    white_xyz: [f32; 3],
+) -> Result<ReferenceWhite, CheckedReferenceWhiteError> {
+    check_reference_white_boundary()?;
+    reference_white(spectra, spectral_blur, white_xyz)
+        .map_err(CheckedReferenceWhiteError::Reconstruction)
+}
+
 fn projected_white(white: [f32; 3]) -> Result<[f32; 2], Error> {
     let sum = (white[0] + white[1]) + white[2];
     if !sum.is_finite() || sum <= 0.0 {
@@ -270,7 +317,9 @@ mod tests {
     use super::*;
     #[test]
     fn widened_half_sample_reflection_matches_repeated_folds() {
+        let mut visited = 0;
         for index in -46_340_i64..=46_420 {
+            visited += 1;
             let mut folded = index;
             while !(0..81).contains(&folded) {
                 folded = if folded < 0 {
@@ -281,6 +330,7 @@ mod tests {
             }
             assert_eq!(gaussian_reflect_index(i128::from(index)), folded as usize);
         }
+        assert_eq!(visited, 92_761);
     }
     #[test]
     fn size_impossibility_and_real_reservation_failure_are_distinct() {
@@ -348,6 +398,45 @@ pub enum TcError {
     UnusableCompressedCoordinates,
     NonfiniteRemappedSample,
     UnusableSamplingCoordinates,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckedTcError {
+    #[cfg(feature = "test-support")]
+    BoundaryUnsupported,
+    Tc(TcError),
+}
+
+impl fmt::Display for CheckedTcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            #[cfg(feature = "test-support")]
+            Self::BoundaryUnsupported => f.write_str("TC production boundary fault"),
+            Self::Tc(error) => f.write_str(error.diagnostic()),
+        }
+    }
+}
+impl std::error::Error for CheckedTcError {}
+
+#[cfg(feature = "test-support")]
+fn check_tc_fault(operation: u32) -> Result<(), CheckedTcError> {
+    match testing::take(operation) {
+        Some(1) => Err(CheckedTcError::BoundaryUnsupported),
+        Some(2) => panic!("TC production boundary fault"),
+        Some(3) => Err(CheckedTcError::Tc(TcError::AllocationFailure)),
+        Some(4) => Err(CheckedTcError::Tc(TcError::NonfiniteIntegratedSample)),
+        Some(_) => unreachable!("closed TC fault"),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(feature = "test-support"))]
+fn check_tc_fault(_operation: u32) -> Result<(), CheckedTcError> {
+    Ok(())
+}
+
+pub fn check_tc_boundary(operation: u32) -> Result<(), CheckedTcError> {
+    check_tc_fault(operation)
 }
 impl TcError {
     pub fn diagnostic(&self) -> &'static str {
@@ -586,6 +675,12 @@ pub fn build_tc_lut(input: Input<'_>) -> Result<FilmTcLut, TcError> {
         samples: integrated,
     })
 }
+
+pub fn build_tc_lut_checked(input: Input<'_>) -> Result<FilmTcLut, CheckedTcError> {
+    check_tc_boundary(1)?;
+    build_tc_lut(input).map_err(CheckedTcError::Tc)
+}
+
 pub fn sample_tc_lut(
     samples: &[f32; TC_LUT_SAMPLE_COUNT],
     xyz: [f32; 3],
@@ -605,6 +700,14 @@ pub fn sample_tc_lut(
         *value = if result.is_finite() { result } else { 0.0 };
     }
     Ok(out)
+}
+
+pub fn sample_tc_lut_checked(
+    samples: &[f32; TC_LUT_SAMPLE_COUNT],
+    xyz: [f32; 3],
+) -> Result<[f32; 3], CheckedTcError> {
+    check_tc_boundary(2)?;
+    sample_tc_lut(samples, xyz).map_err(CheckedTcError::Tc)
 }
 
 impl std::fmt::Display for TcError {

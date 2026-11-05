@@ -3,6 +3,7 @@
 #include "../ffi/print_illuminant_fixture.h"
 #include "../ffi/spatial_optics_fixture.h"
 #include "../ffi/juicer_test_api.h"
+#include "../ffi/case_results.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -16,6 +17,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -50,6 +52,10 @@
 #include "JuicerState.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
+#include "PreparedState.h"
+#include "RenderControls.h"
+#include "RenderValues.h"
+#include "ResourceAssetLibrary.h"
 #include "juicer_cuda_owner.h"
 #include "ColorTransforms.h"
 #include "ofxMemory.h"
@@ -81,8 +87,11 @@ namespace JuicerTestSupport {
             DirCouplersControls pendingDir;
             std::uint64_t pendingFullHash = 0;
             std::uint64_t buildCounter = 0;
+            std::uint64_t buildCounterNext = 0;
             std::uint64_t recipeHash = 0;
             std::uint64_t lastParamHash = 0;
+            bool directPublished = false;
+            bool printPublished = false;
             bool paramEventsSuppressed = false;
             bool latchValid = false;
             std::uint64_t latchSnapshotId = 0;
@@ -126,14 +135,30 @@ namespace JuicerTestSupport {
                 JuicerAtomic::load_shared_ptr(&state.activeDirectState);
             const auto print =
                 JuicerAtomic::load_shared_ptr(&state.activePrintState);
+            result.directPublished = bool(direct);
+            result.printPublished = bool(print);
             if ((result.pendingPrintRoute || !direct) && print) {
                 result.buildCounter = print->buildCounter;
-                result.recipeHash = print->recipe.hash;
+                FjPreparedStateView view{};
+                std::array<char, 2048> text{};
+                FjErrorBuffer error{text.data(), text.size(), 0};
+                const auto status = print->prepared.view(view, error);
+                if (status.category != FJ_STATUS_SUCCESS)
+                    throw std::runtime_error("cannot inspect published print PreparedState");
+                result.recipeHash = view.recipe_hash;
             } else if (direct) {
                 result.buildCounter = direct->buildCounter;
-                result.recipeHash = direct->recipe.hash;
+                FjPreparedStateView view{};
+                std::array<char, 2048> text{};
+                FjErrorBuffer error{text.data(), text.size(), 0};
+                const auto status = direct->prepared.view(view, error);
+                if (status.category != FJ_STATUS_SUCCESS)
+                    throw std::runtime_error("cannot inspect published direct PreparedState");
+                result.recipeHash = view.recipe_hash;
             }
             result.lastParamHash = state.lastHash.load(std::memory_order_acquire);
+            result.buildCounterNext =
+                state.buildCounterNext.load(std::memory_order_acquire);
             result.paramEventsSuppressed = state.suppressParamEvents;
             {
                 std::lock_guard<std::mutex> lock(
@@ -915,10 +940,15 @@ namespace {
             }
             DeviceFrame frame;
             std::uint64_t signature = 0;
+            const std::array<std::string, 6> intended{{"supplied-nonnull/immediate", "supplied-nonnull/delayed", "present-null/immediate", "present-null/delayed", "absent/immediate", "absent/delayed"}};
+            JuicerTests::Cohort rows("stream_render", std::vector<std::string>(intended.begin(), intended.end()));
             for (int streamCase = 0; streamCase < 3; ++streamCase) {
                 const bool present = streamCase != 2;
                 cudaStream_t stream = streamCase == 0 ? frame.stream() : nullptr;
                 for (bool delayed : {false, true}) {
+                    const char* const stream_name = streamCase == 0 ? "supplied-nonnull" : streamCase == 1 ? "present-null"
+                                                                                                           : "absent";
+                    auto case_event = rows.case_event(std::string(stream_name) + (delayed ? "/delayed" : "/immediate"));
                     frame.reset();
                     configure_image_properties(_source.imageProperties, frame.source(), "stream-source");
                     configure_image_properties(_output.imageProperties, frame.destination(), "stream-output");
@@ -946,8 +976,11 @@ namespace {
                     const OfxStatus result = plugin.mainEntry(kOfxImageEffectActionRender, effect_handle(), reinterpret_cast<OfxPropertySetHandle>(&args), nullptr);
                     _observeStreamRelease = false;
                     const int releases = finish_image_audit("stream-contract");
-                    if (cudaStreamSynchronize(stream) != cudaSuccess || result != kOfxStatOK || releases != 2) {
-                        throw std::runtime_error("stream action or lease completion failed: " + std::to_string(streamCase));
+                    const auto synchronized = cudaStreamSynchronize(stream);
+                    if (synchronized != cudaSuccess || result != kOfxStatOK || releases != 2) {
+                        throw std::runtime_error("stream action or lease completion failed: case=" + std::to_string(streamCase) +
+                                                 " sync=" + std::to_string(synchronized) + " result=" + std::to_string(result) +
+                                                 " releases=" + std::to_string(releases));
                     }
                     if (!_streamReleaseMatched) {
                         throw std::runtime_error("stream release completion contract failed: " + std::to_string(streamCase));
@@ -958,6 +991,7 @@ namespace {
                     }
                     signature = output;
                     _trace.push_back("STREAM_CASE case=" + std::to_string(streamCase) + " delayed=" + std::to_string(delayed) + " pending_releases=" + std::to_string(_pendingStreamReleases) + " passed=1");
+                    case_event.passed();
                 }
             }
         }
@@ -1979,9 +2013,9 @@ namespace {
             host._canonicalTime = time;
             host._trace.push_back("CANONICAL_QUERY clip=" + reinterpret_cast<NativeClip*>(clip)->name + " time=" + number_string(time));
             if (host._frameGeometryCase) {
-                const auto halation = JuicerFrame::FrameGeometryTest::halation_snapshot();
-                // A successful query must follow halation and precede effects publication.
-                if (halation.count != 1 || !halation.success || JuicerFrame::FrameGeometryTest::snapshot().count != 2)
+                const auto prepared = JuicerFrame::FrameGeometryTest::prepared_policy_snapshot();
+                // The live canonical query follows the accepted Rust policy and scalar pixel phase.
+                if (prepared.count != 1 || JuicerFrame::FrameGeometryTest::snapshot().count != 2)
                     return kOfxStatFailed;
                 *bounds = host._frameGeometryCase->canonical;
                 return kOfxStatOK;
@@ -2740,7 +2774,7 @@ namespace {
 } // namespace
 
 namespace {
-    nlohmann::json physical_words(const DefectDustRecipe& value) {
+    [[maybe_unused]] nlohmann::json SF_TEMP_BRIDGE_native_physical_words(const DefectDustRecipe& value) {
         return nlohmann::json::array({std::bit_cast<std::uint32_t>(value.cellWidthMm),
                                       std::bit_cast<std::uint32_t>(value.cellHeightMm),
                                       std::bit_cast<std::uint32_t>(value.slotProbability),
@@ -2784,7 +2818,7 @@ namespace {
                                       std::bit_cast<std::uint32_t>(value.compactSubsidiaryOffsetMax),
                                       std::bit_cast<std::uint32_t>(value.compactSubsidiaryAngleMaxRadians)});
     }
-    nlohmann::json physical_words(const DefectScratchRecipe& value) {
+    [[maybe_unused]] nlohmann::json SF_TEMP_BRIDGE_native_physical_words(const DefectScratchRecipe& value) {
         return nlohmann::json::array({std::bit_cast<std::uint32_t>(value.cellWidthMm),
                                       std::bit_cast<std::uint32_t>(value.cellHeightMm),
                                       std::bit_cast<std::uint32_t>(value.slotProbability),
@@ -2823,6 +2857,32 @@ namespace {
                                       std::bit_cast<std::uint32_t>(value.strengthMax)});
     }
     using Json = nlohmann::json;
+    void read_prepared_view(const PreparedState& owner, FjPreparedStateView& view) {
+        std::array<char, 2048> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const FjStatus status = owner.view(view, error);
+        if (status.category != FJ_STATUS_SUCCESS)
+            throw std::runtime_error(std::string("prepared-state view failed: ") + text.data());
+    }
+    std::uint64_t prepared_recipe_hash(const PreparedState& owner) {
+        FjPreparedStateView view{};
+        read_prepared_view(owner, view);
+        return view.recipe_hash;
+    }
+    Json physical_words(const FjDust& value) {
+        Json out = Json::array();
+        const float fields[]{value.cell_width_mm, value.cell_height_mm, value.slot_probability, value.softness_min_mm, value.softness_max_mm, value.softness_size_cap_fraction, value.support_x_mm, value.support_y_mm, value.fiber_fraction, value.fiber_drift_fraction, value.fiber_first_knot_min, value.fiber_first_knot_max, value.fiber_second_knot_min, value.fiber_second_knot_max, value.fiber_interior_width_min_fraction, value.fiber_interior_width_max_fraction, value.diameter_min_mm, value.diameter_bulk_max_mm, value.diameter_max_mm, value.diameter_tail_fraction, value.fiber_length_min_mm, value.fiber_length_max_mm, value.fiber_width_min_mm, value.fiber_width_max_mm, value.opacity_faint_cumulative, value.opacity_intermediate_cumulative, value.compact_opacity_min, value.compact_opacity_faint_end, value.compact_opacity_intermediate_end, value.compact_opacity_max, value.fiber_opacity_min, value.fiber_opacity_faint_end, value.fiber_opacity_intermediate_end, value.fiber_opacity_max, value.compact_dominant_aspect_min, value.compact_dominant_aspect_max, value.compact_subsidiary_scale_min, value.compact_subsidiary_scale_max, value.compact_subsidiary_aspect_min, value.compact_subsidiary_aspect_max, value.compact_subsidiary_offset_max, value.compact_subsidiary_angle_max_radians};
+        for (float field : fields)
+            out.push_back(std::bit_cast<std::uint32_t>(field));
+        return out;
+    }
+    Json physical_words(const FjScratch& value) {
+        Json out = Json::array();
+        const float fields[]{value.cell_width_mm, value.cell_height_mm, value.slot_probability, value.softness_min_mm, value.softness_max_mm, value.softness_size_cap_fraction, value.support_x_mm, value.support_y_mm, value.length_min_mm, value.length_bulk_max_mm, value.length_max_mm, value.length_tail_fraction, value.width_min_mm, value.width_bulk_max_mm, value.width_max_mm, value.width_tail_fraction, value.drift_fraction, value.first_knot_min, value.first_knot_max, value.second_knot_min, value.second_knot_max, value.interior_width_min_fraction, value.interior_width_max_fraction, value.interior_depth_min_fraction, value.interior_depth_max_fraction, value.endpoint_abrupt_probability, value.interruption_probability, value.gap_center_min, value.gap_center_max, value.gap_span_min, value.gap_span_max, value.scuff_probability, value.scuff_length_max_mm, value.scuff_angle_max_radians, value.strength_min, value.strength_max};
+        for (float field : fields)
+            out.push_back(std::bit_cast<std::uint32_t>(field));
+        return out;
+    }
     template <class T>
     Json optics_words(const T& a) {
         Json out = Json::array();
@@ -2849,18 +2909,61 @@ namespace {
         const auto& r = a.resolved;
         return {{"domain", static_cast<unsigned>(a.domain)}, {"active", r.active}, {"family", static_cast<unsigned>(r.family)}, {"f64", optics_words(std::array<double, 9>{r.scatterFraction, r.groupWeightsCoreHaloBloom[0], r.groupWeightsCoreHaloBloom[1], r.groupWeightsCoreHaloBloom[2], r.groupCenterLambdaUm[0], r.groupCenterLambdaUm[1], r.groupCenterLambdaUm[2], r.effectiveWarmth, r.spatialScale})}, {"resolved_hash", r.hash}, {"hash", a.hash}};
     }
-    Json optics_project(const SpatialOptics& a) {
+    [[maybe_unused]] Json SF_TEMP_BRIDGE_native_optics_project(const SpatialOptics& a) {
         const auto& h = a.scatterHalation;
         return {{"camera", optics_project(a.cameraDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(a.cameraLensBlur.sigmaUm)}, {"lens_hash", a.cameraLensBlur.hash}, {"halation", {{"scatter_active", h.scatterActive}, {"back_reflection_active", h.backReflectionActive}, {"f32", optics_words(std::array<float, 9>{h.scatterAmount, h.scatterSpatialScale, h.halationSpatialScale, h.halationFirstSigmaUm[0], h.halationFirstSigmaUm[1], h.halationFirstSigmaUm[2], h.totalStrength[0], h.totalStrength[1], h.totalStrength[2]})}, {"hash", h.hash}}}, {"enlarger", optics_project(a.enlargerDiffusion)}, {"hash", a.hash}};
     }
+    Json optics_project(const FjSpatialOpticsRecipe& a) {
+        const auto project_diffusion = [](const FjDiffusionRecipe& v) {
+            const double lanes[]{v.scatter_fraction, v.group_weights[0], v.group_weights[1], v.group_weights[2], v.group_lambda_um[0], v.group_lambda_um[1], v.group_lambda_um[2], v.warmth, v.spatial_scale};
+            return Json{{"domain", v.domain}, {"active", v.active != 0}, {"family", v.family}, {"f64", optics_words(lanes)}, {"resolved_hash", v.resolved_hash}, {"hash", v.hash}};
+        };
+        const auto& h = a.scatter_halation;
+        return {{"camera", project_diffusion(a.camera_diffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(a.camera_lens_blur.sigma_um)}, {"lens_hash", a.camera_lens_blur.hash}, {"halation", {{"scatter_active", h.scatter_active != 0}, {"back_reflection_active", h.back_reflection_active != 0}, {"f32", optics_words(std::array<float, 9>{h.scatter_amount, h.scatter_spatial_scale, h.halation_spatial_scale, h.first_sigma_um[0], h.first_sigma_um[1], h.first_sigma_um[2], h.total_strength[0], h.total_strength[1], h.total_strength[2]})}, {"hash", h.hash}}}, {"enlarger", project_diffusion(a.enlarger_diffusion)}, {"hash", a.hash}};
+    }
+    Json diffusion_policy_stage(
+        const FjDiffusion& value,
+        Spektrafilm::DiffusionLinearStage fixtureStage) {
+        const auto weights = std::array{value.group_weights[0], value.group_weights[1], value.group_weights[2]};
+        const auto centers = std::array{value.group_lambda_um[0], value.group_lambda_um[1], value.group_lambda_um[2]};
+        const Json sample{{"family", value.family}, {"weights", optics_words(weights)}, {"centers", optics_words(centers)}, {"warmth", std::bit_cast<std::uint64_t>(value.warmth)}, {"scale", std::bit_cast<std::uint64_t>(value.spatial_scale)}, {"pixel", std::bit_cast<std::uint64_t>(value.pixel_size_um)}, {"radius", value.radius_px}, {"hash", value.sample_hash}};
+        return {{"stage", static_cast<unsigned>(fixtureStage)}, {"scatter", std::bit_cast<std::uint64_t>(value.scatter_fraction)}, {"sample", sample}, {"hash", value.hash}};
+    }
+    Json diffusion_policy_project(const FjPreparedFramePolicy& policy, unsigned route) {
+        const auto& value = policy.optics;
+        const bool camera = (value.flags & FJ_OPTICS_CAMERA_DIFFUSION) != 0;
+        const bool enlarger = (value.flags & FJ_OPTICS_ENLARGER_DIFFUSION) != 0;
+        if (!camera && !enlarger)
+            return nullptr;
+        const auto& extent = value.full_frame;
+        // Fixture stage tags use the native descriptor enum (Camera=0, Enlarger=1), not C ABI flags (1, 2).
+        return {{"route", route}, {"extent", {extent.x, extent.y, extent.width, extent.height}}, {"camera", camera ? diffusion_policy_stage(value.camera, Spektrafilm::DiffusionLinearStage::CameraFilmLinear) : Json()}, {"enlarger", enlarger ? diffusion_policy_stage(value.enlarger, Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear) : Json()}, {"hash", value.diffusion_hash}};
+    }
+    Json halation_policy_gaussian(const FjHalationGaussian& value) {
+        return {{"kind", value.kind}, {"radius", value.radius}, {"weights", optics_words(value.fir_weights)}, {"yvv", optics_words(std::array{value.feedforward, value.feedback[0], value.feedback[1], value.feedback[2]})}};
+    }
+    Json halation_policy_project(const FjScatterHalation& value) {
+        Json channels = Json::array();
+        for (const auto& channel : value.channels) {
+            Json tail = Json::array();
+            Json bounce = Json::array();
+            for (const auto& gaussian : channel.tail)
+                tail.push_back(halation_policy_gaussian(gaussian));
+            for (const auto& gaussian : channel.bounce)
+                bounce.push_back(halation_policy_gaussian(gaussian));
+            channels.push_back({{"core", halation_policy_gaussian(channel.core)}, {"tail", tail}, {"bounce", bounce}, {"strength", std::bit_cast<std::uint32_t>(channel.total_strength)}});
+        }
+        return {{"recipe_hash", value.recipe_hash}, {"scatter_amount", std::bit_cast<std::uint32_t>(value.scatter_amount)}, {"channels", channels}};
+    }
     struct OpticsCase {
         Spektrafilm::SpatialOpticsControls controls;
-        Profiles::ProfileDigest digest;
+        std::array<float, 3> firstSigmaUm{65.0f, 65.0f, 65.0f};
+        std::array<float, 3> primaryAmount{0.08f, 0.02f, 0.0f};
         bool print = false;
     };
     Json optics_inputs(const OpticsCase& c) {
         const auto& h = c.controls.scatterHalation;
-        return {{"camera", optics_project(c.controls.cameraDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(c.controls.cameraLensBlurUm)}, {"halation_active", h.active}, {"halation_f32", optics_words(std::array<float, 4>{h.scatterAmount, h.scatterSpatialScale, h.halationAmount, h.halationSpatialScale})}, {"first_sigma_f32", optics_words(c.digest.halationFirstSigmaUm)}, {"primary_f32", optics_words(c.digest.halationPrimaryAmount)}, {"enlarger", optics_project(c.controls.enlargerDiffusion)}, {"print", c.print}};
+        return {{"camera", optics_project(c.controls.cameraDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(c.controls.cameraLensBlurUm)}, {"halation_active", h.active}, {"halation_f32", optics_words(std::array<float, 4>{h.scatterAmount, h.scatterSpatialScale, h.halationAmount, h.halationSpatialScale})}, {"first_sigma_f32", optics_words(c.firstSigmaUm)}, {"primary_f32", optics_words(c.primaryAmount)}, {"enlarger", optics_project(c.controls.enlargerDiffusion)}, {"print", c.print}};
     }
 
     void check_optics_capture(const std::filesystem::path& grainManifest, const char* preset) {
@@ -2873,6 +2976,13 @@ namespace {
         require(bool(stream), "optics capture payload open");
         const auto frozen = PrintIlluminantFixtures::apply(capturePath, Json::parse(stream)).at("ofx");
         require(frozen.size() == 96, "complete frozen optics capture membership");
+        std::vector<std::string> intended;
+        intended.reserve(96);
+        for (unsigned route = 0; route < 4; ++route)
+            for (unsigned input = 0; input < 24; ++input)
+                intended.push_back("route-" + std::to_string(route) + "/input-" + std::to_string(input));
+        JuicerTests::Cohort rows("optics_capture", intended);
+        unsigned visits = 0;
         for (unsigned route = 0; route < 4; ++route) {
             NativeHost host;
             JuicerEffect effect(host.effect_handle());
@@ -2884,6 +2994,7 @@ namespace {
             const std::array<const char*, 9> enlarger{JuicerParams::kPrintDiffusionStrength, JuicerParams::kPrintDiffusionSpatialScale, JuicerParams::kPrintDiffusionHaloWarmth, JuicerParams::kPrintDiffusionCoreIntensity, JuicerParams::kPrintDiffusionCoreSize, JuicerParams::kPrintDiffusionHaloIntensity, JuicerParams::kPrintDiffusionHaloSize, JuicerParams::kPrintDiffusionBloomIntensity, JuicerParams::kPrintDiffusionBloomSize};
             const std::array<const char*, 4> halation{JuicerParams::kHalationScatterAmount, JuicerParams::kHalationScatterSpatialScale, JuicerParams::kHalationAmount, JuicerParams::kHalationSpatialScale};
             for (int n = 0; n < 24; ++n) {
+                auto case_event = rows.case_event("route-" + std::to_string(route) + "/input-" + std::to_string(n));
                 bool enabled = n % 3 != 0;
                 host.set_int_value(JuicerParams::kHalationActive, enabled);
                 host.set_int_value(JuicerParams::kCameraDiffusionEnabled, n % 2);
@@ -2913,19 +3024,26 @@ namespace {
                     if (host.trace()[i].starts_with("GET_CURRENT"))
                         getters.push_back(host.trace()[i]);
                 auto admission = JuicerTestSupport::EffectTraceObserver::admit(effect);
-                const RenderRecipe* recipe = admission.printState ? &admission.printState->recipe : admission.directState ? &admission.directState->recipe
-                                                                                                                          : nullptr;
+                FjPreparedStateView preparedView{};
+                const bool admitted = bool(admission.printState) || bool(admission.directState);
+                if (admission.printState)
+                    read_prepared_view(admission.printState->prepared, preparedView);
+                else if (admission.directState)
+                    read_prepared_view(admission.directState->prepared, preparedView);
                 OpticsCase captured;
                 captured.controls.cameraDiffusion = observed.pendingOptics.cameraDiffusion;
                 captured.controls.enlargerDiffusion = observed.pendingOptics.enlargerDiffusion;
                 captured.controls.scatterHalation = observed.pendingOptics.scatterHalation;
                 captured.print = route % 2;
                 const auto& expected = frozen.at(route * 24 + n);
-                const Json actual{{"route", route}, {"index", n}, {"pending_valid", observed.pendingValid}, {"pending_invalid", observed.pendingInvalid}, {"pending_diagnostic", observed.pendingDiagnostic}, {"snapshot_hash", observed.pendingFullHash}, {"admitted", recipe != nullptr}, {"input", optics_inputs(captured)}, {"recipe", recipe ? optics_project(recipe->spatialOptics) : Json()}, {"final_hash", recipe ? recipe->hash : 0}, {"getters", getters}};
+                const Json actual{{"route", route}, {"index", n}, {"pending_valid", observed.pendingValid}, {"pending_invalid", observed.pendingInvalid}, {"pending_diagnostic", observed.pendingDiagnostic}, {"snapshot_hash", observed.pendingFullHash}, {"admitted", admitted}, {"input", optics_inputs(captured)}, {"recipe", admitted ? optics_project(preparedView.optics) : Json()}, {"final_hash", admitted ? preparedView.recipe_hash : 0}, {"getters", getters}};
                 require(actual == expected, "all frozen OFX optics capture/getter/publication fields route=" + std::to_string(route) + " index=" + std::to_string(n));
+                case_event.passed();
+                ++visits;
             }
             host.unbind_effect();
         }
+        require(visits == intended.size(), "optics capture visit count matches declared route/input extent");
         std::cout << "PASS adapter/96-frozen-optics-capture-publications-four-routes\n";
     }
     void check_physical_capture(NativeHost& host, const std::filesystem::path& grainManifest, const char* preset) {
@@ -2938,6 +3056,15 @@ namespace {
         require(bool(stream), "effects capture fixture open");
         const auto captured = PrintIlluminantFixtures::apply(capturePath, nlohmann::json::parse(stream));
         require(captured.at("ofx").size() == 608, "complete frozen effects capture membership");
+        std::vector<std::string> intended;
+        intended.reserve(20);
+        for (const auto& row : captured.at("ofx")) {
+            const unsigned policy = row.at("policy");
+            const unsigned index = row.at("index");
+            if ((index == 5 && (policy == 0 || policy == 1 || policy == 4 || policy == 7)) || (index == 15 && policy == 0))
+                intended.push_back("route-" + std::to_string(row.at("route").get<unsigned>()) + "/policy-" + std::to_string(policy) + "/index-" + std::to_string(index));
+        }
+        JuicerTests::Cohort rows("physical_capture", intended);
         JuicerEffect effect(host.effect_handle());
         host.bind_effect(effect);
         host.set_time(0);
@@ -2949,6 +3076,7 @@ namespace {
             if (!((index == 5 && (policy == 0 || policy == 1 || policy == 4 || policy == 7)) || (index == 15 && policy == 0)))
                 continue;
             const unsigned route = row.at("route");
+            auto case_event = rows.case_event("route-" + std::to_string(route) + "/policy-" + std::to_string(policy) + "/index-" + std::to_string(index));
             const bool print = route % 2;
             host.set_str_choice_value(JuicerParams::kFilmProfileKey, route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f");
             host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
@@ -2974,10 +3102,12 @@ namespace {
             require(words == row.at("controls").at("amounts") && std::bit_cast<std::uint64_t>(controls.gateWeaveAmount) == row.at("controls").at("weave") && observed.pendingFullHash == row.at("snapshot_hash"), "frozen native captured f32/f64 controls and snapshot identity");
             const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
             require(print ? bool(admitted.printState) : bool(admitted.directState), "physical capture completes actual route publication");
-            const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
-            const auto& effects = recipe.filmJuicerEffects;
-            const nlohmann::json projection{{"film_dust", physical_words(effects.filmDust)}, {"film_scratch", physical_words(effects.filmScratch)}, {"gate_dust", physical_words(effects.gateDust)}, {"gate_scratch", physical_words(effects.gateScratch)}, {"weave", std::bit_cast<std::uint64_t>(effects.gateWeaveAmount)}, {"active", effects.active}, {"hash", effects.hash}};
-            require(projection == row.at("recipe") && recipe.visualGrain.hash == row.at("grain_hash") && recipe.hash == row.at("final_hash"), "actual OFX snapshot to completed grain to exact Rust effects and final publication");
+            FjPreparedStateView preparedView{};
+            read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, preparedView);
+            const auto& effects = preparedView.effects;
+            const nlohmann::json projection{{"film_dust", physical_words(effects.film_dust)}, {"film_scratch", physical_words(effects.film_scratch)}, {"gate_dust", physical_words(effects.gate_dust)}, {"gate_scratch", physical_words(effects.gate_scratch)}, {"weave", std::bit_cast<std::uint64_t>(effects.gate_weave_amount)}, {"active", effects.active != 0}, {"hash", effects.hash}};
+            require(projection == row.at("recipe") && preparedView.grain.hash == row.at("grain_hash") && preparedView.recipe_hash == row.at("final_hash"), "actual OFX snapshot to completed grain to exact Rust effects and final publication");
+            case_event.passed();
             ++count;
         }
         require(count == 20, "bounded physical OFX witness membership");
@@ -2995,6 +3125,39 @@ namespace {
         std::filesystem::path halation;
         std::filesystem::path diffusion;
     };
+    std::vector<std::string> frame_geometry_case_ids() {
+        std::vector<std::string> ids{"shared/off",
+                                     "shared/same-state-roi-scale-par-destination",
+                                     "shared/both-empty-window-fallback",
+                                     "shared/same-state-changed-allocation",
+                                     "shared/negative-nonzero-origin-portrait",
+                                     "shared/admitted-f32-format-before-f64-pixel-arithmetic"};
+        ids.reserve(57);
+        for (unsigned route = 0; route < 4; ++route) {
+            const std::string prefix = "route-" + std::to_string(route) + "/";
+            ids.push_back(prefix + "four-route-distinct-pixel-definition-rejected");
+            ids.push_back(prefix + "four-route-inactive-halation");
+            ids.push_back(prefix + "four-route-active-metadata");
+            for (unsigned mask = 0; mask < 4; ++mask)
+                ids.push_back(prefix + "diffusion-camera-enlarger-combinations/mask-" + std::to_string(mask));
+            ids.push_back(prefix + "active-diffusion-current-square-domain");
+            ids.push_back(prefix + "effects-range-after-canonical");
+            ids.push_back(prefix + "four-route-weave-full-definition");
+            if (route % 2)
+                ids.push_back(prefix + "print-partial-window-rejected-before-scalar");
+        }
+        for (const char* name : {"rust-diffusion-failure-short-circuits-halation-effects",
+                                 "descriptor-failure-before-effects-query",
+                                 "halation-pixel-failure-before-effects-query",
+                                 "backend-before-images-and-state",
+                                 "missing-image-before-state",
+                                 "format-before-state",
+                                 "single-empty-axis-before-state",
+                                 "full-range-before-state",
+                                 "invalid-state-before-scalar"})
+            ids.push_back(std::string("shared/") + name);
+        return ids;
+    }
     void run_frame_geometry_cases(const FrameGeometryFixturePaths& fixtures, const char* preset, const std::filesystem::path& tracePath) {
         using namespace JuicerFrame::FrameGeometryTest;
         const auto& manifestPath = fixtures.geometry;
@@ -3007,6 +3170,12 @@ namespace {
         const auto diffusionManifest = nlohmann::json::parse(std::ifstream(fixtures.diffusion));
         const auto diffusionCaptured = load_shared_fixture(fixtures.diffusion.parent_path() / diffusionManifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
         require(diffusionCaptured.at("preset") == preset && diffusionCaptured.at("products").size() == 92, "diffusion callback frozen native context/membership");
+        // Cohort membership follows callback scenarios; pixel-size expectations
+        // consume only the named landscape, square, portrait, and fractional-film rows.
+        const auto intended = frame_geometry_case_ids();
+        JuicerTests::Cohort rows("frame_geometry", intended);
+        std::string route_prefix = "shared/";
+        std::string check_id_override;
         auto expected_pixel = [&](const char* name) {
             for (const auto& row : captured.at("geometry"))
                 if (row.at("name") == name)
@@ -3025,10 +3194,11 @@ namespace {
         struct ExpectedPhases {
             unsigned completed = 0;
             unsigned canonicalQueries = 0;
-            unsigned halationCalls = UINT32_MAX;
-            bool halationSuccess = true;
         };
-        auto check = [&](const char* name, DeviceFrame& allocation, const FrameGeometryCase& facts, bool failed, ExpectedPhases expected, const char* pixelCase = "landscape") {
+        auto check = [&](const char* name, DeviceFrame& allocation, const FrameGeometryCase& facts, bool failed, ExpectedPhases expected, const char* pixelCase = "landscape", const std::function<void(const NativeHost::RenderResult&)>& after = {}) {
+            const std::string membership_id = route_prefix + (check_id_override.empty() ? name : check_id_override);
+            check_id_override.clear();
+            auto case_event = rows.case_event(membership_id);
             const auto phases = expected.completed;
             const auto queries = expected.canonicalQueries;
             const auto traceBegin = host.trace_size();
@@ -3040,38 +3210,148 @@ namespace {
                 throw std::runtime_error(std::string("frame geometry callback case failed: ") + name);
             }
             const auto observation = snapshot();
-            const auto diffusion = diffusion_snapshot();
-            const auto halation = halation_snapshot();
-            const auto halationCalls = expected.halationCalls == UINT32_MAX ? (phases >= 2 ? 1u : 0u) : expected.halationCalls;
-            require(halation.count == halationCalls, std::string(name) + " halation invocation count");
-            require(diffusion.count == (phases >= 2 ? 1u : 0u), std::string(name) + " diffusion invocation count");
-            if (diffusion.count) {
-                require(std::bit_cast<std::uint64_t>(diffusion.pixelSizeUm) == std::bit_cast<std::uint64_t>(static_cast<double>(std::bit_cast<float>(expected_pixel(pixelCase)))), "diffusion binds current f32 pixel widened to f64");
-                const auto& d = diffusion.fullDomain;
-                require(d.originX == facts.source.x1 && d.originY == facts.source.y1 && d.width == facts.sourceWidth && d.height == facts.sourceHeight, "diffusion binds current full callback domain");
-                require(diffusion.success == (halationCalls != 0), "diffusion construction failure short-circuits halation/effects");
-                if (!diffusion.success)
-                    require(!diffusion.descriptor, "failed diffusion construction publishes no optional");
-                if (diffusion.descriptor) {
-                    require(diffusion.descriptor->route == diffusion.route, "diffusion callback route association");
-                    const auto& rows = diffusionCaptured.at("products");
-                    const auto frozen = std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
-                        return !row.at("frame").is_null() && row.at("frame").at("hash").template get<std::uint64_t>() == diffusion.descriptor->hash;
-                    });
-                    require(frozen != rows.end() && JuicerTestSupport::matches_diffusion_frame(diffusion.descriptor, frozen->at("frame")), "actual diffusion callback complete values/identities match native capture");
+            const auto policy = prepared_policy_snapshot();
+            require(policy.count == (phases >= 2 ? 1u : 0u), std::string(name) + " accepted prepared-policy invocation count");
+            require(diffusion_snapshot().count == 0 && halation_snapshot().count == 0,
+                    std::string(name) + " production entry does not call retired native frame builders");
+            if (policy.count) {
+                const auto admission = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                const bool printPublication = admission.status == PendingRenderAdmissionStatus::AdmittedPrint;
+                FjPreparedStateView published{};
+                read_prepared_view(printPublication ? admission.printState->prepared : admission.directState->prepared, published);
+                require(policy.route == published.route && policy.policy.recipe_hash == published.recipe_hash,
+                        "frame policy comes from the currently admitted route publication");
+                const auto& extent = policy.policy.geometry.full_frame;
+                require(extent.x == facts.source.x1 && extent.y == facts.source.y1 && extent.width == facts.sourceWidth && extent.height == facts.sourceHeight,
+                        "Rust prepared policy binds current full callback extent");
+                require(std::bit_cast<std::uint32_t>(policy.policy.geometry.pixel_size_um) == expected_pixel(pixelCase),
+                        "Rust prepared policy supplies frozen f32 pixel size");
+                const auto& policyOptics = policy.policy.optics;
+                constexpr std::uint32_t kDiffusionFlags =
+                    FJ_OPTICS_CAMERA_DIFFUSION | FJ_OPTICS_ENLARGER_DIFFUSION;
+                const std::uint32_t activeDiffusionFlags = policyOptics.flags & kDiffusionFlags;
+                const auto diffusionComponentIsZero = [](const FjDiffusion& value) {
+                    const auto zeroDoubles = [](const double* fields, std::size_t count) {
+                        return std::all_of(fields, fields + count, [](double field) {
+                            return std::bit_cast<std::uint64_t>(field) == 0;
+                        });
+                    };
+                    return value.family == 0 &&
+                           std::bit_cast<std::uint64_t>(value.scatter_fraction) == 0 &&
+                           zeroDoubles(value.group_weights, 3) &&
+                           zeroDoubles(value.group_lambda_um, 3) &&
+                           std::bit_cast<std::uint64_t>(value.warmth) == 0 &&
+                           std::bit_cast<std::uint64_t>(value.spatial_scale) == 0 &&
+                           std::bit_cast<std::uint64_t>(value.pixel_size_um) == 0 &&
+                           value.radius_px == 0 && value.sample_hash == 0 && value.hash == 0;
+                };
+                if (activeDiffusionFlags == 0) {
+                    require(policyOptics.diffusion_hash == 0,
+                            std::string("Rust prepared inactive diffusion has nonzero hash case=") + name +
+                                " diffusion_hash=" + std::to_string(policyOptics.diffusion_hash));
+                    require(diffusionComponentIsZero(policyOptics.camera),
+                            std::string("Rust prepared inactive camera diffusion is nonzero case=") + name);
+                    require(diffusionComponentIsZero(policyOptics.enlarger),
+                            std::string("Rust prepared inactive enlarger diffusion is nonzero case=") + name);
+                    const auto inactiveDiffusionRow = std::find_if(
+                        diffusionCaptured.at("products").begin(),
+                        diffusionCaptured.at("products").end(),
+                        [&](const Json& row) {
+                            return row.at("frame").is_null() &&
+                                   row.at("input").at("route").get<unsigned>() == policy.route;
+                        });
+                    if (inactiveDiffusionRow == diffusionCaptured.at("products").end()) {
+                        throw std::runtime_error(
+                            std::string("frozen inactive diffusion row missing case=") + name +
+                            " route=" + std::to_string(policy.route));
+                    }
+                    require(inactiveDiffusionRow->at("frame").is_null(),
+                            std::string("frozen inactive diffusion row is not null case=") + name +
+                                " fixture_case=" + inactiveDiffusionRow->at("input").at("name").get<std::string>());
+                } else {
+                    require(policyOptics.diffusion_hash != 0,
+                            std::string("Rust prepared active diffusion has zero hash case=") + name +
+                                " flags=" + std::to_string(activeDiffusionFlags));
+                    const auto& frameExtent = policy.policy.geometry.full_frame;
+                    const auto pixelBits = std::bit_cast<std::uint64_t>(
+                        static_cast<double>(policy.policy.geometry.pixel_size_um));
+                    const auto diffusionRow = std::find_if(
+                        diffusionCaptured.at("products").begin(),
+                        diffusionCaptured.at("products").end(),
+                        [&](const Json& row) {
+                            if (row.at("frame").is_null()) {
+                                return false;
+                            }
+                            const auto& input = row.at("input");
+                            return input.at("route").get<unsigned>() == policy.route &&
+                                   input.at("pixel").get<std::uint64_t>() == pixelBits &&
+                                   input.at("extent") == Json::array({frameExtent.x, frameExtent.y, frameExtent.width, frameExtent.height}) &&
+                                   row.at("frame").at("hash").get<std::uint64_t>() == policyOptics.diffusion_hash;
+                        });
+                    if (diffusionRow == diffusionCaptured.at("products").end()) {
+                        throw std::runtime_error(
+                            std::string("Rust prepared active diffusion fixture row missing case=") + name +
+                            " diffusion_hash=" + std::to_string(policyOptics.diffusion_hash) +
+                            " pixel_bits=" + std::to_string(pixelBits) +
+                            " extent=" + Json::array({frameExtent.x, frameExtent.y, frameExtent.width, frameExtent.height}).dump());
+                    }
+                    const Json projectedDiffusion = diffusion_policy_project(policy.policy, policy.route);
+                    const Json& frozenDiffusion = diffusionRow->at("frame");
+                    require(projectedDiffusion == frozenDiffusion,
+                            std::string("Rust prepared diffusion differs from frozen row case=") + name +
+                                " fixture_case=" + diffusionRow->at("input").at("name").get<std::string>() +
+                                " diffusion_hash=" + std::to_string(policyOptics.diffusion_hash) +
+                                " pixel_bits=" + std::to_string(pixelBits) +
+                                " diff=" + Json::diff(frozenDiffusion, projectedDiffusion).dump());
                 }
-            }
-            if (halationCalls) {
-                require(halation.success == expected.halationSuccess && std::bit_cast<std::uint32_t>(halation.pixelSizeUm) == expected_pixel(pixelCase), "halation uses current callback pixel size and boolean result");
-                if (!halation.success)
-                    require(!halation.descriptor, "computed halation failure remains absent");
-                else if (halation.descriptor) {
-                    const auto& rows = halationCaptured.at("products");
-                    const auto frozen = std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
-                        return row.at("input").at("recipe_hash").template get<std::uint64_t>() == halation.descriptor->recipeHash &&
-                               row.at("input").at("pixel_size_um").template get<std::uint32_t>() == std::bit_cast<std::uint32_t>(halation.pixelSizeUm);
+                const auto& policyHalation = policy.policy.optics.scatter_halation;
+                const auto actualPixelBits = std::bit_cast<std::uint32_t>(policy.policy.geometry.pixel_size_um);
+                if (policyHalation.recipe_hash == 0) {
+                    const auto gaussianIsZero = [](const FjHalationGaussian& gaussian) {
+                        return gaussian.kind == 0 && gaussian.radius == 0 &&
+                               std::all_of(std::begin(gaussian.fir_weights), std::end(gaussian.fir_weights), [](float value) {
+                                   return std::bit_cast<std::uint32_t>(value) == 0;
+                               }) &&
+                               std::bit_cast<std::uint32_t>(gaussian.feedforward) == 0 && std::all_of(std::begin(gaussian.feedback), std::end(gaussian.feedback), [](float value) {
+                                   return std::bit_cast<std::uint32_t>(value) == 0;
+                               });
+                    };
+                    const bool emptyMath =
+                        std::bit_cast<std::uint32_t>(policyHalation.scatter_amount) == 0 &&
+                        std::all_of(std::begin(policyHalation.channels), std::end(policyHalation.channels), [&](const FjHalationChannel& channel) {
+                            return std::bit_cast<std::uint32_t>(channel.total_strength) == 0 &&
+                                   gaussianIsZero(channel.core) &&
+                                   std::all_of(std::begin(channel.tail), std::end(channel.tail), gaussianIsZero) &&
+                                   std::all_of(std::begin(channel.bounce), std::end(channel.bounce), gaussianIsZero);
+                        });
+                    require(emptyMath,
+                            std::string("Rust prepared inactive halation contains nonzero math case=") + name +
+                                " recipe_hash=0 pixel_size_um_bits=" + std::to_string(actualPixelBits));
+                    const auto inactiveRow = std::find_if(halationCaptured.at("products").begin(), halationCaptured.at("products").end(), [](const Json& row) {
+                        return row.at("input").at("recipe_hash").get<std::uint64_t>() == 0;
                     });
-                    require(frozen != rows.end() && JuicerTestSupport::matches_halation_frame(halation.descriptor, frozen->at("descriptor")), "actual callback all21 schedules/scalars/hash match independent native capture");
+                    require(inactiveRow != halationCaptured.at("products").end() &&
+                                inactiveRow->at("descriptor").is_null(),
+                            std::string("frozen inactive halation row missing/null mismatch case=") + name);
+                } else {
+                    const auto halationRow = std::find_if(halationCaptured.at("products").begin(), halationCaptured.at("products").end(), [&](const Json& row) {
+                        return row.at("input").at("recipe_hash").get<std::uint64_t>() == policyHalation.recipe_hash &&
+                               row.at("input").at("pixel_size_um").get<std::uint32_t>() == actualPixelBits;
+                    });
+                    if (halationRow == halationCaptured.at("products").end()) {
+                        throw std::runtime_error(
+                            std::string("Rust prepared active halation fixture row missing case=") + name +
+                            " recipe_hash=" + std::to_string(policyHalation.recipe_hash) +
+                            " pixel_size_um_bits=" + std::to_string(actualPixelBits));
+                    }
+                    const Json projectedHalation = halation_policy_project(policyHalation);
+                    const Json& frozenHalation = halationRow->at("descriptor");
+                    require(projectedHalation == frozenHalation,
+                            std::string("Rust prepared halation descriptor differs from frozen row case=") + name +
+                                " recipe_hash=" + std::to_string(policyHalation.recipe_hash) +
+                                " pixel_size_um_bits=" + std::to_string(actualPixelBits) +
+                                " fixture_case=" + halationRow->at("input").at("name").get<std::string>() +
+                                " diff=" + Json::diff(frozenHalation, projectedHalation).dump());
                 }
             }
             require(observation.count == phases, std::string(name) + " exact completed phase count");
@@ -3100,6 +3380,9 @@ namespace {
                 require(e.pixelDefinition.x == facts.definition.x1 && e.pixelDefinition.y == facts.definition.y1 && e.pixelDefinition.width == facts.definitionWidth && e.pixelDefinition.height == facts.definitionHeight, "effects consumes source cached pixel RoD, distinct from allocation/window");
                 require(e.canonicalX == facts.canonical.x1 && e.canonicalY == facts.canonical.y1 && e.canonicalWidth == 112.0 && e.canonicalHeight == 160.0 && e.scaleX == facts.scale.x && e.scaleY == facts.scale.y && e.pixelAspectRatio == facts.par, "effects consumes live canonical and cached source scale/PAR, distinct from destination and args scale");
             }
+            if (after)
+                after(result);
+            case_event.passed();
             return result;
         };
         const auto first = check("off", frame, geometry, false, {2, 0});
@@ -3107,8 +3390,9 @@ namespace {
         geometry.par = 1.25;
         geometry.destination = {-1, -1, 5, 3};
         geometry.window = {1, 1, 5, 3};
-        const auto roi = check("same-state-roi-scale-par-destination", frame, geometry, false, {2, 0});
-        require(roi.state.recipeHash == first.state.recipeHash && roi.state.buildCounter == first.state.buildCounter, "callback geometry changes preserve immutable parameter state");
+        check("same-state-roi-scale-par-destination", frame, geometry, false, {2, 0}, "landscape", [&](const auto& result) {
+            require(result.state.recipeHash == first.state.recipeHash && result.state.buildCounter == first.state.buildCounter, "callback geometry changes preserve immutable parameter state");
+        });
         geometry.destination = geometry.source;
         geometry.window = {99, 88, 99, 88};
         check("both-empty-window-fallback", frame, geometry, false, {2, 0});
@@ -3118,8 +3402,9 @@ namespace {
         squareFacts.destination = squareFacts.source;
         squareFacts.window = squareFacts.source;
         squareFacts.sourceWidth = squareFacts.sourceHeight = 9;
-        const auto changed = check("same-state-changed-allocation", square, squareFacts, false, {2, 0}, "square");
-        require(changed.state.recipeHash == first.state.recipeHash && changed.state.buildCounter == first.state.buildCounter, "new allocation derives new geometry without rebuilding state");
+        check("same-state-changed-allocation", square, squareFacts, false, {2, 0}, "square", [&](const auto& result) {
+            require(result.state.recipeHash == first.state.recipeHash && result.state.buildCounter == first.state.buildCounter, "new allocation derives new geometry without rebuilding state");
+        });
         DeviceFrame portrait({5, 7});
         auto portraitFacts = geometry;
         portraitFacts.source = {-11, 17, -6, 24};
@@ -3135,6 +3420,7 @@ namespace {
         host.set_double_value(JuicerParams::kCameraFilmFormatMm, 36.0);
         host.dispatch_event(effect, JuicerParams::kCameraFilmFormatMm, OFX::eChangePluginEdit);
         for (unsigned route = 0; route < 4; ++route) {
+            route_prefix = "route-" + std::to_string(route) + "/";
             host.set_str_choice_value(JuicerParams::kFilmProfileKey, route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f");
             host.dispatch_event(effect, JuicerParams::kFilmProfileKey, OFX::eChangePluginEdit);
             host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(route % 2 ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
@@ -3156,23 +3442,28 @@ namespace {
             active.definitionHeight = 5;
             host.set_int_value(JuicerParams::kHalationActive, 0);
             host.dispatch_event(effect, JuicerParams::kHalationActive, OFX::eChangePluginEdit);
-            check("four-route-inactive-halation", frame, active, false, {3, 1});
-            require(!halation_snapshot().descriptor, "inactive halation count-one optional absence on each route/polarity");
+            check("four-route-inactive-halation", frame, active, false, {3, 1}, "landscape", [&](const auto&) {
+                require((prepared_policy_snapshot().policy.optics.flags & FJ_OPTICS_SCATTER_HALATION) == 0,
+                        "inactive halation is absent from accepted Rust frame policy");
+            });
             host.set_int_value(JuicerParams::kHalationActive, 1);
             host.dispatch_event(effect, JuicerParams::kHalationActive, OFX::eChangePluginEdit);
-            check("four-route-active-metadata", frame, active, false, {3, 1});
-            require(halation_snapshot().descriptor.has_value(), "active halation reaches each direct/print polarity callback");
+            check("four-route-active-metadata", frame, active, false, {3, 1}, "landscape", [&](const auto&) {
+                require((prepared_policy_snapshot().policy.optics.flags & FJ_OPTICS_SCATTER_HALATION) != 0,
+                        "active halation reaches accepted Rust frame policy on each route/polarity");
+            });
             for (unsigned mask = 0; mask < 4; ++mask) {
+                check_id_override = "diffusion-camera-enlarger-combinations/mask-" + std::to_string(mask);
                 host.set_int_value(JuicerParams::kCameraDiffusionEnabled, (mask & 1) != 0);
                 host.set_int_value(JuicerParams::kPrintDiffusionEnabled, (mask & 2) != 0);
                 host.dispatch_event(effect, JuicerParams::kCameraDiffusionEnabled, OFX::eChangePluginEdit);
-                check("diffusion-camera-enlarger-combinations", frame, active, false, {3, 1});
-                const auto diffusion = diffusion_snapshot();
-                require(static_cast<unsigned>(diffusion.route) == route, "current admitted route and capture polarity");
-                const unsigned flags = (mask & 1) | (route % 2 ? mask & 2 : 0);
-                require(diffusion.descriptor.has_value() == (flags != 0), "hash-selected diffusion inactivity on all routes");
-                if (diffusion.descriptor)
-                    require(diffusion.descriptor->camera.has_value() == ((flags & 1) != 0) && diffusion.descriptor->enlarger.has_value() == ((flags & 2) != 0), "camera/enlarger stage association on all routes");
+                const unsigned requestedStages = (mask & 1u ? FJ_OPTICS_CAMERA_DIFFUSION : 0u) |
+                                                 (route % 2 ? (mask & 2u ? FJ_OPTICS_ENLARGER_DIFFUSION : 0u) : 0u);
+                check("diffusion-camera-enlarger-combinations", frame, active, false, {3, 1}, "landscape", [&](const auto&) {
+                    const unsigned actualStages = prepared_policy_snapshot().policy.optics.flags &
+                                                  (FJ_OPTICS_CAMERA_DIFFUSION | FJ_OPTICS_ENLARGER_DIFFUSION);
+                    require(actualStages == requestedStages, "accepted Rust frame policy preserves camera/enlarger stage selection on all routes");
+                });
             }
             auto diffusionSquare = squareFacts;
             diffusionSquare.definition = diffusionSquare.source;
@@ -3196,6 +3487,7 @@ namespace {
                 check("print-partial-window-rejected-before-scalar", frame, partial, true, {1, 0});
             }
         }
+        route_prefix = "shared/";
         host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(Spektrafilm::ScanRoute::NegativeDirectScan));
         host.set_int_value(JuicerParams::kCameraDiffusionEnabled, 1);
         host.dispatch_event(effect, JuicerParams::kCameraDiffusionEnabled, OFX::eChangePluginEdit);
@@ -3204,16 +3496,16 @@ namespace {
         diffusionFailure.definitionWidth = 7;
         diffusionFailure.definitionHeight = 5;
         require(fj_test_diffusion_frame_fault(3, 1).category == FJ_STATUS_SUCCESS, "arm bounded diffusion callback failure");
-        check("rust-diffusion-failure-short-circuits-halation-effects", frame, diffusionFailure, true, {2, 0, 0});
+        check("rust-diffusion-failure-short-circuits-halation-effects", frame, diffusionFailure, true, {1, 0});
         auto invalidPhysical = geometry;
         invalidPhysical.source = {7, 5, 0, 0};
         invalidPhysical.sourceWidth = -7;
         invalidPhysical.sourceHeight = -5;
-        check("descriptor-failure-before-effects-query", frame, invalidPhysical, true, {2, 0, 0}, "negative");
+        check("descriptor-failure-before-effects-query", frame, invalidPhysical, true, {1, 0}, "negative");
         host.set_int_value(JuicerParams::kCameraDiffusionEnabled, 0);
         host.set_int_value(JuicerParams::kHalationActive, 1);
         host.dispatch_event(effect, JuicerParams::kCameraDiffusionEnabled, OFX::eChangePluginEdit);
-        check("halation-pixel-failure-before-effects-query", frame, invalidPhysical, true, {2, 0, 1, false}, "negative");
+        check("halation-pixel-failure-before-effects-query", frame, invalidPhysical, true, {1, 0}, "negative");
         host.set_double_value(JuicerParams::kCameraFilmFormatMm, -1);
         host.dispatch_event(effect, JuicerParams::kCameraFilmFormatMm, OFX::eChangePluginEdit);
         require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingInvalid, "pending controls invalid for priority cases");
@@ -3237,26 +3529,114 @@ namespace {
         check("invalid-state-before-scalar", frame, geometry, true, {1, 0});
         host.unbind_effect();
         host.write_trace(tracePath);
-        std::cout << "PASS actual frame geometry callbacks, three phases, four routes, failure priority and image leases\n";
+        std::cout << "PASS prepared Rust frame policy, three phases, four routes, failure priority and image leases\n";
     }
 
 } // namespace
 
-int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-level catches map all fixture failures.
+int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-level catches map all fixture failures.
+    if (JuicerTests::list_requested(argc, argv)) {
+        if (argc == 8 && std::string_view(argv[1]) == "--frame-geometry") {
+            JuicerTests::list_case("adapter_operation", "frame_geometry");
+            for (const auto& id : frame_geometry_case_ids())
+                JuicerTests::list_case("frame_geometry", id);
+            return 0;
+        }
+        if (argc == 6 && (std::string_view(argv[1]) == "--loaded-module" || std::string_view(argv[1]) == "--stream-contract")) {
+            JuicerTests::list_case("adapter_operation", std::string(std::string_view(argv[1]) == "--stream-contract" ? "stream_contract" : "loaded_module"));
+            if (std::string_view(argv[1]) == "--stream-contract")
+                for (const char* stream : {"supplied-nonnull", "present-null", "absent"})
+                    for (const char* delay : {"immediate", "delayed"})
+                        JuicerTests::list_case("stream_render", std::string(stream) + "/" + delay);
+            return 0;
+        }
+        if ((argc == 4 || argc == 7) && std::string_view(argv[1]) == "--trace-output") {
+            JuicerTests::list_case("adapter_operation", "adapter_trace");
+            for (int failed_call : {1, 2})
+                JuicerTests::list_case("route_constructor_failure", std::to_string(failed_call));
+            for (unsigned failure = 0; failure < 3; ++failure)
+                JuicerTests::list_case("route_failure_recovery", std::to_string(failure + 1));
+            for (const char* route : {"direct", "print"}) {
+                for (unsigned film = 0; film < 3; ++film)
+                    for (unsigned print = 0; print < 3; ++print)
+                        JuicerTests::list_case("gamma_capture", std::string(route) + "/film/" + std::to_string(film) + "/print/" + std::to_string(print));
+                JuicerTests::list_case("gamma_capture", std::string(route) + "/print-range");
+                for (unsigned invalid = 0; invalid < 3; ++invalid)
+                    JuicerTests::list_case("gamma_capture", std::string(route) + "/invalid-film/" + std::to_string(invalid));
+                for (unsigned policy = 0; policy < 3; ++policy)
+                    JuicerTests::list_case("gamma_capture", std::string(route) + "/grain-policy/" + std::to_string(policy));
+                for (unsigned preset = 0; preset < 3; ++preset)
+                    for (unsigned policy = 0; policy < 3; ++policy)
+                        for (unsigned sample = 0; sample < 11; ++sample)
+                            JuicerTests::list_case("grain_capture", std::string(route) + "/preset/" + std::to_string(preset) + "/policy/" + std::to_string(policy) + "/sample/" + std::to_string(sample));
+                for (int choice : {-8, 0, 1, 2, 8}) {
+                    JuicerTests::list_case("grain_edit", std::string(route) + "/choice/" + std::to_string(choice));
+                    JuicerTests::list_case("grain_edit", std::string(route) + "/fallback/" + std::to_string(choice));
+                }
+                JuicerTests::list_case("grain_edit", std::string(route) + "/master-ratios");
+                JuicerTests::list_case("grain_edit", std::string(route) + "/manual-custom");
+                JuicerTests::list_case("grain_edit", std::string(route) + "/linked-sharpness-texture");
+                JuicerTests::list_case("grain_edit", std::string(route) + "/reset-advanced");
+                for (unsigned time = 0; time < 4; ++time)
+                    JuicerTests::list_case("grain_edit", std::string(route) + "/time/" + std::to_string(time));
+            }
+            for (const char* route : {"negative-direct", "negative-print", "positive-direct", "positive-print"}) {
+                JuicerTests::list_case("dir_capture", route);
+                for (unsigned flags = 0; flags < 4; ++flags)
+                    JuicerTests::list_case("scanner_capture", std::string(route) + "/flags/" + std::to_string(flags));
+                JuicerTests::list_case("scanner_capture", std::string(route) + "/sanitation-and-recovery");
+            }
+            if (argc == 7 && std::string_view(argv[3]) == "--grain-fixtures") {
+                const std::filesystem::path grain_manifest(argv[4]);
+                const std::string preset(argv[5]);
+                (void)preset;
+                for (unsigned route = 0; route < 4; ++route)
+                    for (unsigned input = 0; input < 24; ++input)
+                        JuicerTests::list_case("optics_capture", "route-" + std::to_string(route) + "/input-" + std::to_string(input));
+                const auto effects_path = grain_manifest.parent_path().parent_path() / "effects-fixtures/manifest.json";
+                const auto effects_manifest = nlohmann::json::parse(std::ifstream(effects_path));
+                const auto effects_path_data = effects_path.parent_path() / effects_manifest.at("presets").at(preset).at("ofx").get<std::string>();
+                const auto effects_capture = PrintIlluminantFixtures::apply(effects_path_data, nlohmann::json::parse(std::ifstream(effects_path_data))).at("ofx");
+                for (const auto& row : effects_capture) {
+                    const unsigned policy = row.at("policy");
+                    const unsigned index = row.at("index");
+                    if ((index == 5 && (policy == 0 || policy == 1 || policy == 4 || policy == 7)) || (index == 15 && policy == 0))
+                        JuicerTests::list_case("physical_capture", "route-" + std::to_string(row.at("route").get<unsigned>()) + "/policy-" + std::to_string(policy) + "/index-" + std::to_string(index));
+                }
+            }
+            return 0;
+        }
+        return 2;
+    }
+    JuicerTests::CaseLog case_log;
+    std::string operation_id = "adapter_trace";
+    if (argc > 1) {
+        const std::string_view mode(argv[1]);
+        if (mode == "--frame-geometry")
+            operation_id = "frame_geometry";
+        else if (mode == "--stream-contract")
+            operation_id = "stream_contract";
+        else if (mode == "--loaded-module")
+            operation_id = "loaded_module";
+    }
+    JuicerTests::CaseEvent operation("adapter_operation", operation_id);
     JuicerCuda::Owner cudaOwner;
     try {
         if (argc == 5 && (std::string_view(argv[1]) == "--loaded-module" || std::string_view(argv[1]) == "--stream-contract") &&
             std::string_view(argv[3]) == "--trace-output") {
             NativeHost host;
             run_loaded_module_callback(host, argv[2], argv[4], std::string_view(argv[1]) == "--stream-contract");
+            operation.passed();
+            case_log.finish();
             return 0;
         }
         if (argc == 7 && std::string_view(argv[1]) == "--frame-geometry") {
             cudaOwner.create(JuicerProcess::data_directory());
             if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess)
                 throw std::runtime_error("CUDA initialization failed");
-            JuicerProcess::root().ensure_bootstrap();
             run_frame_geometry_cases({.geometry = argv[2], .halation = argv[5], .diffusion = argv[6]}, argv[3], argv[4]);
+            operation.passed();
+            case_log.finish();
             return 0;
         }
         if ((argc != 3 && !(argc == 6 && std::string_view(argv[3]) == "--grain-fixtures")) || std::string_view(argv[1]) != "--trace-output") {
@@ -3269,7 +3649,6 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
         if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
             throw std::runtime_error("CUDA initialization failed");
         }
-        JuicerProcess::root().ensure_bootstrap();
         if (argc == 6)
             check_optics_capture(argv[4], argv[5]);
         NativeHost host;
@@ -3277,32 +3656,51 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             check_physical_capture(host, argv[4], argv[5]);
         ParamSnapshot routeSnapshot;
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        FocusedRenderStateBuildProduct routeProduct;
+        std::optional<PreparedState> routeProduct;
         std::string routeDiagnostic;
+        const auto prepareRoute = [&] {
+            std::array<char, 2048> text{};
+            FjErrorBuffer error{text.data(), text.size(), 0};
+            const FjStatus status = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(),
+                                                  routeSnapshot,
+                                                  routeProduct,
+                                                  error);
+            routeDiagnostic.assign(text.data(), std::min(error.length, text.size()));
+            require(status.api == FJ_API_NONE && status.native_code == 0 &&
+                        bool(routeProduct) == (status.category == FJ_STATUS_SUCCESS),
+                    "complete route construction returned inconsistent ownership");
+            if (!routeProduct)
+                return false;
+            FjPreparedStateView view{};
+            require(routeProduct->view(view, error).category == FJ_STATUS_SUCCESS &&
+                        view.route == static_cast<std::uint32_t>(routeSnapshot.scanRoute),
+                    "complete route construction changed selected route");
+            return true;
+        };
         require(
-            build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic),
+            prepareRoute(),
             "matching negative profile route did not build: " + routeDiagnostic);
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::PositiveDirectScan;
         routeDiagnostic.clear();
         require(
-            !build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic) &&
+            !prepareRoute() &&
                 routeDiagnostic.find("route mismatch") != std::string::npos,
             "mismatched negative profile route was not rejected");
         routeSnapshot.filmProfileKey = "fujifilm_provia_100f";
         routeDiagnostic.clear();
         require(
-            build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic),
+            prepareRoute(),
             "matching positive profile route did not build: " + routeDiagnostic);
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
         routeDiagnostic.clear();
         require(
-            !build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic) &&
+            !prepareRoute() &&
                 routeDiagnostic.find("route mismatch") != std::string::npos,
             "mismatched positive profile route was not rejected");
         RouteFaultTest::fail_on_call(1);
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::PositiveDirectScan;
         routeDiagnostic.clear();
-        require(build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic),
+        require(prepareRoute(),
                 "completed film family unexpectedly used the scalar route bridge");
         Spektrafilm::ScanRoute unusedRoute{};
         require(!Spektrafilm::resolve_scan_route(Spektrafilm::ProfilePolarity::Positive,
@@ -3312,7 +3710,10 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     routeDiagnostic.find("RouteResolutionFailure") != std::string::npos,
                 "remaining scalar route fault was consumed by the migrated builder");
         DeviceFrame frame;
+        const std::array<std::string, 2> constructor_failure_ids{{"1", "2"}};
+        JuicerTests::Cohort constructor_failure_rows("route_constructor_failure", std::vector<std::string>(constructor_failure_ids.begin(), constructor_failure_ids.end()));
         for (int failedCall : {1, 2}) {
+            auto row = constructor_failure_rows.case_event(std::to_string(failedCall));
             const std::size_t traceStart = host.trace_size();
             RouteFaultTest::fail_on_call(failedCall);
             bool creationFailed = false;
@@ -3332,7 +3733,11 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                                line.find("RouteResolutionFailure") != std::string::npos;
                     }),
                 "constructor route bridge failure omitted its host diagnostic");
+            row.passed();
         }
+        constexpr std::array<double, 3> recoveryExposureEv{{0.125, -0.25, 0.375}};
+        const std::array<std::string, 3> recovery_ids{{"1", "2", "3"}};
+        JuicerTests::Cohort route_recovery_rows("route_failure_recovery", std::vector<std::string>(recovery_ids.begin(), recovery_ids.end()));
         {
             JuicerEffect effect(host.effect_handle());
             host.bind_effect(effect);
@@ -3351,12 +3756,10 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                         has_valid_latch(first),
                     "first render did not acquire the current zero-EV value");
 
-            constexpr std::array<double, 3> recoveryExposureEv{{0.125,
-                                                                -0.25,
-                                                                0.375}};
             for (std::size_t failureIndex = 0;
                  failureIndex < recoveryExposureEv.size();
                  ++failureIndex) {
+                auto row = route_recovery_rows.case_event(std::to_string(failureIndex + 1));
                 const int failedCall = static_cast<int>(failureIndex) + 1;
                 const PendingRenderAdmissionResult retained =
                     JuicerTestSupport::EffectTraceObserver::admit(effect);
@@ -3378,8 +3781,8 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     retainedPrint ? retained.printState->buildCounter
                                   : retained.directState->buildCounter;
                 const std::uint64_t retainedRecipeHash =
-                    retainedPrint ? retained.printState->recipe.hash
-                                  : retained.directState->recipe.hash;
+                    retainedPrint ? prepared_recipe_hash(retained.printState->prepared)
+                                  : prepared_recipe_hash(retained.directState->prepared);
                 const Spektrafilm::ScanRoute retainedRoute =
                     retained.snapshot.scanRoute;
                 const double retainedExposureEv =
@@ -3398,7 +3801,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                                          retainedStateIdentity &&
                                      retained.printState->buildCounter ==
                                          retainedBuildCounter &&
-                                     retained.printState->recipe.hash ==
+                                     prepared_recipe_hash(retained.printState->prepared) ==
                                          retainedRecipeHash
                                : retained.status == PendingRenderAdmissionStatus::AdmittedDirect &&
                                      !retained.printState && retained.directState &&
@@ -3406,7 +3809,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                                          retainedStateIdentity &&
                                      retained.directState->buildCounter ==
                                          retainedBuildCounter &&
-                                     retained.directState->recipe.hash ==
+                                     prepared_recipe_hash(retained.directState->prepared) ==
                                          retainedRecipeHash;
                 };
 
@@ -3459,8 +3862,8 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                                                                 ? recoveredAdmission.printState->buildCounter
                                                                 : recoveredAdmission.directState->buildCounter;
                 const std::uint64_t recoveredRecipeHash = retainedPrint
-                                                              ? recoveredAdmission.printState->recipe.hash
-                                                              : recoveredAdmission.directState->recipe.hash;
+                                                              ? prepared_recipe_hash(recoveredAdmission.printState->prepared)
+                                                              : prepared_recipe_hash(recoveredAdmission.directState->prepared);
                 require(recoveredRoute.succeeded &&
                             !recoveredRoute.state.pendingInvalid &&
                             exposure_matches(
@@ -3478,6 +3881,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                                 recoveredRecipeHash &&
                             retained_state_unchanged(),
                         "route bridge failure did not replace publication while preserving the retained admission");
+                row.passed();
             }
 
             host.set_str_choice_value(
@@ -3799,12 +4203,31 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
 
             // Observe real OFX capture, including the one film narrowing and
             // already resolved grain controls before development construction.
+            std::vector<std::string> gamma_intended;
+            gamma_intended.reserve(50);
+            for (const char* route : {"direct", "print"}) {
+                for (unsigned film = 0; film < 3; ++film)
+                    for (unsigned print = 0; print < 3; ++print)
+                        gamma_intended.push_back(std::string(route) + "/film/" + std::to_string(film) + "/print/" + std::to_string(print));
+                gamma_intended.push_back(std::string(route) + "/print-range");
+                for (unsigned invalid = 0; invalid < 3; ++invalid)
+                    gamma_intended.push_back(std::string(route) + "/invalid-film/" + std::to_string(invalid));
+                for (unsigned policy = 0; policy < 3; ++policy)
+                    gamma_intended.push_back(std::string(route) + "/grain-policy/" + std::to_string(policy));
+            }
+            JuicerTests::Cohort gamma_rows("gamma_capture", gamma_intended);
             for (bool print : {false, true}) {
+                const std::string routeName = print ? "print" : "direct";
                 host.set_str_choice_value(JuicerParams::kParamScanRoute,
                                           Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan
                                                                             : Spektrafilm::ScanRoute::NegativeDirectScan));
-                for (double filmGamma : {0.05, 1.234567890123, 4.0}) {
-                    for (double printGamma : {0.5, 1.234567890123, 2.0}) {
+                const std::array<double, 3> film_gammas{0.05, 1.234567890123, 4.0};
+                const std::array<double, 3> print_gammas{0.5, 1.234567890123, 2.0};
+                for (std::size_t filmIndex = 0; filmIndex < film_gammas.size(); ++filmIndex) {
+                    for (std::size_t printIndex = 0; printIndex < print_gammas.size(); ++printIndex) {
+                        auto row = gamma_rows.case_event(routeName + "/film/" + std::to_string(filmIndex) + "/print/" + std::to_string(printIndex));
+                        const double filmGamma = film_gammas[filmIndex];
+                        const double printGamma = print_gammas[printIndex];
                         host.set_double_value(JuicerParams::kFilmGammaFactor, filmGamma);
                         host.set_double_value(JuicerParams::kPrintGammaFactor, printGamma);
                         host.dispatch_event(effect, JuicerParams::kFilmGammaFactor, OFX::eChangeUserEdit);
@@ -3815,12 +4238,14 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                                     std::bit_cast<std::uint64_t>(observed.pendingPrintGamma) ==
                                         std::bit_cast<std::uint64_t>(printGamma),
                                 "OFX film-f32/print-f64 capture bits changed");
+                        row.passed();
                     }
                 }
                 host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
                 host.set_double_value(JuicerParams::kPrintGammaFactor, 0.25);
                 host.dispatch_event(effect, JuicerParams::kPrintGammaFactor, OFX::eChangeUserEdit);
                 const auto printInvalid = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                auto print_range_row = gamma_rows.case_event(routeName + "/print-range");
                 require(print ? printInvalid.pendingInvalid : printInvalid.pendingValid,
                         "OFX print gamma validation lost its print-only range");
                 host.set_double_value(JuicerParams::kPrintGammaFactor, 1.0);
@@ -3828,16 +4253,22 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 const auto retained = JuicerTestSupport::EffectTraceObserver::admit(effect);
                 require(print ? bool(retained.printState) : bool(retained.directState),
                         "gamma recovery failed to admit a complete state");
-                for (double invalid : {std::nextafter(0.05, 0.0), std::nextafter(4.0, 5.0), std::numeric_limits<double>::quiet_NaN()}) {
+                print_range_row.passed();
+                const std::array<double, 3> invalid_gammas{std::nextafter(0.05, 0.0), std::nextafter(4.0, 5.0), std::numeric_limits<double>::quiet_NaN()};
+                for (std::size_t invalidIndex = 0; invalidIndex < invalid_gammas.size(); ++invalidIndex) {
+                    auto row = gamma_rows.case_event(routeName + "/invalid-film/" + std::to_string(invalidIndex));
+                    const double invalid = invalid_gammas[invalidIndex];
                     host.set_double_value(JuicerParams::kFilmGammaFactor, invalid);
                     host.dispatch_event(effect, JuicerParams::kFilmGammaFactor, OFX::eChangeUserEdit);
                     require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingInvalid &&
                                 JuicerTestSupport::EffectTraceObserver::admit(effect).status ==
                                     PendingRenderAdmissionStatus::InvalidSnapshotControls,
                             "invalid authored film gamma admitted an older publication");
+                    row.passed();
                 }
                 host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
                 for (int policy : {0, 1, 2}) {
+                    auto row = gamma_rows.case_event(routeName + "/grain-policy/" + std::to_string(policy));
                     host.set_int_value(JuicerParams::kGrainActive, policy != 0);
                     host.set_int_value(JuicerParams::kGrainSublayersActive, policy != 1);
                     host.set_double_value(JuicerParams::kGrainAmplitude, -1.25);
@@ -3855,17 +4286,30 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
                     require(print ? bool(admitted.printState) : bool(admitted.directState),
                             "grain capture did not admit a complete state");
-                    const auto* recipe = print ? &admitted.printState->recipe : &admitted.directState->recipe;
-                    require(recipe->filmDevelop.densityCurvesLayersRequired == (policy == 2) &&
-                                (policy == 0 || recipe->visualGrain.amplitude == grain.amplitude),
+                    FjPreparedStateView view{};
+                    read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, view);
+                    require((view.film_development.density_layers[0][0].count != 0) == (policy == 2) &&
+                                (policy == 0 || view.grain.amplitude == grain.amplitude),
                             "development repeated or changed resolved grain policy");
+                    row.passed();
                 }
             }
             std::cout << "PASS adapter/film-f32-print-f64-grain-capture-and-recovery\n";
             std::ostringstream grainCapture;
+            std::vector<std::unique_ptr<JuicerTests::CaseEvent>> grain_events;
+            grain_events.reserve(234);
 
             // Current OFX getters own these resolved controls until S6.B/C.
+            std::vector<std::string> grain_capture_intended;
+            grain_capture_intended.reserve(198);
+            for (const char* route : {"direct", "print"})
+                for (unsigned preset = 0; preset < 3; ++preset)
+                    for (unsigned policy = 0; policy < 3; ++policy)
+                        for (unsigned sample = 0; sample < 11; ++sample)
+                            grain_capture_intended.push_back(std::string(route) + "/preset/" + std::to_string(preset) + "/policy/" + std::to_string(policy) + "/sample/" + std::to_string(sample));
+            JuicerTests::Cohort grain_capture_rows("grain_capture", grain_capture_intended);
             for (bool print : {false, true}) {
+                const std::string routeName = print ? "print" : "direct";
                 host.set_str_choice_value(JuicerParams::kParamScanRoute,
                                           Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
                 for (int presetIndex : {0, 1, 2}) {
@@ -3880,6 +4324,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                         const double threshold = static_cast<double>(0.999f);
                         const std::array<double, 11> chromas{0.0, 0.375, 1.0, std::nextafter(threshold, 0.0), std::nextafter(threshold, 1.0), static_cast<double>(std::nextafter(0.999f, 0.0f)), static_cast<double>(std::nextafter(0.999f, 1.0f)), std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(), -1.0, 2.0};
                         for (std::size_t index = 0; index < amounts.size(); ++index) {
+                            grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_capture", routeName + "/preset/" + std::to_string(presetIndex) + "/policy/" + std::to_string(policy) + "/sample/" + std::to_string(index)));
                             host.set_int_value(JuicerParams::kGrainActive, policy != 0);
                             host.set_int_value(JuicerParams::kGrainSublayersActive, policy != 1);
                             host.set_double_value(JuicerParams::kGrainAmplitude, amounts[index]);
@@ -3909,10 +4354,13 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                             require(ordered, "all grain current getters retain exact order even disabled");
                             const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
                             require(print ? bool(admitted.printState) : bool(admitted.directState), "grain capture completes route");
-                            const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
-                            require(recipe.filmDevelop.densityCurvesLayersRequired == (policy == 2) &&
-                                        (policy == 0 || (recipe.visualGrain.amplitude == g.amplitude && recipe.visualGrain.chromaSharedWeight == g.chromaSharedWeight &&
-                                                         recipe.visualGrain.chromaIndependentWeight == g.chromaIndependentWeight)),
+                            FjPreparedStateView view{};
+                            read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, view);
+                            const auto& recipe = view.grain;
+                            const bool hasDensityLayers = view.film_development.density_layers[0][0].count != 0;
+                            require(hasDensityLayers == (policy == 2) &&
+                                        (policy == 0 || (recipe.amplitude == g.amplitude && recipe.chroma_shared_weight == g.chromaSharedWeight &&
+                                                         recipe.chroma_independent_weight == g.chromaIndependentWeight)),
                                     "resolved grain is consumed once");
                             grainCapture << "GRAIN_CAPTURE " << print << ' ' << presetIndex << ' ' << policy << ' ' << index
                                          << ' ' << std::bit_cast<std::uint64_t>(amounts[index]) << ' ' << std::bit_cast<std::uint64_t>(chromas[index]);
@@ -3944,7 +4392,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                             grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.clumpTemporalMix);
                             grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.clumpMorphPeriodSec);
                             grainCapture << ' ' << g.debugView;
-                            grainCapture << ' ' << recipe.visualGrain.hash << ' ' << recipe.visualGrain.densityCurvesLayersHash << ' ' << recipe.hash << '\n';
+                            grainCapture << ' ' << recipe.hash << ' ' << recipe.layers_hash << ' ' << view.recipe_hash << '\n';
                         }
                     }
                 }
@@ -3954,7 +4402,23 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             host.set_double_value(JuicerParams::kGrainChroma, 0.375);
 
 
+            std::vector<std::string> grain_edit_intended;
+            grain_edit_intended.reserve(36);
+            for (const char* route : {"direct", "print"}) {
+                for (int choice : {-8, 0, 1, 2, 8}) {
+                    grain_edit_intended.push_back(std::string(route) + "/choice/" + std::to_string(choice));
+                    grain_edit_intended.push_back(std::string(route) + "/fallback/" + std::to_string(choice));
+                }
+                grain_edit_intended.push_back(std::string(route) + "/master-ratios");
+                grain_edit_intended.push_back(std::string(route) + "/manual-custom");
+                grain_edit_intended.push_back(std::string(route) + "/linked-sharpness-texture");
+                grain_edit_intended.push_back(std::string(route) + "/reset-advanced");
+                for (unsigned time = 0; time < 4; ++time)
+                    grain_edit_intended.push_back(std::string(route) + "/time/" + std::to_string(time));
+            }
+            JuicerTests::Cohort grain_edit_rows("grain_edit", grain_edit_intended);
             for (bool print : {false, true}) {
+                const std::string routeName = print ? "print" : "direct";
                 host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
                 host.set_int_value(JuicerParams::kGrainActive, 1);
                 host.set_int_value(JuicerParams::kGrainSublayersActive, 1);
@@ -3964,7 +4428,9 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     const auto& g = observed.pendingGrain;
                     const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
                     require(print ? bool(admitted.printState) : bool(admitted.directState), "grain edit completes publication");
-                    const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
+                    FjPreparedStateView view{};
+                    read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, view);
+                    const auto& recipe = view.grain;
                     grainCapture << "GRAIN_EDIT_CAPTURE " << print << ' ' << label;
                     grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleAreaUm2);
                     grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleCmy[0]);
@@ -3994,11 +4460,12 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.clumpTemporalMix);
                     grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.clumpMorphPeriodSec);
                     grainCapture << ' ' << g.debugView;
-                    grainCapture << ' ' << recipe.visualGrain.hash << ' ' << recipe.visualGrain.densityCurvesLayersHash << ' ' << recipe.hash << '\n';
+                    grainCapture << ' ' << recipe.hash << ' ' << recipe.layers_hash << ' ' << view.recipe_hash << '\n';
                     const auto repeated = JuicerTestSupport::EffectTraceObserver::admit(effect);
                     require(print ? repeated.printState == admitted.printState : repeated.directState == admitted.directState, "same-time capture repeats reuse immutable publication");
                 };
                 for (int choice : {-8, 0, 1, 2, 8}) {
+                    grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/choice/" + std::to_string(choice)));
                     host.set_int_value(JuicerParams::kGrainPreset, choice);
                     const auto before = host.nested_event_count();
                     host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangeUserEdit);
@@ -4007,6 +4474,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     const auto unchanged = host.nested_event_count();
                     host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangeTime);
                     host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangePluginEdit);
+                    grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/fallback/" + std::to_string(choice)));
                     require(host.nested_event_count() == unchanged, "non-user preset events do not repeat setters");
                     const double nan = std::numeric_limits<double>::quiet_NaN();
                     for (const char* name : {JuicerParams::kGrainAmplitude, JuicerParams::kGrainBlur, JuicerParams::kGrainSharpness, JuicerParams::kGrainChroma, JuicerParams::kGrainTexture, JuicerParams::kGrainParticleAreaUm2, JuicerParams::kGrainSizeMixScale, JuicerParams::kGrainSizeMixWeight, JuicerParams::kGrainSizeMixWeightMid, JuicerParams::kGrainBlurDyeCloudsUm, JuicerParams::kGrainClumpTemporalMix, JuicerParams::kGrainClumpMorphPeriodSec})
@@ -4020,6 +4488,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     require(fallback.particleScaleCmy == std::array<float, 3>{1.48f, 1.48f, 1.48f}, "triplet fallback repeats preset master without ratios");
                     record("fallback-" + std::to_string(choice));
                 }
+                grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/master-ratios"));
                 host.set_int_value(JuicerParams::kGrainPreset, 1);
                 host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangeUserEdit);
                 host.set_double3_value(JuicerParams::kGrainParticleScale, {0.5, 1.0, 1.5});
@@ -4027,19 +4496,25 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 host.dispatch_event(effect, JuicerParams::kGrainParticleScaleMaster, OFX::eChangeUserEdit);
                 require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingGrain.particleScaleCmy == std::array<float, 3>{0.625f, 1.25f, 1.875f}, "master edit writes normalized current ratios once");
                 record("master-ratios");
+                grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/manual-custom"));
                 host.set_double3_value(JuicerParams::kGrainParticleScale, {2.0, 3.0, 4.0});
                 host.dispatch_event(effect, JuicerParams::kGrainParticleScale, OFX::eChangeUserEdit);
                 require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingGrain.particleScaleCmy == std::array<float, 3>{2.0f, 3.0f, 4.0f}, "manual triplets are captured without multiplying master");
                 record("manual-custom");
+                grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/linked-sharpness-texture"));
                 host.set_double_value(JuicerParams::kGrainSharpness, 0.25);
                 host.dispatch_event(effect, JuicerParams::kGrainSharpness, OFX::eChangeUserEdit);
                 host.set_double_value(JuicerParams::kGrainTexture, 0.75);
                 host.dispatch_event(effect, JuicerParams::kGrainTexture, OFX::eChangeUserEdit);
                 record("linked-sharpness-texture");
+                grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/reset-advanced"));
                 host.dispatch_event(effect, JuicerParams::kGrainResetAdvanced, OFX::eChangeUserEdit);
                 record("reset-advanced");
                 host.set_int_value(JuicerParams::kGrainActive, 0);
-                for (double time : {2.0, 0.0, 2.0, 2.0}) {
+                const std::array<double, 4> grain_times{2.0, 0.0, 2.0, 2.0};
+                for (std::size_t timeIndex = 0; timeIndex < grain_times.size(); ++timeIndex) {
+                    grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/time/" + std::to_string(timeIndex)));
+                    const double time = grain_times[timeIndex];
                     host.set_time(time);
                     host.dispatch_event(effect, JuicerParams::kGrainActive, OFX::eChangeTime);
                     record(time == 0.0 ? "disabled-backward" : "disabled-repeat");
@@ -4061,6 +4536,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 require(bool(expected), "independent native OFX grain words open");
                 std::istringstream actual(grainWords);
                 std::vector<std::string> originalWords;
+                originalWords.reserve(234);
                 for (std::string word; expected >> word;)
                     originalWords.push_back(word);
                 const auto selectedWords = PrintIlluminantFixtures::apply(expectedPath, originalWords);
@@ -4069,10 +4545,27 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     require(bool(actual >> actualWord) && word.get<std::string>() == actualWord, "exact native authored/captured/recipe/final grain words");
                 require(!(actual >> actualWord), "no extra grain capture records");
             }
+            require(grain_events.size() == 234, "complete grain case event membership");
+            for (auto& event : grain_events)
+                event->passed();
             std::cout << grainWords;
 
+            std::vector<std::string> dir_intended;
+            std::vector<std::string> scanner_intended;
+            dir_intended.reserve(4);
+            scanner_intended.reserve(20);
+            for (const char* route : {"negative-direct", "negative-print", "positive-direct", "positive-print"}) {
+                dir_intended.emplace_back(route);
+                for (unsigned flags = 0; flags < 4; ++flags)
+                    scanner_intended.push_back(std::string(route) + "/flags/" + std::to_string(flags));
+                scanner_intended.push_back(std::string(route) + "/sanitation-and-recovery");
+            }
+            JuicerTests::Cohort dir_rows("dir_capture", dir_intended);
+            JuicerTests::Cohort scanner_rows("scanner_capture", scanner_intended);
             for (bool positive : {false, true})
                 for (bool print : {false, true}) {
+                    const std::string routeName = std::string(positive ? "positive-" : "negative-") + (print ? "print" : "direct");
+                    auto dir_row = dir_rows.case_event(routeName);
                     host.set_str_choice_value(JuicerParams::kFilmProfileKey, positive ? "fujifilm_provia_100f" : "kodak_portra_400");
                     host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
                     host.set_int_value(JuicerParams::kGrainActive, 0);
@@ -4147,16 +4640,18 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     host.set_double3_value(JuicerParams::kDirCouplersLangmuirReceiverKRgb, {1, 1, 1});
                     host.set_double_value(JuicerParams::kDirCouplersDiffusionTailWeight, 0.03);
                     host.set_double_value(JuicerParams::kDirCouplersDiffusionTailUm, 200);
+                    dir_row.passed();
                 }
             std::cout << "PASS adapter/DIR-conditional-capture-narrowing-polarity-and-recovery\n";
 
             for (bool positive : {false, true})
                 for (bool print : {false, true}) {
+                    const std::string routeName = std::string(positive ? "positive-" : "negative-") + (print ? "print" : "direct");
                     host.set_str_choice_value(JuicerParams::kFilmProfileKey, positive ? "fujifilm_provia_100f" : "kodak_portra_400");
                     host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
                     host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
                     host.set_double_value(JuicerParams::kPrintGammaFactor, 1.0);
-                    const auto capture = [&]() {
+                    const auto capture = [&](bool expectPublication = true) {
                         const auto start = host.trace_size();
                         host.dispatch_event(effect, JuicerParams::kScannerBlackCorrection, OFX::eChangeUserEdit);
                         for (const char* name : {JuicerParams::kScannerBlackCorrection, JuicerParams::kScannerWhiteCorrection, JuicerParams::kScannerBlackLevel, JuicerParams::kScannerWhiteLevel}) {
@@ -4167,57 +4662,134 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                                     "scanner control uses exactly one current-value getter");
                         }
                         const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
-                        require(print ? bool(admitted.printState) : bool(admitted.directState), "scanner controls admit complete route");
+                        if (expectPublication) {
+                            require(print ? bool(admitted.printState) : bool(admitted.directState),
+                                    "scanner controls admit complete route: positive=" + std::to_string(positive) +
+                                        " print=" + std::to_string(print) + " status=" +
+                                        std::to_string(static_cast<unsigned>(admitted.status)) + " diagnostic=" + admitted.diagnostic);
+                        } else {
+                            require(admitted.status == PendingRenderAdmissionStatus::RebuildFailed &&
+                                        !admitted.directState && !admitted.printState,
+                                    "scanner constructor failure blocks route admission: positive=" +
+                                        std::to_string(positive) + " print=" + std::to_string(print) +
+                                        " status=" + std::to_string(static_cast<unsigned>(admitted.status)) +
+                                        " diagnostic=" + admitted.diagnostic);
+                        }
                         return admitted;
                     };
-                    const auto output = [&](const auto& admitted) -> const ScannerOutputRecipe& {
-                        return print ? admitted.printState->recipe.scannerOutput : admitted.directState->recipe.scannerOutput;
+                    const auto output = [&](const auto& admitted) {
+                        FjPreparedStateView view{};
+                        read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, view);
+                        return view.scanner_policy;
                     };
                     constexpr double black = 0.01234567890123;
                     constexpr double white = 0.98765432109876;
                     for (unsigned flags = 0; flags < 4; ++flags) {
+                        auto flags_row = scanner_rows.case_event(routeName + "/flags/" + std::to_string(flags));
                         host.set_int_value(JuicerParams::kScannerBlackCorrection, int(flags & 1u));
                         host.set_int_value(JuicerParams::kScannerWhiteCorrection, int((flags >> 1u) & 1u));
                         host.set_double_value(JuicerParams::kScannerBlackLevel, black);
                         host.set_double_value(JuicerParams::kScannerWhiteLevel, white);
                         const auto admitted = capture();
                         const auto& scanner = output(admitted);
-                        require(scanner.blackCorrection == bool(flags & 1u) && scanner.whiteCorrection == bool(flags & 2u) &&
-                                    scanner.blackLevel == static_cast<float>(black) && scanner.whiteLevel == static_cast<float>(white),
+                        require(scanner.black_correction == std::uint32_t(flags & 1u) && scanner.white_correction == std::uint32_t((flags >> 1u) & 1u) &&
+                                    scanner.black_level == static_cast<float>(black) && scanner.white_level == static_cast<float>(white),
                                 "scanner bools and f64-to-f32 narrowing survive actual OFX capture");
+                        flags_row.passed();
                     }
+                    auto recovery_row = scanner_rows.case_event(routeName + "/sanitation-and-recovery");
                     const auto held = capture();
-                    const auto heldHash = print ? held.printState->recipe.hash : held.directState->recipe.hash;
+                    const auto heldHash = print ? prepared_recipe_hash(held.printState->prepared) : prepared_recipe_hash(held.directState->prepared);
                     const auto active = host.render(effect, frame, "scanner-active");
                     require(active.succeeded, "active scanner correction renders for selected polarity/route");
 
                     host.set_double_value(JuicerParams::kScannerBlackLevel, -1.0);
                     host.set_double_value(JuicerParams::kScannerWhiteLevel, 2.0);
                     const auto clamped = capture();
-                    require(output(clamped).blackLevel == 0.0f && output(clamped).whiteLevel == 1.0f, "scanner encoded levels clamp to unit range");
+                    require(output(clamped).black_level == 0.0f && output(clamped).white_level == 1.0f, "scanner encoded levels clamp to unit range");
                     host.set_double_value(JuicerParams::kScannerBlackLevel, std::numeric_limits<double>::quiet_NaN());
                     host.set_double_value(JuicerParams::kScannerWhiteLevel, std::numeric_limits<double>::infinity());
                     const auto sanitized = capture();
-                    require(output(sanitized).blackLevel == 0.01f && output(sanitized).whiteLevel == 0.98f, "scanner nonfinite levels use control defaults");
+                    require(output(sanitized).black_level == 0.01f && output(sanitized).white_level == 0.98f, "scanner nonfinite levels use control defaults");
+                    const auto beforeFailure = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
 
                     if (positive || print) {
+                        require((print ? beforeFailure.printPublished : beforeFailure.directPublished) &&
+                                    !(print ? beforeFailure.directPublished : beforeFailure.printPublished),
+                                "scanner route has one selected publication before constructor failure");
                         host.set_double_value(JuicerParams::kScannerBlackLevel, 0.0);
                         host.set_double_value(JuicerParams::kScannerWhiteLevel, 0.0);
-                        const auto failedState = capture();
-                        require(output(failedState).whiteLevel == 0.0f, "computed correction failure is admitted before frame preparation");
-                        const auto failed = host.render(effect, frame, "scanner-computed-midgray-failure", true);
-                        require(failed.rejected && failed.state.pendingValid && failed.releasedImages == 2, "frame-stage correction failure releases both images after publication");
-                        require(output(held).blackLevel == static_cast<float>(black) && output(held).whiteLevel == static_cast<float>(white) &&
-                                    (print ? held.printState->recipe.hash : held.directState->recipe.hash) == heldHash,
-                                "held immutable scanner recipe survives a newer computed failure");
+                        const char* const expectedDiagnostic = print
+                                                                   ? "MalformedRequiredProfileData phase=8B print corrected midgray"
+                                                                   : "MalformedRequiredProfileData phase=8B direct corrected midgray";
+                        const auto failedAdmission = capture(false);
+                        require(failedAdmission.diagnostic == expectedDiagnostic,
+                                "scanner constructor failure preserves owning corrected-midgray diagnostic: " +
+                                    failedAdmission.diagnostic);
+
+                        std::optional<PreparedState> failedConstructor;
+                        std::array<char, 4096> constructorText{};
+                        FjErrorBuffer constructorError{
+                            constructorText.data(), constructorText.size(), 0};
+                        const FjStatus constructorStatus = prepare_state(
+                            JuicerProcess::root().assets().borrow_rust_assets(),
+                            failedAdmission.snapshot,
+                            failedConstructor,
+                            constructorError);
+                        const std::string constructorDiagnostic(
+                            constructorText.data(),
+                            std::min(constructorError.length, constructorText.size()));
+                        require(constructorStatus.category == FJ_STATUS_PREPARATION_FAILURE &&
+                                    constructorStatus.api == FJ_API_NONE && constructorStatus.native_code == 0 &&
+                                    !failedConstructor && constructorDiagnostic == expectedDiagnostic,
+                                "scanner complete constructor reports the typed preparation failure: " +
+                                    constructorDiagnostic);
+
+                        const auto failedState = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                        require(failedState.pendingValid &&
+                                    failedState.pendingFullHash == hash_params(failedAdmission.snapshot) &&
+                                    failedState.pendingFullHash != beforeFailure.pendingFullHash &&
+                                    failedState.lastParamHash == beforeFailure.lastParamHash &&
+                                    failedState.buildCounterNext == beforeFailure.buildCounterNext &&
+                                    !failedState.directPublished && !failedState.printPublished,
+                                "failed scanner construction keeps controls valid, clears the selected slot, leaves no alternate publication, and does not publish a new hash or counter");
+                        require(output(held).black_level == static_cast<float>(black) &&
+                                    output(held).white_level == static_cast<float>(white) &&
+                                    (print ? prepared_recipe_hash(held.printState->prepared)
+                                           : prepared_recipe_hash(held.directState->prepared)) == heldHash,
+                                "held immutable scanner recipe survives constructor failure");
+
+                        const auto failed = host.render(effect, frame, "scanner-constructor-midgray-failure", true);
+                        require(failed.rejected && failed.state.pendingValid && failed.releasedImages == 2,
+                                "OFX admission rejects the current constructor failure and releases both image leases");
+                        require(failed.state.pendingFullHash == failedState.pendingFullHash &&
+                                    failed.state.lastParamHash == beforeFailure.lastParamHash &&
+                                    failed.state.buildCounterNext == beforeFailure.buildCounterNext &&
+                                    !failed.state.directPublished && !failed.state.printPublished &&
+                                    failed.state.latchValid == beforeFailure.latchValid &&
+                                    failed.state.latchSnapshotId == beforeFailure.latchSnapshotId &&
+                                    failed.state.latchFrameToken == beforeFailure.latchFrameToken,
+                                "failed OFX admission does not select an older publication or alter the submission latch");
+                        require(output(held).black_level == static_cast<float>(black) && output(held).white_level == static_cast<float>(white) &&
+                                    (print ? prepared_recipe_hash(held.printState->prepared) : prepared_recipe_hash(held.directState->prepared)) == heldHash,
+                                "held immutable scanner recipe remains readable after failed OFX admission");
                     }
                     host.set_double_value(JuicerParams::kScannerBlackLevel, black);
                     host.set_double_value(JuicerParams::kScannerWhiteLevel, white);
                     const auto restored = capture();
                     const auto recoveredScanner = host.render(effect, frame, "scanner-recovery");
                     require(recoveredScanner.succeeded && recoveredScanner.outputSignature == active.outputSignature &&
-                                (print ? restored.printState->recipe.hash : restored.directState->recipe.hash) == heldHash,
+                                (print ? prepared_recipe_hash(restored.printState->prepared) : prepared_recipe_hash(restored.directState->prepared)) == heldHash,
                             "scanner valid recovery restores recipe and output identity");
+                    if (positive || print) {
+                        const auto recoveredState = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                        require(recoveredState.pendingValid &&
+                                    (print ? recoveredState.printPublished : recoveredState.directPublished) &&
+                                    recoveredState.lastParamHash == recoveredState.pendingFullHash &&
+                                    recoveredState.buildCounterNext == beforeFailure.buildCounterNext + 1,
+                                "scanner constructor failure recovers through one new complete publication");
+                    }
+                    recovery_row.passed();
                 }
             std::cout << "PASS adapter/scanner-current-capture-flags-sanitation-narrowing-active-routes-and-frame-recovery\n";
 
@@ -4228,6 +4800,8 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
         require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_SUCCESS,
                 "adapter terminal shutdown failed");
         host.write_trace(tracePath);
+        operation.passed();
+        case_log.finish();
         std::cout << "PASS adapter/first-render-current-value\n"
                   << "PASS adapter/two-authored-times\n"
                   << "PASS adapter/backward-seek-repeat\n"
@@ -4250,4 +4824,10 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
         fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         return 1;
     }
+} catch (const std::exception& error) {
+    std::cerr << "FAIL adapter trace setup: " << error.what() << '\n';
+    return 1;
+} catch (...) {
+    std::cerr << "FAIL adapter trace setup: unknown exception\n";
+    return 1;
 }

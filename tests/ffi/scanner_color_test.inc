@@ -76,12 +76,15 @@ namespace ScannerColorTests {
         }
     }
     void integrity() {
+        JuicerTests::CaseEvent event("scanner_color", "integrity_projection");
+        JuicerTests::Cohort integrity_rows("scanner_color.integrity_projection", {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"});
         Scanner::ScannerIlluminant illuminant{};
         illuminant.whiteXYZ[0] = 0.950455f;
         illuminant.whiteXYZ[1] = 1.0f;
         illuminant.whiteXYZ[2] = 1.089058f;
         illuminant.hash = 1234567;
         for (corruption = 1; corruption <= 10; ++corruption) {
+            auto row_event = integrity_rows.case_event(std::to_string(corruption));
             JuicerScanner::Test::set_color_projection(corrupt);
             bool rejected = false;
             try {
@@ -91,15 +94,20 @@ namespace ScannerColorTests {
             }
             JuicerScanner::Test::set_color_projection(nullptr);
             require(rejected, "new foreign projection integrity fails as typed preparation failure");
+            row_event.passed();
         }
+        auto zero_event = integrity_rows.case_event("11");
         corruption = 11;
         JuicerScanner::Test::set_color_projection(corrupt);
         const auto zero = Scanner::build_color_runtime(Scanner::ScannerMedium::Negative, illuminant, {}, 0);
         JuicerScanner::Test::set_color_projection(nullptr);
         corruption = 0;
         require(zero.hash == 0 && zero.encoding.inputIsOutputSpace, "final zero identity remains caller publication responsibility");
+        zero_event.passed();
+        event.passed();
     }
     void cold_first_access(const Json& supplement) {
+        JuicerTests::CaseEvent event("scanner_color", "cold_first_access");
         std::barrier barrier(16);
         std::array<FjScannerColor, 16> values{};
         std::array<FjStatus, 16> statuses{};
@@ -117,6 +125,7 @@ namespace ScannerColorTests {
             thread.join();
         for (std::size_t i = 0; i < values.size(); ++i)
             require(statuses[i].category == 0 && result(values[i]) == supplement.at("cases")[0].at("expected"), "scanner cold concurrent whole-constructor first access");
+        event.passed();
     }
     struct Expectations {
         const Json& supplement;
@@ -129,23 +138,28 @@ namespace ScannerColorTests {
         const auto& cat02 = expected.cat02;
         integrity();
         std::vector<std::pair<FjScannerColor, Json>> held;
-        for (auto operation : {fj_legacy_scanner_color_prepare, fj_test_scanner_color_prepare}) {
+        for (auto [operation, operation_name] : {std::pair{&fj_legacy_scanner_color_prepare, "legacy"}, std::pair{&fj_test_scanner_color_prepare, "facade"}}) {
             for (const auto& row : supplement.at("cases")) {
                 auto in = input(row.at("input"));
                 if (in.illuminant_hash == 0)
                     continue;
+                JuicerTests::CaseEvent event("scanner_color.supplement", std::string(operation_name) + "/" + row.at("id").get<std::string>());
                 auto v = prepare(operation, in);
                 require(result(v) == row.at("expected"), "all supplement words and identities");
                 held.emplace_back(v, row.at("expected"));
+                event.passed();
             }
             for (const auto& row : catalogue.at("scanner")) {
                 if (row.at("illuminant_hash") == 0)
                     continue;
+                const std::string id = std::to_string(row.at("medium").get<int>()) + "/" + std::to_string(row.at("tag").get<int>()) + "/" + std::to_string(row.at("encoded").get<int>());
+                JuicerTests::CaseEvent event("scanner_color.catalogue", std::string(operation_name) + "/" + id);
                 FjScannerColorInput in{row.at("medium"), row.at("tag"), row.at("encoded"), {0.950455f, 1.0f, 1.089058f}, row.at("illuminant_hash"), 7654321};
                 auto v = prepare(operation, in);
                 require(words(v.cat02, 9) == row.at("cat02") && words(v.xyz_to_rgb, 9) == row.at("xyz_to_rgb") && words(v.illuminant_xyz, 3) == row.at("illuminant_xyz") && v.hash == row.at("hash") && v.active_gamut_recipe_hash == row.at("gamut_recipe_hash"), "existing whole-builder raw/facade values");
                 require(v.output_space == row.at("tag") && v.flags == (2u | in.apply_cctf), "original byte and forced input flags");
                 encoding(v.encoding, catalogue.at("entries")[in.output_space < 9 ? in.output_space : 0]);
+                event.passed();
             }
             // Reuse accepted source-white threshold/nonfinite rows; do not reserialize fixtures.
             std::size_t whites = 0;
@@ -155,6 +169,7 @@ namespace ScannerColorTests {
                     const bool selected = id == "threshold-row-1-offset--1" || id == "threshold-row-1-offset-0" || id == "threshold-row-1-offset-1" || id == "source-special-0-3-xyz-0" || id == "source-special-0-4-xyz-0" || id == "source-special-0-5-xyz-0";
                     if (!selected)
                         continue;
+                    JuicerTests::CaseEvent event("scanner_color.cat02", std::string(operation_name) + "/" + id);
                     require(row.at("destination") == Json::array({catalogue.at("entries")[5].at("base")[8], catalogue.at("entries")[5].at("base")[9], catalogue.at("entries")[5].at("base")[10]}), "frozen CAT02 destination is selected catalogue white");
                     FjScannerColorInput in{0, 5, 1, {}, 1234567, 7654321};
                     for (int c = 0; c < 3; ++c)
@@ -168,11 +183,14 @@ namespace ScannerColorTests {
                     });
                     require(native != catalogue.at("scanner").end() && v.hash == native->at("hash"), "source white words do not independently enter runtime hash");
                     ++whites;
+                    event.passed();
                 }
             }
             require(whites == 6, "nonempty exact accepted white case membership");
         }
+        JuicerTests::CaseEvent retained_event("scanner_color", "caller_values_retained");
         for (const auto& [v, expected] : held)
             require(result(v) == expected, "caller-owned values survive subsequent preparations and input expiry");
+        retained_event.passed();
     }
 } // namespace ScannerColorTests

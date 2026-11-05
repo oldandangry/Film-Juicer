@@ -8,12 +8,11 @@
 
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
-#include "RenderRecipe.h"
 #include "FilmEffectsFrameDescriptors.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_descriptors.h"
 
-struct FocusedRenderPayload;
+struct FjHostPreparation;
 
 namespace JuicerCuda {
 
@@ -49,30 +48,18 @@ namespace JuicerCuda {
         bool traceVerbose = false;
     };
 
-    struct DirectExecutionInput {
-        const RenderRecipe& recipe;
-        const FocusedRenderPayload& payload;
-        const ExecutionFrame& frame;
-        ResourceManager::SubmissionSnapshot& snapshot;
-    };
-
-    struct PrintExecutionInput {
-        const RenderRecipe& recipe;
-        const FocusedRenderPayload& payload;
-        const ExecutionFrame& frame;
-        ResourceManager::SubmissionSnapshot& snapshot;
-    };
-
     struct PreparedExecutionInput {
         const JuicerProcess::Root::PreparedFrameInput& preparation;
         const PreparedDescriptors& descriptors;
         FilmPayloadInput film;
         float filmRouteCorrectionScale = 1.0f;
-        PrintExposureRecipe printExposure;
+        float printExposure = 0.0f;
+        float preflashExposure = 0.0f;
         std::uint64_t recipeHash = 0;
         bool cameraAutoEnabled = false;
         const ExecutionFrame& frame;
         ResourceManager::SubmissionSnapshot& snapshot;
+        const FjHostPreparation* hostPreparation = nullptr;
     };
 
     // Internal exception mapped by the caller after prepared-frame unwinding.
@@ -92,20 +79,6 @@ namespace JuicerCuda {
         const FrameRect& sourceBounds,
         const FrameRect& meterBounds,
         Spektrafilm::AutoExposureMethod method);
-
-    void execute_direct(
-        const DirectExecutionInput& input,
-        PendingContextLossRecovery& recovery,
-        FjAbortCallback abortCallback = {});
-    void execute_print(
-        const PrintExecutionInput& input,
-        PendingContextLossRecovery& recovery,
-        FjAbortCallback abortCallback = {});
-
-    PreparedDescriptors describe_execution(
-        const RenderRecipe& recipe,
-        const FocusedRenderPayload& payload,
-        const ExecutionFrame& frame);
 
     void execute_prepared(
         const PreparedExecutionInput& input,

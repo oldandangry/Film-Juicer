@@ -6,9 +6,63 @@
 #include <string.h>
 #include <wchar.h>
 #include "juicer_legacy_api.h"
+#include "juicer_cuda_call_scope.h"
 #include "grain_frame_abi_assertions.inc"
 #include "effects_frame_abi_assertions.inc"
 #include "production-film-expected.h"
+
+#define FJ_ABI_TYPE(type, size, alignment) \
+    _Static_assert(sizeof(type) == size, "size: " #type); \
+    _Static_assert(_Alignof(type) == alignment, "alignment: " #type);
+#define FJ_ABI_FIELD(type, field, offset) \
+    _Static_assert(offsetof(type, field) == offset, "offset: " #type "." #field);
+#define FJ_ABI_VALUE(tag, value) _Static_assert(tag == value, "value: " #tag);
+#include "prepared_call_abi_facts.inc"
+#undef FJ_ABI_TYPE
+#undef FJ_ABI_FIELD
+#undef FJ_ABI_VALUE
+
+_Static_assert(_Generic(((FjGrainCoefficients*)0)->flags, uint32_t: 1, default: 0), "grain flags width");
+_Static_assert(_Generic(((FjGrainCoefficients*)0)->debug_view, uint32_t: 1, default: 0), "grain debug width");
+_Static_assert(_Generic(((FjGrainCoefficients*)0)->sublayer_count, size_t: 1, default: 0), "grain layer count width");
+_Static_assert(_Generic(&((FjGrainCoefficients*)0)->micro_structure, float (*)[2]: 1, default: 0), "grain micro shape");
+_Static_assert(_Generic(&((FjGrainCoefficients*)0)->particle_density_min_cmy, float (*)[3]: 1, default: 0), "grain density shape");
+_Static_assert(_Generic(&((FjGrainCoefficients*)0)->uniformity_cmy, float (*)[3]: 1, default: 0), "grain uniformity shape");
+_Static_assert(_Generic(&((FjGrainCoefficients*)0)->layer_axis_block_prefix_max, float (*)[3][16]: 1, default: 0), "grain axis shape");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->render_outcome_valid, uint32_t: 1, default: 0), "completion validity width");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->abort_failed, uint32_t: 1, default: 0), "completion abort width");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->recovery_scope_entered, uint32_t: 1, default: 0), "completion recovery width");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->has_inspected_context, uint32_t: 1, default: 0), "completion context flag width");
+_Static_assert(_Generic(((FjCallCompletionInput*)0)->force_fatal, uint32_t: 1, default: 0), "completion fatal width");
+_Static_assert(_Generic(((FjCallCompletionResult*)0)->fatal, uint32_t: 1, default: 0), "completion result width");
+
+typedef FjStatus (*FjCallPrecheckFn)(void*, FjErrorBuffer*);
+typedef void (*FjCallReleaseFn)(void*);
+typedef FjStatus (*FjCallInspectFn)(void*, const FjFrame*, FjCudaContext*, FjErrorBuffer*);
+typedef FjStatus (*FjCallPreviewFn)(void*, const FjRect*, const FjRect*, uint32_t, FjAutoExposure*, FjErrorBuffer*);
+typedef FjStatus (*FjCallDescriptorsFn)(void*, const FjFrameMathInput*, FjNativeFrameDescriptors*, FjErrorBuffer*);
+typedef FjRenderOutcome (*FjCallRenderFn)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*);
+typedef FjCallCompletionResult (*FjCallCompleteFn)(void*, const FjCallCompletionInput*);
+typedef FjStatus (*FjHostScannerFn)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
+typedef FjStatus (*FjHostGaussianFn)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
+typedef FjStatus (*FjSelectFn)(void*, const FjCudaContext*, const FjSubmission*, FjSubmission*, FjErrorBuffer*);
+typedef FjStatus (*FjPolicyFn)(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
+typedef FjCallCompletionResult (*FjHeldRenderFn)(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer*);
+typedef FjCallCompletionResult (*FjUnavailableFn)(const FjAssets*, const FjPreparedState*, uint32_t, FjCudaCallAccess, const FjFrame*, FjAbortCallback, FjErrorBuffer*);
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->precheck, FjCallPrecheckFn: 1, default: 0), "precheck signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->admit, FjCallPrecheckFn: 1, default: 0), "admit signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->release, FjCallReleaseFn: 1, default: 0), "release signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->inspect, FjCallInspectFn: 1, default: 0), "inspect signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->preview, FjCallPreviewFn: 1, default: 0), "preview signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->frame_descriptors, FjCallDescriptorsFn: 1, default: 0), "descriptors signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->render, FjCallRenderFn: 1, default: 0), "render signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->complete, FjCallCompleteFn: 1, default: 0), "complete signature");
+_Static_assert(_Generic(((FjHostPreparation*)0)->scanner_lut, FjHostScannerFn: 1, default: 0), "scanner callback signature");
+_Static_assert(_Generic(((FjHostPreparation*)0)->gaussian, FjHostGaussianFn: 1, default: 0), "Gaussian callback signature");
+_Static_assert(_Generic(((FjSubmissionAccess*)0)->select, FjSelectFn: 1, default: 0), "submission callback signature");
+_Static_assert(_Generic(&fj_legacy_prepared_state_frame_policy, FjPolicyFn: 1, default: 0), "frame policy signature");
+_Static_assert(_Generic(&fj_legacy_prepared_state_render, FjHeldRenderFn: 1, default: 0), "held render signature");
+_Static_assert(_Generic(&fj_legacy_prepared_unavailable, FjUnavailableFn: 1, default: 0), "unavailable signature");
 
 /* Fixed reflected-boundary layouts, types, extents, tags and real signatures. */
 _Static_assert(sizeof(FjDirBoundaryInput) == 120 && _Alignof(FjDirBoundaryInput) == 8, "FjDirBoundaryInput layout");
@@ -1278,8 +1332,6 @@ static int effects_values(void) {
 }
 
 
-typedef FjStatus (*SpatialOpticsPrepare)(const FjSpatialOpticsParams*, FjSpatialOpticsRecipe*, FjSpatialOpticsFailure*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_spatial_optics_prepare, SpatialOpticsPrepare: 1, default: 0), "OFF spatial-optics C11 signature");
 _Static_assert(sizeof(FjDiffusionParams) == 80 && _Alignof(FjDiffusionParams) == 8, "OFF FjDiffusionParams layout");
 _Static_assert(offsetof(FjDiffusionParams, active) == 0, "OFF FjDiffusionParams.active");
 _Static_assert(offsetof(FjDiffusionParams, family) == 4, "OFF FjDiffusionParams.family");
@@ -1374,81 +1426,6 @@ _Static_assert(FJ_OPTICS_FIELD_GROUP_CENTERS == 13, "OFF FJ_OPTICS_FIELD_GROUP_C
 _Static_assert(FJ_OPTICS_FIELD_RESOLVED_HASH == 14, "OFF FJ_OPTICS_FIELD_RESOLVED_HASH");
 _Static_assert(FJ_OPTICS_FIELD_SIGMA_UM == 15, "OFF FJ_OPTICS_FIELD_SIGMA_UM");
 _Static_assert(FJ_OPTICS_FIELD_TOTAL_STRENGTH == 16, "OFF FJ_OPTICS_FIELD_TOTAL_STRENGTH");
-static FjDiffusionParams optics_diffusion_input(size_t index, size_t base, size_t flag) {
-    FjDiffusionParams out = {0};
-    double* fields[] = {&out.strength, &out.spatial_scale, &out.halo_warmth, &out.core_intensity,
-        &out.core_size, &out.halo_intensity, &out.halo_size, &out.bloom_intensity, &out.bloom_size};
-    out.active = optics_input_flags[index][flag];
-    out.family = optics_input_flags[index][flag + 1];
-    for (size_t i = 0; i < 9; ++i) memcpy(fields[i], &optics_input_doubles[index][base + i], sizeof(double));
-    return out;
-}
-static int optics_fields(const FjSpatialOpticsRecipe* out, size_t index) {
-    const FjDiffusionRecipe* recipes[] = {&out->camera_diffusion, &out->enlarger_diffusion};
-    for (size_t component = 0; component < 2; ++component) {
-        const FjDiffusionRecipe* r = recipes[component];
-        const double values[] = {r->scatter_fraction, r->group_weights[0], r->group_weights[1],
-            r->group_weights[2], r->group_lambda_um[0], r->group_lambda_um[1], r->group_lambda_um[2],
-            r->warmth, r->spatial_scale};
-        for (size_t i = 0; i < 9; ++i) {
-            uint64_t word;
-            memcpy(&word, &values[i], sizeof(word));
-            if (word != optics_doubles[index][component * 9 + i]) return 0;
-        }
-    }
-    const FjHalationRecipe* h = &out->scatter_halation;
-    const float values[] = {out->camera_lens_blur.sigma_um, h->scatter_amount, h->scatter_spatial_scale,
-        h->halation_spatial_scale, h->first_sigma_um[0], h->first_sigma_um[1], h->first_sigma_um[2],
-        h->total_strength[0], h->total_strength[1], h->total_strength[2]};
-    const uint32_t flags[] = {out->camera_diffusion.domain, out->camera_diffusion.active, out->camera_diffusion.family,
-        out->enlarger_diffusion.domain, out->enlarger_diffusion.active, out->enlarger_diffusion.family,
-        h->scatter_active, h->back_reflection_active};
-    const uint64_t hashes[] = {out->camera_diffusion.resolved_hash, out->camera_diffusion.hash,
-        out->enlarger_diffusion.resolved_hash, out->enlarger_diffusion.hash, out->camera_lens_blur.hash, h->hash, out->hash};
-    if (!words(values, optics_floats[index], 10)) return 0;
-    for (size_t i = 0; i < 8; ++i) if (flags[i] != optics_flags[index][i]) return 0;
-    for (size_t i = 0; i < 7; ++i) if (hashes[i] != optics_hashes[index][i]) return 0;
-    return 1;
-}
-static int optics_values(void) {
-    SpatialOpticsPrepare prepare = fj_legacy_spatial_optics_prepare;
-    const uint32_t expected[15][5] = {{0,0,0,0,3},{0,0,0,0,3},{0,0,0,0,3},{0,0,0,0,3},{0,0,0,0,3},{0,0,0,0,3},
-        {3,2,1,2,3},{3,2,1,1,3},{3,2,4,1,3},{3,2,1,2,3},{3,3,2,15,3},{3,4,3,16,0},{3,2,1,13,3},{2,1,0,0,3},{2,1,0,0,3}};
-    for (size_t index = 0; index < 15; ++index) {
-        FjSpatialOpticsParams input = {0};
-        input.camera_diffusion = optics_diffusion_input(index, 0, 0);
-        input.enlarger_diffusion = optics_diffusion_input(index, 9, 2);
-        input.scatter_halation.active = optics_input_flags[index][4];
-        input.print_domain = optics_input_flags[index][5];
-        float* fields[] = {&input.camera_lens_blur_um, &input.scatter_halation.scatter_amount,
-            &input.scatter_halation.scatter_spatial_scale, &input.scatter_halation.halation_amount,
-            &input.scatter_halation.halation_spatial_scale, &input.scatter_halation.first_sigma_um[0],
-            &input.scatter_halation.first_sigma_um[1], &input.scatter_halation.first_sigma_um[2],
-            &input.scatter_halation.primary_amount[0], &input.scatter_halation.primary_amount[1], &input.scatter_halation.primary_amount[2]};
-        for (size_t i = 0; i < 11; ++i) memcpy(fields[i], &optics_input_floats[index][i], sizeof(float));
-        if (index == 13) {
-            CHECK(strcmp(optics_names[index], "optics-raw-boolean") == 0);
-            CHECK(input.camera_diffusion.active == 2);
-            CHECK(input.enlarger_diffusion.active <= 1 && input.scatter_halation.active <= 1
-                && input.print_domain <= 1);
-        }
-        FjSpatialOpticsRecipe out;
-        memset(&out, 0x55, sizeof(out));
-        FjSpatialOpticsFailure failure = {99,98,97,96};
-        FjStatus value = prepare(index == 14 ? NULL : &input, &out, &failure, NULL);
-        CHECK(status(value, expected[index][0]));
-        CHECK(failure.reason == expected[index][1] && failure.component == expected[index][2]
-            && failure.field == expected[index][3] && failure.channel == expected[index][4]);
-        CHECK(optics_fields(&out, index));
-        printf("OPTICS_CASE %s category=%u api=%u native_code=%lld reason=%u component=%u field=%u channel=%u fields=pass\n",
-            optics_names[index], value.category, value.api, (long long)value.native_code,
-            failure.reason, failure.component, failure.field, failure.channel);
-    }
-    return 0;
-}
-
-typedef FjStatus (*PrintIlluminantPrepare)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_print_illuminant_prepare, PrintIlluminantPrepare: 1, default: 0), "OFF print illuminant C11 signature");
 _Static_assert(sizeof(FjPrintIlluminantParams) == 44 && _Alignof(FjPrintIlluminantParams) == 4, "OFF print params layout");
 _Static_assert(_Generic(((FjPrintIlluminantParams*)0)->edges_nm, float*: 1, default: 0) && offsetof(FjPrintIlluminantParams, edges_nm) == 0 && sizeof(((FjPrintIlluminantParams*)0)->edges_nm) == 4 * sizeof(float), "OFF print edges type/offset/count");
 _Static_assert(_Generic(((FjPrintIlluminantParams*)0)->transitions_nm, float*: 1, default: 0) && offsetof(FjPrintIlluminantParams, transitions_nm) == 16 && sizeof(((FjPrintIlluminantParams*)0)->transitions_nm) == 4 * sizeof(float), "OFF print transitions type/offset/count");
@@ -1457,53 +1434,10 @@ _Static_assert(sizeof(FjPrintIlluminantFailure) == 8 && _Alignof(FjPrintIllumina
 _Static_assert(_Generic(((FjPrintIlluminantFailure*)0)->reason, uint32_t: 1, default: 0) && _Generic(((FjPrintIlluminantFailure*)0)->sample, uint32_t: 1, default: 0), "OFF print failure types");
 _Static_assert(sizeof(FjIlluminant) == 324 && _Alignof(FjIlluminant) == 4 && offsetof(FjIlluminant, samples) == 0 && sizeof(((FjIlluminant*)0)->samples) == 81 * sizeof(float) && _Generic(((FjIlluminant*)0)->samples, float*: 1, default: 0), "OFF reused illuminant layout/type/count");
 _Static_assert(sizeof(FjFloatSpan) == 16 && _Alignof(FjFloatSpan) == 8 && offsetof(FjFloatSpan, data) == 0 && offsetof(FjFloatSpan, count) == 8 && _Generic(((FjFloatSpan*)0)->data, const float*: 1, default: 0) && _Generic(((FjFloatSpan*)0)->count, size_t: 1, default: 0), "OFF reused source span layout/types");
-static int print_illuminant_values(void) {
-    for (size_t i = 0; i < 12; ++i) {
-        FjPrintIlluminantParams params = {0};
-        float source[81];
-        memcpy(params.edges_nm, print_illuminant_edges[i], sizeof(params.edges_nm));
-        memcpy(params.transitions_nm, print_illuminant_transitions[i], sizeof(params.transitions_nm));
-        memcpy(params.cmy_cc, print_illuminant_cmy[i], sizeof(params.cmy_cc));
-        memcpy(source, print_illuminant_source[i], sizeof(source));
-        FjIlluminant out;
-        grain_fill(out.samples, 81, UINT32_C(0xc1500000));
-        FjPrintIlluminantFailure failure = {99, 98};
-        const FjPrintIlluminantParams* bound = i == 10 ? NULL : &params;
-        const FjFloatSpan span = {source, i == 11 ? 80 : 81};
-        FjStatus actual = fj_legacy_print_illuminant_prepare(bound, span, &out, &failure, NULL);
-        CHECK(status(actual, print_illuminant_envelopes[i][0]));
-        CHECK(failure.reason == print_illuminant_envelopes[i][1] && failure.sample == print_illuminant_envelopes[i][2]);
-        CHECK(words(out.samples, print_illuminant_samples[i], 81));
-        printf("PRINT_ILLUMINANT_CASE %s category=%u api=%u native_code=%d reason=%u sample=%u fields=81-pass\n", print_illuminant_names[i], actual.category, actual.api, actual.native_code, failure.reason, failure.sample);
-    }
-    return 0;
-}
 
-_Static_assert(_Generic(&fj_legacy_print_preflash_prepare, FjStatus (*)(const FjPrintPreflashInput*, FjPrintPreflashRaw*, FjPrintPreflashFailure*, FjErrorBuffer*): 1, default: 0), "OFF preflash C11 signature");
 _Static_assert(sizeof(FjPrintPreflashInput) == 48 && _Alignof(FjPrintPreflashInput) == 8 && offsetof(FjPrintPreflashInput, film_base_density) == 0 && offsetof(FjPrintPreflashInput, filtered_illuminant) == 16 && offsetof(FjPrintPreflashInput, print_sensitivity_cmy) == 32, "OFF preflash input layout");
 _Static_assert(sizeof(FjPrintPreflashRaw) == 12 && _Alignof(FjPrintPreflashRaw) == 4 && offsetof(FjPrintPreflashRaw, cmy) == 0 && sizeof(((FjPrintPreflashRaw*)0)->cmy)/sizeof(float) == 3, "OFF preflash raw layout");
 _Static_assert(sizeof(FjPrintPreflashFailure) == 8 && _Alignof(FjPrintPreflashFailure) == 4 && offsetof(FjPrintPreflashFailure, reason) == 0 && offsetof(FjPrintPreflashFailure, channel) == 4, "OFF preflash failure layout");
-static int preflash_values(void) {
-    for (size_t i = 0; i < 12; ++i) {
-        float base[81], light[81], sensitivity[243];
-        memcpy(base, preflash_base[i], sizeof(base));
-        memcpy(light, preflash_light[i], sizeof(light));
-        memcpy(sensitivity, preflash_sensitivity[i], sizeof(sensitivity));
-        FjPrintPreflashInput input = {{base, 81}, {light, 81}, {sensitivity, 243}};
-        FjPrintPreflashRaw out;
-        grain_fill(out.cmy, 3, UINT32_C(0xc1500000));
-        FjPrintPreflashFailure failure = {99, 98};
-        const FjPrintPreflashInput* bound = i == 9 ? NULL : &input;
-        if (i == 10) input.print_sensitivity_cmy.count = 242;
-        if (i == 11) input.filtered_illuminant.data = NULL;
-        FjStatus actual = fj_legacy_print_preflash_prepare(bound, &out, &failure, NULL);
-        CHECK(status(actual, preflash_envelopes[i][0]));
-        CHECK(failure.reason == preflash_envelopes[i][1] && failure.channel == preflash_envelopes[i][2]);
-        CHECK(words(out.cmy, preflash_raw[i], 3));
-        printf("PRINT_PREFLASH_CASE %s category=%u api=%u native_code=%d reason=%u channel=%u fields=3-pass\n", preflash_names[i], actual.category, actual.api, actual.native_code, failure.reason, failure.channel);
-    }
-    return 0;
-}
 
 _Static_assert(_Generic(&fj_legacy_print_balance_prepare, FjStatus (*)(const FjPrintBalanceInput*, FjPrintBalance*, FjPrintBalanceFailure*, FjErrorBuffer*): 1, default: 0), "OFF balance C11 signature");
 _Static_assert(sizeof(FjPrintBalanceInput) == 104 && _Alignof(FjPrintBalanceInput) == 8 && offsetof(FjPrintBalanceInput, film_base_density) == 0 && offsetof(FjPrintBalanceInput, film_channel_density_cmy) == 16 && offsetof(FjPrintBalanceInput, print_sensitivity_rgb) == 32 && offsetof(FjPrintBalanceInput, filtered_main_illuminant) == 48 && offsetof(FjPrintBalanceInput, baseline_density_cmy) == 64 && offsetof(FjPrintBalanceInput, compensated_density_cmy) == 76 && offsetof(FjPrintBalanceInput, reference_hash) == 88 && offsetof(FjPrintBalanceInput, normalization_mode) == 96, "OFF balance input layout");
@@ -1654,97 +1588,9 @@ static int scanner_correction_values(void) {
     return 0;
 }
 
-typedef FjStatus (*ScannerLutAcquire)(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*);
-typedef FjStatus (*ScannerLutView)(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
-typedef FjStatus (*ScannerLutRelease)(FjScannerLutOwner*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_scanner_lut_acquire, ScannerLutAcquire: 1, default: 0), "LUT acquire C11 signature");
-_Static_assert(_Generic(&fj_legacy_scanner_lut_view, ScannerLutView: 1, default: 0), "LUT view C11 signature");
-_Static_assert(_Generic(&fj_legacy_scanner_lut_release, ScannerLutRelease: 1, default: 0), "LUT release C11 signature");
 _Static_assert(sizeof(FjScannerLutInput)==160 && _Alignof(FjScannerLutInput)==8, "LUT input layout");
 _Static_assert(sizeof(FjScannerLutView)==104 && _Alignof(FjScannerLutView)==8, "LUT view layout");
 _Static_assert(sizeof(FjScannerLutFailure)==24 && _Alignof(FjScannerLutFailure)==8, "LUT failure layout");
-static int lut_fields(FjScannerLutFailure f, uint32_t reason, uint32_t buffer, uint64_t index, uint32_t channel) {
-    return f.reason==reason && f.buffer==buffer && f.index==index && f.channel==channel;
-}
-static void lut_report(const char* name, FjStatus s, FjScannerLutFailure f) {
-    printf("SCANNER_LUT_CASE %s category=%u api=%u native_code=%lld reason=%u channel=%u index=%llu buffer=%u fields=pass\n", name,s.category,s.api,(long long)s.native_code,f.reason,f.channel,(unsigned long long)f.index,f.buffer);
-}
-static FjScannerLutInput lut_input(float spectra[7][3], uint32_t resolution) {
-    FjScannerLutInput in={0};
-    memcpy(spectra[0],lut_input_eps_c,12);memcpy(spectra[1],lut_input_eps_m,12);memcpy(spectra[2],lut_input_eps_y,12);
-    memcpy(spectra[3],lut_input_weighted_x,12);memcpy(spectra[4],lut_input_weighted_y,12);memcpy(spectra[5],lut_input_weighted_z,12);memcpy(spectra[6],lut_input_baseline,12);
-    in.eps_c=(FjFloatSpan){spectra[0],3};in.eps_m=(FjFloatSpan){spectra[1],3};in.eps_y=(FjFloatSpan){spectra[2],3};
-    in.weighted_x=(FjFloatSpan){spectra[3],3};in.weighted_y=(FjFloatSpan){spectra[4],3};in.weighted_z=(FjFloatSpan){spectra[5],3};in.baseline_min=(FjFloatSpan){spectra[6],3};
-    memcpy(in.range_min_cmy,lut_input_range_min_cmy,12);memcpy(in.inverse_span_cmy,lut_input_inverse_span_cmy,12);memcpy(&in.inv_yn,lut_input_inv_yn,4);
-    in.sample_count=3;in.has_baseline=1;in.medium=0;in.resolution=resolution;
-    return in;
-}
-static FjStatus lut_expiring_acquire(uint32_t resolution,FjScannerLutOwner** owner,FjScannerLutFailure* failure,FjErrorBuffer* error) {
-    float spectra[7][3];FjScannerLutInput in=lut_input(spectra,resolution);
-    FjStatus result=fj_legacy_scanner_lut_acquire(&in,owner,failure,error);
-    memset(spectra,0x55,sizeof(spectra));memset(&in,0x55,sizeof(in));
-    return result;
-}
-static int lut_view_words(FjScannerLutView v,uint32_t r) {
-    const FjFloatSpan arrays[]={v.log2_xyz,v.slope_c,v.slope_m,v.slope_y,v.cell_min,v.cell_max};
-    const uint32_t* expected2[]={lut_2_log2_xyz,lut_2_slope_c,lut_2_slope_m,lut_2_slope_y,lut_2_cell_min,lut_2_cell_max};
-    const uint32_t* expected3[]={lut_3_log2_xyz,lut_3_slope_c,lut_3_slope_m,lut_3_slope_y,lut_3_cell_min,lut_3_cell_max};
-    CHECK(v.resolution==r);
-    for(size_t i=0;i<6;++i) {size_t side=i<4?r:r-1;size_t count=3*side*side*side;CHECK(arrays[i].data && arrays[i].count==count && words(arrays[i].data,(r==2?expected2:expected3)[i],count));}
-    return 0;
-}
-static int lut_empty(FjScannerLutView v) {
-    const FjFloatSpan arrays[]={v.log2_xyz,v.slope_c,v.slope_m,v.slope_y,v.cell_min,v.cell_max};
-    if(v.resolution) return 0;
-    for(size_t i=0;i<6;++i) if(arrays[i].data || arrays[i].count) return 0;
-    return 1;
-}
-static int lut_reject(const char* name,FjScannerLutInput in,uint32_t category,uint32_t reason,uint32_t buffer,uint64_t index,uint32_t channel) {
-    FjScannerLutOwner* owner=(FjScannerLutOwner*)(uintptr_t)0x5555;FjScannerLutFailure f={99,99,99,99};
-    char text[256];FjErrorBuffer error={text,sizeof(text),99};
-    FjStatus result=fj_legacy_scanner_lut_acquire(&in,&owner,&f,&error);
-    CHECK(status(result,category) && !owner && lut_fields(f,reason,buffer,index,channel));
-    CHECK(error.length<sizeof(text) && text[error.length]==0);
-    CHECK(strcmp(text,reason==1?"invalid scanner LUT arguments":reason==2?"canonical scan LUT resolution must be at least two":reason==3?"scanner LUT dimensions exceed addressable capacity":"canonical scan LUT build produced non-finite log2 XYZ")==0);
-    lut_report(name,result,f);return 0;
-}
-static int scanner_lut_values(void) {
-    for(uint32_t r=2;r<=3;++r) {
-        FjScannerLutOwner* owner=NULL;FjScannerLutFailure f={99,99,99,99};char text[256];FjErrorBuffer error={text,sizeof(text),99};
-        FjStatus result=lut_expiring_acquire(r,&owner,&f,&error);
-        CHECK(status(result,0) && owner && lut_fields(f,0,0,UINT64_MAX,UINT32_MAX) && error.length==0 && text[0]==0);
-        FjScannerLutView v;CHECK(status(fj_legacy_scanner_lut_view(owner,&v,&f,&error),0));CHECK(lut_view_words(v,r)==0 && lut_fields(f,0,0,UINT64_MAX,UINT32_MAX));
-        FjScannerLutView repeated;CHECK(status(fj_legacy_scanner_lut_view(owner,&repeated,&f,NULL),0) && repeated.log2_xyz.data==v.log2_xyz.data);CHECK(lut_view_words(repeated,r)==0);
-        CHECK(status(fj_legacy_scanner_lut_release(owner,NULL),0));owner=NULL;
-        lut_report(r==2?"LUT-A2":"LUT-A3",result,f);
-    }
-    float spectra[7][3];FjScannerLutInput base=lut_input(spectra,2),in=base;
-    in.resolution=1;CHECK(lut_reject("LUT-FAIL-RESOLUTION-1",in,3,2,0,UINT64_MAX,UINT32_MAX)==0);
-    in=base;in.resolution=UINT32_MAX;CHECK(lut_reject("LUT-FAIL-CAPACITY",in,4,3,1,UINT64_MAX,UINT32_MAX)==0);
-    in=base;in.eps_c.data=NULL;CHECK(lut_reject("LUT-FAIL-MISSING-SPAN",in,2,1,0,UINT64_MAX,UINT32_MAX)==0);
-    in=base;in.weighted_z.count=2;CHECK(lut_reject("LUT-FAIL-MISMATCHED-SPAN",in,2,1,0,UINT64_MAX,UINT32_MAX)==0);
-    in=base;in.medium=256;CHECK(lut_reject("LUT-FAIL-MEDIUM-256",in,2,1,0,UINT64_MAX,UINT32_MAX)==0);
-    in=base;in.has_baseline=2;CHECK(lut_reject("LUT-FAIL-BOOLEAN-2",in,2,1,0,UINT64_MAX,UINT32_MAX)==0);
-    in=base;in.sample_count=0;in.eps_c=in.eps_m=in.eps_y=in.weighted_x=in.weighted_y=in.weighted_z=in.baseline_min=(FjFloatSpan){(const float*)(uintptr_t)1,SIZE_MAX};
-    CHECK(lut_reject("LUT-MEDIUM-K0",in,3,5,0,0,0)==0);
-    for(uint32_t channel=0;channel<3;++channel) {
-        float zero=0,one=1,baseline=-1024;
-        in=(FjScannerLutInput){0};in.eps_c=in.eps_m=in.eps_y=(FjFloatSpan){&zero,1};
-        in.weighted_x=(FjFloatSpan){channel==0?&one:&zero,1};in.weighted_y=(FjFloatSpan){channel==1?&one:&zero,1};in.weighted_z=(FjFloatSpan){channel==2?&one:&zero,1};
-        in.baseline_min=(FjFloatSpan){&baseline,1};in.sample_count=1;in.inv_yn=1;in.has_baseline=1;in.medium=1;in.resolution=2;
-        in.inverse_span_cmy[0]=in.inverse_span_cmy[1]=in.inverse_span_cmy[2]=1;
-        const char* names[]={"LUT-SPECTRAL-EARLY-X","LUT-SPECTRAL-EARLY-Y","LUT-SPECTRAL-EARLY-Z"};CHECK(lut_reject(names[channel],in,3,5,0,0,channel)==0);
-    }
-    FjScannerLutView v;memset(&v,0x55,sizeof(v));FjScannerLutFailure f={99,99,99,99};
-    FjStatus result=fj_legacy_scanner_lut_view(NULL,&v,&f,NULL);CHECK(status(result,2)&&lut_empty(v)&&lut_fields(f,1,0,UINT64_MAX,UINT32_MAX));lut_report("LUT-FAIL-NULL-VIEW",result,f);
-    f=(FjScannerLutFailure){99,99,99,99};result=fj_legacy_scanner_lut_acquire(&base,(FjScannerLutOwner**)(uintptr_t)1,&f,NULL);CHECK(status(result,2)&&lut_fields(f,1,0,UINT64_MAX,UINT32_MAX));lut_report("LUT-FAIL-INDEPENDENT-OUTPUT-CLEAR",result,f);
-    FjErrorBuffer malformed={NULL,1,99};FjScannerLutOwner* owner=(FjScannerLutOwner*)(uintptr_t)0x5555;
-    result=fj_legacy_scanner_lut_acquire(&base,&owner,&f,&malformed);CHECK(status(result,2)&&!owner&&malformed.length==0&&lut_fields(f,1,0,UINT64_MAX,UINT32_MAX));lut_report("LUT-FAIL-MALFORMED-DIAGNOSTIC",result,f);
-    /* Release has no failure output; neutral metadata columns are sentinels. */
-    f=(FjScannerLutFailure){0,UINT32_MAX,UINT64_MAX,0};result=fj_legacy_scanner_lut_release(NULL,NULL);CHECK(status(result,0));lut_report("LUT-LIFE-NULL-RELEASE",result,f);
-    CHECK(status(fj_legacy_scanner_lut_acquire(&base,&owner,&f,NULL),0));result=fj_legacy_scanner_lut_release(owner,&malformed);owner=NULL;CHECK(status(result,2)&&malformed.length==0);lut_report("LUT-LIFE-CONSUMED-INVALID-DIAGNOSTIC",result,f);
-    return 0;
-}
 _Static_assert(offsetof(FjScannerLutInput,eps_c)==0, "FjScannerLutInput.eps_c offset");
 _Static_assert(offsetof(FjScannerLutInput,eps_m)==16, "FjScannerLutInput.eps_m offset");
 _Static_assert(offsetof(FjScannerLutInput,eps_y)==32, "FjScannerLutInput.eps_y offset");
@@ -2056,80 +1902,6 @@ static int post_cases(void) {
 _Static_assert(sizeof(FjGaussianKernelInput)==8 && _Alignof(FjGaussianKernelInput)==4 && offsetof(FjGaussianKernelInput,radius)==0 && offsetof(FjGaussianKernelInput,sigma_px)==4, "Gaussian input ABI");
 _Static_assert(sizeof(FjGaussianKernelView)==24 && _Alignof(FjGaussianKernelView)==8 && offsetof(FjGaussianKernelView,radius)==0 && offsetof(FjGaussianKernelView,sigma_px)==4 && offsetof(FjGaussianKernelView,weights)==8 && offsetof(FjFloatSpan,data)==0 && offsetof(FjFloatSpan,count)==8, "Gaussian view ABI");
 _Static_assert(sizeof(FjGaussianKernelFailure)==4 && _Alignof(FjGaussianKernelFailure)==4 && offsetof(FjGaussianKernelFailure,reason)==0, "Gaussian failure ABI");
-_Static_assert(_Generic(&fj_legacy_gaussian_kernel_acquire, FjStatus (*)(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*):1, default:0), "Gaussian acquire signature");
-_Static_assert(_Generic(&fj_legacy_gaussian_kernel_view, FjStatus (*)(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*):1, default:0), "Gaussian view signature");
-_Static_assert(_Generic(&fj_legacy_gaussian_kernel_release, FjStatus (*)(FjGaussianKernelOwner*, FjErrorBuffer*):1, default:0), "Gaussian release signature");
-static void gaussian_result(const char* name, FjStatus s, uint32_t reason, const FjGaussianKernelView* view) {
-    uint32_t sigma = 0;
-    if (view) memcpy(&sigma, &view->sigma_px, sizeof sigma);
-    printf("GAUSSIAN_CASE {\"case\":\"%s\",\"envelope\":[%u,%u,%d,%u],\"radius\":%d,\"sigma_bits\":%u,\"weights\":[",name,s.category,s.api,s.native_code,reason,view?view->radius:0,sigma);
-    if (view) for (size_t i=0;i<view->weights.count;++i) {
-        uint32_t word; memcpy(&word,view->weights.data+i,sizeof word);
-        printf("%s%u",i?",":"",word);
-    }
-    puts("]}");
-}
-static int gaussian_values(void) {
-    for (size_t i=0;i<sizeof(gaussian_rows)/sizeof(gaussian_rows[0]);++i) {
-        FjGaussianKernelInput input = {gaussian_rows[i].radius,0};
-        memcpy(&input.sigma_px,&gaussian_rows[i].sigma,sizeof(float));
-        FjGaussianKernelOwner* owner = NULL;
-        FjGaussianKernelFailure failure = {99};
-        FjGaussianKernelView view = {0};
-        char text[128] = "seed";
-        FjErrorBuffer error = {text,sizeof text,99};
-        FjStatus s = fj_legacy_gaussian_kernel_acquire(&input,&owner,&failure,&error);
-        CHECK(status(s,gaussian_rows[i].reason?3:0) && failure.reason==gaussian_rows[i].reason);
-        if (failure.reason) {
-            CHECK(owner==NULL && strcmp(text,failure.reason==2?"Gaussian kernel radius outside supported range":"invalid Gaussian kernel sigma")==0);
-        } else {
-            CHECK(owner!=NULL && error.length==0 && text[0]==0);
-            s = fj_legacy_gaussian_kernel_view(owner,&view,&failure,&error);
-            CHECK(status(s,0) && failure.reason==0 && view.radius==input.radius && view.weights.count==gaussian_rows[i].count && view.weights.data!=NULL);
-            uint32_t sigma; memcpy(&sigma,&view.sigma_px,sizeof sigma); CHECK(sigma==gaussian_rows[i].sigma);
-            for (size_t j=0;j<view.weights.count;++j) {
-                uint32_t word; memcpy(&word,view.weights.data+j,sizeof word); CHECK(word==gaussian_rows[i].words[j]);
-            }
-        }
-        gaussian_result(gaussian_rows[i].name,s,failure.reason,&view);
-        CHECK(status(fj_legacy_gaussian_kernel_release(owner,NULL),0));
-    }
-    const char* names[]={"radius-upper-reject","null-input","unaligned-input","null-owner-output","null-failure","malformed-diagnostic","null-view-owner","null-view-output","null-view-failure","view-malformed-diagnostic","zero-capacity","null-release","release-malformed-diagnostic"};
-    for (unsigned i=0;i<13;++i) {
-        FjGaussianKernelInput input={i==0?2049:3,1};
-        FjGaussianKernelOwner* owner=NULL;
-        FjGaussianKernelFailure failure={99};
-        FjGaussianKernelView view;
-        memset(&view,0x55,sizeof view);
-        FjErrorBuffer malformed={NULL,1,99}, zero={(char*)(uintptr_t)1,0,99};
-        FjStatus s;
-        if (i<=5) {
-            owner=(FjGaussianKernelOwner*)(uintptr_t)1;
-            s=fj_legacy_gaussian_kernel_acquire(i==1?NULL:i==2?(const FjGaussianKernelInput*)(uintptr_t)1:&input,i==3?NULL:&owner,i==4?NULL:&failure,i==5?&malformed:NULL);
-            CHECK(i==3 || owner==NULL);
-        } else if (i<=9) {
-            CHECK(status(fj_legacy_gaussian_kernel_acquire(&input,&owner,&failure,NULL),0));
-            s=fj_legacy_gaussian_kernel_view(i==6?NULL:owner,i==7?NULL:&view,i==8?NULL:&failure,i==9?&malformed:NULL);
-            CHECK(i==7 || (view.radius==0 && view.sigma_px==0 && view.weights.data==NULL && view.weights.count==0));
-            CHECK(status(fj_legacy_gaussian_kernel_release(owner,NULL),0));
-        } else if (i==10) {
-            s=fj_legacy_gaussian_kernel_acquire(&input,&owner,&failure,&zero);
-            CHECK(owner!=NULL && zero.length==0);
-            CHECK(status(fj_legacy_gaussian_kernel_release(owner,&zero),0));
-        } else if (i==11) s=fj_legacy_gaussian_kernel_release(NULL,NULL);
-        else {
-            CHECK(status(fj_legacy_gaussian_kernel_acquire(&input,&owner,&failure,NULL),0));
-            s=fj_legacy_gaussian_kernel_release(owner,&malformed);
-        }
-        const uint32_t reason=i==0?2:(i==10||i==11?0:1);
-        CHECK(status(s,reason==2?3:reason?2:0));
-        CHECK(i==4 || i==8 || i>=11 || failure.reason==reason);
-        gaussian_result(names[i],s,reason,NULL);
-    }
-    return 0;
-}
-
-
 static uint32_t frame_pixel_word(float pixel) {
     uint32_t word;
     memcpy(&word, &pixel, sizeof(word));
@@ -3621,16 +3393,11 @@ int main(int argc, char** argv) {
 #endif
     CHECK(prepared_state_values(path) == 0);
     CHECK(effects_values() == 0);
-    CHECK(optics_values() == 0);
-    CHECK(print_illuminant_values() == 0);
-    CHECK(preflash_values() == 0);
     CHECK(balance_values() == 0);
     CHECK(scanner_correction_values() == 0);
-    CHECK(scanner_lut_values() == 0);
     CHECK(scanner_color_values() == 0);
     CHECK(scanner_descriptor_values() == 0);
     CHECK(post_cases() == 0);
-    CHECK(gaussian_values() == 0);
     CHECK(frame_values() == 0);
     CHECK(halation_frame_values() == 0);
     CHECK(diffusion_frame_values() == 0);

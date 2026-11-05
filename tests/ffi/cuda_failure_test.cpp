@@ -8,6 +8,7 @@
 #include <cufft.h>
 #include <gtest/gtest.h>
 
+#include "gtest_cases.h"
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
 #include "Cuda/JuicerCudaDeviceLedger.h"
 #include "Cuda/JuicerCudaExecutor.h"
@@ -24,28 +25,48 @@ namespace {
     }
 
     TEST(CudaFailure, RuntimeCodesSelectRecoveryWithoutText) {
+        JuicerTests::GtestCohort runtime_terminal_cases("runtime-terminal", 3u);
+        std::size_t runtime_terminal_index = 0;
         for (const auto code : {cudaErrorContextIsDestroyed, cudaErrorDeviceUninitialized, cudaErrorCudartUnloading}) {
+            auto runtime_terminal_case = runtime_terminal_cases.case_event(std::to_string(runtime_terminal_index++));
             const Failure failure{JuicerCuda::runtime_failure_status(code), "renamed"};
             expect_status(failure.status, {FJ_STATUS_CONTEXT_LOSS, FJ_API_CUDA_RUNTIME, code});
             EXPECT_TRUE(JuicerCuda::context_loss(failure));
+
+            runtime_terminal_case.passed();
         }
+        JuicerTests::GtestCohort runtime_recovery_cases("runtime-recovery", 5u);
+        std::size_t runtime_recovery_index = 0;
         for (const auto code : {cudaErrorInvalidValue, cudaErrorNotReady, cudaErrorIllegalAddress, cudaErrorDevicesUnavailable, cudaErrorUnknown}) {
+            auto runtime_recovery_case = runtime_recovery_cases.case_event(std::to_string(runtime_recovery_index++));
             const Failure failure{JuicerCuda::runtime_failure_status(code), "context is destroyed device lost driver shutting down"};
             expect_status(failure.status, {FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, code});
             EXPECT_FALSE(JuicerCuda::context_loss(failure));
+
+            runtime_recovery_case.passed();
         }
     }
 
     TEST(CudaFailure, DriverCodesRetainApiAndRecovery) {
+        JuicerTests::GtestCohort driver_terminal_cases("driver-terminal", 3u);
+        std::size_t driver_terminal_index = 0;
         for (const auto code : {CUDA_ERROR_CONTEXT_IS_DESTROYED, CUDA_ERROR_INVALID_CONTEXT, CUDA_ERROR_DEINITIALIZED}) {
+            auto driver_terminal_case = driver_terminal_cases.case_event(std::to_string(driver_terminal_index++));
             const Failure failure{JuicerCuda::driver_failure_status(code), "renamed"};
             expect_status(failure.status, {FJ_STATUS_CONTEXT_LOSS, FJ_API_CUDA_DRIVER, code});
             EXPECT_TRUE(JuicerCuda::context_loss(failure));
+
+            driver_terminal_case.passed();
         }
+        JuicerTests::GtestCohort driver_recovery_cases("driver-recovery", 4u);
+        std::size_t driver_recovery_index = 0;
         for (const auto code : {CUDA_ERROR_INVALID_VALUE, CUDA_ERROR_NOT_INITIALIZED, CUDA_ERROR_DEVICE_UNAVAILABLE, CUDA_ERROR_UNKNOWN}) {
+            auto driver_recovery_case = driver_recovery_cases.case_event(std::to_string(driver_recovery_index++));
             const Failure failure{JuicerCuda::driver_failure_status(code), "device lost"};
             expect_status(failure.status, {FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_DRIVER, code});
             EXPECT_FALSE(JuicerCuda::context_loss(failure));
+
+            driver_recovery_case.passed();
         }
     }
 
@@ -81,7 +102,10 @@ namespace {
         try {
             throw JuicerCuda::ExecutionFailure{original};
         } catch (const JuicerCuda::ExecutionFailure& exception) {
+            JuicerTests::GtestCohort category_capacity_cases("category-capacity", 4u);
+            std::size_t category_capacity_index = 0;
             for (const std::size_t capacity : {0u, 1u, 5u, 64u}) {
+                auto category_capacity_case = category_capacity_cases.case_event(std::to_string(category_capacity_index++));
                 std::array<char, 64> bytes{};
                 FjErrorBuffer buffer{bytes.data(), capacity, 99};
                 expect_status(JuicerCuda::write_status(exception.failure.status, exception.failure.diagnostic, &buffer), original.status);
@@ -91,6 +115,8 @@ namespace {
                     EXPECT_EQ(bytes[buffer.length], '\0');
                     EXPECT_EQ(std::string(bytes.data(), buffer.length), original.diagnostic.substr(0, buffer.length));
                 }
+
+                category_capacity_case.passed();
             }
             expect_status(JuicerCuda::write_status(exception.failure.status, exception.failure.diagnostic, nullptr), original.status);
         }
@@ -145,7 +171,10 @@ namespace {
     }
 
     TEST(AllocationRetry, CapacityRetriesOnceRegardlessOfDiagnostic) {
+        JuicerTests::GtestCohort retry_wording_cases("retry-wording", 4u);
+        std::size_t retry_wording_index = 0;
         for (const auto* wording : {"out of memory", "device_cap_exceeded", "unrelated wording", ""}) {
+            auto retry_wording_case = retry_wording_cases.case_event(std::to_string(retry_wording_index++));
             scenario = {};
             scenario.first = {JuicerCuda::runtime_failure_status(cudaErrorMemoryAllocation), wording};
             Failure failure;
@@ -153,14 +182,19 @@ namespace {
             EXPECT_EQ(scenario.attempts, 2);
             EXPECT_EQ(scenario.reclaims, 1);
             EXPECT_TRUE(failure.diagnostic.empty());
+
+            retry_wording_case.passed();
         }
     }
 
     TEST(AllocationRetry, IdenticalTextCannotEnableRetryForOtherCategories) {
+        JuicerTests::GtestCohort retry_category_cases("retry-category", 4u);
+        std::size_t retry_category_index = 0;
         for (const auto status : {FjStatus{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0},
                                   JuicerCuda::runtime_failure_status(cudaErrorInvalidValue),
                                   JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED),
                                   JuicerCuda::cufft_failure_status(CUFFT_ALLOC_FAILED)}) {
+            auto retry_category_case = retry_category_cases.case_event(std::to_string(retry_category_index++));
             scenario = {};
             scenario.first = {status, "out of memory memory allocation device_cap_exceeded"};
             Failure failure;
@@ -169,6 +203,8 @@ namespace {
             EXPECT_EQ(scenario.reclaims, 0);
             expect_status(failure.status, status);
             EXPECT_EQ(failure.diagnostic, scenario.first.diagnostic);
+
+            retry_category_case.passed();
         }
     }
 

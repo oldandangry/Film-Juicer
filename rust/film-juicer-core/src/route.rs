@@ -31,6 +31,7 @@ pub fn resolve(capture_polarity: CapturePolarity, selection: RouteSelection) -> 
 
 #[cfg(test)]
 mod tests {
+    use crate::test_cases::RowCases;
     use super::{CapturePolarity, RouteSelection, ScanRoute, resolve};
 
     #[test]
@@ -57,8 +58,18 @@ mod tests {
                 ScanRoute::PositivePrint,
             ),
         ];
-        for (polarity, selection, expected) in cases {
+        let ids = [
+            "negative/direct",
+            "negative/print",
+            "positive/direct",
+            "positive/print",
+        ];
+        let mut row_cases = RowCases::new("route-resolution", ids);
+        for ((polarity, selection, expected), id) in cases.into_iter().zip(ids) {
+            let case = row_cases.case(id);
             assert_eq!(resolve(polarity, selection), expected);
+            case.passed();
         }
+        row_cases.finish();
     }
 }

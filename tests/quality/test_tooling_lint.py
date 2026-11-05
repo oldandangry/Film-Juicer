@@ -63,8 +63,13 @@ class ToolingLintTests(unittest.TestCase):
     def test_tracked_untracked_and_excluded_scope(self) -> None:
         subprocess.run(["git", "add", "scripts/space name.py"], cwd=self.root, check=True)
         self.write("tests/new.py", "pass\n")
-        for name in ("tests/fixtures/bad.py", "tests/generated/bad.py", "tests/vendor/bad.py", "scripts/vendored/bad.sh", ".juicer-local/private.py", "out/bad.py", "external/bad.py", "Resources/bad.py", "src/bad.py"):
-            self.write(name, "invalid !")
+        excluded = ("tests/fixtures/bad.py", "tests/generated/bad.py", "tests/vendor/bad.py",
+                    "scripts/vendored/bad.sh", ".juicer-local/private.py", "out/bad.py",
+                    "external/bad.py", "Resources/bad.py", "src/bad.py")
+        self.subtest_cases = excluded
+        for name in self.subtest_cases:
+            with self.subTest(case=name):
+                self.write(name, "invalid !")
         self.write(".gitignore", "scripts/ignored.py\n")
         self.write("scripts/ignored.py", "invalid !")
         files = tooling.source_files(self.root)
@@ -92,13 +97,17 @@ class ToolingLintTests(unittest.TestCase):
         self.assertEqual(workflow[workflow.index("-pyflakes") + 1], "")
 
     def test_missing_tools_fail(self) -> None:
-        for name in self.tools:
-            with self.subTest(tool=name), self.assertRaisesRegex(tooling.ToolingError, "missing"):
+        tools = tuple(self.tools)
+        self.subtest_cases = tuple(f"missing-{name}" for name in tools)
+        for case_id, name in zip(self.subtest_cases, tools):
+            with self.subTest(case=case_id), self.assertRaisesRegex(tooling.ToolingError, "missing"):
                 tooling.require_tool(name, str(self.root / "absent"), "--version", "unused")
 
     def test_wrong_versions_fail(self) -> None:
-        for name in self.tools:
-            with self.subTest(tool=name), mock.patch.object(tooling.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "wrong 99", "")), self.assertRaisesRegex(tooling.ToolingError, "wrong"):
+        tools = tuple(self.tools)
+        self.subtest_cases = tuple(f"wrong-version-{name}" for name in tools)
+        for case_id, name in zip(self.subtest_cases, tools):
+            with self.subTest(case=case_id), mock.patch.object(tooling.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "wrong 99", "")), self.assertRaisesRegex(tooling.ToolingError, "wrong"):
                 tooling.require_tool(name, self.tools[name], "--version", r"^expected$")
 
     def test_tool_failures_fail_the_gate(self) -> None:
@@ -121,10 +130,14 @@ class ToolingLintTests(unittest.TestCase):
         with self.assertRaisesRegex(tooling.ToolingError, "changed"):
             self.check()
 
-    def test_tool_edit_during_lint_fails(self) -> None:
-        self.mutation = lambda: Path(self.tools['ruff']).write_text("changed", encoding="utf-8")
-        with self.assertRaisesRegex(tooling.ToolingError, "changed"):
-            self.check()
+    def test_installed_tool_bytes_are_not_admission_inputs(self) -> None:
+        original = tooling.digest
+        tools = {Path(value) for value in self.tools.values()}
+        def source_digest(path):
+            self.assertNotIn(path, tools, "qualified tools must not be hashed")
+            return original(path)
+        with mock.patch.object(tooling, "digest", side_effect=source_digest):
+            self.assertEqual(self.check()["python"], 1)
 
     def test_missing_selected_input_fails(self) -> None:
         self.mutation = lambda: (self.root / "scripts/space name.py").unlink()
@@ -162,6 +175,22 @@ class ToolingLintTests(unittest.TestCase):
         shutil.rmtree(self.root / ".github")
         self.assertEqual(self.check(), {"python": 0, "shell": 0, "workflow": 0})
         self.assertEqual(len(self.commands), 3)
+
+
+ToolingLintTests.test_tracked_untracked_and_excluded_scope.required_subtests = True
+ToolingLintTests.test_tracked_untracked_and_excluded_scope.subtest_cases = (
+    "tests/fixtures/bad.py", "tests/generated/bad.py", "tests/vendor/bad.py",
+    "scripts/vendored/bad.sh", ".juicer-local/private.py", "out/bad.py",
+    "external/bad.py", "Resources/bad.py", "src/bad.py",
+)
+ToolingLintTests.test_missing_tools_fail.required_subtests = True
+ToolingLintTests.test_missing_tools_fail.subtest_cases = (
+    "missing-ruff", "missing-shellcheck", "missing-actionlint"
+)
+ToolingLintTests.test_wrong_versions_fail.required_subtests = True
+ToolingLintTests.test_wrong_versions_fail.subtest_cases = (
+    "wrong-version-ruff", "wrong-version-shellcheck", "wrong-version-actionlint"
+)
 
 
 if __name__ == "__main__":

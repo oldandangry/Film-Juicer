@@ -66,37 +66,4 @@ namespace Spectral {
         const float* destination = nullptr;
     };
 
-    // ============================================================================
-    // Film Raw Input
-    // ============================================================================
-
-    struct FilmRawConfig {
-        InputColorSpace inputColorSpace = InputColorSpace::DaVinciWideGamut;
-        bool applyCctfDecoding = false;
-        // Builders bind all three matrices before consuming this unready carrier.
-        Mat3 inputRGBToXYZ = make_identity_mat3();
-        Mat3 inputXYZAdapt = make_identity_mat3();
-        Mat3 xyzToLinearSrgb = make_identity_mat3();
-        bool applyInputChromaticAdapt = false;
-        SpectralUpsamplingMode spectralUpsamplingMode = SpectralUpsamplingMode::PreferHanatos;
-        float midgrayScale = 1.0f;
-        float midgrayDWG[3] = {0.184f, 0.184f, 0.184f};
-        float rawMidgray[3] = {1.0f, 1.0f, 1.0f};
-        float rawMidgrayGreen = 1.0f;
-        float inputWhiteXYZ[3] = {
-            gDWG_WhitePoint_XYZ[0],
-            gDWG_WhitePoint_XYZ[1],
-            gDWG_WhitePoint_XYZ[2]};
-        float workingWhiteXYZ[3] = {
-            gDWG_WhitePoint_XYZ[0],
-            gDWG_WhitePoint_XYZ[1],
-            gDWG_WhitePoint_XYZ[2]};
-        float refIllumWhiteXYZ[3] = {
-            gDWG_WhitePoint_XYZ[0],
-            gDWG_WhitePoint_XYZ[1],
-            gDWG_WhitePoint_XYZ[2]};
-        bool hasRefIllumWhite = false;
-        bool valid = false;
-    };
-
 } // namespace Spectral

@@ -1,4 +1,4 @@
-//! SF_TEMP_BRIDGE_PRINT_ILLUMINANT: synchronous fixed values; remove at S4.E.
+//! Checked print values and the retained raw balance edge.
 
 use std::fmt::{self, Write};
 use std::mem::{align_of, size_of};
@@ -6,20 +6,27 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use film_juicer_core::print;
 
+#[cfg(feature = "test-support")]
 use crate::asset_illuminant::FjIlluminant;
 use crate::cuda::sys::{
     FJ_API_NONE, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_SUCCESS,
     FJ_STATUS_UNSUPPORTED_INPUT, FjErrorBuffer, FjFloatSpan, FjStatus,
 };
 
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_ILLUMINANT_REASON_NONE: u32 = 0;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_ILLUMINANT_REASON_RAW: u32 = 1;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_ILLUMINANT_REASON_SAMPLE: u32 = 2;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_ILLUMINANT_REASON_ENERGY: u32 = 3;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_ILLUMINANT_REASON_PANIC: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(feature = "test-support")]
 pub(crate) struct FjPrintIlluminantParams {
     pub(crate) edges_nm: [f32; 4],
     pub(crate) transitions_nm: [f32; 4],
@@ -28,14 +35,19 @@ pub(crate) struct FjPrintIlluminantParams {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(feature = "test-support")]
 pub(crate) struct FjPrintIlluminantFailure {
     pub(crate) reason: u32,
     pub(crate) sample: u32,
 }
 
+#[cfg(feature = "test-support")]
 const _: () = assert!(size_of::<FjPrintIlluminantParams>() == 44);
+#[cfg(feature = "test-support")]
 const _: () = assert!(align_of::<FjPrintIlluminantParams>() == 4);
+#[cfg(feature = "test-support")]
 const _: () = assert!(size_of::<FjPrintIlluminantFailure>() == 8);
+#[cfg(feature = "test-support")]
 const _: () = assert!(align_of::<FjPrintIlluminantFailure>() == 4);
 
 fn valid_extent<T>(pointer: *const T, count: usize) -> bool {
@@ -108,11 +120,13 @@ impl Write for Diagnostic {
     }
 }
 
+#[cfg(feature = "test-support")]
 struct Failure {
     category: u32,
     details: FjPrintIlluminantFailure,
 }
 
+#[cfg(feature = "test-support")]
 impl Failure {
     fn raw() -> Self {
         Self {
@@ -143,6 +157,7 @@ impl Failure {
     }
 }
 
+#[cfg(feature = "test-support")]
 fn details(reason: u32) -> FjPrintIlluminantFailure {
     FjPrintIlluminantFailure {
         reason,
@@ -164,6 +179,7 @@ fn status(category: u32) -> FjStatus {
 /// record/backing are exclusive, mutually disjoint and disjoint from all inputs.
 /// Immutable input aliases are allowed. No pointer escapes synchronous return.
 /// Numeric extent checks do not establish allocation, lifetime or initialization.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn prepare(
     params: *const FjPrintIlluminantParams,
     source: FjFloatSpan,
@@ -247,51 +263,37 @@ pub(crate) unsafe fn prepare(
     }
 }
 
-/// # Safety
-/// The checked operation's initialized, live, aligned and disjoint input/output contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_print_illuminant_prepare(
-    params: *const FjPrintIlluminantParams,
-    source: FjFloatSpan,
-    out: *mut FjIlluminant,
-    failure: *mut FjPrintIlluminantFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The same checked synchronous operation retains no foreign pointer.
-    unsafe { prepare(params, source, out, failure, error) }
-}
-
-const _: unsafe extern "C" fn(
-    *const FjPrintIlluminantParams,
-    FjFloatSpan,
-    *mut FjIlluminant,
-    *mut FjPrintIlluminantFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_print_illuminant_prepare;
-
 // SF_TEMP_BRIDGE_PRINT_PREFLASH: fixed synchronous integral; remove S4.E.
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_PREFLASH_REASON_NONE: u32 = 0;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_PREFLASH_REASON_RAW: u32 = 1;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_PREFLASH_REASON_CHANNEL: u32 = 2;
+#[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_PREFLASH_REASON_PANIC: u32 = 3;
 
 #[repr(C)]
+#[cfg(feature = "test-support")]
 pub(crate) struct FjPrintPreflashInput {
     pub(crate) film_base_density: FjFloatSpan,
     pub(crate) filtered_illuminant: FjFloatSpan,
     pub(crate) print_sensitivity_cmy: FjFloatSpan,
 }
 #[repr(C)]
+#[cfg(feature = "test-support")]
 pub(crate) struct FjPrintPreflashRaw {
     pub(crate) cmy: [f32; 3],
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(feature = "test-support")]
 pub(crate) struct FjPrintPreflashFailure {
     pub(crate) reason: u32,
     pub(crate) channel: u32,
 }
 
+#[cfg(feature = "test-support")]
 fn preflash_details(reason: u32) -> FjPrintPreflashFailure {
     FjPrintPreflashFailure {
         reason,
@@ -299,10 +301,12 @@ fn preflash_details(reason: u32) -> FjPrintPreflashFailure {
     }
 }
 
+#[cfg(feature = "test-support")]
 struct PreflashFailure {
     category: u32,
     details: FjPrintPreflashFailure,
 }
+#[cfg(feature = "test-support")]
 impl PreflashFailure {
     fn raw() -> Self {
         Self {
@@ -334,6 +338,7 @@ impl PreflashFailure {
 /// Writable outputs and optional diagnostic record/backing are live, exclusive,
 /// mutually disjoint and disjoint from inputs through synchronous return.
 /// Address/count admission does not establish allocation, initialization or lifetime.
+#[cfg(feature = "test-support")]
 pub(crate) unsafe fn prepare_preflash(
     input: *const FjPrintPreflashInput,
     out: *mut FjPrintPreflashRaw,
@@ -416,25 +421,6 @@ pub(crate) unsafe fn prepare_preflash(
         }
     }
 }
-
-/// # Safety
-/// The same initialized, live, aligned and disjoint synchronous contract as prepare_preflash.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_print_preflash_prepare(
-    input: *const FjPrintPreflashInput,
-    out: *mut FjPrintPreflashRaw,
-    failure: *mut FjPrintPreflashFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The checked operation retains no pointer and admits each output independently.
-    unsafe { prepare_preflash(input, out, failure, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjPrintPreflashInput,
-    *mut FjPrintPreflashRaw,
-    *mut FjPrintPreflashFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_print_preflash_prepare;
 
 // SF_TEMP_BRIDGE_PRINT_BALANCE: complete fixed balance; retire at S4.E.
 pub(crate) const FJ_PRINT_BALANCE_REASON_NONE: u32 = 0;

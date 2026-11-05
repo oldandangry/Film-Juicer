@@ -1,0 +1,184 @@
+{
+  "schema": "native-gpu-contracts-v1",
+  "required": [
+    "Ffi.Gpu.PreparedBoundary.negative-direct",
+    "Ffi.Gpu.PreparedBoundary.negative-print",
+    "Ffi.Gpu.PreparedBoundary.positive-direct",
+    "Ffi.Gpu.PreparedBoundary.positive-print",
+    "Ffi.Gpu.PreparedStateLifetime",
+    "ScatterHalation.Gpu.PreparedFrame",
+    "ScatterHalation.Gpu.RouteBoundaries",
+    "ScatterHalation.Gpu.CapturedCarrier",
+    "ScatterHalation.Gpu.ZeroWork",
+    "ScatterHalation.Gpu.Lifecycle",
+    "Ffi.Gpu.CudaInspect",
+    "Ffi.Gpu.CudaInspect.MultiDevice",
+    "Ffi.Gpu.ProductionPreparedRender"
+  ],
+  "targets": {
+    "JuicerFilmRecipeTests": {
+      "protocol": "custom",
+      "registrations": 2
+    },
+    "JuicerPinnedUploadTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerGaussianKernelTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerScannerLutResourceTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerDeferredDestroyTests": {
+      "protocol": "custom",
+      "registrations": 5
+    },
+    "JuicerCudaInspectGpuTests": {
+      "protocol": "gtest",
+      "registrations": 2
+    },
+    "JuicerProfileCudaSafetyTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerProcessorReferenceProbe": {
+      "protocol": "custom",
+      "registrations": 4
+    },
+    "JuicerPreparedBoundaryProbe": {
+      "protocol": "custom",
+      "registrations": 12
+    },
+    "JuicerExecutorFailureOrderProbe": {
+      "protocol": "custom",
+      "registrations": 9
+    },
+    "JuicerAdapterTraceProbe": {
+      "protocol": "custom",
+      "registrations": 3
+    },
+    "JuicerScatterHalationGpuTests": {
+      "protocol": "custom",
+      "registrations": 8
+    },
+    "JuicerGrainScratchTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerDirExposureCacheTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerGrainDeltaTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerScannerOutputTests": {
+      "protocol": "gtest",
+      "registrations": 2
+    },
+    "JuicerColorPreparationTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerProductionPreparedRenderProbe": {
+      "protocol": "custom",
+      "registrations": 1
+    }
+  },
+  "native_cohorts": {
+    "Print.Gpu.BalanceCache": 3,
+    "Print.Gpu.PreflashCache": 3,
+    "Color.Gpu.ScannerReuse": 2,
+    "Resource.Gpu.GaussianKernel": 1,
+    "Grain.Gpu.DeltaFusion": 1,
+    "ScatterHalation.Gpu.HostContracts": 18,
+    "ScatterHalation.Gpu.PreparedFrame": 3,
+    "ScatterHalation.Gpu.TerminalRetention": 2,
+    "ScatterHalation.Gpu.FocusedCudaReference": 10,
+    "ScatterHalation.Gpu.RouteBoundaries": 4,
+    "ScatterHalation.Gpu.CapturedCarrier": 3,
+    "ScatterHalation.Gpu.ZeroWork": 3,
+    "ScatterHalation.Gpu.Lifecycle": 4,
+    "Ofx.Gpu.ProcessorReference": 1,
+    "Ofx.Gpu.SequentialOwners": 1,
+    "Ofx.Gpu.CutoverContract": 8,
+    "Ofx.Gpu.AcceptedCudaCaptures": 1,
+    "Ofx.Gpu.NoiseSourceLifetime": 4,
+    "Ofx.Gpu.WorkspaceTransitions": 2,
+    "Ofx.Gpu.ExecutorFailureOrder": 1,
+    "Ofx.Gpu.ResourceFailure.ScannerLut": 1,
+    "Ofx.Gpu.ResourceFailure.DefectFence": 1,
+    "Ofx.Gpu.ResourceFailure.GrainUpload": 1,
+    "Ofx.Gpu.EffectsFrame": 1,
+    "Ofx.Gpu.GrainFrame": 1,
+    "Ofx.Gpu.DirFrame": 1,
+    "Ofx.Gpu.FrameGeometry": 1,
+    "Ofx.Gpu.AdapterTrace": 9,
+    "Ofx.Gpu.StreamContract": 1,
+    "Ffi.Gpu.PreparedBoundary.negative-direct": 4,
+    "Ffi.Gpu.PreparedBoundary.negative-print": 4,
+    "Ffi.Gpu.PreparedBoundary.positive-direct": 4,
+    "Ffi.Gpu.PreparedBoundary.positive-print": 4,
+    "Ffi.Gpu.PreparedBoundary.combined-print": 8,
+    "Ffi.Gpu.PreparedBoundary.glare-plus-zero": 4,
+    "Ffi.Gpu.PreparedBoundary.glare-minus-zero": 4,
+    "Ffi.Gpu.PreparedBoundary.mallett-direct": 4,
+    "Ffi.Gpu.PreparedBoundary.arctic-print": 4,
+    "Ffi.Gpu.CudaRender.negative-direct": 20,
+    "Ffi.Gpu.CudaRender.negative-print": 20,
+    "Ffi.Gpu.PreparedStateLifetime": 52,
+    "Ffi.Gpu.ProductionPreparedRender": 1
+  },
+  "gtest_cohorts": {
+    "InspectGpu.AllocationCoverageIncludesFullSourceAndDestinationBounds": 1,
+    "PinnedUpload.ReservationFailuresPreserveRuntimeCodesWithoutDeviceReclaim": 1,
+    "PinnedUpload.FailedStagedCopyReturnsReservationAndNeverBorrowsCallerStorage": 1,
+    "PinnedUpload.ReservationDiagnosticFailurePreservesNativeStatus": 1,
+    "PinnedUpload.CopyDiagnosticFailureReturnsReservationAndPreservesNativeStatus": 1,
+    "PinnedUpload.CompletionDiagnosticFailurePreservesQuarantineAndContextLoss": 1,
+    "ScannerLut.ColdWarmAndCallbackFault": 4,
+    "ScannerLut.BothOwnerRechecks": 2,
+    "ScannerLut.SixUploadFailures": 2,
+    "ScannerLut.OrderedRetirementFailures": 2,
+    "ScannerLut.LaterGamutFailure": 1,
+    "ScannerLut.AsyncBackingAndTeardown": 1,
+    "ProfileCudaSafety.SingletonDuplicateAndInfiniteDomains": 1,
+    "ProfileCudaSafety.ClampsBeforeFloatToIndexConversion": 1,
+    "ProfileCudaSafety.NonfiniteLutContentsAndNarrowingCoordinatesUseRealConsumers": 1,
+    "ProfileCudaSafety.DirectAndPrintDevelopmentUseVariableAndDuplicateAxes": 1,
+    "ExposureCache.GaussianFirArraysMatchFrozenWordsAndWarmHitsDoNoConstruction": 1,
+    "ExposureCache.ReflectedBoundaryRootArraysWarmHitsClearFinishAndAbort": 1,
+    "ExposureCache.ReflectedBoundaryFailuresStagingAndIndependentEpoch": 1,
+    "ExposureCache.ReflectedBoundarySameKeyRaceAndPrepublicationCancellation": 1,
+    "ExposureCache.SourceBuildMatchesSeparateCacheAndDevelopedDensityBitForBit": 1,
+    "GrainScratch.PreparedFrameNoiseReleaseFailurePreservesConsumerAndRootOutcomes": 1,
+    "GrainScratch.GaussianPreparedArraysMatchFrozenWordsAndWarmHitsDoNoConstruction": 1,
+    "GrainScratch.ReusesFinishedRawCorrectionPlanesWithoutDedicatedGrainAllocations": 1,
+    "GrainScratch.FilmGammaRebuildReusesExactCurveAndLayerDeviceStorage": 1,
+    "GrainScratch.GrainMatchesDedicatedScratchBitForBitAcrossRoutesShapesTimesAndDebugViews": 1,
+    "GrainScratch.ReusesOnlyWithinEligibleRouteAndRetainedTier": 1,
+    "GrainScratch.SurvivesResolutionChangesQueuedAbortAndContextRetirement": 1,
+    "GrainScratch.AdmittedTierPreservesGrainBindingAndOutput": 1,
+    "ScannerOutput.TransferFunctionsMatchDoubleOracle": 4,
+    "ScannerOutput.EncodingFollowsBlurUnsharpWeaveAndGateAttenuation": 1,
+    "ScannerRoutes.CorrectionRoutes": 1,
+    "ScannerRoutes.GamutSwitchKeepsPreparedRenderingStable": 1,
+    "ScannerRoutes.PostConstructorResourcesReuseRebuildRejectAndRecover": 1,
+    "ScannerRoutes.FusedAndSeparateOutputMatchOnAllFourRoutes": 1,
+    "ScannerRoutes.RequiredLutFailuresAreReportedByBothScannerCallers": 3,
+    "ScannerRoutes.DeferredDirFailureComesFromReadbackBits": 1,
+    "ScannerRoutes.ResolutionTransitionRestoresLutContentAndOutput": 1,
+    "ScannerRoutes.PrintResourceCacheAcceptsPublishedValuesAcrossDescriptorChanges": 1,
+    "ScannerRoutes.LutConstructionFailuresPreserveCategoryAndCache": 1,
+    "ScannerRoutes.LutIdentityTracksSelectedProfileBoundsAndIlluminant": 1,
+    "ScannerRoutes.WholeNativeLutProductsSurviveActualPreparedUpload": 1
+  },
+  "excluded_gtest": {
+    "ExposureCache.DISABLED_SixKTiming": "Explicit CUDA-event timing benchmark; never part of ordinary CTest.",
+    "GrainScratch.DISABLED_SixKMemoryAndTiming": "Explicit 6K memory/timing benchmark; never part of ordinary CTest."
+  }
+}

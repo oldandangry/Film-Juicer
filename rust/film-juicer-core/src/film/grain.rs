@@ -376,6 +376,7 @@ mod tests {
     use crate::film::{self, Development};
     use crate::profile::Polarity;
     use crate::route::ScanRoute;
+    use crate::test_cases::RowCases;
     use serde_json::{Value, json};
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -484,7 +485,15 @@ mod tests {
         let row = &captured["products"][2];
         let with_layers = development(&assets, row, true);
         let without_layers = development(&assets, row, false);
-        for row in captured["controls"].as_array().unwrap() {
+        let rows = captured["controls"].as_array().unwrap();
+        let mut cases = RowCases::new(
+            "grain-controls",
+            rows.iter()
+                .enumerate()
+                .map(|(index, row)| format!("{}/row-{index}", row["id"].as_str().unwrap())),
+        );
+        for (index, row) in rows.iter().enumerate() {
+            let case = cases.case(format!("{}/row-{index}", row["id"].as_str().unwrap()));
             let development = if row["source_layers_hash"].as_u64().unwrap() == 0 {
                 &without_layers
             } else {
@@ -509,7 +518,9 @@ mod tests {
                     row["id"]
                 );
             }
+            case.passed();
         }
+        cases.finish();
         let mut controls = params(&row["controls"]);
         controls.particle_area_um2 = 0.0;
         assert_eq!(
@@ -522,11 +533,20 @@ mod tests {
     fn exact_native_normalized_total_axis_helper_domain() {
         let captured = fixture("values");
         assert_eq!(captured["metadata"].as_array().unwrap().len(), 144);
-        for row in captured["metadata"].as_array().unwrap() {
+        let rows = captured["metadata"].as_array().unwrap();
+        let mut cases = RowCases::new(
+            "grain-metadata",
+            rows.iter()
+                .enumerate()
+                .map(|(index, _)| format!("row/{index}")),
+        );
+        for (index, row) in rows.iter().enumerate() {
+            let case = cases.case(format!("row/{index}"));
             if row["polarity"] == 2 {
                 // Unsupported native polarity has no representation in a completed Development.
                 assert_eq!(row["finite"], json!(([false; 3])));
                 assert_eq!(row["prefix"], json!(([[0u32; 16]; 3])));
+                case.passed();
                 continue;
             }
             let curves: Vec<[f32; 3]> = row["normalized"]
@@ -543,7 +563,9 @@ mod tests {
             let (finite, prefix) = axis_search_metadata(&curves, polarity);
             assert_eq!(json!(finite), row["finite"]);
             assert_eq!(json!(prefix.map(|v| v.map(f32::to_bits))), row["prefix"]);
+            case.passed();
         }
+        cases.finish();
     }
 
     #[test]
@@ -551,7 +573,15 @@ mod tests {
         for (kind, count) in [("values", 36), ("synthetic", 28)] {
             let captured = fixture(kind);
             assert_eq!(captured["products"].as_array().unwrap().len(), count);
-            for row in captured["products"].as_array().unwrap() {
+            let rows = captured["products"].as_array().unwrap();
+            let mut cases = RowCases::new(
+                format!("grain-products-{kind}"),
+                rows.iter()
+                    .enumerate()
+                    .map(|(index, row)| format!("{}/row-{index}", row["key"].as_str().unwrap())),
+            );
+            for (index, row) in rows.iter().enumerate() {
+                let case = cases.case(format!("{}/row-{index}", row["key"].as_str().unwrap()));
                 let directory = if let Some(name) = row["source"].as_str() {
                     root()
                         .join("tests/film/grain-fixtures/synthetic")
@@ -593,7 +623,9 @@ mod tests {
                 assets.release_cached_payloads().unwrap();
                 drop(assets);
                 assert_eq!(project(&recipe), row["grain"], "{}", row["key"]);
+                case.passed();
             }
+            cases.finish();
         }
     }
 

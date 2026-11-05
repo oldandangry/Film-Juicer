@@ -33,6 +33,7 @@
 #include "RustGamutBridge.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "case_results.h"
 #include "spectral_allocation_probe.h"
 
 namespace JuicerAssets::OutputGamutTest {
@@ -109,7 +110,8 @@ namespace {
 
     public:
         Hold() = default;
-        explicit Hold(std::shared_ptr<BoundaryHold> input) : value(std::move(input)) {}
+        explicit Hold(std::shared_ptr<BoundaryHold> input)
+            : value(std::move(input)) {}
         explicit operator bool() const {
             return bool(value);
         }
@@ -157,7 +159,8 @@ namespace {
         }
 
     public:
-        explicit OutputCacheProbe(const std::filesystem::path& resources) : native(resources) {}
+        explicit OutputCacheProbe(const std::filesystem::path& resources)
+            : native(resources) {}
         ~OutputCacheProbe() {
             FjCacheMetrics m{};
             const auto result = fj_test_cache_metrics(owner(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &m, nullptr);
@@ -456,6 +459,7 @@ namespace {
     void controls(const std::filesystem::path& resources, const ControlInputs& inputs) {
         const auto& a = inputs.matching;
         const auto& conflict = inputs.conflicting;
+        JuicerTests::Cohort earlier_failures("output_gamut_cache.controls_earlier", {"false", "true"});
         {
             OutputCacheProbe library(resources);
             Worker actor(library, a, true);
@@ -528,6 +532,7 @@ namespace {
             require(acquire(library, a) == current, "last older payload release preserves current winner");
         }
         for (bool earlier : {false, true}) {
+            auto row_event = earlier_failures.case_event(earlier ? "true" : "false");
             OutputCacheProbe library(resources);
             const auto winner = acquire(library, a);
             const auto hull = library.input_compression_hull();
@@ -548,15 +553,21 @@ namespace {
             status(library.release_cached_payloads(), FJ_STATUS_INTERNAL_FAILURE);
             require(library.input_compression_hull() == hull, "A8 retained-hull rule unchanged");
             completed(winner, a);
+            row_event.passed();
         }
     }
 } // namespace
 int main(int argc, char** argv) {
     JuicerCuda::Owner owner;
     try {
+        JuicerTests::CaseLog case_log;
+        if (argc == 5 && std::string_view(argv[argc - 1]) == "--list-cases") {
+            for (const char* id : {"allocation_failures", "stale_warm_reuse", "selected_hold", "retry_failure", "controls"})
+                JuicerTests::list_case("output_gamut_cache", id);
+            return 0;
+        }
         require(argc == 4, "resources, fixture manifest, preset");
         owner.create(argv[1]);
-        JuicerProcess::root().ensure_bootstrap();
         std::ifstream input(argv[2]);
         Json manifest;
         input >> manifest;
@@ -568,61 +579,105 @@ int main(int argc, char** argv) {
         std::ifstream tables(directory / member["tables"].get<std::string>(), std::ios::binary);
         const auto b = expected(fixture["rows"][0], tables);
         const auto conflict = expected(fixture["rows"][1], tables);
-        for (unsigned allocation = 1; allocation <= 2; ++allocation) {
-            JuicerAssets::Library native(argv[1]);
-            std::string diagnostic;
-            auto warm = native.output_boundary_table(b.transform, diagnostic);
-            require(warm && warm->hash == b.hash && std::memcmp(warm->cmax.data(), b.words.data(), b.words.size() * sizeof(std::uint32_t)) == 0, "native forwarded boundary matches every frozen word");
-            SpectralAllocationProbe::arm(allocation);
-            bool failed = false;
-            try {
-                (void)native.output_boundary_table(b.transform, diagnostic);
-            } catch (const std::bad_alloc&) {
-                failed = true;
-            }
-            require(failed && SpectralAllocationProbe::bytes() != 0, "actual native boundary handle/control-block allocation failure");
-            SpectralAllocationProbe::clear();
-            status(native.release_cached_payloads(), FJ_STATUS_SUCCESS);
-            FjCacheMetrics metrics{};
-            status(fj_test_cache_metrics(native.borrow_rust_assets(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &metrics, nullptr), FJ_STATUS_SUCCESS);
-            require(metrics.allocations == 1 && metrics.destructions == 0, "native warm hold survives cache clear without a replacement allocation");
-            // Releasing the only successful wrapper must reclaim the entry; no
-            // failed wrapper may have leaked its earlier foreign acquisition.
-            warm.reset();
-            status(fj_test_cache_metrics(native.borrow_rust_assets(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &metrics, nullptr), FJ_STATUS_SUCCESS);
-            require(metrics.destructions == 1 && metrics.live_bytes == 0, "failed native boundary wrappers release their foreign holds");
-        }
+        std::vector<std::string> parameter_ids{"allocation/1", "allocation/2"};
         for (bool matching : {true, false}) {
-            const auto& a = matching ? b : conflict;
-            for (bool repeated : {false, true}) {
-                OutputCacheProbe library(argv[1]);
-                stale(library, a, b, repeated);
-                std::printf("W%u completion/identity/all-word/retention PASS\n", repeated ? matching ? 3u : 4u : matching ? 1u
-                                                                                                                          : 2u);
-            }
-            for (int variant = 0; variant < 2; ++variant) {
-                OutputCacheProbe library(argv[1]);
-                selection(library, a, b, variant, matching);
-                std::printf("W%u selected hold %s PASS\n", variant == 0 ? 6u : 7u, matching ? "matching" : "conflicting");
-            }
-            for (auto timing : {FailureTiming::SameGeneration, FailureTiming::AfterClear, FailureTiming::AfterRepeatedClear})
-                for (unsigned fault : {2u, 3u, 5u}) {
-                    OutputCacheProbe library(argv[1]);
-                    own_failure(library, a, b, timing, fault, matching, false);
+            for (bool repeated : {false, true})
+                parameter_ids.emplace_back("stale/matching-" + std::to_string(matching) + "/repeated-" + std::to_string(repeated));
+            for (int variant = 0; variant < 2; ++variant)
+                parameter_ids.emplace_back("selection/matching-" + std::to_string(matching) + "/variant-" + std::to_string(variant));
+            for (const auto timing : {FailureTiming::SameGeneration, FailureTiming::AfterClear, FailureTiming::AfterRepeatedClear})
+                for (unsigned fault : {2u, 3u, 5u})
+                    parameter_ids.emplace_back("fault/matching-" + std::to_string(matching) + "/timing-" + std::to_string(static_cast<unsigned>(timing)) + "/fault-" + std::to_string(fault));
+        }
+        JuicerTests::Cohort parameter_rows("output_gamut_cache.parameter_tuple", parameter_ids);
+        {
+            JuicerTests::CaseEvent event("output_gamut_cache", "allocation_failures");
+            for (unsigned allocation = 1; allocation <= 2; ++allocation) {
+                auto row_event = parameter_rows.case_event("allocation/" + std::to_string(allocation));
+                JuicerAssets::Library native(argv[1]);
+                std::string diagnostic;
+                auto warm = native.output_boundary_table(b.transform, diagnostic);
+                require(warm && warm->hash == b.hash && std::memcmp(warm->cmax.data(), b.words.data(), b.words.size() * sizeof(std::uint32_t)) == 0, "native forwarded boundary matches every frozen word");
+                SpectralAllocationProbe::arm(allocation);
+                bool failed = false;
+                try {
+                    (void)native.output_boundary_table(b.transform, diagnostic);
+                } catch (const std::bad_alloc&) {
+                    failed = true;
                 }
+                require(failed && SpectralAllocationProbe::bytes() != 0, "actual native boundary handle/control-block allocation failure");
+                SpectralAllocationProbe::clear();
+                status(native.release_cached_payloads(), FJ_STATUS_SUCCESS);
+                FjCacheMetrics metrics{};
+                status(fj_test_cache_metrics(native.borrow_rust_assets(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &metrics, nullptr), FJ_STATUS_SUCCESS);
+                require(metrics.allocations == 1 && metrics.destructions == 0, "native warm hold survives cache clear without a replacement allocation");
+                // Releasing the only successful wrapper must reclaim the entry; no
+                // failed wrapper may have leaked its earlier foreign acquisition.
+                warm.reset();
+                status(fj_test_cache_metrics(native.borrow_rust_assets(), FJ_TEST_CACHE_OUTPUT_BOUNDARY, &metrics, nullptr), FJ_STATUS_SUCCESS);
+                require(metrics.destructions == 1 && metrics.live_bytes == 0, "failed native boundary wrappers release their foreign holds");
+                row_event.passed();
+            }
+            event.passed();
         }
         {
-            OutputCacheProbe library(argv[1]);
-            selection(library, b, b, 2, true);
-            std::puts("W7 self-publication selection before clear PASS");
+            JuicerTests::CaseEvent event("output_gamut_cache", "stale_warm_reuse");
+            for (bool matching : {true, false}) {
+                const auto& a = matching ? b : conflict;
+                for (bool repeated : {false, true}) {
+                    auto row_event = parameter_rows.case_event("stale/matching-" + std::to_string(matching) + "/repeated-" + std::to_string(repeated));
+                    OutputCacheProbe library(argv[1]);
+                    stale(library, a, b, repeated);
+                    row_event.passed();
+                    std::printf("W%u completion/identity/all-word/retention PASS\n", repeated ? matching ? 3u : 4u : matching ? 1u
+                                                                                                                              : 2u);
+                }
+                for (int variant = 0; variant < 2; ++variant) {
+                    auto row_event = parameter_rows.case_event("selection/matching-" + std::to_string(matching) + "/variant-" + std::to_string(variant));
+                    OutputCacheProbe library(argv[1]);
+                    selection(library, a, b, variant, matching);
+                    row_event.passed();
+                    std::printf("W%u selected hold %s PASS\n", variant == 0 ? 6u : 7u, matching ? "matching" : "conflicting");
+                }
+                for (auto timing : {FailureTiming::SameGeneration, FailureTiming::AfterClear, FailureTiming::AfterRepeatedClear})
+                    for (unsigned fault : {2u, 3u, 5u}) {
+                        auto row_event = parameter_rows.case_event("fault/matching-" + std::to_string(matching) + "/timing-" + std::to_string(static_cast<unsigned>(timing)) + "/fault-" + std::to_string(fault));
+                        OutputCacheProbe library(argv[1]);
+                        own_failure(library, a, b, timing, fault, matching, false);
+                        row_event.passed();
+                    }
+            }
+            event.passed();
         }
-        for (auto timing : {FailureTiming::SameGeneration, FailureTiming::AfterClear, FailureTiming::AfterRepeatedClear}) {
-            OutputCacheProbe library(argv[1]);
-            own_failure(library, b, b, timing, 0, true, true);
+        {
+            JuicerTests::CaseEvent event("output_gamut_cache", "selected_hold");
+            {
+                OutputCacheProbe library(argv[1]);
+                selection(library, b, b, 2, true);
+                std::puts("W7 self-publication selection before clear PASS");
+            }
+            event.passed();
         }
+        JuicerTests::Cohort retry_timings("output_gamut_cache.retry_timing", {"same-generation", "after-clear", "after-repeated-clear"});
+        {
+            JuicerTests::CaseEvent event("output_gamut_cache", "retry_failure");
+            unsigned timing_index = 0;
+            for (auto timing : {FailureTiming::SameGeneration, FailureTiming::AfterClear, FailureTiming::AfterRepeatedClear}) {
+                static const char* const timing_ids[] = {"same-generation", "after-clear", "after-repeated-clear"};
+                auto row_event = retry_timings.case_event(timing_ids[timing_index]);
+                OutputCacheProbe library(argv[1]);
+                own_failure(library, b, b, timing, 0, true, true);
+                row_event.passed();
+                ++timing_index;
+            }
+            event.passed();
+        }
+        JuicerTests::CaseEvent controls_event("output_gamut_cache", "controls");
         controls(argv[1], {b, conflict});
         require(Hooks::violations.load() == 0 && rustAllocations.load() > 0 && rustDestructions.load() > 0, "allocation/free/foreign/format/wait scope controls");
         status(owner.close(), FJ_STATUS_SUCCESS);
+        controls_event.passed();
+        case_log.finish();
         std::puts("W1-W7, own failures/retries, same-generation, mismatch order, exhaustion/precedence/Rust cleanup, destruction scopes and A8 lifetime PASS");
         return 0;
     } catch (const JuicerCuda::ExecutionFailure& error) {

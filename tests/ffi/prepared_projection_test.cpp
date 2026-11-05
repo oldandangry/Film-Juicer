@@ -8,18 +8,59 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "prepared_descriptors.h"
-#include "RenderRecipe.h"
+#include "JuicerState.h"
+#include "PreparedState.h"
+#include "RenderValues.h"
 #include "Scanner.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
 #include "spatial_optics_fixture.h"
+#include "gtest_cases.h"
 
 namespace {
     FjPreparedHostData make_fixed_input();
+
+    TEST(PreparedProjection, SnapshotAdapterPreservesIntegerFlagsWidthsAndKeyBorrows) {
+        ASSERT_STREQ(std::getenv("JUICER_TEST_PRESET_NAME"), FJ_PREPARED_STATE_PRESET);
+        ParamSnapshot snapshot;
+        snapshot.normalizePrintExposure = -3;
+        snapshot.printExposureCompensation = 2;
+        snapshot.inputCctfDecoding = -3;
+        snapshot.inputCompressionEnabled = 2;
+        snapshot.hanatos2025AdaptationWindow = -3;
+        snapshot.hanatos2025AdaptationSurface = 2;
+        snapshot.cameraAutoExposureEnabled = -3;
+        snapshot.scannerBlackCorrection = 2;
+        snapshot.scannerWhiteCorrection = -3;
+        snapshot.outputCctfEncoding = 2;
+        snapshot.outputGamutCompressionEnabled = -3;
+        snapshot.cameraDiffusion.strength = 0x1.0000000000001p+0;
+        snapshot.printGammaFactor = -0.0;
+        const auto wire = preparation_params(snapshot);
+        EXPECT_EQ(wire.normalize_print_exposure, -3);
+        EXPECT_EQ(wire.print_exposure_compensation, 2);
+        EXPECT_EQ(wire.input_cctf_decoding, -3);
+        EXPECT_EQ(wire.input_compression_enabled, 2);
+        EXPECT_EQ(wire.hanatos2025_adaptation_window, -3);
+        EXPECT_EQ(wire.hanatos2025_adaptation_surface, 2);
+        EXPECT_EQ(wire.camera_auto_exposure_enabled, -3);
+        EXPECT_EQ(wire.scanner_black_correction, 2);
+        EXPECT_EQ(wire.scanner_white_correction, -3);
+        EXPECT_EQ(wire.output_cctf_encoding, 2);
+        EXPECT_EQ(wire.output_gamut_compression_enabled, -3);
+        static_assert(sizeof(wire.camera_diffusion.strength) == sizeof(double));
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(wire.camera_diffusion.strength), std::bit_cast<std::uint64_t>(0x1.0000000000001p+0));
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(wire.print_gamma_factor), std::bit_cast<std::uint64_t>(-0.0));
+        EXPECT_EQ(wire.film_profile_key.data, snapshot.filmProfileKey.data());
+        EXPECT_EQ(wire.film_profile_key.count, snapshot.filmProfileKey.size());
+        EXPECT_EQ(wire.print_profile_key.data, snapshot.printProfileKey.data());
+        EXPECT_EQ(wire.print_profile_key.count, snapshot.printProfileKey.size());
+    }
 
     TEST(PreparedProjection, GrainFramesKeepCapturedMathHashAndRecipeMetadata) {
         const auto directory = std::filesystem::path(__FILE__).parent_path().parent_path() / "grain/frame-fixtures";
@@ -28,44 +69,63 @@ namespace {
         ASSERT_NE(preset, nullptr);
         const auto captured = nlohmann::json::parse(std::ifstream(directory / manifest.at("presets").at(preset).at("native").get<std::string>()));
         ASSERT_EQ(captured.at("cases").size(), 153u);
+        std::vector<std::string> expectedIds;
+        for (const auto& row : captured.at("cases")) {
+            if (row.at("success").get<bool>() && row.at("native").at("active").get<bool>())
+                expectedIds.push_back(row.at("input").at("name").get<std::string>());
+        }
+        JuicerTests::GtestCohort cohort("grain-frame-projection", expectedIds);
         for (const auto& row : captured.at("cases")) {
             if (!row.at("success").get<bool>() || !row.at("native").at("active").get<bool>())
                 continue;
+            const auto id = row.at("input").at("name").get<std::string>();
+            auto caseEvent = cohort.case_event(id);
             SCOPED_TRACE(row.at("input").at("name").get<std::string>());
             FjPreparedHostData wire = make_fixed_input();
             JuicerCuda::PreparedDescriptors source, decoded;
             std::string diagnostic;
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, source, diagnostic)) << diagnostic;
-            const auto amplitude = source.grainRecipe.amplitude;
-            const auto independent = source.grainRecipe.chromaIndependentWeight;
-            const auto finite = source.grainRecipe.grainLayerAxisFinite;
-            const auto prefix = source.grainRecipe.grainLayerAxisBlockPrefixMax;
-            const auto uniformity = source.grainRecipe.uniformityCmy;
-            const auto microStructure = source.grainRecipe.microStructure;
-            FilmDevelopRecipe film;
-            const auto input = JuicerTestSupport::grain_frame_input(row.at("input"), source.grainRecipe, film);
+            const auto coefficients = source.grainPayload.coefficients;
+            const auto input = JuicerTestSupport::grain_frame_input(row.at("input"), coefficients);
             Spektrafilm::VisualGrainFrameDescriptor frame;
             ASSERT_TRUE(JuicerTestSupport::prepare_grain_frame(input, frame, diagnostic)) << diagnostic;
             ASSERT_EQ(JuicerTestSupport::grain_frame_fields(frame), row.at("native"));
             source.grain = frame;
-            source.capturePolarity = film.polarity;
-            source.route = film.polarity == Spektrafilm::ProfilePolarity::Positive ? Spektrafilm::ScanRoute::PositivePrintScan : Spektrafilm::ScanRoute::NegativePrintScan;
+            source.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(input.frame.capture_polarity);
+            source.route = source.capturePolarity == Spektrafilm::ProfilePolarity::Positive ? Spektrafilm::ScanRoute::PositivePrintScan : Spektrafilm::ScanRoute::NegativePrintScan;
+            source.grainPayload.coefficients = input.coefficients;
+            source.grainPayload.recipeHash = frame.recipeHash;
+            source.grainPayload.densityLayersHash = frame.densityCurvesLayersHash;
             JuicerCudaTest::encode_prepared_descriptors(source, wire);
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic)) << diagnostic;
             ASSERT_TRUE(decoded.grain);
             EXPECT_EQ(JuicerTestSupport::grain_frame_fields(*decoded.grain), row.at("native"));
-            EXPECT_EQ(decoded.grainRecipe.amplitude, amplitude);
-            EXPECT_EQ(decoded.grainRecipe.chromaMix, source.grainRecipe.chromaMix);
-            EXPECT_EQ(decoded.grainRecipe.chromaSharedWeight, source.grainRecipe.chromaSharedWeight);
-            EXPECT_EQ(decoded.grainRecipe.chromaIndependentWeight, independent);
-            EXPECT_EQ(decoded.grainRecipe.grainLayerAxisFinite, finite);
-            EXPECT_EQ(decoded.grainRecipe.grainLayerAxisBlockPrefixMax, prefix);
-            EXPECT_EQ(decoded.grainRecipe.uniformityCmy, uniformity);
-            EXPECT_EQ(decoded.grainRecipe.microStructure, microStructure);
-            EXPECT_EQ(decoded.grainRecipe.clumpTemporalMix, source.grainRecipe.clumpTemporalMix);
-            EXPECT_EQ(decoded.grainRecipe.sizeMixScale, source.grainRecipe.sizeMixScale);
-            EXPECT_EQ(decoded.grainRecipe.nSubLayers, source.grainRecipe.nSubLayers);
-            EXPECT_EQ(decoded.grainRecipe.debugView, source.grainRecipe.debugView);
+            EXPECT_EQ(decoded.grainPayload.coefficients.amplitude, coefficients.amplitude);
+            EXPECT_EQ(decoded.grainPayload.coefficients.chroma_mix, source.grainPayload.coefficients.chroma_mix);
+            EXPECT_EQ(decoded.grainPayload.coefficients.chroma_shared_weight, source.grainPayload.coefficients.chroma_shared_weight);
+            EXPECT_EQ(decoded.grainPayload.coefficients.chroma_independent_weight, coefficients.chroma_independent_weight);
+            EXPECT_EQ(decoded.grainPayload.coefficients.flags,
+                      (coefficients.flags & ~(FJ_GRAIN_ACTIVE | FJ_GRAIN_SUBLAYERS)) |
+                          FJ_GRAIN_ACTIVE | (row.at("input").at("sublayers_active").get<bool>() ? FJ_GRAIN_SUBLAYERS : 0u));
+            EXPECT_EQ(std::memcmp(decoded.grainPayload.coefficients.layer_axis_block_prefix_max,
+                                  coefficients.layer_axis_block_prefix_max,
+                                  sizeof(coefficients.layer_axis_block_prefix_max)),
+                      0);
+            EXPECT_EQ(std::memcmp(decoded.grainPayload.coefficients.uniformity_cmy,
+                                  coefficients.uniformity_cmy,
+                                  sizeof(coefficients.uniformity_cmy)),
+                      0);
+            EXPECT_EQ(std::memcmp(decoded.grainPayload.coefficients.micro_structure,
+                                  coefficients.micro_structure,
+                                  sizeof(coefficients.micro_structure)),
+                      0);
+            EXPECT_EQ(decoded.grainPayload.coefficients.clump_temporal_mix, coefficients.clump_temporal_mix);
+            EXPECT_EQ(decoded.grainPayload.coefficients.size_mix_scale, input.coefficients.size_mix_scale);
+            EXPECT_EQ(decoded.grainPayload.coefficients.sublayer_count, input.coefficients.sublayer_count);
+            EXPECT_EQ(decoded.grainPayload.coefficients.debug_view, input.coefficients.debug_view);
+            EXPECT_EQ(decoded.grainPayload.recipeHash, frame.recipeHash);
+            EXPECT_EQ(decoded.grainPayload.densityLayersHash, frame.densityCurvesLayersHash);
+            caseEvent.passed();
         }
     }
 
@@ -76,29 +136,46 @@ namespace {
         ASSERT_NE(preset, nullptr);
         const auto captured = load_shared_fixture(directory / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
         auto rows = captured.at("cases");
+        const auto caseCount = rows.size();
         for (const auto& row : captured.at("products"))
             rows.push_back(row);
         ASSERT_EQ(rows.size(), 98u);
+        std::vector<std::string> expectedIds;
+        for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const auto& row = rows[rowIndex];
+            if (!row.at("success").get<bool>())
+                continue;
+            expectedIds.push_back(std::string(rowIndex < caseCount ? "case/" : "product/") +
+                                  row.at("input").at("name").get<std::string>() + "/" + std::to_string(rowIndex));
+        }
+        JuicerTests::GtestCohort cohort("dir-frame-projection", expectedIds);
         bool sawZeroWeightYvv = false;
-        for (const auto& row : rows) {
+        for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const auto& row = rows[rowIndex];
             SCOPED_TRACE(row.at("input").at("name").get<std::string>());
             if (!row.at("success").get<bool>())
                 continue;
+            const auto id = std::string(rowIndex < caseCount ? "case/" : "product/") +
+                            row.at("input").at("name").get<std::string>() + "/" + std::to_string(rowIndex);
+            auto caseEvent = cohort.case_event(id);
             const auto& input = row.at("input");
             const auto scalar = [](const nlohmann::json& v) {
                 return std::bit_cast<float>(v.get<std::uint32_t>());
             };
-            const auto extent = [](const nlohmann::json& v) -> Spektrafilm::DirFrameExtent {
+            const auto extent = [](const nlohmann::json& v) -> FjExtent {
                 return {v.at(0), v.at(1), v.at(2), v.at(3)};
             };
-            DirCouplersRecipe recipe;
-            recipe.active = input.at("active");
-            recipe.diffusionSizeUm = scalar(input.at("size"));
-            recipe.diffusionTailUm = scalar(input.at("tail"));
-            recipe.diffusionTailWeight = scalar(input.at("weight"));
-            recipe.hash = input.at("hash");
+            const FjDirFrameInput frameInput{
+                input.at("active").get<bool>() ? 1u : 0u,
+                scalar(input.at("size")),
+                scalar(input.at("tail")),
+                scalar(input.at("weight")),
+                scalar(input.at("pixel")),
+                extent(input.at("render")),
+                extent(input.at("full")),
+                input.at("hash").get<std::uint64_t>()};
             SpatialDirDescriptor frame;
-            ASSERT_TRUE(JuicerTestSupport::prepare_dir_frame(recipe, scalar(input.at("pixel")), extent(input.at("render")), extent(input.at("full")), "print", frame));
+            ASSERT_TRUE(JuicerTestSupport::prepare_dir_frame(frameInput, "print", frame));
             auto expected = row.at("native");
             if (!expected.at("label").is_null())
                 expected["label"] = "print";
@@ -112,6 +189,7 @@ namespace {
             if (frame.hash != 0 && frame.dirRecipeHash == 0) {
                 EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic));
                 EXPECT_EQ(diagnostic, "MalformedPreparedHostData field=spatial_dir.identity");
+                caseEvent.passed();
                 continue;
             }
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(wire, decoded, diagnostic)) << diagnostic;
@@ -129,6 +207,7 @@ namespace {
             }
             EXPECT_EQ(JuicerTestSupport::dir_frame_fields(decoded.spatialDir), expected);
             EXPECT_EQ(decoded.spatialDir.hash, frame.hash);
+            caseEvent.passed();
         }
         EXPECT_TRUE(sawZeroWeightYvv);
     }
@@ -140,10 +219,22 @@ namespace {
         ASSERT_NE(preset, nullptr);
         const auto captured = load_shared_fixture(directory / manifest.at("presets").at(preset).at("native").get<std::string>(), "manifest.json");
         auto rows = captured.at("cases");
+        const auto caseCount = rows.size();
         for (const auto& row : captured.at("products"))
             rows.push_back(row);
         ASSERT_EQ(rows.size(), 72u);
-        for (const auto& row : rows) {
+        std::vector<std::string> expectedIds;
+        expectedIds.reserve(rows.size());
+        for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            expectedIds.push_back(std::string(rowIndex < caseCount ? "case/" : "product/") +
+                                  rows[rowIndex].at("input").at("name").get<std::string>() + "/" + std::to_string(rowIndex));
+        }
+        JuicerTests::GtestCohort cohort("halation-frame-projection", expectedIds);
+        for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const auto& row = rows[rowIndex];
+            const auto id = std::string(rowIndex < caseCount ? "case/" : "product/") +
+                            row.at("input").at("name").get<std::string>() + "/" + std::to_string(rowIndex);
+            auto caseEvent = cohort.case_event(id);
             SCOPED_TRACE(row.at("input").at("name").get<std::string>());
             const auto& input = row.at("input");
             ScatterHalationOpticsRecipe recipe;
@@ -163,8 +254,10 @@ namespace {
             ASSERT_EQ(success, row.at("success").get<bool>());
             ASSERT_EQ(frame.has_value(), row.at("present").get<bool>());
             ASSERT_TRUE(JuicerTestSupport::matches_halation_frame(frame, row.at("descriptor")));
-            if (!success)
+            if (!success) {
+                caseEvent.passed();
                 continue;
+            }
             JuicerCuda::PreparedDescriptors source;
             // Populate unrelated fixed families using the existing projection fixture below.
             FjPreparedHostData wire = make_fixed_input();
@@ -178,6 +271,7 @@ namespace {
                 decoded.halation->channels[2].bounce[2].firWeights[18] = std::bit_cast<float>(std::bit_cast<std::uint32_t>(decoded.halation->channels[2].bounce[2].firWeights[18]) ^ 1u);
                 EXPECT_FALSE(JuicerTestSupport::matches_halation_frame(decoded.halation, row.at("descriptor"))) << "reader reaches final unused weight";
             }
+            caseEvent.passed();
         }
     }
 
@@ -359,22 +453,25 @@ namespace {
 
     TEST(PreparedProjection, RealPostConstructorSurvivesExecutionProjection) {
         const std::uint64_t expectedHashes[]{7511645345345342884ull, 3186614872363949542ull, 2245189015135736206ull, 1365222576910583988ull};
+        const std::vector<std::string> ids{"route/0", "route/1", "route/2", "route/3"};
+        JuicerTests::GtestCohort cohort("post-constructor-routes", ids);
         for (unsigned route = 0; route < 4; ++route) {
-            ScannerOutputRecipe recipe;
-            recipe.route = static_cast<Spektrafilm::ScanRoute>(route);
-            recipe.glareActive = true;
-            recipe.glarePercent = 2.0f;
-            recipe.glareRoughness = 0.3f;
-            recipe.glareBlurSigmaPx = 0.7f;
-            recipe.lensBlurSigmaPx = 1.25f;
-            recipe.unsharpSigmaPx = 0.7f;
-            recipe.unsharpAmount = 0.8f;
+            auto caseEvent = cohort.case_event("route/" + std::to_string(route));
+            const FjScannerPostEffectsInput postInput{route, 1, 2.0f, 0.3f, 0.7f, 1.25f, 0.7f, 0.8f};
+            FjScannerPostEffectsDescriptor post{};
+            FjScannerPostEffectsFailure failure{};
+            std::array<char, 256> message{};
+            FjErrorBuffer error{message.data(), message.size(), 0};
+            const auto status = fj_test_scanner_post_describe(&postInput, &post, &failure, &error);
+            ASSERT_EQ(status.category, FJ_STATUS_SUCCESS) << message.data();
+            ASSERT_EQ(status.api, FJ_API_NONE);
+            ASSERT_EQ(status.native_code, 0);
             JuicerCuda::PreparedDescriptors source;
-            source.route = recipe.route;
+            source.route = static_cast<Spektrafilm::ScanRoute>(route);
             source.capturePolarity = static_cast<Spektrafilm::ProfilePolarity>(route / 2);
             source.color.preparedEncoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_SRGB);
+            source.post = {static_cast<Spektrafilm::ScanRoute>(post.route), post.glare_active != 0, post.glare_percent, post.glare_roughness, post.glare_blur_sigma_px, post.glare_blur_radius, post.lens_blur_sigma_px, post.lens_blur_radius, post.unsharp_sigma_px, post.unsharp_radius, post.unsharp_amount, post.schema, post.hash};
             std::string diagnostic;
-            ASSERT_TRUE(Scanner::build_scanner_post_effects_descriptor(recipe, source.post, diagnostic)) << diagnostic;
             ASSERT_EQ(source.post.hash, expectedHashes[route]);
             FjPreparedHostData encoded{};
             JuicerCudaTest::encode_prepared_descriptors(source, encoded);
@@ -383,7 +480,7 @@ namespace {
             EXPECT_EQ(input.capture_polarity, route / 2);
             JuicerCuda::PreparedDescriptors decoded;
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, decoded, diagnostic)) << diagnostic;
-            EXPECT_EQ(decoded.post.route, recipe.route);
+            EXPECT_EQ(decoded.post.route, static_cast<Spektrafilm::ScanRoute>(route));
             EXPECT_EQ(decoded.post.schemaVersion, 2u);
             EXPECT_EQ(decoded.post.hash, expectedHashes[route]);
             EXPECT_EQ(decoded.post.glareActive, bool(route & 1));
@@ -397,6 +494,7 @@ namespace {
             FjPreparedHostData roundtrip{};
             JuicerCudaTest::encode_prepared_descriptors(decoded, roundtrip);
             EXPECT_EQ(std::memcmp(&roundtrip.scanner_post, &encoded.scanner_post, sizeof(encoded.scanner_post)), 0);
+            caseEvent.passed();
         }
     }
 
@@ -413,7 +511,10 @@ namespace {
             {FJ_ROUTE_NEGATIVE_PRINT, FJ_POLARITY_NEGATIVE, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ProfilePolarity::Negative, Scanner::ScannedMediumKind::Print},
             {FJ_ROUTE_POSITIVE_DIRECT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ProfilePolarity::Positive, Scanner::ScannedMediumKind::Film},
             {FJ_ROUTE_POSITIVE_PRINT, FJ_POLARITY_POSITIVE, Spektrafilm::ScanRoute::PositivePrintScan, Spektrafilm::ProfilePolarity::Positive, Scanner::ScannedMediumKind::Print}};
+        const std::vector<std::string> ids{"route/0", "route/1", "route/2", "route/3"};
+        JuicerTests::GtestCohort cohort("route-polarity-medium", ids);
         for (const auto& item : cases) {
+            auto caseEvent = cohort.case_event("route/" + std::to_string(item.route));
             SCOPED_TRACE(item.route);
             FjPreparedHostData input{};
             input.output_color.encoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_SRGB);
@@ -431,6 +532,7 @@ namespace {
             EXPECT_FALSE(actual.grain);
             EXPECT_FALSE(actual.effects);
             EXPECT_EQ(actual.spatialDir.hash, 0u);
+            caseEvent.passed();
         }
     }
 
@@ -473,8 +575,16 @@ namespace {
     }
 
     TEST(PreparedProjection, DisabledGamutKeepsRecipeIdentityWithoutActiveResources) {
-        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan};
+        std::vector<std::string> ids;
+        for (const auto route : routes)
+            for (bool enabled : {false, true})
+                ids.push_back("route=" + std::to_string(static_cast<int>(route)) + "/enabled=" + std::to_string(enabled));
+        JuicerTests::GtestCohort cohort("disabled-gamut-routes", ids);
+        for (const auto route : routes) {
             for (bool enabled : {false, true}) {
+                const auto id = "route=" + std::to_string(static_cast<int>(route)) + "/enabled=" + std::to_string(enabled);
+                auto caseEvent = cohort.case_event(id);
                 SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " enabled=" << enabled);
                 FjPreparedHostData input{};
                 input.output_color = make_fixed_input().output_color;
@@ -494,6 +604,7 @@ namespace {
                 JuicerCudaTest::encode_prepared_descriptors(actual, encoded);
                 EXPECT_EQ(encoded.output_color.gamut_recipe_hash, input.output_color.gamut_recipe_hash);
                 EXPECT_EQ(encoded.output_color.flags, input.output_color.flags);
+                caseEvent.passed();
             }
         }
     }
@@ -576,7 +687,7 @@ namespace {
         ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic)) << diagnostic;
         ASSERT_TRUE(actual.grain);
         const auto& grain = *actual.grain;
-        const auto& recipe = actual.grainRecipe;
+        const auto& coefficients = actual.grainPayload.coefficients;
         EXPECT_EQ(grain.frame0, -17);
         EXPECT_FLOAT_EQ(grain.frameAlpha, 0.375f);
         EXPECT_EQ(grain.seedBase, 401u);
@@ -599,19 +710,18 @@ namespace {
         EXPECT_EQ(grain.recipeHash, 408u);
         EXPECT_EQ(grain.densityCurvesLayersHash, 409u);
         EXPECT_EQ(grain.hash, 410u);
-        EXPECT_TRUE(recipe.active);
-        EXPECT_TRUE(recipe.sublayersActive);
-        EXPECT_EQ(recipe.nSubLayers, 3);
-        EXPECT_TRUE(recipe.grainLayerAxisFinite[0]);
-        EXPECT_FALSE(recipe.grainLayerAxisFinite[1]);
-        EXPECT_TRUE(recipe.grainLayerAxisFinite[2]);
-        EXPECT_FLOAT_EQ(recipe.grainLayerAxisBlockPrefixMax[0][15], 2.125f);
-        EXPECT_FLOAT_EQ(recipe.grainLayerAxisBlockPrefixMax[2][4], 3.25f);
-        EXPECT_FLOAT_EQ(recipe.visualParticleDensityMinCmy[2], 0.12f);
-        EXPECT_FLOAT_EQ(recipe.microStructure[0], 0.2f);
-        EXPECT_FLOAT_EQ(recipe.microStructure[1], 30.0f);
-        EXPECT_FLOAT_EQ(recipe.chromaSharedWeight, 0.75f);
-        EXPECT_FLOAT_EQ(recipe.chromaIndependentWeight, 0.5f);
+        EXPECT_EQ(coefficients.flags, FJ_GRAIN_ACTIVE | FJ_GRAIN_SUBLAYERS | FJ_GRAIN_AXIS_FINITE_C | FJ_GRAIN_AXIS_FINITE_Y);
+        EXPECT_EQ(coefficients.flags & FJ_GRAIN_FULL_FRAME, 0u);
+        EXPECT_EQ(coefficients.sublayer_count, 3u);
+        EXPECT_FLOAT_EQ(coefficients.layer_axis_block_prefix_max[0][15], 2.125f);
+        EXPECT_FLOAT_EQ(coefficients.layer_axis_block_prefix_max[2][4], 3.25f);
+        EXPECT_FLOAT_EQ(coefficients.particle_density_min_cmy[2], 0.12f);
+        EXPECT_FLOAT_EQ(coefficients.micro_structure[0], 0.2f);
+        EXPECT_FLOAT_EQ(coefficients.micro_structure[1], 30.0f);
+        EXPECT_FLOAT_EQ(coefficients.chroma_shared_weight, 0.75f);
+        EXPECT_FLOAT_EQ(coefficients.chroma_independent_weight, 0.5f);
+        EXPECT_EQ(actual.grainPayload.recipeHash, 408u);
+        EXPECT_EQ(actual.grainPayload.densityLayersHash, 409u);
     }
 
     TEST(PreparedProjection, EffectsKeepFilmGateAndPhysicalCoordinatesDistinct) {
@@ -694,11 +804,12 @@ namespace {
         source.grain->dyeCloud[0][2] = {1.25f, 4, 612};
         source.grain->recipeHash = 613;
         source.grain->hash = 614;
-        source.grainRecipe.active = true;
-        source.grainRecipe.nSubLayers = 2;
-        source.grainRecipe.grainLayerAxisFinite[1] = true;
-        source.grainRecipe.grainLayerAxisBlockPrefixMax[1][14] = 2.875f;
-        source.grainRecipe.chromaIndependentWeight = 0.625f;
+        source.grainPayload.coefficients.flags = FJ_GRAIN_ACTIVE | FJ_GRAIN_AXIS_FINITE_M;
+        source.grainPayload.coefficients.sublayer_count = 2;
+        source.grainPayload.coefficients.layer_axis_block_prefix_max[1][14] = 2.875f;
+        source.grainPayload.coefficients.chroma_independent_weight = 0.625f;
+        source.grainPayload.recipeHash = 613;
+        source.grainPayload.densityLayersHash = 0;
         source.effects.emplace();
         source.effects->filmActive = true;
         source.effects->filmScratch.interiorDepthMaxFraction = 0.8125f;
@@ -740,6 +851,8 @@ namespace {
         EXPECT_EQ(actual.optics.camera.sample_hash, 606u);
         EXPECT_EQ(actual.optics.camera.hash, 607u);
         EXPECT_EQ(actual.optics.scatter_halation.recipe_hash, 608u);
+        EXPECT_EQ(actual.grain.recipe_hash, 613u);
+        EXPECT_EQ(actual.grain.density_layers_hash, 0u);
         EXPECT_EQ(actual.optics.scatter_halation.channels[2].bounce[0].kind, FJ_HALATION_YVV_REPLICATE);
         EXPECT_FLOAT_EQ(actual.optics.scatter_halation.channels[2].bounce[0].feedback[1], -0.3125f);
         EXPECT_EQ(actual.spatial_dir.hash, 609u);
@@ -781,9 +894,18 @@ namespace {
     }
 
     TEST(PreparedProjection, OutputEncodingRoundTripsBothRoutesAndFlagsWithoutRepreparation) {
-        for (const auto route : {FJ_ROUTE_NEGATIVE_DIRECT, FJ_ROUTE_NEGATIVE_PRINT, FJ_ROUTE_POSITIVE_DIRECT, FJ_ROUTE_POSITIVE_PRINT}) {
+        const std::array routes{FJ_ROUTE_NEGATIVE_DIRECT, FJ_ROUTE_NEGATIVE_PRINT, FJ_ROUTE_POSITIVE_DIRECT, FJ_ROUTE_POSITIVE_PRINT};
+        std::vector<std::string> ids;
+        for (const auto route : routes)
+            for (std::uint32_t space = 0; space <= FJ_OUTPUT_REC709; ++space)
+                for (bool enabled : {false, true})
+                    ids.push_back("route=" + std::to_string(route) + "/space=" + std::to_string(space) + "/enabled=" + std::to_string(enabled));
+        JuicerTests::GtestCohort cohort("output-encoding-roundtrip", ids);
+        for (const auto route : routes) {
             for (std::uint32_t space = 0; space <= FJ_OUTPUT_REC709; ++space) {
                 for (bool enabled : {false, true}) {
+                    const auto id = "route=" + std::to_string(route) + "/space=" + std::to_string(space) + "/enabled=" + std::to_string(enabled);
+                    auto caseEvent = cohort.case_event(id);
                     JuicerCuda::PreparedDescriptors retained;
                     const auto expected = JuicerCudaTest::prepare_output_encoding(space);
                     {
@@ -814,30 +936,47 @@ namespace {
                     }
                     for (int i = 0; i < 9; ++i)
                         EXPECT_EQ(std::bit_cast<std::uint32_t>(actual.dwg_to_output[i]), std::bit_cast<std::uint32_t>(expected.dwg_to_output[i]));
+                    caseEvent.passed();
                 }
             }
         }
     }
 
     TEST(PreparedProjection, OutputEncodingAdmissionUsesSchemaAndKindEvenWhenDisabled) {
+        const std::vector<std::uint32_t> schemas{0u, 2u, std::numeric_limits<std::uint32_t>::max()};
+        const std::vector<std::uint32_t> kinds{6u, std::numeric_limits<std::uint32_t>::max()};
+        std::vector<std::string> ids;
+        for (bool enabled : {false, true}) {
+            for (const auto schema : schemas)
+                ids.push_back("enabled=" + std::to_string(enabled) + "/schema=" + std::to_string(schema));
+            for (const auto kind : kinds)
+                ids.push_back("enabled=" + std::to_string(enabled) + "/kind=" + std::to_string(kind));
+            ids.push_back("enabled=" + std::to_string(enabled) + "/accepted-authored-values");
+        }
+        JuicerTests::GtestCohort cohort("output-encoding-admission", ids);
         for (bool enabled : {false, true}) {
             auto input = make_fixed_input();
             input.output_color.flags = enabled ? FJ_COLOR_ENCODE_CCTF : 0u;
             for (const auto schema : {0u, 2u, std::numeric_limits<std::uint32_t>::max()}) {
+                auto caseEvent = cohort.case_event("enabled=" + std::to_string(enabled) + "/schema=" + std::to_string(schema));
                 input.output_color.encoding.schema = schema;
                 JuicerCuda::PreparedDescriptors actual;
                 std::string diagnostic;
                 EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic));
                 EXPECT_EQ(actual.color.hash, 0u);
                 EXPECT_NE(diagnostic.find("output_color.encoding"), std::string::npos);
+                caseEvent.passed();
             }
             input.output_color.encoding.schema = 1;
             for (const auto kind : {6u, std::numeric_limits<std::uint32_t>::max()}) {
+                auto caseEvent = cohort.case_event("enabled=" + std::to_string(enabled) + "/kind=" + std::to_string(kind));
                 input.output_color.encoding.cctf_kind = kind;
                 JuicerCuda::PreparedDescriptors actual;
                 std::string diagnostic;
                 EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic));
+                caseEvent.passed();
             }
+            auto acceptedCase = cohort.case_event("enabled=" + std::to_string(enabled) + "/accepted-authored-values");
             input.output_color.encoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_DISPLAY_P3);
             // Authored coefficient content is not a completion/admission test.
             input.output_color.encoding.gamma = std::numeric_limits<float>::quiet_NaN();
@@ -847,6 +986,7 @@ namespace {
             ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic));
             EXPECT_TRUE(std::isnan(actual.color.preparedEncoding.gamma));
             EXPECT_EQ(std::bit_cast<std::uint32_t>(actual.color.preparedEncoding.dwg_to_output[0]), 0x80000000u);
+            acceptedCase.passed();
         }
     }
 
@@ -973,7 +1113,12 @@ namespace {
             {"effects frame identity", [](FjPreparedHostData& value) {
                  value.effects.hash = 0;
              }}};
+        std::vector<std::string> ids;
+        for (const auto& item : cases)
+            ids.emplace_back(item.name);
+        JuicerTests::GtestCohort cohort("malformed-descriptors", ids);
         for (const auto& item : cases) {
+            auto caseEvent = cohort.case_event(item.name);
             SCOPED_TRACE(item.name);
             FjPreparedHostData input = make_fixed_input();
             JuicerCuda::PreparedDescriptors actual;
@@ -986,9 +1131,12 @@ namespace {
             EXPECT_FALSE(actual.halation);
             EXPECT_FALSE(actual.grain);
             EXPECT_FALSE(actual.effects);
-            EXPECT_FALSE(actual.grainRecipe.active);
+            EXPECT_EQ(actual.grainPayload.coefficients.flags, 0u);
+            EXPECT_EQ(actual.grainPayload.recipeHash, 0u);
+            EXPECT_EQ(actual.grainPayload.densityLayersHash, 0u);
             EXPECT_EQ(actual.spatialDir.hash, 0u);
             EXPECT_EQ(actual.scanner.hash, 0u);
+            caseEvent.passed();
         }
     }
 

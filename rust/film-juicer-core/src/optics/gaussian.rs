@@ -74,21 +74,45 @@ impl GaussianKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
 
     #[test]
     fn active_domain_and_order() {
-        for radius in [0, 2049, u32::MAX] {
+        let radius_cases = [("zero", 0), ("above-limit", 2049), ("max", u32::MAX)];
+        let mut cases = RowCases::new(
+            "gaussian-invalid-radius",
+            radius_cases.iter().map(|(id, _)| *id),
+        );
+        for (id, radius) in radius_cases {
+            let case = cases.case(id);
             assert_eq!(
                 GaussianKernel::new(radius, f32::NAN).unwrap_err(),
                 GaussianKernelError::Radius
             );
+            case.passed();
         }
-        for sigma in [0.0, -0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        cases.finish();
+        let sigma_cases = [
+            ("positive-zero", 0.0),
+            ("negative-zero", -0.0),
+            ("negative", -1.0),
+            ("nan", f32::NAN),
+            ("positive-infinity", f32::INFINITY),
+            ("negative-infinity", f32::NEG_INFINITY),
+        ];
+        let mut cases = RowCases::new(
+            "gaussian-invalid-sigma",
+            sigma_cases.iter().map(|(id, _)| *id),
+        );
+        for (id, sigma) in sigma_cases {
+            let case = cases.case(id);
             assert_eq!(
                 GaussianKernel::new(1, sigma).unwrap_err(),
                 GaussianKernelError::Sigma
             );
+            case.passed();
         }
+        cases.finish();
         let kernel = GaussianKernel::new(2048, f32::from_bits(1)).unwrap();
         assert_eq!(kernel.weights().len(), 4097);
         assert_eq!(kernel.weights()[2048], 1.0);
@@ -125,13 +149,36 @@ mod tests {
         let mut mismatches = Vec::new();
         let mut primitive_differences = 0;
         let mut samples = 0;
-        for case in captured["cases"].as_array().unwrap() {
+        let rows = captured["cases"].as_array().unwrap();
+        let mut ids = rows
+            .iter()
+            .map(|row| row["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        ids.extend(rows.iter().flat_map(|row| {
+            row["primitives"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .map(|(index, primitive)| {
+                    format!(
+                        "primitive/{}/query/{index}/i/{}",
+                        row["name"].as_str().unwrap(),
+                        primitive["i"].as_i64().unwrap()
+                    )
+                })
+        }));
+        let mut cases = RowCases::new("gaussian-native-cases-and-primitives", ids);
+        for case in rows {
+            let name = case["name"].as_str().unwrap();
+            let row_case = cases.case(name);
             let radius = case["radius"].as_i64().unwrap();
             let sigma_bits = case["sigma_bits"].as_u64().unwrap() as u32;
             let sigma = f32::from_bits(sigma_bits);
             if radius <= 0 || !sigma.is_finite() || sigma <= 0.0 {
                 assert_eq!(case["count"], 0);
                 assert!(case["weights"].as_array().unwrap().is_empty());
+                row_case.passed();
                 continue;
             }
             let kernel = GaussianKernel::new(radius as u32, sigma).unwrap();
@@ -140,6 +187,7 @@ mod tests {
             let expected = case["weights"].as_array().unwrap();
             assert_eq!(kernel.weights().len(), expected.len());
             assert_eq!(case["count"].as_u64().unwrap() as usize, expected.len());
+            let mismatch_count = mismatches.len();
             for (index, (actual, word)) in kernel.weights().iter().zip(expected).enumerate() {
                 samples += 1;
                 if actual.to_bits() != word.as_u64().unwrap() as u32 {
@@ -147,7 +195,16 @@ mod tests {
                         "index":index,"native":word,"rust":actual.to_bits()}));
                 }
             }
-            for primitive in case["primitives"].as_array().unwrap() {
+            if mismatches.len() == mismatch_count {
+                row_case.passed();
+            } else {
+                drop(row_case);
+            }
+            for (index, primitive) in case["primitives"].as_array().unwrap().iter().enumerate() {
+                let primitive_case = cases.case(format!(
+                    "primitive/{name}/query/{index}/i/{}",
+                    primitive["i"].as_i64().unwrap()
+                ));
                 let x = f64::from(primitive["i"].as_i64().unwrap() as i32);
                 let s = f64::from(sigma);
                 let argument = -(x * x) / (s * s * 2.0);
@@ -155,6 +212,7 @@ mod tests {
                 if argument.exp().to_bits() != primitive["exp"].as_u64().unwrap() {
                     primitive_differences += 1;
                 }
+                primitive_case.passed();
             }
         }
         println!(
@@ -168,5 +226,6 @@ mod tests {
             mismatches.is_empty(),
             "exact Gaussian coefficient gate failed"
         );
+        cases.finish();
     }
 }

@@ -60,38 +60,7 @@ include(cmake/JuicerDependencies.cmake)
 include(cmake/JuicerSources.cmake)
 include(cmake/JuicerRust.cmake)
 
-add_library(juicer_settings INTERFACE)
-target_include_directories(juicer_settings INTERFACE
-    "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/native")
-target_link_libraries(juicer_settings INTERFACE juicer_dependencies)
-target_compile_definitions(juicer_settings INTERFACE
-    JUICER_DIAGNOSTICS_COMPILED=$<IF:$<CONFIG:Debug>,1,0>)
-if(WIN32)
-    message(STATUS "CUDA 13.2 Windows: explicit hybrid runtime integration (CMake 4.3)")
-    target_compile_definitions(juicer_settings INTERFACE WIN32 NOMINMAX _CRT_SECURE_NO_WARNINGS
-        $<$<COMPILE_LANGUAGE:CXX>:_WINDLL>
-        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>:UNICODE;_UNICODE>)
-    target_compile_options(juicer_settings INTERFACE
-        $<$<COMPILE_LANGUAGE:CXX>:/W3;/WX;/sdl;/permissive-;/EHsc>
-        $<$<COMPILE_LANGUAGE:CXX>:/O2;/Oi;/Ob2;/Gy>
-        $<$<COMPILE_LANGUAGE:CUDA>:-O3;-Xptxas=-O3;-Xcompiler=/EHsc,/O2,/Oi,/Ob2,/Gy,/Gw,/GF>)
-    target_link_options(juicer_settings INTERFACE /DEBUG /INCREMENTAL:NO /OPT:REF /OPT:ICF)
-    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        message(FATAL_ERROR "Windows requires ClangCl with NVCC/MSVC")
-    endif()
-    target_compile_options(juicer_settings INTERFACE
-        $<$<COMPILE_LANGUAGE:CXX>:/Gw;/GF;-flto=thin>)
-else()
-    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
-       CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10 OR
-       CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16)
-        message(FATAL_ERROR "Linux requires CUDA 13.2-supported GCC 10 through 15")
-    endif()
-    target_compile_options(juicer_settings INTERFACE
-        $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Werror>
-        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fvisibility=hidden>
-        $<$<COMPILE_LANGUAGE:CUDA>:-O3;-Xptxas=-O3>)
-endif()
+include(cmake/JuicerSettings.cmake)
 
 add_library(juicer_native OBJECT ${JUICER_NATIVE_SOURCES})
 target_link_libraries(juicer_native PRIVATE juicer_settings)
@@ -105,7 +74,7 @@ target_link_libraries(juicer_adapter PRIVATE juicer_settings juicer_ofx_headers)
 # the configured database retains every test-hook variant.
 add_custom_target(juicer_analysis_inputs)
 add_dependencies(juicer_analysis_inputs
-    juicer_native juicer_host juicer_adapter juicer_rust_build)
+    juicer_native juicer_host juicer_adapter juicer_rust_production_build)
 
 # Preserve one aggregate archive for current product/test links and isolated
 # test-hook object replacement, without compiling a second CUDA implementation.
@@ -113,11 +82,11 @@ add_library(juicer_core STATIC
     $<TARGET_OBJECTS:juicer_native>
     $<TARGET_OBJECTS:juicer_host>
     $<TARGET_OBJECTS:juicer_adapter>)
-target_link_libraries(juicer_core PUBLIC juicer_settings juicer_ofx_headers film_juicer_rust)
+target_link_libraries(juicer_core PUBLIC juicer_settings juicer_ofx_headers)
 set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 
 add_library(juicer MODULE src/main.cpp)
-target_link_libraries(juicer PRIVATE juicer_core juicer_ofxs)
+target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_ofxs juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
@@ -130,9 +99,22 @@ if(UNIX)
     set_property(TARGET juicer APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/cmake/juicer.exports")
 endif()
 
+add_executable(JuicerProductionPreparedRenderProbe EXCLUDE_FROM_ALL
+    tests/ffi/production-prepared-render.cpp src/main.cpp)
+target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE
+    juicer_core film_juicer_rust juicer_ofxs juicer_dependencies CUDA::cuda_driver)
+set_target_properties(JuicerProductionPreparedRenderProbe PROPERTIES
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
+if(UNIX)
+    set_property(TARGET JuicerProductionPreparedRenderProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+
+include(cmake/JuicerBundle.cmake)
+
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
 include(CTest)
 if(BUILD_TESTING)
-    add_subdirectory(tests)
+    add_subdirectory(tests EXCLUDE_FROM_ALL)
 endif()
-include(cmake/JuicerBundle.cmake)
+
+juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe ${JUICER_RUST_TEST_CONSUMERS})

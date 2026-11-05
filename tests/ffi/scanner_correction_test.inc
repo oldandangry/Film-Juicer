@@ -28,345 +28,115 @@ namespace ScannerCorrectionTest {
         return rows;
     }
 
-    Json project(const Scanner::ScannerColorCorrectionDescriptor& value) {
-        const std::array floats{value.targetBlackLinear, value.targetWhiteLinear, value.referenceBlackY, value.referenceWhiteY, value.xyzSlope, value.xyzOffset, value.exposureScale};
-        return {{"route", static_cast<unsigned>(value.route)}, {"active", value.active}, {"black", value.blackCorrection}, {"white", value.whiteCorrection}, {"words", words(floats.data(), floats.size())}, {"schema", value.schemaVersion}, {"hash", value.hash}};
-    }
+    Json project(const FjScannerColorCorrection& value);
 
-    template <typename Rows>
-    Json row_words(const Rows& rows) {
-        Json out = Json::array();
-        for (const auto& row : rows)
-            for (float value : row)
-                out.push_back(std::bit_cast<std::uint32_t>(value));
-        return out;
-    }
-
-    Json inputs(const RenderRecipe& recipe, const Spectral::SpectralTables& tables, const std::array<float, 81>& light, const std::array<float, 3>& preflash, float normalizer, bool print) {
-        const auto& output = recipe.scannerOutput;
-        const auto& bounds = recipe.densityBounds;
-        Json out{{"route", static_cast<unsigned>(recipe.profileRoute.scanRoute)},
-                 {"flags", unsigned(output.blackCorrection) + 2u * unsigned(output.whiteCorrection)},
-                 {"levels", words(std::array{output.blackLevel, output.whiteLevel}.data(), 2)},
-                 {"medium", static_cast<unsigned>(bounds.medium)},
-                 {"minimum", words(bounds.dataMinCmy.data(), 3)},
-                 {"maximum", words(bounds.dataMaxCmy.data(), 3)},
-                 {"inverse", words(bounds.invSpanCmy.data(), 3)},
-                 {"tables", {{"c", words(tables.epsC.data(), tables.epsC.size())}, {"m", words(tables.epsM.data(), tables.epsM.size())}, {"y", words(tables.epsY.data(), tables.epsY.size())}, {"ay", words(tables.Ay.data(), tables.Ay.size())}, {"baseline", words(tables.baseDensityMin.data(), tables.baseDensityMin.size())}, {"k", tables.K}, {"has_baseline", tables.hasBaseline}, {"inv_yn", std::bit_cast<std::uint32_t>(tables.invYn)}}}};
-        if (recipe.profileRoute.filmProfile) {
-            const auto& film = recipe.profileRoute.filmProfile->data;
-            out["film_base"] = words(film.baseDensity.data(), 81);
-            out["film_axis"] = words(film.logExposure.data(), film.logExposure.size());
-            out["film_dyes"] = row_words(film.channelDensity);
-        }
-        out["authored_curves"] = row_words(recipe.filmDevelop.authoredDensityCurves);
-        out["baseline_density"] = words(output.syntheticFilmReference.baselineDensityCmy.data(), 3);
-        out["reference_hash"] = output.syntheticFilmReference.hash;
-        if (print && recipe.profileRoute.printProfile) {
-            const auto& paper = recipe.profileRoute.printProfile->data;
-            out["print_base"] = words(paper.baseDensity.data(), 81);
-            out["print_axis"] = words(paper.logExposure.data(), paper.logExposure.size());
-            out["print_curves"] = row_words(paper.densityCurves);
-            out["sensitivity"] = row_words(paper.linearSensitivity);
-        }
-        out["light"] = words(light.data(), 81);
-        out["preflash"] = words(preflash.data(), 3);
-        out["normalizer"] = std::bit_cast<std::uint32_t>(normalizer);
-        out["preflash_exposure"] = std::bit_cast<std::uint32_t>(recipe.print.exposure.preflashExposure);
-        out["film_minimum"] = words(recipe.enlargerFilmBounds.dataMinCmy.data(), 3);
-        out["film_maximum"] = words(recipe.enlargerFilmBounds.dataMaxCmy.data(), 3);
-        return out;
-    }
-
-    struct Literal {
-        RenderRecipe recipe;
-        std::shared_ptr<Profiles::FilmProfile> film = std::make_shared<Profiles::FilmProfile>();
-        std::shared_ptr<Profiles::PrintProfile> paper = std::make_shared<Profiles::PrintProfile>();
-        Spectral::SpectralTables tables;
-        std::array<float, 81> light{};
-        std::array<float, 3> preflash{};
-        float normalizer = 1.0f;
-        bool missing = false;
-        bool nullRecipe = false;
-
-        explicit Literal(const Json& spec) {
-            recipe.profileRoute.filmProfile = film;
-            recipe.profileRoute.printProfile = paper;
-            recipe.profileRoute.scanRoute = static_cast<Spektrafilm::ScanRoute>(spec.at("route").get<unsigned>());
-            auto& output = recipe.scannerOutput;
-            const unsigned flags = spec.at("flags");
-            output.blackCorrection = (flags & 1u) != 0;
-            output.whiteCorrection = (flags & 2u) != 0;
-            output.blackLevel = 0.0f;
-            output.whiteLevel = 1.0f;
-            if (spec.contains("levels")) {
-                output.blackLevel = std::bit_cast<float>(spec.at("levels")[0].get<std::uint32_t>());
-                output.whiteLevel = std::bit_cast<float>(spec.at("levels")[1].get<std::uint32_t>());
-            }
-            output.syntheticFilmReference.hash = 1;
-            output.syntheticFilmReference.baselineDensityCmy = {1, 1, 1};
-            auto& bounds = recipe.densityBounds;
-            bounds.medium = spec.at("print").get<bool>() ? Spektrafilm::DensityMedium::Print : Spektrafilm::DensityMedium::Film;
-            bounds.dataMaxCmy = {3, 3, 3};
-            bounds.invSpanCmy = {1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f};
-            recipe.enlargerFilmBounds.dataMaxCmy = {3, 3, 3};
-            film->data.logExposure = {-2, 0, 2};
-            recipe.filmDevelop.authoredDensityCurves = {{3, 3, 3}, {1.5f, 1.5f, 1.5f}, {0, 0, 0}};
-            paper->data.logExposure = {-2, 0, 2};
-            paper->data.densityCurves = {{0, 0, 0}, {1.5f, 1.5f, 1.5f}, {3, 3, 3}};
-            for (std::size_t sample = 0; sample < 81; ++sample) {
-                film->data.channelDensity[sample] = {1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f};
-                paper->data.linearSensitivity[sample] = {1.0f / 81.0f, 1.0f / 81.0f, 1.0f / 81.0f};
-            }
-            light.fill(1);
-            tables.K = 1;
-            tables.epsC = tables.epsM = tables.epsY = {1.0f / 3.0f};
-            tables.Ax = tables.Ay = tables.Az = {1};
-            const std::string mutation = spec.value("mutation", "none");
-            if (mutation == "missing") {
-                missing = true;
-                recipe.profileRoute.filmProfile.reset();
-                recipe.profileRoute.printProfile.reset();
-            } else if (mutation == "null-recipe") {
-                nullRecipe = true;
-            } else if (mutation == "reference") {
-                output.syntheticFilmReference.hash = 0;
-            } else if (mutation == "scan") {
-                tables.invYn = kInfinity;
-            } else if (mutation == "midgray") {
-                output.blackLevel = output.whiteLevel = 0;
-            } else if (mutation == "direct-lookup") {
-                recipe.filmDevelop.authoredDensityCurves.clear();
-            } else if (mutation == "print-lookup") {
-                paper->data.logExposure.clear();
-            } else if (mutation == "range") {
-                tables.epsC = tables.epsM = tables.epsY = {0};
-            } else if (mutation == "normalizer-nan") {
-                normalizer = kNan;
-            } else if (mutation == "normalizer-zero") {
-                normalizer = 0;
-            } else if (mutation == "normalizer-negative") {
-                normalizer = -1;
-            } else if (mutation == "preflash") {
-                preflash.fill(.25f);
-                recipe.print.exposure.preflashExposure = .1f;
-            } else if (mutation == "zero-inverse") {
-                bounds.invSpanCmy[0] = 0;
-            } else if (mutation == "infinite-inverse") {
-                bounds.invSpanCmy[0] = kInfinity;
-            } else if (mutation == "narrow-overflow") {
-                tables.Ay[0] = std::numeric_limits<float>::max();
-                tables.invYn = 2;
-            } else if (mutation == "baseline-nan") {
-                tables.hasBaseline = true;
-                tables.baseDensityMin = {kNan};
-            } else if (mutation == "negative-ay") {
-                tables.Ay[0] = -1;
-            } else if (mutation == "nan-ay") {
-                tables.Ay[0] = kNan;
-            } else if (mutation == "finite-negative-sensitivity") {
-                paper->data.linearSensitivity[0] = {-1, -1, -1};
-            } else if (mutation == "nan-light") {
-                light[0] = kNan;
-            } else if (mutation == "provenance") {
-                recipe.filmDevelop.logExposure = {-20, 0, 20};
-                film->data.densityCurves = {{13, 13, 13}, {12, 12, 12}, {11, 11, 11}};
-            } else if (mutation == "baseline") {
-                tables.hasBaseline = true;
-                tables.baseDensityMin = {.1234567f};
-            } else if (mutation == "baseline-infinite") {
-                tables.hasBaseline = true;
-                tables.baseDensityMin = {kInfinity};
-            } else if (mutation == "nonfinite-eps") {
-                tables.epsM[0] = kNan;
-            } else if (mutation == "k-zero") {
-                tables.K = 0;
-            } else if (mutation == "k-81") {
-                tables.K = 81;
-                tables.epsC.assign(81, .1234567f);
-                tables.epsM.assign(81, .33333334f);
-                tables.epsY.assign(81, .7777777f);
-                tables.Ax = tables.Ay = tables.Az = std::vector<float>(81, 1.0f / 81.0f);
-            } else if (mutation == "medium-literal") {
-                bounds.medium = static_cast<Spektrafilm::DensityMedium>(255);
-                bounds.dataMinCmy = {.1234567f, -.1f, .33333334f};
-            } else if (mutation == "medium-opposite") {
-                bounds.medium = spec.at("print").get<bool>() ? Spektrafilm::DensityMedium::Film : Spektrafilm::DensityMedium::Print;
-                bounds.dataMinCmy = {.1234567f, -.1f, .33333334f};
-            } else if (mutation == "base-nonfinite") {
-                film->data.baseDensity[0] = paper->data.baseDensity[0] = kNan;
-                film->data.baseDensity[1] = paper->data.baseDensity[1] = kInfinity;
-            } else if (mutation == "mean-nonfinite") {
-                recipe.filmDevelop.authoredDensityCurves[1] = {kNan, 1.5f, kInfinity};
-                paper->data.densityCurves[1] = {kNan, 1.5f, kInfinity};
-            } else if (mutation == "mean-zero") {
-                recipe.filmDevelop.authoredDensityCurves[1] = {kNan, -kInfinity, kInfinity};
-                paper->data.densityCurves[1] = {kNan, -kInfinity, kInfinity};
-            } else if (mutation == "singleton") {
-                film->data.logExposure = {0};
-                recipe.filmDevelop.authoredDensityCurves = {{1, 1, 1}};
-                paper->data.logExposure = {0};
-                paper->data.densityCurves = {{1, 1, 1}};
-            } else if (mutation == "duplicate") {
-                film->data.logExposure = {-2, 0, 1, 2};
-                recipe.filmDevelop.authoredDensityCurves = {{3, 3, 3}, {1.5f, 1.5f, 1.5f}, {1.5f, 1.5f, 1.5f}, {0, 0, 0}};
-                paper->data.logExposure = {-2, 0, 0, 2};
-                paper->data.densityCurves = {{0, 0, 0}, {1.5f, 1.5f, 1.5f}, {2, 2, 2}, {3, 3, 3}};
-            } else if (mutation == "descending") {
-                std::reverse(film->data.logExposure.begin(), film->data.logExposure.end());
-                std::reverse(recipe.filmDevelop.authoredDensityCurves.begin(), recipe.filmDevelop.authoredDensityCurves.end());
-                std::reverse(paper->data.logExposure.begin(), paper->data.logExposure.end());
-                std::reverse(paper->data.densityCurves.begin(), paper->data.densityCurves.end());
-            } else if (mutation == "mismatch") {
-                film->data.logExposure.pop_back();
-                paper->data.logExposure.pop_back();
-            } else if (mutation == "axis-nan") {
-                film->data.logExposure[1] = paper->data.logExposure[1] = kNan;
-            } else if (mutation == "axis-infinite") {
-                film->data.logExposure = {-kInfinity, 0, kInfinity};
-                paper->data.logExposure = {-kInfinity, 0, kInfinity};
-            } else if (mutation != "none") {
-                throw std::runtime_error("unknown scanner correction capture mutation");
-            }
-        }
-    };
-
-    Json observe(const RenderRecipe& recipe, const Spectral::SpectralTables& tables, const std::array<float, 81>& light, const std::array<float, 3>& preflash, float normalizer, bool print, bool missing = false, bool nullRecipe = false) {
-        Scanner::ScannerColorCorrectionDescriptor descriptor;
-        descriptor.hash = 99;
-        std::string diagnostic = "seeded";
-        Json out;
-        try {
-            const bool returned = print
-                                      ? Scanner::build_print_scanner_color_correction_descriptor(
-                                            {nullRecipe ? nullptr : &recipe, missing ? nullptr : &tables, missing ? nullptr : light.data(), 81, missing ? nullptr : preflash.data(), normalizer},
-                                            descriptor,
-                                            diagnostic)
-                                      : Scanner::build_direct_scanner_color_correction_descriptor(recipe, tables, descriptor, diagnostic);
-            out = {{"native_outcome", "returned"}, {"native_bool", returned}, {"exception_kind", nullptr}};
-        } catch (const std::out_of_range&) {
-            out = {{"native_outcome", "exception"}, {"native_bool", nullptr}, {"exception_kind", "std::out_of_range"}};
-        }
-        out["descriptor"] = project(descriptor);
-        out["diagnostic"] = diagnostic;
-        return out;
-    }
-
-    std::streamoff trace_position() {
-        if (!JTRACE_ENABLED(2))
-            return 0;
-        auto& sink = JuicerLogging::sink();
-        std::lock_guard lock(sink.m);
-        JuicerLogging::ensure_sink_locked(sink);
-        sink.stream.flush();
-        return static_cast<std::streamoff>(sink.sizeBytes);
-    }
-    Json correction_trace_since(std::streamoff position) {
-        Json rows = Json::array();
-        if (!JTRACE_ENABLED(2))
-            return rows;
-        auto& sink = JuicerLogging::sink();
-        std::lock_guard lock(sink.m);
-        sink.stream.flush();
-        std::ifstream input(sink.path, std::ios::binary);
-        require(input.is_open(), "scanner trace sink is readable");
-        input.seekg(position);
-        for (std::string line; std::getline(input, line);)
-            if (line.starts_with("SCAN | event=scanner_correction_descriptor "))
-                rows.push_back(line);
-        return rows;
-    }
-
-    void check_trace(const Json& actual, std::string_view context, const Json& native) {
-        require(actual.size() == native.size(), "scanner correction trace event count");
-        constexpr std::array fields{"blackLevelEncoded", "whiteLevelEncoded", "targetBlackLinear", "targetWhiteLinear", "referenceBlackY", "referenceWhiteY", "referenceDeltaY", "xyzSlope", "xyzOffset", "correctedMidgrayInput", "exposureScale"};
-        const auto is_nan = [](std::string_view token) {
-            if (token.starts_with('-') || token.starts_with('+'))
-                token.remove_prefix(1);
-            return token == "nan" || (token.starts_with("nan(") && token.ends_with(')'));
-        };
-        for (std::size_t i = 0; i < actual.size(); ++i) {
-            auto observed = actual.at(i).get<std::string>();
-            auto expected = native.at(i).get<std::string>();
-            std::vector<std::string> differences;
-            if (observed.find(" outcome=rejected_") != std::string::npos && expected.find(" outcome=rejected_") != std::string::npos) {
-                for (const auto* field : fields) {
-                    const auto prefix = std::string(" ") + field + "=";
-                    const auto observedPosition = observed.find(prefix);
-                    const auto expectedPosition = expected.find(prefix);
-                    if (observedPosition == std::string::npos || expectedPosition == std::string::npos)
-                        continue;
-                    const auto observedBegin = observedPosition + prefix.size();
-                    const auto expectedBegin = expectedPosition + prefix.size();
-                    const auto observedToken = observed.substr(observedBegin, observed.find(' ', observedBegin) - observedBegin);
-                    const auto expectedToken = expected.substr(expectedBegin, expected.find(' ', expectedBegin) - expectedBegin);
-                    if (observedToken != expectedToken && is_nan(observedToken) && is_nan(expectedToken)) {
-                        differences.emplace_back(field).append(" actual=").append(observedToken).append(" native=").append(expectedToken);
-                        observed.replace(observedBegin, observedToken.size(), "<diagnostic-nan>");
-                        expected.replace(expectedBegin, expectedToken.size(), "<diagnostic-nan>");
-                    }
-                }
-            }
-            if (observed != expected) {
-                std::fprintf(stderr, "scanner trace disagreement context=%.*s actual=%s native=%s\n", static_cast<int>(context.size()), context.data(), actual.at(i).get<std::string>().c_str(), native.at(i).get<std::string>().c_str());
-                require(false, "public scanner trace continuity");
-            }
-            for (const auto& difference : differences)
-                std::fprintf(stderr, "SCANNER_DIAGNOSTIC_NAN context=%.*s %s\n", static_cast<int>(context.size()), context.data(), difference.c_str());
-        }
-    }
-
-    Json products(const std::filesystem::path& resources, const Json& expectedTraces) {
+    Json products(const std::filesystem::path& resources, const Json& expectedProducts) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
-        JuicerProcess::root().ensure_bootstrap();
+        auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+        require(assets != nullptr, "scanner correction products have process Rust assets");
         Json out = Json::array();
+        std::vector<std::string> recipe_ids;
+        for (unsigned route = 0; route < 4; ++route)
+            for (int mode = 0; mode < 3; ++mode)
+                for (unsigned flags = 0; flags < 4; ++flags)
+                    recipe_ids.emplace_back(std::to_string(route) + "/" + std::to_string(mode) + "/" + std::to_string(flags));
+        JuicerTests::Cohort recipe_rows("scanner_correction.recipe_tuple", recipe_ids);
         for (unsigned route = 0; route < 4; ++route)
             for (int mode = 0; mode < 3; ++mode)
                 for (unsigned flags = 0; flags < 4; ++flags) {
+                    auto case_event = recipe_rows.case_event(std::to_string(route) + "/" + std::to_string(mode) + "/" + std::to_string(flags));
                     auto params = PrintPreflashTest::controls();
                     params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
                     params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
                     params.spectralUpsamplingMode = mode;
                     params.scannerBlackCorrection = (flags & 1u) != 0;
                     params.scannerWhiteCorrection = (flags & 2u) != 0;
-                    FocusedRenderStateBuildProduct product;
-                    std::string diagnostic;
-                    const bool success = route % 2 ? build_print_render_state_product(params, product, diagnostic)
-                                                   : build_direct_render_state_product(params, product, diagnostic);
-                    require(success, diagnostic.c_str());
-                    const auto& recipe = product.recipe;
-                    JTRACE_LEVEL(2, "SCANNER_CAPTURE", std::string("product=") + std::to_string(route) + ":" + std::to_string(mode) + ":" + std::to_string(flags));
-                    std::array<float, 81> light{};
-                    std::array<float, 3> preflash{};
-                    float normalizer = 1;
-                    if (route % 2) {
-                        JuicerCuda::PrintResourceInput printInput;
-                        std::array<float, 81> preflashLight{};
-                        require(JuicerCuda::build_print_resource_input(
-                                    {&recipe, &JuicerProcess::root().assets(), product.payload.printMainIlluminant ? &*product.payload.printMainIlluminant : nullptr},
-                                    printInput,
-                                    preflashLight,
-                                    diagnostic),
-                                diagnostic.c_str());
-                        require(printInput.mainIlluminant.size() == light.size(), "prepared correction light extent");
-                        std::copy(printInput.mainIlluminant.begin(), printInput.mainIlluminant.end(), light.begin());
-                        preflash = printInput.preflashRawCmy;
-                        normalizer = printInput.normalizer;
+                    auto stateOwner = JuicerTestSupport::prepare_product(params);
+                    FjPreparedStateView state{};
+                    std::array<char, 2048> errorText{};
+                    FjErrorBuffer error{errorText.data(), errorText.size(), 0};
+                    status(stateOwner.view(state, error));
+                    const bool printRoute = route % 2 != 0;
+
+                    // Source-profile bytes remain owned by the live asset views;
+                    // the complete prepared state supplies resolved execution data.
+                    FjFilmProfile* filmOwner = nullptr;
+                    FjPrintProfile* printOwner = nullptr;
+                    status(fj_legacy_film_profile_acquire(assets, state.film_profile_key, &filmOwner, &error));
+                    FjFilmProfileView film{};
+                    FjPrintProfileView paper{};
+                    status(fj_legacy_film_profile_view(filmOwner, &film, &error));
+                    require(film.asset_token == state.film_profile_asset_version,
+                            "correction product film view matches held-state asset version");
+                    if (printRoute) {
+                        status(fj_legacy_print_profile_acquire(assets, state.print_profile_key, &printOwner, &error));
+                        status(fj_legacy_print_profile_view(printOwner, &paper, &error));
+                        require(paper.asset_token == state.print_profile_asset_version,
+                                "correction product print view matches held-state asset version");
                     }
-                    const auto position = trace_position();
-                    const auto observation = observe(recipe, product.payload.scannerTables, light, preflash, normalizer, route % 2 != 0);
-                    const auto context = "product:" + std::to_string(route) + ":" + std::to_string(mode) + ":" + std::to_string(flags);
-                    check_trace(correction_trace_since(position), context, expectedTraces.at(context));
+
+                    const auto& tables = state.scanner_tables;
+                    require(tables.lambda_nm.count == 81 && tables.illuminant.count == 81 &&
+                                tables.weighted_xyz[1].count == 81 && tables.dyes_cmy[0].count == 81 &&
+                                tables.dyes_cmy[1].count == 81 && tables.dyes_cmy[2].count == 81,
+                            "held scanner correction table extents");
+                    Json tableInput{{"c", words(tables.dyes_cmy[0].data, tables.dyes_cmy[0].count)},
+                                    {"m", words(tables.dyes_cmy[1].data, tables.dyes_cmy[1].count)},
+                                    {"y", words(tables.dyes_cmy[2].data, tables.dyes_cmy[2].count)},
+                                    {"ay", words(tables.weighted_xyz[1].data, tables.weighted_xyz[1].count)},
+                                    {"baseline", words(tables.baseline_min.data, tables.baseline_min.count)},
+                                    {"k", tables.lambda_nm.count},
+                                    {"has_baseline", tables.has_baseline != 0},
+                                    {"inv_yn", std::bit_cast<std::uint32_t>(tables.inv_yn)}};
+                    const std::array<float, 81> emptyLight{};
+                    const auto lightWords = printRoute
+                                                ? words(state.print.main_illuminant.data, state.print.main_illuminant.count)
+                                                : words(emptyLight.data(), emptyLight.size());
+                    Json input{{"route", state.route},
+                               {"flags", unsigned(state.scanner_policy.black_correction) + 2u * unsigned(state.scanner_policy.white_correction)},
+                               {"levels", words(std::array{state.scanner_policy.black_level, state.scanner_policy.white_level}.data(), 2)},
+                               {"medium", state.scanner_bounds.medium},
+                               {"minimum", words(state.scanner_bounds.minimum_cmy, 3)},
+                               {"maximum", words(state.scanner_bounds.maximum_cmy, 3)},
+                               {"inverse", words(state.scanner_bounds.inv_span_cmy, 3)},
+                               {"tables", std::move(tableInput)},
+                               {"film_base", words(film.tables.base_density.data, film.tables.base_density.count)},
+                               {"film_axis", words(film.tables.log_exposure.data, film.tables.log_exposure.count)},
+                               {"film_dyes", words(film.tables.channel_density_cmy.data, film.tables.channel_density_cmy.count)},
+                               {"authored_curves", words(film.tables.density_curves_cmy.data, film.tables.density_curves_cmy.count)},
+                               {"baseline_density", words(state.film_reference.baseline_density_cmy, 3)},
+                               {"reference_hash", state.film_reference.hash},
+                               {"light", lightWords},
+                               {"preflash", words(state.print.preflash_raw_cmy, 3)},
+                               {"normalizer", std::bit_cast<std::uint32_t>(printRoute ? state.print.normalizer : 1.0f)},
+                               {"preflash_exposure", std::bit_cast<std::uint32_t>(printRoute ? state.print.preflash_exposure : 0.0f)},
+                               {"film_minimum", words(state.enlarger_film_bounds.minimum_cmy, 3)},
+                               {"film_maximum", words(state.enlarger_film_bounds.maximum_cmy, 3)}};
+                    if (printRoute) {
+                        input["print_base"] = words(paper.tables.base_density.data, paper.tables.base_density.count);
+                        input["print_axis"] = words(paper.tables.log_exposure.data, paper.tables.log_exposure.count);
+                        input["print_curves"] = words(paper.tables.density_curves_cmy.data, paper.tables.density_curves_cmy.count);
+                        input["sensitivity"] = words(paper.tables.linear_sensitivity_rgb.data, paper.tables.linear_sensitivity_rgb.count);
+                    }
+                    const auto capturedCorrection = [&] {
+                        const auto descriptor = project(state.scanner_correction);
+                        return Json{{"native_outcome", "returned"}, {"native_bool", true}, {"exception_kind", nullptr}, {"descriptor", descriptor}, {"diagnostic", ""}};
+                    }();
                     out.push_back({{"id", std::to_string(route) + ":" + std::to_string(mode) + ":" + std::to_string(flags)},
                                    {"mode", mode},
                                    {"print", route % 2 != 0},
-                                   {"input", inputs(recipe, product.payload.scannerTables, light, preflash, normalizer, route % 2 != 0)},
-                                   {"native", observation},
+                                   {"input", std::move(input)},
+                                   {"native", capturedCorrection},
                                    {"snapshot_hash", hash_params(params)},
-                                   {"recipe_hash", recipe.hash},
-                                   {"scanner_hash", recipe.scannerOutput.hash},
-                                   {"upload_hash", product.payload.uploadCoreHash}});
+                                   {"recipe_hash", state.recipe_hash},
+                                   {"scanner_hash", state.scanner_recipe_hash},
+                                   {"upload_hash", state.upload_core_hash}});
+                    if (printOwner)
+                        status(fj_legacy_print_profile_release(printOwner, &error));
+                    status(fj_legacy_film_profile_release(filmOwner, &error));
+                    require(out.back() == expectedProducts.at(out.size() - 1), "per-case complete scanner correction product");
+                    case_event.passed();
                 }
         return out;
     }
@@ -525,6 +295,9 @@ namespace ScannerCorrectionTest {
                 const auto& norm = checked.at("cases").at(row.at("id").get<std::string>());
                 if (norm.at("native_only").get<bool>())
                     continue;
+                const auto id = row.at("id").get<std::string>();
+                const std::string suffix = facade ? "/test-facade" : "/legacy-facade";
+                JuicerTests::CaseEvent facade_event("cpp", id + suffix);
                 Inputs source(row.at("input"));
                 const bool print = row.at("spec").at("print");
                 const bool missing = row.at("spec").value("mutation", "none") == "missing";
@@ -552,14 +325,19 @@ namespace ScannerCorrectionTest {
                 const auto direct = source.direct(tables);
                 const auto paper = source.print(tables);
                 const auto result = reason == 0 ? expected(row.at("native").at("descriptor")) : FjScannerColorCorrection{};
+                JuicerTests::CaseEvent c11_event("c11", id + suffix + "/c-call");
                 require(fj_test_scanner_correction_c_call(print ? 1u : 0u, &source.params, missing ? nullptr : &direct, missing ? nullptr : &paper, &result, norm.at("category"), reason) == 1, "actual C11 signature/value/failure call");
+                c11_event.passed();
+                facade_event.passed();
             }
             for (const auto& row : captured.at("products")) {
+                JuicerTests::CaseEvent case_event("cpp", "scanner-correction/product/" + row.at("id").get<std::string>() + (facade ? "/test-facade" : "/legacy-facade"));
                 Inputs source(row.at("input"));
                 const auto out = invoke(source, row.at("print"), facade);
                 status(out.status);
                 require(out.failure.reason == 0 && out.length == 0, "actual scanner inputs accepted");
                 require(project(out.value) == row.at("native").at("descriptor"), "all genuine input corrections exact");
+                case_event.passed();
             }
         }
         Outcome retained;
@@ -571,12 +349,32 @@ namespace ScannerCorrectionTest {
     }
 
     void boundary(const Json& captured) {
+        JuicerTests::CaseEvent boundary_event("cpp", "scanner-correction/boundary");
         Inputs source(literal(captured, "direct-none").at("input"));
         Inputs paperSource(literal(captured, "print-none").at("input"));
+        std::vector<std::string> mode_ids, capacity_ids, scenario_ids, fault_ids;
+        for (unsigned facade = 0; facade < 2; ++facade) {
+            for (unsigned route = 0; route < 256; ++route)
+                for (unsigned flags = 0; flags < 4; ++flags)
+                    for (bool print : {false, true})
+                        mode_ids.emplace_back("caller-" + std::to_string(facade) + "/route-" + std::to_string(route) + "/flags-" + std::to_string(flags) + "/print-" + std::to_string(print));
+            for (const auto capacity : {0u, 1u, 9u, 512u})
+                capacity_ids.emplace_back("caller-" + std::to_string(facade) + "/capacity-" + std::to_string(capacity));
+            for (unsigned scenario = 0; scenario < 13; ++scenario)
+                scenario_ids.emplace_back("caller-" + std::to_string(facade) + "/scenario-" + std::to_string(scenario));
+            for (unsigned operation = 0; operation < 2; ++operation)
+                fault_ids.emplace_back("caller-" + std::to_string(facade) + "/operation-" + std::to_string(operation));
+        }
+        JuicerTests::Cohort demand_modes("scanner_correction.demand_mode", mode_ids);
+        JuicerTests::Cohort diagnostic_capacities("scanner_correction.diagnostic_capacity", capacity_ids);
+        JuicerTests::Cohort malformed_scenarios("scanner_correction.malformed_scenario", scenario_ids);
+        JuicerTests::Cohort preparation_faults("scanner_correction.preparation_fault", fault_ids);
+        unsigned facade_index = 0;
         for (bool facade : {false, true}) {
             for (unsigned route = 0; route < 256; ++route)
                 for (unsigned flags = 0; flags < 4; ++flags)
                     for (bool print : {false, true}) {
+                        auto row_event = demand_modes.case_event("caller-" + std::to_string(facade_index) + "/route-" + std::to_string(route) + "/flags-" + std::to_string(flags) + "/print-" + std::to_string(print));
                         const FjScannerCorrectionParams params{route, flags, kNan, kNan};
                         std::uint32_t required = 99;
                         FjScannerCorrectionFailure detail{99};
@@ -596,10 +394,12 @@ namespace ScannerCorrectionTest {
                         } else
                             failure(out, active ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_PREPARATION_FAILURE, {active ? 1u : print ? 7u
                                                                                                                                     : 2u});
+                        row_event.passed();
                     }
             const auto tables = source.tables();
             auto input = source.direct(tables);
             for (unsigned scenario = 0; scenario < 13; ++scenario) {
+                auto row_event = malformed_scenarios.case_event("caller-" + std::to_string(facade_index) + "/scenario-" + std::to_string(scenario));
                 auto params = source.params;
                 auto malformed = input;
                 auto malformedTables = tables;
@@ -646,6 +446,7 @@ namespace ScannerCorrectionTest {
                     require(out.trace.outcome == 0 && trace_words(out.trace) == Json::array({0, 0, 0, 0, 0, 0, 0, 0}), "independent valid trace clears");
                 if (scenario != 8)
                     require(diagnostic.length < diagnostic.capacity && out.text[diagnostic.length] == '\0', "diagnostic remains bounded on structural failure");
+                row_event.passed();
             }
             auto ignoredTables = tables;
             ignoredTables.baseline_min = {reinterpret_cast<const float*>(std::uintptr_t{1}), SIZE_MAX};
@@ -656,6 +457,7 @@ namespace ScannerCorrectionTest {
             require(project(ignoredOut.value) == literal(captured, "direct-none").at("native").at("descriptor"), "disabled baseline backing ignored");
             const std::string message = "ResourceDescriptorMismatch phase=8B print correction inputs";
             for (std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{9}, std::size_t{512}}) {
+                auto row_event = diagnostic_capacities.case_event("caller-" + std::to_string(facade_index) + "/capacity-" + std::to_string(capacity));
                 std::array<char, 512> text{};
                 text.fill('x');
                 FjErrorBuffer error{capacity ? text.data() : reinterpret_cast<char*>(std::uintptr_t{1}), capacity, 99};
@@ -665,8 +467,10 @@ namespace ScannerCorrectionTest {
                 failure(out, FJ_STATUS_PREPARATION_FAILURE, {7});
                 const auto length = capacity == 0 ? 0 : std::min(capacity - 1, message.size());
                 require(error.length == length && (capacity == 0 || (text[length] == '\0' && std::string(text.data()) == message.substr(0, length))), "capacity zero/one/truncated/full preserves checked envelope");
+                row_event.passed();
             }
             for (unsigned operation : {0u, 1u}) {
+                auto row_event = preparation_faults.case_event("caller-" + std::to_string(facade_index) + "/operation-" + std::to_string(operation));
                 auto& active = operation == 0 ? source : paperSource;
                 status(fj_test_scanner_correction_fault(operation, 1));
                 std::uint32_t demand = 99;
@@ -688,11 +492,15 @@ namespace ScannerCorrectionTest {
                 independent.join();
                 failure(invoke(active, operation != 0, facade), FJ_STATUS_INTERNAL_FAILURE, {14});
                 status(invoke(active, operation != 0, facade).status);
+                row_event.passed();
             }
+            ++facade_index;
         }
         status(fj_test_scanner_correction_fault(2, 1), FJ_STATUS_UNSUPPORTED_INPUT);
         status(fj_test_scanner_correction_fault(0, 2), FJ_STATUS_UNSUPPORTED_INPUT);
+        JuicerTests::Cohort demand_query_scenarios("scanner_correction.demand_query_scenario", {"0", "1", "2", "3", "4"});
         for (unsigned scenario = 0; scenario < 5; ++scenario) {
+            auto row_event = demand_query_scenarios.case_event(std::to_string(scenario));
             auto params = source.params;
             std::uint32_t required = 99;
             FjScannerCorrectionFailure detail{99};
@@ -707,6 +515,7 @@ namespace ScannerCorrectionTest {
                 require(required == 0, "query independently clears required on invalid peer/Params/all-off width");
             if (scenario != 2)
                 require(detail.reason == FJ_SCANNER_CORRECTION_REASON_RAW, "query independently reports RAW on invalid peer");
+            row_event.passed();
         }
         {
             auto tables = source.tables();
@@ -723,111 +532,10 @@ namespace ScannerCorrectionTest {
         FjScannerCorrectionFailure detail{99};
         status(fj_legacy_scanner_correction_input_demand(&source.params, 2, &required, &detail, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         require(required == 0 && detail.reason == 1, "unknown query operation clears required");
+        boundary_event.passed();
     }
 
-    thread_local unsigned corruption = 0;
-    void corrupt(FjStatus& status, FjScannerColorCorrection& value, FjScannerCorrectionFailure& failure, FjScannerCorrectionTrace& trace) {
-        if (corruption == 0)
-            status.api = FJ_API_CUDA_RUNTIME;
-        if (corruption == 1)
-            failure.reason = 99;
-        if (corruption == 2)
-            value.schema_version = 2;
-        if (corruption == 3)
-            value.active = 2;
-        if (corruption == 4)
-            value.xyz_slope = kNan;
-        if (corruption == 5)
-            value.hash = 0;
-        if (corruption == 6)
-            value.route = 255;
-        if (corruption == 7)
-            trace.outcome = 99;
-        if (corruption == 8) {
-            value.reference_white_y = value.reference_black_y;
-            trace.reference_white_y = value.reference_white_y;
-        }
-        if (corruption == 9)
-            trace.corrected_midgray = kNan;
-    }
-    void native(const Json& captured, const Json& checked) {
-        for (const auto& row : captured.at("cases")) {
-            Literal source(row.at("spec"));
-            const bool print = row.at("spec").at("print");
-            require(inputs(source.recipe, source.tables, source.light, source.preflash, source.normalizer, print) == row.at("input"), "native transport consumes frozen literal inputs");
-            Scanner::ScannerColorCorrectionDescriptor out;
-            FjScannerCorrectionTrace trace{};
-            std::string diagnostic = "seed";
-            const Scanner::PrintCorrectionDerivationInput paper{source.nullRecipe ? nullptr : &source.recipe, source.missing ? nullptr : &source.tables, source.missing ? nullptr : source.light.data(), 81, source.missing ? nullptr : source.preflash.data(), source.normalizer};
-            const bool success = print ? JuicerScanner::prepare_print(paper, out, trace, diagnostic)
-                                       : JuicerScanner::prepare_direct(source.recipe, source.tables, out, trace, diagnostic);
-            const auto& norm = checked.at("cases").at(row.at("id").get<std::string>());
-            require(success == (norm.at("native_only").get<bool>() ? row.at("native").at("native_bool").get<bool>() : norm.at("reason") == 0), "native adapter returned checked outcome");
-            require(project(out) == row.at("native").at("descriptor"), "native success or reset descriptor preserves all captured words/requested byte");
-            require(diagnostic == (norm.at("intentional_exception_replacement").get<bool>() ? checked.at("print_byte_diagnostic").get<std::string>()
-                                                                                            : row.at("native").at("diagnostic").get<std::string>()),
-                    "native exact ordinary diagnostic");
-        }
-        Literal source(literal(captured, "direct-none").at("spec"));
-        for (corruption = 0; corruption < 10; ++corruption) {
-            JuicerScanner::Test::set_projection(corrupt);
-            bool rejected = false;
-            Scanner::ScannerColorCorrectionDescriptor out;
-            FjScannerCorrectionTrace trace{};
-            std::string diagnostic;
-            try {
-                (void)JuicerScanner::prepare_direct(source.recipe, source.tables, out, trace, diagnostic);
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                rejected = true;
-                status(error.failure.status, FJ_STATUS_INTERNAL_FAILURE);
-            }
-            JuicerScanner::Test::set_projection(nullptr);
-            require(rejected && !out.active && out.hash == 0 && out.route == source.recipe.profileRoute.scanRoute, "native integrity rejection exposes no partial descriptor");
-        }
-        SpectralAllocationProbe::arm();
-        bool rejected = false;
-        Scanner::ScannerColorCorrectionDescriptor out;
-        FjScannerCorrectionTrace trace{};
-        std::string diagnostic;
-        try {
-            (void)JuicerScanner::prepare_direct(source.recipe, source.tables, out, trace, diagnostic);
-        } catch (const JuicerCuda::ExecutionFailure& error) {
-            rejected = true;
-            status(error.failure.status, FJ_STATUS_ALLOCATION_FAILURE);
-        }
-        SpectralAllocationProbe::clear();
-        require(rejected && SpectralAllocationProbe::bytes() == 9 * sizeof(float) && !out.active && out.hash == 0, "actual flat-curve temporary allocation is separately typed");
-        require(JuicerScanner::prepare_direct(source.recipe, source.tables, out, trace, diagnostic), "native allocation recovery");
-        for (unsigned route : {4u, 255u})
-            for (unsigned flags = 0; flags < 4; ++flags) {
-                source.recipe.profileRoute.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                source.recipe.scannerOutput.blackCorrection = (flags & 1u) != 0;
-                source.recipe.scannerOutput.whiteCorrection = (flags & 2u) != 0;
-                const Scanner::PrintCorrectionDerivationInput malformed{&source.recipe, reinterpret_cast<const Spectral::SpectralTables*>(std::uintptr_t{1}), reinterpret_cast<const float*>(std::uintptr_t{1}), 81, reinterpret_cast<const float*>(std::uintptr_t{1}), kNan};
-                const bool success = JuicerScanner::prepare_print(malformed, out, trace, diagnostic);
-                require(success == (flags == 0) && trace.outcome == 0 && !out.active && out.route == source.recipe.profileRoute.scanRoute,
-                        "native shared demand precedes malformed active storage for print byte domain");
-            }
-    }
-    void callers(const Json& captured, const Json& checked, const std::filesystem::path& tracePath) {
-        const auto expectedTraces = read(tracePath);
-        for (const auto& row : captured.at("cases")) {
-            Literal source(row.at("spec"));
-            const auto position = trace_position();
-            const auto observed = observe(source.recipe, source.tables, source.light, source.preflash, source.normalizer, row.at("spec").at("print"), source.missing, source.nullRecipe);
-            Json expected = row.at("native");
-            if (checked.at("cases").at(row.at("id").get<std::string>()).at("intentional_exception_replacement").get<bool>()) {
-                expected["native_outcome"] = "returned";
-                expected["native_bool"] = false;
-                expected["exception_kind"] = nullptr;
-                expected["diagnostic"] = checked.at("print_byte_diagnostic");
-            }
-            require(observed == expected, "public scanner caller preserves exact native value/reset/diagnostic with separate checked exception replacement");
-            const auto context = "case:" + row.at("id").get<std::string>();
-            check_trace(correction_trace_since(position), context, expectedTraces.at(context));
-        }
-    }
-    void check_products(const std::filesystem::path& resources, const Json& captured, const Json& expectedTraces) {
-        require(products(resources, expectedTraces) == captured.at("products"), "all 48 actual correction callers retain controls, resource inputs, descriptor and enclosing identities");
+    void check_products(const std::filesystem::path& resources, const Json& captured) {
+        require_equal(products(resources, captured.at("products")), captured.at("products"), "all 48 actual correction products retain controls, resource inputs, descriptor and enclosing identities");
     }
 } // namespace ScannerCorrectionTest

@@ -671,7 +671,6 @@ _Static_assert(offsetof(FjSpatialOpticsFailure, field) == 8, "FjSpatialOpticsFai
 _Static_assert(_Generic(((FjSpatialOpticsFailure*)0)->channel, uint32_t: 1, default: 0), "FjSpatialOpticsFailure.channel type");
 _Static_assert(offsetof(FjSpatialOpticsFailure, channel) == 12, "FjSpatialOpticsFailure.channel offset");
 _Static_assert(sizeof(FjSpatialOpticsFailure) == 16 && _Alignof(FjSpatialOpticsFailure) == 4, "FjSpatialOpticsFailure size/alignment");
-_Static_assert(_Generic(&fj_legacy_spatial_optics_prepare, FjStatus (*)(const FjSpatialOpticsParams*, FjSpatialOpticsRecipe*, FjSpatialOpticsFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_spatial_optics_prepare signature");
 _Static_assert(_Generic(&fj_test_spatial_optics_prepare, FjStatus (*)(const FjSpatialOpticsParams*, FjSpatialOpticsRecipe*, FjSpatialOpticsFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_spatial_optics_prepare signature");
 
 _Static_assert(sizeof(FjPrintIlluminantParams) == 44 && _Alignof(FjPrintIlluminantParams) == 4, "FjPrintIlluminantParams layout");
@@ -703,7 +702,6 @@ _Static_assert(FJ_PRINT_ILLUMINANT_REASON_RAW == 1, "FJ_PRINT_ILLUMINANT_REASON_
 _Static_assert(FJ_PRINT_ILLUMINANT_REASON_SAMPLE == 2, "FJ_PRINT_ILLUMINANT_REASON_SAMPLE value");
 _Static_assert(FJ_PRINT_ILLUMINANT_REASON_ENERGY == 3, "FJ_PRINT_ILLUMINANT_REASON_ENERGY value");
 _Static_assert(FJ_PRINT_ILLUMINANT_REASON_PANIC == 4, "FJ_PRINT_ILLUMINANT_REASON_PANIC value");
-_Static_assert(_Generic(&fj_legacy_print_illuminant_prepare, FjStatus (*)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_print_illuminant_prepare signature");
 _Static_assert(_Generic(&fj_test_print_illuminant_prepare, FjStatus (*)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_print_illuminant_prepare signature");
 
 _Static_assert(sizeof(FjPrintPreflashInput) == 48 && _Alignof(FjPrintPreflashInput) == 8, "FjPrintPreflashInput layout");
@@ -726,7 +724,6 @@ _Static_assert(FJ_PRINT_PREFLASH_REASON_NONE == 0, "FJ_PRINT_PREFLASH_REASON_NON
 _Static_assert(FJ_PRINT_PREFLASH_REASON_RAW == 1, "FJ_PRINT_PREFLASH_REASON_RAW value");
 _Static_assert(FJ_PRINT_PREFLASH_REASON_CHANNEL == 2, "FJ_PRINT_PREFLASH_REASON_CHANNEL value");
 _Static_assert(FJ_PRINT_PREFLASH_REASON_PANIC == 3, "FJ_PRINT_PREFLASH_REASON_PANIC value");
-_Static_assert(_Generic(&fj_legacy_print_preflash_prepare, FjStatus (*)(const FjPrintPreflashInput*, FjPrintPreflashRaw*, FjPrintPreflashFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_print_preflash_prepare signature");
 _Static_assert(_Generic(&fj_test_print_preflash_prepare, FjStatus (*)(const FjPrintPreflashInput*, FjPrintPreflashRaw*, FjPrintPreflashFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_print_preflash_prepare signature");
 
 _Static_assert(sizeof(FjPrintBalanceInput) == 104 && _Alignof(FjPrintBalanceInput) == 8, "FjPrintBalanceInput layout");
@@ -1006,12 +1003,21 @@ _Static_assert(_Generic(((FjScannerLutFailure*)0)->reason, uint32_t: 1, default:
 _Static_assert(_Generic(((FjScannerLutFailure*)0)->channel, uint32_t: 1, default: 0), "FjScannerLutFailure.channel type");
 _Static_assert(_Generic(((FjScannerLutFailure*)0)->index, uint64_t: 1, default: 0), "FjScannerLutFailure.index type");
 _Static_assert(_Generic(((FjScannerLutFailure*)0)->buffer, uint32_t: 1, default: 0), "FjScannerLutFailure.buffer type");
-_Static_assert(_Generic(&fj_legacy_scanner_lut_acquire, FjStatus (*)(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_lut_acquire signature");
-_Static_assert(_Generic(&fj_legacy_scanner_lut_view, FjStatus (*)(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_lut_view signature");
-_Static_assert(_Generic(&fj_legacy_scanner_lut_release, FjStatus (*)(FjScannerLutOwner*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_lut_release signature");
 _Static_assert(_Generic(&fj_test_scanner_lut_acquire, FjStatus (*)(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_acquire signature");
 _Static_assert(_Generic(&fj_test_scanner_lut_view, FjStatus (*)(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_view signature");
 _Static_assert(_Generic(&fj_test_scanner_lut_release, FjStatus (*)(FjScannerLutOwner*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_release signature");
+
+FjStatus fj_test_scanner_lut_c_acquire(const FjScannerLutInput* input, FjScannerLutOwner** owner, FjScannerLutFailure* failure, FjErrorBuffer* error) {
+    return fj_test_scanner_lut_acquire(input, owner, failure, error);
+}
+
+FjStatus fj_test_scanner_lut_c_view(const FjScannerLutOwner* owner, FjScannerLutView* view, FjScannerLutFailure* failure, FjErrorBuffer* error) {
+    return fj_test_scanner_lut_view(owner, view, failure, error);
+}
+
+FjStatus fj_test_scanner_lut_c_release(FjScannerLutOwner* owner, FjErrorBuffer* error) {
+    return fj_test_scanner_lut_release(owner, error);
+}
 
 _Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->mode, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.mode type");
 _Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->route, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.route type");
@@ -1088,9 +1094,9 @@ _Static_assert(_Generic(((FjGaussianKernelView*)0)->radius, int32_t: 1, default:
 _Static_assert(_Generic(((FjGaussianKernelView*)0)->sigma_px, float: 1, default: 0), "FjGaussianKernelView.sigma_px type");
 _Static_assert(_Generic(((FjGaussianKernelView*)0)->weights, FjFloatSpan: 1, default: 0), "FjGaussianKernelView.weights type");
 _Static_assert(_Generic(((FjGaussianKernelFailure*)0)->reason, uint32_t: 1, default: 0), "FjGaussianKernelFailure.reason type");
-_Static_assert(_Generic(&fj_legacy_gaussian_kernel_acquire, FjStatus (*)(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*): 1, default: 0), "Gaussian acquire signature");
-_Static_assert(_Generic(&fj_legacy_gaussian_kernel_view, FjStatus (*)(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*): 1, default: 0), "Gaussian view signature");
-_Static_assert(_Generic(&fj_legacy_gaussian_kernel_release, FjStatus (*)(FjGaussianKernelOwner*, FjErrorBuffer*): 1, default: 0), "Gaussian release signature");
+_Static_assert(_Generic(&fj_test_gaussian_kernel_acquire, FjStatus (*)(const FjGaussianKernelInput*, FjGaussianKernelOwner**, FjGaussianKernelFailure*, FjErrorBuffer*): 1, default: 0), "Gaussian acquire signature");
+_Static_assert(_Generic(&fj_test_gaussian_kernel_view, FjStatus (*)(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*): 1, default: 0), "Gaussian view signature");
+_Static_assert(_Generic(&fj_test_gaussian_kernel_release, FjStatus (*)(FjGaussianKernelOwner*, FjErrorBuffer*): 1, default: 0), "Gaussian release signature");
 
 int fj_test_gaussian_c_call(const FjGaussianKernelInput* input, const uint32_t* expected, size_t count) {
     uint32_t sigma_bits = 0;
@@ -1098,9 +1104,9 @@ int fj_test_gaussian_c_call(const FjGaussianKernelInput* input, const uint32_t* 
     FjGaussianKernelOwner* owner = NULL;
     FjGaussianKernelFailure failure = {99};
     FjGaussianKernelView view;
-    if (fj_legacy_gaussian_kernel_acquire(input, &owner, &failure, NULL).category != 0 || !owner || failure.reason != 0)
+    if (fj_test_gaussian_kernel_acquire(input, &owner, &failure, NULL).category != 0 || !owner || failure.reason != 0)
         return 0;
-    int ok = fj_legacy_gaussian_kernel_view(owner, &view, &failure, NULL).category == 0 && failure.reason == 0 && view.radius == input->radius && view.weights.count == count;
+    int ok = fj_test_gaussian_kernel_view(owner, &view, &failure, NULL).category == 0 && failure.reason == 0 && view.radius == input->radius && view.weights.count == count;
     uint32_t observed_sigma = 0;
     memcpy(&observed_sigma, &view.sigma_px, sizeof(float));
     ok = ok && observed_sigma == sigma_bits;
@@ -1109,7 +1115,7 @@ int fj_test_gaussian_c_call(const FjGaussianKernelInput* input, const uint32_t* 
         memcpy(&word, view.weights.data + i, sizeof word);
         ok = word == expected[i];
     }
-    return fj_legacy_gaussian_kernel_release(owner, NULL).category == 0 && ok;
+    return fj_test_gaussian_kernel_release(owner, NULL).category == 0 && ok;
 }
 
 static int halation_words_equal(const float* a, size_t count, const float* b) {
@@ -1566,3 +1572,15 @@ _Static_assert(FJ_DIR_BOUNDARY_NO_AXIS == 0, "FJ_DIR_BOUNDARY_NO_AXIS value");
 _Static_assert(FJ_DIR_BOUNDARY_HORIZONTAL == 1, "FJ_DIR_BOUNDARY_HORIZONTAL value");
 _Static_assert(FJ_DIR_BOUNDARY_VERTICAL == 2, "FJ_DIR_BOUNDARY_VERTICAL value");
 _Static_assert(FJ_DIR_BOUNDARY_NO_ROW == 3, "FJ_DIR_BOUNDARY_NO_ROW value");
+
+FjStatus fj_test_spatial_optics_c_prepare(const FjSpatialOpticsParams* input, FjSpatialOpticsRecipe* out, FjSpatialOpticsFailure* failure, FjErrorBuffer* error) {
+    return fj_test_spatial_optics_prepare(input, out, failure, error);
+}
+
+FjStatus fj_test_print_illuminant_c_prepare(const FjPrintIlluminantParams* input, FjFloatSpan source, FjIlluminant* out, FjPrintIlluminantFailure* failure, FjErrorBuffer* error) {
+    return fj_test_print_illuminant_prepare(input, source, out, failure, error);
+}
+
+FjStatus fj_test_print_preflash_c_prepare(const FjPrintPreflashInput* input, FjPrintPreflashRaw* out, FjPrintPreflashFailure* failure, FjErrorBuffer* error) {
+    return fj_test_print_preflash_prepare(input, out, failure, error);
+}

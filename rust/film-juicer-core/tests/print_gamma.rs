@@ -13,6 +13,9 @@ use film_juicer_core::hash;
 use film_juicer_core::profile::{
     DensitySampleError, PrintDensityError, PrintProfile, load_print_source,
 };
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -123,8 +126,14 @@ fn bundled_and_floor_gamma_samples_and_downstream_identities_match_captures() {
     let mut bundled = 0;
     let mut floors = 0;
     let mut sampled = 0;
-    for captured in gamma_fixture["captured"].as_array().unwrap() {
+    let captured_rows = gamma_fixture["captured"].as_array().unwrap();
+    let mut cases = RowCases::new(
+        "bundled-and-floor-gamma-captures",
+        captured_rows.iter().map(|row| row["id"].as_str().unwrap()),
+    );
+    for captured in captured_rows {
         let id = captured["id"].as_str().unwrap();
+        let row_case = cases.case(id);
         let case = density["cases"]
             .as_array()
             .unwrap()
@@ -196,7 +205,9 @@ fn bundled_and_floor_gamma_samples_and_downstream_identities_match_captures() {
             "{id} downstream"
         );
         sampled += axis.len();
+        row_case.passed();
     }
+    cases.finish();
     assert_eq!((bundled, floors, sampled), (48, 30, 12_438));
 }
 
@@ -204,7 +215,13 @@ fn bundled_and_floor_gamma_samples_and_downstream_identities_match_captures() {
 fn unusual_coefficients_succeed_through_print_gamma_without_readmission() {
     let fixtures = fixture("print-gamma.json");
     let directory = Directory::new();
-    for case in fixtures["analytical"].as_array().unwrap() {
+    let analytical = fixtures["analytical"].as_array().unwrap();
+    let mut cases = RowCases::new(
+        "analytical-print-gamma-cases",
+        analytical.iter().map(|case| case["id"].as_str().unwrap()),
+    );
+    for case in analytical {
+        let row = cases.case(case["id"].as_str().unwrap());
         let profile = directory.profile(&document(&case["model"], &doubles(&case["axis"])));
         let curves = profile
             .sample_density_curves(f64::from_bits(number(&case["gamma_bits"])))
@@ -217,27 +234,54 @@ fn unusual_coefficients_succeed_through_print_gamma_without_readmission() {
         );
         assert_eq!(curves.hash(), number(&case["print_hash"]), "{}", case["id"]);
         assert!(curves.totals().iter().flatten().all(|v| v.is_finite()));
+        row.passed();
     }
+    cases.finish();
 }
 
 #[test]
 fn gamma_control_boundary_requires_only_finite_positive_values() {
     let directory = Directory::new();
     let profile = directory.profile(&document(&uniform_model(0., 1., 1.), &[0.]));
-    for gamma in [0., -0., -1., f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+    let invalid = [
+        ("positive-zero", 0.),
+        ("negative-zero", -0.),
+        ("negative-one", -1.),
+        ("nan", f64::NAN),
+        ("positive-infinity", f64::INFINITY),
+        ("negative-infinity", f64::NEG_INFINITY),
+    ];
+    let mut invalid_rows = RowCases::new("invalid-gamma-values", invalid.iter().map(|(id, _)| *id));
+    for (id, gamma) in invalid {
+        let row = invalid_rows.case(id);
         assert_eq!(
             profile.sample_density_curves(gamma).unwrap_err(),
             PrintDensityError::InvalidGamma
         );
+        row.passed();
     }
+    invalid_rows.finish();
     // Range admission stays with the recipe, and even an infinite adjusted sigma
     // can produce a finite half response through the approved sampler.
-    for gamma in [0.25, 4., f64::from_bits(1), f64::MAX] {
+    let valid = [
+        ("below-recipe-min", 0.25),
+        ("above-recipe-max", 4.),
+        ("min-subnormal", f64::from_bits(1)),
+        ("max-finite", f64::MAX),
+    ];
+    let mut valid_rows = RowCases::new(
+        "finite-positive-gamma-values",
+        valid.iter().map(|(id, _)| *id),
+    );
+    for (id, gamma) in valid {
+        let row = valid_rows.case(id);
         assert_eq!(
             profile.sample_density_curves(gamma).unwrap().totals(),
             &[[1.5; 3]]
         );
+        row.passed();
     }
+    valid_rows.finish();
 }
 
 #[test]
@@ -282,12 +326,23 @@ fn curve_identity_preserves_raw_axis_bits_count_and_sample_dependencies() {
     let base_curves = base.sample_density_curves(1.).unwrap();
     let changed_axis = directory.profile(&document(&model, &[0., 0.]));
     let changed_count = directory.profile(&document(&model, &[0.]));
-    for profile in [&changed_axis, &changed_count] {
+    let changed_profiles = [
+        ("axis-zero-sign", &changed_axis),
+        ("sample-count", &changed_count),
+    ];
+    let mut identity_rows = RowCases::new(
+        "gamma-curve-axis-identity-changes",
+        changed_profiles.iter().map(|(id, _)| *id),
+    );
+    for (id, profile) in changed_profiles {
+        let row = identity_rows.case(id);
         assert_ne!(
             profile.sample_density_curves(1.).unwrap().hash(),
             base_curves.hash()
         );
+        row.passed();
     }
+    identity_rows.finish();
     let changed_model = directory.profile(&document(&uniform_model(0., 2., 1.), &[-0., 0.]));
     assert_ne!(
         changed_model.sample_density_curves(1.).unwrap().hash(),

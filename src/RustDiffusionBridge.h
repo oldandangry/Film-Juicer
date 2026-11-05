@@ -3,7 +3,7 @@
 #include <optional>
 
 #include "DiffusionHostBehavior.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 
 namespace JuicerCuda {
     struct Failure;

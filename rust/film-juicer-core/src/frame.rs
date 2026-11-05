@@ -68,6 +68,7 @@ impl Geometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
 
     #[test]
     fn complete_native_capture() {
@@ -91,7 +92,13 @@ mod tests {
         let captured = read(manifest["payloads"][logical].as_str().unwrap());
         let array =
             |row: &serde_json::Value| -> [i32; 4] { serde_json::from_value(row.clone()).unwrap() };
-        for row in captured["domains"].as_array().unwrap() {
+        let domains = captured["domains"].as_array().unwrap();
+        let mut domain_cases = RowCases::new(
+            "frame-domain",
+            domains.iter().map(|row| row["name"].as_str().unwrap()),
+        );
+        for row in domains {
+            let case = domain_cases.case(row["name"].as_str().unwrap());
             let [x1, y1, x2, y2] = array(&row["bounds"]);
             let result = Domain::from_bounds(Bounds { x1, y1, x2, y2 });
             if row["range"].as_bool().unwrap() {
@@ -105,8 +112,16 @@ mod tests {
                     row["name"]
                 );
             }
+            case.passed();
         }
-        for row in captured["geometry"].as_array().unwrap() {
+        domain_cases.finish();
+        let geometries = captured["geometry"].as_array().unwrap();
+        let mut geometry_cases = RowCases::new(
+            "frame-geometry",
+            geometries.iter().map(|row| row["name"].as_str().unwrap()),
+        );
+        for row in geometries {
+            let case = geometry_cases.case(row["name"].as_str().unwrap());
             let [x, y, width, height] = array(&row["domain"]);
             let domain = Domain {
                 x,
@@ -131,6 +146,8 @@ mod tests {
                 "{}",
                 row["name"]
             );
+            case.passed();
         }
+        geometry_cases.finish();
     }
 }

@@ -121,10 +121,6 @@ pub unsafe extern "C" fn fj_legacy_cat16_matrix(
         if source_white_xyz.is_null() || destination_white_xyz.is_null() {
             return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
         }
-        #[cfg(feature = "test-support")]
-        if let Err(category) = color_fault(1) {
-            return color_status(category);
-        }
         // SAFETY: Both nonnull read-only inputs authorize exactly three floats.
         let whites = unsafe {
             Whites {
@@ -132,7 +128,15 @@ pub unsafe extern "C" fn fj_legacy_cat16_matrix(
                 destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
             }
         };
-        let matrix = color::cat16_matrix(whites);
+        let matrix = match color::checked_cat16_matrix(whites) {
+            Ok(matrix) => matrix,
+            #[cfg(feature = "test-support")]
+            Err(color::CheckedError::UnsupportedInput) => {
+                return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+            }
+            #[cfg(not(feature = "test-support"))]
+            Err(error) => match error {},
+        };
         // SAFETY: The complete local result is disjoint from the authorized output.
         unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
         color_status(FJ_STATUS_SUCCESS)
@@ -163,10 +167,6 @@ pub unsafe extern "C" fn fj_legacy_adapt_cat16(
         if xyz.is_null() || source_white_xyz.is_null() || destination_white_xyz.is_null() {
             return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
         }
-        #[cfg(feature = "test-support")]
-        if let Err(category) = color_fault(2) {
-            return color_status(category);
-        }
         // SAFETY: Each nonnull read-only input authorizes exactly three floats.
         let (value, whites) = unsafe {
             (
@@ -177,7 +177,15 @@ pub unsafe extern "C" fn fj_legacy_adapt_cat16(
                 },
             )
         };
-        let adapted = color::adapt_cat16(value, whites);
+        let adapted = match color::checked_adapt_cat16(value, whites) {
+            Ok(adapted) => adapted,
+            #[cfg(feature = "test-support")]
+            Err(color::CheckedError::UnsupportedInput) => {
+                return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+            }
+            #[cfg(not(feature = "test-support"))]
+            Err(error) => match error {},
+        };
         // SAFETY: The complete local result is disjoint from the authorized output.
         unsafe { out_xyz.copy_from_nonoverlapping(adapted.as_ptr(), 3) };
         color_status(FJ_STATUS_SUCCESS)
@@ -207,10 +215,6 @@ pub unsafe extern "C" fn fj_legacy_cat02_matrix(
         if source_white_xyz.is_null() || destination_white_xyz.is_null() {
             return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
         }
-        #[cfg(feature = "test-support")]
-        if let Err(category) = color_fault(3) {
-            return color_status(category);
-        }
         // SAFETY: Both nonnull read-only inputs authorize exactly three floats.
         let whites = unsafe {
             Whites {
@@ -218,7 +222,15 @@ pub unsafe extern "C" fn fj_legacy_cat02_matrix(
                 destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
             }
         };
-        let matrix = color::cat02_matrix(whites);
+        let matrix = match color::checked_cat02_matrix(whites) {
+            Ok(matrix) => matrix,
+            #[cfg(feature = "test-support")]
+            Err(color::CheckedError::UnsupportedInput) => {
+                return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+            }
+            #[cfg(not(feature = "test-support"))]
+            Err(error) => match error {},
+        };
         // SAFETY: The complete local result is disjoint from the authorized output.
         unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
         color_status(FJ_STATUS_SUCCESS)
@@ -572,15 +584,26 @@ const _: unsafe extern "C" fn(u32, *mut FjOutputColorPreparation) -> FjStatus =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_cases::RowCases;
 
     #[test]
     fn foreign_tags_preserve_the_reference_table() {
         let expected = [[0, 1, 0, 1], [2, 3, 2, 3], [0, 1, 0, 1]];
+        let ids: Vec<String> = (0..expected.len())
+            .flat_map(|polarity| {
+                (0..expected[polarity].len())
+                    .map(move |selection| format!("polarity-{polarity}/selection-{selection}"))
+            })
+            .collect();
+        let mut rows = RowCases::new("foreign-route-table", &ids);
         for (polarity, routes) in expected.into_iter().enumerate() {
             for (selection, route) in routes.into_iter().enumerate() {
+                let row = rows.case(format!("polarity-{polarity}/selection-{selection}"));
                 assert_eq!(resolve_foreign(polarity as u8, selection as u8), Ok(route));
+                row.passed();
             }
         }
+        rows.finish();
     }
 
     #[test]

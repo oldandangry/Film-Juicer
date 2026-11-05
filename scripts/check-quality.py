@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import hashlib
 import json
 import os
 import re
@@ -13,18 +12,15 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import tomllib
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
-
-EXECUTION_SOURCE = Path(__file__).with_name("execution.py")
 
 RUST_POLICY_FILES = {
     "Cargo.lock",
@@ -105,63 +101,50 @@ class AnalysisCommand:
     source: str = ""
 
 
-def supervised_run(command, *, cwd, env, stdout, stderr, check, process_prefix, **options):
-    """Reuse the command owner; return captured bytes only after writers drain."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from execution import OutputLease, run_process_tree
-    tree = {"drained": False}
-    receipt = process_prefix.with_suffix(".process.json")
-    lock = process_prefix.with_suffix(".running.lock")
-    stdout_path = process_prefix.with_suffix(".capture")
-    stderr_path = process_prefix.with_suffix(".error-capture")
-    try:
-        with stdout_path.open("wb") as output, stderr_path.open("wb") as errors:
-            status = run_process_tree(command, cwd, env, output, None, receipt, lock, tree,
-                                      errors if stderr == subprocess.PIPE else None)
-        payload = stdout_path.read_bytes()
-        error_payload = stderr_path.read_bytes()
-        if options.get("text"):
-            payload = payload.decode("utf-8", errors="replace").replace("\r\n", "\n")
-            error_payload = error_payload.decode("utf-8", errors="replace").replace("\r\n", "\n")
-        return subprocess.CompletedProcess(command, status, payload, error_payload)
-    finally:
-        if tree["drained"]:
-            lock.unlink(missing_ok=True)
-            stdout_path.unlink(missing_ok=True)
-            stderr_path.unlink(missing_ok=True)
-        else:
-            for lease in OutputLease.held.values():
-                lease.blocked = True
-
-
 class Runner:
-    def __init__(self, root: Path, log_dir: Path, jobs: int = 1) -> None:
+    def __init__(self, root: Path, log_dir: Path, jobs: int = 1, native_run=None,
+                 name_prefix: str = "") -> None:
         if jobs < 1:
             raise QualityError("analysis jobs must be at least 1")
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from execution import NativeRun
+
         self.root = root
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.native_run = native_run or NativeRun(root, log_dir)
         self.jobs = jobs
-        self.index = 0
+        self.name_prefix = name_prefix
         self.output_lock = threading.Lock()
-        self.inputs: dict[str, str] = {}
-        self.blocked = False
-        self.bind_inputs([EXECUTION_SOURCE, EXECUTION_SOURCE.with_name("process_tree.py")])
+        self.names: set[str] = set()
+        self.expected_checks: list[str] = []
+        self.completed_checks: list[str] = []
+        self.expected_commands: list[str] = []
+        self.python_cases: list[str] = []
+        self.consumed_inputs: set[str] = set()
+        self.command_output_read_bytes = 0
 
-    def bind_inputs(self, paths: Sequence[Path]) -> None:
-        """Bind external/generated inputs when consumed; reject later changes."""
-        with self.output_lock:
-            for path in paths:
-                name = str(path.resolve())
-                value = file_digest(path)
-                if name in self.inputs and self.inputs[name] != value:
-                    raise QualityError(f"quality input changed during checks: {name}")
-                self.inputs[name] = value
+    def complete(self, name: str) -> None:
+        if name not in self.expected_checks:
+            raise QualityError(f"completed an undeclared quality check: {name}")
+        if name in self.completed_checks:
+            raise QualityError(f"completed a quality check more than once: {name}")
+        self.completed_checks.append(name)
 
-    def verify_inputs(self) -> None:
-        for name, value in self.inputs.items():
-            if file_digest(Path(name)) != value:
-                raise QualityError(f"quality input changed during checks: {name}")
+    def consume(self, paths: Sequence[Path | str]) -> None:
+        for path in paths:
+            candidate = Path(path)
+            if not candidate.is_file():
+                continue
+            try:
+                name = candidate.resolve().relative_to(self.root.resolve()).as_posix()
+            except ValueError:
+                continue
+            self.consumed_inputs.add(name)
+
+    @staticmethod
+    def _name(label: str) -> str:
+        return re.sub(r"[^a-z0-9-]+", "-", label.lower()).strip("-") or "check"
 
     def run(
         self,
@@ -173,67 +156,43 @@ class Runner:
         display_output: bool = True,
         stdout_only: bool = False,
     ) -> str:
-        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-")
         with self.output_lock:
-            self.index += 1
-            log_path = self.log_dir / f"{self.index:02d}-{safe_label}.log"
+            safe_label = self._name(label)
+            name = safe_label
+            suffix = 2
+            while name in self.names:
+                name = f"{safe_label}-{suffix}"
+                suffix += 1
+            self.names.add(name)
+            command_name = self.name_prefix + name
+            self.expected_commands.append(command_name)
             print("+", subprocess.list2cmdline(command))
-        start = time.perf_counter()
-        record = {"command": list(command), "directory": str(cwd or self.root), "label": label}
-        executable = shutil.which(command[0], path=(env or os.environ).get("PATH", ""))
-        if executable is None:
-            detail = f"{label}: could not start command: executable is unavailable: {command[0]}"
-            log_path.write_text(detail + "\n", encoding="utf-8")
-            record.update(seconds=time.perf_counter() - start, returncode=None, error=detail)
-            log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-            raise QualityError(detail)
-        if executable:
-            self.bind_inputs([Path(executable)])
-            record["executable_sha256"] = self.inputs[str(Path(executable).resolve())]
         try:
-            output_options = {} if stdout_only else {
-                "text": True, "encoding": "utf-8", "errors": "replace",
-            }
-            completed = supervised_run(
-                command,
-                process_prefix=log_path,
-                cwd=cwd or self.root,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE if stdout_only else subprocess.STDOUT,
-                check=False,
-                **output_options,
+            output_path = self.native_run.command(
+                command_name, command, cwd=cwd or self.root, env=env, timeout=None,
+                stdout_only=stdout_only,
             )
-        except BaseException as exc:
-            process_receipt = log_path.with_suffix(".process.json")
-            self.blocked |= not process_receipt.is_file() or not json.loads(process_receipt.read_text())["drained"]
-            log_path.write_text(f"{label}: could not start command: {exc}\n", encoding="utf-8")
-            record.update(seconds=time.perf_counter() - start, returncode=None, error=str(exc))
-            log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-            raise QualityError(f"{label}: could not start command: {exc}; see {log_path}") from exc
-        record.update(seconds=time.perf_counter() - start, returncode=completed.returncode)
+        except subprocess.CalledProcessError as exc:
+            raise QualityError(f"{label} failed with exit code {exc.returncode}; see {self.log_dir / (command_name + '.log')}") from exc
+        except Exception as exc:
+            raise QualityError(f"{label} could not start command: {exc}; see {self.log_dir / (command_name + '.log')}") from exc
         if stdout_only:
-            # Keep machine-readable stdout separate and preserve both original byte streams.
-            stdout_path = log_path.with_suffix(".stdout.log")
-            stderr_path = log_path.with_suffix(".stderr.log")
-            stdout_path.write_bytes(completed.stdout)
-            stderr_path.write_bytes(completed.stderr)
-            self.bind_inputs([stdout_path, stderr_path])
-            record["stdout"] = {"file": stdout_path.name, "sha256": file_digest(stdout_path)}
-            record["stderr"] = {"file": stderr_path.name, "sha256": file_digest(stderr_path)}
-            stdout = completed.stdout.decode("utf-8", errors="replace")
-            output = stdout + completed.stderr.decode("utf-8", errors="replace")
+            stdout_path = output_path
+            stderr_path = self.log_dir / f"{command_name}.stderr.log"
+            stdout_bytes = stdout_path.read_bytes()
+            stderr_bytes = stderr_path.read_bytes()
+            self.command_output_read_bytes += len(stdout_bytes) + len(stderr_bytes)
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            diagnostics = stderr_bytes.decode("utf-8", errors="replace")
+            output = stdout + diagnostics
         else:
-            stdout = output = completed.stdout
-        log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-        log_path.write_text(output, encoding="utf-8")
+            output_bytes = output_path.read_bytes()
+            self.command_output_read_bytes += len(output_bytes)
+            stdout = output_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n")
+            output = stdout
         if output and display_output:
             with self.output_lock:
-                print(output, end="" if output.endswith("\n") else "\n")
-        if completed.returncode != 0:
-            raise QualityError(
-                f"{label} failed with exit code {completed.returncode}; see {log_path}"
-            )
+                print(output, end="" if str(output).endswith("\n") else "\n")
         return stdout.strip()
 
 
@@ -273,7 +232,6 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--qualification", action="store_true", help="include representative native/CUDA and complete Rust gates")
     parser.add_argument("--compiler-consumers", nargs="+", help="actual compiler dependency consumers supplied by development verification")
     parser.add_argument("--rust-packages", nargs="+", choices=("film-juicer-core", "film-juicer-plugin"))
-    parser.add_argument("--rust-test-filters", nargs="+", help="existing package test filters for development")
     parser.add_argument("--development", action="store_true", help="development checks only; never publishes qualification probes")
     parser.add_argument("--preset", required=True, choices=sorted(PRESET_TARGETS))
     parser.add_argument("--verifier-scope-output", type=Path,
@@ -286,7 +244,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--jobs", type=int, default=min(os.process_cpu_count() or 1, 4),
                         help="maximum concurrent native/CUDA analysis commands (default: up to 4 available CPUs)")
     arguments = parser.parse_args()
-    if (arguments.rust_packages or arguments.rust_test_filters) and not arguments.development:
+    if arguments.rust_packages and not arguments.development:
         parser.error("named Rust checks require development verification")
     if arguments.compiler_consumers and not arguments.development:
         parser.error("compiler consumers require development verification")
@@ -660,12 +618,6 @@ def check_rust(
     rustc = resolve_tool(arguments.rustc, "JUICER_RUSTC", rustc_candidates)
     environment = cargo_environment()
     environment["CLIPPY_CONF_DIR"] = str(root)
-    rustup = shutil.which("rustup", path=environment.get("PATH", ""))
-    if rustup and file_digest(Path(cargo)) == file_digest(Path(rustup)):
-        for tool in ("cargo", "rustc", "rustfmt", "cargo-clippy", "clippy-driver"):
-            resolved = runner.run([rustup, "which", tool], env=environment, label=f"resolve-{tool}").strip()
-            runner.bind_inputs([Path(resolved)])
-
     cargo_version = runner.run([cargo, "--version"], env=environment, label="cargo-version")
     rustc_version = runner.run(
         [rustc, "--version", "--verbose"], env=environment, label="rustc-version"
@@ -685,6 +637,9 @@ def check_rust(
     if not clippy_version.startswith("clippy 0.1.98 "):
         raise QualityError(f"qualified Clippy 0.1.98 is required; got {clippy_version}")
 
+    runner.consume([root / "Cargo.toml", root / "Cargo.lock", root / "rust-toolchain.toml",
+                    root / "rustfmt.toml", root / "clippy.toml", root / "rust/film-juicer-core/Cargo.toml",
+                    root / "rust/film-juicer-plugin/Cargo.toml", root / "rust/film-juicer-core/src/lib.rs"])
     check_workspace_contract(root)
     metadata = runner.run(
         [cargo, "metadata", "--locked", "--offline", "--format-version", "1"],
@@ -696,9 +651,13 @@ def check_rust(
     packages = json.loads(metadata)
     check_dependency_contract(root, packages)
     for package in packages["packages"]:
-        if package.get("source"):
+        if package.get("source") is None:
             directory = Path(package["manifest_path"]).parent
-            runner.bind_inputs([path for path in directory.rglob("*") if path.is_file()])
+            try:
+                directory.relative_to(root / "rust")
+            except ValueError:
+                continue
+            runner.consume([directory / "Cargo.toml", *directory.rglob("*.rs")])
     target_dir = root / "out/build" / arguments.preset / "cargo"
     common = [
         cargo,
@@ -709,10 +668,10 @@ def check_rust(
         "--target-dir",
         str(target_dir),
     ]
-    development = getattr(arguments, "development", False)
     profile = "release" if arguments.preset.endswith("-release") else "dev"
     profile_args = ["--release"] if profile == "release" else []
     selected_packages = getattr(arguments, "rust_packages", None) or ["film-juicer-core", "film-juicer-plugin"]
+    development = getattr(arguments, "development", False)
     format_packages = [item for package in selected_packages for item in ("--package", package)] if development else ["--all"]
     runner.run([cargo, "fmt", *format_packages, "--", "--check"], env=environment, label="rustfmt")
     for package in selected_packages:
@@ -729,21 +688,6 @@ def check_rust(
                 env=environment,
                 label=f"clippy-{package}-test-support-{profile}",
             )
-
-    if development:
-        for package in selected_packages:
-            filters = (getattr(arguments, "rust_test_filters", None) or [""]) if package == "film-juicer-core" else [""]
-            for index, test_filter in enumerate(filters):
-                variants = [[], ["--features", "test-support"]] if package == "film-juicer-plugin" else [[]]
-                for features in variants:
-                    output = runner.run([cargo, "test", "--locked", "--package", package,
-                                         "--no-default-features", *features, "--target", target,
-                                         "--target-dir", str(target_dir), "--lib", test_filter],
-                                        env=environment, label=f"test-{package}-{index}-{'test-support' if features else 'production'}")
-                    if not re.search(r"running [1-9][0-9]* tests?", output) or "test result: ok" not in output:
-                        raise QualityError("selected Cargo filter did not execute a nonempty successful result")
-        return
-
 
 def split_compiler_command(command: str) -> tuple[str, ...]:
     if os.name != "nt":
@@ -1040,10 +984,7 @@ def prepare_cuda_analysis(
     root: Path, runner: Runner, clang_tidy: str, entries: Sequence[CompilationEntry],
 ) -> list[AnalysisCommand]:
     overlay = prepare_cuda_overlay(root, runner.log_dir)
-    runner.bind_inputs([
-        overlay / "openrand/util.h",
-        overlay / "texture_fetch_functions.h",
-    ])
+    runner.consume([root / "third_party/openrand/util.h"])
     qualified: dict[tuple[Path, Path], list[str]] = {}
     commands: list[AnalysisCommand] = []
     for index, entry in enumerate(entries, start=1):
@@ -1075,12 +1016,6 @@ def prepare_cuda_analysis(
         frontend = [*qualified[key], "-D_NV_RSQRT_SPECIFIER=", "-I", str(overlay), *frontend]
         command = [clang_tidy, "--warnings-as-errors=*", f"--config-file={root / '.clang-tidy'}",
                    str(root / entry.path), "--", *frontend]
-        receipt = runner.log_dir / f"cuda-command-{index}.json"
-        receipt.write_text(json.dumps({
-            "source": entry.path, "directory": str(entry.directory),
-            "nvcc_arguments": list(entry.arguments or split_compiler_command(entry.command)),
-            "clang_tidy_arguments": command,
-        }, indent=2) + "\n", encoding="utf-8")
         commands.append(AnalysisCommand(
             command, entry.directory, f"clang-tidy-cuda-{index}-{Path(entry.path).name}",
             entry.path,
@@ -1096,6 +1031,8 @@ def prepare_native_analysis(
     policy: SourcePolicy,
 ) -> list[AnalysisCommand]:
     entries = compilation_entries(root, arguments.preset)
+    runner.consume([root / "out/build" / arguments.preset / "compile_commands.json",
+                    root / ".clang-format", root / ".clang-tidy"])
     validate_translation_units(selected_native, entries, policy)
     format_candidates = (
         arguments.clang_format,
@@ -1135,7 +1072,7 @@ def prepare_native_analysis(
     for entry in entries:
         if entry.path in translation_units:
             consumed.update(included_paths(root.resolve(), entry, includes, edges))
-    runner.bind_inputs([root / path for path in sorted(consumed)])
+    runner.consume([root / path for path in sorted(consumed)])
     build_dir = root / "out/build" / arguments.preset
     commands: list[AnalysisCommand] = []
     for index, translation_unit in enumerate(translation_units, start=1):
@@ -1174,10 +1111,49 @@ def check_build_path(root: Path, preset: str) -> None:
             return
 
 
+def quality_requirements(arguments: argparse.Namespace, selected: Sequence[str], policy: SourcePolicy):
+    runner_changed = (
+        getattr(arguments, "qualification", False)
+        or any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
+        or any(path in NATIVE_POLICY_FILES for path in selected)
+        or any(path.startswith(".github/workflows/") for path in selected)
+    )
+    rust_required = (
+        runner_changed
+        or any(path in RUST_BUILD_FILES for path in selected)
+        or any(is_rust(path) for path in selected)
+    )
+    native_required = bool(getattr(arguments, "compiler_consumers", None)) or runner_changed or any(
+        path in {".clang-format", ".clang-tidy"} or is_native(path, policy)
+        for path in selected
+    )
+    expected = ["source-hygiene", "git-diff-check", "native-boundary-enforcement"]
+    if rust_required:
+        expected.append("rust-quality")
+    if native_required:
+        expected.append("native-quality")
+    if not selected:
+        expected.append("empty-selection")
+    return expected, rust_required, native_required
+
+
+def complete_check(runner: Runner, name: str) -> None:
+    runner.complete(name)
+
+
 def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
                selected: Sequence[str], excluded: Sequence[str], runner: Runner) -> int:
     target = PRESET_TARGETS[arguments.preset]
     log_dir = runner.log_dir
+    expected_checks, rust_required, native_required = quality_requirements(arguments, selected, policy)
+    runner_changed = (
+        getattr(arguments, "qualification", False)
+        or any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
+        or any(path in NATIVE_POLICY_FILES for path in selected)
+        or any(path.startswith(".github/workflows/") for path in selected)
+    )
+    runner.expected_checks = expected_checks
+    runner.python_cases = ["quality-boundary"]
 
     print("Selected files:")
     if not selected:
@@ -1194,7 +1170,15 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
     print(f"Python: {sys.version.split()[0]}")
     print(f"Rust target: {target}")
 
-    check_source_hygiene(root, selected, policy, log_dir / "source-hygiene.log")
+    runner.consume([root / "scripts/check-quality.py", root / "scripts/source_file_policy.json",
+                    root / "scripts/verify.py", root / "scripts/qualification.py",
+                    root / "scripts/execution.py", root / "scripts/process_tree.py",
+                    root / "scripts/build_dependencies.py",
+                    root / ".clang-format", root / ".clang-tidy", root / "tests/ffi/test_native_boundary.py",
+                    *(root / path for path in selected)])
+    check_source_hygiene(root, selected, policy,
+                         log_dir / (getattr(runner, "name_prefix", "") + "source-hygiene.log"))
+    complete_check(runner, "source-hygiene")
 
     if arguments.base:
         diff_command = ["git", "diff", "--check", arguments.base, "--"]
@@ -1203,31 +1187,19 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
     else:
         diff_command = ["git", "diff", "--check"]
     runner.run(diff_command, label="git-diff-check")
+    complete_check(runner, "git-diff-check")
 
     # These inexpensive guards inspect their complete boundary, even for a
     # documentation-only selection or a newly introduced native helper/header.
     runner.run(
-        [sys.executable, "-m", "unittest", "discover", "-s", "tests/ffi",
+        [sys.executable, "-B", "scripts/verify.py", "python-tests", "--preset", arguments.preset,
+         "--key", "quality-boundary", "--", sys.executable, "-m", "unittest", "discover", "-s", "tests/ffi",
          "-p", "test_native_boundary.py", "-v"],
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "FJ_HOST_BUNDLE": str(log_dir),
+             "JUICER_PRODUCT_BUILD": str(root / "out/build" / arguments.preset)},
         label="native-boundary-enforcement",
     )
-
-    runner_changed = (
-        getattr(arguments, "qualification", False)
-        or any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
-        or any(path in NATIVE_POLICY_FILES for path in selected)
-        or any(path.startswith(".github/workflows/") for path in selected)
-    )
-    rust_required = (
-        runner_changed
-        or any(path in RUST_BUILD_FILES for path in selected)
-        or any(is_rust(path) for path in selected)
-    )
-    native_required = bool(getattr(arguments, "compiler_consumers", None)) or runner_changed or any(
-        path in {".clang-format", ".clang-tidy"} or is_native(path, policy)
-        for path in selected
-    )
+    complete_check(runner, "native-boundary-enforcement")
 
     native_commands: list[AnalysisCommand] = []
     if native_required:
@@ -1245,62 +1217,38 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
 
     if rust_required:
         check_rust(root, runner, arguments, target)
+        complete_check(runner, "rust-quality")
     if native_required:
         runner.run_analysis([item for item in native_commands if item.source not in native_files])
+        complete_check(runner, "native-quality")
 
     if not selected:
-        print("No owned files selected: diff/boundary checks and receipt validation still apply.")
+        print("No owned files selected: diff/boundary checks and result validation still apply.")
+        complete_check(runner, "empty-selection")
     elif not rust_required and not native_required:
         print("Documentation/configuration-only selection: diff/boundary checks and review apply.")
     return 0
 
 
-def file_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(block)
-    except OSError as exc:
-        raise QualityError(f"cannot identify quality input {path}: {exc}") from exc
-    return digest.hexdigest()
-
-
-def quality_inputs(root: Path, preset: str, selected: Sequence[str], policy: SourcePolicy, development=False) -> dict:
-    """Bound the current source tree, never previous validation runs or binaries."""
-    head = run_git(root, ["rev-parse", "HEAD"]).decode().strip()
-    # HEAD binds clean tracked files; hash every dirty file and relevant untracked
-    # input. Include ignored source files: generated headers/bindings are inputs too.
-    dirty = run_git(root, ["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"]).decode().split("\0")
-    others = run_git(root, ["ls-files", "--others", "--exclude-standard", "-z"]).decode().split("\0")
-    roots = [*policy.owned_prefixes, "third_party/", ".cargo/"]
-    ignored = run_git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", *roots]).decode().split("\0")
-    names = set(selected) | set(dirty) | set(NATIVE_POLICY_FILES) | RUST_POLICY_FILES | ROOT_OWNED_FILES
-    names.update(name for name in [*others, *ignored]
-                 if name.startswith(tuple(roots)) and "__pycache__" not in Path(name).parts
-                 and not name.endswith((".pyc", ".pyo")))
-    # Hash tracked source bytes as well as Git identity to include index flags
-    # such as assume-unchanged, and to avoid relying on Git's timestamp cache.
-    names.update(run_git(root, ["ls-files", "-z", "--", *roots]).decode().split("\0"))
-    if development:
-        names = set(selected) | NATIVE_POLICY_FILES | RUST_POLICY_FILES
-        names.update(name for name in run_git(root, ["ls-files", "-z", "--", "src/", "native/"]).decode().split("\0") if name)
-        names.add("tests/ffi/test_native_boundary.py")
-        if any(is_rust(name) for name in selected):
-            names.update(path.relative_to(root).as_posix() for path in (root / "rust").rglob("*")
-                         if path.is_file() and "__pycache__" not in path.parts)
-    names.update(f"out/build/{preset}/{name}" for name in ("compile_commands.json", "CMakeCache.txt", "build.ninja", "CMakeFiles/rules.ninja"))
-    files = {name: file_digest(root / name) if (root / name).is_file() else None
-             for name in sorted(names) if name and not (root / name).is_dir()}
-    return {"git_head": head, "files": files,
-            "environment_sha256": hashlib.sha256(json.dumps(dict(os.environ), sort_keys=True).encode()).hexdigest()}
-
-
 def create_run_directory(root: Path, preset: str) -> Path:
-    runs = root / "out/validation" / preset / "quality/runs"
+    runs = root / "out/validation" / preset / "results"
     runs.mkdir(parents=True, exist_ok=True)
-    prefix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
-    return Path(tempfile.mkdtemp(prefix=prefix, dir=runs))
+    directory = runs / f"quality-{uuid.uuid4().hex}"
+    directory.mkdir()
+    return directory
+
+
+def capture_candidate(root: Path):
+    from verify import capture_native_source
+
+    return capture_native_source(root, "scripts/check-quality.py", domain_tests=False)
+
+
+def finish_quality_result(native_run, result, candidate, costs):
+    from qualification import validate_quality_result
+    from verify import finish_native_run
+
+    return finish_native_run(native_run, result, candidate, costs, validate_quality_result)
 
 
 def main() -> int:
@@ -1325,41 +1273,135 @@ def quality_main(root, arguments):
     check_build_path(root, arguments.preset)
     policy = load_policy(root)
     selected, excluded = select_paths(root, arguments, policy)
-    log_dir = create_run_directory(root, arguments.preset)
-    runner = Runner(root, log_dir, jobs=arguments.jobs)
-    record = {
-        "command": [sys.executable, *sys.argv], "directory": str(root),
-        "preset": arguments.preset, "selected": selected, "excluded": excluded,
-        "mode": "development" if getattr(arguments, "development", False) else "qualification",
-        "started_at": datetime.now(timezone.utc).isoformat(), "status": "running",
-        "selected_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-                            for name in selected if (root / name).is_file()},
-    }
-    receipt = log_dir / "run.json"
-    receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    bundle = os.environ.get("FJ_HOST_BUNDLE")
+    in_bundle = bundle is not None
+    from execution import expire_diagnostics
+    expiry = None if in_bundle else expire_diagnostics(root, arguments.preset)
+    log_dir = Path(bundle) if in_bundle else create_run_directory(root, arguments.preset)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, str(root / "scripts"))
+    from execution import NativeRun, write_json
+    native_run = NativeRun(root, log_dir)
+    runner = Runner(root, log_dir, jobs=arguments.jobs, native_run=native_run,
+                    name_prefix="quality-" if in_bundle else "")
+    runner.consume([root / "out/build" / arguments.preset / "CMakeCache.txt",
+                    root / ".cargo/config", root / ".cargo/config.toml"])
+    expected_checks, _, _ = quality_requirements(arguments, selected, policy)
+    runner.expected_checks = expected_checks
+    runner.python_cases = ["quality-boundary"]
+    candidate = None
+    candidate_patch = b""
+    source_costs = {"source_capture_seconds": 0.0, "git_output_bytes": 0, "source_read_bytes": 0}
+    failure = None
+    if not in_bundle:
+        try:
+            candidate, candidate_patch, measured = capture_candidate(root)
+            source_costs.update(measured)
+        except Exception as exc:
+            failure = exc
     print(f"Quality run: {log_dir}", flush=True)
     start = time.perf_counter()
-    try:
-        record["inputs"] = quality_inputs(root, arguments.preset, selected, policy, getattr(arguments, "development", False))
-        receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-        result = run_checks(root, arguments, policy, selected, excluded, runner)
-        if result != 0:
-            raise QualityError(f"quality checks returned {result}")
-        if quality_inputs(root, arguments.preset, selected, policy, getattr(arguments, "development", False)) != record["inputs"]:
-            raise QualityError("quality inputs changed during checks; run cannot qualify them")
-        runner.verify_inputs()
-        record["status"] = "passed"
+    candidate_unchanged = None
+    if failure is None:
+        try:
+            result = run_checks(root, arguments, policy, selected, excluded, runner)
+            if result != 0:
+                raise QualityError(f"quality checks returned {result}")
+        except Exception as exc:
+            failure = exc
+    if candidate is not None:
+        try:
+            after, after_patch, measured = capture_candidate(root)
+            for name, value in measured.items():
+                source_costs[name] = source_costs.get(name, 0) + value
+            candidate_unchanged = after == candidate and after_patch == candidate_patch
+        except Exception as exc:
+            candidate_unchanged = False
+            if failure is None:
+                failure = exc
+        if not candidate_unchanged and failure is None:
+            failure = QualityError("quality source candidate changed while checks ran")
+    status = "failed" if failure else "passed"
+    if status == "passed":
         print(f"Quality checks passed; logs: {log_dir}")
-        return result
-    except BaseException as exc:
-        record.update(status="failed", error=str(exc))
-        raise
-    finally:
-        record["consumed_inputs"] = runner.inputs if isinstance(runner.inputs, dict) else {}
-        record.update(seconds=time.perf_counter() - start, finished_at=datetime.now(timezone.utc).isoformat())
-        record["files"] = {} if runner.blocked else {path.relative_to(log_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-                           for path in sorted(log_dir.rglob("*")) if path.is_file() and path != receipt}
-        receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    commands = native_run.commands
+    consumed_inputs = getattr(runner, "consumed_inputs", set())
+    if not isinstance(consumed_inputs, set):
+        consumed_inputs = set()
+    completed_checks = getattr(runner, "completed_checks", [])
+    if not isinstance(completed_checks, list):
+        completed_checks = []
+    expected_commands = getattr(runner, "expected_commands", [])
+    if not isinstance(expected_commands, list):
+        expected_commands = []
+    python_cases = getattr(runner, "python_cases", ["quality-boundary"])
+    if not isinstance(python_cases, list):
+        python_cases = ["quality-boundary"]
+    command_output_read_bytes = getattr(runner, "command_output_read_bytes", 0)
+    if not isinstance(command_output_read_bytes, int):
+        command_output_read_bytes = 0
+    costs = {
+        **source_costs,
+        "seconds": time.perf_counter() - start,
+        "command_output_bytes": sum(command.get("output_bytes", 0) + command.get("stderr_bytes", 0)
+                                     for command in commands),
+        "command_output_read_bytes": command_output_read_bytes,
+        "bookkeeping_read_bytes": 0,
+        "report_read_bytes": 0,
+    }
+    if expiry is not None:
+        costs["expiry"] = expiry
+        costs["report_read_bytes"] += expiry["read_bytes"]
+    checks = {
+        "schema": "native-quality-checks-v1",
+        "status": status,
+        "preset": arguments.preset,
+        "selected": selected,
+        "excluded": excluded,
+        "mode": "development" if getattr(arguments, "development", False) else "qualification",
+        "expected_checks": expected_checks,
+        "completed_checks": completed_checks,
+        "expected_commands": expected_commands,
+        "commands": commands,
+        "python_cases": python_cases,
+        "consumed_inputs": sorted(consumed_inputs),
+        "costs": costs,
+    }
+    if failure is not None:
+        checks["error"] = f"{type(failure).__name__}: {failure}"
+    write_json(log_dir / "quality.checks.json", checks)
+    if in_bundle:
+        if failure is not None:
+            raise failure
+        return 0
+
+    if candidate is None:
+        raise failure or QualityError("could not capture the standalone quality source candidate")
+    (log_dir / "candidate.patch").write_bytes(candidate_patch)
+    candidate_record = {**candidate, "preset": arguments.preset}
+    result_payload = {
+        "schema": "native-quality-v1",
+        "status": status,
+        "preset": arguments.preset,
+        "candidate_head": candidate["head"],
+        "candidate_unchanged": candidate_unchanged,
+        "shipping_isolation": False,
+        "commands": commands,
+        "selected": selected,
+        "excluded": excluded,
+        "scope": "quality",
+        "mode": "development" if getattr(arguments, "development", False) else "qualification",
+        "members": {},
+        "costs": costs,
+    }
+    # An unproved descendant keeps the owner blocked and cannot publish a pass.
+    if all(command.get("drained", False) for command in commands):
+        finished = finish_quality_result(native_run, result_payload, candidate_record, costs)
+        if finished != 0 and failure is None:
+            raise QualityError(result_payload.get("error", "quality result validation failed"))
+    if failure is not None:
+        raise failure
+    return 0
 
 
 

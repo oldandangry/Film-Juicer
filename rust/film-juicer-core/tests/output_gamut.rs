@@ -1,6 +1,9 @@
 #![cfg(feature = "test-support")]
 use film_juicer_core::color;
 use film_juicer_core::gamut::{self, fixtures};
+#[path = "support/case_results.rs"]
+mod test_cases;
+use test_cases::RowCases;
 use serde_json::Value;
 use std::fs;
 
@@ -80,33 +83,61 @@ fn native_primitive_intermediate_full_family_bits() {
         serde_json::json!(fixtures::output_constants().map(|a| a.map(f32::to_bits))),
         records["oklab"]
     );
-    for (i, direction) in records["directions"].as_array().unwrap().iter().enumerate() {
+    let directions = records["directions"].as_array().unwrap();
+    let direction_ids: Vec<String> = (0..directions.len()).map(|i| format!("hue/{i}")).collect();
+    let mut direction_cases = RowCases::new("output-gamut-directions", &direction_ids);
+    for (i, direction) in directions.iter().enumerate() {
+        let row_case = direction_cases.case(&direction_ids[i]);
         assert_eq!(
             serde_json::json!(bits(fixtures::output_direction(i))),
             *direction,
             "hue libm {i}"
         );
+        row_case.passed();
     }
-    for row in records["primitives"]
+    direction_cases.finish();
+    let primitive_rows: Vec<_> = records["primitives"]
         .as_array()
         .unwrap()
         .iter()
         .chain(extra["primitives"].as_array().unwrap())
-    {
+        .collect();
+    let primitive_ids: Vec<String> = (0..primitive_rows.len())
+        .map(|i| format!("primitive/{i}"))
+        .collect();
+    let mut primitive_cases = RowCases::new("output-gamut-primitives", &primitive_ids);
+    for (row, id) in primitive_rows.iter().zip(&primitive_ids) {
+        let row_case = primitive_cases.case(id);
         primitive(row);
+        row_case.passed();
     }
-    for row in extra["cube"].as_array().unwrap() {
+    primitive_cases.finish();
+    let cube_rows = extra["cube"].as_array().unwrap();
+    let cube_ids: Vec<String> = (0..cube_rows.len()).map(|i| format!("cube/{i}")).collect();
+    let mut cube_cases = RowCases::new("output-gamut-cube-boundaries", &cube_ids);
+    for (row, id) in cube_rows.iter().zip(&cube_ids) {
+        let row_case = cube_cases.case(id);
         assert_eq!(
             fixtures::output_cube(f64::from_bits(row["value"].as_u64().unwrap())),
             row["inside"].as_bool().unwrap()
         );
+        row_case.passed();
     }
-    for row in records["rows"]
+    cube_cases.finish();
+    let transform_rows: Vec<_> = records["rows"]
         .as_array()
         .unwrap()
         .iter()
         .chain(extra["rows"].as_array().unwrap())
-    {
+        .collect();
+    let transform_ids: Vec<String> = transform_rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| format!("transform/{i}/tag/{}", row["tag"].as_u64().unwrap_or(0)))
+        .collect();
+    let mut transforms = RowCases::new("output-gamut-transform-rows", &transform_ids);
+    for (row, id) in transform_rows.iter().zip(&transform_ids) {
+        let row_case = transforms.case(id);
         let source = &row["source"];
         let rgb = floats(&source["rgb_to_xyz"]);
         let xyz = floats(&source["xyz_to_rgb"]);
@@ -125,6 +156,7 @@ fn native_primitive_intermediate_full_family_bits() {
             Ok(t) => t,
             Err(e) => {
                 assert_eq!(e.to_string(), row["diagnostic"].as_str().unwrap());
+                row_case.passed();
                 continue;
             }
         };
@@ -183,7 +215,9 @@ fn native_primitive_intermediate_full_family_bits() {
             }
             Err(e) => assert_eq!(e.to_string(), row["boundary_diagnostic"].as_str().unwrap()),
         }
+        row_case.passed();
     }
+    transforms.finish();
     assert_eq!(
         fixtures::output_reserve_failure(),
         gamut::BoundaryError::AllocationFailure

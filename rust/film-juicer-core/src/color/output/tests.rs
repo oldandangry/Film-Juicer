@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_cases::RowCases;
 use serde_json::Value;
 
 fn fixture() -> Value {
@@ -47,25 +48,58 @@ fn compare_completed(color: &OutputColor, row: &Value) {
 #[test]
 fn native_literals_matrices_and_identities_are_exact() {
     let fixture = fixture();
+    let mut source_cases = RowCases::new("output-color-source", ["source"]);
+    let source_case = source_cases.case("source");
     compare(&SOURCE, &fixture["source"]);
+    source_case.passed();
+    source_cases.finish();
+    let entries = fixture["entries"].as_array().unwrap();
+    let invalid_tags = [9, 255, u32::MAX];
+    let ids = entries
+        .iter()
+        .map(|row| row["name"].as_str().unwrap().to_owned())
+        .chain(invalid_tags.map(|tag| format!("invalid-tag/{tag}")))
+        .collect::<Vec<_>>();
+    let mut cases = RowCases::new("output-color-entries-and-invalid-tags", ids);
     for (tag, literal) in LITERALS.iter().enumerate() {
         let row = &fixture["entries"][tag];
+        let case = cases.case(row["name"].as_str().unwrap());
         compare(literal, row);
         let color = output_color(OutputSpace::try_from(tag as u32).unwrap());
         compare_completed(color, row);
+        case.passed();
     }
     assert_ne!(
         entry_hash(&SOURCE),
         output_color(OutputSpace::DaVinciWideGamut).hash()
     );
-    for tag in [9, 255, u32::MAX] {
+    for tag in invalid_tags {
+        let case = cases.case(format!("invalid-tag/{tag}"));
         assert!(OutputSpace::try_from(tag).is_err());
+        case.passed();
     }
+    cases.finish();
 }
 #[test]
 fn canonical_zero_and_nonfinite_subhash_composition_are_native() {
     let fixture = fixture();
-    for row in fixture["hash_variants"].as_array().unwrap() {
+    let rows = fixture["hash_variants"].as_array().unwrap();
+    let mut cases = RowCases::new(
+        "output-color-hash-variants",
+        rows.iter().map(|row| {
+            format!(
+                "component/{}/word/{:08x}",
+                row["component"].as_u64().unwrap(),
+                row["word"].as_u64().unwrap()
+            )
+        }),
+    );
+    for row in rows {
+        let case = cases.case(format!(
+            "component/{}/word/{:08x}",
+            row["component"].as_u64().unwrap(),
+            row["word"].as_u64().unwrap()
+        ));
         let original = &LITERALS[0];
         let mut literal = Literal {
             base: original.base,
@@ -82,7 +116,9 @@ fn canonical_zero_and_nonfinite_subhash_composition_are_native() {
         };
         *lane = f32::from_bits(row["word"].as_u64().unwrap() as u32);
         compare(&literal, &row["entry"]);
+        case.passed();
     }
+    cases.finish();
 }
 #[test]
 fn concurrent_catalogue_initialization_publishes_complete_immutable_entries() {

@@ -737,6 +737,8 @@ impl Assets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "test-support")]
+    use crate::test_cases::RowCases;
     use crate::color::{self, InputSpace, OutputSpace};
     use std::path::Path;
     use std::sync::Barrier;
@@ -750,12 +752,21 @@ mod tests {
     #[test]
     fn hull_admission_faults_preserve_typed_causes_and_warm_owner_isolation() {
         use super::super::testing::{CacheFamily, HullFault};
-        for cause in [
+        let causes = [
             gamut::HullError::LocusAndCenter,
             gamut::HullError::RayIntersections,
             gamut::HullError::InscribedScale,
             gamut::HullError::Identity,
-        ] {
+        ];
+        let ids = [
+            "locus-and-center",
+            "ray-intersections",
+            "inscribed-scale",
+            "identity",
+        ];
+        let mut cases = RowCases::new("derived-input-hull-faults", ids);
+        for (cause, id) in causes.into_iter().zip(ids) {
+            let case = cases.case(id);
             let owner = assets();
             owner.arm_hull_fault(Some(HullFault::Preparation(cause)));
             let error = owner.input_hull().err().expect("actual cold hull visit");
@@ -773,20 +784,33 @@ mod tests {
             assert!(owner.hull_fault_pending());
             owner.arm_hull_fault(None);
             assert!(!owner.hull_fault_pending());
+            case.passed();
         }
+        cases.finish();
     }
 
     #[cfg(feature = "test-support")]
     #[test]
     fn cache_owned_illuminant_faults_are_lazy_owner_scoped_and_consumed_once() {
         use super::super::testing::{CacheFamily, IlluminantFault, IlluminantOperation};
-        for operation in [
+        let operations = [
             IlluminantOperation::Samples,
             IlluminantOperation::TungstenKg3,
             IlluminantOperation::LensPrepare,
             IlluminantOperation::LensFinish,
-        ] {
-            for fault in [IlluminantFault::Unsupported, IlluminantFault::Capacity] {
+        ];
+        let faults = [
+            (IlluminantFault::Unsupported, "unsupported"),
+            (IlluminantFault::Capacity, "capacity"),
+        ];
+        let expected_ids = operations
+            .iter()
+            .flat_map(|operation| faults.map(|(_, fault)| format!("{operation:?}/{fault}")))
+            .collect::<Vec<_>>();
+        let mut cases = RowCases::new("derived-illuminant-operation-faults", expected_ids);
+        for operation in operations {
+            for (fault, fault_id) in faults {
+                let case = cases.case(format!("{operation:?}/{fault_id}"));
                 let owner = assets();
                 let warm = owner.illuminants().unwrap();
                 owner.arm_illuminant_operation(operation, Some(fault));
@@ -815,8 +839,10 @@ mod tests {
                 assert_eq!(metrics.allocations, 3);
                 assert_eq!(metrics.destructions, 3);
                 assert_eq!(metrics.live_bytes, 0);
+                case.passed();
             }
         }
+        cases.finish();
     }
 
     #[cfg(feature = "test-support")]

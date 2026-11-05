@@ -171,6 +171,22 @@ fn domain(extent: FjExtent) -> Domain {
     }
 }
 
+/// Shared checked rectangle conversion used by both the foreign fixed-record
+/// edge and the held-state render path.
+pub(crate) fn checked_domain(bounds: Bounds) -> Result<Domain, ()> {
+    #[cfg(feature = "test-support")]
+    faults::check(0);
+    Domain::from_bounds(bounds).map_err(|_| ())
+}
+
+/// Shared geometry construction. Fault injection remains at this operation so
+/// the legacy ABI and the complete owner exercise the same preparation point.
+pub(crate) fn checked_geometry(domain: Domain, film_format_long_edge_mm: f32) -> Geometry {
+    #[cfg(feature = "test-support")]
+    faults::check(1);
+    Geometry::new(domain, film_format_long_edge_mm)
+}
+
 /// # Safety
 /// Required records authorize initialized/live aligned storage; writable records
 /// and optional diagnostic backing are exclusive/disjoint through synchronous return.
@@ -189,9 +205,7 @@ pub(crate) unsafe fn prepare_domain(
                 return Err(Failure::Raw);
             }
             let input = input.read();
-            #[cfg(feature = "test-support")]
-            faults::check(0);
-            let result = Domain::from_bounds(Bounds {
+            let result = checked_domain(Bounds {
                 x1: input.x1,
                 y1: input.y1,
                 x2: input.x2,
@@ -232,9 +246,7 @@ pub(crate) unsafe fn prepare_geometry(
                 return Err(Failure::Raw);
             }
             let input = input.read();
-            #[cfg(feature = "test-support")]
-            faults::check(1);
-            let result = Geometry::new(domain(input.full_frame), input.film_format_long_edge_mm);
+            let result = checked_geometry(domain(input.full_frame), input.film_format_long_edge_mm);
             out.write(FjFrameGeometry {
                 full_frame: project(result.domain()),
                 pixel_size_um: result.pixel_size_um(),

@@ -14,7 +14,9 @@
 #include <nlohmann/json.hpp>
 
 #include "gaussian_kernel_test_hooks.h"
+#include "../ffi/case_results.h"
 #include "../ffi/exposure_fixture.h"
+#include "../ffi/host_preparation_fixture.h"
 #include "../ffi/juicer_test_api.h"
 
 namespace {
@@ -30,6 +32,16 @@ namespace {
     const float kSigma = 1.234567f;
     std::uint64_t key(int radius, float sigma) {
         return (std::uint64_t(std::uint32_t(radius)) << 32u) | std::bit_cast<std::uint32_t>(sigma);
+    }
+    bool ensure_prepared_gaussian(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, int radius, Failure& failure) {
+        return JuicerTestSupport::with_host_preparation([&](const FjHostPreparation* preparation) {
+            return ensure_gaussian_kernel(resources, kernel, sigma, radius, failure, preparation);
+        });
+    }
+    bool ensure_prepared_spatial_dir(Resources& resources, Resources::DeviceGaussianKernel& kernel, int radius, float sigma, Failure& failure) {
+        return JuicerTestSupport::with_host_preparation([&](const FjHostPreparation* preparation) {
+            return ensure_spatial_dir_kernel(resources, kernel, radius, sigma, failure, preparation);
+        });
     }
     struct Fixture {
         CUcontext context = nullptr;
@@ -84,7 +96,7 @@ namespace {
         require(a.entries == b.entries && a.allocations == b.allocations &&
                     a.ledger.chargedBytes == b.ledger.chargedBytes && a.ledger.reservedBytes == b.ledger.reservedBytes &&
                     a.ledger.committedBytes == b.ledger.committedBytes && a.ledger.retiringBytes == b.ledger.retiringBytes &&
-                    a.ledger.recordCount == b.ledger.recordCount,
+                    a.ledger.recordCount == b.ledger.recordCount && a.ledger.capBytes == b.ledger.capBytes,
                 "Gaussian failed transition preserves cache/record/ledger balance");
     }
     void download(const Resources::DeviceGaussianKernel& kernel, const Json& fixture) {
@@ -105,7 +117,7 @@ namespace {
         Fixture fixture;
         auto& r = *fixture.resources;
         Failure failure;
-        require(ensure_gaussian_kernel(r, r.scannerLensBlurKernel, 1.0f, 3, failure), "seed old Gaussian slot/cache");
+        require(ensure_prepared_gaussian(r, r.scannerLensBlurKernel, 1.0f, 3, failure), "seed old Gaussian slot/cache");
         const auto old = r.scannerLensBlurKernel;
         const auto before = snapshot(r);
         const auto owners = fj_test_gaussian_kernel_live_owners();
@@ -114,7 +126,7 @@ namespace {
         controls.participants[0].failInsertion = !copy;
         {
             Binding binding(controls, 0);
-            require(!ensure_gaussian_kernel(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "selected native Gaussian failure");
+            require(!ensure_prepared_gaussian(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "selected native Gaussian failure");
         }
         const auto& p = controls.participants[0];
         require(p.copies == 1 && p.candidate && p.frees == 1 && p.freed == p.candidate && p.freeSucceeded, "exactly one successful real candidate free");
@@ -137,7 +149,7 @@ namespace {
         } else {
             require(p.insertionConsumed && p.rejectedBytes != 0 && failure.status.category == 3 && failure.status.api == 0 && failure.status.native_code == 0 && failure.diagnostic == "Gaussian cache bookkeeping failed", "real cache-node allocation rejected with unchanged bookkeeping envelope");
         }
-        require(ensure_gaussian_kernel(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "successful recovery after clearing one-shot fault");
+        require(ensure_prepared_gaussian(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "successful recovery after clearing one-shot fault");
         download(r.scannerLensBlurKernel, expected);
         fixture.close();
         std::printf("PASS Gaussian %s failure: actual candidate cleanup, old state, ledger/Rust balance and recovery\n", copy ? "copy" : "node-allocation");
@@ -146,33 +158,69 @@ namespace {
         Fixture fixture;
         auto& r = *fixture.resources;
         Failure failure;
-        require(ensure_gaussian_kernel(r, r.scannerLensBlurKernel, 1.0f, 3, failure), "key witness seed");
+        const auto empty = snapshot(r);
+        const auto coldAcquires = fj_test_gaussian_kernel_acquires();
+        require(empty.entries == 0 && empty.allocations == 0 && empty.ledger.reservedBytes == 0 &&
+                    empty.ledger.committedBytes == 0 && empty.ledger.retiringBytes == 0 && empty.ledger.chargedBytes == 0 && empty.ledger.recordCount == 0,
+                "fresh Gaussian owner has no kernel candidate or device charge");
+        require(!ensure_gaussian_kernel(r, r.scannerLensBlurKernel, 1.0f, 3, failure, nullptr), "cold Gaussian miss requires host preparation");
+        require(failure.status.category == FJ_STATUS_PREPARATION_FAILURE && failure.status.api == FJ_API_NONE &&
+                    failure.status.native_code == 0 && failure.diagnostic == "Gaussian kernel projection invalid",
+                "cold null Gaussian preparation keeps the exact typed transport failure");
+        require(!r.scannerLensBlurKernel.weights && r.scannerLensBlurKernel.radius == 0 && std::bit_cast<std::uint32_t>(r.scannerLensBlurKernel.sigma) == 0,
+                "cold null Gaussian preparation publishes no kernel candidate");
+        equal(snapshot(r), empty);
+        require(fj_test_gaussian_kernel_acquires() == coldAcquires && fj_test_gaussian_kernel_live_owners() == 0,
+                "cold null Gaussian preparation visits no callback and retains no Rust owner");
+        require(ensure_prepared_gaussian(r, r.scannerLensBlurKernel, 1.0f, 3, failure), "key witness seed");
         const auto old = r.scannerLensBlurKernel;
         const auto initial = snapshot(r);
+        const auto warmAcquires = fj_test_gaussian_kernel_acquires();
+        require(fj_test_gaussian_kernel_fault(0, 1).category == 0, "arm acquire panic before Gaussian warm hit");
+        require(ensure_prepared_gaussian(r, r.scannerUnsharpKernel, 1.0f, 3, failure), "warm Gaussian hit while callback fault is armed");
+        require(fj_test_gaussian_kernel_acquires() == warmAcquires && r.scannerUnsharpKernel.weights == old.weights, "warm hit leaves callback unvisited");
+        require(ensure_gaussian_kernel(r, r.scannerUnsharpKernel, 1.0f, 3, failure, nullptr), "warm Gaussian hit succeeds without host preparation");
+        require(r.scannerUnsharpKernel.weights == old.weights && r.scannerUnsharpKernel.radius == old.radius &&
+                    std::bit_cast<std::uint32_t>(r.scannerUnsharpKernel.sigma) == std::bit_cast<std::uint32_t>(old.sigma) &&
+                    fj_test_gaussian_kernel_acquires() == warmAcquires && fj_test_gaussian_kernel_live_owners() == 0,
+                "warm null Gaussian preparation reuses exact metadata without a callback or Rust owner");
+        equal(snapshot(r), initial);
+        require(!ensure_prepared_gaussian(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "next actual miss consumes the pending acquire panic");
+        require(failure.status.category == FJ_STATUS_INTERNAL_FAILURE && fj_test_gaussian_kernel_acquires() == warmAcquires + 1 &&
+                    r.scannerLensBlurKernel.weights == old.weights && fj_test_gaussian_kernel_live_owners() == 0,
+                "armed Gaussian panic survives hit and releases failed miss backing");
+        equal(snapshot(r), initial);
+        const std::vector<std::string> faultIds{"acquire-panic", "acquire-null", "view-panic", "view-null", "view-short", "view-invalid"};
+        JuicerTests::Cohort faultCases("Gaussian.preparation-faults", faultIds);
+        std::size_t faultIndex = 0;
         for (auto fault : {std::array<unsigned, 2>{0, 1}, {0, 2}, {1, 1}, {1, 2}, {1, 3}, {1, 4}}) {
+            auto faultCase = faultCases.case_event(faultIds[faultIndex++]);
             require(fj_test_gaussian_kernel_fault(fault[0], fault[1]).category == 0, "arm owning Rust failure");
-            require(!ensure_gaussian_kernel(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "actual cache miss propagates Rust preparation/projection failure");
+            require(!ensure_prepared_gaussian(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "actual cache miss propagates Rust preparation/projection failure");
             require(r.scannerLensBlurKernel.weights == old.weights, "failed Rust preparation keeps old slot");
             equal(snapshot(r), initial);
             require(fj_test_gaussian_kernel_live_owners() == 0, "failed Rust cache miss releases owner");
+            faultCase.passed();
         }
         download(old, expected);
+        require(ensure_prepared_gaussian(r, r.scannerLensBlurKernel, kSigma, kRadius, failure), "Gaussian callback retries after individual preparation faults");
+        download(r.scannerLensBlurKernel, expected);
         const auto beforeGuard = fj_test_gaussian_kernel_acquires();
-        require(!ensure_gaussian_kernel(r, r.scannerUnsharpKernel, 19.0f, 76, failure), "standard family radius guard preserved");
+        require(!ensure_prepared_gaussian(r, r.scannerUnsharpKernel, 19.0f, 76, failure), "standard family radius guard preserved");
         require(failure.diagnostic == "gaussian descriptor is invalid" && fj_test_gaussian_kernel_acquires() == beforeGuard, "guard precedes Rust acquisition");
-        require(ensure_spatial_dir_kernel(r, r.spatialDirKernels[1], 2048, 512.0f, failure), "DIR upper bound actual cache entry");
+        require(ensure_prepared_spatial_dir(r, r.spatialDirKernels[1], 2048, 512.0f, failure), "DIR upper bound actual cache entry");
         download(r.spatialDirKernels[1], expected);
         const auto beforeInvalidDir = fj_test_gaussian_kernel_acquires();
-        require(!ensure_spatial_dir_kernel(r, r.spatialDirKernels[2], 2049, 512.0f, failure) && fj_test_gaussian_kernel_acquires() == beforeInvalidDir, "DIR upper guard before Rust");
+        require(!ensure_prepared_spatial_dir(r, r.spatialDirKernels[2], 2049, 512.0f, failure) && fj_test_gaussian_kernel_acquires() == beforeInvalidDir, "DIR upper guard before Rust");
         require(failure.diagnostic == "spatial DIR kernel radius exceeds prepared-frame limit", "DIR guard exact diagnostic");
-        require(ensure_gaussian_kernel(r, r.scannerUnsharpKernel, std::bit_cast<float>(std::uint32_t{0x3f800001}), 3, failure), "adjacent sigma bits create distinct exact key");
+        require(ensure_prepared_gaussian(r, r.scannerUnsharpKernel, std::bit_cast<float>(std::uint32_t{0x3f800001}), 3, failure), "adjacent sigma bits create distinct exact key");
         require(r.scannerUnsharpKernel.weights != old.weights, "sigma bit change does not reuse old key");
         download(r.scannerUnsharpKernel, expected);
         const auto beforeEpoch = snapshot(r);
         auto* epoch = create(r.ownerContextKey, 2, fixture.ledger, failure);
         require(epoch != nullptr, "second epoch exact owner");
         const auto epochAcquires = fj_test_gaussian_kernel_acquires();
-        const bool epochReady = ensure_gaussian_kernel(*epoch, epoch->scannerLensBlurKernel, 1, 3, failure);
+        const bool epochReady = ensure_prepared_gaussian(*epoch, epoch->scannerLensBlurKernel, 1, 3, failure);
         const bool independent = epochReady && epoch->scannerLensBlurKernel.weights != old.weights && epoch->gaussianKernelCache.size() == 1 && fj_test_gaussian_kernel_acquires() == epochAcquires + 1;
         destroy(epoch);
         require(independent, "new epoch constructs independent device entry");
@@ -181,7 +229,7 @@ namespace {
             Fixture other;
             const auto beforeContext = fj_test_gaussian_kernel_acquires();
             require(other.resources->ownerContextKey != r.ownerContextKey, "different real exact contexts");
-            require(ensure_gaussian_kernel(*other.resources, other.resources->scannerLensBlurKernel, 1, 3, failure), "new exact context acquires independent coefficients");
+            require(ensure_prepared_gaussian(*other.resources, other.resources->scannerLensBlurKernel, 1, 3, failure), "new exact context acquires independent coefficients");
             require(fj_test_gaussian_kernel_acquires() == beforeContext + 1 && other.resources->gaussianKernelCache.size() == 1, "no cross-context host/device reuse");
             download(other.resources->scannerLensBlurKernel, expected);
             other.close();
@@ -215,8 +263,8 @@ namespace {
                         require(cuCtxSetCurrent(fixture.context) == CUDA_SUCCESS, "worker current exact context");
                         Binding binding(controls, index);
                         auto& r = *fixture.resources;
-                        ok = index == 0 ? ensure_gaussian_kernel(r, r.scannerLensBlurKernel, kSigma, kRadius, failures[index])
-                                        : ensure_spatial_dir_kernel(r, r.spatialDirKernels[0], kRadius, kSigma, failures[index]);
+                        ok = index == 0 ? ensure_prepared_gaussian(r, r.scannerLensBlurKernel, kSigma, kRadius, failures[index])
+                                        : ensure_prepared_spatial_dir(r, r.spatialDirKernels[0], kRadius, kSigma, failures[index]);
                     } catch (...) {
                         exceptions[index] = std::current_exception();
                     }
@@ -231,7 +279,7 @@ namespace {
         Fixture fixture;
         auto& r = *fixture.resources;
         Failure failure;
-        require(ensure_gaussian_kernel(r, r.scannerLensBlurKernel, 1.0f, 3, failure), "seed collision old state");
+        require(ensure_prepared_gaussian(r, r.scannerLensBlurKernel, 1.0f, 3, failure), "seed collision old state");
         const auto old = r.scannerLensBlurKernel;
         const auto before = snapshot(r);
         const auto owners = fj_test_gaussian_kernel_live_owners();
@@ -279,7 +327,7 @@ namespace {
             const auto warmAcquires = fj_test_gaussian_kernel_acquires();
             {
                 Binding binding(controls, 0);
-                require(ensure_gaussian_kernel(r, r.scannerUnsharpKernel, kSigma, kRadius, failure), "real warm hit");
+                require(ensure_prepared_gaussian(r, r.scannerUnsharpKernel, kSigma, kRadius, failure), "real warm hit");
             }
             require(fj_test_gaussian_kernel_acquires() == warmAcquires && a.copies == 1 && r.scannerUnsharpKernel.weights == a.candidate, "warm hit has zero Rust acquire, host coefficient allocation, device allocation and copy");
             equal(snapshot(r), after);
@@ -289,14 +337,33 @@ namespace {
     }
 } // namespace
 int main(int argc, char** argv) try {
+    static constexpr std::array<const char*, 5> operations{
+        "preparation-keys-contexts", "seeded-copy-failure", "seeded-insertion-failure", "collision-winner", "collision-cancellation"};
+    if (JuicerTests::list_requested(argc, argv)) {
+        for (const auto* operation : operations)
+            JuicerTests::list_case("Gaussian", operation);
+        return 0;
+    }
     require(argc == 2, "Gaussian logical fixture argument");
     const auto expected = load_shared_fixture(argv[1], "manifest.json");
+    JuicerTests::CaseLog log;
+    auto preparation = JuicerTests::CaseEvent("Gaussian", operations[0]);
     preparation_keys_and_contexts(expected);
+    preparation.passed();
+    auto copy = JuicerTests::CaseEvent("Gaussian", operations[1]);
     seeded_failure(expected, true);
+    copy.passed();
+    auto insertion = JuicerTests::CaseEvent("Gaussian", operations[2]);
     seeded_failure(expected, false);
+    insertion.passed();
+    auto winner = JuicerTests::CaseEvent("Gaussian", operations[3]);
     collision(expected, false);
+    winner.passed();
+    auto cancellation = JuicerTests::CaseEvent("Gaussian", operations[4]);
     collision(expected, true);
     require(fj_test_gaussian_kernel_live_owners() == 0, "no escaped Gaussian owners");
+    cancellation.passed();
+    log.finish();
     return 0;
 } catch (const std::exception& error) {
     std::fprintf(stderr, "FAIL Gaussian: %s\n", error.what());

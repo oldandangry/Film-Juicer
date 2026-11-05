@@ -32,6 +32,8 @@ pub struct Development {
     normalized_curves_hash: u64,
     layers_hash: u64,
     hash: u64,
+    #[cfg(any(test, feature = "test-support"))]
+    _curve_observation: test_support::CurveObservation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +131,8 @@ impl Development {
         normalized_curves_cmy
             .try_reserve_exact(capacity)
             .map_err(|_| Error::Allocation)?;
+        #[cfg(any(test, feature = "test-support"))]
+        let curve_observation = test_support::CurveObservation::new();
         normalized_curves_cmy.extend_from_slice(authored);
         let (minimum_cmy, maximum_cmy) = normalize_curves(&mut normalized_curves_cmy);
         let normalized_curves_hash = curve_hash(normalized_curves_cmy.as_flattened());
@@ -185,6 +189,8 @@ impl Development {
             normalized_curves_hash,
             layers_hash,
             hash: identity,
+            #[cfg(any(test, feature = "test-support"))]
+            _curve_observation: curve_observation,
         })
     }
 
@@ -234,6 +240,35 @@ impl Development {
 pub mod test_support {
     //! Bounded reservation and rare zero-identity rejection witnesses, absent in production.
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static LIVE_CURVES: AtomicUsize = AtomicUsize::new(0);
+    static ALLOCATED_CURVES: AtomicUsize = AtomicUsize::new(0);
+    static DROPPED_CURVES: AtomicUsize = AtomicUsize::new(0);
+
+    // Field order drops this observation after a completed Development's curve
+    // vector; failed local construction drops both before its caller can sample.
+    pub(super) struct CurveObservation;
+    impl CurveObservation {
+        pub(super) fn new() -> Self {
+            LIVE_CURVES.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_CURVES.fetch_add(1, Ordering::Relaxed);
+            Self
+        }
+    }
+    impl Drop for CurveObservation {
+        fn drop(&mut self) {
+            LIVE_CURVES.fetch_sub(1, Ordering::Relaxed);
+            DROPPED_CURVES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn curve_counts() -> [usize; 3] {
+        [
+            LIVE_CURVES.load(Ordering::Relaxed),
+            ALLOCATED_CURVES.load(Ordering::Relaxed),
+            DROPPED_CURVES.load(Ordering::Relaxed),
+        ]
+    }
     thread_local! { static FAULT: Cell<u32> = const { Cell::new(0) }; }
     pub fn reject_next(fault: u32) {
         FAULT.set(fault);
@@ -247,6 +282,7 @@ pub mod test_support {
 mod tests {
     use super::{curve_hash, normalize_curves};
     use crate::hash;
+    use crate::test_cases::RowCases;
     use serde_json::Value;
     use std::path::PathBuf;
 
@@ -262,7 +298,16 @@ mod tests {
             .join("../../tests/film/fixtures")
             .join(format!("{preset}-primitive.json"));
         let fixture: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        for row in fixture["normalization"].as_array().unwrap() {
+        let normalization = fixture["normalization"].as_array().unwrap();
+        let mut normalization_cases = RowCases::new(
+            "film-primitive-normalization",
+            normalization
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("normalization/{index}")),
+        );
+        for (index, row) in normalization.iter().enumerate() {
+            let case = normalization_cases.case(format!("normalization/{index}"));
             let mut curves: Vec<[f32; 3]> = row["authored"]
                 .as_array()
                 .unwrap()
@@ -289,8 +334,19 @@ mod tests {
                 curve_hash(curves.as_flattened()),
                 row["hash"].as_u64().unwrap()
             );
+            case.passed();
         }
-        for row in fixture["hash"].as_array().unwrap() {
+        normalization_cases.finish();
+        let hashes = fixture["hash"].as_array().unwrap();
+        let mut hash_cases = RowCases::new(
+            "film-primitive-hashes",
+            hashes
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("hash/{index}")),
+        );
+        for (index, row) in hashes.iter().enumerate() {
+            let case = hash_cases.case(format!("hash/{index}"));
             let samples: Vec<f32> = row["values"]
                 .as_array()
                 .unwrap()
@@ -301,6 +357,8 @@ mod tests {
             assert_eq!(pair.values, row["value_hash"].as_u64().unwrap());
             assert_eq!(pair.nan_mask, row["mask_hash"].as_u64().unwrap());
             assert_eq!(curve_hash(&samples), row["hash"].as_u64().unwrap());
+            case.passed();
         }
+        hash_cases.finish();
     }
 }

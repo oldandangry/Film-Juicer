@@ -9,6 +9,22 @@ use film_juicer_core::frame::Domain;
 
 use crate::cuda::sys::{FjDirGaussian, FjErrorBuffer, FjExtent, FjStatus};
 
+/// One checked DIR plan operation shared by the raw ABI and held render path.
+/// `fault` is captured at the caller's historical admission point; only fault 1
+/// belongs to this operation. Wire and trace corruptions remain in the ABI edge.
+#[expect(
+    clippy::result_large_err,
+    reason = "preserve the core's bounded four-slot failure trace without a fallible heap owner"
+)]
+pub(crate) fn checked_plan(input: frame::Input, fault: u32) -> Result<Option<Plan>, frame::Error> {
+    #[cfg(feature = "test-support")]
+    if fault == 1 {
+        panic!("spatial DIR frame fixture panic");
+    }
+    let _ = fault;
+    Plan::new(input)
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct FjDirFrameInput {
@@ -182,7 +198,7 @@ fn component(v: &Component) -> FjDirGaussian {
     }
 }
 
-fn projection(
+pub(crate) fn projection(
     recipe_hash: u64,
     render: Domain,
     full: Domain,
@@ -198,6 +214,14 @@ fn projection(
         filter_domain_extent: extent(full),
         components: components.map(|c| component(&c)),
     }
+}
+
+pub(crate) fn failure_diagnostic(field: frame::Field) -> &'static str {
+    MESSAGES[field as usize]
+}
+
+pub(crate) fn empty_math() -> FjDirFrameMath {
+    EMPTY_MATH
 }
 
 const MESSAGES: [&str; 13] = [
@@ -279,20 +303,28 @@ pub(crate) unsafe fn prepare(
         let input = input.unwrap();
         #[cfg(feature = "test-support")]
         let fault = dir_frame_faults::take();
-        #[cfg(feature = "test-support")]
-        if fault == 1 {
-            panic!("spatial DIR frame fixture panic");
-        }
-        let result = Plan::new(frame::Input {
-            active: input.active != 0,
-            diffusion_size_um: input.diffusion_size_um,
-            diffusion_tail_um: input.diffusion_tail_um,
-            diffusion_tail_weight: input.diffusion_tail_weight,
-            pixel_size_um: input.pixel_size_um,
-            render_extent: domain(input.render_extent),
-            full_frame_extent: domain(input.full_frame_extent),
-            recipe_hash: input.recipe_hash,
-        });
+        let result = checked_plan(
+            frame::Input {
+                active: input.active != 0,
+                diffusion_size_um: input.diffusion_size_um,
+                diffusion_tail_um: input.diffusion_tail_um,
+                diffusion_tail_weight: input.diffusion_tail_weight,
+                pixel_size_um: input.pixel_size_um,
+                render_extent: domain(input.render_extent),
+                full_frame_extent: domain(input.full_frame_extent),
+                recipe_hash: input.recipe_hash,
+            },
+            {
+                #[cfg(feature = "test-support")]
+                {
+                    fault
+                }
+                #[cfg(not(feature = "test-support"))]
+                {
+                    0
+                }
+            },
+        );
         match result {
             Ok(plan) => {
                 let wire = plan.as_ref().map_or(EMPTY_MATH, |p| {
@@ -392,7 +424,7 @@ pub(crate) mod dir_frame_faults {
         PENDING.with(|p| p.set(fault));
         status(0)
     }
-    pub(super) fn take() -> u32 {
+    pub(crate) fn take() -> u32 {
         PENDING.with(|p| p.replace(0))
     }
     pub(super) fn corrupt(mut wire: FjDirFrameMath, fault: u32) -> FjDirFrameMath {
