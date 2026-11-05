@@ -26,7 +26,6 @@ from execution import OutputLease, UnresolvedScope, closeout_run, expire_diagnos
 from build_dependencies import header_consumers
 from qualification import collect_bundles
 
-OPTICS_FUNCTION = "optics::tests::matches_frozen_native_words_identities_and_failures"
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED = {"src/ScanRoute.cpp", "src/ScanRoute.h", "rust/film-juicer-core/src/route.rs", "rust/film-juicer-core/src/color/output.rs"}
 OWNERS = ("tests/route/development.json", "tests/ffi/output-color-development.json")
@@ -139,7 +138,6 @@ def rust_tests(args):
     discovery_path = bundle / f"{registration}.discovery.json"
     junit_path = bundle / f"{registration}.xml"
     execution_path = bundle / f"{registration}.execution.json"
-    events_path = bundle / "rust.jsonl" if package == "core" else None
     config_path = bundle / f"{registration}.nextest.toml"
 
     # Cargo metadata supplies the test-target contract independently of the
@@ -217,8 +215,6 @@ def rust_tests(args):
     environment.pop("FJ_OPTICS_CASES", None)
     environment.pop("FJ_RUST_ROWS", None)
     environment["FJ_RUST_ROWS"] = str(bundle / (registration + ".rows.jsonl"))
-    if events_path is not None:
-        environment["FJ_OPTICS_CASES"] = str(events_path)
     commands = [
         [*common, "list", *metadata, "--message-format", "json"],
         [*common, "run", *metadata, "--test-threads", "1", "--retries", "0",
@@ -572,7 +568,7 @@ def cache_values(build):
             if ":" in line and "=" in line and not line.startswith(("#", "//"))} if path.exists() else {}
 
 
-def finish_native_run(run, result, candidate, costs, validate):
+def finish_native_run(run, result, candidate, costs, validate, *, scratch=None):
     """Publish one flat bundle after all commands and source checks complete."""
     import gzip
     import hashlib
@@ -603,6 +599,12 @@ def finish_native_run(run, result, candidate, costs, validate):
         except (ValueError, KeyError, TypeError, OSError) as error:
             result.update(status="failed", error=str(error))
         costs["publication_validation_seconds"] = time.perf_counter() - started
+    if result["status"] == "passed" and scratch is not None:
+        try:
+            shutil.rmtree(scratch)
+            costs["successful_scratch_bytes"] = 0
+        except OSError as error:
+            result.update(status="failed", error="successful scratch cleanup: " + str(error))
     with gzip.open(run.directory / "diagnostics.gz", "wb") as output:
         for path in sorted(run.directory.iterdir()):
             if path.name.endswith((".log", ".process.json", ".gate.json")):
@@ -680,7 +682,7 @@ def native_tests(args):
                   "candidate_head": initial["head"], "shipping_isolation": False,
                   "scope": "checkpoint" if args.mode == "qualification" and not args.label and not args.tests else "focused",
                   "groups": args.selection or [], "runtime": args.runtime, "selection": [], "case_files": {},
-                  "commands": run.commands, "members": {}, "optics_rows": [], "costs": costs, "build_kind": "product", "reason": args.reason,
+                  "commands": run.commands, "members": {}, "costs": costs, "build_kind": "product", "reason": args.reason,
                   "quality_files": sorted(args.files or [])}
         try:
             cmake = shutil.which("cmake")
@@ -772,7 +774,7 @@ def native_tests(args):
             if source_selection:
                 targets.update(source_selection["targets"])
             if targets:
-                run.command("build", [*build_command, "--target", *sorted(targets), "--", "-k0"], vctip_executable=windows_vctip(os.environ))
+                run.command("build", [*build_command, *(["--clean-first"] if getattr(args, "clean_first", False) else []), "--target", *sorted(targets), "--", "-k0"], vctip_executable=windows_vctip(os.environ))
             versions = [sys.executable, "-B", str(Path(__file__).absolute()), "tool-versions", "--tool", "cmake", cmake, "--tool", "ctest", ctest]
             if not standalone:
                 for name, executable in (("cargo", cargo), ("rustc", str(Path(cargo).with_name("rustc.exe" if os.name == "nt" else "rustc"))), ("nextest", nextest)):
@@ -786,10 +788,6 @@ def native_tests(args):
             candidate["versions"] = {item["name"]: item["output"] for item in candidate["version_commands"]}
             if not standalone and (not candidate["versions"]["cargo"].startswith("cargo 1.98.1 ") or not candidate["versions"]["rustc"].startswith("rustc 1.98.1 ") or not candidate["versions"]["nextest"].startswith("cargo-nextest 0.9.143 ")):
                 raise ValueError("qualified Rust/Cargo 1.98.1 and nextest 0.9.143 required")
-            if "Rust.Core" in selected:
-                manifest = json.loads((ROOT / "tests/film/optics-fixtures/manifest.json").read_bytes())
-                literal = ROOT / "tests/film/optics-fixtures" / manifest["presets"][args.preset]["literal"]
-                result["optics_rows"] = [row["id"] for row in json.loads(literal.read_bytes())["cases"]]
             environment = dict(os.environ, FJ_HOST_BUNDLE=str(directory))
             for name in ("FJ_RUST_FILTER", "FJ_OPTICS_BUNDLE", "FJ_HOST_ROWS"):
                 environment.pop(name, None)
@@ -846,7 +844,7 @@ def native_tests(args):
             except BaseException as error:
                 result.update(status="failed", error=str(error))
             costs["elapsed_seconds"] = time.perf_counter() - started
-            costs["measurement"] = "explicit source/Git and result bookkeeping; compiler/test/resource/OS I/O and transient rewrites unmeasured"
+            costs["measurement"] = "explicit source/Git/result bookkeeping and advisory per-command OS counters; physical bytes, transient rewrites and uninstrumented in-process I/O unknown"
             return finish_native_run(run, result, candidate, costs, validate_tests_result)
 
 
@@ -857,9 +855,13 @@ def development(args):
 def fresh_prepare(args):
     """Configure/build explicit targets without creating preparation admission."""
     from execution import NativeRun, name_component
-    from qualification import validate_build_result
+    from qualification import validate_build_result, validate_production_contract
     if args.preset.startswith("windows") != (os.name == "nt"):
         raise ValueError("build preparation requires its native platform")
+    production_contract = getattr(args, "production_contract", False)
+    if production_contract and (args.testing != "OFF" or not args.preset.endswith("release")
+            or args.cuda_free or not {"juicer", "JuicerProductionPreparedRenderProbe"} <= set(args.targets or ())):
+        raise ValueError("production contract requires native Release OFF juicer and JuicerProductionPreparedRenderProbe targets")
     started = time.perf_counter()
     cuda_free = getattr(args, "cuda_free", False)
     preset_build = ROOT / "out/build" / args.preset
@@ -869,13 +871,14 @@ def fresh_prepare(args):
         expiry = expire_diagnostics(ROOT, args.preset) if "FJ_HOST_BUNDLE" not in os.environ else None
         directory.mkdir(parents=True, exist_ok=False)
         run = NativeRun(ROOT, directory)
-        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py")
+        source, patch, costs = capture_native_source(ROOT, "scripts/verify.py", domain_tests=production_contract)
         if expiry is not None:
             costs["expiry"] = expiry
         costs["report_read_bytes"] = expiry["read_bytes"] if expiry is not None else 0
         candidate = {**source, "preset": args.preset}
         result = {"schema": "native-build-v1", "status": "failed", "preset": args.preset, "scope": "build",
-                  "candidate_head": source["head"], "shipping_isolation": False, "commands": run.commands, "members": {}, "costs": costs}
+                  "candidate_head": source["head"], "shipping_isolation": False, "commands": run.commands, "members": {}, "costs": costs,
+                  "production_contract": production_contract}
         (directory / "candidate.patch").write_bytes(patch)
         try:
             cmake = shutil.which("cmake")
@@ -889,7 +892,7 @@ def fresh_prepare(args):
             targets = args.targets or select_consumers(ROOT, build, args.files, require_compiled=False)["targets"]
             if not targets:
                 raise ValueError("explicit preparation selected no build targets")
-            run.command("build", [cmake, "--build", str(build), "--target", *targets, "--", "-k0"], vctip_executable=windows_vctip(os.environ))
+            run.command("build", [cmake, "--build", str(build), *(["--clean-first"] if getattr(args, "clean_first", False) else []), "--target", *targets, "--", "-k0"], vctip_executable=windows_vctip(os.environ))
             cache = cache_values(build)
             candidate["configuration"] = {key: cache.get(key) for key in
                 ("BUILD_TESTING", "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER")}
@@ -897,16 +900,30 @@ def fresh_prepare(args):
                 "tool-versions", "--tool", "cmake", cmake], stdout_only=True).read_bytes()
             costs["report_read_bytes"] += len(version_data)
             candidate["version_commands"] = json.loads(version_data)
+            if production_contract:
+                scratch = directory / "production"
+                with OutputLease(ROOT):
+                    run.command("production-contract", [sys.executable, "-B", str(ROOT / "tests/ffi/production_contract.py"),
+                        "--preset", args.preset, "--artifacts", str(scratch)])
+                reports = {}
+                for source_name, member_name in (("production.json", "production-contract.json"), ("commands.json", "production-commands.json")):
+                    data = (scratch / source_name).read_bytes()
+                    costs["report_read_bytes"] += len(data)
+                    reports[member_name] = data
+                    (directory / member_name).write_bytes(data)
+                validate_production_contract(args.preset, reports)
+                costs["production_io"] = json.loads(reports["production-contract.json"])["io_costs"]
             result.update(status="passed", targets=targets)
         except BaseException as error:
             result["error"] = str(error)
-        final, final_patch, measured = capture_native_source(ROOT, "scripts/verify.py")
+        final, final_patch, measured = capture_native_source(ROOT, "scripts/verify.py", domain_tests=production_contract)
         for key, value in measured.items():
             costs[key] += value
         result["candidate_unchanged"] = source == final and patch == final_patch
         costs["elapsed_seconds"] = time.perf_counter() - started
-        costs["measurement"] = "explicit source/Git and result bookkeeping; compiler/test/resource/OS I/O and transient rewrites unmeasured"
-        return finish_native_run(run, result, candidate, costs, validate_build_result)
+        costs["measurement"] = "explicit source/Git/result bookkeeping and advisory per-command OS counters; physical bytes, transient rewrites and uninstrumented in-process I/O unknown"
+        return finish_native_run(run, result, candidate, costs, validate_build_result,
+                                 scratch=directory / "production" if production_contract else None)
 
 
 def python_tests(args):
@@ -1113,6 +1130,7 @@ def main():
         command.add_argument("--cargo", type=Path)
         command.add_argument("--nextest", type=Path)
         command.add_argument("--run-id")
+        command.add_argument("--clean-first", action="store_true", help="clean the selected native build before building its closure")
         command.add_argument("--label")
         if mode == "development":
             command.add_argument("--cuda-free", action="store_true",
@@ -1133,6 +1151,9 @@ def main():
     selected.add_argument("--files", nargs="+")
     prepare.add_argument("--testing", choices=("ON", "OFF"), default="ON")
     prepare.add_argument("--run-id")
+    prepare.add_argument("--clean-first", action="store_true")
+    prepare.add_argument("--production-contract", action="store_true",
+                         help="run the Release OFF production closure under the build owner")
     prepare.add_argument("--cuda-free", action="store_true",
                          help="prepare selected CUDA-independent test targets")
     owner = modes.add_parser("check-owner", help=argparse.SUPPRESS)

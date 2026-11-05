@@ -48,6 +48,46 @@ class NativeRunTests(unittest.TestCase):
         self.native_run.publish({"schema": "native-run-v1", "commands": self.native_run.commands})
         self.assertEqual(json.loads((self.directory / "result.json").read_text())["schema"], "native-run-v1")
 
+    def test_native_run_reports_advisory_child_io_counters(self):
+        payload_bytes = 64 * 1024
+        output = self.root / "resource-usage-payload.bin"
+        code = (
+            "from pathlib import Path;"
+            f"Path({str(output)!r}).write_bytes(b'x' * {payload_bytes});"
+            "print('io control complete', flush=True)"
+        )
+        self.native_run.command("io-control", [self.python, "-B", "-c", code], timeout=10)
+
+        process = json.loads((self.directory / "io-control.process.json").read_text())
+        record = self.native_run.commands[0]
+        self.assertTrue(process["drained"])
+        self.assertEqual(process["status"], "completed")
+        self.assertEqual(record["drained"], process["drained"])
+        usage = process.get("resource_usage")
+        self.assertIsNotNone(usage, process.get("resource_usage_error"))
+        self.assertEqual(record["resource_usage"], usage)
+        self.assertTrue(
+            all(
+                type(value) is int and value >= 0
+                for key, value in usage.items()
+                if key not in {"kind", "scope", "transfer_semantics"}
+            )
+        )
+        if os.name == "nt":
+            self.assertEqual(usage["kind"], "windows_job_io_accounting")
+            self.assertEqual(usage["scope"], "all_job_members_including_terminated")
+            self.assertEqual(
+                usage["transfer_semantics"],
+                "OS job logical transfers, not physical device bytes",
+            )
+            self.assertGreaterEqual(usage["write_transfer_bytes"], payload_bytes)
+        else:
+            self.assertEqual(usage["kind"], "linux_rusage_children")
+            self.assertEqual(usage["scope"], "children_reaped_by_process_tree_supervisor")
+            self.assertIn("input_blocks", usage)
+            self.assertIn("output_blocks", usage)
+        self.assertEqual(output.stat().st_size, payload_bytes)
+
     def test_nonzero_parent_drains_descendant_and_keeps_failure_visible(self):
         code = ("import subprocess,sys;"
                 "subprocess.Popen([sys.executable,'-B','-c','import time;time.sleep(20)']);"

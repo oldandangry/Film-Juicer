@@ -18,7 +18,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import execution
-from qualification import OPTICS_FUNCTION, OPTICS_TESTS, read_native_result, validate_native_result
+from qualification import (
+    OPTICS_FUNCTION, OPTICS_TESTS, read_native_result, validate_build_result, validate_native_result,
+)
 
 
 class NativeResultTests(unittest.TestCase):
@@ -102,6 +104,73 @@ class NativeResultTests(unittest.TestCase):
             (self.bundle / name).write_bytes(data)
             self.result["members"][name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
         (self.bundle / "result.json").write_bytes(json.dumps(self.result).encode())
+
+    def production_fixture(self, preset="linux-release"):
+        commands = [
+            {"name": name, "returncode": 0}
+            for name in (
+                "native-symbols", "rust-symbols", "module-exports", "film-compile", "film-values",
+                "accepted-output-color-compile", "accepted-output-color-values", "prepared-render",
+                "module-symbols" if preset == "linux-release" else "pdb-symbols",
+            )
+        ]
+        commands_data = json.dumps(commands).encode()
+        rows = [
+            {"case_id": case_id, "accepted_fixture_match": True, "diagnostic": "",
+             "status": 0, "api": 0, "native_code": 0}
+            for case_id in (
+                "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm",
+            )
+        ]
+        report = {
+            "schema": "production-contract-v1", "preset": preset,
+            "build_testing": "OFF", "test_support": "OFF",
+            "exports": ["OfxGetNumberOfPlugins", "OfxGetPlugin"], "hidden_device_load": True,
+            "commands": {"sha256": hashlib.sha256(commands_data).hexdigest()},
+            "scanned": [{"symbols_and_fault_strings_absent": True} for _ in range(4)],
+            "probes": [
+                {"name": name, "linked_sha256": "linked", "before_run_sha256": "linked", "after_run_sha256": "linked"}
+                for name in ("film", "accepted-output-color")
+            ],
+            "prepared_render": {"executable_sha256_before": "prepared", "executable_sha256_after": "prepared", "rows": rows},
+            "original_source": "/unavailable/source", "original_build": "/unavailable/build",
+        }
+        candidate = {
+            "head": "source-baseline", "preset": preset, "configuration": {"BUILD_TESTING": "OFF"},
+            "inputs": {"CMakeLists.txt": "identity"}, "original_source": "/unavailable/source",
+            "original_build": "/unavailable/build",
+        }
+        payloads = {"candidate.json": json.dumps(candidate).encode(), "candidate.patch": b"patch",
+                    "production-contract.json": json.dumps(report).encode(),
+                    "production-commands.json": commands_data}
+        result = {
+            "schema": "native-build-v1", "preset": preset, "status": "passed",
+            "candidate_head": "source-baseline", "candidate_unchanged": True, "shipping_isolation": False,
+            "production_contract": True,
+            "commands": [{"name": "production-contract", "returncode": 0, "drained": True,
+                          "process_status": "completed"}],
+            "members": {},
+        }
+        return result, payloads
+
+    def write_bundle(self, result, payloads, *, omitted=frozenset()):
+        members = {}
+        for name, data in payloads.items():
+            (self.bundle / name).write_bytes(data)
+            if name not in omitted:
+                members[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        result["members"] = members
+        raw = json.dumps(result).encode()
+        (self.bundle / "result.json").write_bytes(raw)
+        return raw
+
+    @staticmethod
+    def production_report(payloads):
+        return json.loads(payloads["production-contract.json"])
+
+    @staticmethod
+    def update_production_report(payloads, report):
+        payloads["production-contract.json"] = json.dumps(report).encode()
 
     def reject(self):
         # Semantic mutations exercise the same pure validator as publication and
@@ -228,6 +297,106 @@ class NativeResultTests(unittest.TestCase):
         raw = json.dumps(self.result).encode()
         with patch.object(Path, "read_bytes", side_effect=AssertionError("payload read")):
             with self.assertRaisesRegex(ValueError, "membership"):
+                read_native_result(self.bundle, result_bytes=raw)
+
+    def test_boolean_member_size_rejected_before_payload_reads(self):
+        self.payloads["candidate.patch"] = b"x"
+        self.save()
+        self.assertEqual((self.bundle / "candidate.patch").stat().st_size, 1)
+        self.result["members"]["candidate.patch"]["bytes"] = True
+        raw = json.dumps(self.result).encode()
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("payload read")):
+            with self.assertRaisesRegex(ValueError, "member identity"):
+                read_native_result(self.bundle, result_bytes=raw)
+
+    def test_physical_member_size_rejected_before_payload_reads(self):
+        self.save()
+        raw = (self.bundle / "result.json").read_bytes()
+        member = self.bundle / "candidate.patch"
+        member.write_bytes(member.read_bytes() + b"x")
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("payload read")):
+            with self.assertRaisesRegex(ValueError, "damaged bundle member size: candidate.patch"):
+                read_native_result(self.bundle, result_bytes=raw)
+
+    def test_completed_production_off_report_is_read_from_bundle_only(self):
+        result, payloads = self.production_fixture()
+        raw = self.write_bundle(result, payloads)
+        summary = read_native_result(self.bundle, result_bytes=raw)
+        self.assertEqual(summary["production_off"], True)
+        self.assertEqual(summary["prepared_render_cases"], 4)
+
+    def test_production_report_rejects_missing_or_failed_command(self):
+        self.subtest_cases = ("missing", "failed")
+        for failed in (False, True):
+            with self.subTest(case="failed" if failed else "missing"):
+                result, payloads = self.production_fixture()
+                commands = json.loads(payloads["production-commands.json"])
+                if failed:
+                    commands[0]["returncode"] = 1
+                    message = "missing or failed production command"
+                else:
+                    commands.pop()
+                    message = "missing or failed production command"
+                payloads["production-commands.json"] = json.dumps(commands).encode()
+                report = self.production_report(payloads)
+                report["commands"]["sha256"] = hashlib.sha256(payloads["production-commands.json"]).hexdigest()
+                self.update_production_report(payloads, report)
+                result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                     for name, data in payloads.items()}
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_build_result(result, payloads)
+
+    def test_production_report_rejects_changed_probe(self):
+        result, payloads = self.production_fixture()
+        report = self.production_report(payloads)
+        report["probes"][0]["after_run_sha256"] = "changed"
+        self.update_production_report(payloads, report)
+        result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                             for name, data in payloads.items()}
+        with self.assertRaisesRegex(ValueError, "changed or missing production C11 probe"):
+            validate_build_result(result, payloads)
+
+    def test_production_report_rejects_missing_or_failed_prepared_row(self):
+        self.subtest_cases = ("missing", "failed")
+        for failed in (False, True):
+            with self.subTest(case="failed" if failed else "missing"):
+                result, payloads = self.production_fixture()
+                report = self.production_report(payloads)
+                if failed:
+                    report["prepared_render"]["rows"][0]["accepted_fixture_match"] = False
+                else:
+                    report["prepared_render"]["rows"].pop()
+                self.update_production_report(payloads, report)
+                result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                     for name, data in payloads.items()}
+                with self.assertRaisesRegex(ValueError, "incomplete or failed production prepared rendering"):
+                    validate_build_result(result, payloads)
+
+    def test_production_report_rejects_testing_on_or_wrong_preset(self):
+        self.subtest_cases = ("testing-on", "wrong-preset")
+        for mutation in self.subtest_cases:
+            with self.subTest(case=mutation):
+                result, payloads = self.production_fixture()
+                report = self.production_report(payloads)
+                if mutation == "testing-on":
+                    candidate = json.loads(payloads["candidate.json"])
+                    candidate["configuration"]["BUILD_TESTING"] = "ON"
+                    payloads["candidate.json"] = json.dumps(candidate).encode()
+                    message = "production contract requires a testing-OFF candidate"
+                else:
+                    report["preset"] = "linux-debug"
+                    self.update_production_report(payloads, report)
+                    message = "incomplete production OFF assertions"
+                result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                     for name, data in payloads.items()}
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_build_result(result, payloads)
+
+    def test_missing_production_payload_rejected_before_payload_reads(self):
+        result, payloads = self.production_fixture()
+        raw = self.write_bundle(result, payloads, omitted={"production-commands.json"})
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("payload read")):
+            with self.assertRaisesRegex(ValueError, "missing required native run members"):
                 read_native_result(self.bundle, result_bytes=raw)
 
     def test_path_escape_rejected_before_payload_reads(self):
@@ -726,6 +895,14 @@ with OutputLease(root,root/'build'):
                     run.publish({"status": "passed"})
         for owner in (build_owner, gpu_owner):
             self.assertEqual(json.loads((owner.path / "owner.json").read_text())["status"], "blocked")
+
+
+
+NativeResultTests.test_production_report_rejects_missing_or_failed_command.required_subtests = True
+
+NativeResultTests.test_production_report_rejects_missing_or_failed_prepared_row.required_subtests = True
+
+NativeResultTests.test_production_report_rejects_testing_on_or_wrong_preset.required_subtests = True
 
 
 if __name__ == "__main__":

@@ -127,7 +127,8 @@ result:
 
 ```sh
 python -B scripts/verify.py prepare --preset linux-debug --targets JuicerFilmRecipeTests --testing ON
-python -B scripts/verify.py prepare --preset linux-release --targets juicer --testing OFF
+python -B scripts/verify.py prepare --preset linux-release --clean-first \
+  --production-contract --targets juicer JuicerProductionPreparedRenderProbe --testing OFF
 ```
 
 `development` selects files, tests or targets for a focused run. It can specify
@@ -146,6 +147,18 @@ a flat result only after descendant drainage. `--selection` accepts `product`,
 `--build-dir` selects an already configured standalone tooling tree. `--label`
 accepts a CTest regex and makes the result focused; it cannot establish a complete
 selection.
+
+The owner-authorized Step 6 workflow uses `--clean-first` within the standard
+preset owner for Debug and the Release OFF closure; Release ON reuses the clean
+production objects. Run product/boundary host selections in all four presets, tooling
+once per native Debug OS, and corpus once in Linux Debug. Run both native Release
+OFF production-contract commands before restoring either Release cache to ON.
+The available RTX 4080 is single-GPU only: run the affected GPU registrations as
+explicit focused checks, leaving `Ffi.Gpu.CudaInspect.MultiDevice` outstanding.
+The complete command set, membership and output limits are in
+[the test guide](tests/README.md#owner-authorized-step-6-final-qualification).
+These host and focused GPU results do not claim a full all-runtime checkpoint or
+Resolve acceptance.
 
 ```sh
 python -B scripts/verify.py qualification --preset linux-debug \

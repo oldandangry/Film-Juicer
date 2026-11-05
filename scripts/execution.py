@@ -290,6 +290,10 @@ class NativeRun:
                           drained=tree["drained"], process_status=tree.get("status"),
                           command_seconds=tree.get("command_seconds"),
                           drain_seconds=tree.get("drain_seconds"))
+            if "resource_usage" in tree:
+                record["resource_usage"] = tree["resource_usage"]
+            if "resource_usage_error" in tree:
+                record["resource_usage_error"] = tree["resource_usage_error"]
             if cleanup:
                 record["vctip_terminated"] = tree.get("vctip_terminated", [])
             if tree["drained"]:

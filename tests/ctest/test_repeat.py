@@ -299,7 +299,7 @@ class ArtifactSelectionTests(unittest.TestCase):
                 self.assertEqual(len(expanded), len(set(expanded)), "artifact names must be unique across matrix jobs")
                 self.assertIn(tooling + "-results", artifacts)
                 self.assertIn(tooling + "-failed-controls", artifacts)
-                for lane in ("product-debug", "product-release", "analysis"):
+                for lane in ("product-debug", "product-release"):
                     self.assertIn(f"{native}-{lane}-failed-controls", artifacts)
                 self.assertNotIn("out/validation/**", text)
 

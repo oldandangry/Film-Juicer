@@ -53,6 +53,17 @@ class LinuxChildren:
     def close(self):
         pass
 
+    def resource_usage(self):
+        import resource
+
+        usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        return {
+            "kind": "linux_rusage_children",
+            "scope": "children_reaped_by_process_tree_supervisor",
+            "input_blocks": int(usage.ru_inblock),
+            "output_blocks": int(usage.ru_oublock),
+        }
+
 
 class WindowsJob:
     def __init__(self):
@@ -87,7 +98,14 @@ class WindowsJob:
                 ("terminated", wintypes.DWORD),
             ]
 
+        class BasicAndIoAccounting(ctypes.Structure):
+            _fields_ = [
+                ("basic", Accounting),
+                ("io", ctypes.c_uint64 * 6),
+            ]
+
         self.accounting_type = Accounting
+        self.basic_and_io_accounting_type = BasicAndIoAccounting
         self.api = ctypes.WinDLL("kernel32", use_last_error=True)
         for name, arguments, result in (
             ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
@@ -221,6 +239,26 @@ class WindowsJob:
 
     def stop(self):
         self.check(self.api.TerminateJobObject(self.job, 125))
+
+    def resource_usage(self):
+        accounting = self.basic_and_io_accounting_type()
+        self.check(
+            self.api.QueryInformationJobObject(
+                self.job, 8, ctypes.byref(accounting), ctypes.sizeof(accounting), None
+            )
+        )
+        io = accounting.io
+        return {
+            "kind": "windows_job_io_accounting",
+            "scope": "all_job_members_including_terminated",
+            "read_operations": int(io[0]),
+            "write_operations": int(io[1]),
+            "other_operations": int(io[2]),
+            "read_transfer_bytes": int(io[3]),
+            "write_transfer_bytes": int(io[4]),
+            "other_transfer_bytes": int(io[5]),
+            "transfer_semantics": "OS job logical transfers, not physical device bytes",
+        }
 
     def stop_vctip(self, expected_path, record_termination):
         from ctypes import wintypes
@@ -410,6 +448,13 @@ def main():
         record.update(status="blocked", error=str(exc))
         raise
     finally:
+        if record["drained"]:
+            try:
+                record["resource_usage"] = owner.resource_usage()
+            except BaseException as exc:
+                # Counters are advisory. A query failure must not alter process
+                # status, drainage, or the native caller's result.
+                record["resource_usage_error"] = f"{type(exc).__name__}: {exc}"
         owner.close()
         save()
 

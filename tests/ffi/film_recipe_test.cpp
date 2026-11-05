@@ -359,7 +359,7 @@ int main(int argc, char** argv) try {
     const bool list_cases = JuicerTests::list_requested(argc, argv);
     if (list_cases)
         --argc;
-    JuicerTests::CaseLog case_log{!list_cases, "FJ_OPTICS_CASES"};
+    JuicerTests::CaseLog case_log{!list_cases};
     if (argc == 5 && (std::string_view(argv[3]) == "effects-frame" || std::string_view(argv[3]) == "effects-frame-products")) {
         const auto manifest = read(argv[2]);
         const auto directory = std::filesystem::path(argv[2]).parent_path();

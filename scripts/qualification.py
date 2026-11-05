@@ -154,7 +154,7 @@ def _native_metadata(result):
         path = PurePosixPath(name)
         if path.is_absolute() or path.parts != (name,) or any(c in name for c in "\\:") or name in {".", ".."}:
             raise ValueError("unconfined bundle reference")
-        if not isinstance(spec["bytes"], int) or spec["bytes"] < 0 or len(spec["sha256"]) != 64:
+        if type(spec["bytes"]) is not int or spec["bytes"] < 0 or len(spec["sha256"]) != 64:
             raise ValueError("invalid member identity")
     return rows, operations
 
@@ -394,7 +394,8 @@ def domain_result_members(result):
         for name in set(selection) & {"Rust.Core", "Rust.Bridge"}:
             required.update(name + suffix for suffix in (".discovery.json", ".xml", ".execution.json", ".nextest.toml", ".rows.jsonl"))
             required.update({"rust-cargo.json", "rust-binaries.json"})
-        if "Rust.Core" in selection:
+        if "Rust.Core" in selection and "optics_rows" in result:
+            # Earlier completed bundles used a second optics stream (offline only).
             rows = result["optics_rows"]
             if len(rows) != 553 or len(set(rows)) != 553 or any(not isinstance(r, str) or not r for r in rows):
                 raise ValueError("invalid Rust optics row membership")
@@ -404,7 +405,7 @@ def domain_result_members(result):
     for name, spec in members.items():
         if PurePosixPath(name).parts != (name,) or any(c in name for c in "\\:") or name in {".", ".."} or PurePosixPath(name).is_absolute():
             raise ValueError("unconfined host result reference")
-        if not isinstance(spec["bytes"], int) or spec["bytes"] < 0 or len(spec["sha256"]) != 64:
+        if type(spec["bytes"]) is not int or spec["bytes"] < 0 or len(spec["sha256"]) != 64:
             raise ValueError("invalid host member identity")
     return members
 
@@ -466,7 +467,7 @@ def validate_domain_result(result, payloads):
                     raise ValueError("incomplete Rust discovery/execution")
                 counts["rust_functions"] += len(expected)
                 counts["rust_cases"] += rust_case_events(payloads[name + ".rows.jsonl"], contract, expected)
-                if package == "core":
+                if package == "core" and "optics_rows" in result:
                     counts["rust_cases"] += optics_events(payloads["rust.jsonl"], {("rust", r) for r in result["optics_rows"]})
                 continue
             entry = native[name]
@@ -517,8 +518,10 @@ def read_native_result(bundle, *, result_bytes=None):
     result_path = bundle / "result.json"
     def regular(path):
         info = path.lstat()
-        return stat.S_ISREG(info.st_mode) and not getattr(info, "st_file_attributes", 0) & 0x400
-    if not regular(result_path):
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            return None
+        return info
+    if regular(result_path) is None:
         raise ValueError("linked result metadata")
     raw = result_path.read_bytes() if result_bytes is None else result_bytes
     result = json.loads(raw)
@@ -529,10 +532,13 @@ def read_native_result(bundle, *, result_bytes=None):
     metadata, validate = validators.get(result.get("schema"),
         (domain_result_members, validate_domain_result) if host else (_native_metadata, validate_native_result))
     metadata(result)  # Reject incomplete/unconfined metadata before payload I/O.
-    for name in result["members"]:
+    for name, spec in result["members"].items():
         target = bundle / name
-        if not regular(target):
+        info = regular(target)
+        if info is None:
             raise ValueError("linked bundle member")
+        if info.st_size != spec["bytes"]:
+            raise ValueError("damaged bundle member size: " + name)
     payloads = {name: (bundle / name).read_bytes() for name in result["members"]}
     summary = validate(result, payloads)
     candidate = json.loads(payloads["candidate.json"])
@@ -666,7 +672,7 @@ def _flat_members(result, required):
     for name, spec in members.items():
         if PurePosixPath(name).parts != (name,) or any(c in name for c in "\\:") or name in {".", ".."} or PurePosixPath(name).is_absolute():
             raise ValueError("unconfined result reference")
-        if (not isinstance(spec["bytes"], int) or spec["bytes"] < 0 or len(spec["sha256"]) != 64
+        if (type(spec["bytes"]) is not int or spec["bytes"] < 0 or len(spec["sha256"]) != 64
                 or any(c not in "0123456789abcdef" for c in spec["sha256"])):
             raise ValueError("invalid result member identity")
     return members
@@ -739,7 +745,8 @@ def tests_result_members(result):
         for name in set(selected) & {"Rust.Core", "Rust.Bridge"}:
             required.update(name + suffix for suffix in (".discovery.json", ".xml", ".execution.json", ".nextest.toml", ".rows.jsonl"))
             required.update({"rust-cargo.json", "rust-binaries.json"})
-        if "Rust.Core" in selected:
+        if "Rust.Core" in selected and "optics_rows" in result:
+            # Earlier completed bundles used a second optics stream (offline only).
             if len(result["optics_rows"]) != 553 or len(set(result["optics_rows"])) != 553:
                 raise ValueError("invalid optics membership")
             required.add("rust.jsonl")
@@ -764,7 +771,7 @@ def _native_cases(result, payloads, entries, contract, selected):
                 raise ValueError("incomplete Rust execution")
             counts["rust_functions"] += len(expected)
             counts["rust_cases"] += rust_case_events(payloads[name + ".rows.jsonl"], contract, expected)
-            if package == "core":
+            if package == "core" and "optics_rows" in result:
                 counts["rust_cases"] += optics_events(payloads["rust.jsonl"], {("rust", row) for row in result["optics_rows"]})
             continue
         entry = entries[name]
@@ -934,14 +941,57 @@ def validate_quality_result(result, payloads):
     return {"status": result["status"], "preset": result["preset"], "scope": "quality", **counts, "shipping_isolation": False}
 
 
+def validate_production_contract(preset, payloads):
+    """Read the completed OFF gate's assertions, never its original file paths."""
+    report = json.loads(payloads["production-contract.json"])
+    commands_data = payloads["production-commands.json"]
+    commands = json.loads(commands_data)
+    if (preset not in {"linux-release", "windows-clang-release"}
+            or report.get("schema") != "production-contract-v1" or report.get("preset") != preset
+            or report.get("build_testing") != "OFF" or report.get("test_support") != "OFF"
+            or report.get("exports") != ["OfxGetNumberOfPlugins", "OfxGetPlugin"]
+            or report.get("hidden_device_load") is not True):
+        raise ValueError("incomplete production OFF assertions")
+    expected = {"native-symbols", "rust-symbols", "module-exports", "film-compile", "film-values",
+                "accepted-output-color-compile", "accepted-output-color-values", "prepared-render",
+                "pdb-symbols" if preset.startswith("windows") else "module-symbols"}
+    if (len(commands) != len(expected) or {row["name"] for row in commands} != expected
+            or any(type(row["returncode"]) is not int or row["returncode"] != 0 for row in commands)
+            or hashlib.sha256(commands_data).hexdigest() != report["commands"]["sha256"]):
+        raise ValueError("missing or failed production command")
+    if len(report["scanned"]) != 4 or any(row["symbols_and_fault_strings_absent"] is not True for row in report["scanned"]):
+        raise ValueError("incomplete production isolation scan")
+    probes = report["probes"]
+    if (len(probes) != 2 or {row["name"] for row in probes} != {"film", "accepted-output-color"}
+            or any(row["linked_sha256"] != row["before_run_sha256"] or row["linked_sha256"] != row["after_run_sha256"] for row in probes)):
+        raise ValueError("changed or missing production C11 probe")
+    prepared = report["prepared_render"]
+    if (prepared["executable_sha256_before"] != prepared["executable_sha256_after"]
+            or [row["case_id"] for row in prepared["rows"]] != [
+                "negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"]
+            or any(row["accepted_fixture_match"] is not True or row["diagnostic"] != ""
+                   or any(type(row[key]) is not int or row[key] != 0 for key in ("status", "api", "native_code"))
+                   for row in prepared["rows"])):
+        raise ValueError("incomplete or failed production prepared rendering")
+    return {"production_off": True, "prepared_render_cases": len(prepared["rows"])}
+
+
 def build_result_members(result):
-    return _flat_members(result, {"candidate.json", "candidate.patch"})
+    required = {"candidate.json", "candidate.patch"}
+    if result.get("production_contract") is True and result["status"] == "passed":
+        required.update({"production-contract.json", "production-commands.json"})
+    return _flat_members(result, required)
 
 
 def validate_build_result(result, payloads):
     build_result_members(result)
-    _payloads(result, payloads)
-    return {"status": result["status"], "preset": result["preset"], "scope": "build", "shipping_isolation": False}
+    candidate = _payloads(result, payloads)
+    assertions = {}
+    if result.get("production_contract") is True and result["status"] == "passed":
+        if candidate["configuration"]["BUILD_TESTING"] != "OFF":
+            raise ValueError("production contract requires a testing-OFF candidate")
+        assertions = validate_production_contract(result["preset"], payloads)
+    return {"status": result["status"], "preset": result["preset"], "scope": "build", "shipping_isolation": False, **assertions}
 
 
 def collect_bundles(args):

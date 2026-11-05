@@ -4,7 +4,6 @@
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
-#include <initializer_list>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -19,8 +18,8 @@ namespace JuicerTests {
 
     class CaseLog {
     public:
-        explicit CaseLog(bool enabled = true, const char* compatibility_name = nullptr)
-            : previous_(active_log), path_(enabled ? output_path(compatibility_name) : std::filesystem::path{}) {
+        explicit CaseLog(bool enabled = true)
+            : previous_(active_log), path_(enabled ? output_path() : std::filesystem::path{}) {
             if (!path_.empty()) {
                 stream_.open(path_, std::ios::out | std::ios::trunc);
             }
@@ -70,28 +69,22 @@ namespace JuicerTests {
         }
 
     private:
-        static std::filesystem::path output_path(const char* compatibility_name) {
-            for (const char* name : {"FJ_HOST_CASES", compatibility_name}) {
-                if (!name)
-                    continue;
+        static std::filesystem::path output_path() {
 #ifdef _WIN32
-                const std::string_view narrow_name(name);
-                const std::wstring wide_name(narrow_name.begin(), narrow_name.end());
-                std::size_t length = 0;
-                if (_wgetenv_s(&length, nullptr, 0, wide_name.c_str()) != 0)
+            std::size_t length = 0;
+            if (_wgetenv_s(&length, nullptr, 0, L"FJ_HOST_CASES") != 0)
+                throw std::runtime_error("native case output environment read");
+            if (length > 1) {
+                std::wstring path(length, L'\0');
+                if (_wgetenv_s(&length, path.data(), path.size(), L"FJ_HOST_CASES") != 0)
                     throw std::runtime_error("native case output environment read");
-                if (length > 1) {
-                    std::wstring path(length, L'\0');
-                    if (_wgetenv_s(&length, path.data(), path.size(), wide_name.c_str()) != 0)
-                        throw std::runtime_error("native case output environment read");
-                    path.resize(length - 1);
-                    return std::filesystem::path(path);
-                }
-#else
-                if (const auto* path = std::getenv(name); path && *path)
-                    return std::filesystem::path(path);
-#endif
+                path.resize(length - 1);
+                return std::filesystem::path(path);
             }
+#else
+            if (const auto* path = std::getenv("FJ_HOST_CASES"); path && *path)
+                return std::filesystem::path(path);
+#endif
             return {};
         }
 

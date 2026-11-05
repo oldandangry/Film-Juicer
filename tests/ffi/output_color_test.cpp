@@ -89,11 +89,10 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
         if (argc > 2 && std::string_view(argv[1]) == "scanner-color") {
             std::ifstream supplementFile{std::filesystem::path(argv[2])};
             std::ifstream catalogueFile{std::filesystem::path(argv[3])};
-            std::ifstream cat02File{std::filesystem::path(argv[4])};
-            Json supplement, catalogue, cat02;
+            Json supplement, catalogue;
             supplementFile >> supplement;
             catalogueFile >> catalogue;
-            cat02File >> cat02;
+            const auto cat02 = load_exposure_qualified_fixture(argv[4]);
             for (const auto& row : supplement.at("cases"))
                 JuicerTests::list_case("output_color.scanner_verification", row.at("id").get<std::string>());
             JuicerTests::list_case("scanner_color", "cold_first_access");

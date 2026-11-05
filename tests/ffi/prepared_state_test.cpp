@@ -1480,10 +1480,9 @@ int main(int argc, char** argv) {
         }
         if (preset != FJ_PREPARED_STATE_PRESET)
             throw std::runtime_error("prepared-state preset does not match its compiled native profile");
-        const auto resourceDirectory = std::string("out/build/") + preset + "/tests/Resources";
         const auto sourceRoot = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
-        if (!std::filesystem::equivalent(sourceRoot / resourceDirectory, std::filesystem::path(argv[1])))
-            throw std::runtime_error("prepared-state resources do not match the declared native preset");
+        if (!std::filesystem::equivalent(sourceRoot / "Resources", std::filesystem::path(argv[1])))
+            throw std::runtime_error("prepared-state tests require the configured source Resources");
         JuicerCuda::Owner owner;
         owner.create(std::filesystem::path(argv[1]));
         const int result = RUN_ALL_TESTS();

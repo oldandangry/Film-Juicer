@@ -77,6 +77,30 @@ class PublicCliTests(unittest.TestCase):
         self.assertEqual(args.testing, "ON")
         self.assertEqual(args.run_id, "prepare-one")
 
+    def test_release_off_closure_uses_the_native_prepare_owner(self):
+        with patch.object(sys, "argv", ["verify.py", "prepare", "--preset", "linux-release",
+                                        "--targets", "juicer", "JuicerProductionPreparedRenderProbe",
+                                        "--testing", "OFF", "--production-contract", "--clean-first"]), \
+                patch.object(verify, "fresh_prepare", return_value=0) as prepare:
+            self.assertEqual(verify.main(), 0)
+        self.assertTrue(prepare.call_args.args[0].production_contract)
+        self.assertTrue(prepare.call_args.args[0].clean_first)
+
+    def test_production_contract_rejects_an_on_or_partial_build_before_mutation(self):
+        self.subtest_cases = ("testing-on", "debug", "missing-probe")
+        for case_id, (testing, preset, targets) in zip(self.subtest_cases, (("ON", "linux-release", ["juicer", "JuicerProductionPreparedRenderProbe"]),
+                                         ("OFF", "linux-debug", ["juicer", "JuicerProductionPreparedRenderProbe"]),
+                                         ("OFF", "linux-release", ["juicer"]))):
+            with self.subTest(case=case_id):
+                native = SimpleNamespace(production_contract=True, testing=testing, preset=preset,
+                                         targets=targets, cuda_free=False)
+                with patch.object(verify.os, "name", "posix"), patch.object(verify, "OutputLease") as owner:
+                    with self.assertRaisesRegex(ValueError, "native Release OFF"):
+                        verify.fresh_prepare(native)
+                owner.assert_not_called()
+
+    test_production_contract_rejects_an_on_or_partial_build_before_mutation.required_subtests = True
+
     def test_prepare_dispatches_cuda_free_mode(self):
         with patch.object(sys, "argv", ["verify.py", "prepare", "--preset", "linux-debug",
                                         "--targets", "JuicerHashContractTests", "--cuda-free"]), \
@@ -181,6 +205,44 @@ class PublicCliTests(unittest.TestCase):
         with patch.object(sys, "argv", ["verify.py", "closeout", "--preset", "linux-debug", "--accept"]), \
                 self.assertRaises(SystemExit):
             verify.main()
+
+
+class PublicationScratchTests(unittest.TestCase):
+    def test_success_disposes_scratch_and_failed_completion_preserves_it(self):
+        from qualification import validate_build_result
+        self.subtest_cases = ("success", "changed-source", "failed-command", "cleanup-error")
+        for case in self.subtest_cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory(prefix="publication scratch ü ") as temporary:
+                root = Path(temporary).resolve()
+                preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+                build = root / "out/build" / preset
+                build.mkdir(parents=True)
+                directory = root / "out/validation" / preset / "results/one"
+                scratch = directory / "production"
+                scratch.mkdir(parents=True)
+                (scratch / "reproduction").write_bytes(b"probe reproduction")
+                (directory / "candidate.patch").write_bytes(b"patch")
+                candidate = {"head": "fixture", "preset": preset, "inputs": {"source": "fixture"}}
+                native = execution.NativeRun(root, directory)
+                native.commands.append({"name": "fixture", "returncode": 1 if case == "failed-command" else 0,
+                                        "drained": True, "process_status": "completed"})
+                result = {"schema": "native-build-v1", "preset": preset, "status": "passed", "scope": "build",
+                          "shipping_isolation": False, "candidate_head": "fixture", "candidate_unchanged": case != "changed-source",
+                          "commands": native.commands, "members": {}}
+                costs = {"report_read_bytes": 0}
+                with execution.OutputLease(root, build), contextlib.ExitStack() as stack:
+                    if case == "cleanup-error":
+                        stack.enter_context(patch.object(verify.shutil, "rmtree", side_effect=OSError("controlled cleanup failure")))
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        returned = verify.finish_native_run(native, result, candidate, costs, validate_build_result, scratch=scratch)
+                published = json.loads((directory / "result.json").read_text())
+                self.assertEqual(returned, 0 if case == "success" else 1)
+                self.assertEqual(published["status"], "passed" if case == "success" else "failed")
+                self.assertEqual(scratch.exists(), case != "success")
+                if case == "success":
+                    self.assertEqual(costs["successful_scratch_bytes"], 0)
+
+    test_success_disposes_scratch_and_failed_completion_preserves_it.required_subtests = True
 
 
 class CloseoutCliTests(unittest.TestCase):

@@ -35,6 +35,73 @@ diagnostics are retained. These hosted host checks do not establish GPU or Resol
 acceptance. See [the contributor workflow](../CONTRIBUTING.md#required-checks)
 for the supported local inputs and explicit checkpoint commands.
 
+## Owner-authorized Step 6 final qualification
+
+Step 6 runs one product/boundary **host** checkpoint in each preset.
+It runs tooling once in Debug on each native OS and corpus once in Linux Debug.
+The available GPU host is one RTX 4080, so GPU work is a set of explicit focused
+registrations, not a full all-runtime checkpoint. `Ffi.Gpu.CudaInspect.MultiDevice`
+remains unqualified. Do not claim full all-runtime coverage from these selections.
+
+Run both Release OFF production closures before restoring either Release cache to
+testing ON. Each command configures and clean-builds under the preset owner,
+executes the maintained production contract, validates its compact outcome, and
+copies the mandatory flat payloads `production-contract.json` and
+`production-commands.json` into the result. Successful report scratch beneath
+`results/<run-id>/production/` is removed after validation; failed commands retain
+it for reproduction. Production executables and tools are not pinned in historical
+results:
+
+```sh
+python -B scripts/verify.py prepare --preset linux-release --clean-first \
+  --production-contract --targets juicer JuicerProductionPreparedRenderProbe --testing OFF
+python -B scripts/verify.py prepare --preset windows-clang-release --clean-first \
+  --production-contract --targets juicer JuicerProductionPreparedRenderProbe --testing OFF
+```
+
+The report records the actual prepared-render probe, four direct/print cold/warm
+rows, C11 probe outcomes, production symbols/exports, and hashes for consumed
+fixtures and required build inputs. Offline reading validates the closure's
+assertions, probe identities, command outcomes and all four prepared-render rows
+from the two copied payloads. It does not access original files, executables or
+tools, and does not establish installed Resolve behavior or absent-driver behavior.
+
+After both OFF closures, run these product/boundary host checkpoints on the
+same candidate. Clean Debug builds establish the complete test graph; Release
+reuses the clean production closure and builds its separate test-support closure:
+
+```sh
+python -B scripts/verify.py qualification --preset windows-clang-debug --clean-first \
+  --reason 'Final candidate' --selection product boundary tooling --runtime host
+python -B scripts/verify.py qualification --preset windows-clang-release \
+  --reason 'Final candidate' --selection product boundary --runtime host
+python -B scripts/verify.py qualification --preset linux-debug --clean-first \
+  --reason 'Final candidate' --selection product boundary tooling corpus --runtime host
+python -B scripts/verify.py qualification --preset linux-release \
+  --reason 'Final candidate' --selection product boundary --runtime host
+```
+
+The Debug commands include the once-per-OS tooling membership and Linux corpus;
+do not replay those groups separately.
+
+On the available RTX 4080, run the supported affected GPU registrations as a
+focused selection. Keep `Ffi.Gpu.CudaInspect.MultiDevice` outstanding:
+
+```sh
+python -B scripts/verify.py development --preset linux-debug --runtime gpu \
+  --tests Ffi.Gpu.PreparedBoundary.negative-direct Ffi.Gpu.PreparedBoundary.negative-print \
+    Ffi.Gpu.PreparedBoundary.positive-direct Ffi.Gpu.PreparedBoundary.positive-print \
+    Ffi.Gpu.PreparedStateLifetime ScatterHalation.Gpu.PreparedFrame \
+    ScatterHalation.Gpu.RouteBoundaries ScatterHalation.Gpu.CapturedCarrier \
+    ScatterHalation.Gpu.ZeroWork ScatterHalation.Gpu.Lifecycle Ffi.Gpu.CudaInspect \
+    Ffi.Gpu.ProductionPreparedRender
+```
+
+Keep the standard `out/build/<preset>` trees. `--clean-first` runs under the
+native preset owner and rebuilds the selected closure in that cache; do not create
+campaign caches or run an unowned clean concurrently. Resolve, installed-host,
+visual, multi-device and other unavailable hardware evidence stays outstanding.
+
 ## Validation cadence
 
 Choose checks from the changed contract and the checkpoint being completed.
@@ -296,10 +363,9 @@ cmake --preset linux-debug -DBUILD_TESTING=ON \
 Linux Debug:
 
 ```sh
-cmake --preset linux-debug -DBUILD_TESTING=ON
 python -B scripts/verify.py qualification --preset linux-debug \
-  --selection product boundary tooling corpus --runtime all \
-  --reason "Complete supported-machine checkpoint"
+  --selection product boundary --runtime host \
+  --reason "Product and boundary host checkpoint"
 ```
 
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
@@ -471,10 +537,11 @@ an authorized CI run.
 
 Use the shared verifier for build preparation, focused development checks and
 named qualification. Development and qualification create fresh native results
-under `out/validation/<preset>/results/<run-id>/`; preparation is build-only.
+under `out/validation/<preset>/results/<run-id>/`; ordinary preparation is build-only.
 
 `prepare` configures and builds the selected target/file closure. It does not run
-tests or produce a qualification result:
+tests or produce a qualification result. The explicit Release OFF
+`--production-contract` mode above additionally executes the production closure:
 
 ```sh
 python -B scripts/verify.py prepare --preset linux-debug --targets JuicerFilmRecipeTests --testing ON
@@ -506,7 +573,14 @@ python -B scripts/verify.py qualification --preset linux-debug \
 
 Every native operation supervises its selected build and test children, compares
 source inputs at entry and exit, and publishes results only after descendants
-have drained. Results preserve the actual selected functions, rows and operations.
+have drained. `FJ_RUST_ROWS` and `FJ_HOST_CASES` carry the canonical current row
+and case outcomes; these are the only live producers. The historical
+`native-spatial-optics` decoder remains available only to offline reading of old
+bundles. Results preserve actual selected functions, rows and operations.
+Per-command `resource_usage` is optional OS-reported evidence: Windows Job
+transfer bytes are logical transfers, not physical device I/O; Linux child block
+counters remain block counts and are not converted to bytes. Measurement failure
+is reported as unknown and does not affect command success or drainage.
 Only GPU selections hold the shared physical-device lease. Bundles are flat and
 can be inspected offline; a result for one preset or focused selection cannot be
 assembled into a complete checkpoint by collection.

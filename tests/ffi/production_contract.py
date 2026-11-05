@@ -29,7 +29,6 @@ from grain_probe_contract import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from execution import digest
 
 root = Path(__file__).resolve().parents[2]
 fixtures = Path(__file__).resolve().parent
@@ -138,6 +137,20 @@ PRODUCTION_FORBIDDEN_STRINGS = [
 ]
 PRODUCTION_MODULE_EXPORTS = ("OfxGetNumberOfPlugins", "OfxGetPlugin")
 
+# Count the bytes already read for identity checks; no second inventory pass.
+IO_COSTS = {"hash_read_bytes": 0, "hash_reads": 0, "copy_read_bytes": 0,
+            "copy_write_bytes": 0, "command_output_write_bytes": 0}
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            IO_COSTS["hash_read_bytes"] += len(block)
+            value.update(block)
+    IO_COSTS["hash_reads"] += 1
+    return value.hexdigest()
+
 
 def production_module_export_names(output, windows):
     if windows:
@@ -163,6 +176,7 @@ def execute(arguments):
             }
         )
         (out / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+        IO_COSTS["command_output_write_bytes"] += len(result.stdout) + len(result.stderr)
         result.check_returncode()
         return result.stdout.decode("utf-8", errors="replace")
 
@@ -193,7 +207,6 @@ def execute(arguments):
         ("--no-default-features" in line and "--features" not in line
          and "/cargo/production" in line.replace("\\", "/") for line in cargo)
     )
-    check_build_inputs()
     archive = (
         build
         / "cargo"
@@ -284,7 +297,7 @@ def execute(arguments):
         assert match is None, (name, match.group(0) if match else None)
         raw = path.read_bytes()
         assert not any((value in raw for value in PRODUCTION_FORBIDDEN_STRINGS)), name
-        assert digest(path) == build_hashes[str(path)], "production build input changed during scan"
+        assert hashlib.sha256(raw).hexdigest() == build_hashes[str(path)], "production build input changed during scan"
         scanned.append(
             {
                 "file": str(path),
@@ -434,11 +447,8 @@ def execute(arguments):
                 "-o",
                 str(executable),
             ]
-        check_consumed()
         run(name + "-compile", command)
         linked = digest(executable)
-        assert digest(archive) == next(row["sha256"] for row in scanned if row["file"] == str(archive))
-        check_consumed()
         before = digest(executable)
         assert before == linked
         output = run(
@@ -449,12 +459,11 @@ def execute(arguments):
         after = digest(executable)
         assert after == before
         assert digest(source) == source_sha256, "generated probe source changed during execution"
-        check_consumed()
         probe_records.append({"name": name, "executable": str(executable),
                               "linked_sha256": linked, "before_run_sha256": before,
                               "after_run_sha256": after, "source": str(source),
                               "source_sha256": source_sha256, "archive": str(archive),
-                              "archive_sha256": digest(archive)})
+                              "archive_sha256": build_hashes[str(archive)]})
         if name == "film":
             prepared_state_results = [json.loads(line.removeprefix("PREPARED_STATE_RESULT "))
                                       for line in output.splitlines() if line.startswith("PREPARED_STATE_RESULT ")]
@@ -588,8 +597,6 @@ def execute(arguments):
                 actual = json.loads(line.removeprefix("FRAME_CASE "))
                 assert actual == expected, actual["case"]
                 frame_results.append(actual)
-    check_build_inputs()
-    check_consumed()
     prepared_before = digest(prepared_executable)
     prepared_command = [str(prepared_executable), str(root / "Resources"), str(processor_fixture),
                         arguments.preset, str(print_updates)]
@@ -623,8 +630,6 @@ def execute(arguments):
         "stdout_sha256": digest(out / "prepared-render.stdout"),
         "stderr_sha256": digest(out / "prepared-render.stderr"), "rows": prepared_rows,
     }
-    check_build_inputs()
-    check_consumed()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
         cuda = Path(os.environ["CUDA_PATH_V13_2"])
@@ -638,22 +643,23 @@ def execute(arguments):
     loaded.OfxGetPlugin.argtypes = [ctypes.c_int]
     loaded.OfxGetPlugin.restype = ctypes.c_void_p
     assert loaded.OfxGetNumberOfPlugins() == 1 and loaded.OfxGetPlugin(0)
-    check_consumed()
     retained_build_inputs = {}
     for original, expected in build_hashes.items():
         path = Path(original)
         retained = out / "build" / path.relative_to(build)
         retained.parent.mkdir(parents=True, exist_ok=True)
-        assert digest(path) == expected, "production build input changed before retention"
         shutil.copyfile(path, retained)
+        IO_COSTS["copy_read_bytes"] += path.stat().st_size
+        IO_COSTS["copy_write_bytes"] += retained.stat().st_size
         assert digest(retained) == expected, "production build input changed during retention"
         retained_build_inputs[original] = {"file": str(retained), "sha256": expected}
         if path == prepared_executable:
             assert retained == retained_prepared, "prepared executable retention path changed"
-            assert digest(retained_prepared) == prepared_after, "retained prepared executable changed"
     check_consumed()
     check_build_inputs()
     report = {
+        "schema": "production-contract-v1",
+        "io_costs": IO_COSTS,
         "preset": arguments.preset,
         "build_testing": "OFF",
         "test_support": "OFF",
