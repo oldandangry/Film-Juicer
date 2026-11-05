@@ -9,7 +9,7 @@ namespace GrainFrameTest {
     Spektrafilm::VisualGrainFrameExtent extent(const Json& v) {
         return {v.at(0), v.at(1), v.at(2), v.at(3)};
     }
-    Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json& expectedRows) {
+    Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         Json products = Json::array();

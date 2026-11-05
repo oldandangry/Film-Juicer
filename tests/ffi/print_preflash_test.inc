@@ -27,6 +27,7 @@ namespace PrintPreflashTest {
     }
     std::vector<std::string> primitive_density_ids() {
         std::vector<std::string> ids;
+        ids.reserve(27);
         for (std::size_t index = 0; index < 21; ++index)
             ids.emplace_back("authored/" + std::to_string(index));
         for (const auto* key : {"kodak_portra_400", "fujifilm_provia_100f"})
@@ -40,6 +41,7 @@ namespace PrintPreflashTest {
         const std::vector<float> authored{0.0f, -0.0f, 0.001f, -0.001f, 0.1f, 0.31f, 0.99999994f, 1.0f, 2.4f, 38.0f, 100.0f, 308.0f, 309.0f, 323.0f, 324.0f, -38.0f, -308.0f, -309.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
         const auto profile_ids = primitive_profile_ids();
         const auto density_ids = primitive_density_ids();
+        densities.reserve(density_ids.size());
         JuicerTests::Cohort profiles("print_preflash.primitive_profile", profile_ids);
         JuicerTests::Cohort density_cases("print_preflash.primitive_density_grid", density_ids);
         for (std::size_t index = 0; index < authored.size(); ++index)
@@ -92,7 +94,7 @@ namespace PrintPreflashTest {
                                         {"rust_narrowed", std::bit_cast<std::uint32_t>(narrowed)}});
                     }
                 }
-            require(visited == 7u * 4u * 4u, "complete per-density preflash primitive arithmetic grid");
+            require(visited == std::size_t{7} * 4u * 4u, "complete per-density preflash primitive arithmetic grid");
             density_event.passed();
         }
         require(rows.size() == densities.size() * 7u * 4u * 4u, "complete preflash primitive table visitation");

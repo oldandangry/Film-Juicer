@@ -20,9 +20,6 @@ from execution import NativeRun, OutputLease
 from control_artifacts import MARKER, record_fixture, selected_paths
 
 ROOT = Path(__file__).resolve().parents[2]
-WINDOWS_CLANG_CL = Path(
-    r"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-cl.exe"
-)
 
 
 class CompilationInputsTests(unittest.TestCase):
@@ -110,7 +107,7 @@ class NativeDependencyWitnessTests(unittest.TestCase):
         self.native_run = NativeRun(self.scratch, self.logs)
         self.cmake = shutil.which("cmake")
         self.ninja = shutil.which("ninja")
-        self.compiler = WINDOWS_CLANG_CL if os.name == "nt" else Path("/usr/bin/g++-13")
+        self.compiler = Path(shutil.which("clang-cl") or "clang-cl.exe") if os.name == "nt" else Path("/usr/bin/g++-13")
 
     def finish_scratch(self):
         outcome = record_fixture(self.scratch, self)

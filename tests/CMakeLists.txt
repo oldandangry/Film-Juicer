@@ -326,7 +326,8 @@ set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Quality.HostResults "JuicerCu
 juicer_add_python_test(NAME Ffi.Host.NativeBoundary
     COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p "test_native_boundary.py" -v)
-set_tests_properties(Ffi.Host.NativeBoundary PROPERTIES LABELS "host" TIMEOUT 0)
+set_tests_properties(Ffi.Host.NativeBoundary PROPERTIES LABELS "host" TIMEOUT 0
+    ENVIRONMENT "JUICER_PRODUCT_BUILD=${CMAKE_BINARY_DIR}")
 
 add_library(juicer_noise_test_objects OBJECT ../src/RustAssetBridge.cpp ../native/juicer_cuda_api.cpp)
 target_link_libraries(juicer_noise_test_objects PRIVATE juicer_settings)

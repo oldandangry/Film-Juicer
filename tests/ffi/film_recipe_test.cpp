@@ -388,7 +388,7 @@ int main(int argc, char** argv) try {
             return 0;
         }
         if (products) {
-            const auto actual = EffectsFrameTest::product_rows(argv[1], read(directory / "inputs.json"), captured.at("products"));
+            const auto actual = EffectsFrameTest::product_rows(argv[1], read(directory / "inputs.json"), captured.at("products").get_ref<const Json::array_t&>());
             require_equal(actual, captured.at("products"), "complete genuine effects frame products");
         } else {
             EffectsFrameTest::values(captured, read(directory / "checked.json"));
@@ -421,7 +421,7 @@ int main(int argc, char** argv) try {
             return 0;
         }
         if (products) {
-            const auto actual = GrainFrameTest::product_rows(argv[1], read(directory / "inputs.json"), captured.at("products"));
+            const auto actual = GrainFrameTest::product_rows(argv[1], read(directory / "inputs.json"), captured.at("products").get_ref<const Json::array_t&>());
             require(actual == captured.at("products"), "complete genuine grain frame products and native composition hashes");
         } else {
             layouts();
@@ -490,7 +490,7 @@ int main(int argc, char** argv) try {
         if (!products) {
             DirFrameTest::boundary(captured.at("cases"));
         } else {
-            const auto actual = DirFrameTest::products(argv[1], read(directory / "inputs.json").at("products"), captured.at("products"));
+            const auto actual = DirFrameTest::products(argv[1], read(directory / "inputs.json").at("products"), captured.at("products").get_ref<const Json::array_t&>());
             require(actual == captured.at("products"), "complete DIR route products and final native identities");
         }
         case_log.finish();
@@ -667,7 +667,7 @@ int main(int argc, char** argv) try {
         layouts();
         GaussianTest::values(captured.at("cases"));
         if (products) {
-            const auto actual = GaussianTest::products(argv[1], captured.at("cohort"), captured.at("cases"));
+            const auto actual = GaussianTest::products(argv[1], captured.at("cohort"), captured.at("cases").get_ref<const Json::array_t&>());
             auto expected = captured.at("cases");
             for (auto& row : expected)
                 row.erase("primitives");

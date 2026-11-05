@@ -511,7 +511,10 @@ int main(int argc, char** argv) {
                     const auto captured = load_shared_fixture(argv[index], index == 5 ? "cat02-manifest.json" : "input-color-manifest.json");
                     for (const auto& row : captured.at("helpers")) {
                         const std::string row_id = row.at("id").is_string() ? row.at("id").get<std::string>() : std::to_string(row.at("id").get<std::int64_t>());
-                        JuicerTests::list_case("mallett.spectra.helper", fixture_id + "/" + row_id);
+                        std::string case_id = fixture_id;
+                        case_id += "/";
+                        case_id += row_id;
+                        JuicerTests::list_case("mallett.spectra.helper", case_id);
                     }
                     for (int operation : {1, 2, 3})
                         for (int fault : {1, 2})

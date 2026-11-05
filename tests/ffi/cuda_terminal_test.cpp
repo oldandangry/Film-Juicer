@@ -360,6 +360,7 @@ namespace {
                 injection.clear();
                 const std::array<std::size_t, 3> capacities{0u, 1u, 8u};
                 std::vector<std::string> capacity_ids;
+                capacity_ids.reserve(capacities.size());
                 for (const auto capacity : capacities)
                     capacity_ids.push_back(mode + "/" + std::to_string(capacity));
                 JuicerTests::Cohort capacity_cases("cuda_terminal.capacity", capacity_ids);
@@ -463,15 +464,15 @@ namespace JuicerCuda::TerminalTest {
 } // namespace JuicerCuda::TerminalTest
 
 int main(int argc, char** argv) {
-    JuicerTests::CaseLog case_log;
-    const bool listing = argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases";
-    const std::string mode = argc > 1 && (!listing || argc > 2) ? argv[1] : "success";
-    if (listing) {
-        JuicerTests::list_case("cuda_terminal", mode);
-        return 0;
-    }
-    JuicerTests::CaseEvent event("cuda_terminal", mode);
     try {
+        JuicerTests::CaseLog case_log;
+        const bool listing = argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases";
+        const std::string mode = argc > 1 && (!listing || argc > 2) ? argv[1] : "success";
+        if (listing) {
+            JuicerTests::list_case("cuda_terminal", mode);
+            return 0;
+        }
+        JuicerTests::CaseEvent event("cuda_terminal", mode);
         if (mode == "partial-library") {
             JuicerCuda::Owner owner;
             failLibraryConstruction = true;

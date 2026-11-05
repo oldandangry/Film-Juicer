@@ -208,7 +208,7 @@ namespace EffectsFrameTest {
                 {"strength_min", std::bit_cast<std::uint32_t>(v.strength_min)},
                 {"strength_max", std::bit_cast<std::uint32_t>(v.strength_max)}};
     }
-    Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json& expectedRows) {
+    Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();

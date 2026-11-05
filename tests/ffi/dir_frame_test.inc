@@ -17,7 +17,7 @@ namespace DirFrameTest {
         return {{"input", input}, {"success", success}, {"native", JuicerTestSupport::dir_frame_fields(out)}};
     }
 
-    Json products(const std::filesystem::path& resources, const Json& inputs, const Json& expectedRows) {
+    Json products(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
         JuicerCuda::Owner owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();

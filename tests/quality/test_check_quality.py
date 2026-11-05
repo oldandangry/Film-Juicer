@@ -289,6 +289,8 @@ class CheckQualityTests(IsolatedOwnerTests):
                 runner.run_analysis.assert_not_called()
                 self.assertEqual([call.kwargs["label"] for call in runner.run.call_args_list],
                                  ["git-diff-check", "native-boundary-enforcement"])
+                self.assertEqual(runner.run.call_args_list[-1].kwargs["env"]["JUICER_PRODUCT_BUILD"],
+                                 str(root / "out/build" / preset))
 
     def test_policy_changes_cannot_skip_required_checks(self) -> None:
         cases = (

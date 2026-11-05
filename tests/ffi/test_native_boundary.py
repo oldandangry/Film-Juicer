@@ -110,7 +110,22 @@ def find_llvm_nm():
             else shutil.which("llvm-nm-22") or shutil.which("llvm-nm"))
 
 
+def product_build():
+    if selected := os.environ.get("JUICER_PRODUCT_BUILD"):
+        return Path(selected)
+    build = Path.cwd().parent
+    if (build / "CMakeCache.txt").is_file():
+        return build
+    return ROOT / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
+
+
 class NativeBoundary(unittest.TestCase):
+    def test_explicit_product_build_does_not_fall_back_to_debug(self):
+        selected = ROOT / "out/build" / ("windows-clang-release" if os.name == "nt" else "linux-release")
+        with (patch.dict(os.environ, {"JUICER_PRODUCT_BUILD": str(selected)}),
+              patch.object(Path, "cwd", side_effect=AssertionError("explicit build must take precedence"))):
+            self.assertEqual(product_build(), selected)
+
     def test_prepared_execution_binds_resolved_grain_matrices_and_print_scalars(self):
         header = (ROOT / "native/juicer_cuda_descriptors.h").read_text(encoding="utf-8")
         decoder = (ROOT / "native/juicer_cuda_descriptors.cpp").read_text(encoding="utf-8")
@@ -682,9 +697,7 @@ class NativeBoundary(unittest.TestCase):
         self.assertIn("S6.D", header)
 
     def test_dir_boundary_hooks_are_absent_from_ordinary_objects(self):
-        build = Path.cwd().parent
-        if not (build / "CMakeCache.txt").is_file():
-            build = ROOT / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
+        build = product_build()
         compdb = json.loads((build / "compile_commands.json").read_bytes())
         isolated = [row for row in compdb if "juicer_dir_boundary_test_objects.dir" in row["command"]]
         self.assertEqual(len(isolated), 1)
@@ -744,9 +757,7 @@ class NativeBoundary(unittest.TestCase):
         self.assertIn("JuicerTestSupport::prepare_effects_frame", (ROOT / "tests/scatter_halation/recipe_descriptor_test.cpp").read_text())
 
     def test_effects_frame_seams_are_absent_from_ordinary_native_objects(self):
-        build = Path.cwd().parent
-        if not (build / "CMakeCache.txt").is_file():
-            build = ROOT / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
+        build = product_build()
         compdb = json.loads((build / "compile_commands.json").read_bytes())
         nm = find_llvm_nm()
         self.assertTrue(nm, "qualified LLVM nm required for effects frame ordinary-object isolation")
@@ -833,9 +844,7 @@ class NativeBoundary(unittest.TestCase):
         self.assertIn("S6.D", header)
 
     def test_frame_geometry_hooks_are_absent_from_ordinary_objects(self):
-        build = Path.cwd().parent
-        if not (build / "CMakeCache.txt").is_file():
-            build = ROOT / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
+        build = product_build()
         compdb = json.loads((build / "compile_commands.json").read_bytes())
         nm = find_llvm_nm()
         self.assertTrue(nm, "qualified LLVM nm required for ordinary-object isolation")
@@ -859,9 +868,7 @@ class NativeBoundary(unittest.TestCase):
             print("Frame geometry ordinary-object isolation", path, hashlib.sha256(data).hexdigest())
 
     def test_gaussian_hooks_and_allocator_are_absent_from_ordinary_objects(self):
-        build = Path.cwd().parent
-        if not (build / "CMakeCache.txt").is_file():
-            build = ROOT / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
+        build = product_build()
         compdb = json.loads((build / "compile_commands.json").read_bytes())
         ordinary = [row for row in compdb if "juicer_native.dir" in row["command"] or "juicer_host.dir" in row["command"]]
         self.assertTrue(ordinary)

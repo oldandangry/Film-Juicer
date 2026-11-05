@@ -274,6 +274,7 @@ namespace {
         };
         const std::array<Expected, 7> expected{{{FJ_CSV_D65, 81, 0xadbdb3d2c250ef10ull}, {FJ_CSV_D55, 81, 0xbc4634b46165cfffull}, {FJ_CSV_D50, 81, 0xf70ca3af96e9a5e8ull}, {FJ_CSV_T, 81, 0x2013ac33b7e2aaecull}, {FJ_CSV_K75P, 81, 0x1adba11b770daaa9ull}, {FJ_CSV_KG3, 146, 0xe040af29a7935a51ull}, {FJ_CSV_CANON_24_F28_IS, 107, 0x74308f00cb53f384ull}}};
         std::vector<std::string> source_ids;
+        source_ids.reserve(expected.size());
         for (const auto& source : expected)
             source_ids.push_back("csv-tag/" + std::to_string(source.tag));
         JuicerTests::GtestCohort source_cases("csv-source-resources", source_ids);

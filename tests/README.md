@@ -102,6 +102,37 @@ native preset owner and rebuilds the selected closure in that cache; do not crea
 campaign caches or run an unowned clean concurrently. Resolve, installed-host,
 visual, multi-device and other unavailable hardware evidence stays outstanding.
 
+## I8 integration checkpoint: 5 November 2026
+
+The reviewed I8 candidate passes one fresh product/boundary host checkpoint in
+each native preset: 181 Linux Debug, 174 Windows Debug, 162 Linux Release and
+161 Windows Release registrations. Debug includes all 13 tooling groups per OS;
+Linux Debug also includes the six corpus registrations. Separate focused GPU
+runs pass all 55 supported registrations per preset on one RTX 4080. These are
+678 host and 220 GPU executions; `Ffi.Gpu.CudaInspect.MultiDevice` remains
+unqualified in all four contexts.
+
+Cumulative analysis covers 125 translation units per native profile, including
+seven CUDA units, and all 12 Rust package/feature/profile combinations. Reviewed
+composition retains successful unchanged commands and completes failed or
+unexecuted commands; ten original failed analysis reports remain failed. The
+four fresh host bundles form a host checkpoint through the offline reader.
+Focused GPU results and composed analysis do not form an all-runtime checkpoint.
+
+The bounded repairs select the active Windows compiler and the actual preset
+build for native object inspections, contain native test-output exceptions and
+correct test-report construction diagnostics. Scientific fixtures, expectations
+and production mathematics are unchanged. Earlier Release OFF evidence retains
+its original scope; no production input changed to require another OFF cycle.
+Independent review approves the implementation and available-context evidence.
+MultiDevice, installed-host/Resolve, performance and applicable parent/release
+gates remain open. Publication does not close I8 or the S4 migration stage.
+
+The 38 native attempts, including ten failed analysis attempts, record
+323,849,321 bytes of source/Git/report/worker bookkeeping reads. Five offline
+reports add 138,921,084 bytes. The advisory read/time targets remain unmet;
+recorded overlapping intervals are not complete task wall time or physical I/O.
+
 ## Validation cadence
 
 Choose checks from the changed contract and the checkpoint being completed.
@@ -602,6 +633,12 @@ compiler fixtures remain CTest-owned; selected Rust test binaries are built by
 CMake and run once through cargo-nextest, not rebuilt from inside the quality
 command. Quality logs and diagnostics are kept under
 `out/validation/<preset>/results/quality-<id>/`.
+
+Native object inspections use `JUICER_PRODUCT_BUILD` supplied by the quality
+command or CTest registration, so Release checks inspect the Release objects
+regardless of the invocation directory. Windows compiler fixtures resolve
+`clang-cl` from the active qualified VS 18 environment, including Community and
+Enterprise installations.
 
 The shared standalone and product tooling registration has 13 Debug tests:
 `Quality.NativeResults`, `Quality.HostResults`, `Quality.GpuResults`,

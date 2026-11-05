@@ -106,7 +106,7 @@ namespace OpticsTest {
                 case_event.passed();
             }
     }
-    enum class RawVariant : std::size_t {
+    enum class RawVariant : std::uint8_t {
         NullInput,
         NullResult,
         NullFailure,
@@ -146,7 +146,7 @@ namespace OpticsTest {
                                                               {"optics:raw:diagnostic-capacity-1", OpticsOperationKind::RawInput, static_cast<std::size_t>(RawVariant::DiagnosticCapacityOne)},
                                                               {"optics:raw:diagnostic-capacity-3", OpticsOperationKind::RawInput, static_cast<std::size_t>(RawVariant::DiagnosticCapacityThree)},
                                                               {"optics:raw:diagnostic-capacity-256", OpticsOperationKind::RawInput, static_cast<std::size_t>(RawVariant::DiagnosticCapacityFull)}}};
-    enum class FaultVariant : std::size_t {
+    enum class FaultVariant : std::uint8_t {
         Panic,
         PanicOneShot,
         RawNullInputPanic,

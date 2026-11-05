@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <iterator>
 #include <string_view>
 #include <type_traits>
@@ -28,7 +29,7 @@ static_assert(std::is_same_v<decltype(&fj_cuda_retire_instance), FjStatus (*)(Fj
 static_assert(std::is_same_v<decltype(&fj_cuda_shutdown), FjStatus (*)(FjCuda*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_destroy), FjStatus (*)(FjCuda*, FjErrorBuffer*)>);
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
     JuicerTests::CaseLog case_log;
     if (argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases") {
         JuicerTests::list_case("cuda_abi", "c_cpp_rust.layout_tags_signatures");
@@ -71,4 +72,10 @@ int main(int argc, char** argv) {
     event.passed();
     case_log.finish();
     return 0;
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "Native ABI test output: %s\n", error.what());
+    return 1;
+} catch (...) {
+    std::fputs("Native ABI test output failed\n", stderr);
+    return 1;
 }

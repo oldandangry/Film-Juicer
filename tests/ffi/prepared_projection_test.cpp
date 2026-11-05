@@ -224,6 +224,7 @@ namespace {
             rows.push_back(row);
         ASSERT_EQ(rows.size(), 72u);
         std::vector<std::string> expectedIds;
+        expectedIds.reserve(rows.size());
         for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
             expectedIds.push_back(std::string(rowIndex < caseCount ? "case/" : "product/") +
                                   rows[rowIndex].at("input").at("name").get<std::string>() + "/" + std::to_string(rowIndex));

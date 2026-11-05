@@ -100,8 +100,7 @@ class RegistrationTests(unittest.TestCase):
         python = Path(sys.executable)
         cargo = shutil.which("cargo")
         ninja = shutil.which("ninja")
-        compiler = (r"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-cl.exe"
-                    if os.name == "nt" else shutil.which("gcc-13"))
+        compiler = shutil.which("clang-cl" if os.name == "nt" else "gcc-13")
         self.assertTrue(self.cmake and self.ctest and cargo and ninja and compiler,
                         "shared tooling configure requires CMake, CTest, Cargo, Ninja and the native C compiler")
         environment = dict(os.environ)

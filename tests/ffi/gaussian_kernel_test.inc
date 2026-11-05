@@ -29,7 +29,7 @@ namespace GaussianTest {
         return row;
     }
 
-    Json products(const std::filesystem::path& resources, const Json& cohort, const Json& expected) {
+    Json products(const std::filesystem::path& resources, const Json& cohort, const Json::array_t& expected) {
         Json productRows = expected;
         for (auto& row : productRows)
             row.erase("primitives");

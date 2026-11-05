@@ -221,7 +221,10 @@ namespace {
             const auto request = source.record();
             for (auto call : {fj_test_input_hull_abi_c, fj_test_gamut_input_hull}) {
                 const std::string caller = call == fj_test_input_hull_abi_c ? "c11" : "facade";
-                JuicerTests::CaseEvent event("input_hull.boundary", caller + "/" + row_id);
+                std::string case_id = caller;
+                case_id += "/";
+                case_id += row_id;
+                JuicerTests::CaseEvent event("input_hull.boundary", case_id);
                 Output out;
                 out.poison();
                 Diagnostic diagnostic;

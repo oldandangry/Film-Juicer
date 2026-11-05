@@ -1195,7 +1195,8 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
         [sys.executable, "-B", "scripts/verify.py", "python-tests", "--preset", arguments.preset,
          "--key", "quality-boundary", "--", sys.executable, "-m", "unittest", "discover", "-s", "tests/ffi",
          "-p", "test_native_boundary.py", "-v"],
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "FJ_HOST_BUNDLE": str(log_dir)},
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "FJ_HOST_BUNDLE": str(log_dir),
+             "JUICER_PRODUCT_BUILD": str(root / "out/build" / arguments.preset)},
         label="native-boundary-enforcement",
     )
     complete_check(runner, "native-boundary-enforcement")
