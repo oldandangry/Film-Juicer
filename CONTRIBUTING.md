@@ -154,7 +154,10 @@ production objects. Run product/boundary host selections in all four presets, to
 once per native Debug OS, and corpus once in Linux Debug. Run both native Release
 OFF production-contract commands before restoring either Release cache to ON.
 The available RTX 4080 is single-GPU only: run the affected GPU registrations as
-explicit focused checks, leaving `Ffi.Gpu.CudaInspect.MultiDevice` outstanding.
+explicit focused checks. By owner decision on 5 November 2026,
+`Ffi.Gpu.CudaInspect.MultiDevice` is optional hardware coverage outside the
+single-GPU target's acceptance requirements. Preserve its unexecuted status;
+it is not an acceptance blocker or deferred hardware-acquisition requirement.
 The complete command set, membership and output limits are in
 [the test guide](tests/README.md#owner-authorized-step-6-final-qualification).
 These host and focused GPU results do not claim a full all-runtime checkpoint or

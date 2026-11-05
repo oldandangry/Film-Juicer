@@ -96,7 +96,8 @@ class NativeDependencyWitnessTests(unittest.TestCase):
             "JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / self.preset
         )).resolve() / "build-evidence-controls"
         artifact_root.mkdir(parents=True, exist_ok=True)
-        self.scratch = Path(tempfile.mkdtemp(prefix="native-dependency ü ", dir=artifact_root))
+        # Nested lifetime controls must fit Windows compiler-tool path limits.
+        self.scratch = Path(tempfile.mkdtemp(prefix="n ü ", dir=artifact_root))
         self.succeeded = False
         self.addCleanup(self.finish_scratch)
         self.source = self.scratch / "source"
@@ -257,7 +258,7 @@ class DependencyFixtureLifetimeTests(unittest.TestCase):
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
         parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR", ROOT / "out/validation" / preset)) / "build-evidence-controls"
         parent.mkdir(parents=True, exist_ok=True)
-        directory = tempfile.TemporaryDirectory(prefix="lifetime-", dir=parent, delete=False)
+        directory = tempfile.TemporaryDirectory(prefix="l-", dir=parent, delete=False)
         case = NativeDependencyWitnessTests("test_failed_native_command_retains_scratch_diagnostics")
         original = case.test_failed_native_command_retains_scratch_diagnostics
         if outer_failure:

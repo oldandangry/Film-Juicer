@@ -40,8 +40,12 @@ for the supported local inputs and explicit checkpoint commands.
 Step 6 runs one product/boundary **host** checkpoint in each preset.
 It runs tooling once in Debug on each native OS and corpus once in Linux Debug.
 The available GPU host is one RTX 4080, so GPU work is a set of explicit focused
-registrations, not a full all-runtime checkpoint. `Ffi.Gpu.CudaInspect.MultiDevice`
-remains unqualified. Do not claim full all-runtime coverage from these selections.
+registrations, not a full all-runtime checkpoint. By owner decision on
+5 November 2026, physical multi-GPU qualification is outside acceptance for this
+single-GPU target. `Ffi.Gpu.CudaInspect.MultiDevice` remains available as optional
+hardware coverage; its unexecuted status is not an I8/S4 acceptance blocker or a
+deferred hardware-acquisition requirement. Do not count it as passed or claim
+full all-runtime coverage from these selections.
 
 Run both Release OFF production closures before restoring either Release cache to
 testing ON. Each command configures and clean-builds under the preset owner,
@@ -85,7 +89,7 @@ The Debug commands include the once-per-OS tooling membership and Linux corpus;
 do not replay those groups separately.
 
 On the available RTX 4080, run the supported affected GPU registrations as a
-focused selection. Keep `Ffi.Gpu.CudaInspect.MultiDevice` outstanding:
+focused selection. MultiDevice is optional and requires two physical CUDA GPUs:
 
 ```sh
 python -B scripts/verify.py development --preset linux-debug --runtime gpu \
@@ -100,7 +104,8 @@ python -B scripts/verify.py development --preset linux-debug --runtime gpu \
 Keep the standard `out/build/<preset>` trees. `--clean-first` runs under the
 native preset owner and rebuilds the selected closure in that cache; do not create
 campaign caches or run an unowned clean concurrently. Resolve, installed-host,
-visual, multi-device and other unavailable hardware evidence stays outstanding.
+visual and other applicable unavailable hardware evidence stays outstanding.
+The owner-removed multi-GPU requirement is not among the open acceptance gates.
 
 ## I8 integration checkpoint: 5 November 2026
 
@@ -109,8 +114,9 @@ each native preset: 181 Linux Debug, 174 Windows Debug, 162 Linux Release and
 161 Windows Release registrations. Debug includes all 13 tooling groups per OS;
 Linux Debug also includes the six corpus registrations. Separate focused GPU
 runs pass all 55 supported registrations per preset on one RTX 4080. These are
-678 host and 220 GPU executions; `Ffi.Gpu.CudaInspect.MultiDevice` remains
-unqualified in all four contexts.
+678 host and 220 GPU executions. `Ffi.Gpu.CudaInspect.MultiDevice` was unexecuted
+in all four contexts; the owner's subsequent decision above removes it from
+acceptance while preserving that coverage limitation.
 
 Cumulative analysis covers 125 translation units per native profile, including
 seven CUDA units, and all 12 Rust package/feature/profile combinations. Reviewed
@@ -125,8 +131,15 @@ correct test-report construction diagnostics. Scientific fixtures, expectations
 and production mathematics are unchanged. Earlier Release OFF evidence retains
 its original scope; no production input changed to require another OFF cycle.
 Independent review approves the implementation and available-context evidence.
-MultiDevice, installed-host/Resolve, performance and applicable parent/release
-gates remain open. Publication does not close I8 or the S4 migration stage.
+Installed-host/Resolve, performance and applicable parent/release gates remain
+open. MultiDevice no longer blocks acceptance. Publication does not itself
+close I8 or the S4 migration stage.
+
+The subsequent hosted Windows BuildEvidence failure came from nested fixture
+paths exceeding compiler-tool path limits. Shorter disposable prefixes preserve
+Unicode/space coverage, both fixture-family directories and all lifetime/cleanup
+assertions. All seven BuildEvidence functions pass in focused native Debug checks
+on each OS. These rechecks retain the earlier checkpoint's original source scope.
 
 The 38 native attempts, including ten failed analysis attempts, record
 323,849,321 bytes of source/Git/report/worker bookkeeping reads. Five offline
