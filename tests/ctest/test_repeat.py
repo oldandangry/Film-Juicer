@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/ctest"))
-from control_artifacts import MARKER, record_fixture, selected_paths
+from control_artifacts import MARKER, current_fixture_blockers, record_fixture, selected_paths
 import execution
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -225,6 +225,17 @@ class ArtifactSelectionTests(unittest.TestCase):
         self.family.mkdir(parents=True)
         self.case = unittest.FunctionTestCase(lambda: None)
 
+    def test_selector_omits_absent_empty_and_successful_families(self):
+        self.subtest_cases = ("absent", "empty", "passed")
+        self.family.rmdir()
+        for case_id in self.subtest_cases:
+            with self.subTest(case=case_id):
+                if case_id == "empty":
+                    self.family.mkdir()
+                elif case_id == "passed":
+                    record_fixture(self.family / "completed", self.case, "passed")
+                self.assertEqual(selected_paths(self.preset_root), [])
+
     def test_selector_includes_every_unproved_fixture_and_required_sample(self):
         failed = self.family / "failed"
         interrupted = self.family / "interrupted"
@@ -259,6 +270,96 @@ class ArtifactSelectionTests(unittest.TestCase):
         for case_id, path, included in expected_rows:
             with self.subTest(case=case_id):
                 self.assertEqual(path in selected, included)
+
+    def test_selector_fails_closed_on_ambiguous_or_unbound_marker_metadata(self):
+        cases = (
+            "duplicate-outcome", "fixture-mismatch", "owner-root-missing",
+            "owner-root-path-missing", "owner-root-outside", "descendant-owner-with-live-root",
+            "blocked-not-a-list", "unknown-field",
+            "passed-with-failure", "passed-with-error", "cleanup-exception",
+        )
+        self.subtest_cases = cases
+        for case_id in cases:
+            with self.subTest(case=case_id):
+                fixture = self.family / ("untrusted-" + case_id)
+                fixture.mkdir()
+                record_fixture(fixture, self.case, "passed")
+                marker = fixture / MARKER
+                record = json.loads(marker.read_text(encoding="utf-8"))
+                if case_id == "duplicate-outcome":
+                    content = marker.read_text(encoding="utf-8").replace(
+                        '"outcome": "passed"', '"outcome": "failed", "outcome": "passed"', 1)
+                    marker.write_text(content, encoding="utf-8")
+                else:
+                    if case_id == "fixture-mismatch":
+                        record["fixture"] = str(self.family)
+                    elif case_id == "owner-root-missing":
+                        del record["owner_root"]
+                    elif case_id == "owner-root-path-missing":
+                        record["owner_root"] = str(fixture / "missing-owner")
+                    elif case_id == "owner-root-outside":
+                        outside = self.preset_root / "outside-owner"
+                        outside.mkdir()
+                        record["owner_root"] = str(outside)
+                    elif case_id == "descendant-owner-with-live-root":
+                        child = fixture / "unused-child"
+                        child.mkdir()
+                        record["owner_root"] = str(child)
+                        (fixture / "out/verification-locks/live-root-owner").mkdir(parents=True)
+                    elif case_id == "blocked-not-a-list":
+                        record["blocked_owners"] = ""
+                    elif case_id == "unknown-field":
+                        record["legacy_status"] = "passed"
+                    elif case_id == "passed-with-failure":
+                        record["failures"] = ["failure trace"]
+                    elif case_id == "passed-with-error":
+                        record["errors"] = ["error trace"]
+                    elif case_id == "cleanup-exception":
+                        record["cleanup_exception"] = "OSError: cleanup did not finish"
+                    marker.write_text(json.dumps(record), encoding="utf-8")
+                self.assertIn(fixture, selected_paths(self.preset_root))
+
+    def test_selector_rescans_live_owner_and_named_command_locks(self):
+        cases = ("owner-record-after-marker", "empty-lease-directory", "named-command-lock", "dependency-command-lock")
+        self.subtest_cases = cases
+        for case_id in cases:
+            with self.subTest(case=case_id):
+                fixture = self.family / ("live-" + case_id)
+                fixture.mkdir()
+                record_fixture(fixture, self.case, "passed", owner_root=fixture)
+                if case_id == "owner-record-after-marker":
+                    owner = fixture / "out/verification-locks/late-owner/owner.json"
+                    owner.parent.mkdir(parents=True)
+                    owner.write_text('{"status":"owned"}', encoding="utf-8")
+                elif case_id == "empty-lease-directory":
+                    (fixture / "out/verification-locks/acquiring-owner").mkdir(parents=True)
+                else:
+                    running = (fixture / "logs/native.running.lock" if case_id == "dependency-command-lock" else
+                               fixture / "out/validation/linux-debug/results/campaign/native.running.lock")
+                    running.parent.mkdir(parents=True)
+                    running.write_text("running\n", encoding="utf-8")
+                self.assertIn(fixture, selected_paths(self.preset_root))
+
+    @unittest.skipUnless(os.name == "posix", "native POSIX directory-link control")
+    def test_selector_retains_linked_output_directories(self):
+        locations = ("out", "out/validation/linux-debug", "out/validation/linux-debug/results/run-one")
+        self.subtest_cases = locations
+        target = Path(self.temporary.name) / "outside-fixture"
+        target.mkdir()
+        for location in locations:
+            with self.subTest(case=location):
+                fixture = self.family / ("linked-" + location.replace("/", "-"))
+                record_fixture(fixture, self.case, "passed")
+                link = fixture / location
+                link.parent.mkdir(parents=True, exist_ok=True)
+                destination = target / location.replace("/", "-")
+                if location == "out":
+                    link.rename(destination)
+                else:
+                    destination.mkdir()
+                link.symlink_to(destination, target_is_directory=True)
+                self.assertTrue(current_fixture_blockers(fixture))
+                self.assertIn(fixture, selected_paths(self.preset_root))
 
     def test_native_workflows_upload_selected_paths_and_keep_reports(self):
         native_targets = ("linux", "windows")
@@ -304,11 +405,15 @@ class ArtifactSelectionTests(unittest.TestCase):
                 self.assertNotIn("out/validation/**", text)
 
 
+ArtifactSelectionTests.test_selector_omits_absent_empty_and_successful_families.required_subtests = True
 ArtifactSelectionTests.test_selector_includes_every_unproved_fixture_and_required_sample.required_subtests = True
 ArtifactSelectionTests.test_selector_includes_every_unproved_fixture_and_required_sample.subtest_cases = (
     "failed-marker", "interrupted-marker", "missing-marker", "malformed-marker",
     "passed-marker", "passed-blocked-owner", "npy-sample", "build-cache",
 )
+ArtifactSelectionTests.test_selector_fails_closed_on_ambiguous_or_unbound_marker_metadata.required_subtests = True
+ArtifactSelectionTests.test_selector_rescans_live_owner_and_named_command_locks.required_subtests = True
+ArtifactSelectionTests.test_selector_retains_linked_output_directories.required_subtests = True
 ArtifactSelectionTests.test_native_workflows_upload_selected_paths_and_keep_reports.required_subtests = True
 ArtifactSelectionTests.test_native_workflows_upload_selected_paths_and_keep_reports.subtest_cases = (
     "linux-workflow", "windows-workflow"

@@ -1235,6 +1235,13 @@ borrow expiry. The fixture keeps optics, grain and physical effects disabled.
 These groups add preparation/ownership evidence; production callback publication
 and installed-host acceptance remain separate. See [the FFI guide](ffi/README.md#complete-prepared-state).
 
+Prepared-state discovery returns before fixture or process-root setup. Actual
+selected projection consumers load their frozen oracle through GoogleTest's
+selected-test environment; ABI-only runs keep it unused. The two owning CTest
+registrations independently assert unused/loaded state. Full projection selection
+still requires all 31 rows in their frozen order, including wildcard/colon-list
+filters; fixture provenance and numerical assertions are unchanged.
+
 `Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.
 It checks bit-exact equivalence between cold/warm C-boundary execution, the direct
 executor and the processor adapter for all nine scenarios. Each case starts a
