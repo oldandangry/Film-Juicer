@@ -1274,6 +1274,8 @@ def quality_main(root, arguments):
     selected, excluded = select_paths(root, arguments, policy)
     bundle = os.environ.get("FJ_HOST_BUNDLE")
     in_bundle = bundle is not None
+    from execution import expire_diagnostics
+    expiry = None if in_bundle else expire_diagnostics(root, arguments.preset)
     log_dir = Path(bundle) if in_bundle else create_run_directory(root, arguments.preset)
     log_dir.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(root / "scripts"))
@@ -1346,6 +1348,9 @@ def quality_main(root, arguments):
         "bookkeeping_read_bytes": 0,
         "report_read_bytes": 0,
     }
+    if expiry is not None:
+        costs["expiry"] = expiry
+        costs["report_read_bytes"] += expiry["read_bytes"]
     checks = {
         "schema": "native-quality-checks-v1",
         "status": status,

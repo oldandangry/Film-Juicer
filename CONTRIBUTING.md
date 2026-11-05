@@ -201,6 +201,14 @@ configured include variants. CUDA analysis uses Clang's CUDA frontend with CUDA
 18 environment on Windows. The existing narrow CUDA parser adaptations and
 warnings-as-errors remain enabled.
 
+After review and acceptance, use `scripts/verify.py closeout --preset <preset>
+--run <run-id> --accept --review closed` on that native platform. Explicit review,
+failure and reproduction holds serialize with the preset owner. Unheld successful
+optional diagnostics become eligible seven days after closeout; the next native
+invocation or a plain `closeout --preset <preset>` visits at most 32 direct runs.
+Required results, candidate identity and scientific artifacts remain. See
+[result retention](tests/README.md#validation-cadence) for commands and failure policy.
+
 `Quality.RustNaming` checks current crate naming policy using temporary copies of
 the real manifests and reports rejected identifiers by diagnostic code/location.
 `Quality.RustBoundaries` checks workspace dependencies, valid consumer compilation,

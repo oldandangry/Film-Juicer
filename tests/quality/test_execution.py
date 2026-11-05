@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import subprocess
@@ -123,6 +124,363 @@ class NativeRunTests(unittest.TestCase):
         self.assertFalse((self.directory / "result.tmp").exists())
         with self.assertRaisesRegex(ValueError, "already exists"):
             self.native_run.publish({"schema": "native-run-v1", "commands": []})
+
+
+class NativeCloseoutTests(unittest.TestCase):
+    retention_seconds = 7 * 24 * 60 * 60
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="native closeout ")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        self.build = self.root / "out/build" / self.preset
+        self.build.mkdir(parents=True)
+        self.runs = self.root / "out/validation" / self.preset / "results"
+        self.runs.mkdir(parents=True)
+        self.lease = execution.OutputLease(self.root, self.build)
+        self.lease.__enter__()
+        self.addCleanup(self.release_lease)
+
+    def release_lease(self):
+        if self.lease is not None and self.lease.path in execution.OutputLease.held:
+            self.lease.__exit__(None, None, None)
+
+    def create_run(self, run_id, *, status="passed", candidate_unchanged=True,
+                   commands=None, diagnostics=True):
+        directory = self.runs / run_id
+        directory.mkdir()
+        members = {}
+        for name, data in (("candidate.json", b"{}\n"), ("candidate.patch", b"")):
+            (directory / name).write_bytes(data)
+            members[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        if diagnostics:
+            (directory / "diagnostics.gz").write_bytes(b"compressed diagnostic bytes")
+        result = {
+            "schema": "native-build-v1",
+            "status": status,
+            "preset": self.preset,
+            "candidate_unchanged": candidate_unchanged,
+            "commands": commands if commands is not None else [
+                {"returncode": 0, "process_status": "completed", "drained": True}
+            ],
+            "members": members,
+            "diagnostics": {"path": "diagnostics.gz", "optional": True},
+        }
+        (directory / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        return directory
+
+    def accept(self, run_id, *, now=1_000_000):
+        return execution.closeout_run(
+            self.root, self.preset, run_id, accept=True, review="closed", now=now
+        )
+
+    def expire(self, *, now=None):
+        return execution.expire_diagnostics(
+            self.root, self.preset, now=1_000_000 + self.retention_seconds if now is None else now)
+
+    def test_closeout_time_controls_expiry_independently_of_file_timestamps(self):
+        directory = self.create_run("run-clock")
+        result_bytes = (directory / "result.json").read_bytes()
+        old = 100
+        os.utime(directory / "diagnostics.gz", (old, old))
+        closeout = self.accept("run-clock", now=1_000_000)
+        before = self.expire(now=1_000_000 + self.retention_seconds - 1)
+        self.assertTrue((directory / "diagnostics.gz").exists())
+        self.assertEqual(before["deleted_bytes"], 0)
+        expired = self.expire(now=1_000_000 + self.retention_seconds)
+        self.assertFalse((directory / "diagnostics.gz").exists())
+        self.assertEqual(expired["deleted_bytes"], len(b"compressed diagnostic bytes"))
+        self.assertEqual(closeout["closeout"]["closed_at"], 1_000_000)
+        self.assertEqual((directory / "result.json").read_bytes(), result_bytes)
+        repeated = self.expire()
+        state = json.loads((directory / "closeout.json").read_text(encoding="utf-8"))
+        self.assertEqual(repeated["deleted_bytes"], 0)
+        self.assertEqual(state["disposition"]["deleted_bytes"], len(b"compressed diagnostic bytes"))
+
+    def test_absent_invalid_and_reopened_closeout_do_not_expire(self):
+        case_ids = ("absent", "invalid", "reopened")
+        self.subtest_cases = case_ids
+        for case_id in case_ids:
+            with self.subTest(case=case_id):
+                run_id = "run-" + case_id
+                directory = self.create_run(run_id)
+                if case_id == "invalid":
+                    (directory / "closeout.json").write_text("{", encoding="utf-8")
+                elif case_id == "reopened":
+                    self.accept(run_id)
+                    execution.closeout_run(self.root, self.preset, run_id, review="open")
+                before_reads = 0
+                if case_id == "absent":
+                    summary = self.expire()
+                    self.assertEqual(summary["read_bytes"], before_reads)
+                else:
+                    self.expire()
+                self.assertTrue((directory / "diagnostics.gz").exists())
+                if case_id == "invalid":
+                    self.assertTrue(self.expire()["errors"])
+                if case_id == "reopened":
+                    state = json.loads((directory / "closeout.json").read_text(encoding="utf-8"))
+                    self.assertIsNone(state["closed_at"])
+
+    def test_each_hold_blocks_expiry_until_released(self):
+        hold_kinds = ("review", "failure", "reproduction")
+        self.subtest_cases = tuple("hold/" + value for value in hold_kinds)
+        for hold_kind in hold_kinds:
+            with self.subTest(case="hold/" + hold_kind):
+                run_id = "run-hold-" + hold_kind
+                directory = self.create_run(run_id)
+                self.accept(run_id, now=1_000_000)
+                execution.closeout_run(self.root, self.preset, run_id, hold=(hold_kind,))
+                summary = self.expire()
+                self.assertEqual(summary["deleted_bytes"], 0)
+                self.assertTrue((directory / "diagnostics.gz").exists())
+                execution.closeout_run(self.root, self.preset, run_id, release_hold=(hold_kind,))
+                self.expire()
+                self.assertFalse((directory / "diagnostics.gz").exists())
+
+    def test_failed_changed_and_undrained_results_cannot_be_accepted_or_expired(self):
+        cases = (
+            ("failed", {"status": "failed"}),
+            ("changed", {"candidate_unchanged": False}),
+            ("undrained", {"commands": [{"returncode": 0, "process_status": "completed", "drained": False}]}),
+        )
+        self.subtest_cases = tuple(case for case, _ in cases)
+        for case_id, overrides in cases:
+            with self.subTest(case=case_id):
+                run_id = "run-" + case_id
+                directory = self.create_run(run_id, **overrides)
+                with self.assertRaises(ValueError):
+                    self.accept(run_id)
+                execution.closeout_run(self.root, self.preset, run_id, review="closed", now=1_000_000)
+                self.expire()
+                self.assertTrue((directory / "diagnostics.gz").exists())
+
+    def test_missing_optional_diagnostic_is_accepted_but_missing_mandatory_member_is_rejected(self):
+        cases = ("optional-missing", "mandatory-missing")
+        self.subtest_cases = cases
+        for case_id in cases:
+            with self.subTest(case=case_id):
+                run_id = "run-" + case_id
+                directory = self.create_run(run_id)
+                if case_id == "optional-missing":
+                    (directory / "diagnostics.gz").unlink()
+                    self.accept(run_id)
+                    self.expire()
+                    state = json.loads((directory / "closeout.json").read_text(encoding="utf-8"))
+                    self.assertEqual(state["disposition"]["status"], "absent")
+                else:
+                    (directory / "candidate.patch").unlink()
+                    with self.assertRaisesRegex(ValueError, "mandatory"):
+                        self.accept(run_id)
+
+    def test_member_and_run_directory_links_are_rejected(self):
+        if os.name == "nt":
+            cases = ("junction",)
+        else:
+            cases = ("diagnostic-symlink", "run-directory-symlink")
+        self.subtest_cases = cases
+        for case_id in cases:
+            with self.subTest(case=case_id):
+                run_id = "run-link-" + case_id
+                directory = self.create_run(run_id)
+                self.accept(run_id)
+                outside = self.root / ("outside-" + case_id)
+                if case_id == "diagnostic-symlink":
+                    outside.write_bytes(b"protected outside bytes")
+                    (directory / "diagnostics.gz").unlink()
+                    (directory / "diagnostics.gz").symlink_to(outside)
+                else:
+                    directory.rename(outside)
+                    link = self.runs / run_id
+                    if os.name == "nt":
+                        created = subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(outside)],
+                                                 capture_output=True, text=True)
+                        self.assertEqual(created.returncode, 0, created.stderr)
+                    else:
+                        link.symlink_to(outside, target_is_directory=True)
+                summary = self.expire()
+                self.assertTrue(summary["errors"])
+                if case_id == "diagnostic-symlink":
+                    self.assertEqual(outside.read_bytes(), b"protected outside bytes")
+                else:
+                    self.assertTrue((outside / "diagnostics.gz").exists())
+
+    def test_unlink_failure_is_reported_and_retry_preserves_actual_deleted_bytes(self):
+        run_id = "run-unlink-failure"
+        directory = self.create_run(run_id)
+        self.accept(run_id)
+        diagnostic = directory / "diagnostics.gz"
+        actual_bytes = diagnostic.stat().st_size
+        other = self.create_run("run-unlink-success")
+        self.accept("run-unlink-success")
+        other_bytes = (other / "diagnostics.gz").stat().st_size
+        original_unlink = Path.unlink
+
+        def fail_diagnostic(path, *args, **kwargs):
+            if path == diagnostic:
+                raise OSError("diagnostic is temporarily locked")
+            return original_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_diagnostic):
+            failed = self.expire()
+        self.assertTrue(failed["errors"])
+        self.assertTrue(diagnostic.exists())
+        self.assertEqual(failed["deleted_bytes"], other_bytes)
+        self.assertFalse((other / "diagnostics.gz").exists())
+        state = json.loads((directory / "closeout.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["disposition"]["status"], "failed")
+        succeeded = self.expire()
+        self.assertFalse(diagnostic.exists())
+        self.assertEqual(succeeded["deleted_bytes"], actual_bytes)
+        self.assertEqual(succeeded["deleted_runs"], 1)
+
+    def test_only_the_declared_optional_stream_can_expire(self):
+        cases = ("parent-path", "required-member", "not-optional", "undeclared", "missing-required-after-closeout")
+        self.subtest_cases = cases
+        for case_id in cases:
+            with self.subTest(case=case_id):
+                run_id = "run-" + case_id
+                directory = self.create_run(run_id)
+                self.accept(run_id)
+                result_path = directory / "result.json"
+                result = json.loads(result_path.read_bytes())
+                if case_id == "missing-required-after-closeout":
+                    (directory / "candidate.patch").unlink()
+                else:
+                    if case_id == "parent-path":
+                        result["diagnostics"]["path"] = "../protected.gz"
+                    elif case_id == "required-member":
+                        result["diagnostics"]["path"] = "candidate.json"
+                    elif case_id == "not-optional":
+                        result["diagnostics"]["optional"] = False
+                    else:
+                        result.pop("diagnostics")
+                    raw = json.dumps(result).encode()
+                    result_path.write_bytes(raw)
+                    closeout = directory / "closeout.json"
+                    state = json.loads(closeout.read_bytes())
+                    state["result_sha256"] = hashlib.sha256(raw).hexdigest()
+                    closeout.write_text(json.dumps(state), encoding="utf-8")
+                before = result_path.read_bytes()
+                summary = self.expire()
+                self.assertTrue(any(error["run"] == run_id for error in summary["errors"]))
+                self.assertTrue((directory / "diagnostics.gz").exists())
+                self.assertEqual(result_path.read_bytes(), before)
+
+    def test_final_disposition_write_failure_is_recovered_after_unlink(self):
+        run_id = "run-final-write-failure"
+        directory = self.create_run(run_id)
+        self.accept(run_id)
+        diagnostic = directory / "diagnostics.gz"
+        actual_bytes = diagnostic.stat().st_size
+        original_replace = Path.replace
+        failed_once = False
+
+        def fail_final_write(path, target, *args, **kwargs):
+            nonlocal failed_once
+            if (path.name == "closeout.tmp" and Path(target).name == "closeout.json"
+                    and not failed_once):
+                failed_once = True
+                raise OSError("interrupted closeout disposition")
+            return original_replace(path, target, *args, **kwargs)
+
+        closeout_path = directory / "closeout.json"
+        replace_count = 0
+        def fail_after_pending(path, target, *args, **kwargs):
+            nonlocal replace_count
+            if Path(target) == closeout_path:
+                replace_count += 1
+                if replace_count == 2:
+                    return fail_final_write(path, target, *args, **kwargs)
+            return original_replace(path, target, *args, **kwargs)
+
+        with patch.object(Path, "replace", fail_after_pending):
+            first = self.expire()
+        self.assertTrue(first["errors"])
+        self.assertFalse(diagnostic.exists())
+        second = self.expire()
+        state = json.loads((directory / "closeout.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["disposition"]["deleted_bytes"], actual_bytes)
+        self.assertEqual(state["disposition"]["status"], "deleted")
+        self.assertEqual(second["deleted_bytes"], 0)
+
+    def test_expiry_visits_at_most_32_runs_and_rotation_survives_owner_release(self):
+        report = self.runs / "verifier-scope-fixture.json"
+        report.write_bytes(b"report-only evidence; never a run directory")
+        run_ids = [f"run-batch-{index:02d}" for index in range(40)]
+        for run_id in run_ids:
+            self.create_run(run_id)
+            self.accept(run_id)
+        first = self.expire()
+        self.assertEqual(first["visited"], 32)
+        self.assertTrue(first["more"])
+        self.assertLessEqual(first["visited"], 32)
+        self.lease.__exit__(None, None, None)
+        self.lease = execution.OutputLease(self.root, self.build)
+        self.lease.__enter__()
+        second = self.expire()
+        self.assertEqual(second["visited"], 8)
+        self.assertFalse(second["more"])
+        self.assertEqual(first["deleted_runs"] + second["deleted_runs"], 40)
+        self.assertTrue(all(not (self.runs / run_id / "diagnostics.gz").exists() for run_id in run_ids))
+        self.assertEqual(report.read_bytes(), b"report-only evidence; never a run directory")
+
+    def test_hold_and_expiry_share_the_preset_lease_across_processes(self):
+        run_id = "run-serialized"
+        directory = self.create_run(run_id)
+        self.accept(run_id)
+        script = (
+            "import sys; from pathlib import Path; "
+            f"sys.path.insert(0, {str(Path(execution.__file__).parent)!r}); "
+            "from execution import OutputLease; "
+            f"root=Path({str(self.root)!r}); build=root/'out/build'/{self.preset!r}; "
+            "\ntry:\n with OutputLease(root, build, timeout=0): print('acquired')"
+            "\nexcept TimeoutError: print('excluded')"
+        )
+        environment = {key: value for key, value in os.environ.items() if key != "JUICER_OUTPUT_LEASES"}
+        contender = subprocess.run([sys.executable, "-B", "-c", script], env=environment,
+                                   capture_output=True, text=True, timeout=10)
+        self.assertEqual(contender.returncode, 0, contender.stderr)
+        self.assertEqual(contender.stdout.strip(), "excluded")
+        execution.closeout_run(self.root, self.preset, run_id, hold=("reproduction",))
+        retained = self.expire()
+        self.assertEqual(retained["deleted_bytes"], 0)
+        self.assertTrue((directory / "diagnostics.gz").exists())
+        execution.closeout_run(self.root, self.preset, run_id, release_hold=("reproduction",))
+        self.expire()
+        self.assertFalse((directory / "diagnostics.gz").exists())
+
+    def test_closeout_and_expiry_require_the_exact_preset_owner(self):
+        run_id = "run-no-owner"
+        self.create_run(run_id)
+        self.lease.__exit__(None, None, None)
+        self.lease = None
+        with self.assertRaisesRegex(RuntimeError, "exact preset owner"):
+            execution.closeout_run(self.root, self.preset, run_id)
+        with self.assertRaisesRegex(RuntimeError, "exact preset owner"):
+            execution.expire_diagnostics(self.root, self.preset)
+
+    def test_blocked_owner_prevents_hold_changes_and_expiry(self):
+        directory = self.create_run("run-blocked")
+        self.accept("run-blocked")
+        self.lease.blocked = True
+        try:
+            with self.assertRaisesRegex(RuntimeError, "blocked"):
+                execution.closeout_run(self.root, self.preset, "run-blocked", hold=("review",))
+            with self.assertRaisesRegex(RuntimeError, "blocked"):
+                self.expire()
+        finally:
+            self.lease.blocked = False
+        self.assertTrue((directory / "diagnostics.gz").exists())
+
+
+NativeCloseoutTests.test_absent_invalid_and_reopened_closeout_do_not_expire.required_subtests = True
+NativeCloseoutTests.test_each_hold_blocks_expiry_until_released.required_subtests = True
+NativeCloseoutTests.test_failed_changed_and_undrained_results_cannot_be_accepted_or_expired.required_subtests = True
+NativeCloseoutTests.test_missing_optional_diagnostic_is_accepted_but_missing_mandatory_member_is_rejected.required_subtests = True
+NativeCloseoutTests.test_member_and_run_directory_links_are_rejected.required_subtests = True
+NativeCloseoutTests.test_only_the_declared_optional_stream_can_expire.required_subtests = True
 
 
 class WindowsVctipTests(unittest.TestCase):

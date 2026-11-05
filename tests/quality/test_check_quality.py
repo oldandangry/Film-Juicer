@@ -394,8 +394,10 @@ class CheckQualityTests(IsolatedOwnerTests):
             module = __import__(module_name)
             suite = module.RustNamingTests if module_name.endswith("naming") else module.RustBoundaryTests
             with tempfile.TemporaryDirectory() as directory:
+                family = "naming" if module_name.endswith("naming") else "boundaries"
                 settings = {"JUICER_CARGO": "cargo", "JUICER_RUST_TARGET": "x86_64-unknown-linux-gnu",
-                    "JUICER_RUST_PROBE_DIR": directory + "/cache", "JUICER_TEST_ARTIFACT_DIR": directory + "/logs"}
+                    "JUICER_RUST_PROBE_DIR": str(module.ROOT / "out/build/linux-debug/cargo/quality-probes" / family),
+                    "JUICER_TEST_ARTIFACT_DIR": directory + "/logs"}
                 with self.subTest(case=case_id, module=module_name, profile=profile), patch.dict(
                     os.environ, {**settings, "JUICER_RUST_PROBE_PROFILE": profile},
                 ):
@@ -525,7 +527,7 @@ class CheckQualityTests(IsolatedOwnerTests):
         probe.subtest_cases = self.subtest_cases
         probe.subTest = lambda msg=None, **parameters: self.subTest(msg=msg, **parameters)
         with (
-            patch.object(probe, "attach_many", side_effect=lambda owner, names: {
+            patch.object(probe, "attach_many", side_effect=lambda owner, names, cleanup: {
                 name: identities[name] for name in names
             }) as attach,
             patch.object(probe, "check_features", side_effect=[
@@ -575,6 +577,41 @@ class CheckQualityTests(IsolatedOwnerTests):
         self.assertTrue(finished.is_set())
         self.assertEqual(sorted(call.args[2] for call in command.call_args_list), [False, True])
 
+    def test_boundary_probe_restoration_waits_for_proven_drainage(self) -> None:
+        module = __import__("test_rust_boundaries")
+        cases = ("drained", "undrained", "blocked")
+        self.subtest_cases = cases
+        for state in cases:
+            with self.subTest(case=state), tempfile.TemporaryDirectory() as directory:
+                class Probe(module.RustBoundaryTests):
+                    pass
+                Probe.lease = Mock(blocked=state == "blocked")
+                Probe.native_run = Mock(commands=[{"drained": state != "undrained", "process_status": "completed"}])
+                Probe.retain_artifacts = False
+                probe = Probe("test_valid_profile_consumers_compile")
+                probe.workspace = Path(directory) / "workspace"
+                source = probe.workspace / "rust/film-juicer-plugin/src/lib.rs"
+                source.parent.mkdir(parents=True)
+                source.write_text("original source\n", encoding="utf-8")
+                fixture = Path(directory) / "fixtures"
+                fixture.mkdir()
+                (fixture / "example.rs").write_text("pub fn example() {}\n", encoding="utf-8")
+                with patch.object(module, "FIXTURES", fixture), contextlib.ExitStack() as cleanup:
+                    probe.attach_many("film-juicer-plugin/src/lib.rs", ("example",), cleanup)
+                    self.assertIn("quality_boundary_probe", source.read_text(encoding="utf-8"))
+                    if state != "drained":
+                        with patch.object(module.shutil, "copytree", side_effect=AssertionError("copied unproved writers")):
+                            try:
+                                raise RuntimeError("controlled undrained compiler failure")
+                            except RuntimeError:
+                                probe.preserve_failed_workspace()
+                if state == "drained":
+                    self.assertEqual(source.read_text(encoding="utf-8"), "original source\n")
+                    self.assertFalse((source.parent / "quality_boundary_probe_example.rs").exists())
+                else:
+                    self.assertIn("quality_boundary_probe", source.read_text(encoding="utf-8"))
+                    self.assertTrue((source.parent / "quality_boundary_probe_example.rs").is_file())
+                    self.assertTrue(Probe.retain_artifacts)
     def test_cuda_header_selects_real_c_and_cpp_consumers(self) -> None:
         root = SCRIPT_PATH.parent.parent
         policy = check_quality.load_policy(root)
@@ -1681,6 +1718,8 @@ class EmptySelectionTests(unittest.TestCase):
         record = self.receipt()
         self.assertEqual(record["status"], "passed")
         self.assertTrue(record["candidate_unchanged"])
+        self.assertEqual(record["costs"]["expiry"]["visited"], 0)
+        self.assertEqual(record["costs"]["expiry"]["deleted_bytes"], 0)
         self.assertEqual(record["excluded"], [
             ".gitattributes: outside owned quality scope",
             "README.md: outside owned quality scope",
@@ -1792,6 +1831,7 @@ CheckQualityTests.test_policy_changes_cannot_skip_required_checks.required_subte
 CheckQualityTests.test_rust_probe_profiles_select_the_preset_or_complete_matrix.required_subtests = True
 CheckQualityTests.test_boundary_negative_checks_bind_code_marker_and_fixture.required_subtests = True
 CheckQualityTests.test_boundary_fixture_batches_keep_success_and_failure_groups_separate.required_subtests = True
+CheckQualityTests.test_boundary_probe_restoration_waits_for_proven_drainage.required_subtests = True
 CommandOutputTests.test_empty_or_malformed_stdout_cannot_use_json_from_stderr.required_subtests = True
 ParallelAnalysisTests.test_cli_requires_a_positive_worker_limit.required_subtests = True
 ParallelAnalysisTests.test_development_cannot_stage_probe_or_complete_qualification_receipts.required_subtests = True

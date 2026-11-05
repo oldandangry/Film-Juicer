@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -17,7 +18,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
 FIXTURES = Path(__file__).parent / "fixtures/rust_boundaries"
+SCRATCH_LIFETIME_CASES = ("success", "failure", "hold", "cleanup-error", "incomplete", "undrained")
 SPEC = importlib.util.spec_from_file_location("boundary_quality", ROOT / "scripts/check-quality.py")
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("cannot load the tracked quality contract")
@@ -26,21 +29,44 @@ sys.modules[SPEC.name] = quality
 SPEC.loader.exec_module(quality)
 
 
+def preset_build_for_probe(target_dir: Path, family: str) -> Path:
+    build_root = (ROOT / "out/build").resolve()
+    try:
+        relative = target_dir.relative_to(build_root)
+    except ValueError as error:
+        raise ValueError("Rust boundary probe cache must be under the standard preset Cargo tree") from error
+    if (len(relative.parts) != 4 or relative.parts[0] not in quality.PRESET_TARGETS
+            or relative.parts[1:] != ("cargo", "quality-probes", family)):
+        raise ValueError("Rust boundary probe cache must be <root>/out/build/<preset>/cargo/quality-probes/boundaries")
+    return build_root / relative.parts[0]
+
+
 class RustBoundaryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.cargo = os.environ["JUICER_CARGO"]
         cls.target = os.environ["JUICER_RUST_TARGET"]
         cls.target_dir = Path(os.environ["JUICER_RUST_PROBE_DIR"]).resolve()
+        cls.preset_build = preset_build_for_probe(cls.target_dir, "boundaries")
+        if quality.PRESET_TARGETS[cls.preset_build.name] != cls.target:
+            raise ValueError("Rust boundary target does not match its standard preset")
         cls.profiles = {"debug": (False,), "release": (True,), "both": (False, True)}[
             os.environ.get("JUICER_RUST_PROBE_PROFILE", "both")
         ]
+        from execution import NativeRun, OutputLease
+        cls.lease = OutputLease(ROOT, cls.preset_build)
+        cls.lease.__enter__()
+        cls.addClassCleanup(cls.release_lease)
         artifact_root = Path(os.environ["JUICER_TEST_ARTIFACT_DIR"]).resolve()
         artifact_root.mkdir(parents=True, exist_ok=True)
         cls.artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=artifact_root))
-        directory = tempfile.TemporaryDirectory(prefix="probe-", dir=cls.artifacts)
-        cls.addClassCleanup(directory.cleanup)
-        cls.workspace = Path(directory.name)
+        cls.native_run = NativeRun(ROOT, cls.artifacts)
+        cls.expected_tests = set(unittest.defaultTestLoader.getTestCaseNames(cls))
+        cls.completed_tests = set()
+        cls.retain_artifacts = False
+        cls.failure_snapshots = set()
+        cls.addClassCleanup(cls.cleanup_artifacts)
+        cls.workspace = Path(tempfile.mkdtemp(prefix="probe-", dir=cls.artifacts))
         for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
             shutil.copy2(ROOT / name, cls.workspace / name)
         shutil.copytree(ROOT / "rust", cls.workspace / "rust")
@@ -49,31 +75,126 @@ class RustBoundaryTests(unittest.TestCase):
         cls.invocation = 0
         cls.invocation_lock = threading.Lock()
 
+    @classmethod
+    def release_lease(cls) -> None:
+        if cls.lease is not None:
+            cls.lease.__exit__(None, None, None)
+
+    @classmethod
+    def cleanup_artifacts(cls) -> None:
+        if not cls.artifacts.exists():
+            return
+        if (cls.retain_artifacts or cls.completed_tests != cls.expected_tests
+                or os.environ.get("JUICER_TEST_RETAIN_FIXTURES")):
+            print("Retained Rust boundary fixture evidence:", cls.artifacts, file=sys.stderr)
+            return
+        if cls.lease.blocked or not cls.commands_drained():
+            print("Retained Rust boundary fixtures without a drained preset owner:", cls.artifacts, file=sys.stderr)
+            return
+        try:
+            cls.lease.check_admission()
+            cls.report_command_costs()
+            shutil.rmtree(cls.artifacts)
+        except BaseException:
+            print("Rust boundary fixture cleanup failed; retained:", cls.artifacts, file=sys.stderr)
+            raise
+
+    @classmethod
+    def commands_drained(cls) -> bool:
+        return all(row.get("drained", False)
+                   and row.get("process_status") in {"completed", "failed-parent"}
+                   for row in cls.native_run.commands)
+
+    @classmethod
+    def report_command_costs(cls) -> None:
+        records = cls.native_run.commands if cls.native_run is not None else []
+        if not records:
+            return
+        print(
+            "Rust boundary NativeRun cost: "
+            f"count={len(records)} supervised_seconds={sum(row.get('seconds', 0.0) for row in records):.3f} "
+            f"command_seconds={sum(row.get('command_seconds') or 0.0 for row in records):.3f} "
+            f"drain_seconds={sum(row.get('drain_seconds') or 0.0 for row in records):.3f} "
+            f"stdout_bytes={sum(row.get('output_bytes', 0) for row in records)} "
+            f"stderr_bytes={sum(row.get('stderr_bytes', 0) for row in records)}",
+            flush=True,
+        )
+
+    def setUp(self) -> None:
+        # Run after later fixture restorations so this observes cleanup errors.
+        self.addCleanup(self.finalize_test)
+
+    def finalize_test(self) -> None:
+        cls = type(self)
+        outcome = self._outcome
+        result = outcome.result if outcome else None
+        if (result is None or getattr(self, "interrupted", False)
+                or cls.lease.blocked
+                or not cls.commands_drained()
+                or any(owner is self or getattr(owner, "test_case", None) is self
+                       for owner, _ in [*result.failures, *result.errors])):
+            cls.retain_artifacts = True
+        cls.completed_tests.add(self._testMethodName)
+
+    def preserve_failed_workspace(self) -> None:
+        result = self._outcome.result if self._outcome else None
+        if (sys.exception() is None and (result is None or not any(
+                owner is self or getattr(owner, "test_case", None) is self
+                for owner, _ in [*result.failures, *result.errors]))):
+            return
+        cls = type(self)
+        cls.retain_artifacts = True
+        if cls.lease.blocked or not cls.commands_drained():
+            return  # Keep the original workspace while writers remain unproved.
+        if self._testMethodName in cls.failure_snapshots:
+            return
+        snapshot = cls.artifacts / ("failure-" + self._testMethodName)
+        shutil.copytree(cls.workspace, snapshot)
+        cls.failure_snapshots.add(self._testMethodName)
+
+    def tearDown(self) -> None:
+        # Save the mutated probe before unittest runs source/probe restorations.
+        self.preserve_failed_workspace()
+
     def command(self, arguments: list[str], label: str) -> subprocess.CompletedProcess:
         with self.invocation_lock:
             type(self).invocation += 1
             invocation = self.invocation
         command = [self.cargo, *arguments]
         quality.check_probe_configuration(ROOT, self.workspace)
-        result = subprocess.run(
-            command, cwd=self.workspace, env=self.environment,
-            capture_output=True, text=True, encoding="utf-8", check=False,
-        )
-        log = self.artifacts / f"{invocation:02d}-{self._testMethodName}-{label}.log"
-        log.write_text(
-            subprocess.list2cmdline(command) + "\n" + result.stdout + result.stderr,
-            encoding="utf-8",
-        )
+        cls = type(self)
+        name = f"{invocation:02d}-{self._testMethodName}-{label}".lower().replace("_", "-")
+        try:
+            log = cls.native_run.command(name, command, env=self.environment,
+                                         stdout_only=True, cwd=self.workspace)
+            returncode = next(record["returncode"] for record in cls.native_run.commands
+                              if record["name"] == name)
+        except subprocess.CalledProcessError as error:
+            log = cls.artifacts / f"{name}.log"
+            returncode = error.returncode
+        stdout = log.read_text(encoding="utf-8") if log.exists() else ""
+        stderr_path = cls.artifacts / f"{name}.stderr.log"
+        stderr = stderr_path.read_text(encoding="utf-8") if stderr_path.exists() else ""
+        result = subprocess.CompletedProcess(command, returncode, stdout, stderr)
         quality.check_probe_configuration(ROOT, self.workspace)
         return result
 
-    def attach(self, owner: str, fixture: str) -> None:
+    def restore_probe(self, action, *args, **kwargs) -> None:
+        cls = type(self)
+        if cls.lease.blocked or not cls.commands_drained():
+            cls.retain_artifacts = True
+            return
+        cls.lease.check_admission()
+        action(*args, **kwargs)
+
+    def attach(self, owner: str, fixture: str, cleanup=None) -> None:
+        register_cleanup = cleanup.callback if cleanup is not None else self.addCleanup
         source = self.workspace / "rust" / owner
         original = source.read_text(encoding="utf-8")
-        self.addCleanup(source.write_text, original, encoding="utf-8")
+        register_cleanup(self.restore_probe, source.write_text, original, encoding="utf-8")
         probe = source.parent / "quality_boundary_probe.rs"
         shutil.copy2(FIXTURES / f"{fixture}.rs", probe)
-        self.addCleanup(probe.unlink)
+        register_cleanup(self.restore_probe, probe.unlink)
         # Absolute paths let the same fixture enter a crate root or a protected
         # child module. The owner retains its real lint and visibility context.
         source.write_text(
@@ -83,16 +204,17 @@ class RustBoundaryTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def attach_many(self, owner: str, fixtures: tuple[str, ...]) -> dict[str, str]:
+    def attach_many(self, owner: str, fixtures: tuple[str, ...], cleanup=None) -> dict[str, str]:
+        register_cleanup = cleanup.callback if cleanup is not None else self.addCleanup
         source = self.workspace / "rust" / owner
         original = source.read_text(encoding="utf-8")
-        self.addCleanup(source.write_text, original, encoding="utf-8")
+        register_cleanup(self.restore_probe, source.write_text, original, encoding="utf-8")
         declarations = []
         identities = {}
         for fixture in fixtures:
             probe = source.parent / f"quality_boundary_probe_{fixture}.rs"
             shutil.copy2(FIXTURES / f"{fixture}.rs", probe)
-            self.addCleanup(probe.unlink)
+            register_cleanup(self.restore_probe, probe.unlink)
             module = f"quality_boundary_probe_{fixture}"
             declarations.extend((
                 "#[cfg(test)]",
@@ -224,27 +346,30 @@ class RustBoundaryTests(unittest.TestCase):
                 batches = ([independent] if independent else []) + [(fixture,) for fixture in construction]
             for selected in batches:
                 print("Rust boundary fixtures: " + ", ".join(selected), flush=True)
-                identities = self.attach_many(owner, selected)
-                for release in self.profiles:
-                    results = (
-                        self.check_features(package, release)
-                        if feature_forms == (False, True)
-                        else [self.check(package, release, feature_forms[0])]
-                    )
-                    for test_support, (status, diagnostics) in zip(feature_forms, results, strict=True):
-                        for fixture in selected:
-                            expected = next(value for name, value in cases if name == fixture)
-                            case_id = (
-                                f"{fixture}|{'release' if release else 'debug'}|"
-                                f"{'test-support' if test_support else 'default'}"
+                with ExitStack() as cleanup:
+                    try:
+                        identities = self.attach_many(owner, selected, cleanup)
+                        for release in self.profiles:
+                            results = (
+                                self.check_features(package, release)
+                                if feature_forms == (False, True)
+                                else [self.check(package, release, feature_forms[0])]
                             )
-                            self.assertIn(case_id, expected_cases)
-                            with self.subTest(case=case_id):
-                                if expected is None:
-                                    self.assert_accepted(status, diagnostics, tuple(identities.values()))
-                                else:
-                                    self.assert_rejected(status, diagnostics, expected, identities[fixture])
-                self.doCleanups()
+                            for test_support, (status, diagnostics) in zip(feature_forms, results, strict=True):
+                                for fixture in selected:
+                                    expected = next(value for name, value in cases if name == fixture)
+                                    case_id = (
+                                        f"{fixture}|{'release' if release else 'debug'}|"
+                                        f"{'test-support' if test_support else 'default'}"
+                                    )
+                                    self.assertIn(case_id, expected_cases)
+                                    with self.subTest(case=case_id):
+                                        if expected is None:
+                                            self.assert_accepted(status, diagnostics, tuple(identities.values()))
+                                        else:
+                                            self.assert_rejected(status, diagnostics, expected, identities[fixture])
+                    finally:
+                        self.preserve_failed_workspace()
 
     def test_workspace_dependencies_and_build_hooks(self) -> None:
         quality.check_workspace_contract(self.workspace)
@@ -256,10 +381,12 @@ class RustBoundaryTests(unittest.TestCase):
         quality.check_dependency_contract(self.workspace, json.loads(result.stdout))
 
     def test_valid_profile_consumers_compile(self) -> None:
-        self.subtest_cases = tuple(
+        compile_cases = tuple(
             f"accepted|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
             for release in self.profiles for support in (False, True)
         )
+        self.subtest_cases = tuple(f"scratch-lifetime:{case}" for case in SCRATCH_LIFETIME_CASES) + compile_cases
+        exercise_scratch_lifetime_controls(self, RustBoundaryTests)
         self.attach("film-juicer-plugin/src/lib.rs", "accepted")
         for release in self.profiles:
             for support, (status, diagnostics) in zip((False, True), self.check_features("film-juicer-plugin", release), strict=True):
@@ -850,15 +977,16 @@ class RustBoundaryTests(unittest.TestCase):
             for fixture, _ in cases for release in self.profiles
         )
         for fixture, expected in cases:
-            self.attach("film-juicer-plugin/src/lib.rs", fixture)
-            try:
-                for release in self.profiles:
-                    status, diagnostics = self.check("film-juicer-plugin", release)
-                    case_id = f"{fixture}|{'release' if release else 'debug'}"
-                    with self.subTest(case=case_id):
-                        self.assert_rejected(status, diagnostics, expected)
-            finally:
-                self.doCleanups()
+            with ExitStack() as cleanup:
+                try:
+                    self.attach("film-juicer-plugin/src/lib.rs", fixture, cleanup)
+                    for release in self.profiles:
+                        status, diagnostics = self.check("film-juicer-plugin", release)
+                        case_id = f"{fixture}|{'release' if release else 'debug'}"
+                        with self.subTest(case=case_id):
+                            self.assert_rejected(status, diagnostics, expected)
+                finally:
+                    self.preserve_failed_workspace()
 
     def test_deleted_film_development_definitions_and_foundation_policy(self) -> None:
         import re
@@ -1299,13 +1427,14 @@ class RustBoundaryTests(unittest.TestCase):
         for package, source in owners:
             for release in self.profiles:
                 case_id = f"{package}/{source}|{'release' if release else 'debug'}"
-                self.attach(f"{package}/src/{source}", "unsafe_override")
-                try:
-                    with self.subTest(case=case_id):
-                        status, diagnostics = self.check(package, release)
-                        self.assert_rejected(status, diagnostics, {"E0453": ("unsafe_code",)})
-                finally:
-                    self.doCleanups()
+                with ExitStack() as cleanup:
+                    try:
+                        self.attach(f"{package}/src/{source}", "unsafe_override", cleanup)
+                        with self.subTest(case=case_id):
+                            status, diagnostics = self.check(package, release)
+                            self.assert_rejected(status, diagnostics, {"E0453": ("unsafe_code",)})
+                    finally:
+                        self.preserve_failed_workspace()
 
     def test_completed_exposure_results_are_private_and_readonly(self) -> None:
         cases = (('exposure_default', {'E0599': ('Sensitivity::default()', 'ReferenceWhite::default()')}),
@@ -1482,6 +1611,84 @@ RustBoundaryTests.test_complete_tc_lut_privacy_and_borrowing.required_subtests =
 RustBoundaryTests.test_complete_input_hull_privacy_and_borrows.required_subtests = True
 RustBoundaryTests.test_prepared_state_is_complete_private_and_borrowed.required_subtests = True
 RustBoundaryTests.test_cuda_render_borrows_complete_owners_and_hides_projection.required_subtests = True
+
+
+def exercise_scratch_lifetime_controls(test_case, owner):
+    original_hold = os.environ.get("JUICER_TEST_RETAIN_FIXTURES")
+    try:
+        scenarios = (("success", False, False, False, False, False),
+                     ("failure", True, False, False, False, False),
+                     ("hold", False, True, False, False, False),
+                     ("cleanup-error", False, False, True, False, False),
+                     ("incomplete", False, False, False, True, False),
+                     ("undrained", False, False, False, False, True))
+        for name, failed, hold, cleanup_error, incomplete, undrained in scenarios:
+            with test_case.subTest(case="scratch-lifetime:" + name), tempfile.TemporaryDirectory(prefix="boundary scratch lifetime ") as parent:
+                artifacts = Path(parent) / "run-fixture"
+                class ControlLease:
+                    blocked = undrained
+
+                    def check_admission(self):
+                        if self.blocked:
+                            raise RuntimeError("controlled undrained owner")
+
+                class ControlRun:
+                    commands = []
+
+                class ScratchLifecycleControl(owner):
+                    @classmethod
+                    def setUpClass(cls):
+                        cls.artifacts = artifacts
+                        cls.artifacts.mkdir()
+                        cls.workspace = cls.artifacts / "probe-fixture"
+                        cls.expected_tests = {"test_control"}
+                        if incomplete:
+                            cls.expected_tests.add("test_unrun")
+                        cls.completed_tests = set()
+                        cls.retain_artifacts = False
+                        cls.failure_snapshots = set()
+                        cls.lease = ControlLease()
+                        cls.native_run = ControlRun()
+                        cls.addClassCleanup(cls.cleanup_artifacts)
+
+                    def setUp(self):
+                        self.workspace = self.artifacts / "probe-fixture"
+                        self.workspace.mkdir()
+                        (self.workspace / "mutated-source.rs").write_text(
+                            "synthetic expected-negative probe\n", encoding="utf-8")
+                        type(self).workspace = self.workspace
+                        self.addCleanup(self.finalize_test)
+                        if cleanup_error:
+                            self.addCleanup(self.fail_cleanup)
+
+                    def fail_cleanup(self):
+                        raise OSError("controlled cleanup failure")
+
+                    def test_control(self):
+                        child_status = 1  # Expected synthetic compiler rejection.
+                        self.assertEqual(child_status, 1)
+                        if failed:
+                            self.fail("controlled outer assertion failure")
+
+                case = ScratchLifecycleControl("test_control")
+                result = unittest.TestResult()
+                if hold:
+                    os.environ["JUICER_TEST_RETAIN_FIXTURES"] = "1"
+                else:
+                    os.environ.pop("JUICER_TEST_RETAIN_FIXTURES", None)
+                unittest.TestSuite([case]).run(result)
+                retained = failed or hold or cleanup_error or incomplete or undrained
+                if result.wasSuccessful() == (failed or cleanup_error):
+                    raise AssertionError(f"Rust boundary control {name} produced the wrong outer outcome")
+                if artifacts.exists() != retained:
+                    raise AssertionError(f"Rust boundary scratch lifetime was wrong for {name}")
+                if failed and not (artifacts / "failure-test_control" / "mutated-source.rs").is_file():
+                    raise AssertionError("Rust boundary outer failure lost its mutated probe workspace")
+    finally:
+        if original_hold is None:
+            os.environ.pop("JUICER_TEST_RETAIN_FIXTURES", None)
+        else:
+            os.environ["JUICER_TEST_RETAIN_FIXTURES"] = original_hold
 
 if __name__ == "__main__":
     unittest.main()

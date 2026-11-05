@@ -22,7 +22,7 @@ if __name__ == "__main__" and sys.argv[1:2] == ["collect-qualification"]:
     from qualification import collection_main
     raise SystemExit(collection_main(sys.argv[2:]))
 
-from execution import OutputLease, UnresolvedScope, write_json, windows_vctip
+from execution import OutputLease, UnresolvedScope, closeout_run, expire_diagnostics, write_json, windows_vctip
 from build_dependencies import header_consumers
 from qualification import collect_bundles
 
@@ -120,6 +120,7 @@ def rust_tests(args):
         # Direct CTest remains supervised when the shared native runner is absent.
         directory = ROOT / "out/validation" / args.preset / "rust-tests" / (registration + "-" + uuid.uuid4().hex)
         with OutputLease(ROOT, ROOT / "out/build" / args.preset):
+            expire_diagnostics(ROOT, args.preset)
             directory.mkdir(parents=True)
             run = NativeRun(ROOT, directory)
             environment = dict(os.environ, FJ_HOST_BUNDLE=str(directory))
@@ -315,6 +316,7 @@ def native_case(args):
         directory = ROOT / "out/validation" / args.preset / "native-host" / uuid.uuid4().hex
         with ExitStack() as ownership:
             ownership.enter_context(OutputLease(ROOT, ROOT / "out/build" / args.preset))
+            expire_diagnostics(ROOT, args.preset)
             if args.runtime == "gpu":
                 ownership.enter_context(OutputLease(ROOT))
             directory.mkdir(parents=True)
@@ -655,6 +657,9 @@ def native_tests(args):
             costs[key] += value
         return source, patch
     with OutputLease(ROOT, preset_build):
+        if "FJ_HOST_BUNDLE" not in os.environ:
+            costs["expiry"] = expire_diagnostics(ROOT, args.preset)
+            costs["report_read_bytes"] += costs["expiry"]["read_bytes"]
         directory.mkdir(parents=True, exist_ok=False)
         run = NativeRun(ROOT, directory)
         initial, patch = capture()
@@ -861,10 +866,13 @@ def fresh_prepare(args):
     build = preset_build / "host-tests" if cuda_free else preset_build
     directory = ROOT / "out/validation" / args.preset / "results" / name_component(args.run_id or "build-" + uuid.uuid4().hex)
     with OutputLease(ROOT, preset_build):
+        expiry = expire_diagnostics(ROOT, args.preset) if "FJ_HOST_BUNDLE" not in os.environ else None
         directory.mkdir(parents=True, exist_ok=False)
         run = NativeRun(ROOT, directory)
         source, patch, costs = capture_native_source(ROOT, "scripts/verify.py")
-        costs["report_read_bytes"] = 0
+        if expiry is not None:
+            costs["expiry"] = expiry
+        costs["report_read_bytes"] = expiry["read_bytes"] if expiry is not None else 0
         candidate = {**source, "preset": args.preset}
         result = {"schema": "native-build-v1", "status": "failed", "preset": args.preset, "scope": "build",
                   "candidate_head": source["head"], "shipping_isolation": False, "commands": run.commands, "members": {}, "costs": costs}
@@ -923,6 +931,7 @@ def python_tests(args):
     if not parent:
         build = ROOT / "out/build" / args.preset
         with OutputLease(ROOT, build):
+            expire_diagnostics(ROOT, args.preset)
             scratch = ROOT / "out/validation" / args.preset / "python-controls"
             scratch.mkdir(parents=True, exist_ok=True)
             directory = Path(tempfile.mkdtemp(prefix="case-", dir=scratch))
@@ -1080,6 +1089,18 @@ def python_tests(args):
     return outcome["returncode"]
 
 
+def closeout(args):
+    """Explicit review/hold changes and the same bounded pass as native entry."""
+    if args.preset.startswith("windows") != (os.name == "nt"):
+        raise ValueError("closeout requires the preset's native platform")
+    with OutputLease(ROOT, ROOT / "out/build" / args.preset):
+        changes = closeout_run(ROOT, args.preset, args.run_id, accept=args.accept, review=args.review,
+                               hold=args.hold, release_hold=args.release_hold) if args.run_id else None
+        expired = expire_diagnostics(ROOT, args.preset)
+        print(json.dumps({"closeout": changes, "expiry": expired}, indent=2))
+        return 1 if expired["errors"] else 0
+
+
 def main():
     from qualification import PRESETS, GROUPS
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1116,6 +1137,13 @@ def main():
                          help="prepare selected CUDA-independent test targets")
     owner = modes.add_parser("check-owner", help=argparse.SUPPRESS)
     owner.add_argument("--preset", required=True, choices=PRESETS)
+    close = modes.add_parser("closeout", help="record review/acceptance or holds and expire optional diagnostics")
+    close.add_argument("--preset", required=True, choices=PRESETS)
+    close.add_argument("--run", dest="run_id")
+    close.add_argument("--accept", action="store_true")
+    close.add_argument("--review", choices=("open", "closed"))
+    close.add_argument("--hold", nargs="+", choices=("review", "failure", "reproduction"), default=[])
+    close.add_argument("--release-hold", nargs="+", choices=("review", "failure", "reproduction"), default=[])
     collection = modes.add_parser("collect-qualification", help="pure offline reading of named bundles")
     collection.add_argument("--bundles", type=Path, nargs="+", required=True)
     collection.add_argument("--output", type=Path, required=True)
@@ -1142,6 +1170,8 @@ def main():
     probe = modes.add_parser("gpu-lock-probe", help=argparse.SUPPRESS)
     probe.add_argument("--wait-for-owner", action="store_true")
     args = parser.parse_args()
+    if args.mode == "closeout" and not args.run_id and (args.accept or args.review or args.hold or args.release_hold):
+        parser.error("closeout changes require --run")
     if getattr(args, "cuda_free", False):
         if getattr(args, "files", None) or getattr(args, "build_dir", None):
             parser.error("--cuda-free requires explicit --tests or --targets and its standard configuration directory")
@@ -1150,7 +1180,7 @@ def main():
     dispatch = {"prepare": fresh_prepare, "development": development, "qualification": native_tests,
                 "collect-qualification": collect_bundles, "native-case": native_case,
                 "python-tests": python_tests, "rust-tests": rust_tests, "tool-versions": tool_versions,
-                "check-owner": check_owner}
+                "check-owner": check_owner, "closeout": closeout}
     if args.mode == "gpu-lock-probe":
         return gpu_lock_probe(wait_for_owner=args.wait_for_owner)
     return dispatch[args.mode](args)

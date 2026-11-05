@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import io
+import json
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import verify
+import execution
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -151,10 +160,111 @@ class PublicCliTests(unittest.TestCase):
         with patch.object(sys, "argv", ["verify.py", "collect-qualification", "--bundles", "bundle-a", "bundle-b",
                                         "--output", "aggregate.json"]), \
                 patch.object(verify, "collect_bundles", return_value=0) as collect:
-            self.assertEqual(verify.main(), 0)
+            with patch.object(verify, "expire_diagnostics", side_effect=AssertionError("offline reader swept native outputs")):
+                self.assertEqual(verify.main(), 0)
         args = collect.call_args.args[0]
         self.assertEqual(args.bundles, [Path("bundle-a"), Path("bundle-b")])
         self.assertEqual(args.output, Path("aggregate.json"))
+
+    def test_closeout_dispatch_preserves_explicit_review_and_holds(self):
+        with patch.object(sys, "argv", ["verify.py", "closeout", "--preset", "linux-debug", "--run", "run-one",
+                                        "--accept", "--review", "closed", "--hold", "review", "reproduction",
+                                        "--release-hold", "failure"]), \
+                patch.object(verify, "closeout", return_value=0) as close:
+            self.assertEqual(verify.main(), 0)
+        args = close.call_args.args[0]
+        self.assertEqual((args.run_id, args.accept, args.review), ("run-one", True, "closed"))
+        self.assertEqual(args.hold, ["review", "reproduction"])
+        self.assertEqual(args.release_hold, ["failure"])
+
+    def test_closeout_changes_require_a_named_run(self):
+        with patch.object(sys, "argv", ["verify.py", "closeout", "--preset", "linux-debug", "--accept"]), \
+                self.assertRaises(SystemExit):
+            verify.main()
+
+
+class CloseoutCliTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="closeout cli ü ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        self.directory = self.root / "out/validation" / self.preset / "results/run-one"
+        self.directory.mkdir(parents=True)
+        candidate = json.dumps({"head": "fixture", "preset": self.preset, "inputs": {"source": "fixture"}}).encode()
+        payloads = {"candidate.json": candidate, "candidate.patch": b"scoped fixture patch\n"}
+        for name, data in payloads.items():
+            (self.directory / name).write_bytes(data)
+        self.result = {"schema": "native-build-v1", "preset": self.preset, "status": "passed", "scope": "build",
+                       "shipping_isolation": False, "candidate_head": "fixture", "candidate_unchanged": True,
+                       "commands": [{"name": "fixture", "returncode": 0, "drained": True, "process_status": "completed"}],
+                       "members": {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                   for name, data in payloads.items()},
+                       "diagnostics": {"path": "diagnostics.gz", "optional": True}}
+        self.raw = json.dumps(self.result).encode()
+        (self.directory / "result.json").write_bytes(self.raw)
+        (self.directory / "diagnostics.gz").write_bytes(b"optional diagnostic fixture")
+        self.enterContext(patch.object(verify, "ROOT", self.root))
+        self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+
+    def cli(self, *arguments):
+        with patch.object(sys, "argv", ["verify.py", "closeout", "--preset", self.preset, *arguments]):
+            return verify.main()
+
+    def test_accept_hold_release_and_expiry_use_no_tools_and_preserve_required_bytes(self):
+        with patch.object(execution.time, "time", return_value=100), \
+                patch.object(subprocess, "Popen", side_effect=AssertionError("closeout launched a tool")):
+            self.assertEqual(self.cli("--run", "run-one", "--accept", "--review", "closed", "--hold", "reproduction"), 0)
+        with patch.object(execution.time, "time", return_value=100 + 7 * 86400):
+            self.assertEqual(self.cli(), 0)
+            self.assertTrue((self.directory / "diagnostics.gz").exists())
+            self.assertEqual(self.cli("--run", "run-one", "--release-hold", "reproduction"), 0)
+        self.assertFalse((self.directory / "diagnostics.gz").exists())
+        self.assertEqual((self.directory / "result.json").read_bytes(), self.raw)
+        from qualification import read_native_result
+        self.assertEqual(read_native_result(self.directory)["status"], "passed")
+
+    def test_deletion_error_is_reported_by_cli_and_keeps_the_diagnostic(self):
+        with patch.object(execution.time, "time", return_value=100):
+            self.assertEqual(self.cli("--run", "run-one", "--accept", "--review", "closed"), 0)
+        unlink = Path.unlink
+        def fail_diagnostic(path, *args, **kwargs):
+            if path.name == "diagnostics.gz":
+                raise PermissionError("controlled locked diagnostic")
+            return unlink(path, *args, **kwargs)
+        with patch.object(execution.time, "time", return_value=100 + 7 * 86400), \
+                patch.object(Path, "unlink", fail_diagnostic):
+            self.assertEqual(self.cli(), 1)
+        self.assertTrue((self.directory / "diagnostics.gz").exists())
+
+    def test_prepare_expires_after_owner_acquisition_before_any_native_command(self):
+        events = []
+        def expired(root, preset):
+            self.assertEqual((root, preset), (self.root, self.preset))
+            execution._preset_owner(root, preset)
+            events.append("expiry")
+            return {"read_bytes": 17}
+        native = Mock()
+        native.commands = []
+        def command(*args, **kwargs):
+            events.append(args[0])
+            raise ValueError("controlled stop before native execution")
+        native.command.side_effect = command
+        args = SimpleNamespace(preset=self.preset, run_id="prepare-order", targets=["fixture"],
+                               files=None, testing="ON", cuda_free=False)
+        environment = dict(os.environ)
+        environment.pop("FJ_HOST_BUNDLE", None)
+        with patch.dict(os.environ, environment, clear=True), \
+                patch.object(verify, "expire_diagnostics", side_effect=expired), \
+                patch.object(execution, "NativeRun", return_value=native), \
+                patch.object(verify, "capture_native_source", side_effect=lambda *args, **kwargs: (
+                    {"head": "fixture"}, b"", {"source_read_bytes": 0})), \
+                patch.object(verify.shutil, "which", return_value="fixture-cmake"), \
+                patch.object(verify, "windows_vctip", return_value=None), \
+                patch.object(verify, "finish_native_run", return_value=1) as finish:
+            self.assertEqual(verify.fresh_prepare(args), 1)
+        self.assertEqual(events, ["expiry", "configure"])
+        self.assertEqual(finish.call_args.args[3]["report_read_bytes"], 17)
 
     def test_removed_receipt_and_recovery_options_are_rejected(self):
         with patch.object(sys, "argv", ["verify.py", "development", "--preset", "linux-debug",

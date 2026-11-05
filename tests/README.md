@@ -579,23 +579,25 @@ combinations. Each native CI lane adds an explicit Release Rust selection
 quality selection.
 
 `Quality.RustNaming` uses the current workspace manifests and Clippy configuration
-in temporary copies. Its logs are retained with the fresh native quality result.
+in temporary copies. Required function/parameter outcomes remain in the native result.
 The checked-in `quality/fixtures/rust_naming/*.rs` files are product naming-policy
 contracts, not external references. Both crates are checked in the preset's
 profile, including test targets. Expected failures must produce the specific
 error code and primary source span for every rejected identifier; a compiler
 setup failure is not a passing negative test. Valid names and a reasoned raw
 binding exception must compile successfully. Cargo runs offline and locked;
-the normal configured build supplies cached dependencies. Logs remain in the
-artifact directory after temporary workspace cleanup. Run it with
+the normal configured build supplies cached dependencies. Successful outer runs
+remove their disposable source and log directories after all consumers finish.
+Failures, interruptions, incomplete outcomes or `JUICER_TEST_RETAIN_FIXTURES=1`
+retain the necessary workspace and diagnostics. Run it with
 `ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or run its standalone harness with the configured tool and artifact environment.
 
 `Quality.RustBoundaries` uses one temporary workspace per run. Both compiler-probe
 groups reuse Cargo artifacts under `out/build/<preset>/cargo/quality-probes/`,
 separately from product artifacts. Cargo's fingerprints and build lock govern
 reuse; standalone runs compile every current probe and check its diagnostics.
-The groups remove temporary source workspaces on completion and keep
-logs with the fresh native quality result. Run
+Both groups apply the same outer-outcome scratch policy; expected compiler
+rejections in a passing test do not pin disposable logs or source copies. Run
 `ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or its standalone harness. Cargo is offline and locked; the configured build supplies
 the dependencies. Each negative fixture in `quality/fixtures/rust_boundaries/`
 must fail for its expected compiler code at its own source location, not because
@@ -611,16 +613,18 @@ incremental policy. Set `CARGO_INCREMENTAL=1` explicitly when comparing probe
 timings or choosing that cache tradeoff; the harnesses honor an existing setting.
 
 At compiler-probe closeout, retain current results needed for review, active
-diagnosis or rollback. Superseded ordinary success logs follow the seven-day
-retention window in [failure diagnosis](#diagnosing-a-failure); their presence
-alone does not require indefinite retention. Keep each result bundle intact while
-it remains a review or reproduction input. There is no background expiry service.
+diagnosis or rollback. Successful disposable compiler workspaces and per-command
+logs are removed after drainage; required outcomes and candidate records remain.
+The outer runner's optional compressed diagnostic stream follows the seven-day
+window after explicit closeout described below. Review and reproduction holds
+protect retained diagnostics. There is no background expiry service.
 
 CTest owns compiler execution for both probe groups through the shared native
-runner. Ordinary quality checks retain formatting, Clippy and native/CUDA analysis;
-they do not dispatch these probes. Each current attempt retains its own diagnostics
-with the native result. Probe-workspace Cargo configuration must match repository
-ancestry.
+runner, including per-command descendant drainage before scratch cleanup.
+Ordinary quality checks retain formatting, Clippy and native/CUDA analysis;
+they do not dispatch these probes. Each current attempt keeps its required outcomes
+and outer diagnostic stream; failed or held probe workspaces remain at their
+reported paths. Probe-workspace Cargo configuration must match repository ancestry.
 
 Relevance labels partition `product`, `boundary`, `tooling` and `corpus`;
 `host`/`gpu` are independent prerequisites. CI executes product and boundary
@@ -634,6 +638,39 @@ fixture retention. Successful, fully drained workspaces clean up after assertion
 failures, interruptions, blocked owners and explicit retention preserve the
 diagnostics and configured paths. Ordinary fixture cleanup does not sweep prior
 runs or scientific capture inputs.
+
+Completed result, candidate and required scientific/case files remain immutable.
+Record explicit review and acceptance closeout separately on the matching native
+platform; starting a new build does not imply acceptance:
+
+```sh
+python -B scripts/verify.py closeout --preset linux-debug --run <run-id> --accept --review closed
+python -B scripts/verify.py closeout --preset linux-debug --run <run-id> --hold reproduction
+python -B scripts/verify.py closeout --preset linux-debug --run <run-id> --release-hold reproduction
+python -B scripts/verify.py closeout --preset linux-debug
+```
+
+`--review open` reopens review and clears its closeout clock. Holds are `review`,
+`failure` and `reproduction`; acquire/release them under the same preset owner as
+building and deletion. Only passed, unchanged and completely drained results can
+be accepted. Seven days after explicit acceptance **and** review closure, an
+unheld run's declared optional `diagnostics.gz` becomes eligible for expiry.
+Missing/invalid closeout, active review, any hold, failed/undrained result,
+missing required files or links/reparse traversal prevent deletion. File timestamps
+do not authorize expiry. The immutable result remains readable offline after its
+optional stream disappears; closeout does not reopen source, build or tool paths.
+
+The next outer native invocation expires eligible diagnostics after acquiring its
+preset owner and before build/test work; `closeout` performs the same pass without
+running tools. Each pass visits at most 32 direct result directories and persists
+one name cursor beside the preset's owner metadata. Directory names stream up to
+that cursor; payloads and legacy trees are never traversed. The summary reports
+visited directories, enumerated names, metadata reads/writes, actual deleted bytes,
+deletion errors and whether another batch remains. Repeat `closeout` for a backlog;
+no complete history inventory is needed. Failed deletion retains a retryable
+disposition, including interruption between unlink and final metadata publication.
+Expiry reads are included in native bookkeeping costs. Existing results without
+explicit closeout keep their diagnostics; this is no historical cleanup command.
 
 Asset-owner, spectral/exposure-product, bootstrap and illuminant tests create
 isolated input workspaces under their configured scratch roots. Host preparation
