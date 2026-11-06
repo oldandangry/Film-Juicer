@@ -1,4 +1,4 @@
-"""Complete testing-OFF Release isolation, C11 values/ABI and OFX loading gate."""
+"""Generate C11 expectations or run the testing-OFF Release production gate."""
 
 from pathlib import Path
 import argparse
@@ -162,9 +162,7 @@ def execute(arguments):
     out.mkdir(parents=True, exist_ok=True)
     commands = []
     probe_header_directory = build / "production-probes"
-    probe_header_directory.mkdir(parents=True, exist_ok=True)
     probe_expected_header = probe_header_directory / "production-film-expected.h"
-    shutil.copyfile(out / "production-film-expected.h", probe_expected_header)
 
     def run(name, command, timeout=None):
         result = subprocess.run(command, cwd=root, capture_output=True, timeout=timeout)
@@ -227,7 +225,7 @@ def execute(arguments):
     build_hashes.update({
         str(path): digest(path)
         for path in [production_features, production_stamp, native, archive, module, prepared_executable,
-                     probe_expected_header, *([build / "juicer.pdb"] if windows else [])]
+                     *([build / "juicer.pdb"] if windows else [])]
     })
     processor_fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{arguments.preset}.dat"
     print_updates = root / "tests/print/illuminant-fixtures/product-updates.json"
@@ -240,7 +238,7 @@ def execute(arguments):
                       fixtures / "production-film.c.in",
                       fixtures / "production-output-color.c.in", fixtures / "grain_frame_abi_assertions.inc",
                       fixtures / "grain_probe_contract.py", Path(__file__),
-                      out / "production-film-expected.h", probe_expected_header]
+                      out / "production-film-expected.h"]
     for directory in [root / "Resources", root / "tests/film/fixtures",
                       root / "tests/film/input-fixtures", root / "tests/film/dir-fixtures"]:
         consumed_paths.extend(path for path in directory.rglob("*") if path.is_file())
@@ -431,6 +429,11 @@ def execute(arguments):
         )
         run(name + "-compile", ["cmake", "--build", str(build), "--config", "Release",
                                  "--target", target, "--verbose"])
+        if name == "film":
+            header_hash = digest(probe_expected_header)
+            assert header_hash == digest(out / "production-film-expected.h"), "generated C11 expectations differ"
+            build_hashes[str(probe_expected_header)] = header_hash
+            consumed[str(probe_expected_header)] = header_hash
         build_hashes[str(executable)] = digest(executable)
         linked = digest(executable)
         before = digest(executable)
@@ -1485,6 +1488,8 @@ def main(argv=None):
         "--preset", choices=["linux-release", "windows-clang-release"], required=True
     )
     parser.add_argument("--artifacts", type=Path, required=True)
+    parser.add_argument("--generate-expected-header", action="store_true",
+                        help="write only production-film-expected.h; no native commands or driver access")
     global arguments, build
     arguments = parser.parse_args(argv)
     build = root / "out/build" / arguments.preset
@@ -1502,7 +1507,8 @@ def main(argv=None):
     expected_effects_frame_header(arguments.artifacts)
     expected_dir_frame_header(arguments.artifacts)
     expected_dir_boundary_header(arguments.artifacts)
-    execute(arguments)
+    if not arguments.generate_expected_header:
+        execute(arguments)
 
 
 if __name__ == "__main__":

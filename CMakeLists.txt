@@ -114,6 +114,38 @@ endif()
 set(JUICER_PRODUCTION_C_PROBES)
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     enable_language(C)
+    find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Interpreter)
+    if(WIN32)
+        set(probe_preset windows-clang-release)
+    else()
+        set(probe_preset linux-release)
+    endif()
+    set(probe_fixture_directories
+        tests/film/fixtures tests/film/input-fixtures tests/film/reference-fixtures
+        tests/film/dir-fixtures tests/film/grain-fixtures tests/film/effects-fixtures
+        tests/print/balance-fixtures tests/scanner/correction-fixtures
+        tests/scanner/color-fixtures tests/dir/boundary-fixtures
+        tests/film/effects-frame-fixtures tests/grain/frame-fixtures
+        tests/dir/frame-fixtures tests/diffusion/frame-fixtures
+        tests/scatter_halation/frame-fixtures tests/frame/geometry-fixtures
+        tests/scanner/post-effects-fixtures tests/scanner/descriptor-fixtures)
+    set(probe_fixture_inputs)
+    foreach(directory IN LISTS probe_fixture_directories)
+        file(GLOB_RECURSE fixture_inputs CONFIGURE_DEPENDS
+            "${PROJECT_SOURCE_DIR}/${directory}/*.json")
+        list(APPEND probe_fixture_inputs ${fixture_inputs})
+    endforeach()
+    set(probe_expected_header "${CMAKE_BINARY_DIR}/production-probes/production-film-expected.h")
+    add_custom_command(OUTPUT "${probe_expected_header}"
+        COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/ffi/production_contract.py"
+            --preset "${probe_preset}" --artifacts "${CMAKE_BINARY_DIR}/production-probes"
+            --generate-expected-header
+        DEPENDS ${probe_fixture_inputs}
+            tests/ffi/production_contract.py tests/ffi/shared_fixture.py
+            tests/ffi/compact_exposure_fixtures.py tests/ffi/grain_probe_contract.py
+            tests/ffi/effects_frame_probe_contract.py
+        COMMENT "Generating C11 production fixture expectations"
+        VERBATIM)
     foreach(probe IN ITEMS Film OutputColor)
         if(probe STREQUAL "Film")
             set(probe_source tests/ffi/production-film.c.in)
@@ -123,6 +155,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
         set(probe_target JuicerProduction${probe}Probe)
         set_source_files_properties(${probe_source} PROPERTIES LANGUAGE C)
         add_executable(${probe_target} EXCLUDE_FROM_ALL ${probe_source})
+        if(probe STREQUAL "Film")
+            target_sources(${probe_target} PRIVATE "${probe_expected_header}")
+        endif()
         set_target_properties(${probe_target} PROPERTIES
             C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
             LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")

@@ -170,6 +170,24 @@ objects, current C++ host preparation, and OFX adapter objects enter one
 `juicer_core` archive used by existing product and test links. Isolated test-hook
 objects replace selected archive members without rebuilding CUDA in Cargo.
 
+## Release production probes
+
+The excluded `JuicerProductionFilmProbe` and `JuicerProductionOutputColorProbe`
+targets compile as C11 and link the production Rust/native archives. Release
+configuration selects Python 3.13 for their fixture tooling. CMake owns the Film
+probe's `production-probes/production-film-expected.h`: selecting that probe
+generates a missing header before compilation, with dependencies on its Python
+helpers and the consumed frozen JSON fixture families. A preceding testing-OFF
+run is not required to build the probe in a testing-ON tree.
+
+`python -B tests/ffi/production_contract.py --preset <release-preset>
+--artifacts <directory> --generate-expected-header` runs the same fixture conversion without native
+commands or driver access. It generates a C header from existing expectations;
+it does not regenerate scientific fixtures. The complete OFF contract generates
+its own expected header, builds the CMake probes, then compares and pins the
+actual generated header before executing the value checks. It does not seed the
+build-tree header by copying a prior result.
+
 ## Binding maintenance
 
 The only regeneration entry point is `scripts/regenerate-rust-bindings.py`.
