@@ -625,8 +625,8 @@ pub unsafe extern "C" fn fj_test_cuda_abi_facts(out_count: *mut usize) -> *const
 // in a linked binary. The C and C++ fixture checks the same types independently.
 const _: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> u32> =
     None::<FjAbortQuery>.flatten();
-const _: unsafe extern "C" fn(FjPathView, *mut *mut FjCuda, *mut FjErrorBuffer) -> FjStatus =
-    fj_cuda_create;
+const _: unsafe extern "C" fn(*mut *mut FjCuda, *mut FjErrorBuffer) -> FjStatus = fj_cuda_create;
+const _: unsafe extern "C" fn(*mut FjCuda, *mut FjErrorBuffer) -> FjStatus = fj_cuda_check_terminal;
 const _: unsafe extern "C" fn(
     *mut FjCuda,
     *const FjFrame,

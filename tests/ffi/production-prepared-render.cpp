@@ -23,7 +23,7 @@
 #include "case_results.h"
 #include "JuicerState.h"
 #include "PreparedState.h"
-#include "ProcessRoot.h"
+#include "ProcessRuntime.h"
 
 namespace {
 
@@ -109,18 +109,10 @@ namespace {
             release();
         }
 
-        void create(FjAssets* assets, const ParamSnapshot& parameters, FjErrorBuffer& error) {
-            const FjPreparationParams input = preparation_params(parameters);
-            FjPreparedState* created = nullptr;
-            const FjStatus status = fj_legacy_prepared_state_create(assets, &input, &created, &error);
-            if (status.category != FJ_STATUS_SUCCESS || !created) {
-                if (created) {
-                    FjErrorBuffer ignored{nullptr, 0, 0};
-                    (void)fj_legacy_prepared_state_release(created, &ignored);
-                }
-                throw std::runtime_error(error.length ? std::string(error.data, error.length) : "prepared state creation failed");
-            }
-            state_ = created;
+        void take(FjAdmission& admission) {
+            require(admission.state, "instance admission did not return a prepared state");
+            state_ = admission.state;
+            admission.state = nullptr;
         }
 
         FjPreparedState* get() const noexcept {
@@ -139,6 +131,85 @@ namespace {
 
     private:
         FjPreparedState* state_ = nullptr;
+    };
+
+    class InstanceOwner final {
+    public:
+        InstanceOwner() {
+            FjErrorBuffer error{nullptr, 0, 0};
+            const FjStatus status = fj_legacy_instance_create(&instance_, &error);
+            if (status.category != FJ_STATUS_SUCCESS || !instance_) {
+                if (instance_) {
+                    FjErrorBuffer ignored{nullptr, 0, 0};
+                    (void)fj_legacy_instance_destroy(instance_, &ignored);
+                    instance_ = nullptr;
+                }
+                throw std::runtime_error("production instance creation failed");
+            }
+        }
+
+        InstanceOwner(const InstanceOwner&) = delete;
+        InstanceOwner& operator=(const InstanceOwner&) = delete;
+
+        ~InstanceOwner() {
+            (void)close();
+        }
+
+        void capture_and_admit(const FjAssets* assets, const ParamSnapshot& parameters, FjAdmission& admission, FjErrorBuffer& error) {
+            const std::uint64_t inputIdentity = hash_params(parameters);
+            FjCaptureStart capture{};
+            error.length = 0;
+            require(fj_legacy_instance_begin_capture(instance_, FJ_CAPTURE_CHANGE, &capture, &error).category == FJ_STATUS_SUCCESS &&
+                        capture.kind == FJ_CAPTURE_STARTED,
+                    error.length ? std::string(error.data, error.length) : "instance capture did not start");
+
+            FjSnapshotStart snapshot{};
+            error.length = 0;
+            require(fj_legacy_instance_begin_snapshot(instance_, capture.capture, &snapshot, &error).category == FJ_STATUS_SUCCESS &&
+                        snapshot.kind == FJ_SNAPSHOT_READY,
+                    error.length ? std::string(error.data, error.length) : "instance snapshot was not ready");
+
+            const FjPreparationParams input = preparation_params(parameters);
+            std::uint32_t update = FJ_UPDATE_NONE;
+            error.length = 0;
+            require(fj_legacy_instance_install(instance_, capture.capture, snapshot.write_revision, &input, inputIdentity, &update, &error).category == FJ_STATUS_SUCCESS &&
+                        update == FJ_UPDATE_APPLIED,
+                    error.length ? std::string(error.data, error.length) : "instance snapshot install was not applied");
+
+            admission = {};
+            error.length = 0;
+            const FjStatus status = fj_legacy_instance_admit(instance_, assets, &admission, &error);
+            if (status.category != FJ_STATUS_SUCCESS || admission.kind != FJ_ADMISSION_READY || !admission.state) {
+                if (admission.state) {
+                    FjErrorBuffer ignored{nullptr, 0, 0};
+                    (void)fj_legacy_prepared_state_release(admission.state, &ignored);
+                    admission.state = nullptr;
+                }
+                throw std::runtime_error(error.length ? std::string(error.data, error.length) : "instance admission was not ready");
+            }
+            if (admission.input_identity != inputIdentity || admission.build != 1) {
+                FjPreparedState* state = admission.state;
+                admission.state = nullptr;
+                FjErrorBuffer ignored{nullptr, 0, 0};
+                (void)fj_legacy_prepared_state_release(state, &ignored);
+                throw std::runtime_error(admission.input_identity != inputIdentity
+                                             ? "admitted input identity differs from captured parameters"
+                                             : "unchanged instance admission did not retain build one");
+            }
+        }
+
+        bool close() noexcept {
+            FjInstance* instance = instance_;
+            instance_ = nullptr;
+            if (instance) {
+                FjErrorBuffer ignored{nullptr, 0, 0};
+                return fj_legacy_instance_destroy(instance, &ignored).category == FJ_STATUS_SUCCESS;
+            }
+            return true;
+        }
+
+    private:
+        FjInstance* instance_ = nullptr;
     };
 
     struct Case final {
@@ -329,7 +400,8 @@ namespace {
         const std::vector<float>& expected;
     };
 
-    Json run_pass(const Case& test, std::string_view pass, const PassPixels& pixels, std::vector<std::uint32_t>* coldWords, std::uint64_t* coldRecipeHash, DeviceBuffers& device, bool summary) {
+    Json run_pass(const Case& test, std::string_view pass, const PassPixels& pixels, std::vector<std::uint32_t>* coldWords, std::uint64_t* coldRecipeHash, DeviceBuffers& device, InstanceOwner& instance, FjRuntimeView runtime, bool summary) {
+        require(runtime.assets && runtime.cuda, "production prepared render requires a live Runtime view");
         const auto& source = pixels.source;
         const auto& expected = pixels.expected;
         const int pitch = kWidth * test.components + kPitchPadding;
@@ -356,9 +428,14 @@ namespace {
 
         std::array<char, 2048> errorStorage{};
         FjErrorBuffer error{errorStorage.data(), errorStorage.size(), 0};
-        auto& assets = JuicerProcess::root().assets();
         PreparedOwner prepared;
-        prepared.create(assets.borrow_rust_assets(), parameters_for(test), error);
+        FjAdmission admission{};
+        const ParamSnapshot parameters = parameters_for(test);
+        instance.capture_and_admit(runtime.assets, parameters, admission, error);
+        prepared.take(admission);
+        if (pass == "warm") {
+            require(instance.close(), "instance close before warm admitted render failed");
+        }
         std::optional<FjPreparedStateView> view(std::in_place);
         require(fj_legacy_prepared_state_view(prepared.get(), &*view, &error).category == FJ_STATUS_SUCCESS,
                 "prepared state scalar view failed");
@@ -371,13 +448,13 @@ namespace {
 
         CompletionState completion;
         const auto route = static_cast<std::uint32_t>(test.route);
-        JuicerCuda::CallScope scope(JuicerCuda::borrowed_owner(), route, complete_call, &completion);
+        JuicerCuda::CallScope scope(runtime.cuda, route, complete_call, &completion);
         std::uint64_t submissionId = 1;
         const FjSubmissionAccess submission{kInstanceToken + route, 37, &submissionId, select_submission};
         CUcontext contextBefore = nullptr;
         require_driver(cuCtxGetCurrent(&contextBefore), "inspect CUDA context before submission");
         const FjCallCompletionResult result = fj_legacy_prepared_state_render(
-            assets.borrow_rust_assets(), prepared.get(), scope.access(), &frame, &policy, submission, {}, &error);
+            runtime.assets, prepared.get(), scope.access(), &frame, &policy, submission, {}, &error);
         view.reset();
         const bool viewsReleased = !view.has_value();
         const bool stateReleased = prepared.release() && prepared.get() == nullptr;
@@ -475,7 +552,7 @@ int main(int argc, char** argv) {
         ContextRestore contextRestore(original);
 
         require_cuda(cudaSetDevice(0), "select CUDA device");
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
 
         const auto expected = expected_pixels(fixture, updatesJson);
@@ -497,9 +574,10 @@ int main(int argc, char** argv) {
             std::uint64_t coldRecipeHash = 0;
             const PassPixels pixels{.source = source, .expected = expected[caseIndex]};
             cases.event("production-prepared-render", std::string(test.id) + "/cold", "start");
-            rows.push_back(run_pass(test, "cold", pixels, &coldWords, &coldRecipeHash, device, summary));
+            InstanceOwner instance;
+            rows.push_back(run_pass(test, "cold", pixels, &coldWords, &coldRecipeHash, device, instance, owner.borrow(), summary));
             cases.event("production-prepared-render", std::string(test.id) + "/warm", "start");
-            rows.push_back(run_pass(test, "warm", pixels, &coldWords, &coldRecipeHash, device, summary));
+            rows.push_back(run_pass(test, "warm", pixels, &coldWords, &coldRecipeHash, device, instance, owner.borrow(), summary));
 
             require_cuda(cudaFree(device.destination), "free destination buffer");
             device.destination = nullptr;

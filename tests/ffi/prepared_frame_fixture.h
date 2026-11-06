@@ -49,6 +49,7 @@ namespace JuicerCudaTest::PreparedFrameFixture {
     // Every view, raw frame record, descriptor and span in Inputs is call-local.
     // Consumers must finish synchronously and must not retain any reference.
     bool with_prepared_frame_inputs(
+        const FjAssets* assets,
         const PreparedState& state,
         const FrameFacts& facts,
         void* user,

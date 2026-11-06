@@ -25,9 +25,10 @@ set(JUICER_NATIVE_SOURCES
 )
 
 set(JUICER_HOST_SOURCES
+    src/ProcessRuntime.cpp
     src/JuicerState.cpp
     src/PreparedState.cpp
-    src/RustAssetBridge.cpp
+    src/NativePath.cpp
     src/RustScannerBridge.cpp
     src/RustFrameBridge.cpp
     src/RustGamutBridge.cpp
@@ -35,7 +36,6 @@ set(JUICER_HOST_SOURCES
     src/DiffusionHostBehavior.cpp
     src/RenderValues.cpp
     src/FilmEffectsFrameDescriptors.cpp
-    src/ResourceAssetLibrary.cpp
     src/ScatterHalation.cpp
     src/RustHalationBridge.cpp
     src/RustDiffusionBridge.cpp

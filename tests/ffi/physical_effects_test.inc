@@ -391,7 +391,7 @@ namespace {
         event.passed();
     }
     void effects_products(const std::filesystem::path& resources, const Json& captured) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         require(captured.at("products").size() == 92, "exact physical effects product membership");
         for (const auto& row : captured.at("products")) {
@@ -412,7 +412,7 @@ namespace {
             params.gateWeaveAmount = controls.gate_weave_amount;
             params.grainControls.active = controls.grain_active != 0;
             params.grainControls.debugView = controls.grain_debug_view;
-            auto product = JuicerTestSupport::prepare_product(params);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
@@ -435,42 +435,57 @@ namespace {
             params.gateDustAmount = 3;
             params.gateScratchAmount = 4;
             params.gateWeaveAmount = 0.1;
-            InstanceState state;
-            const auto pending = [&](const ParamSnapshot& value) {
-                std::lock_guard<std::mutex> lock(state.pending.m);
-                state.pending.value = PendingParamsState::Valid{value, hash_params(value)};
-            };
-            pending(params);
-            const auto admitted = admit_pending_render_state(state);
-            require(route % 2 ? bool(admitted.printState) : bool(admitted.directState), "effects publication baseline");
+            RenderInstance state;
+            JuicerTestSupport::capture(state, params);
+            const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(admitted.kind == FJ_ADMISSION_READY && admitted.state, "effects publication baseline");
             const auto held = JuicerTestSupport::published_view(admitted);
             const auto hash = held.recipe_hash;
-            const auto counter = state.buildCounterNext.load();
+            const auto baselineMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
             auto changed = params;
             changed.gateWeaveAmount = 0.2;
-            pending(changed);
+            JuicerTestSupport::capture(state, changed);
             status(fj_test_prepared_effects_probability_fault());
-            const auto rejected = admit_pending_render_state(state);
-            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && rejected.diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy" && !rejected.directState && !rejected.printState && state.buildCounterNext.load() == counter && held.recipe_hash == hash, "effects guard failure publishes no partial route and preserves admitted holds");
-            pending(params);
-            const auto recovered = admit_pending_render_state(state);
-            require(route % 2 ? bool(recovered.printState) : bool(recovered.directState), "effects publication recovers after consumed fault");
-            const auto repeated = admit_pending_render_state(state);
-            require(repeated.directState == recovered.directState && repeated.printState == recovered.printState, "unchanged recovered effects reuses publication");
+            const auto rejected = JuicerTestSupport::admit(owner.borrow().assets, state);
+            const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+            require(rejected.delivery.category == FJ_STATUS_PREPARATION_FAILURE &&
+                        rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state &&
+                        rejected.diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy" &&
+                        failedMetrics.build == baselineMetrics.build &&
+                        failedMetrics.publishedIdentity == baselineMetrics.publishedIdentity &&
+                        failedMetrics.backingIdentity == baselineMetrics.backingIdentity && held.recipe_hash == hash,
+                    "effects guard failure publishes no partial route and preserves admitted holds");
+            JuicerTestSupport::capture(state, params);
+            const auto recovered = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(recovered.kind == FJ_ADMISSION_READY && recovered.state &&
+                        JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
+                    "effects publication returns to last complete state after consumed fault");
+            const auto repeated = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(repeated.kind == FJ_ADMISSION_READY && repeated.state &&
+                        JuicerTestSupport::PublicationObserver::backing(*repeated.state) == baselineMetrics.backingIdentity &&
+                        JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
+                    "unchanged recovered effects reuses publication");
             auto invalidGrain = params;
             invalidGrain.grainControls.active = true;
             invalidGrain.grainControls.debugView = 3;
             invalidGrain.grainControls.particleAreaUm2 = 0;
-            pending(invalidGrain);
+            JuicerTestSupport::capture(state, invalidGrain);
             status(fj_test_prepared_effects_probability_fault());
-            const auto preceding = admit_pending_render_state(state);
-            require(preceding.status == PendingRenderAdmissionStatus::RebuildFailed && preceding.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain", "required grain failure precedes effects suppression or injected guard");
+            const auto preceding = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(preceding.kind == FJ_ADMISSION_PREPARATION_FAILED && !preceding.state &&
+                        preceding.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain",
+                    "required grain failure precedes effects suppression or injected guard");
             auto badDir = params;
             badDir.dirCouplers.active = true;
             badDir.dirCouplers.amount = -1;
-            pending(badDir);
-            const auto blockedDir = admit_pending_render_state(state);
-            require(blockedDir.status == PendingRenderAdmissionStatus::RebuildFailed && blockedDir.diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy" && !blockedDir.directState && !blockedDir.printState, "unconsumed effects guard precedes competing DIR failure");
+            JuicerTestSupport::capture(state, badDir);
+            const auto blockedDir = JuicerTestSupport::admit(owner.borrow().assets, state);
+            const auto finalMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+            require(blockedDir.kind == FJ_ADMISSION_PREPARATION_FAILED && !blockedDir.state &&
+                        blockedDir.diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy" &&
+                        finalMetrics.build == baselineMetrics.build &&
+                        finalMetrics.backingIdentity == baselineMetrics.backingIdentity,
+                    "unconsumed effects guard precedes competing DIR failure");
             require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "effects failures drain temporary development/DIR holds");
             event.passed();
         }

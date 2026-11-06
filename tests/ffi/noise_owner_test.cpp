@@ -12,7 +12,8 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaExecutor.h"
-#include "RustAssetBridge.h"
+#include "NativePath.h"
+#include "ProcessRuntime.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
@@ -222,17 +223,21 @@ namespace {
     }
 
     TEST(NoiseOwner, NativeCallReentryPrecheck) {
-        JuicerCuda::Owner owner;
-        owner.create(resources);
-        JuicerCuda::check_native_call_admission(JuicerCuda::borrowed_owner());
-        EXPECT_FALSE(JuicerCuda::calling_thread_native_gate_active());
+        JuicerProcess::ProcessRuntime runtime;
+        runtime.create(resources);
         {
-            JuicerCuda::NativeCall call(JuicerCuda::borrowed_owner());
-            EXPECT_TRUE(JuicerCuda::calling_thread_native_gate_active());
-            EXPECT_THROW(JuicerCuda::check_native_call_admission(JuicerCuda::borrowed_owner()), JuicerCuda::ExecutionFailure);
+            const FjRuntimeView view = runtime.borrow();
+            JuicerCuda::check_native_call_admission(view.cuda);
         }
         EXPECT_FALSE(JuicerCuda::calling_thread_native_gate_active());
-        expect_status(owner.close(), FJ_STATUS_SUCCESS);
+        {
+            const FjRuntimeView view = runtime.borrow();
+            JuicerCuda::NativeCall call(view.cuda);
+            EXPECT_TRUE(JuicerCuda::calling_thread_native_gate_active());
+            EXPECT_THROW(JuicerCuda::check_native_call_admission(view.cuda), JuicerCuda::ExecutionFailure);
+        }
+        EXPECT_FALSE(JuicerCuda::calling_thread_native_gate_active());
+        expect_status(runtime.close(), FJ_STATUS_SUCCESS);
     }
 } // namespace
 

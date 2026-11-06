@@ -10,7 +10,7 @@ namespace GrainFrameTest {
         return {v.at(0), v.at(1), v.at(2), v.at(3)};
     }
     Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         Json products = Json::array();
         std::size_t expectedIndex = 0;
@@ -28,7 +28,7 @@ namespace GrainFrameTest {
                 params.grainControls.amplitude = scalar(spec.value("amplitude", Json(1065353216u)));
                 params.grainControls.particleAreaUm2 = scalar(spec.value("area", Json(1051428127u)));
                 params.cameraExposureCompensationEv = spec.value("ev", 0.0);
-                auto product = JuicerTestSupport::prepare_product(params);
+                auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
                 FjPreparedStateView view{};
                 FjErrorBuffer viewError{};
                 status(product.view(view, viewError));

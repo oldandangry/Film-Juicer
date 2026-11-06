@@ -29,8 +29,8 @@ namespace JuicerCudaTest {
         void operator()(FjPreparedState* owner) const noexcept;
     };
     using RawPreparedStateHold = std::unique_ptr<FjPreparedState, RawPreparedStateDeleter>;
-    RawPreparedStateHold prepare_raw_state(FjAssets*, const ParamSnapshot&, FjStatus&, std::string&);
-    std::optional<PreparedState> prepare_state(FjAssets*, const ParamSnapshot&, FjStatus&, std::string&);
+    RawPreparedStateHold prepare_raw_state(const FjAssets*, const ParamSnapshot&, FjStatus&, std::string&);
+    std::optional<PreparedState> prepare_state(const FjAssets*, const ParamSnapshot&, FjStatus&, std::string&);
 
     enum class StateLifetimeCase : std::uint8_t {
         SuppliedStream,
@@ -48,8 +48,8 @@ namespace JuicerCudaTest {
         Count
     };
 
-    bool execute_prepared_state(FjAssets*, const ParamSnapshot&, const FjFrame&, std::uint64_t instanceToken, bool contract, bool lifetime, std::string&, StateLifetimeCase = StateLifetimeCase::SuppliedStream);
-    void check_prepared_state_lifetime(std::optional<PreparedState>&, FjAssets*, FjCuda*, const FjCudaContext&, const FjFrame&, const FjSubmission&, FjPreparedHostData&, FjErrorBuffer*, StateLifetimeCase);
+    bool execute_prepared_state(FjRuntimeView, const ParamSnapshot&, const FjFrame&, std::uint64_t instanceToken, bool contract, bool lifetime, std::string&, StateLifetimeCase = StateLifetimeCase::SuppliedStream);
+    void check_prepared_state_lifetime(std::optional<PreparedState>&, const FjAssets*, FjCuda*, const FjCudaContext&, const FjFrame&, const FjSubmission&, FjPreparedHostData&, FjErrorBuffer*, StateLifetimeCase);
 
     // Temporal grain fixtures borrow the complete state; DIR-only callers need no hold here.
     void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const FjPreparedStateView* state, const FjHostPreparation* hostPreparation, const std::string& invocationContext);
@@ -58,6 +58,7 @@ namespace JuicerCudaTest {
 
 
     bool execute_boundary(
+        FjRuntimeView runtime,
         const PreparedState& owner,
         const FjFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,

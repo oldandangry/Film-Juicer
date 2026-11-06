@@ -6,7 +6,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -21,14 +20,13 @@
 #include "JuicerState.h"
 #include "PreparedState.h"
 #include "prepared_product_fixture.h"
-#include "ProcessRoot.h"
-#include "ResourceAssetLibrary.h"
-#include "juicer_cuda_owner.h"
+#include "ProcessRuntime.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 
 namespace {
     using Json = nlohmann::json;
+    constexpr std::uint32_t kBlockedPendingKind = 6;
     void require(bool condition, const std::string& why) {
         if (!condition)
             throw std::runtime_error(why);
@@ -85,7 +83,7 @@ namespace {
         p.cameraExposureCompensationEv = std::bit_cast<double>(c.at("cameraExposureCompensationEv").at("f64_bits").get<std::uint64_t>());
         return p;
     }
-    void products(FjAssets* assets, const Json& fixture) {
+    void products(JuicerProcess::ProcessRuntime& runtime, const Json& fixture) {
         require(fixture.at("products").size() == 56, "all 56 Mallett product rows retained");
         std::vector<std::string> product_ids;
         for (const auto& row : fixture.at("products"))
@@ -99,7 +97,7 @@ namespace {
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             std::optional<PreparedState> owner;
-            const auto status = prepare_state(assets, p, owner, error);
+            const auto status = prepare_state(runtime.borrow().assets, p, owner, error);
             require(status.category == FJ_STATUS_SUCCESS && owner.has_value(), std::string(diagnostic.data(), error.length));
             FjPreparedStateView view{};
             require(owner->view(view, error).category == FJ_STATUS_SUCCESS, std::string(diagnostic.data(), error.length));
@@ -117,24 +115,13 @@ namespace {
             event.passed();
         }
     }
-    void pending(InstanceState& state, const ParamSnapshot& p) {
-        std::lock_guard<std::mutex> lock(state.pending.m);
-        state.pending.value = PendingParamsState::Valid{p, hash_params(p)};
-    }
-    bool admitted(const PendingRenderAdmissionResult& out, bool print) {
-        return out.status == (print ? PendingRenderAdmissionStatus::AdmittedPrint : PendingRenderAdmissionStatus::AdmittedDirect) && (print ? bool(out.printState) : bool(out.directState));
-    }
-    std::uint64_t recipe_hash(const PendingRenderAdmissionResult& out, bool print) {
-        require(admitted(out, print), "published recipe has matching route hold");
-        return JuicerTestSupport::published_view(out).recipe_hash;
-    }
     struct FaultScope {
         ~FaultScope() {
             fj_test_mallett_source_clear();
             fj_test_exposure_clear_fault();
             fj_test_spectral_clear_fault();
             fj_test_color_clear_fault();
-            set_pending_capture_test_hook(nullptr, nullptr);
+            fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
         }
     };
 
@@ -210,7 +197,7 @@ namespace {
                  {"columns_81x2", columns, columns.string() + ": " + expectedShape, columnsHash, true},
                  {"short_payload", truncated, truncated.string() + ": ShortRead(Payload)", truncatedHash, true}}};
     }
-    void constructor_failures(FjAssets* assets, const std::filesystem::path& artifactRoot) {
+    void constructor_failures(JuicerProcess::ProcessRuntime& runtime, const std::filesystem::path& artifactRoot) {
         const auto sourceCases = source_failures(artifactRoot);
         std::vector<std::string> source_ids, exposure_fault_ids, precedence_ids;
         for (std::uint32_t route = 0; route < 4; ++route) {
@@ -230,7 +217,7 @@ namespace {
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             std::optional<PreparedState> held;
-            require(prepare_state(assets, p, held, error).category == FJ_STATUS_SUCCESS && held, "constructor held-state seed");
+            require(prepare_state(runtime.borrow().assets, p, held, error).category == FJ_STATUS_SUCCESS && held, "constructor held-state seed");
             FjPreparedStateView seed{};
             require(held->view(seed, error).category == FJ_STATUS_SUCCESS, "constructor seed view");
             const auto retained = complete_result(seed, 1);
@@ -240,15 +227,15 @@ namespace {
                 arm_source(source.path);
                 require(fj_test_exposure_arm_fault(3, 1, 1).category == FJ_STATUS_SUCCESS, "constructor midgray fault arm");
                 std::optional<PreparedState> failed;
-                const auto status = prepare_state(assets, p, failed, error);
+                const auto status = prepare_state(runtime.borrow().assets, p, failed, error);
                 require(status.category == FJ_STATUS_PREPARATION_FAILURE && status.api == FJ_API_NONE && status.native_code == 0 && !failed, "constructor source failure has no owner");
                 require(std::string(diagnostic.data(), error.length) == source.diagnostic, "constructor exact source diagnostic: " + std::string(diagnostic.data(), error.length));
                 require(fj_test_mallett_source_consumed() == 1 && fj_test_exposure_fault_consumed(3, 1) == 0, "source decode consumes once before midgray");
                 FjPreparedStateView unchanged{};
                 require(held->view(unchanged, error).category == FJ_STATUS_SUCCESS && complete_result(unchanged, 1) == retained, "source failure preserves complete held values");
-                const auto later = prepare_state(assets, p, failed, error);
+                const auto later = prepare_state(runtime.borrow().assets, p, failed, error);
                 require(later.category == FJ_STATUS_UNSUPPORTED_INPUT && !failed && fj_test_exposure_fault_consumed(3, 1) == 1, "constructor retry reaches skipped midgray fault");
-                require(prepare_state(assets, p, failed, error).category == FJ_STATUS_SUCCESS && failed, "constructor source/fault one-shot recovery");
+                require(prepare_state(runtime.borrow().assets, p, failed, error).category == FJ_STATUS_SUCCESS && failed, "constructor source/fault one-shot recovery");
                 event.passed();
             }
             for (std::uint32_t operation : {3u, 5u, 6u}) {
@@ -257,7 +244,7 @@ namespace {
                     FaultScope cleanup;
                     require(fj_test_exposure_arm_fault(operation, 1, fault).category == FJ_STATUS_SUCCESS, "constructor checked exposure arm");
                     std::optional<PreparedState> failed;
-                    const auto status = prepare_state(assets, p, failed, error);
+                    const auto status = prepare_state(runtime.borrow().assets, p, failed, error);
                     const auto expected = fault == 1 ? FJ_STATUS_UNSUPPORTED_INPUT : fault == 2 ? FJ_STATUS_INTERNAL_FAILURE
                                                                                                 : FJ_STATUS_PREPARATION_FAILURE;
                     require(status.category == expected && status.api == FJ_API_NONE && status.native_code == 0 && !failed, "constructor checked exposure category/empty owner");
@@ -269,7 +256,7 @@ namespace {
                     require(fj_test_exposure_fault_consumed(operation, fault) == 1, "constructor checked exposure consumed once");
                     FjPreparedStateView unchanged{};
                     require(held->view(unchanged, error).category == FJ_STATUS_SUCCESS && complete_result(unchanged, 1) == retained, "checked exposure failure preserves complete held values");
-                    require(prepare_state(assets, p, failed, error).category == FJ_STATUS_SUCCESS && failed, "constructor checked exposure recovery");
+                    require(prepare_state(runtime.borrow().assets, p, failed, error).category == FJ_STATUS_SUCCESS && failed, "constructor checked exposure recovery");
                     event.passed();
                 }
             }
@@ -285,7 +272,7 @@ namespace {
                     require(fj_test_color_arm_fault(FJ_TEST_CAT02_MATRIX, 1, 1).category == FJ_STATUS_SUCCESS, "constructor color precedence arm");
                 arm_source(sourceCases[0].path);
                 std::optional<PreparedState> failed;
-                const auto status = prepare_state(assets, controls, failed, error);
+                const auto status = prepare_state(runtime.borrow().assets, controls, failed, error);
                 require(status.category == FJ_STATUS_PREPARATION_FAILURE && !failed && std::string(diagnostic.data(), error.length) == sourceCases[0].diagnostic, "source acquisition precedes output policy, inverse and scanner color");
                 require(fj_test_mallett_source_consumed() == 1, "constructor precedence real decode consumed");
                 if (precedence == 1) {
@@ -312,31 +299,40 @@ namespace {
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             std::optional<PreparedState> failed;
-            const auto status = prepare_state(assets, p, failed, error);
+            const auto status = prepare_state(runtime.borrow().assets, p, failed, error);
             require(status.category == FJ_STATUS_PREPARATION_FAILURE && !failed && fj_test_exposure_fault_consumed(4, 4) == 1, "constructor actual TC normalization category/one-shot");
             require(std::string(diagnostic.data(), error.length) == "TC mid-gray normalization: fixed exposure preparation category fault", "constructor TC normalization diagnostic");
-            require(prepare_state(assets, p, failed, error).category == FJ_STATUS_SUCCESS && failed, "constructor TC normalization recovery");
+            require(prepare_state(runtime.borrow().assets, p, failed, error).category == FJ_STATUS_SUCCESS && failed, "constructor TC normalization recovery");
             event.passed();
         }
     }
     struct Supersession {
+        RenderInstance* instance = nullptr;
         ParamSnapshot next;
         int mode = 0;
         bool fired = false;
+        bool failed = false;
     };
-    void supersede(InstanceState& state, void* opaque) {
+    void supersede_after_prepare(void* opaque) noexcept {
         auto& value = *static_cast<Supersession*>(opaque);
         if (std::exchange(value.fired, true))
             return;
-        std::lock_guard<std::mutex> lock(state.pending.m);
-        if (value.mode == 1)
-            state.pending.value = PendingParamsState::InvalidSnapshotControls{"new invalid controls"};
-        else if (value.mode == 2)
-            state.pending.value = PendingParamsState::Uninitialized{};
-        else
-            state.pending.value = PendingParamsState::Valid{value.next, hash_params(value.next)};
+        try {
+            if (value.mode == 0) {
+                JuicerTestSupport::capture(*value.instance, value.next);
+            } else if (value.mode == 1) {
+                JuicerTestSupport::invalidate(*value.instance, "new invalid controls");
+            } else {
+                FjCaptureStart capture{};
+                FjErrorBuffer error{nullptr, 0, 0};
+                value.instance->begin_capture(FJ_CAPTURE_CHANGE, capture, error);
+                value.failed = capture.kind != FJ_CAPTURE_STARTED;
+            }
+        } catch (...) {
+            value.failed = true;
+        }
     }
-    void admission(const Json& contract, const std::filesystem::path& artifactRoot) {
+    void admission(JuicerProcess::ProcessRuntime& runtime, const Json& contract, const std::filesystem::path& artifactRoot) {
         require(contract.contains("diagnostic"), "frozen historical failure contract remains present");
         const auto sourceCases = source_failures(artifactRoot);
         std::vector<std::string> source_ids, exposure_fault_ids, supersession_ids, precedence_ids;
@@ -359,90 +355,122 @@ namespace {
         JuicerTests::Cohort precedence_rows("mallett.admission.precedence", precedence_ids);
         for (int polarity = 0; polarity < 2; ++polarity)
             for (int route = 0; route < 2; ++route) {
-                const bool print = route == 1;
                 auto p = snapshot(static_cast<Spektrafilm::ScanRoute>(polarity * 2 + route), Spektrafilm::RgbToRawMethod::Mallett2019);
                 auto changed = p;
                 changed.cameraExposureCompensationEv = 1.5;
                 for (const auto& source : sourceCases) {
                     auto event = source_rows.case_event(std::to_string(polarity) + "/" + std::to_string(route) + "/" + source.name);
                     FaultScope cleanup;
-                    InstanceState state;
-                    pending(state, p);
-                    auto old = admit_pending_render_state(state);
-                    require(admitted(old, print), "initial admission");
-                    const auto oldRecipe = recipe_hash(old, print), hash = state.lastHash.load(), counter = state.buildCounterNext.load();
+                    RenderInstance state;
+                    JuicerTestSupport::capture(state, p);
+                    auto old = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                    require(old.kind == FJ_ADMISSION_READY && old.state, "initial admission");
+                    const auto oldRecipe = JuicerTestSupport::published_view(old).recipe_hash;
+                    const auto oldIdentity = old.state->input_identity();
+                    const auto oldBuild = old.state->build();
                     const auto retained = complete_result(JuicerTestSupport::published_view(old), 1);
+                    const auto beforeFailure = JuicerTestSupport::PublicationObserver::metrics(state);
                     arm_source(source.path);
-                    pending(state, changed);
+                    JuicerTestSupport::capture(state, changed);
                     require(fj_test_exposure_arm_fault(3, 1, 1).category == FJ_STATUS_SUCCESS, "mid-gray fault armed");
-                    const auto failed = admit_pending_render_state(state);
-                    require(failed.status == PendingRenderAdmissionStatus::RebuildFailed && !failed.directState && !failed.printState && failed.diagnostic == source.diagnostic, "amendment 7 source diagnostic route=" + std::to_string(route) + " source=" + source.name + " observed=" + failed.diagnostic);
+                    const auto failed = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                    require(failed.kind == FJ_ADMISSION_PREPARATION_FAILED && !failed.state && failed.diagnostic == source.diagnostic, "amendment 7 source diagnostic route=" + std::to_string(route) + " source=" + source.name + " observed=" + failed.diagnostic);
                     require(fj_test_mallett_source_consumed() == 1, "real decoder override consumed once");
                     require(fj_test_exposure_fault_consumed(3, 1) == 0, "missing source skips Rust binding");
-                    require(state.lastHash.load() == hash && state.buildCounterNext.load() == counter, "ordinary failure keeps hash/counter");
-                    require(print ? !JuicerAtomic::load_shared_ptr(&state.activePrintState) : !JuicerAtomic::load_shared_ptr(&state.activeDirectState), "ordinary failure clears selected slot");
-                    require(recipe_hash(old, print) == oldRecipe && complete_result(JuicerTestSupport::published_view(old), 1) == retained, "already admitted complete hold survives");
-                    {
-                        std::lock_guard<std::mutex> lock(state.pending.m);
-                        const auto* current = std::get_if<PendingParamsState::Valid>(&state.pending.value);
-                        require(current && current->fullHash == hash_params(changed), "failed changed-current snapshot remains valid pending");
-                    }
+                    const auto afterFailure = JuicerTestSupport::PublicationObserver::metrics(state);
+                    require(afterFailure.publishedIdentity == beforeFailure.publishedIdentity && afterFailure.build == beforeFailure.build && afterFailure.inputIdentity == hash_params(changed), "ordinary failure retains private A and current B identity");
+                    require(old.state->input_identity() == oldIdentity && old.state->build() == oldBuild && JuicerTestSupport::published_view(old).recipe_hash == oldRecipe && complete_result(JuicerTestSupport::published_view(old), 1) == retained, "already admitted complete hold survives");
                     fj_test_mallett_source_clear();
-                    const auto exceptional = admit_pending_render_state(state);
-                    require(exceptional.status == PendingRenderAdmissionStatus::RebuildFailed && fj_test_exposure_fault_consumed(3, 1) == 1, "valid recovery attempt consumes skipped fault before cleanup");
+                    const auto exceptional = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                    require(exceptional.kind == FJ_ADMISSION_PREPARATION_FAILED && fj_test_exposure_fault_consumed(3, 1) == 1, "valid recovery attempt consumes skipped fault before cleanup");
                     fj_test_exposure_clear_fault();
-                    const auto recovered = admit_pending_render_state(state);
-                    require(admitted(recovered, print) && state.lastHash.load() == hash_params(changed) && state.buildCounterNext.load() == counter + 1, "recovery complete publication");
-                    const auto reused = admit_pending_render_state(state);
-                    require(reused.directState == recovered.directState && reused.printState == recovered.printState && state.buildCounterNext.load() == counter + 1, "same-input owner reuse");
-                    require(JuicerProcess::root().assets().release_cached_payloads().category == FJ_STATUS_SUCCESS, "release source/profile cache");
-                    require(recipe_hash(old, print) == oldRecipe && complete_result(JuicerTestSupport::published_view(old), 1) == retained && recipe_hash(recovered, print) == recipe_hash(reused, print), "admitted complete holds survive cache release");
+                    JuicerTestSupport::capture(state, p);
+                    const auto reusedA = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                    require(reusedA.kind == FJ_ADMISSION_READY && reusedA.state && reusedA.state->input_identity() == oldIdentity && reusedA.state->build() == oldBuild, "return to A reuses its retained complete publication");
+                    JuicerTestSupport::capture(state, changed);
+                    const auto recovered = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                    require(recovered.kind == FJ_ADMISSION_READY && recovered.state && recovered.state->input_identity() == hash_params(changed) && recovered.state->build() == oldBuild + 1, "recovery complete publication");
+                    const auto reused = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                    require(reused.kind == FJ_ADMISSION_READY && reused.state && reused.state->input_identity() == recovered.state->input_identity() && reused.state->build() == recovered.state->build(), "same-input owner reuse");
+                    require(fj_legacy_assets_release_cached_payloads(runtime.borrow().assets, nullptr).category == FJ_STATUS_SUCCESS, "release source/profile cache");
+                    require(JuicerTestSupport::published_view(old).recipe_hash == oldRecipe && complete_result(JuicerTestSupport::published_view(old), 1) == retained && JuicerTestSupport::published_view(recovered).recipe_hash == JuicerTestSupport::published_view(reused).recipe_hash, "admitted complete holds survive cache release");
                     event.passed();
                 }
                 for (std::uint32_t operation : {3u, 5u, 6u})
                     for (std::uint32_t fault : {1u, 2u, 4u}) {
                         auto event = exposure_fault_rows.case_event(std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(operation) + "/" + std::to_string(fault));
                         FaultScope cleanup;
-                        InstanceState state;
-                        pending(state, p);
-                        const auto old = admit_pending_render_state(state);
-                        require(admitted(old, print), "fault initial admission");
-                        const auto hash = state.lastHash.load(), counter = state.buildCounterNext.load();
-                        pending(state, changed);
+                        RenderInstance state;
+                        JuicerTestSupport::capture(state, p);
+                        const auto old = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                        require(old.kind == FJ_ADMISSION_READY && old.state, "fault initial admission");
+                        const auto metrics = JuicerTestSupport::PublicationObserver::metrics(state);
+                        const auto old_complete = complete_result(JuicerTestSupport::published_view(old), 1);
+                        JuicerTestSupport::capture(state, changed);
                         require(fj_test_exposure_arm_fault(operation, 1, fault).category == FJ_STATUS_SUCCESS, "actual operation fault arm");
-                        const auto result = admit_pending_render_state(state);
-                        require(result.status == PendingRenderAdmissionStatus::RebuildFailed && !result.directState && !result.printState, "actual caller rejects fault");
+                        const auto result = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                        if (fault == 2) {
+                            require(result.kind == FJ_ADMISSION_POISONED && !result.state && result.delivery.category == FJ_STATUS_INTERNAL_FAILURE,
+                                    "actual preparation panic poisons admission");
+                            require(!result.diagnostic.empty(), "first preparation panic diagnostic is retained");
+                            require(fj_test_exposure_fault_consumed(operation, fault) == 1, "actual caller consumed panic before cleanup");
+                            const auto blocked = JuicerTestSupport::PublicationObserver::metrics(state);
+                            require(blocked.pendingKind == kBlockedPendingKind && blocked.build == metrics.build && old.state->build() == metrics.build,
+                                    "panic blocks the instance without advancing its committed publication");
+                            require(complete_result(JuicerTestSupport::published_view(old), 1) == old_complete,
+                                    "admitted old hold remains readable after poison");
+                            const auto future = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                            require(future.kind == FJ_ADMISSION_POISONED && !future.state && future.delivery.category == FJ_STATUS_INTERNAL_FAILURE,
+                                    "future admission on poisoned instance is rejected");
+                            fj_test_exposure_clear_fault();
+                            RenderInstance recovery;
+                            JuicerTestSupport::capture(recovery, p);
+                            const auto recovery_a = JuicerTestSupport::admit(runtime.borrow().assets, recovery);
+                            require(recovery_a.kind == FJ_ADMISSION_READY && recovery_a.state, "independent recovery instance admits A");
+                            JuicerTestSupport::capture(recovery, changed);
+                            const auto recovery_b = JuicerTestSupport::admit(runtime.borrow().assets, recovery);
+                            require(recovery_b.kind == FJ_ADMISSION_READY && recovery_b.state && recovery_b.state->build() == recovery_a.state->build() + 1,
+                                    "independent recovery instance admits B");
+                            event.passed();
+                            continue;
+                        }
+                        require(result.kind == FJ_ADMISSION_PREPARATION_FAILED && !result.state, "actual caller rejects fault");
                         require(fj_test_exposure_fault_consumed(operation, fault) == 1, "actual caller consumed before cleanup");
-                        require(state.lastHash.load() == hash && state.buildCounterNext.load() == counter, "fault keeps counters");
-                        if (fault == 4)
-                            require(print ? !JuicerAtomic::load_shared_ptr(&state.activePrintState) : !JuicerAtomic::load_shared_ptr(&state.activeDirectState), "ordinary failure slot clear");
-                        else
-                            require(JuicerAtomic::load_shared_ptr(&state.activeDirectState) == old.directState && JuicerAtomic::load_shared_ptr(&state.activePrintState) == old.printState, "exception retains publication");
+                        const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+                        require(failedMetrics.publishedIdentity == metrics.publishedIdentity && failedMetrics.build == metrics.build && old.state->build() == metrics.build, "fault retains private publication and committed build");
                         fj_test_exposure_clear_fault();
-                        require(admitted(admit_pending_render_state(state), print), "typed-fault recovery");
+                        JuicerTestSupport::capture(state, p);
+                        const auto reused_a = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                        require(reused_a.kind == FJ_ADMISSION_READY && reused_a.state && reused_a.state->build() == metrics.build, "typed-fault return to A reuses the retained publication");
+                        JuicerTestSupport::capture(state, changed);
+                        const auto retry = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                        require(retry.kind == FJ_ADMISSION_READY && retry.state && retry.state->build() == metrics.build + 1, "typed-fault recovery commits B once");
                         event.passed();
                     }
                 for (bool sourceFailure : {false, true})
                     for (int mode = 0; mode < 3; ++mode) {
                         auto event = supersession_rows.case_event(std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(sourceFailure) + "/" + std::to_string(mode));
                         FaultScope cleanup;
-                        InstanceState state;
-                        pending(state, p);
-                        const auto held = admit_pending_render_state(state);
-                        require(admitted(held, print), "supersession initial");
+                        RenderInstance state;
+                        JuicerTestSupport::capture(state, p);
+                        const auto held = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                        require(held.kind == FJ_ADMISSION_READY && held.state, "supersession initial");
                         const auto retained = complete_result(JuicerTestSupport::published_view(held), 1);
-                        Supersession selection{p, mode, false};
-                        pending(state, changed);
-                        set_pending_capture_test_hook(supersede, &selection);
+                        Supersession selection{&state, p, mode};
+                        JuicerTestSupport::capture(state, changed);
+                        fj_test_instance_prepare_hooks(nullptr, supersede_after_prepare, &selection);
                         if (sourceFailure)
                             arm_source(sourceCases[0].path);
                         else
                             require(fj_test_exposure_arm_fault(3, 1, 1).category == FJ_STATUS_SUCCESS, "supersession fault arm");
-                        const auto next = admit_pending_render_state(state);
-                        require(selection.fired && (sourceFailure ? fj_test_mallett_source_consumed() == 1 : fj_test_exposure_fault_consumed(3, 1) == 1), "obsolete attempt fault consumed before cleanup");
+                        const auto next = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                        require(selection.fired && !selection.failed && (sourceFailure ? fj_test_mallett_source_consumed() == 1 : fj_test_exposure_fault_consumed(3, 1) == 1), "obsolete attempt fault consumed before cleanup");
                         require(complete_result(JuicerTestSupport::published_view(held), 1) == retained, "supersession preserves admitted complete values");
-                        require(mode == 0 ? admitted(next, print) : next.status == (mode == 1 ? PendingRenderAdmissionStatus::InvalidSnapshotControls : PendingRenderAdmissionStatus::NeedsSnapshotAcquisition), "supersession resolves current snapshot");
-                        set_pending_capture_test_hook(nullptr, nullptr);
+                        require(mode == 0   ? next.kind == FJ_ADMISSION_READY && next.state && next.state->input_identity() == hash_params(p) && next.state->build() == held.state->build()
+                                : mode == 1 ? next.kind == FJ_ADMISSION_CAPTURE_FAILED && !next.state
+                                            : next.kind == FJ_ADMISSION_CAPTURING && !next.state,
+                                "supersession resolves current Rust capture state");
+                        fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
                         event.passed();
                     }
                 for (int earlier = 0; earlier < 3; ++earlier) {
@@ -451,18 +479,18 @@ namespace {
                     const auto& source = sourceCases[0];
                     arm_source(source.path);
                     auto bad = p;
-                    InstanceState state;
-                    pending(state, bad);
+                    RenderInstance state;
+                    JuicerTestSupport::capture(state, bad);
                     if (earlier == 0) {
                         bad.outputColorSpace = 255;
-                        pending(state, bad);
+                        JuicerTestSupport::capture(state, bad);
                     }
                     if (earlier == 1)
                         require(fj_test_spectral_arm_fault(3, 1, 1).category == FJ_STATUS_SUCCESS, "earlier inverse fault");
                     if (earlier == 2)
                         require(fj_test_color_arm_fault(FJ_TEST_CAT02_MATRIX, 1, 1).category == FJ_STATUS_SUCCESS, "later scanner fault at first call");
-                    const auto failed = admit_pending_render_state(state);
-                    require(failed.status == PendingRenderAdmissionStatus::RebuildFailed && state.lastHash.load() == 0 && state.buildCounterNext.load() == 0, "precedence no publication");
+                    const auto failed = JuicerTestSupport::admit(runtime.borrow().assets, state);
+                    require(failed.kind == FJ_ADMISSION_PREPARATION_FAILED && JuicerTestSupport::PublicationObserver::metrics(state).build == 0, "precedence no publication");
                     require(failed.diagnostic == source.diagnostic, "amendment 7 source acquisition precedes later preparation");
                     require(fj_test_mallett_source_consumed() == 1, "precedence source override consumed");
                     fj_test_mallett_source_clear();
@@ -488,24 +516,24 @@ namespace {
         for (int method : {0, 2}) {
             auto event = tc_normalization_rows.case_event(std::to_string(method));
             FaultScope cleanup;
-            InstanceState state;
+            RenderInstance state;
             auto p = snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, static_cast<Spektrafilm::RgbToRawMethod>(method));
-            pending(state, p);
+            JuicerTestSupport::capture(state, p);
             require(fj_test_exposure_arm_fault(4, 1, 4).category == FJ_STATUS_SUCCESS, "TC normalization fault arm");
-            require(admit_pending_render_state(state).status == PendingRenderAdmissionStatus::RebuildFailed && fj_test_exposure_fault_consumed(4, 4) == 1, "TC actual consumer");
+            require(JuicerTestSupport::admit(runtime.borrow().assets, state).kind == FJ_ADMISSION_PREPARATION_FAILED && fj_test_exposure_fault_consumed(4, 4) == 1, "TC actual consumer");
             fj_test_exposure_clear_fault();
-            require(admitted(admit_pending_render_state(state), false), "TC normalization recovery");
+            require(JuicerTestSupport::admit(runtime.borrow().assets, state).kind == FJ_ADMISSION_READY, "TC normalization recovery");
             event.passed();
         }
         {
             JuicerTests::Cohort skipped_normalization("mallett.admission.skipped_tc_normalization", {"mallett"});
             auto event = skipped_normalization.case_event("mallett");
             FaultScope cleanup;
-            InstanceState state;
+            RenderInstance state;
             auto p = snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Mallett2019);
-            pending(state, p);
+            JuicerTestSupport::capture(state, p);
             require(fj_test_exposure_arm_fault(4, 1, 4).category == FJ_STATUS_SUCCESS, "skipped TC fault armed");
-            require(admitted(admit_pending_render_state(state), false), "Mallett skips TC normalization");
+            require(JuicerTestSupport::admit(runtime.borrow().assets, state).kind == FJ_ADMISSION_READY, "Mallett skips TC normalization");
             require(fj_test_exposure_fault_consumed(4, 4) == 0, "Mallett leaves TC fault pending");
             FjMidgrayNormalization normalized{};
             std::array<char, 128> diagnostic{};
@@ -519,19 +547,17 @@ namespace {
     }
 } // namespace
 void fj_test_mallett_callers(const std::filesystem::path& resources, const Json& fixture, const std::filesystem::path& contractPath, bool admissionOnly, const std::filesystem::path& artifactRoot) {
-    JuicerCuda::Owner owner;
-    owner.create(resources);
-    FjAssets* assets = JuicerProcess::root().assets().borrow_rust_assets();
-    require(assets != nullptr, "prepared-state assets owner");
+    JuicerProcess::ProcessRuntime runtime;
+    runtime.create(resources);
     if (admissionOnly) {
         std::ifstream stream(contractPath);
         const auto contract = Json::parse(stream);
-        admission(contract, artifactRoot);
+        admission(runtime, contract, artifactRoot);
     } else {
-        products(assets, fixture);
-        constructor_failures(assets, artifactRoot);
+        products(runtime, fixture);
+        constructor_failures(runtime, artifactRoot);
     }
     JuicerTests::CaseEvent close_event("mallett.caller", admissionOnly ? "admission_owner_close" : "products_owner_close");
-    require(owner.close().category == FJ_STATUS_SUCCESS, "caller owner close");
+    require(runtime.close().category == FJ_STATUS_SUCCESS, "caller Runtime close");
     close_event.passed();
 }

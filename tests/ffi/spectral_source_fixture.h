@@ -9,7 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "RustAssetBridge.h"
+#include "NativePath.h"
 #include "juicer_legacy_api.h"
 
 namespace JuicerTestSupport {

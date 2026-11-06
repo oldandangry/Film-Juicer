@@ -44,6 +44,14 @@ def color_sources(root):
     ) + [root / "CMakeLists.txt"]
 
 
+def product_sources(root):
+    return sorted(
+        path for directory in (root / "src", root / "native", root / "cmake")
+        for path in directory.rglob("*")
+        if path.is_file() and (path.suffix.lower() in SOURCE_SUFFIXES or path.suffix == ".cmake")
+    ) + [root / "CMakeLists.txt"]
+
+
 RETIRED_CAT02 = r"\b(?:chromatic_adapt_XYZ_CAT02|build_chromatic_adaptation_matrix|prepare_film_raw_config|mat3_has_only_finite|sanitize_nonnegative_triplet|normalize_triplet_to_unit_y|triplet_has_positive_finite_sum|sanitize_white_or_dwg|whites_approximately_equal)\b"
 
 RETIRED_INPUT_COLOR = r"\b(?:matrix_input_rgb_to_xyz|input_colorspace_white_xyz|kRGB_to_XYZ_DWG|kRGB_to_XYZ_BT2020|kRGB_to_XYZ_ACES2065|kRGB_to_XYZ_sRGB_Rec709|kInputD65WhiteXYZ|kInputAcesWhiteXYZ|gDWG_RGB_to_XYZ|gDWG_XYZ_to_RGB|XYZ_to_DWG_linear|DWG_linear_to_XYZ|decode_BT2020_nonnegative|decode_BT2020_channel|decode_sRGB_nonnegative|decode_sRGB_channel|apply_input_cctf_decoding|convert_input_rgb_to_DWG|convert_input_rgb_to_sRGB_linear|copy_triplet_sanitized|clamp_triplet_nonnegative_inplace|mul_3x3_vec3)\b"
@@ -102,6 +110,19 @@ RETIRED_FILM_INPUT_DEFINITIONS = (
     r"std::array<float,\s*3>\s+copy_filter_triplet|"
     r"Spektrafilm::AutoExposureMethod\s+auto_exposure_method_from_index)"
     r"\s*\([^;{}]*\)\s*\{"
+)
+
+RETIRED_S5C2_AMBIENT_OWNERS = (
+    r"\b(?:JuicerCuda::Owner|borrowed_owner|Root::instance)\b|"
+    r"\bJuicerProcess::root\s*\(|"
+    r"\b(?:static|inline\s+static)\s+(?:JuicerProcess::)?Root\b|"
+    r"\b(?:JuicerProcess::)?Root\s+g_root\b|"
+    r"\bHostCleanup\b|"
+    r"\b(?:JuicerAssets::(?:Library|AssetBridge)|(?:ResourceAssetLibrary|RustAssetBridge))\b|"
+    r"\bFjAssets\s*\*\s*_assets\b|"
+    r"\b(?:borrow_rust_assets|release_cached_payloads|detach_assets)\s*\(|"
+    r"\b_dataDirectory\b|"
+    r"\bRoot\s*\(\s*(?:const\s+)?std::filesystem::path\s*&"
 )
 
 
@@ -302,10 +323,13 @@ class NativeBoundary(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         state = (ROOT / "src/JuicerState.cpp").read_text()
         self.assertNotIn("developmentHold", state)
-        self.assertIn("prepare_published_state(", state)
-        self.assertIn("JuicerProcess::root().assets().borrow_rust_assets(), params, out, error", state)
+        self.assertNotIn("prepare_published_state(", state)
+        instance = (ROOT / "rust/film-juicer-plugin/src/instance.rs").read_text()
+        self.assertIn("publication: Arc<state::Publication>", instance)
+        self.assertIn("self.publication.admit(|params| {", instance)
+        self.assertIn("let outcome = recipe::prepare(assets, params);", instance)
         self.assertNotIn("DevelopmentHold", (ROOT / "src/JuicerState.h").read_text())
-        self.assertNotIn("film_reference_samples", (ROOT / "src/RustAssetBridge.h").read_text())
+        self.assertNotIn("film_reference_samples", (ROOT / "src/ProcessRuntime.h").read_text() + (ROOT / "src/ProcessRuntime.cpp").read_text())
         reader = (ROOT / "tests/ffi/illuminant_calibration_test.cpp").read_text()
         self.assertNotIn("foundationReference", reader)
         self.assertIn("fj_test_exposure_sensitivity(&foundationInput", reader)
@@ -314,14 +338,23 @@ class NativeBoundary(unittest.TestCase):
         self.assertNotIn("result.developmentHold = std::move(film.developmentHold)", source)
         preparation = (ROOT / "rust/film-juicer-plugin/src/preparation.rs").read_text()
         self.assertIn("let completed = recipe::prepare(assets, params)", preparation)
-        self.assertIn("state.push(completed)", preparation)
+        self.assertIn("FjPreparedState::from_state(Arc::new(completed))", preparation)
         self.assertIn("fn project_state(owner: &FjPreparedState)", preparation)
         self.assertNotIn("pub(crate) fn project_state(", preparation)
         owner = preparation.split("pub(crate) struct FjPreparedState {", 1)[1].split("\n}", 1)[0]
-        self.assertIn("state: Vec<recipe::RenderState>", owner)
+        self.assertIn("state: Arc<recipe::RenderState>", owner)
         public_state = r"\bpub(?:\([^)]*\))?\s+state\s*:"
         self.assertNotRegex(owner, public_state)
-        self.assertRegex("pub(crate) state: Vec<recipe::RenderState>", public_state)
+        self.assertRegex("pub(crate) state: Arc<recipe::RenderState>", public_state)
+
+        contents_owner = recipe.split("pub struct RenderState {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("contents: Vec<Contents>", contents_owner)
+        self.assertNotRegex(contents_owner, r"\bpub(?:\([^)]*\))?\s+contents\s*:")
+        contents = recipe.split("struct Contents {", 1)[1].split("\n}", 1)[0]
+        self.assertNotRegex(contents, r"\bpub(?:\([^)]*\))?\s+")
+        self.assertIn(".try_reserve_exact(if reject_reservation { usize::MAX } else { 1 })", recipe)
+        self.assertIn(".map_err(PrepareError::ContentsAllocation)?;", recipe)
+        self.assertIn("backing.push(contents);", recipe)
 
     def test_film_input_construction_and_hash_definitions_stay_deleted(self):
         paths = [path for directory in (ROOT / "src", ROOT / "native")
@@ -448,10 +481,10 @@ class NativeBoundary(unittest.TestCase):
         self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_INPUT_HULL_DEFINITIONS), [])
         self.assertFalse((ROOT / "src/GamutCompression.cpp").exists())
         self.assertNotIn("build_input_compression_hull", (ROOT / "src/GamutCompression.h").read_text(encoding="utf-8"))
-        library = (ROOT / "src/ResourceAssetLibrary.cpp").read_text(encoding="utf-8")
+        library = (ROOT / "tests/ffi/test_asset_library.cpp").read_text(encoding="utf-8")
         self.assertNotIn("JuicerGamut::input_hull(", library)
         self.assertIn("return _bridge.input_hull();", library)
-        bridge = (ROOT / "src/RustAssetBridge.cpp").read_text(encoding="utf-8")
+        bridge = (ROOT / "tests/ffi/test_asset_bridge.cpp").read_text(encoding="utf-8")
         self.assertEqual(bridge.count("fj_legacy_assets_input_hull_acquire("), 1)
         core = (ROOT / "rust/film-juicer-core/src/gamut.rs").read_text(encoding="utf-8")
         self.assertEqual(core.count("fn ray_polygon_distance<"), 1)
@@ -537,8 +570,30 @@ class NativeBoundary(unittest.TestCase):
                      "build_focused_route_resource_input()", "derive_print_resource_input()"):
             self.assertRegex(text, model)
         self.assertFalse((ROOT / "src/FocusedRenderPayload.h").exists())
-        self.assertEqual(state.count("PreparedState prepared;"), 2)
-        self.assertIn("prepare_published_state(", state)
+        retired_publications = (
+            r"\b(?:InstanceState|PendingParamsState|DirectRenderState|PrintRenderState|JuicerAtomic)\b|"
+            r"\b(?:admit_pending_render_state|prepare_published_state|rebuild_direct_render_state|"
+            r"rebuild_print_render_state|set_pending_capture_test_hook)\s*\(")
+        self.assertEqual(forbidden_uses(native_sources(ROOT), retired_publications), [])
+        for name in ("InstanceState", "PendingParamsState", "DirectRenderState", "PrintRenderState"):
+            self.assertRegex("struct " + name + " {};", retired_publications)
+        self.assertRegex("namespace JuicerAtomic {}", retired_publications)
+        for name in ("admit_pending_render_state", "prepare_published_state", "rebuild_direct_render_state",
+                     "rebuild_print_render_state", "set_pending_capture_test_hook"):
+            self.assertRegex(name + "()", retired_publications)
+        cmake = (ROOT / "tests/CMakeLists.txt").read_text()
+        retired_hooks = r"\b(?:JUICER_ADMISSION_TEST_HOOK|juicer_admission_test_state)\b"
+        self.assertNotRegex(cmake, retired_hooks)
+        for name in ("JUICER_ADMISSION_TEST_HOOK", "juicer_admission_test_state"):
+            self.assertRegex(name, retired_hooks)
+        self.assertIn("struct NativeSubmissionState", state)
+        effect = (ROOT / "src/JuicerEffect.cpp").read_text()
+        effect_header = (ROOT / "src/JuicerEffect.h").read_text()
+        self.assertIn("RenderInstance _publication;", effect_header)
+        self.assertIn("std::optional<PreparedState> admitted;", effect)
+        self.assertIn("const PreparedState& prepared = *admitted;", effect)
+        self.assertIn("frameRequest.renderState = &prepared;", effect)
+        self.assertIn("std::exchange(_renderState, nullptr)", source)
         self.assertIn("std::optional<JuicerCuda::PrintResourceInput> print;", root)
         self.assertIn("const FocusedRouteResourceInput& input", root)
         self.assertIn("const PrintResourceInput& input", root)
@@ -549,6 +604,9 @@ class NativeBoundary(unittest.TestCase):
         self.assertEqual(provider.count("_call->render("), 1)
         holder = (ROOT / "src/PreparedState.cpp").read_text(encoding="utf-8")
         self.assertEqual(holder.count("return fj_legacy_prepared_state_render("), 1)
+        self.assertIn("fj_legacy_instance_admit(owner_, assets, &admission, &error)", holder)
+        instance = (ROOT / "rust/film-juicer-plugin/src/instance_bridge.rs").read_text()
+        self.assertIn("FjPreparedState::from_state(admission.into_state())", instance)
         boundary = (ROOT / "native/juicer_cuda_api.cpp").read_text(encoding="utf-8")
         self.assertEqual(boundary.count("JuicerCuda::execute_prepared_host_data("), 1)
         self.assertEqual(boundary.count("FjRenderOutcome JuicerCuda::NativeCall::render("), 1)
@@ -558,7 +616,7 @@ class NativeBoundary(unittest.TestCase):
         definitions = []
         for path in (ROOT / "native").glob("*.cpp"):
             definitions.extend(re.findall(r"^(?:FjStatus|FjRenderOutcome) (fj_cuda_\w+)\([^;]*?\)\s*\{", path.read_text(encoding="utf-8"), re.MULTILINE))
-        self.assertCountEqual(definitions, ["fj_cuda_create", "fj_cuda_inspect", "fj_cuda_render", "fj_cuda_retire_instance", "fj_cuda_shutdown", "fj_cuda_destroy"])
+        self.assertCountEqual(definitions, ["fj_cuda_create", "fj_cuda_inspect", "fj_cuda_render", "fj_cuda_retire_instance", "fj_cuda_shutdown", "fj_cuda_destroy", "fj_cuda_check_terminal"])
 
     def test_resource_destruction_does_not_reenter_root(self):
         source = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text(encoding="utf-8")
@@ -811,12 +869,12 @@ class NativeBoundary(unittest.TestCase):
         for path, consumer in setup.items():
             self.assertNotIn("build_visual_grain_frame_descriptor", consumer)
             if path == "tests/ffi/gaussian_kernel_test.inc":
-                self.assertIn("JuicerTestSupport::prepare_product(p)", consumer)
+                self.assertRegex(consumer, r"JuicerTestSupport::prepare_product\([^,\n]+,\s*p\)")
                 self.assertNotIn("GrainFrameTest::product_input", consumer)
                 self.assertIn("JuicerTestSupport::grain_frame_input(view, grainFrame)", consumer)
                 self.assertIn("fj_test_grain_frame_prepare(&rawGrain", consumer)
             elif path == "tests/grain/scratch_reuse_test.cpp":
-                self.assertIn("JuicerTestSupport::prepare_product(make_controls(route, variant))", consumer)
+                self.assertRegex(consumer, r"JuicerTestSupport::prepare_product\([^,\n]+,\s*make_controls\(route, variant\)\)")
                 self.assertIn("FrameFixture::with_prepared_frame_inputs(", consumer)
                 helper = (ROOT / "tests/ffi/prepared_frame_fixture.cpp").read_text()
                 self.assertIn("fj_test_grain_frame_prepare(", helper)
@@ -909,6 +967,77 @@ class NativeBoundary(unittest.TestCase):
         paths.append(ROOT / "src/ProcessRoot.cpp")
         self.assertEqual(forbidden_uses(paths, CONTEXT_RESET), [])
 
+    def test_s5c2_process_ownership_is_explicit_and_test_helpers_stay_test_only(self):
+        paths = product_sources(ROOT)
+        self.assertEqual(forbidden_uses(paths, RETIRED_S5C2_AMBIENT_OWNERS), [])
+
+        for relative in (
+            "src/ResourceAssetLibrary.h", "src/ResourceAssetLibrary.cpp",
+            "src/RustAssetBridge.h", "src/RustAssetBridge.cpp",
+        ):
+            self.assertFalse((ROOT / relative).exists(), relative)
+
+        runtime_header = (ROOT / "src/ProcessRuntime.h").read_text(encoding="utf-8")
+        runtime_source = (ROOT / "src/ProcessRuntime.cpp").read_text(encoding="utf-8")
+        process_root = (ROOT / "src/ProcessRoot.h").read_text(encoding="utf-8")
+        effect = (ROOT / "src/JuicerEffect.cpp").read_text(encoding="utf-8")
+        processing = (ROOT / "src/mainProcessing.cpp").read_text(encoding="utf-8")
+        plugin = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        self.assertIn("class ProcessRuntime final", runtime_header)
+        self.assertIn("FjRuntimeView ProcessRuntime::borrow() const", runtime_source)
+        self.assertIn("JuicerProcess::ProcessRuntime _runtime;", plugin)
+        self.assertIn("_runtime.create(JuicerProcess::data_directory())", plugin)
+        self.assertIn("_runtime.close()", plugin)
+        self.assertIn("const FjRuntimeView runtimeView = _runtime.borrow();", effect)
+        self.assertIn("const FjAssets* assets = runtimeView.assets", effect)
+        self.assertIn("JuicerCuda::borrow_root(runtimeView.cuda)", effect)
+        self.assertIn("JuicerProcessor proc(*this, runtimeView)", effect)
+        self.assertIn("JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect, FjRuntimeView runtime)", processing)
+        self.assertNotIn("static Root& instance()", process_root)
+        self.assertNotIn("JuicerAssets::Library", process_root)
+        self.assertNotRegex(process_root, r"\bFjAssets\s*\*|\b_assets\b|\b_dataDirectory\b")
+        self.assertNotIn("borrow_rust_assets", process_root)
+
+        for relative in (
+            "src/NativePath.h", "src/NativePath.cpp",
+            "tests/ffi/test_asset_bridge.h", "tests/ffi/test_asset_bridge.cpp",
+            "tests/ffi/test_asset_library.h", "tests/ffi/test_asset_library.cpp",
+        ):
+            self.assertTrue((ROOT / relative).is_file(), relative)
+        bridge_header = (ROOT / "tests/ffi/test_asset_bridge.h").read_text(encoding="utf-8")
+        bridge_source = (ROOT / "tests/ffi/test_asset_bridge.cpp").read_text(encoding="utf-8")
+        library_source = (ROOT / "tests/ffi/test_asset_library.cpp").read_text(encoding="utf-8")
+        bridge_consumer = (ROOT / "tests/ffi/production_profile_owner_test.cpp").read_text(encoding="utf-8")
+        library_consumer = (ROOT / "tests/ffi/input_hull_test.cpp").read_text(encoding="utf-8")
+        native_path_header = (ROOT / "src/NativePath.h").read_text(encoding="utf-8")
+        native_path_source = (ROOT / "src/NativePath.cpp").read_text(encoding="utf-8")
+        native_owner = (ROOT / "native/juicer_cuda_owner.h").read_text(encoding="utf-8")
+        self.assertIn("class InputHullHold", bridge_header)
+        self.assertIn("class OutputBoundaryHold", bridge_header)
+        self.assertIn("InputHullHold::~InputHullHold()", bridge_source)
+        self.assertIn("OutputBoundaryHold::~OutputBoundaryHold()", bridge_source)
+        self.assertIn("fj_legacy_assets_input_hull_acquire(", bridge_source)
+        self.assertIn("fj_legacy_assets_output_boundary_acquire(", bridge_source)
+        self.assertIn('#include "test_asset_bridge.h"', bridge_consumer)
+        self.assertIn("JuicerAssets::AssetBridge", bridge_consumer)
+        self.assertIn('#include "test_asset_library.h"', library_consumer)
+        self.assertIn("JuicerAssets::Library", library_consumer)
+        self.assertIn("class NativePathArgument", native_path_header)
+        self.assertIn("NativePathArgument::view()", native_path_source)
+        self.assertNotRegex(native_path_header + native_path_source, r"copy_native_path|path_diagnostic|fj_legacy_assets_create")
+        self.assertIn("JuicerProcess::Root& borrow_root(FjCuda* cuda)", native_owner)
+        self.assertNotIn("fj_legacy_runtime_create(", library_source + bridge_source)
+
+        build = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8") + (ROOT / "cmake/JuicerSources.cmake").read_text(encoding="utf-8")
+        tests_build = (ROOT / "tests/CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertNotIn("src/ResourceAssetLibrary.cpp", build + tests_build)
+        self.assertNotIn("src/RustAssetBridge.cpp", build + tests_build)
+        self.assertNotIn("tests/ffi/test_asset_bridge.cpp", build)
+        self.assertNotIn("tests/ffi/test_asset_library.cpp", build)
+        self.assertIn("src/NativePath.cpp", build)
+        self.assertIn("test_asset_bridge.cpp", tests_build)
+        self.assertIn("test_asset_library.cpp", tests_build)
+
     def test_retired_cat16_producers_stay_deleted(self):
         self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_CAT16), [])
 
@@ -992,7 +1121,7 @@ class NativeBoundary(unittest.TestCase):
         owner = preparation.split("unsafe fn illuminants_acquire_with(", 1)[1].split("pub(crate) unsafe fn illuminants_view(", 1)[0]
         for token in (".illuminants_observed(&IlluminantObserver(&*hooks))", "entry: owner.illuminants().map_err(Failure::Asset)?"):
             self.assertIn(token, owner)
-        bridge = (ROOT / "src/RustAssetBridge.cpp").read_text(encoding="utf-8")
+        bridge = (ROOT / "tests/ffi/test_asset_bridge.cpp").read_text(encoding="utf-8")
         self.assertIn("IlluminantTest::calibration_result(raw)", bridge)
         self.assertIn("fj_legacy_neutral_calibration_lookup(", bridge)
 
@@ -1000,6 +1129,37 @@ class NativeBoundary(unittest.TestCase):
 
 
 class NativeBoundaryControls(unittest.TestCase):
+    def test_s5c2_ownership_guard_rejects_ambient_and_native_asset_owners(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CMakeLists.txt").write_text("", encoding="utf-8")
+            source = root / "src/ProcessRoot.cpp"
+            source.parent.mkdir(parents=True)
+            for text in (
+                "JuicerCuda::Owner owner;",
+                "Root::instance();",
+                "JuicerProcess::root();",
+                "borrowed_owner();",
+                "HostCleanup cleanup;",
+                "JuicerAssets::Library library(path);",
+                "FjAssets* _assets;",
+                "borrow_rust_assets();",
+                "release_cached_payloads();",
+                "detach_assets();",
+                "JuicerProcess::Root g_root;",
+                "Root(const std::filesystem::path& path) {}",
+            ):
+                source.write_text(text, encoding="utf-8")
+                self.assertEqual(len(forbidden_uses(product_sources(root), RETIRED_S5C2_AMBIENT_OWNERS)), 1, text)
+            source.write_text(
+                "ProcessRuntime runtime;\n"
+                "const FjRuntimeView view = runtime.borrow();\n"
+                "Root& root = JuicerCuda::borrow_root(view.cuda);\n"
+                "const FjAssets* assets = view.assets;\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(forbidden_uses(product_sources(root), RETIRED_S5C2_AMBIENT_OWNERS), [])
+
     def test_llvm_nm_uses_active_toolchain_path(self):
         names = ("llvm-nm.exe",) if os.name == "nt" else ("llvm-nm-22", "llvm-nm")
         self.subtest_cases = tuple(f"tool/{name}" for name in names)
@@ -1115,6 +1275,7 @@ class NativeBoundaryControls(unittest.TestCase):
                 self.assertEqual(len(forbidden_uses([source], RETIRED_PROFILES)), 1)
             source.write_text("src/RustAssetBridge.cpp\n", encoding="utf-8")
             self.assertEqual(forbidden_uses([source], RETIRED_PROFILES), [])
+            self.assertEqual(len(forbidden_uses([source], RETIRED_S5C2_AMBIENT_OWNERS)), 1)
 
     def test_spectral_deletions_reject_definitions_includes_and_fixture_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1187,9 +1348,9 @@ class NativeBoundaryControls(unittest.TestCase):
                  for path in directory.rglob("*")
                  if path.is_file() and path.suffix.lower() in SOURCE_SUFFIXES]
         self.assertEqual(forbidden_uses(paths, RETIRED_NOISE), [])
-        source = (ROOT / "src/ResourceAssetLibrary.cpp").read_text(encoding="utf-8")
+        runtime_source = (ROOT / "src/ProcessRuntime.cpp").read_text(encoding="utf-8")
         root_source = (ROOT / "src/ProcessRoot.cpp").read_text(encoding="utf-8")
-        self.assertNotRegex(source, r"nlohmann|\bJson\b|fstream|ifstream|read_bytes|Library\s*::\s*noise")
+        self.assertNotRegex(runtime_source, r"nlohmann|\bJson\b|fstream|ifstream|read_bytes")
         self.assertNotIn("assets().noise()", root_source)
         noise_preflight = root_source.index("if (request.identity.grainActive && !request.noise)")
         self.assertLess(noise_preflight, root_source.index("if (!begin_submission(", noise_preflight))

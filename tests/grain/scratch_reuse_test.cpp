@@ -22,6 +22,7 @@
 #include "ColorTransforms.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "ProcessRuntime.h"
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/juicer_test_api.h"
@@ -116,6 +117,7 @@ namespace {
     };
 
     struct Inputs {
+        JuicerProcess::ProcessRuntime& runtime;
         PreparedState state;
         ParamSnapshot controls;
         Spektrafilm::VisualGrainFrameDescriptor grain{};
@@ -132,8 +134,8 @@ namespace {
         int height;
         FrameFixture::FrameFacts facts{};
 
-        Inputs(int w, int h, Spektrafilm::ScanRoute route, const GrainVariant& variant = {})
-            : state(JuicerTestSupport::prepare_product(make_controls(route, variant))),
+        Inputs(JuicerProcess::ProcessRuntime& processRuntime, int w, int h, Spektrafilm::ScanRoute route, const GrainVariant& variant = {})
+            : runtime(processRuntime), state(JuicerTestSupport::prepare_product(runtime.borrow().assets, make_controls(route, variant))),
               controls(make_controls(route, variant)), width(w), height(h) {
             facts.renderExtent = {0, 0, w, h};
             facts.fullFrameExtent = facts.renderExtent;
@@ -190,7 +192,7 @@ namespace {
             Capture capture{this};
             std::string diagnostic;
             require(FrameFixture::with_prepared_frame_inputs(
-                        state, facts, &capture, &capture_values, diagnostic),
+                        runtime.borrow().assets, state, facts, &capture, &capture_values, diagnostic),
                     diagnostic);
         }
 
@@ -201,6 +203,7 @@ namespace {
     };
 
     struct FrameCall {
+        JuicerProcess::Root& root;
         const bool withDir;
         const JuicerCuda::ResourceManager::DeviceContextKey& key;
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;
@@ -273,7 +276,7 @@ namespace {
         auto preparation = prepared.preparation;
         if (!call.withDir)
             preparation.spatialDirDescriptor = nullptr;
-        Frame frame = JuicerProcess::root().prepare_cuda_frame(
+        Frame frame = call.root.prepare_cuda_frame(
             call.key, call.snapshot, preparation, {}, call.stream, call.failure, prepared.hostPreparation);
         if (!frame.active()) {
             diagnostic = call.failure.diagnostic;
@@ -325,6 +328,15 @@ namespace {
 
     class GrainScratch : public testing::Test {
     protected:
+        inline static JuicerProcess::ProcessRuntime runtime;
+
+        static void SetUpTestSuite() {
+            runtime.create(JuicerProcess::data_directory());
+        }
+        static void TearDownTestSuite() {
+            require(runtime.close().category == FJ_STATUS_SUCCESS, "grain Runtime close failed");
+        }
+
         void SetUp() override {
             require_cuda(cudaSetDevice(0));
             require_cuda(cudaFree(nullptr));
@@ -338,7 +350,7 @@ namespace {
             require_cuda(cudaStreamSynchronize(stream));
             std::string error;
             const bool retired = contextRetired ||
-                                 JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error);
+                                 JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, key.contextOpaque, error);
             const cudaError_t destroyStatus = cudaStreamDestroy(stream);
             stream = nullptr;
             require(retired, error);
@@ -357,10 +369,10 @@ namespace {
             snapshot.deviceContextKey = key;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                 inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
-            FrameCall call{withDir, key, snapshot, stream, {}, {}, curves, expectedCurves};
+            FrameCall call{JuicerCuda::borrow_root(runtime.borrow().cuda), withDir, key, snapshot, stream, {}, {}, curves, expectedCurves};
             std::string diagnostic;
             const bool ready = FrameFixture::with_prepared_frame_inputs(
-                inputs.state, inputs.facts, &call, &prepare_root_frame, diagnostic);
+                inputs.runtime.borrow().assets, inputs.state, inputs.facts, &call, &prepare_root_frame, diagnostic);
             require(ready, diagnostic.empty() ? call.failure.diagnostic : diagnostic);
             return std::move(call.frame);
         }
@@ -439,7 +451,7 @@ namespace {
 
     TEST_F(GrainScratch, PreparedFrameNoiseReleaseFailurePreservesConsumerAndRootOutcomes) {
         JuicerTests::GtestCohort cases("noise-release-operation", {"consumer-exception-preserved", "release-failure-preserved", "retry-after-release-failure"});
-        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
         const std::size_t baseline = fj_test_live_noise_owners();
         NoiseFaultReset resetFault;
         FrameFixture::FrameFacts facts = inputs.facts;
@@ -449,7 +461,7 @@ namespace {
         std::string diagnostic;
         try {
             (void)FrameFixture::with_prepared_frame_inputs(
-                inputs.state, facts, nullptr, &throw_after_release_fault, diagnostic);
+                inputs.runtime.borrow().assets, inputs.state, facts, nullptr, &throw_after_release_fault, diagnostic);
         } catch (const ConsumerThrowSentinel&) {
             sentinelRethrown = true;
         } catch (...) {
@@ -467,10 +479,10 @@ namespace {
         snapshot.deviceContextKey = key;
         snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
             inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
-        FrameCall call{true, key, snapshot, stream, {}, {}};
+        FrameCall call{JuicerCuda::borrow_root(runtime.borrow().cuda), true, key, snapshot, stream, {}, {}};
         diagnostic.clear();
         const bool releaseFailed = FrameFixture::with_prepared_frame_inputs(
-            inputs.state, facts, &call, &prepare_then_arm_release_fault, diagnostic);
+            inputs.runtime.borrow().assets, inputs.state, facts, &call, &prepare_then_arm_release_fault, diagnostic);
         EXPECT_FALSE(releaseFailed);
         EXPECT_TRUE(call.frame.active());
         EXPECT_NE(diagnostic.find("asset boundary panic"), std::string::npos);
@@ -481,10 +493,10 @@ namespace {
 
         auto retry_event = cases.case_event("retry-after-release-failure");
         fj_test_noise_fault(0);
-        FrameCall retry{true, key, snapshot, stream, {}, {}};
+        FrameCall retry{JuicerCuda::borrow_root(runtime.borrow().cuda), true, key, snapshot, stream, {}, {}};
         diagnostic.clear();
         EXPECT_TRUE(FrameFixture::with_prepared_frame_inputs(
-            inputs.state, facts, &retry, &prepare_root_frame, diagnostic))
+            inputs.runtime.borrow().assets, inputs.state, facts, &retry, &prepare_root_frame, diagnostic))
             << diagnostic;
         EXPECT_TRUE(retry.frame.active());
         if (retry.frame.active())
@@ -536,7 +548,7 @@ namespace {
                 auto row = cases.case_event(
                     route_case_key(route) + "/pixel-" +
                     std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
-                Inputs inputs(64, 48, route, {.pixelSize = pixelSize});
+                Inputs inputs(runtime, 64, 48, route, {.pixelSize = pixelSize});
                 auto frame = prepare(inputs);
                 const auto kernels = frame.visual_grain_resources();
                 ASSERT_TRUE(kernels.active);
@@ -579,7 +591,7 @@ namespace {
         JuicerTests::GtestCohort cases("route", ids);
         for (auto route : routes) {
             auto row = cases.case_event(route_case_key(route));
-            Inputs inputs(128, 96, route);
+            Inputs inputs(runtime, 128, 96, route);
             auto frame = prepare(inputs);
             const auto lease = frame.workspace_lease();
             const auto grain = frame.visual_grain_workspace(lease);
@@ -619,9 +631,9 @@ namespace {
                 auto row = cases.case_event(route_case_key(route) + "/layers-" + (layers ? "on" : "off"));
                 GrainVariant variant;
                 variant.layers = layers;
-                Inputs before(64, 48, route, variant);
+                Inputs before(runtime, 64, 48, route, variant);
                 variant.filmGamma = 1.1f;
-                Inputs changed(64, 48, route, variant);
+                Inputs changed(runtime, 64, 48, route, variant);
                 EXPECT_NE(before.filmDevelopmentHash, changed.filmDevelopmentHash);
                 EXPECT_NE(before.recipeHash, changed.recipeHash);
                 EXPECT_EQ(before.normalizedDensityCurvesHash, changed.normalizedDensityCurvesHash);
@@ -644,7 +656,7 @@ namespace {
     }
 
     TEST_F(GrainScratch, KeepsDedicatedWorkspaceWithoutSpatialDir) {
-        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
         auto frame = prepare(inputs, false);
         const auto grain = frame.visual_grain_workspace(frame.workspace_lease());
         const auto optics = frame.scanner_workspace(frame.workspace_lease());
@@ -690,7 +702,7 @@ namespace {
                                                             << " layers=" << layers << " shared=" << shared << " time=" << time << " debug=" << debug);
                             auto& retained = inputsByDebug[debug];
                             if (!retained) {
-                                retained.emplace(48, 32, route, GrainVariant{.layers = layers, .shared = shared, .debug = debug, .time = time});
+                                retained.emplace(runtime, 48, 32, route, GrainVariant{.layers = layers, .shared = shared, .debug = debug, .time = time});
                             } else {
                                 retained->build_grain_frame(time);
                             }
@@ -731,7 +743,7 @@ namespace {
             for (float pixelSize : pixelSizes) {
                 auto row = cases.case_event(route_case_key(route) + "/pixel-" +
                                             std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
-                Inputs inputs(64, 48, route, {.pixelSize = pixelSize});
+                Inputs inputs(runtime, 64, 48, route, {.pixelSize = pixelSize});
                 auto frame = prepare(inputs);
                 auto lease = frame.workspace_lease();
                 const auto before = frame.visual_grain_workspace(lease);
@@ -763,7 +775,7 @@ namespace {
         JuicerTests::GtestCohort cases("width-context-transition", ids);
         for (int width : widths) {
             auto row = cases.case_event("width-" + std::to_string(width));
-            Inputs inputs(width, width / 2, Spektrafilm::ScanRoute::NegativePrintScan);
+            Inputs inputs(runtime, width, width / 2, Spektrafilm::ScanRoute::NegativePrintScan);
             auto frame = prepare(inputs);
             const auto marker = frame.workspace_lease();
             const auto grain = frame.visual_grain_workspace(marker);
@@ -779,8 +791,8 @@ namespace {
         auto retirement = cases.case_event("context-retirement-recreation");
         require_cuda(cudaStreamSynchronize(stream));
         std::string error;
-        require(JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error), error);
-        Inputs inputs(96, 64, Spektrafilm::ScanRoute::NegativeDirectScan);
+        require(JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, key.contextOpaque, error), error);
+        Inputs inputs(runtime, 96, 64, Spektrafilm::ScanRoute::NegativeDirectScan);
         auto recreated = prepare(inputs);
         compare_grain(inputs, recreated);
         finish(recreated);
@@ -788,7 +800,7 @@ namespace {
     }
 
     TEST_F(GrainScratch, RejectsConcurrentRetainedLeasesAndOrdersLaterStreamReuse) {
-        Inputs inputs(96, 64, Spektrafilm::ScanRoute::NegativePrintScan);
+        Inputs inputs(runtime, 96, 64, Spektrafilm::ScanRoute::NegativePrintScan);
         auto first = prepare(inputs);
         try {
             auto overlap = prepare(inputs);
@@ -799,7 +811,7 @@ namespace {
         first.abort();
         require_cuda(cudaStreamSynchronize(stream));
         std::string error;
-        require(JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error), error);
+        require(JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, key.contextOpaque, error), error);
         auto queued = prepare(inputs);
         const auto work = queued.visual_grain_workspace(queued.workspace_lease());
         require_cuda(cudaMemsetAsync(work.deltaAccum, 0xff, static_cast<std::size_t>(inputs.width) * inputs.height * sizeof(float), stream));
@@ -814,10 +826,10 @@ namespace {
     }
 
     TEST_F(GrainScratch, GrainToggleReleasesLogicalWorkspaceAndReenablesReuse) {
-        Inputs inputs(128, 96, Spektrafilm::ScanRoute::NegativePrintScan);
+        Inputs inputs(runtime, 128, 96, Spektrafilm::ScanRoute::NegativePrintScan);
         auto first = prepare(inputs);
         finish(first);
-        Inputs disabled(128, 96, Spektrafilm::ScanRoute::NegativePrintScan, GrainVariant{.active = false});
+        Inputs disabled(runtime, 128, 96, Spektrafilm::ScanRoute::NegativePrintScan, GrainVariant{.active = false});
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
         snapshot.instanceToken.value = 0x475241494eull;
         snapshot.frameToken.value = nextIdentity;
@@ -825,10 +837,10 @@ namespace {
         snapshot.deviceContextKey = key;
         snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
             disabled.uploadCoreHash, disabled.dirRecipeHash, disabled.scannerHash, 0);
-        FrameCall call{true, key, snapshot, stream, {}, {}};
+        FrameCall call{JuicerCuda::borrow_root(runtime.borrow().cuda), true, key, snapshot, stream, {}, {}};
         std::string diagnostic;
         const bool ready = FrameFixture::with_prepared_frame_inputs(
-            disabled.state, disabled.facts, &call, &prepare_root_frame, diagnostic);
+            disabled.runtime.borrow().assets, disabled.state, disabled.facts, &call, &prepare_root_frame, diagnostic);
         require(ready, diagnostic.empty() ? call.failure.diagnostic : diagnostic);
         auto off = std::move(call.frame);
         EXPECT_FALSE(off.visual_grain_workspace(off.workspace_lease()).active);
@@ -848,7 +860,7 @@ namespace {
         JuicerTests::GtestCohort cases("route", ids);
         for (auto route : routes) {
             auto row = cases.case_event(route_case_key(route));
-            Inputs inputs(96, 64, route);
+            Inputs inputs(runtime, 96, 64, route);
             auto frame = prepare(inputs);
             const auto lease = frame.workspace_lease();
             const auto work = frame.visual_grain_workspace(lease);
@@ -875,7 +887,7 @@ namespace {
     }
 
     TEST_F(GrainScratch, DiffusionKeepsDedicatedGrainScratch) {
-        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativeDirectScan, {.cameraDiffusion = true});
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativeDirectScan, {.cameraDiffusion = true});
         auto frame = prepare(inputs);
         const auto lease = frame.workspace_lease();
         const auto work = frame.visual_grain_workspace(lease);
@@ -894,8 +906,8 @@ namespace {
         constexpr std::uint64_t firstToken = 0x475241494eull;
         constexpr std::uint64_t secondToken = firstToken + 1;
         using Observer = JuicerProcess::TestSupport::RootLifetimeObserver;
-        auto& root = JuicerProcess::root();
-        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
+        auto& root = JuicerCuda::borrow_root(runtime.borrow().cuda);
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
         const auto originalKey = key;
         auto* const originalStream = stream;
         {
@@ -924,7 +936,7 @@ namespace {
         const auto otherBefore = Observer::grain_snapshot(root, key, firstToken, secondToken);
         require(otherBefore.members == 1 && otherBefore.grainRecords != 0, "other context lacks grain ownership");
 
-        EXPECT_EQ(fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), firstToken, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(fj_cuda_retire_instance(runtime.borrow().cuda, firstToken, nullptr).category, FJ_STATUS_SUCCESS);
         const auto remaining = Observer::grain_snapshot(root, originalKey, firstToken, secondToken);
         const auto otherAfter = Observer::grain_snapshot(root, key, firstToken, secondToken);
         EXPECT_FALSE(remaining.first);
@@ -943,7 +955,7 @@ namespace {
         // is current. Its physical ownership must enter deferred destruction,
         // without reentering Root or retiring either context implicitly.
         const auto chargedBefore = otherAfter.ledger.chargedBytes;
-        EXPECT_EQ(fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), secondToken, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(fj_cuda_retire_instance(runtime.borrow().cuda, secondToken, nullptr).category, FJ_STATUS_SUCCESS);
         const auto deferred = Observer::grain_snapshot(root, originalKey, firstToken, secondToken);
         EXPECT_EQ(deferred.members, 0u);
         EXPECT_TRUE(deferred.grain.expired());
@@ -974,8 +986,8 @@ namespace {
         constexpr std::uint64_t primaryToken = 0x475241494eull;
         constexpr std::uint64_t foreignToken = primaryToken + 1;
         using Observer = JuicerProcess::TestSupport::RootLifetimeObserver;
-        auto& root = JuicerProcess::root();
-        Inputs inputs(32, 24, Spektrafilm::ScanRoute::NegativeDirectScan);
+        auto& root = JuicerCuda::borrow_root(runtime.borrow().cuda);
+        Inputs inputs(runtime, 32, 24, Spektrafilm::ScanRoute::NegativeDirectScan);
         const auto primaryKey = key;
         auto* const primaryStream = stream;
         {
@@ -998,7 +1010,7 @@ namespace {
         require(cuCtxSetCurrent(static_cast<CUcontext>(primaryKey.contextOpaque)) == CUDA_SUCCESS, "restore primary fixture context");
         key = primaryKey;
         stream = primaryStream;
-        EXPECT_EQ(fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), foreignToken, nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(fj_cuda_retire_instance(runtime.borrow().cuda, foreignToken, nullptr).category, FJ_STATUS_SUCCESS);
         const auto deferred = Observer::grain_snapshot(root, foreignKey, primaryToken, foreignToken);
         EXPECT_TRUE(deferred.grain.expired());
         EXPECT_GT(deferred.ledger.chargedBytes, primary.ledger.chargedBytes);
@@ -1017,19 +1029,19 @@ namespace {
     }
 
     TEST_F(GrainScratch, ResetRetiresReusedWorkspace) {
-        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativePrintScan);
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativePrintScan);
         auto frame = prepare(inputs);
         compare_grain(inputs, frame);
         finish(frame);
         require_cuda(cudaStreamSynchronize(stream));
         std::string error;
-        require(JuicerProcess::root().retire_reset_context(0, key.contextOpaque, error), error);
+        require(JuicerCuda::borrow_root(runtime.borrow().cuda).retire_reset_context(0, key.contextOpaque, error), error);
         contextRetired = true;
     }
 
     // Explicit maintenance benchmark, excluded from ordinary CTest runs.
     TEST_F(GrainScratch, DISABLED_SixKMemoryAndTiming) {
-        Inputs inputs(6048, 4032, Spektrafilm::ScanRoute::NegativePrintScan);
+        Inputs inputs(runtime, 6048, 4032, Spektrafilm::ScanRoute::NegativePrintScan);
         auto frame = prepare(inputs);
         const auto lease = frame.workspace_lease();
         const auto work = frame.visual_grain_workspace(lease);
@@ -1098,13 +1110,10 @@ int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
     if (testing::GTEST_FLAG(list_tests))
         return RUN_ALL_TESTS();
-    JuicerCuda::Owner cudaOwner;
-    cudaOwner.create(JuicerProcess::data_directory());
     JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
     case_log.finish();
-    const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
-    return closed.category == FJ_STATUS_SUCCESS ? result : 1;
+    return result;
 } catch (...) {
     return 1;
 }

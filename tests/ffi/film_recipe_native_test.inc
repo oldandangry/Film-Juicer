@@ -1,16 +1,33 @@
+#include <exception>
+
 namespace {
     struct RecipeSupersession {
+        RenderInstance* instance = nullptr;
         ParamSnapshot replacement;
         bool fired = false;
+        std::exception_ptr failure;
     };
-    void supersede_recipe_snapshot(InstanceState& state, void* context) {
+    void supersede_recipe_snapshot(void* context) noexcept {
         auto& selection = *static_cast<RecipeSupersession*>(context);
         if (selection.fired)
             return;
-        std::lock_guard<std::mutex> lock(state.pending.m);
-        state.pending.value = PendingParamsState::Valid{selection.replacement, hash_params(selection.replacement)};
-        selection.fired = true;
+        try {
+            JuicerTestSupport::capture(*selection.instance, selection.replacement);
+            selection.fired = true;
+        } catch (...) {
+            selection.failure = std::current_exception();
+        }
     }
+    struct RecipePrepareHook final {
+        explicit RecipePrepareHook(RecipeSupersession& selection) {
+            fj_test_instance_prepare_hooks(nullptr, supersede_recipe_snapshot, &selection);
+        }
+        RecipePrepareHook(const RecipePrepareHook&) = delete;
+        RecipePrepareHook& operator=(const RecipePrepareHook&) = delete;
+        ~RecipePrepareHook() {
+            fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
+        }
+    };
 
     DirCouplersControls native_controls(const FjFilmDirParams& v) {
         DirCouplersControls out;
@@ -77,7 +94,7 @@ namespace {
     }
 
     void products(const std::filesystem::path& resources, const Json& captured) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
         for (const auto& row : captured.at("cases")) {
             JuicerTests::CaseEvent case_event("cpp", film_case_id("film/products", row));
@@ -93,7 +110,7 @@ namespace {
             controls.outputGamutCompressionEnabled = 0;
             controls.grainControls.active = false;
             const bool print = Spektrafilm::scan_route_is_print(controls.scanRoute);
-            auto product = JuicerTestSupport::prepare_product(controls);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
@@ -120,40 +137,54 @@ namespace {
             controls.inputCompressionEnabled = 0;
             controls.outputGamutCompressionEnabled = 0;
             controls.grainControls.active = false;
-            InstanceState state;
-            const auto pending = [&](const ParamSnapshot& snapshot) {
-                std::lock_guard<std::mutex> lock(state.pending.m);
-                state.pending.value = PendingParamsState::Valid{snapshot, hash_params(snapshot)};
-            };
-            pending(controls);
-            const auto admitted = admit_pending_render_state(state);
-            require(route % 2 ? bool(admitted.printState) : bool(admitted.directState), "complete DIR admission baseline");
+            RenderInstance state;
+            JuicerTestSupport::capture(state, controls);
+            const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(admitted.kind == FJ_ADMISSION_READY && admitted.state,
+                    "complete DIR admission baseline");
             const auto original = JuicerTestSupport::published_view(admitted);
-            const auto counter = state.buildCounterNext.load();
+            require(original.route == route, "DIR publication retains the selected route");
+            const auto originalMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+            const auto counter = originalMetrics.build;
             const auto oldHash = original.recipe_hash;
             auto changed = controls;
             changed.dirCouplers.active = true;
             changed.dirCouplers.amount = 0.5f;
-            pending(changed);
+            JuicerTestSupport::capture(state, changed);
             status(fj_test_film_recipe_fault(5, 3));
-            const auto rejected = admit_pending_render_state(state);
-            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && !rejected.directState && !rejected.printState &&
+            const auto rejected = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state &&
                         rejected.diagnostic == "MalformedRequiredProfileData phase=3D-3 field=dirCouplers",
                     "checked Rust DIR producer failure blocks complete-state admission");
-            require(state.buildCounterNext.load() == counter && original.recipe_hash == oldHash && !JuicerAtomic::load_shared_ptr(&state.activeDirectState) && !JuicerAtomic::load_shared_ptr(&state.activePrintState), "no intermediate publication; old admitted view remains readable after selected-slot clear");
+            const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+            require(failedMetrics.inputIdentity == hash_params(changed) && failedMetrics.build == counter &&
+                        failedMetrics.publishedIdentity == originalMetrics.publishedIdentity &&
+                        failedMetrics.backingIdentity == originalMetrics.backingIdentity && original.recipe_hash == oldHash,
+                    "failed current DIR preparation blocks admission while retaining the prior complete publication");
             require(fj_test_film_dir_live_owners() == 0, "failed Rust DIR construction retains no foreign DIR owner");
-            const auto recovered = admit_pending_render_state(state);
-            require(route % 2 ? bool(recovered.printState) : bool(recovered.directState), "DIR recovery");
-            const auto warm = admit_pending_render_state(state);
-            require(warm.directState == recovered.directState && warm.printState == recovered.printState, "unchanged snapshot reuse");
+            JuicerTestSupport::capture(state, controls);
+            const auto reusedA = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(reusedA.kind == FJ_ADMISSION_READY && reusedA.state && reusedA.state->build() == counter &&
+                        JuicerTestSupport::PublicationObserver::backing(*reusedA.state) == originalMetrics.backingIdentity,
+                    "restoring A reuses its retained publication after B fails");
+            JuicerTestSupport::capture(state, changed);
+            const auto recovered = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(recovered.kind == FJ_ADMISSION_READY && recovered.state && recovered.state->build() == counter + 1,
+                    "DIR recovery commits B once");
+            const auto warm = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(warm.kind == FJ_ADMISSION_READY && warm.state &&
+                        JuicerTestSupport::PublicationObserver::backing(*warm.state) == JuicerTestSupport::PublicationObserver::backing(*recovered.state) &&
+                        warm.state->build() == recovered.state->build(),
+                    "unchanged snapshot reuse");
             const auto recoveredView = JuicerTestSupport::published_view(recovered);
             auto unused = changed;
             if (route < 2)
                 unused.dirCouplers.langmuirReceiverKRgb[0] = 2;
             else
                 unused.dirCouplers.langmuirDonorKRgb[0] = 2;
-            pending(unused);
-            const auto unusedState = admit_pending_render_state(state);
+            JuicerTestSupport::capture(state, unused);
+            const auto unusedState = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(unusedState.kind == FJ_ADMISSION_READY && unusedState.state, "unused captured K admission");
             const auto unusedView = JuicerTestSupport::published_view(unusedState);
             require(unusedView.dir_recipe.hash == recoveredView.dir_recipe.hash, "unused captured K preserves family identity");
             require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "admission/recovery owns no temporary foreign graph");
@@ -161,16 +192,20 @@ namespace {
             first.dirCouplers.amount = 0.625f;
             auto latest = first;
             latest.dirCouplers.amount = 0.875f;
-            pending(first);
+            JuicerTestSupport::capture(state, first);
             status(fj_test_film_recipe_fault(5, 3));
-            RecipeSupersession selection{latest};
-            set_pending_capture_test_hook(supersede_recipe_snapshot, &selection);
-            const auto beforeSupersession = state.buildCounterNext.load();
-            const auto superseded = admit_pending_render_state(state);
-            set_pending_capture_test_hook(nullptr, nullptr);
-            require(selection.fired && (route % 2 ? bool(superseded.printState) : bool(superseded.directState)) &&
-                        hash_params(superseded.snapshot) == hash_params(latest) && state.lastHash.load() == hash_params(latest) &&
-                        state.buildCounterNext.load() == beforeSupersession + 1,
+            RecipeSupersession selection{&state, latest, false, {}};
+            const auto beforeSupersession = JuicerTestSupport::PublicationObserver::metrics(state).build;
+            JuicerTestSupport::PublicationAdmission superseded;
+            {
+                RecipePrepareHook hook(selection);
+                superseded = JuicerTestSupport::admit(owner.borrow().assets, state);
+            }
+            if (selection.failure)
+                std::rethrow_exception(selection.failure);
+            require(selection.fired && superseded.kind == FJ_ADMISSION_READY && superseded.state &&
+                        superseded.state->input_identity() == hash_params(latest) &&
+                        superseded.state->build() == beforeSupersession + 1,
                     "a superseded checked Rust DIR failure retries only the latest complete snapshot");
             require(fj_test_film_dir_live_owners() == 0, "supersession drains foreign DIR owners");
             route_event.passed();

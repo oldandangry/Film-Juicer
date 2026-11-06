@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "ProcessRoot.h"
-#include "RustAssetBridge.h"
+#include "ProcessRuntime.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
@@ -25,17 +25,27 @@ namespace {
     unsigned destructions = 0;
     std::string injection;
     thread_local bool failOwnerLock = false;
-    thread_local bool failLibraryConstruction = false;
     const std::system_error ownerLockFailure{std::make_error_code(std::errc::invalid_argument)};
     std::atomic<bool> holdShutdown{false};
     std::atomic<bool> ownerLockAttempted{false};
-    std::atomic<bool> holdHostCleanup{false};
-    std::atomic<unsigned> hostCleanupAttempts{0};
 
     void require(bool condition, const char* message) {
         if (!condition) {
             throw std::runtime_error(message);
         }
+    }
+
+    FjCuda* native(JuicerProcess::ProcessRuntime& owner) {
+        return owner.borrow().cuda;
+    }
+
+    bool live(JuicerProcess::ProcessRuntime& owner) {
+        FjRuntimeView view{};
+        return owner.borrow(view).category == FJ_STATUS_SUCCESS;
+    }
+
+    JuicerProcess::Root& root(JuicerProcess::ProcessRuntime& owner) {
+        return JuicerCuda::borrow_root(native(owner));
     }
 
     bool same_status(FjStatus a, FjStatus b) {
@@ -73,13 +83,6 @@ namespace {
 
     void require_host_detached() {
         require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0 && fj_test_profile_live_owners() == 0 && fj_test_print_density_live_owners() == 0, "retained native graph owns Rust assets");
-        bool rejected = false;
-        try {
-            (void)JuicerProcess::root().assets();
-        } catch (const std::logic_error&) {
-            rejected = true;
-        }
-        require(rejected, "detached Root served or recreated host assets");
     }
 
     void reject_accepting_calls(FjCuda* cuda) {
@@ -95,94 +98,101 @@ namespace {
                 "closed owner admitted render");
         require(fj_cuda_retire_instance(cuda, 1, nullptr).category == FJ_STATUS_PREPARATION_FAILURE,
                 "closed owner admitted retirement");
-        require(!JuicerProcess::root().begin_frame_preparation().active(), "closed Root admitted preparation");
+        require(!JuicerCuda::borrow_root(cuda).begin_frame_preparation().active(), "closed Root admitted preparation");
     }
 
     void check_success() {
-        JuicerCuda::Owner empty;
+        JuicerProcess::ProcessRuntime empty;
         require(empty.close().category == FJ_STATUS_SUCCESS, "empty close failed");
         for (unsigned cycle = 0; cycle != 3; ++cycle) {
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create("metadata-only");
-            FjCuda* borrow = JuicerCuda::borrowed_owner();
+            FjCuda* borrow = native(owner);
             require(fj_cuda_retire_instance(borrow, 0, nullptr).category == FJ_STATUS_UNSUPPORTED_INPUT, "zero token accepted");
             require(fj_cuda_retire_instance(borrow, 123, nullptr).category == FJ_STATUS_SUCCESS, "valid unused token rejected");
-            require(fj_cuda_shutdown(borrow, nullptr).category == FJ_STATUS_SUCCESS, "metadata shutdown failed");
-            require(JuicerCuda::borrowed_owner() == borrow && destructions == cycle, "shutdown consumed caller ownership");
+            require(owner.shutdown().category == FJ_STATUS_SUCCESS, "metadata shutdown failed");
+            require(native(owner) == borrow && destructions == cycle, "shutdown consumed caller ownership");
             reject_accepting_calls(borrow);
             const auto attempts = shutdownAttempts.load();
-            require(fj_cuda_shutdown(borrow, nullptr).category == FJ_STATUS_SUCCESS && shutdownAttempts == attempts, "closed shutdown retried");
+            require(owner.shutdown().category == FJ_STATUS_SUCCESS && shutdownAttempts == attempts, "closed shutdown retried");
             require(owner.close().category == FJ_STATUS_SUCCESS, "closed destroy failed");
-            require(!JuicerCuda::borrowed_owner() && destructions == cycle + 1, "closed destroy did not release exactly once");
+            require(!live(owner) && destructions == cycle + 1, "closed destroy did not release exactly once");
             require(owner.close().category == FJ_STATUS_SUCCESS && destructions == cycle + 1, "empty wrapper consumed twice");
         }
         const auto attempts = shutdownAttempts.load();
         {
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create("accepting-destroy");
         }
-        require(shutdownAttempts == attempts + 1 && destructions == 4 && !JuicerCuda::borrowed_owner(),
+        require(shutdownAttempts == attempts + 1 && destructions == 4,
                 "accepting destructor did not make exactly one shutdown attempt");
     }
 
     void check_host_cache_result(bool nativeFailure) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(JuicerProcess::data_directory());
-        const auto& catalog = JuicerProcess::root().assets().spektrafilm_profile_catalog();
-        require(catalog.valid && fj_test_catalog_live_owners() == 1, "terminal catalog acquisition failed");
+        const auto& catalog = owner.spektrafilm_profile_catalog();
+        require(catalog.valid && fj_test_catalog_live_owners() == 0, "Runtime retained its temporary catalog handle");
+        const auto* const label = catalog.filmProfiles.front().label.c_str();
         fj_test_cache_release_failure();
-        auto* borrowed = JuicerCuda::borrowed_owner();
+        auto* borrowed = native(owner);
         if (nativeFailure) {
             injection = "typed";
-            require(fj_cuda_shutdown(borrowed, nullptr).native_code == -701, "host failure erased native close failure");
-            require(hostCleanupAttempts == 0 && fj_test_catalog_live_owners() == 1, "native failure started host purge");
+            require(owner.shutdown().native_code == -701, "host failure erased native close failure");
+            require(fj_test_runtime_cache_attempts() == 0 && fj_test_catalog_live_owners() == 0, "native failure started host purge");
+            require(catalog.filmProfiles.front().label.c_str() == label, "native failure invalidated copied catalog presentation");
             injection.clear();
             require(owner.close().native_code == -701, "terminal cleanup erased native failure");
             require_host_detached();
             require(shutdownAttempts == 1 && destructions == 0, "failed native close was retired again or deleted");
             return;
         }
-        holdHostCleanup = true;
+        fj_test_runtime_cache_hold(1);
         std::array<FjStatus, 8> results{};
         std::array<std::array<char, 256>, 8> diagnostics{};
         std::array<std::thread, 8> workers;
         std::atomic<unsigned> completed{0};
         const auto call = [&](std::size_t i) {
             FjErrorBuffer error{diagnostics[i].data(), diagnostics[i].size(), 0};
-            results[i] = fj_cuda_shutdown(borrowed, &error);
+            results[i] = owner.shutdown(&error);
             completed.fetch_add(1);
         };
         workers[0] = std::thread(call, 0);
-        while (hostCleanupAttempts.load() == 0) {
-            hostCleanupAttempts.wait(0);
+        while (fj_test_runtime_cache_attempts() == 0) {
+            std::this_thread::yield();
         }
         for (std::size_t i = 1; i < workers.size(); ++i) {
             workers[i] = std::thread(call, i);
         }
         require(completed == 0, "shutdown returned before cleanup result publication");
-        holdHostCleanup = false;
-        holdHostCleanup.notify_all();
+        fj_test_runtime_cache_hold(0);
         for (auto& worker : workers) {
             worker.join();
         }
         for (std::size_t i = 0; i < workers.size(); ++i) {
             require(results[i].category == FJ_STATUS_INTERNAL_FAILURE && same_status(results[i], results[0]) && std::strcmp(diagnostics[i].data(), diagnostics[0].data()) == 0, "concurrent shutdown saw another cleanup result");
         }
-        require(hostCleanupAttempts == 1 && shutdownAttempts == 1 && fj_test_catalog_live_owners() == 1, "cache release repeated or revoked the catalog");
+        require(fj_test_runtime_cache_attempts() == 1 && shutdownAttempts == 1 && fj_test_catalog_live_owners() == 0, "cache release repeated or retained its temporary catalog handle");
+        require(catalog.filmProfiles.front().label.c_str() == label, "cache cleanup invalidated copied catalog presentation");
         reject_accepting_calls(borrowed);
-        require(same_status(fj_cuda_shutdown(borrowed, nullptr), results[0]) && hostCleanupAttempts == 1 && shutdownAttempts == 1, "repeated shutdown retried cleanup/native retirement");
-        require(same_status(owner.close(), results[0]) && destructions == 1 && !JuicerCuda::borrowed_owner(), "host cleanup failure retained closed native graph or lost precedence");
+        require(same_status(owner.shutdown(), results[0]) && fj_test_runtime_cache_attempts() == 1 && shutdownAttempts == 1, "repeated shutdown retried cleanup/native retirement");
+        fj_test_runtime_fault(3);
+        std::array<char, 256> terminalText{};
+        FjErrorBuffer terminalError{terminalText.data(), terminalText.size(), 0};
+        require(same_status(owner.close(&terminalError), results[0]) && destructions == 1 && !live(owner) &&
+                    std::strcmp(terminalText.data(), diagnostics[0].data()) == 0,
+                "terminal host cleanup erased the saved cache result or retained the closed native graph");
         require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0 && fj_test_profile_live_owners() == 0, "terminal close retained host owners");
     }
 
     void check_serialization() {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create("admission-order");
-        auto outerGuard = JuicerProcess::root().begin_frame_preparation();
-        FjCuda* borrow = JuicerCuda::borrowed_owner();
+        auto outerGuard = JuicerCuda::borrow_root(native(owner)).begin_frame_preparation();
+        FjCuda* borrow = native(owner);
         FjStatus result{};
         std::thread terminal([&] {
-            result = fj_cuda_shutdown(borrow, nullptr);
+            result = owner.shutdown();
         });
         shutdownAttempts.wait(0);
         bool rejected = false;
@@ -198,14 +208,14 @@ namespace {
     }
 
     void check_unregistered(const std::string& mode) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create("unregistered-terminal-handle");
         auto* const invalid = reinterpret_cast<FjCuda*>(std::uintptr_t{8});
         if (mode == "unregistered") {
             require(fj_cuda_shutdown(invalid, nullptr).category == FJ_STATUS_PREPARATION_FAILURE, "unregistered shutdown accepted");
             require(fj_cuda_destroy(invalid, nullptr).category == FJ_STATUS_PREPARATION_FAILURE, "unregistered destroy accepted");
         } else if (mode == "unregistered-reentry") {
-            JuicerCuda::NativeCall call(JuicerCuda::borrowed_owner());
+            JuicerCuda::NativeCall call(native(owner));
             require(fj_cuda_shutdown(invalid, nullptr).category == FJ_STATUS_UNSUPPORTED_INPUT, "reentrant shutdown accepted");
             require(fj_cuda_destroy(invalid, nullptr).category == FJ_STATUS_PREPARATION_FAILURE, "reentrant unregistered destroy accepted");
         } else {
@@ -218,7 +228,7 @@ namespace {
                 require(!failOwnerLock && result.category == FJ_STATUS_INTERNAL_FAILURE, "unregistered admission exception not contained");
             }
         }
-        require(fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), 1, nullptr).category == FJ_STATUS_SUCCESS, "invalid handle changed registered admission");
+        require(fj_cuda_retire_instance(native(owner), 1, nullptr).category == FJ_STATUS_SUCCESS, "invalid handle changed registered admission");
         require(owner.close().category == FJ_STATUS_SUCCESS && destructions == 1, "valid owner was lost");
     }
 
@@ -228,19 +238,19 @@ namespace {
         const FjStatus expected = saved ? FjStatus{FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_DRIVER, -701}
                                         : FjStatus{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
         {
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create("terminal-admission-exception");
-            FjCuda* borrow = JuicerCuda::borrowed_owner();
+            FjCuda* borrow = native(owner);
             std::array<char, 128> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             if (saved) {
                 injection = "typed";
-                require(same_status(fj_cuda_shutdown(borrow, &error), expected), "initial typed shutdown failed");
+                require(same_status(owner.shutdown(&error), expected), "initial typed shutdown failed");
                 injection.clear();
             }
             failOwnerLock = true;
             const auto before = allocations.load();
-            const auto result = consuming ? owner.close(&error) : fj_cuda_shutdown(borrow, &error);
+            const auto result = consuming ? owner.close(&error) : owner.shutdown(&error);
             const auto after = allocations.load();
             require(!failOwnerLock && same_status(result, expected), "admission exception replaced selected status");
             require(before == after, "admission failure retention allocated");
@@ -263,21 +273,21 @@ namespace {
     void check_buffers(const std::string& mode) {
         const bool blocked = mode == "malformed-blocked-destroy";
         {
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create("terminal-error-buffer");
-            FjCuda* borrow = JuicerCuda::borrowed_owner();
+            FjCuda* borrow = native(owner);
             FjErrorBuffer malformed{nullptr, 1, 99};
             if (mode == "buffers") {
-                require(fj_cuda_shutdown(borrow, &malformed).category == FJ_STATUS_UNSUPPORTED_INPUT, "malformed borrowed shutdown accepted");
+                require(owner.shutdown(&malformed).category == FJ_STATUS_UNSUPPORTED_INPUT, "malformed borrowed shutdown accepted");
                 require(fj_cuda_retire_instance(borrow, 1, nullptr).category == FJ_STATUS_SUCCESS, "malformed shutdown closed admission");
                 require(shutdownAttempts == 0, "malformed shutdown attempted drain");
                 FjErrorBuffer zero{nullptr, 0, 99};
-                require(fj_cuda_shutdown(borrow, &zero).category == FJ_STATUS_SUCCESS && zero.length == 0, "zero-capacity shutdown rejected");
+                require(owner.shutdown(&zero).category == FJ_STATUS_SUCCESS && zero.length == 0, "zero-capacity shutdown rejected");
                 require(owner.close().category == FJ_STATUS_SUCCESS, "valid destroy failed");
             } else {
                 if (blocked) {
                     injection = "typed";
-                    require(fj_cuda_shutdown(borrow, nullptr).native_code == -701, "typed setup failed");
+                    require(owner.shutdown(nullptr).native_code == -701, "typed setup failed");
                     injection.clear();
                 }
                 const auto result = owner.close(&malformed);
@@ -298,21 +308,20 @@ namespace {
     }
 
     void check_shutdown_progress() {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create("shutdown-progress");
-        FjCuda* borrow = JuicerCuda::borrowed_owner();
         injection = "typed";
         holdShutdown = true;
         FjStatus first{}, second{};
         std::array<char, 128> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
         std::thread terminal([&] {
-            first = fj_cuda_shutdown(borrow, nullptr);
+            first = owner.shutdown(nullptr);
         });
         shutdownAttempts.wait(0);
         std::thread rejected([&] {
             failOwnerLock = true;
-            second = fj_cuda_shutdown(borrow, &error);
+            second = owner.shutdown(&error);
         });
         ownerLockAttempted.wait(false);
         holdShutdown = false;
@@ -339,20 +348,21 @@ namespace {
             expected = {FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_DRIVER, -701};
         }
         {
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create("retained-terminal-owner");
-            FjCuda* borrow = JuicerCuda::borrowed_owner();
+            FjCuda* borrow = native(owner);
             injection = mode;
             // The same exception seam also proves the non-consuming instance C
             // entry contains exceptions while preserving accepting admission.
             require(same_status(fj_cuda_retire_instance(borrow, 1, nullptr), expected), "retire exception lost typed origin");
-            require(JuicerProcess::root().begin_frame_preparation().active(), "retire exception closed owner admission");
+            require(root(owner).begin_frame_preparation().active(), "retire exception closed owner admission");
             std::array<char, 128> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-            const auto result = destroyAccepting ? owner.close(&error) : fj_cuda_shutdown(borrow, &error);
+            const auto result = destroyAccepting ? owner.close(&error) : owner.shutdown(&error);
             require(same_status(result, expected) && error.length != 0, "terminal failure lost category/API/code/diagnostic");
-            require(shutdownAttempts == 1 && destructions == 0 && JuicerCuda::borrowed_owner() == borrow,
-                    "failed terminal call retried, freed or unregistered graph");
+            require(shutdownAttempts == 1 && destructions == 0 &&
+                        (destroyAccepting ? !live(owner) : native(owner) == borrow),
+                    "failed terminal call retried, freed or incorrectly retained the runtime owner");
             require(fj_test_assets_live_owners() == (destroyAccepting ? 0u : 1u), "borrowed versus terminal host lifetime mismatch");
             if (!destroyAccepting) {
                 reject_accepting_calls(borrow);
@@ -367,7 +377,7 @@ namespace {
                 for (const std::size_t capacity : capacities) {
                     auto capacity_event = capacity_cases.case_event(mode + "/" + std::to_string(capacity));
                     error = {diagnostic.data(), capacity, 99};
-                    require(same_status(fj_cuda_shutdown(borrow, &error), expected), "diagnostic capacity changed terminal status");
+                    require(same_status(owner.shutdown(&error), expected), "diagnostic capacity changed terminal status");
                     require(error.length == (capacity ? capacity - 1 : 0), "terminal diagnostic length wrong");
                     if (capacity) {
                         require(diagnostic[capacity - 1] == '\0', "terminal diagnostic missing terminator");
@@ -386,7 +396,7 @@ namespace {
         }
         require(shutdownAttempts == 1 && destructions == 0, "destructor retried or walked retained graph");
         FjCuda* replacement = nullptr;
-        require(fj_cuda_create(JuicerAssets::NativePathArgument(std::filesystem::path("new")).view(), &replacement, nullptr).category == FJ_STATUS_PREPARATION_FAILURE && !replacement,
+        require(fj_cuda_create(&replacement, nullptr).category == FJ_STATUS_PREPARATION_FAILURE && !replacement,
                 "retention permitted a replacement graph");
     }
 } // namespace
@@ -397,10 +407,6 @@ namespace {
 void* operator new(std::size_t size) {
     allocations.fetch_add(1, std::memory_order_relaxed);
     if (rejectDiagnosticAllocation) {
-        throw std::bad_alloc();
-    }
-    if (failLibraryConstruction && fj_test_assets_live_owners() != 0) {
-        failLibraryConstruction = false;
         throw std::bad_alloc();
     }
     if (void* value = std::malloc(size ? size : 1)) {
@@ -445,15 +451,11 @@ namespace JuicerCuda::TerminalTest {
         }
     }
     void before_shutdown() {
+        require(fj_test_assets_live_owners() == 1, "Runtime released Assets before the native terminal attempt");
         shutdownAttempts.fetch_add(1);
         shutdownAttempts.notify_all();
         holdShutdown.wait(true);
         inject();
-    }
-    void before_host_cleanup() noexcept {
-        hostCleanupAttempts.fetch_add(1);
-        hostCleanupAttempts.notify_all();
-        holdHostCleanup.wait(true);
     }
     void before_retire_instance() {
         inject();
@@ -474,72 +476,97 @@ int main(int argc, char** argv) {
         }
         JuicerTests::CaseEvent event("cuda_terminal", mode);
         if (mode == "partial-library") {
-            JuicerCuda::Owner owner;
-            failLibraryConstruction = true;
+            JuicerProcess::ProcessRuntime owner;
+            fj_test_runtime_fault(1);
             bool failed = false;
             try {
-                owner.create("partial-library-construction");
+                owner.create("runtime-assets-before-native");
             } catch (const std::bad_alloc&) {
                 failed = true;
             }
-            // The transferred caches leave no required native allocation after
-            // Assets creation. Some standard-library implementations still
-            // allocate while constructing the remaining native members.
-            const bool pending = std::exchange(failLibraryConstruction, false);
-            if (failed) {
-                require(!pending, "partial Library allocation fault did not run");
-                require(!JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 0, "partial Library leaked acquired Rust Assets");
-                require(destructions == 0, "partial Library published/completed FjCuda");
-            } else {
-                require(pending, "Library allocation failure was swallowed");
-                require(JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 1 && destructions == 0, "allocation-free Library construction lost its owner");
-                require(owner.close().category == FJ_STATUS_SUCCESS && !JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 0 && destructions == 1, "allocation-free Library construction did not close exactly once");
+            require(failed && !live(owner) && fj_test_assets_live_owners() == 0 && shutdownAttempts == 0 && destructions == 0,
+                    "Runtime stage 1 did not release partial Assets before native construction");
+
+            fj_test_runtime_fault(2);
+            failed = false;
+            try {
+                owner.create("runtime-native-before-publication");
+            } catch (const std::bad_alloc&) {
+                failed = true;
             }
+            require(failed && !live(owner) && fj_test_assets_live_owners() == 0 && shutdownAttempts == 1 && destructions == 1,
+                    "Runtime stage 2 did not consume the guarded native owner before releasing Assets");
+
+            for (const unsigned stage : {4u, 5u}) {
+                fj_test_runtime_fault(stage);
+                bool contained = false;
+                try {
+                    owner.create("runtime-construction-unwind");
+                } catch (const JuicerCuda::ExecutionFailure& failure) {
+                    contained = failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
+                }
+                const unsigned attempts = stage == 4 ? 1u : 2u;
+                require(contained && !live(owner) && fj_test_assets_live_owners() == 0 &&
+                            shutdownAttempts == attempts && destructions == attempts,
+                        "Runtime construction panic escaped or leaked/retried an owner");
+            }
+
+            owner.create("runtime-terminal-host-cleanup");
+            fj_test_runtime_fault(3);
+            const FjStatus terminal = owner.close();
+            require(terminal.category == FJ_STATUS_INTERNAL_FAILURE && !live(owner) &&
+                        fj_test_assets_live_owners() == 0 && shutdownAttempts == 3 && destructions == 3,
+                    "Runtime stage 3 did not report after terminal host cleanup");
         } else if (mode == "construction") {
             injection = "construction";
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             bool failed = false;
             try {
                 owner.create("partial-host-construction");
             } catch (const std::bad_alloc&) {
                 failed = true;
             }
-            require(failed && !JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 0, "partial construction leaked/published host owner");
+            require(failed && !live(owner) && fj_test_assets_live_owners() == 0 && destructions == 1 && shutdownAttempts == 0, "partial construction leaked/published host owner");
             injection.clear();
             owner.create("retry-after-partial-construction");
             require(owner.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0, "construction retry failed");
         } else if (mode == "catalog-retention") {
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create(JuicerProcess::data_directory());
-            const auto& catalog = JuicerProcess::root().assets().spektrafilm_profile_catalog();
-            require(catalog.valid && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1, "cold terminal catalog failed");
+            const auto& catalog = owner.spektrafilm_profile_catalog();
+            require(catalog.valid && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0, "cold terminal catalog failed");
             const auto* label = catalog.filmProfiles.front().label.c_str();
             injection = "typed";
-            require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).native_code == -701, "borrowed close lost injected failure");
-            require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1 && catalog.filmProfiles.front().label.c_str() == label, "failed borrowed close expired catalog");
+            require(owner.shutdown().native_code == -701, "borrowed close lost injected failure");
+            require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0 && catalog.filmProfiles.front().label.c_str() == label, "failed borrowed close expired catalog");
             injection.clear();
             const auto before = allocations.load();
             require(owner.close().native_code == -701, "catalog cleanup lost primary native failure");
-            require(allocations.load() == before, "terminal whole-Library detachment allocated");
+            require(allocations.load() == before, "terminal Runtime cleanup allocated");
             require_host_detached();
             require(shutdownAttempts == 1 && destructions == 0, "catalog cleanup retried uncertain CUDA teardown");
         } else if (mode == "registered-reentry") {
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create(JuicerProcess::data_directory());
-            const auto& catalog = JuicerProcess::root().assets().spektrafilm_profile_catalog();
+            const auto& catalog = owner.spektrafilm_profile_catalog();
             const auto* label = catalog.filmProfiles.front().label.c_str();
+            FjCuda* borrowed = native(owner);
             {
-                JuicerCuda::NativeCall call(JuicerCuda::borrowed_owner());
-                require(owner.close().category == FJ_STATUS_UNSUPPORTED_INPUT, "registered reentry accepted");
-                require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1, "reentry detached active host borrow");
+                JuicerCuda::NativeCall call(borrowed);
+                require(fj_cuda_destroy(borrowed, nullptr).category == FJ_STATUS_UNSUPPORTED_INPUT, "registered native reentry accepted");
+                require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0, "native reentry detached active host borrow");
                 require(label == catalog.filmProfiles.front().label.c_str(), "reentry invalidated option borrow");
             }
             // Reentry is explicitly an illegal terminal overlap, not evidence
             // of cleanup. After the active borrow ends, a legal terminal call
             // may consume its retained host owner without retrying native work.
-            require(fj_cuda_destroy(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_UNSUPPORTED_INPUT, "saved reentry failure lost");
+            fj_test_runtime_fault(3);
+            require(owner.close().category == FJ_STATUS_UNSUPPORTED_INPUT, "saved reentry failure lost");
             require_host_detached();
-            require(shutdownAttempts == 0, "reentry recovery retried CUDA");
+            require(shutdownAttempts == 0 && destructions == 0, "reentry recovery retried or deleted native metadata");
+            require(fj_cuda_check_terminal(borrowed, nullptr).category == FJ_STATUS_SUCCESS,
+                    "consuming reentry cleanup lost retained native registration");
+            reject_accepting_calls(borrowed);
         } else if (mode == "host-cache-failure") {
             check_host_cache_result(false);
         } else if (mode == "host-cache-native-precedence") {

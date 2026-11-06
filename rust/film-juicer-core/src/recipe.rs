@@ -3,6 +3,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::{collections::TryReserveError, error::Error as StdError};
 
 use crate::assets::{AssetError, Assets, Illuminants, InputHull, SpectraLut};
 use crate::data_io::calibration;
@@ -19,6 +20,18 @@ const OUTPUT_KNEE: [f32; 3] = [0.95, 1.0, 1.6];
 #[cfg(feature = "test-support")]
 pub mod testing {
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static LIVE_STATES: AtomicUsize = AtomicUsize::new(0);
+    pub(super) fn state_created() {
+        LIVE_STATES.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(super) fn state_released() {
+        LIVE_STATES.fetch_sub(1, Ordering::Relaxed);
+    }
+    pub fn live_states() -> usize {
+        LIVE_STATES.load(Ordering::Relaxed)
+    }
 
     use crate::assets::InputHull;
     use crate::profile::FilmProfile;
@@ -57,6 +70,8 @@ pub mod testing {
         static TRACE: Cell<Trace> = const { Cell::new(Trace { stages: [0; 24], count: 0 }) };
         static ZERO_IDENTITY: Cell<Option<ZeroIdentity>> = const { Cell::new(None) };
         static INPUT_OBSERVER: Cell<Option<InputObserver>> = const { Cell::new(None) };
+        static CONTENTS_RESERVATION_FAILURE: Cell<bool> = const { Cell::new(false) };
+        static CONTENTS_RESERVATION_CONSUMED: Cell<bool> = const { Cell::new(false) };
     }
     #[derive(Clone, Copy, Eq, PartialEq)]
     pub enum ZeroIdentity {
@@ -68,6 +83,20 @@ pub mod testing {
     }
     pub fn set_input_observer(observer: Option<InputObserver>) {
         INPUT_OBSERVER.set(observer);
+    }
+    pub fn arm_contents_reservation_failure() {
+        CONTENTS_RESERVATION_CONSUMED.set(false);
+        CONTENTS_RESERVATION_FAILURE.set(true);
+    }
+    pub fn contents_reservation_failure_consumed() -> bool {
+        CONTENTS_RESERVATION_CONSUMED.get()
+    }
+    pub(super) fn take_contents_reservation_failure() -> bool {
+        let armed = CONTENTS_RESERVATION_FAILURE.replace(false);
+        if armed {
+            CONTENTS_RESERVATION_CONSUMED.set(true);
+        }
+        armed
     }
     pub(super) fn observe_input(profile: &FilmProfile, hull: Option<&InputHull>) {
         if let Some(observer) = INPUT_OBSERVER.take() {
@@ -265,6 +294,14 @@ pub enum PrepareError {
     ScannerColor(scanner::ColorError),
     ScannerCorrection(scanner::CorrectionError),
     ScannerPostEffects(scanner::PostEffectsError),
+    ContentsAllocation(TryReserveError),
+}
+impl PrepareError {
+    /// Some film-input leaves contain their unwind before returning to the
+    /// complete-state owner. That remains a panic, not an ordinary rejection.
+    pub fn is_panic(&self) -> bool {
+        matches!(self, Self::Input(input::Error::Panic(_)))
+    }
 }
 impl From<AssetError> for PrepareError {
     fn from(error: AssetError) -> Self {
@@ -357,10 +394,20 @@ impl fmt::Display for PrepareError {
             Self::ScannerColor(error) => error.fmt(f),
             Self::ScannerCorrection(error) => error.fmt(f),
             Self::ScannerPostEffects(error) => error.fmt(f),
+            Self::ContentsAllocation(_) => {
+                f.write_str("Complete render-state backing allocation failed")
+            }
         }
     }
 }
-impl std::error::Error for PrepareError {}
+impl StdError for PrepareError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::ContentsAllocation(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 fn exposure_boundary_diagnostic(error: exposure::BoundaryError) -> &'static str {
     match error {
@@ -501,6 +548,16 @@ fn reference_diagnostic(error: reference::Error, f: &mut fmt::Formatter<'_>) -> 
 }
 
 pub struct RenderState {
+    contents: Vec<Contents>,
+}
+#[cfg(feature = "test-support")]
+impl Drop for RenderState {
+    fn drop(&mut self) {
+        testing::state_released();
+    }
+}
+
+struct Contents {
     film_key: String,
     development: film::Development,
     input: input::Recipe,
@@ -616,67 +673,67 @@ enum ReconstructionStorage {
 
 impl RenderState {
     pub fn film_key(&self) -> &str {
-        &self.film_key
+        &self.contents[0].film_key
     }
     pub fn film_profile(&self) -> &FilmProfile {
-        self.development.profile()
+        self.contents[0].development.profile()
     }
     pub fn development(&self) -> &film::Development {
-        &self.development
+        &self.contents[0].development
     }
     pub fn input(&self) -> &input::Recipe {
-        &self.input
+        &self.contents[0].input
     }
     pub fn optics(&self) -> &optics::Recipe {
-        &self.optics
+        &self.contents[0].optics
     }
     pub fn minimum(&self) -> &density::Minimum {
-        &self.minimum
+        &self.contents[0].minimum
     }
     pub fn grain(&self) -> &grain::Recipe {
-        &self.grain
+        &self.contents[0].grain
     }
     pub fn effects(&self) -> &effects::Recipe {
-        &self.effects
+        &self.contents[0].effects
     }
     pub fn dir(&self) -> &dir::Recipe {
-        &self.dir
+        &self.contents[0].dir
     }
     pub fn film_bounds(&self) -> &density::Bounds {
-        &self.film_bounds
+        &self.contents[0].film_bounds
     }
     pub fn exposure_tables(&self) -> &spectral::Tables {
-        &self.exposure_tables
+        &self.contents[0].exposure_tables
     }
     pub fn s_inverse(&self) -> &[f32; 9] {
-        &self.s_inverse
+        &self.contents[0].s_inverse
     }
     pub fn reconstruction(&self) -> &FilmReconstruction {
-        &self.reconstruction
+        &self.contents[0].reconstruction
     }
     pub fn input_hull(&self) -> Option<&InputHull> {
-        self.input_hull.as_deref()
+        self.contents[0].input_hull.as_deref()
     }
     pub fn reference(&self) -> &reference::Reference {
-        &self.reference
+        &self.contents[0].reference
     }
     pub fn scanner(&self) -> &ScannerOutput {
-        &self.scanner
+        &self.contents[0].scanner
     }
     pub fn route(&self) -> &PreparedRoute {
-        &self.route
+        &self.contents[0].route
     }
     pub fn profile_route_hash(&self) -> u64 {
-        self.profile_route_hash
+        self.contents[0].profile_route_hash
     }
     pub fn hash(&self) -> u64 {
-        self.hash
+        self.contents[0].hash
     }
     pub fn upload_core_hash(&self) -> u64 {
-        self.hash
+        self.contents[0].hash
     }
     pub fn scanner_hash(&self) -> u64 {
-        self.scanner_hash
+        self.contents[0].scanner_hash
     }
 }
 impl DirectState {
@@ -2025,7 +2082,7 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
     if hash == 0 || scanner_hash == 0 || scanner_recipe_hash == 0 || scanner.color.hash() == 0 {
         return Err(ControlError::Identity(params.scan_route).into());
     }
-    Ok(RenderState {
+    let contents = Contents {
         film_key: params.film_profile_key.clone(),
         development: acquired.development,
         input,
@@ -2045,19 +2102,35 @@ pub fn prepare(assets: &Assets, params: &Params) -> Result<RenderState, PrepareE
         profile_route_hash,
         hash,
         scanner_hash,
-    })
+    };
+    let mut backing = Vec::new();
+    #[cfg(feature = "test-support")]
+    let reject_reservation = testing::take_contents_reservation_failure();
+    #[cfg(not(feature = "test-support"))]
+    let reject_reservation = false;
+    backing
+        .try_reserve_exact(if reject_reservation { usize::MAX } else { 1 })
+        .map_err(PrepareError::ContentsAllocation)?;
+    backing.push(contents);
+    #[cfg(feature = "test-support")]
+    testing::state_created();
+    Ok(RenderState { contents: backing })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_cases::RowCases;
+pub(crate) mod test_support {
     use std::path::Path;
+    use std::sync::Weak;
 
-    fn assets() -> Assets {
+    use super::*;
+
+    pub(crate) fn assets() -> Assets {
         Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"))
     }
-    fn params(route: ScanRoute, method: i32) -> Params {
+    pub(crate) fn output_boundary_weak(state: &RenderState) -> Weak<crate::assets::OutputBoundary> {
+        Arc::downgrade(state.scanner().gamut.boundary.as_ref().unwrap())
+    }
+    pub(crate) fn params(route: ScanRoute, method: i32) -> Params {
         let diffusion = optics::DiffusionParams {
             active: false,
             family: 1,
@@ -2179,6 +2252,14 @@ mod tests {
             camera_filter_override: false,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::test_support::{assets, params};
+    use crate::test_cases::RowCases;
+
     #[test]
     fn all_routes_and_methods_complete_with_active_spatial_dir() {
         let assets = assets();
@@ -2230,6 +2311,34 @@ mod tests {
         }
         assert_eq!(count, 12);
         cases.finish();
+    }
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn complete_contents_reservation_fails_after_preparation() {
+        let assets = assets();
+        let params = params(ScanRoute::NegativeDirect, 1);
+        testing::reset();
+        testing::arm_contents_reservation_failure();
+        let error = match prepare(&assets, &params) {
+            Ok(_) => panic!("armed contents reservation must fail"),
+            Err(error) => error,
+        };
+        assert!(testing::contents_reservation_failure_consumed());
+        let (stages, count) = testing::trace();
+        assert_eq!(
+            stages[count as usize - 1],
+            testing::Stage::FinalIdentity as u32
+        );
+        assert!(matches!(&error, PrepareError::ContentsAllocation(_)));
+        assert_eq!(
+            error.to_string(),
+            "Complete render-state backing allocation failed"
+        );
+        assert!(std::error::Error::source(&error).is_some());
+
+        let state = prepare(&assets, &params).expect("one-shot reservation fault was consumed");
+        assert_eq!(state.contents.len(), 1);
+        assert_ne!(state.hash(), 0);
     }
     #[test]
     fn direct_ignores_print_only_sources_and_controls() {

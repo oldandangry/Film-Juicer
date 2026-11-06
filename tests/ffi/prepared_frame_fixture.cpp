@@ -374,7 +374,8 @@ namespace JuicerCudaTest::PreparedFrameFixture {
 
     } // namespace
 
-    bool with_prepared_frame_inputs(const PreparedState& state,
+    bool with_prepared_frame_inputs(const FjAssets* assets,
+                                    const PreparedState& state,
                                     const FrameFacts& facts,
                                     void* user,
                                     Consumer consume,
@@ -617,7 +618,6 @@ namespace JuicerCudaTest::PreparedFrameFixture {
         identity.effectsHash = view.effects.hash;
         identity.effectsActive = descriptors.effects.has_value();
 
-        auto* const assets = JuicerProcess::root().assets().borrow_rust_assets();
         if (assets == nullptr) {
             diagnostic = "prepared frame fixture has no process Rust assets owner";
             return false;

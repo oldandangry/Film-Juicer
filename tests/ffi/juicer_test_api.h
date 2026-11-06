@@ -31,7 +31,7 @@ FjStatus fj_test_input_hull_release(FjInputHullOwner*, FjErrorBuffer*);
 FjStatus fj_test_assets_output_boundary_acquire(const FjAssets*, const FjOutputBoundarySource*, uint64_t expected_contract_hash, FjOutputBoundaryOwner**, FjErrorBuffer*);
 FjStatus fj_test_output_boundary_view(const FjOutputBoundaryOwner*, FjOutputBoundaryView*, FjErrorBuffer*);
 FjStatus fj_test_output_boundary_release(FjOutputBoundaryOwner*, FjErrorBuffer*);
-FjStatus fj_test_prepared_state_create(FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
+FjStatus fj_test_prepared_state_create(const FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
 FjStatus fj_test_prepared_state_view(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*);
 FjStatus fj_test_prepared_state_release(FjPreparedState*, FjErrorBuffer*);
 /* Test-only borrowed observation immediately before a complete prepared state
@@ -372,6 +372,11 @@ void fj_test_profile_fault(uint32_t fault);
 size_t fj_test_profile_live_owners(void);
 size_t fj_test_print_density_live_owners(void);
 void fj_test_cache_release_failure(void);
+/* Consume-once Runtime faults: 1/2 before/after native construction allocation
+ * failures, 3 post-terminal host cleanup failure, 4/5 corresponding panics. */
+void fj_test_runtime_fault(uint32_t stage);
+void fj_test_runtime_cache_hold(uint32_t hold);
+size_t fj_test_runtime_cache_attempts(void);
 size_t fj_test_assets_live_owners(void);
 size_t fj_test_catalog_live_owners(void);
 
@@ -611,6 +616,37 @@ FjStatus fj_test_effects_frame_prepare(const FjEffectsFrameInput*, FjEffectsFram
 FjStatus fj_test_effects_frame_fault(uint32_t);
 int fj_test_effects_frame_c_check(uint32_t, const FjEffectsFrameInput*, const FjEffectsFrameMath*, FjStatus, FjEffectsFrameFailure, const char*);
 int fj_test_effects_frame_c_raw(uint32_t, const FjEffectsFrameInput*, uint32_t, const FjEffectsFrameMath*);
+
+/* Test-support-only immutable observations from the actual publication owner.
+ * Borrowed snapshot strings/spans expire when observation is released. This
+ * does not prepare/admit/recover state. Acquire/release consume one owner. */
+const size_t* fj_test_instance_abi_facts(size_t* count);
+size_t fj_test_prepared_state_identity(const FjPreparedState*);
+typedef struct FjInstanceObservation FjInstanceObservation;
+typedef struct FjInstanceObservationView {
+    uint32_t pending_kind; /* 0 uninitialized, 1 capturing, 2 awaiting writes,
+                            3 needs refresh, 4 valid, 5 failed, 6 blocked */
+    uint32_t failure_kind;
+    uint64_t issued;
+    uint64_t write_revision;
+    uint64_t outstanding_writes;
+    uint64_t input_identity;
+    uint64_t published_identity;
+    uint64_t build;
+    size_t backing_identity;
+    FjStringView diagnostic;
+    FjPreparationParams captured;
+    FjPreparedStateView published;
+} FjInstanceObservationView;
+FjStatus fj_test_instance_observation_acquire(const FjInstance*, FjInstanceObservation**, FjErrorBuffer*);
+FjStatus fj_test_instance_observation_view(const FjInstanceObservation*, FjInstanceObservationView*, FjErrorBuffer*);
+FjStatus fj_test_instance_observation_release(FjInstanceObservation*, FjErrorBuffer*);
+/* Thread-local hooks run after input selection / after complete preparation,
+ * outside the state lock. Fixture callbacks contain exceptions; their context
+ * stays live until cleared. Hooks are never present in a production archive. */
+void fj_test_instance_prepare_hooks(void (*before_prepare)(void*), void (*after_prepare)(void*), void* context);
+void fj_test_prepared_contents_reservation_failure(void);
+uint32_t fj_test_prepared_contents_reservation_failure_consumed(void);
 
 #ifdef __cplusplus
 }

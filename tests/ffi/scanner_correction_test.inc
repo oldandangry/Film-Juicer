@@ -31,9 +31,9 @@ namespace ScannerCorrectionTest {
     Json project(const FjScannerColorCorrection& value);
 
     Json products(const std::filesystem::path& resources, const Json& expectedProducts) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
-        auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+        const auto* assets = owner.borrow().assets;
         require(assets != nullptr, "scanner correction products have process Rust assets");
         Json out = Json::array();
         std::vector<std::string> recipe_ids;
@@ -52,7 +52,7 @@ namespace ScannerCorrectionTest {
                     params.spectralUpsamplingMode = mode;
                     params.scannerBlackCorrection = (flags & 1u) != 0;
                     params.scannerWhiteCorrection = (flags & 2u) != 0;
-                    auto stateOwner = JuicerTestSupport::prepare_product(params);
+                    auto stateOwner = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
                     FjPreparedStateView state{};
                     std::array<char, 2048> errorText{};
                     FjErrorBuffer error{errorText.data(), errorText.size(), 0};

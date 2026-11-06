@@ -287,7 +287,7 @@ pub(crate) enum Failure {
     Internal(&'static str),
 }
 impl Failure {
-    fn category(&self) -> u32 {
+    pub(crate) fn category(&self) -> u32 {
         match self {
             Self::Film(error) => match error {
                 film_juicer_core::film::Error::InvalidGamma
@@ -496,13 +496,16 @@ pub(crate) unsafe fn run<T>(
 
 /// # Safety
 /// The caller authorizes the initialized, platform-native input extent.
-unsafe fn path(view: FjPathView) -> Result<std::path::PathBuf, Failure> {
+pub(crate) unsafe fn path(view: FjPathView) -> Result<std::path::PathBuf, Failure> {
     if view.data.is_null() || view.count == 0 {
         return Err(Failure::Input("empty resource root"));
     }
     #[cfg(target_os = "linux")]
     let units = {
-        if view.encoding != FJ_PATH_UNIX_BYTES || view.count > isize::MAX as usize {
+        if view.encoding != FJ_PATH_UNIX_BYTES
+            || view.count > isize::MAX as usize
+            || (view.data as usize).checked_add(view.count).is_none()
+        {
             return Err(Failure::Input("invalid Unix path extent or encoding"));
         }
         // SAFETY: Bounds checked before forming the caller-authorized byte slice.
@@ -512,6 +515,9 @@ unsafe fn path(view: FjPathView) -> Result<std::path::PathBuf, Failure> {
     let units = {
         if view.encoding != FJ_PATH_WINDOWS_WIDE
             || view.count > isize::MAX as usize / 2
+            || (view.data as usize)
+                .checked_add(view.count.saturating_mul(2))
+                .is_none()
             || !(view.data as usize).is_multiple_of(std::mem::align_of::<u16>())
         {
             return Err(Failure::Input("invalid Windows path extent or encoding"));
@@ -523,6 +529,118 @@ unsafe fn path(view: FjPathView) -> Result<std::path::PathBuf, Failure> {
         PathError::Empty => Failure::Input("empty resource root"),
         PathError::ContainsNul => Failure::Input("resource root contains NUL"),
     })
+}
+
+pub(crate) fn runtime_assets(resource_dir: std::path::PathBuf) -> Assets {
+    let assets = Assets::new(resource_dir);
+    #[cfg(feature = "test-support")]
+    {
+        LIVE_ASSETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    assets
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "Runtime retains a nonallocating terminal failure"
+)]
+pub(crate) fn release_runtime_caches(assets: &Assets) -> Result<(), crate::cuda::Failure> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        RUNTIME_CACHE_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        while RUNTIME_CACHE_HOLD.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+    }
+    catch_unwind(AssertUnwindSafe(|| release_runtime_cache_payloads(assets))).unwrap_or_else(|_| {
+        Err(crate::cuda::Failure::new(
+            FJ_STATUS_INTERNAL_FAILURE,
+            "runtime cache cleanup panicked",
+        ))
+    })
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "Runtime retains a nonallocating terminal failure"
+)]
+fn release_runtime_cache_payloads(assets: &Assets) -> Result<(), crate::cuda::Failure> {
+    let derived = assets.release_derived_payloads();
+    let sources = assets.release_source_payloads();
+    derived.and(sources).map_err(|error| {
+        let failure = Failure::Asset(error);
+        crate::cuda::Failure::new(failure.category(), failure)
+    })?;
+    #[cfg(any(test, feature = "test-support"))]
+    if CACHE_FAILURE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        return Err(crate::cuda::Failure::new(
+            FJ_STATUS_INTERNAL_FAILURE,
+            "injected post-release cache failure",
+        ));
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "Runtime retains a nonallocating terminal failure"
+)]
+pub(crate) fn close_runtime_assets(assets: Assets) -> Result<(), crate::cuda::Failure> {
+    drop(assets);
+    #[cfg(feature = "test-support")]
+    LIVE_ASSETS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(any(test, feature = "test-support"))]
+    runtime_checkpoint(3)?;
+    Ok(())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! { static RUNTIME_FAULT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+#[cfg(any(test, feature = "test-support"))]
+static RUNTIME_CACHE_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(test, feature = "test-support"))]
+static RUNTIME_CACHE_HOLD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(any(test, feature = "test-support"))]
+#[expect(
+    clippy::result_large_err,
+    reason = "fault evidence uses the actual fixed Runtime failure"
+)]
+pub(crate) fn runtime_checkpoint(stage: u32) -> Result<(), crate::cuda::Failure> {
+    if matches!((stage, RUNTIME_FAULT.get()), (1, 4) | (2, 5)) {
+        RUNTIME_FAULT.set(0);
+        panic!("runtime construction checkpoint panic");
+    }
+    if RUNTIME_FAULT.get() != stage {
+        return Ok(());
+    }
+    RUNTIME_FAULT.set(0);
+    Err(crate::cuda::Failure::new(
+        if stage == 3 {
+            FJ_STATUS_INTERNAL_FAILURE
+        } else {
+            FJ_STATUS_ALLOCATION_FAILURE
+        },
+        "runtime ownership checkpoint failure",
+    ))
+}
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_runtime_fault(stage: u32) {
+    RUNTIME_FAULT.set(stage);
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_runtime_cache_hold(hold: u32) {
+    RUNTIME_CACHE_HOLD.store(hold != 0, std::sync::atomic::Ordering::SeqCst);
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_runtime_cache_attempts() -> usize {
+    RUNTIME_CACHE_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// # Safety

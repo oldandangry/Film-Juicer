@@ -1,71 +1,21 @@
 #pragma once
 
-#include <atomic>
 #include <array>
+#include <atomic>
 #include <cstdint>
-#include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
-#include <utility>
-#include <variant>
-#include <vector>
 
 #include "ColorTransforms.h"
-#include "GamutCompression.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
+#include "OutputColor.h"
 #include "ProfileCatalog.h"
-#include "PreparedState.h"
 #include "RenderControls.h"
-#include "RenderValues.h"
 #include "ScanRoute.h"
-#include "Scanner.h"
 #include "ScatterHalation.h"
 #include "SpectralData.h"
-#include "ofxImageEffect.h"
 
-namespace JuicerAtomic {
-
-    template <typename T>
-    inline std::shared_ptr<T> load_shared_ptr(const std::shared_ptr<T>* p) {
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-        std::shared_ptr<T> v = std::atomic_load(p);
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-        return v;
-    }
-
-    template <typename T>
-    inline void store_shared_ptr(std::shared_ptr<T>* p, std::shared_ptr<T> value) {
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-        std::atomic_store(p, std::move(value));
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-    }
-
-} // namespace JuicerAtomic
-
-#include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
-
-struct DirectRenderState {
-    explicit DirectRenderState(PreparedState&& state);
-    PreparedState prepared;
-    std::uint64_t buildCounter = 0;
-};
-
-struct PrintRenderState {
-    explicit PrintRenderState(PreparedState&& state);
-    PreparedState prepared;
-    std::uint64_t buildCounter = 0;
-};
-
+// SF_TEMP_BRIDGE_CAPTURED_INPUT_IDENTITY: native capture/conversion/hash through S6.
 struct ParamSnapshot {
     double printExposure = 1.0;
     double printPreflashExposure = 0.0;
@@ -135,42 +85,8 @@ bool set_gamma_snapshot_values(
     ParamSnapshot& snapshot,
     std::string& outDiagnostic);
 
-struct PendingParamsState {
-    struct Uninitialized {};
-
-    struct Valid {
-        ParamSnapshot params;
-        std::uint64_t fullHash = 0;
-    };
-
-    struct InvalidSnapshotControls {
-        std::string diagnostic;
-    };
-
-    // Leaf lock for the coalesced pending-params snapshot. Do not nest with InstanceState::m.
-    std::mutex m;
-    std::variant<Uninitialized, Valid, InvalidSnapshotControls> value{Uninitialized{}};
-};
-
-struct InstanceState {
-    // Lock-order rule for P6: rebuildMutex may precede m during rebuild snapshot/publication.
-    // m is otherwise a short publication/snapshot lock and must not be held across heavy rebuild
-    // work, sleep/wait paths, or while acquiring the leaf mutexes below.
-    std::mutex m;
-    // Serializes focused-state rebuilds so heavy construction runs outside InstanceState::m.
-    std::mutex rebuildMutex;
-    // Published route state. Readers use std::atomic_load; writers use std::atomic_store.
-    std::shared_ptr<const DirectRenderState> activeDirectState;
-    std::shared_ptr<const PrintRenderState> activePrintState;
-    std::atomic<std::uint64_t> buildCounterNext{0};
-
-    std::atomic<std::uint64_t> lastHash{0};
-
-    // Latest parameter snapshot observed from UI callbacks; consumed/coalesced on render thread.
-    PendingParamsState pending;
-
-    bool suppressParamEvents = false;
-
+// SF_TEMP_BRIDGE_NATIVE_SUBMISSION_STATE: temporal/submission ownership moves at S5.D.
+struct NativeSubmissionState {
     std::uint64_t sessionSeed = 0;
     std::uint64_t instanceToken = 0;
     std::atomic<std::uint64_t> submissionSnapshotIdNext{1};
@@ -181,35 +97,11 @@ struct InstanceState {
     JuicerCuda::ResourceManager::SubmissionSnapshot submissionSnapshotLatch{};
 };
 
-enum class PendingRenderAdmissionStatus : std::uint8_t {
-    NeedsSnapshotAcquisition = 0,
-    InvalidSnapshotControls,
-    RebuildFailed,
-    AdmittedDirect,
-    AdmittedPrint
-};
-
-struct PendingRenderAdmissionResult {
-    PendingRenderAdmissionStatus status =
-        PendingRenderAdmissionStatus::NeedsSnapshotAcquisition;
-    ParamSnapshot snapshot;
-    std::shared_ptr<const DirectRenderState> directState;
-    std::shared_ptr<const PrintRenderState> printState;
-    std::string diagnostic;
-};
-
-bool spektrafilm_profile_catalog_ready();
-const char* spektrafilm_profile_catalog_failure();
-int film_profile_option_count();
-const char* film_profile_option_key(int index);
-const char* film_profile_option_label(int index);
-int print_profile_option_count();
-const char* print_profile_option_key(int index);
-const char* print_profile_option_label(int index);
-bool rebuild_direct_render_state(InstanceState& S, const ParamSnapshot& P);
-bool rebuild_print_render_state(InstanceState& S, const ParamSnapshot& P);
-PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state);
-#if defined(JUICER_ADMISSION_TEST_HOOK)
-using PendingCaptureTestHook = void (*)(InstanceState&, void*);
-void set_pending_capture_test_hook(PendingCaptureTestHook hook, void* context);
-#endif
+bool spektrafilm_profile_catalog_ready(const Spektrafilm::ProfileCatalog& catalog);
+const char* spektrafilm_profile_catalog_failure(const Spektrafilm::ProfileCatalog& catalog);
+int film_profile_option_count(const Spektrafilm::ProfileCatalog& catalog);
+const char* film_profile_option_key(const Spektrafilm::ProfileCatalog& catalog, int index);
+const char* film_profile_option_label(const Spektrafilm::ProfileCatalog& catalog, int index);
+int print_profile_option_count(const Spektrafilm::ProfileCatalog& catalog);
+const char* print_profile_option_key(const Spektrafilm::ProfileCatalog& catalog, int index);
+const char* print_profile_option_label(const Spektrafilm::ProfileCatalog& catalog, int index);

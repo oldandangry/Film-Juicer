@@ -13,9 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ResourceAssetLibrary.h"
-#include "ProcessRoot.h"
-#include "juicer_cuda_owner.h"
+#include "ProcessRuntime.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 #include "print_illuminant_fixture.h"
@@ -28,8 +26,8 @@
 #undef FJ_TC_FIELD
 
 extern "C" int fj_test_tc_lut_abi_c(void);
-void fj_test_tc_lut_products(const nlohmann::json&);
-void fj_test_tc_lut_admission();
+void fj_test_tc_lut_products(const FjAssets*, const nlohmann::json&);
+void fj_test_tc_lut_admission(const FjAssets*);
 
 namespace {
     using Json = nlohmann::json;
@@ -81,9 +79,9 @@ namespace {
         }
         return hash;
     }
-    void numerical(const Json& fixture, const std::filesystem::path& tablesPath) {
-        const JuicerTestSupport::HanatosSource hanatos(JuicerProcess::root().assets().borrow_rust_assets());
-        const JuicerTestSupport::ArcticSource arctic(JuicerProcess::root().assets().borrow_rust_assets());
+    void numerical(JuicerProcess::ProcessRuntime& runtime, const Json& fixture, const std::filesystem::path& tablesPath) {
+        const JuicerTestSupport::HanatosSource hanatos(runtime.borrow().assets);
+        const JuicerTestSupport::ArcticSource arctic(runtime.borrow().assets);
         std::vector<float> procedural(std::size_t{192} * 192u * 81u);
         for (std::size_t i = 0; i < procedural.size(); ++i)
             procedural[i] = std::bit_cast<float>(0x3e000123u + static_cast<std::uint32_t>(i % 4093u) * 173u);
@@ -298,8 +296,8 @@ int main(int argc, char** argv) {
             boundary();
             event.passed();
         } else {
-            JuicerCuda::Owner owner;
-            owner.create(argv[2]);
+            JuicerProcess::ProcessRuntime runtime;
+            runtime.create(argv[2]);
             const std::filesystem::path manifestPath(argv[3]);
             std::ifstream manifestFile(manifestPath);
             const auto manifest = Json::parse(manifestFile);
@@ -308,16 +306,16 @@ int main(int argc, char** argv) {
             const auto fixture = PrintIlluminantFixtures::apply(manifestPath.parent_path() / membership["records"].get<std::string>(), Json::parse(input));
             if (std::string(argv[1]) == "products") {
                 JuicerTests::CaseEvent event("tc_lut", "products");
-                fj_test_tc_lut_products(fixture);
+                fj_test_tc_lut_products(runtime.borrow().assets, fixture);
                 event.passed();
             } else if (std::string(argv[1]) == "admission") {
                 JuicerTests::CaseEvent event("tc_lut", "admission");
-                fj_test_tc_lut_admission();
+                fj_test_tc_lut_admission(runtime.borrow().assets);
                 event.passed();
             } else
-                numerical(fixture, manifestPath.parent_path() / membership["tables"].get<std::string>());
+                numerical(runtime, fixture, manifestPath.parent_path() / membership["tables"].get<std::string>());
             JuicerTests::CaseEvent close_event("tc_lut", "owner_close");
-            require(owner.close().category == FJ_STATUS_SUCCESS, "close host owner");
+            require(runtime.close().category == FJ_STATUS_SUCCESS, "close Runtime");
             close_event.passed();
         }
         case_log.finish();

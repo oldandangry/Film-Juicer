@@ -24,6 +24,7 @@
 #include "ColorTransforms.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "ProcessRuntime.h"
 #include "RustDirBoundaryBridge.h"
 #include "boundary_test_hooks.h"
 #include "juicer_cuda_owner.h"
@@ -77,6 +78,7 @@ namespace {
     };
 
     struct Inputs {
+        JuicerProcess::ProcessRuntime& runtime;
         PreparedState state;
         Spektrafilm::SpatialDirDescriptor dir;
         JuicerCuda::FilmPayloadInput filmPayload{};
@@ -87,8 +89,8 @@ namespace {
         int width;
         int height;
 
-        Inputs(Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method, float pixelSize, Spektrafilm::DirFrameExtent extent, float tailWeight = 0.03f)
-            : state(JuicerTestSupport::prepare_product(controls(route, method, tailWeight))),
+        Inputs(JuicerProcess::ProcessRuntime& processRuntime, Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method, float pixelSize, Spektrafilm::DirFrameExtent extent, float tailWeight = 0.03f)
+            : runtime(processRuntime), state(JuicerTestSupport::prepare_product(runtime.borrow().assets, controls(route, method, tailWeight))),
               pixelSizeUm(pixelSize), width(extent.width), height(extent.height) {
             FrameFixture::FrameFacts facts;
             facts.renderExtent = {extent.x, extent.y, extent.width, extent.height};
@@ -98,7 +100,7 @@ namespace {
             Capture captured{};
             std::string diagnostic;
             require(FrameFixture::with_prepared_frame_inputs(
-                        state, facts, &captured, &capture_values, diagnostic),
+                        runtime.borrow().assets, state, facts, &captured, &capture_values, diagnostic),
                     diagnostic);
             dir = captured.dir;
             filmPayload = captured.filmPayload;
@@ -159,7 +161,7 @@ namespace {
                             const FrameFixture::Inputs& prepared,
                             std::string& diagnostic) {
         auto& call = *static_cast<RootFrameCall*>(user);
-        JuicerProcess::Root& root = JuicerProcess::root();
+        JuicerProcess::Root& root = JuicerCuda::borrow_root(call.inputs->runtime.borrow().cuda);
         Frame frame = root.prepare_cuda_frame(
             *call.key, *call.snapshot, prepared.preparation, {}, call.stream, call.failure, prepared.hostPreparation);
         if (!frame.active()) {
@@ -183,14 +185,7 @@ namespace {
         RootFrameCall call{&inputs, &key, &snapshot, stream, {}, {}};
         std::string diagnostic;
         const bool ready = FrameFixture::with_prepared_frame_inputs(
-            inputs.state,
-            {{0, 0, inputs.width, inputs.height},
-             {0, 0, inputs.width, inputs.height},
-             {0, 0, inputs.width, inputs.height},
-             inputs.pixelSizeUm},
-            &call,
-            &prepare_root_frame,
-            diagnostic);
+            inputs.runtime.borrow().assets, inputs.state, {{0, 0, inputs.width, inputs.height}, {0, 0, inputs.width, inputs.height}, {0, 0, inputs.width, inputs.height}, inputs.pixelSizeUm}, &call, &prepare_root_frame, diagnostic);
         failure = call.failure;
         require(ready, diagnostic.empty() ? failure.diagnostic : diagnostic);
         return std::move(call.frame);
@@ -331,6 +326,15 @@ namespace {
 
     class ExposureCache : public testing::Test {
     protected:
+        inline static JuicerProcess::ProcessRuntime runtime;
+
+        static void SetUpTestSuite() {
+            runtime.create(JuicerProcess::data_directory());
+        }
+        static void TearDownTestSuite() {
+            require(runtime.close().category == FJ_STATUS_SUCCESS, "DIR Runtime close failed");
+        }
+
         void SetUp() override {
             require_cuda(cudaSetDevice(0));
             require_cuda(cudaFree(nullptr));
@@ -342,7 +346,7 @@ namespace {
         void TearDown() override {
             require_cuda(cudaStreamSynchronize(stream));
             std::string error;
-            const bool retired = JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error);
+            const bool retired = JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, key.contextOpaque, error);
             const auto status = cudaStreamDestroy(stream);
             require(retired, error);
             require_cuda(status);
@@ -364,7 +368,7 @@ namespace {
             return prepare_frame(inputs, key, snapshot, stream, failure);
         }
         JuicerCuda::Resources& boundary_owner() {
-            Inputs inputs(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Hanatos2025, 1.0f, {0, 0, 64, 48});
+            Inputs inputs(runtime, Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Hanatos2025, 1.0f, {0, 0, 64, 48});
             const auto identity = boundary_key(inputs.dir.filterPlan.components[0], 64, 48);
             JuicerCuda::DirBoundaryTest::Watch watch(key, identity);
             auto frame = prepare_boundary(inputs);
@@ -555,7 +559,7 @@ namespace {
         JuicerTests::GtestCohort cases("route", ids);
         for (auto route : routes) {
             auto row = cases.case_event(route_case_key(route));
-            Inputs inputs(route, Spektrafilm::RgbToRawMethod::Hanatos2025, 12.0f, {0, 0, 64, 48});
+            Inputs inputs(runtime, route, Spektrafilm::RgbToRawMethod::Hanatos2025, 12.0f, {0, 0, 64, 48});
             JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
             snapshot.instanceToken.value = 0x4741555353ull;
             snapshot.frameToken.value = nextIdentity;
@@ -616,7 +620,7 @@ namespace {
             const auto& spec = cases[caseIndex];
             auto row = case_rows.case_event(ids[caseIndex]);
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(spec.route) << " pixel=" << spec.pixel << " tail=" << spec.tail << " width=" << spec.width);
-            Inputs inputs(spec.route, Spektrafilm::RgbToRawMethod::Hanatos2025, spec.pixel, {0, 0, spec.width, spec.height}, spec.tail);
+            Inputs inputs(runtime, spec.route, Spektrafilm::RgbToRawMethod::Hanatos2025, spec.pixel, {0, 0, spec.width, spec.height}, spec.tail);
             auto frame = prepare_boundary(inputs);
             const auto actual = frame.spatial_dir_resources(frame.workspace_lease(), inputs.dir.hash);
             ASSERT_TRUE(actual.active);
@@ -829,7 +833,7 @@ namespace {
         for (auto route : routes) {
             for (auto method : methods) {
                 for (float pixelSize : pixelSizes) {
-                    Inputs inputs(route, method, pixelSize, {0, 0, 64, 48});
+                    Inputs inputs(runtime, route, method, pixelSize, {0, 0, 64, 48});
                     for (bool carrier : carrierModes) {
                         for (int cachePlanes : cachePlaneCounts) {
                             const auto id = route_case_key(route) + "/method-" +
@@ -856,7 +860,7 @@ namespace {
 
     // Explicit CUDA-event measurement; never part of ordinary CTest.
     TEST_F(ExposureCache, DISABLED_SixKTiming) {
-        Inputs inputs(Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::RgbToRawMethod::Hanatos2025, 36000.0f / 6048.0f, {0, 0, 6048, 4032});
+        Inputs inputs(runtime, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::RgbToRawMethod::Hanatos2025, 36000.0f / 6048.0f, {0, 0, 6048, 4032});
         compare<JuicerCuda::PrintPipelineRunParams>(inputs, false, 3, true);
     }
 } // namespace
@@ -865,13 +869,10 @@ int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
     if (testing::GTEST_FLAG(list_tests))
         return RUN_ALL_TESTS();
-    JuicerCuda::Owner cudaOwner;
-    cudaOwner.create(JuicerProcess::data_directory());
     JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
     case_log.finish();
-    const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
-    return closed.category == FJ_STATUS_SUCCESS ? result : 1;
+    return result;
 } catch (...) {
     return 1;
 }

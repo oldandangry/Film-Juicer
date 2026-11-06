@@ -117,7 +117,7 @@
     "Ofx.Gpu.GrainFrame": 1,
     "Ofx.Gpu.DirFrame": 1,
     "Ofx.Gpu.FrameGeometry": 1,
-    "Ofx.Gpu.AdapterTrace": 9,
+    "Ofx.Gpu.AdapterTrace": 10,
     "Ofx.Gpu.StreamContract": 1,
     "Ffi.Gpu.PreparedBoundary.negative-direct": 4,
     "Ffi.Gpu.PreparedBoundary.negative-print": 4,

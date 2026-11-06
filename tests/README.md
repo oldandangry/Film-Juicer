@@ -146,6 +146,32 @@ The 38 native attempts, including ten failed analysis attempts, record
 reports add 138,921,084 bytes. The advisory read/time targets remain unmet;
 recorded overlapping intervals are not complete task wall time or physical I/O.
 
+## S5C2 process/runtime ownership checkpoint: 6 November 2026
+
+Safe Rust `Runtime` owns process Assets and the sole native CUDA handle. The
+factory, effects and synchronous processors borrow it explicitly; native
+`FjCuda`/`Root` retains CUDA resources, exact contexts/epochs, admission, drainage
+and uncertain native retention. Native host composition and ambient owner/Root
+discovery are removed. See the [FFI ownership guide](ffi/README.md).
+
+Recorded qualification includes 678 host registrations across the four presets
+(181 Linux Debug, 174 Windows Debug, 162 Linux Release and 161 Windows Release),
+44 selected GPU registrations per preset, scoped/full quality and the ordered
+native Release testing-OFF/ON closures. The host checkpoint includes Debug tooling
+on both OSes and Linux Debug corpus. The Windows receipt-publication repair has
+native transient/persistent-denial controls; historical failed attempts remain
+failed and their original receipts are preserved.
+
+Independent review identified omitted consuming-close checks in two GPU failure
+branches and stale fixture-owner guidance. The correction passed the four
+affected GPU registrations in every preset (16 total), plus scoped native Debug
+quality for all three compiler variants on both OSes. These focused results and
+the preceding broad checkpoints retain their separate source/assertion scopes.
+Implementation and focused re-review are approved, and the owner accepts bounded
+publication. NativeSubmissionState/temporal/latch work remains S5.D; capture/UI and
+adapter replacement remain S6. Full S5 and installed-host/Resolve acceptance are
+not established. MultiDevice remains optional and unexecuted.
+
 ## Validation cadence
 
 Choose checks from the changed contract and the checkpoint being completed.
@@ -415,6 +441,12 @@ python -B scripts/verify.py qualification --preset linux-debug \
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
+The Release testing-OFF contract builds its two existing C11 value probes as
+`JuicerProductionFilmProbe` and `JuicerProductionOutputColorProbe`. CMake supplies
+the real native engine and production Rust final link; their tracked C sources,
+C11 assertions and value checks remain the same. These validation targets are
+excluded from default product builds.
+
 Test targets are excluded from the default product build. The verifier builds
 the selected target closure before CTest; `ctest` alone expects its selected
 binaries and Rust metadata to have been prepared. Unrelated test targets and
@@ -424,17 +456,25 @@ For genuinely CUDA-independent work, use the same verifier and native preset:
 
 ```sh
 python -B scripts/verify.py development --preset linux-debug --cuda-free \
-  --tests Rust.Bridge Ffi.Host.CudaAbi Route.Host.Bridge
+  --tests Rust.Core Rust.Bridge
 ```
 
 This configures `tests/host` in `out/build/<preset>/host-tests`, reusing the
 parent preset's compiler settings and `cargo/{production,test-support}`. It
-registers Rust.Core/Bridge, shared tooling/Rust quality groups, and the existing
-CudaAbi, ProfileOwner, SpectralOwner, RouteBridge, HashContract and RenderAssertion
-native targets. No CUDA compiler or toolkit discovery is enabled. These are
+registers Rust.Core/Bridge, shared tooling/Rust quality groups, and the
+HashContract and RenderAssertion native targets. No CUDA compiler or toolkit discovery is enabled. These are
 shared definitions from `tests/CMakeLists.txt`; this configuration supplies no
 product core, GPU tests, plug-in or alternate renderer. Product-linked `host`
-tests continue to require CUDA for compilation.
+tests continue to require CUDA for compilation. CudaAbi, ProfileOwner,
+SpectralOwner and RouteBridge link the complete Rust plug-in archive and its real
+native runtime dependency through the product entry. They remain host tests;
+their native link requires CUDA 13.2 for compilation.
+
+Debug tooling's `Quality.BuildRegistration` checks both configured graphs. Before
+that tooling checkpoint, prepare the shared CUDA-free graph with
+`verify.py prepare --preset <native-debug> --cuda-free --targets
+JuicerHashContractTests JuicerRenderAssertionTests`. Product Debug registration
+binds that graph and the product graph into the same complete tooling module.
 
 Both configurations use the same preset build owner. The CUDA-independent
 entry checks that ownership at configure/build time; invoke it through
@@ -467,6 +507,25 @@ directory, saving nextest binaries-only and Cargo metadata. Cargo owns source
 and included-fixture freshness. CTest discovers/runs these built binaries without
 invoking another build. For a focused Rust rebuild, select
 `cmake --build --preset <preset> --target juicer_rust_tests` before CTest.
+
+`Rust.Core` exercises the production `state::Publication` authority with real,
+resource-backed `recipe::prepare` results. Its cases cover ordered capture
+tickets, registered host writes, revision-stamped snapshots, deferred reads and
+conditional refresh, supplied input identity (including zero and equivalent
+updates), all four routes, typed failures, obsolete outcomes and committed build
+numbering. Concurrent admission, panic/poison/overflow blocking, fallible complete
+backing and admitted holds through replacement/close/final destruction are also
+covered. Test-only observations and bounded rendezvous establish overlap; scoped
+workers join before completion.
+
+Production `RenderInstance` delegates through the private C edge to safe Rust
+`Instance` and `Publication`. The render callback retains one immutable admitted
+`PreparedState` while the processor borrows it through synchronous processing.
+Native capture identity and temporal/submission ownership remain separate from
+publication. `Ffi.Host.PreparedState` checks the actual C11 protocol, while
+`Ofx.Gpu.AdapterTrace` exercises getters, setters, callback reentry, late host-write
+completion and exception/image-release behavior through the real adapter. These
+fixture results do not establish installed Resolve retry behavior.
 
 The presets use four CTest workers. GPU groups share `juicer_gpu`, the
 product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
@@ -1256,9 +1315,11 @@ compiled into the owning test library; no private workbench files are required.
 the CUDA C boundary signatures. `Rust.Bridge` includes internal ABI checks. See
 [the FFI guide](ffi/README.md) for bounded commands and pinned binding maintenance.
 
-`Ffi.Host.CudaOwner` covers native owner creation, non-publication on failure,
-duplicate rejection, noncreating teardown, scoped close/reload and consume-once
-retention after a controlled metadata-only shutdown failure without a GPU.
+`Ffi.Host.CudaOwner` covers Rust Runtime creation/borrowing through C11 and C++,
+non-publication on failure, duplicate rejection, noncreating teardown, scoped
+close/reload and consume-once retention after a controlled metadata-only shutdown
+failure without a GPU. Isolated native lifecycle cases also exercise direct
+`FjCuda` creation and consuming destruction.
 `Ofx.Host.CudaOwnerUnload` verifies that the real factory's failed close returns
 a fatal status through the OFX entry point and blocks replacement ownership.
 Direct native fixtures explicitly own their runtime; `Root` access only borrows

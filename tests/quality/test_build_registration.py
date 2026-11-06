@@ -429,10 +429,21 @@ MembershipRecordTests.test_duplicate_disabled_and_colliding_scratch_registration
 class CudaFreeBuildRegistrationTests(unittest.TestCase):
     """Actual selected closures and owner guards for the shared preset Cargo tree."""
 
-    HOST_TARGETS = (
+    CUDA_FREE_TARGETS = ("JuicerHashContractTests", "JuicerRenderAssertionTests")
+    PRODUCT_RUST_TARGETS = (
         "JuicerCudaAbiTests", "JuicerProfileOwnerTests", "JuicerSpectralOwnerTests",
-        "JuicerRouteBridgeTests", "JuicerHashContractTests", "JuicerRenderAssertionTests",
+        "JuicerRouteBridgeTests",
     )
+    PRODUCT_RUST_SOURCES = (
+        "cuda_abi_c.c", "cuda_abi_test.cpp", "profile_abi_c.c", "profile_owner_test.cpp",
+        "spectral_abi_c.c", "spectral_owner_test.cpp", "route_bridge_test.cpp", "ScanRoute.cpp",
+    )
+    PRODUCT_RUST_VARIANTS = {
+        "JuicerCudaAbiTests": ("cuda_abi_c.c", "test-support"),
+        "JuicerProfileOwnerTests": ("profile_abi_c.c", "test-support"),
+        "JuicerSpectralOwnerTests": ("spectral_abi_c.c", "test-support"),
+        "JuicerRouteBridgeTests": ("route_bridge_test.cpp", "production"),
+    }
     GPU_ONLY_TARGETS = (
         "JuicerPinnedUploadTests", "JuicerGaussianKernelTests", "JuicerScannerLutResourceTests",
         "JuicerDeferredDestroyTests", "JuicerCudaInspectGpuTests", "JuicerProfileCudaSafetyTests",
@@ -513,6 +524,17 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.assertTrue(Path(ninja).is_file())
         return self.native_run.command(
             name, [ninja, "-C", str(build), "-t", "commands", *targets],
+            timeout=60, cwd=ROOT,
+        ).read_text(encoding="utf-8", errors="replace").replace("\\", "/")
+
+    def query_targets(self, name, build):
+        cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+        configured = re.search(r"^CMAKE_MAKE_PROGRAM:[^=]+=(.+)$", cache, re.MULTILINE)
+        self.assertIsNotNone(configured, "the configuration must select Ninja")
+        ninja = configured.group(1)
+        self.assertTrue(Path(ninja).is_file())
+        return self.native_run.command(
+            name, [ninja, "-C", str(build), "-t", "targets", "all"],
             timeout=60, cwd=ROOT,
         ).read_text(encoding="utf-8", errors="replace").replace("\\", "/")
 
@@ -618,7 +640,7 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.assertIn("check-owner", commands)
         print("Shared resource stage no-op: zero payload commands and writes; files=", len(before) - 1)
 
-    def test_host_configuration_and_selected_six_target_closure_are_cuda_free(self):
+    def test_host_configuration_and_selected_two_target_closure_are_cuda_free(self):
         cache_path = self.host_build / "CMakeCache.txt"
         self.assertTrue(cache_path.is_file())
         cache = cache_path.read_text(encoding="utf-8", errors="replace")
@@ -635,13 +657,13 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.assertTrue(compile_rows)
         self.assertTrue(all(not Path(row["file"]).suffix.casefold() == ".cu" for row in compile_rows))
 
-        selected = self.query_commands("host-selected-commands", self.host_build, *self.HOST_TARGETS)
-        for source in ("cuda_abi_c.c", "profile_owner_test.cpp", "spectral_owner_test.cpp",
-                       "route_bridge_test.cpp", "ScanRoute.cpp", "hash_contract_test.cpp",
-                       "render_assertions_test.cpp"):
+        selected = self.query_commands("host-selected-commands", self.host_build, *self.CUDA_FREE_TARGETS)
+        for source in ("hash_contract_test.cpp", "render_assertions_test.cpp"):
             self.assertIn(source, selected)
-        self.assertIn("/out/build/" + self.preset + "/cargo/test-support", selected)
-        self.assertIn("/out/build/" + self.preset + "/cargo/production", selected)
+        for source in self.PRODUCT_RUST_SOURCES:
+            self.assertNotIn(source, selected)
+        self.assertNotIn("/out/build/" + self.preset + "/cargo/test-support", selected)
+        self.assertNotIn("/out/build/" + self.preset + "/cargo/production", selected)
         self.assertNotIn("/host-tests/cargo/", selected)
         self.assertNotIn("nvcc", selected.casefold())
         self.assertNotIn("cufft", selected.casefold())
@@ -650,10 +672,13 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
                          "immutable explicit-root consumers must not prepare the staged package tree")
         self.assert_no_test_metadata(selected)
 
+        targets = self.query_targets("host-target-inventory", self.host_build)
+        for target in self.PRODUCT_RUST_TARGETS:
+            self.assertNotRegex(targets, rf"(?m)^{re.escape(target)}(?:$|:)")
+
         all_commands = self.query_commands("host-all-commands", self.host_build)
         self.assertEqual(all_commands.strip(), "", "the CUDA-free default target must not compile tests")
-        for source in ("cuda_abi_c.c", "profile_owner_test.cpp", "spectral_owner_test.cpp",
-                       "route_bridge_test.cpp", "hash_contract_test.cpp", "render_assertions_test.cpp"):
+        for source in (*self.PRODUCT_RUST_SOURCES, "hash_contract_test.cpp", "render_assertions_test.cpp"):
             self.assertNotIn(source, all_commands)
         self.assert_no_test_metadata(all_commands)
 
@@ -681,12 +706,22 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
         self.assertIn("JuicerCudaExecutor.cpp", selected)
         self.assertIn("JuicerCudaFilmPipeline.cu", selected)
         self.assertIn("cufft", selected.casefold())
-        for target in self.GPU_ONLY_TARGETS:
+        for target in (*self.GPU_ONLY_TARGETS, *self.PRODUCT_RUST_TARGETS):
             self.assertNotIn(target, selected)
+        # ScanRoute.cpp is also an ordinary production core source.
+        test_sources = tuple(source for source in self.PRODUCT_RUST_SOURCES if source != "ScanRoute.cpp")
+        for source in test_sources:
+            self.assertNotIn(source, selected)
+
+        for target, (source, variant) in self.PRODUCT_RUST_VARIANTS.items():
+            commands = self.query_commands("product-rust-consumer-" + target.lower(), self.preset_build, target)
+            self.assertIn(source, commands)
+            self.assertIn("/cargo/" + variant + "/", commands)
+            self.assert_no_test_metadata(commands)
 
         all_commands = self.query_commands("product-all-commands", self.preset_build)
         for source in ("cuda_failure_test.cpp", "film_recipe_test.cpp", "pinned_upload_test.cpp",
-                       "hash_contract_test.cpp", "render_assertions_test.cpp"):
+                       *test_sources, "hash_contract_test.cpp", "render_assertions_test.cpp"):
             self.assertNotIn(source, all_commands)
         lower = all_commands.casefold().replace("\\", "/")
         self.assertIn("/cargo/production", lower)

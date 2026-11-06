@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include "ProcessRuntime.h"
 #include "gtest_cases.h"
 #include "asset_lookup_test.h"
 #include "juicer_cuda_owner.h"
@@ -144,7 +145,7 @@ namespace {
         friend bool operator==(const PublishedReference&, const PublishedReference&) = default;
     };
 
-    PublishedReference published_reference(const PendingRenderAdmissionResult& publication) {
+    PublishedReference published_reference(const JuicerTestSupport::PublicationAdmission& publication) {
         const auto state = JuicerTestSupport::published_view(publication);
         return {state.film_reference.hash, state.scanner_recipe_hash, state.recipe_hash, reference_value(state.film_reference)};
     }
@@ -159,15 +160,6 @@ namespace {
         params.cameraAutoExposureEnabled = 0;
         params.inputCompressionEnabled = 0;
         return params;
-    }
-
-    void set_pending(InstanceState& state, const ParamSnapshot& params) {
-        std::lock_guard lock(state.pending.m);
-        state.pending.value = PendingParamsState::Valid{params, hash_params(params)};
-    }
-
-    bool admitted(const PendingRenderAdmissionResult& result) {
-        return result.status == PendingRenderAdmissionStatus::AdmittedDirect && bool(result.directState);
     }
 
     void set_lookup_fault(std::uint32_t mode) {
@@ -420,62 +412,72 @@ namespace {
         EXPECT_EQ(reference_value(failed), ReferenceValue{});
         EXPECT_EQ(reference_value(successful), retained);
 
-        JuicerCuda::Owner processOwner;
+        JuicerProcess::ProcessRuntime processOwner;
         processOwner.create(std::filesystem::path(JUICER_LOOKUP_RESOURCE_DIR));
         auto controls = lookup_controls();
         // An earlier development-construction failure must leave the later
         // baseline/channel-zero lookup fault armed and unconsumed.
-        InstanceState early;
+        RenderInstance early;
         auto invalid = controls;
         invalid.filmGammaFactor = 0.0f;
-        set_pending(early, invalid);
+        JuicerTestSupport::capture(early, invalid);
         ASSERT_NO_THROW(set_lookup_fault(1));
-        const auto early_failure = admit_pending_render_state(early);
-        EXPECT_EQ(early_failure.status, PendingRenderAdmissionStatus::RebuildFailed);
+        const auto early_failure = JuicerTestSupport::admit(processOwner.borrow().assets, early);
+        EXPECT_EQ(early_failure.kind, FJ_ADMISSION_PREPARATION_FAILED);
+        EXPECT_FALSE(early_failure.state);
         EXPECT_EQ(fj_test_film_reference_lookup_fault_consumed(), 0u);
         ASSERT_NO_THROW(set_lookup_fault(0));
 
-        InstanceState state;
-        set_pending(state, controls);
-        const auto initial = admit_pending_render_state(state);
-        ASSERT_TRUE(admitted(initial));
-        const auto old_state = initial.directState;
+        RenderInstance state;
+        JuicerTestSupport::capture(state, controls);
+        const auto initial = JuicerTestSupport::admit(processOwner.borrow().assets, state);
+        ASSERT_EQ(initial.kind, FJ_ADMISSION_READY);
+        ASSERT_TRUE(initial.state);
         const PublishedReference old_value = published_reference(initial);
         ASSERT_NE(old_value.reference_hash, 0u);
         ASSERT_NE(old_value.scanner_recipe_hash, 0u);
         ASSERT_NE(old_value.recipe_hash, 0u);
-        const std::uint64_t previous_hash = state.lastHash.load();
-        const std::uint64_t previous_counter = state.buildCounterNext.load();
+        const auto previous = JuicerTestSupport::PublicationObserver::metrics(state);
 
         auto changed = controls;
         changed.cameraExposureCompensationEv += 0.25;
-        set_pending(state, changed);
+        JuicerTestSupport::capture(state, changed);
         ASSERT_NO_THROW(set_lookup_fault(1));
         const auto unsupported_mode = fj_test_film_reference_lookup_fault(2);
         EXPECT_EQ(unsupported_mode.category, FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(unsupported_mode.api, FJ_API_NONE);
         EXPECT_EQ(unsupported_mode.native_code, 0);
-        const auto rejected = admit_pending_render_state(state);
+        const auto rejected = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         EXPECT_EQ(fj_test_film_reference_lookup_fault_consumed(), 1u);
-        EXPECT_EQ(rejected.status, PendingRenderAdmissionStatus::RebuildFailed);
-        EXPECT_FALSE(rejected.directState);
+        EXPECT_EQ(rejected.kind, FJ_ADMISSION_PREPARATION_FAILED);
+        EXPECT_FALSE(rejected.state);
         EXPECT_EQ(rejected.diagnostic, "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup");
-        EXPECT_FALSE(JuicerAtomic::load_shared_ptr(&state.activeDirectState));
-        EXPECT_EQ(state.lastHash.load(), previous_hash);
-        EXPECT_EQ(state.buildCounterNext.load(), previous_counter);
+        const auto after_failure = JuicerTestSupport::PublicationObserver::metrics(state);
+        EXPECT_EQ(after_failure.build, previous.build);
+        EXPECT_EQ(after_failure.inputIdentity, hash_params(changed));
+        EXPECT_EQ(after_failure.publishedIdentity, previous.publishedIdentity);
         EXPECT_EQ(published_reference(initial), old_value);
 
-        set_pending(state, changed);
-        const auto retry = admit_pending_render_state(state);
-        ASSERT_TRUE(admitted(retry));
-        EXPECT_NE(retry.directState, old_state);
-        EXPECT_EQ(state.lastHash.load(), hash_params(changed));
-        EXPECT_EQ(state.buildCounterNext.load(), previous_counter + 1);
-        const auto reused = admit_pending_render_state(state);
-        ASSERT_TRUE(admitted(reused));
-        EXPECT_EQ(reused.directState, retry.directState);
-        EXPECT_EQ(state.buildCounterNext.load(), previous_counter + 1);
-        ASSERT_EQ(JuicerProcess::root().assets().release_cached_payloads().category, FJ_STATUS_SUCCESS);
+        JuicerTestSupport::capture(state, controls);
+        const auto reused_old = JuicerTestSupport::admit(processOwner.borrow().assets, state);
+        ASSERT_EQ(reused_old.kind, FJ_ADMISSION_READY);
+        ASSERT_TRUE(reused_old.state);
+        EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*reused_old.state), JuicerTestSupport::PublicationObserver::backing(*initial.state));
+        EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).build, previous.build);
+
+        JuicerTestSupport::capture(state, changed);
+        const auto retry = JuicerTestSupport::admit(processOwner.borrow().assets, state);
+        ASSERT_EQ(retry.kind, FJ_ADMISSION_READY);
+        ASSERT_TRUE(retry.state);
+        auto retry_metrics = JuicerTestSupport::PublicationObserver::metrics(state);
+        EXPECT_EQ(retry_metrics.inputIdentity, hash_params(changed));
+        EXPECT_EQ(retry_metrics.build, previous.build + 1);
+        const auto reused = JuicerTestSupport::admit(processOwner.borrow().assets, state);
+        ASSERT_EQ(reused.kind, FJ_ADMISSION_READY);
+        ASSERT_TRUE(reused.state);
+        EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*reused.state), JuicerTestSupport::PublicationObserver::backing(*retry.state));
+        EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).build, retry_metrics.build);
+        ASSERT_EQ(fj_legacy_assets_release_cached_payloads(processOwner.borrow().assets, nullptr).category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(published_reference(initial), old_value);
         EXPECT_EQ(processOwner.close().category, FJ_STATUS_SUCCESS);
     }

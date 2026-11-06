@@ -266,6 +266,7 @@ namespace {
 namespace JuicerCuda {
 
     bool execute_prepared_host_data(
+        JuicerProcess::Root& root,
         const FjPreparedHostData& source,
         const ExecutionFrame& frame,
         ResourceManager::SubmissionSnapshot& snapshot,
@@ -367,7 +368,7 @@ namespace JuicerCuda {
         if (print) {
             preparation.print = decode_print(source);
         }
-        execute_prepared({preparation, descriptors, film, exposure.route_correction_scale, source.print.exposure, source.print.preflash_exposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot, hostPreparation}, recovery, abortCallback);
+        execute_prepared(root, {preparation, descriptors, film, exposure.route_correction_scale, source.print.exposure, source.print.preflash_exposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot, hostPreparation}, recovery, abortCallback);
         return true;
     }
 

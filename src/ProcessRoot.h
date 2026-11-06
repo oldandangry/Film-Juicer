@@ -15,7 +15,6 @@
 #include "Cuda/JuicerCudaFailure.h"
 
 #include "RenderValues.h"
-#include "ResourceAssetLibrary.h"
 #include "FilmEffectsFrameDescriptors.h"
 
 #include "Cuda/JuicerCudaFilmPayloads.h"
@@ -166,8 +165,6 @@ namespace JuicerProcess {
 
             Root* _root = nullptr;
         };
-
-        static Root& instance();
 
         Root(const Root&) = delete;
         Root& operator=(const Root&) = delete;
@@ -495,7 +492,6 @@ namespace JuicerProcess {
             void* cudaStreamOpaque,
             JuicerCuda::Failure& outError,
             const FjHostPreparation* hostPreparation = nullptr);
-        JuicerAssets::Library& assets();
 
     private:
         friend class TestSupport::RootLifetimeObserver;
@@ -512,7 +508,7 @@ namespace JuicerProcess {
             JuicerCuda::Failure& outError,
             const FjHostPreparation* hostPreparation = nullptr);
 
-        explicit Root(const std::filesystem::path& dataDirectory);
+        Root();
         ~Root();
 
         void retire_grain_static_instance(std::uint64_t instanceToken);
@@ -520,13 +516,9 @@ namespace JuicerProcess {
         bool shutdown(std::mutex& nativeCallMutex, JuicerCuda::Failure& outError);
         bool retire_known_contexts(JuicerCuda::Failure& outError);
         bool release_cuda_context_resource_owners() noexcept;
-        FjStatus release_process_host_services(FjErrorBuffer* error = nullptr) noexcept;
-        std::unique_ptr<JuicerAssets::Library> detach_host_assets() noexcept;
         void finish_frame_preparation() noexcept;
         bool wait_for_frame_preparation() noexcept;
 
-        // FJ_TEMP_BRIDGE: native host asset owner; remove S5.C.
-        std::unique_ptr<JuicerAssets::Library> _assets;
         std::mutex _framePreparationMutex;
         std::condition_variable _framePreparationCv;
         std::uint32_t _activeFramePreparations = 0;
@@ -617,7 +609,6 @@ namespace JuicerProcess {
         CudaContextResourceMap _cudaContextResources;
     };
 
-    Root& root();
     std::filesystem::path data_directory();
 
 } // namespace JuicerProcess

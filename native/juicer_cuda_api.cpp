@@ -20,13 +20,8 @@
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaFailure.h"
 #include "ProcessRoot.h"
-#include "RustAssetBridge.h"
 
 struct FjCuda final {
-    explicit FjCuda(const std::filesystem::path& dataDirectory)
-        : root(dataDirectory) {
-    }
-
     enum class Lifecycle : std::uint8_t {
         Accepting,
         Closing,
@@ -112,32 +107,6 @@ struct FjCuda final {
         }
     }
 
-    FjStatus release_host_caches(FjErrorBuffer* error) noexcept {
-        auto state = hostCleanup.load(std::memory_order_acquire);
-        for (;;) {
-            if (state == HostCleanup::Complete) {
-                return JuicerCuda::write_status(hostCleanupStatus, {hostCleanupDiagnostic.data(), hostCleanupDiagnosticLength}, error);
-            }
-            if (state == HostCleanup::Running) {
-                hostCleanup.wait(state, std::memory_order_acquire);
-            } else if (hostCleanup.compare_exchange_weak(state, HostCleanup::Running, std::memory_order_acq_rel)) {
-                FjErrorBuffer retained{hostCleanupDiagnostic.data(), hostCleanupDiagnostic.size(), 0};
-#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
-                JuicerCuda::TerminalTest::before_host_cleanup();
-#endif
-                hostCleanupStatus = root.release_process_host_services(&retained);
-                hostCleanupDiagnosticLength = retained.length;
-                hostCleanup.store(HostCleanup::Complete, std::memory_order_release);
-                hostCleanup.notify_all();
-            }
-            state = hostCleanup.load(std::memory_order_acquire);
-        }
-    }
-
-    std::unique_ptr<JuicerAssets::Library> detach_host_assets() noexcept {
-        return root.detach_host_assets();
-    }
-
     void retire_instance(std::uint64_t instanceToken) {
         root.retire_grain_static_instance(instanceToken);
     }
@@ -146,16 +115,6 @@ struct FjCuda final {
     FjStatus terminalStatus{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
     std::array<char, 1024> terminalDiagnostic{};
     std::size_t terminalDiagnosticLength = 0;
-
-    enum class HostCleanup : std::uint8_t {
-        Pending,
-        Running,
-        Complete
-    };
-    std::atomic<HostCleanup> hostCleanup{HostCleanup::Pending};
-    FjStatus hostCleanupStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-    std::array<char, 1024> hostCleanupDiagnostic{};
-    std::size_t hostCleanupDiagnosticLength = 0;
 
     std::mutex callMutex;
     JuicerProcess::Root root;
@@ -283,7 +242,7 @@ namespace {
 
 } // namespace
 
-FjStatus fj_cuda_create(FjPathView data_directory, FjCuda** out_cuda, FjErrorBuffer* error) {
+FjStatus fj_cuda_create(FjCuda** out_cuda, FjErrorBuffer* error) {
     if (out_cuda) {
         *out_cuda = nullptr;
     }
@@ -294,8 +253,7 @@ FjStatus fj_cuda_create(FjPathView data_directory, FjCuda** out_cuda, FjErrorBuf
         if (gNativeCallActive || !out_cuda) {
             return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA owner creation input");
         }
-        const auto directory = JuicerAssets::copy_native_path(data_directory);
-        auto candidate = std::make_unique<FjCuda>(directory);
+        auto candidate = std::make_unique<FjCuda>();
 #if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
         JuicerCuda::TerminalTest::after_construct();
 #endif
@@ -308,7 +266,7 @@ FjStatus fj_cuda_create(FjPathView data_directory, FjCuda** out_cuda, FjErrorBuf
                 published = true;
             }
         }
-        // Rejected candidates and partial construction release Rust outside locks.
+        // Rejected candidates release native metadata outside the registration lock.
         return status(published ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE, error, published ? "" : "CUDA runtime already has an owner");
     } catch (const JuicerCuda::ExecutionFailure& failure) {
         return JuicerCuda::write_status(failure.failure.status, failure.failure.diagnostic, error);
@@ -537,7 +495,7 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
 #if defined(JUICER_CUDA_RENDER_TEST_HOOK)
             JuicerCuda::RenderTest::before_execute();
 #endif
-            if (!JuicerCuda::execute_prepared_host_data(*prepared, execution, snapshot, recovery, abortCallback, diagnostic, hostPreparation)) {
+            if (!JuicerCuda::execute_prepared_host_data(_cuda->root, *prepared, execution, snapshot, recovery, abortCallback, diagnostic, hostPreparation)) {
                 return {{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0};
             }
 #if defined(JUICER_CUDA_RENDER_TEST_HOOK)
@@ -589,6 +547,19 @@ FjStatus fj_cuda_retire_instance(FjCuda* cuda, uint64_t instance_token, FjErrorB
     }
 }
 
+FjStatus fj_cuda_check_terminal(FjCuda* cuda, FjErrorBuffer* error) {
+    if (!valid_diagnostic(error)) {
+        return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
+    }
+    if (!cuda || gNativeCallActive) {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid or reentrant CUDA terminal precheck");
+    }
+    if (cuda != gOwner.load(std::memory_order_acquire)) {
+        return status(FJ_STATUS_PREPARATION_FAILURE, error, "CUDA terminal precheck requires the registered owner");
+    }
+    return status(FJ_STATUS_SUCCESS, error, "");
+}
+
 FjStatus fj_cuda_shutdown(FjCuda* cuda, FjErrorBuffer* error) {
     if (!valid_diagnostic(error)) {
         return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
@@ -608,9 +579,6 @@ FjStatus fj_cuda_shutdown(FjCuda* cuda, FjErrorBuffer* error) {
             }
             result = cuda->shutdown();
         }
-        if (result.category == FJ_STATUS_SUCCESS) {
-            return cuda->release_host_caches(error);
-        }
         return JuicerCuda::write_status(result,
                                         result.category == FJ_STATUS_SUCCESS ? std::string_view{} : std::string_view{cuda->terminalDiagnostic.data(), cuda->terminalDiagnosticLength},
                                         error);
@@ -624,22 +592,21 @@ FjStatus fj_cuda_shutdown(FjCuda* cuda, FjErrorBuffer* error) {
 }
 
 FjStatus fj_cuda_destroy(FjCuda* cuda, FjErrorBuffer* error) {
-    FjErrorBuffer* nativeError = valid_diagnostic(error) ? error : nullptr;
+    const bool diagnosticValid = valid_diagnostic(error);
+    FjErrorBuffer* nativeError = diagnosticValid ? error : nullptr;
     if (!cuda) {
         return status(FJ_STATUS_UNSUPPORTED_INPUT, nativeError, "CUDA destroy requires an owning handle");
     }
-    // Registration precedes every dereference. Reentry cannot detach assets
-    // borrowed by its active invocation; it retains the existing blocked graph.
+    // Registration precedes every dereference. Reentry retains the native graph
+    // while the caller still holds its non-consuming host owner.
     if (cuda != gOwner.load(std::memory_order_acquire)) {
         return status(FJ_STATUS_PREPARATION_FAILURE, nativeError, "CUDA destroy requires the registered owner");
     }
     if (gNativeCallActive) {
         return terminal_admission_failure(cuda, {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "reentrant CUDA destroy retained the owner", true, nativeError);
     }
-    // Legal terminal use requires the host to exclude ALL asset readers/views,
-    // independently of GPU draining. This move allocates nothing and precedes
-    // throwable admission. Keep the whole Library through the native attempt.
-    auto hostAssets = cuda->detach_host_assets();
+    // The Rust owner keeps Assets alive through this native terminal attempt.
+    // Legal consuming use requires host callback/view exclusion before entry.
     FjStatus result{};
     bool closed = false;
     try {
@@ -666,35 +633,15 @@ FjStatus fj_cuda_destroy(FjCuda* cuda, FjErrorBuffer* error) {
     } catch (...) {
         result = terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA destroy admission failed", true, nativeError);
     }
-    if (closed && cuda->hostCleanup.load(std::memory_order_acquire) == FjCuda::HostCleanup::Complete) {
-        result = JuicerCuda::write_status(cuda->hostCleanupStatus, {cuda->hostCleanupDiagnostic.data(), cuda->hostCleanupDiagnosticLength}, nativeError);
-    }
-    // Neither Rust cleanup nor native metadata destruction runs under a lock.
-    const auto hostResult = hostAssets ? hostAssets->close(result.category == FJ_STATUS_SUCCESS ? error : nullptr)
-                                       : FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-    hostAssets.reset();
+    // Native metadata destruction stays outside every native lock. Uncertain
+    // retention keeps only the native graph; the Rust owner handles host cleanup.
     if (closed) {
         delete cuda;
+        return diagnosticValid ? status(FJ_STATUS_SUCCESS, nativeError, "")
+                               : FjStatus{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
     }
-    return result.category == FJ_STATUS_SUCCESS ? hostResult : result;
+    return result;
 }
-
-namespace JuicerProcess {
-
-    Root& Root::instance() {
-        FjCuda* cuda = gOwner.load(std::memory_order_acquire);
-        if (!cuda) {
-            throw std::logic_error("CUDA runtime has no owner");
-        }
-        return cuda->root;
-    }
-
-    Root& root() {
-        return Root::instance();
-    }
-
-
-} // namespace JuicerProcess
 
 namespace JuicerCuda {
 
@@ -713,6 +660,17 @@ namespace JuicerCuda {
     }
 #endif
 
+    JuicerProcess::Root& borrow_root(FjCuda* cuda) {
+        if (!cuda || cuda != gOwner.load(std::memory_order_acquire)) {
+            reject_native_call(FJ_STATUS_PREPARATION_FAILURE, "Root borrow requires the supplied registered owner");
+        }
+        return cuda->root;
+    }
+
+    JuicerProcess::Root& NativeCall::root() const noexcept {
+        return _cuda->root;
+    }
+
     NativeCall::NativeCall(FjCuda* cuda)
         : _lock(native_call_mutex(cuda)), _cuda(cuda) {
         if (cuda->lifecycle.load(std::memory_order_acquire) != FjCuda::Lifecycle::Accepting) {
@@ -723,36 +681,6 @@ namespace JuicerCuda {
 
     NativeCall::~NativeCall() {
         gNativeCallActive = false;
-    }
-
-    FjCuda* borrowed_owner() noexcept {
-        return gOwner.load(std::memory_order_acquire);
-    }
-
-    Owner::~Owner() {
-        close();
-    }
-
-    void Owner::create(const std::filesystem::path& dataDirectory) {
-        if (_cuda) {
-            throw std::logic_error("CUDA owner is already initialized");
-        }
-        std::array<char, 256> message{};
-        FjErrorBuffer error{message.data(), message.size(), 0};
-        const JuicerAssets::NativePathArgument argument(dataDirectory);
-        const FjStatus result = fj_cuda_create(argument.view(), &_cuda, &error);
-        if (result.category == FJ_STATUS_ALLOCATION_FAILURE) {
-            throw std::bad_alloc();
-        }
-        if (result.category != FJ_STATUS_SUCCESS) {
-            throw std::runtime_error(message.data());
-        }
-    }
-
-    FjStatus Owner::close(FjErrorBuffer* error) noexcept {
-        FjCuda* cuda = std::exchange(_cuda, nullptr);
-        return cuda ? fj_cuda_destroy(cuda, error)
-                    : write_status({FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, {}, error);
     }
 
 } // namespace JuicerCuda

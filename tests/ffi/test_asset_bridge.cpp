@@ -1,4 +1,5 @@
-#include "RustAssetBridge.h"
+#include "test_asset_bridge.h"
+#include "NativePath.h"
 
 #include <algorithm>
 #include <array>
@@ -28,10 +29,6 @@ namespace JuicerAssets {
             JuicerCuda::Failure failure;
             JuicerCuda::set_failure(failure, status, message);
             throw JuicerCuda::ExecutionFailure{std::move(failure)};
-        }
-
-        [[noreturn]] void invalid_path() {
-            fail({FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "invalid native resource path extent or encoding");
         }
 
         void report_cleanup(FjStatus result) noexcept {
@@ -100,59 +97,6 @@ namespace JuicerAssets {
             }
         }
     } // namespace
-
-    NativePathArgument::NativePathArgument(const std::filesystem::path& path)
-#if !defined(_WIN32)
-        : _units(path.native())
-#endif
-    {
-#if defined(_WIN32)
-        _units.reserve(path.native().size());
-        for (wchar_t unit : path.native()) {
-            _units.push_back(static_cast<std::uint16_t>(unit));
-        }
-#endif
-    }
-
-    FjPathView NativePathArgument::view() const noexcept {
-#if defined(_WIN32)
-        return {_units.data(), _units.size(), FJ_PATH_WINDOWS_WIDE};
-#else
-        return {_units.data(), _units.size(), FJ_PATH_UNIX_BYTES};
-#endif
-    }
-
-    std::filesystem::path copy_native_path(FjPathView view) {
-        constexpr auto kLimit = static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max());
-        if (!view.data || view.count == 0) {
-            invalid_path();
-        }
-#if defined(_WIN32)
-        if (view.encoding != FJ_PATH_WINDOWS_WIDE || view.count > kLimit / sizeof(std::uint16_t) ||
-            reinterpret_cast<std::uintptr_t>(view.data) % alignof(std::uint16_t) != 0) {
-            invalid_path();
-        }
-        const auto* units = static_cast<const std::uint16_t*>(view.data);
-        std::wstring native;
-        native.reserve(view.count);
-        for (std::size_t i = 0; i < view.count; ++i) {
-            if (units[i] == 0) {
-                invalid_path();
-            }
-            native.push_back(static_cast<wchar_t>(units[i]));
-        }
-        return std::filesystem::path(std::move(native));
-#else
-        if (view.encoding != FJ_PATH_UNIX_BYTES || view.count > kLimit) {
-            invalid_path();
-        }
-        const std::string_view native(static_cast<const char*>(view.data), view.count);
-        if (native.find('\0') != std::string_view::npos) {
-            invalid_path();
-        }
-        return std::filesystem::path(native);
-#endif
-    }
 
     std::string path_diagnostic(const std::filesystem::path& path) {
         const auto& native = path.native();

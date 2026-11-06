@@ -313,6 +313,28 @@ FjStatus fj_legacy_exposure_mallett_reference_raw(const FjMallettReferenceInput*
  * Categories: success, unsupported input, preparation, allocation, internal;
  * api/native_code are zero. Diagnostic truncation never changes the status. */
 typedef struct FjAssets FjAssets;
+typedef struct FjRuntime FjRuntime;
+
+/* SF_TEMP_BRIDGE_RUNTIME_CALL_VIEW: synchronous adapter projection; remove S6.
+ * Both fields borrow the same live Runtime; neither is an owning handle. Do not
+ * store/transfer this view or destroy its Assets. Host terminal exclusion covers
+ * all callbacks, asset readers and outstanding views independently of GPU drain.
+ * Required record/output pointers are live, aligned, initialized and disjoint.
+ * Outputs clear before fallible work. Paths retain native bytes/UTF-16 units.
+ * check_close rejects reentry without consuming or establishing host exclusion.
+ * After successful precheck under host exclusion, destroy consumes exactly once
+ * on every result, including malformed diagnostics and contained panic. Assets
+ * outlives the native terminal attempt; native failure retains precedence.
+ */
+typedef struct FjRuntimeView {
+    const FjAssets* assets;
+    FjCuda* cuda;
+} FjRuntimeView;
+FjStatus fj_legacy_runtime_create(FjPathView resource_dir, FjRuntime** out, FjErrorBuffer* error);
+FjStatus fj_legacy_runtime_borrow(const FjRuntime* runtime, FjRuntimeView* out, FjErrorBuffer* error);
+FjStatus fj_legacy_runtime_check_close(const FjRuntime* runtime, FjErrorBuffer* error);
+FjStatus fj_legacy_runtime_shutdown(const FjRuntime* runtime, FjErrorBuffer* error);
+FjStatus fj_legacy_runtime_destroy(FjRuntime* runtime, FjErrorBuffer* error);
 typedef struct FjCatalog FjCatalog;
 #define FJ_PROFILE_ROLE_FILM UINT32_C(0)
 #define FJ_PROFILE_ROLE_PRINT UINT32_C(1)
@@ -2052,9 +2074,80 @@ typedef struct FjPreparedStateView {
     uint64_t scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash;
 } FjPreparedStateView;
 typedef struct FjPreparedState FjPreparedState;
-FjStatus fj_legacy_prepared_state_create(FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
+FjStatus fj_legacy_prepared_state_create(const FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
 FjStatus fj_legacy_prepared_state_view(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*);
 FjStatus fj_legacy_prepared_state_release(FjPreparedState*, FjErrorBuffer*);
+
+/* Private S5C1 instance publication/admission bridge. These naturally aligned
+ * records are in-process only. Required pointers authorize aligned, live,
+ * initialized storage; input strings/records are borrowed only through return
+ * and no input pointer is retained. Clear valid outputs before fallible work.
+ * Ready admission transfers one owning state handle and its metadata from the
+ * same immutable admission; non-Ready admission clears every metadata field.
+ * FjHostWrite and FjInstance are consuming handles: finish/destroy consume a
+ * valid handle even on malformed output/diagnostic arguments or contained
+ * failure. The C++ owner must clear its raw pointer before either call and must
+ * never retry it. A valid admission state remains independently owned after
+ * instance destruction and must be released with fj_legacy_prepared_state_release.
+ * See the paired Rust edge for phase/tag semantics; constants below are ABI. */
+typedef struct FjInstance FjInstance;
+typedef struct FjHostWrite FjHostWrite;
+typedef struct FjCaptureStart {
+    uint64_t capture;
+    uint32_t kind;
+} FjCaptureStart;
+typedef struct FjSnapshotStart {
+    uint64_t write_revision;
+    uint32_t kind;
+} FjSnapshotStart;
+typedef struct FjAdmission {
+    FjPreparedState* state;
+    uint64_t input_identity;
+    uint64_t build;
+    uint32_t kind;
+    uint32_t route;
+} FjAdmission;
+
+#define FJ_CAPTURE_INITIAL UINT32_C(0)
+#define FJ_CAPTURE_CHANGE UINT32_C(1)
+#define FJ_CAPTURE_REFRESH UINT32_C(2)
+#define FJ_CAPTURE_START_NONE UINT32_C(0)
+#define FJ_CAPTURE_STARTED UINT32_C(1)
+#define FJ_CAPTURE_NOT_STARTED UINT32_C(2)
+#define FJ_HOST_WRITE_NONE UINT32_C(0)
+#define FJ_HOST_WRITE_STARTED UINT32_C(1)
+#define FJ_HOST_WRITE_IGNORED UINT32_C(2)
+#define FJ_HOST_WRITE_SUCCEEDED UINT32_C(0)
+#define FJ_SNAPSHOT_NONE UINT32_C(0)
+#define FJ_SNAPSHOT_READY UINT32_C(1)
+#define FJ_SNAPSHOT_DEFERRED UINT32_C(2)
+#define FJ_SNAPSHOT_IGNORED UINT32_C(3)
+#define FJ_UPDATE_NONE UINT32_C(0)
+#define FJ_UPDATE_APPLIED UINT32_C(1)
+#define FJ_UPDATE_IGNORED UINT32_C(2)
+#define FJ_UPDATE_DEFERRED UINT32_C(3)
+#define FJ_CAPTURE_INVALID_CONTROLS UINT32_C(1)
+#define FJ_CAPTURE_HOST_FAILURE UINT32_C(2)
+#define FJ_CAPTURE_ALLOCATION_FAILURE UINT32_C(3)
+#define FJ_ADMISSION_NONE UINT32_C(0)
+#define FJ_ADMISSION_READY UINT32_C(1)
+#define FJ_ADMISSION_NEEDS_CAPTURE UINT32_C(2)
+#define FJ_ADMISSION_CAPTURING UINT32_C(3)
+#define FJ_ADMISSION_CAPTURE_FAILED UINT32_C(4)
+#define FJ_ADMISSION_PREPARATION_FAILED UINT32_C(5)
+#define FJ_ADMISSION_POISONED UINT32_C(6)
+#define FJ_ADMISSION_NEEDS_REFRESH UINT32_C(7)
+
+FjStatus fj_legacy_instance_create(FjInstance** out, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_begin_capture(FjInstance*, uint32_t mode, FjCaptureStart* out, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_capture_is_current(const FjInstance*, uint64_t capture, uint32_t* out_current, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_begin_host_write(FjInstance*, uint64_t capture, FjHostWrite** out, uint32_t* out_start, FjErrorBuffer* error);
+FjStatus fj_legacy_host_write_finish(FjHostWrite*, uint32_t failure_kind, FjStringView diagnostic, uint32_t* out_refresh, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_begin_snapshot(FjInstance*, uint64_t capture, FjSnapshotStart* out, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_install(FjInstance*, uint64_t capture, uint64_t write_revision, const FjPreparationParams*, uint64_t input_identity, uint32_t* out_update, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_invalidate(FjInstance*, uint64_t capture, uint32_t failure_kind, FjStringView diagnostic, uint32_t* out_update, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_admit(FjInstance*, const FjAssets*, FjAdmission* out, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_destroy(FjInstance*, FjErrorBuffer* error);
 
 #ifdef __cplusplus
 }

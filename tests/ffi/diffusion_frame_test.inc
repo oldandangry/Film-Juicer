@@ -122,7 +122,7 @@ namespace DiffusionFrameTest {
             std::fflush(stderr);
         };
         progress("bootstrap", "");
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
         std::size_t expectedIndex = 0;
@@ -149,7 +149,7 @@ namespace DiffusionFrameTest {
             params.cameraDiffusion.active = spec.at("camera");
             params.enlargerDiffusion.active = spec.at("enlarger");
             params.cameraDiffusion.family = params.enlargerDiffusion.family = static_cast<Spektrafilm::DiffusionFilterFamily>(spec.at("family").get<unsigned>());
-            auto product = JuicerTestSupport::prepare_product(params);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
             FjPreparedStateView view{};
             FjErrorBuffer viewError{};
             status(product.view(view, viewError));

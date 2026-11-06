@@ -10,6 +10,7 @@ struct FjHostPreparation;
 namespace JuicerCuda {
 
     bool execute_prepared_host_data(
+        JuicerProcess::Root& root,
         const FjPreparedHostData& source,
         const ExecutionFrame& frame,
         ResourceManager::SubmissionSnapshot& snapshot,

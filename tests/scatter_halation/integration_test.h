@@ -9,6 +9,7 @@
 
 #include "DiffusionHostBehavior.h"
 #include "ProcessRoot.h"
+#include "ProcessRuntime.h"
 #include "RenderControls.h"
 #include "ScatterHalation.h"
 #include "../ffi/prepared_frame_fixture.h"
@@ -52,12 +53,14 @@ namespace ScatterHalationValidation {
     };
 
     PreparedRouteInputs build_prepared_route_inputs(
+        JuicerProcess::ProcessRuntime& runtime,
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
         float pixelSizeUm,
         ImageExtent extent);
     PreparedRouteInputs build_prepared_route_inputs(
+        JuicerProcess::ProcessRuntime& runtime,
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
@@ -71,6 +74,7 @@ namespace ScatterHalationValidation {
         std::string caseGroup;
         std::filesystem::path fixtureRoot;
         std::filesystem::path resourceRoot;
+        JuicerProcess::ProcessRuntime* runtimeOwner = nullptr;
         std::filesystem::path scratchRoot;
         std::filesystem::path performanceOutput;
         std::string performanceMode = "active";

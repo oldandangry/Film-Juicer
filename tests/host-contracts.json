@@ -9,18 +9,15 @@
   "targets": {
     "JuicerCudaAbiTests": {
       "protocol": "custom",
-      "registrations": 1,
-      "cuda_free": true
+      "registrations": 1
     },
     "JuicerProfileOwnerTests": {
       "protocol": "gtest",
-      "registrations": 1,
-      "cuda_free": true
+      "registrations": 1
     },
     "JuicerSpectralOwnerTests": {
       "protocol": "gtest",
-      "registrations": 1,
-      "cuda_free": true
+      "registrations": 1
     },
     "JuicerNoiseOwnerTests": {
       "protocol": "gtest",
@@ -64,8 +61,7 @@
     },
     "JuicerRouteBridgeTests": {
       "protocol": "custom",
-      "registrations": 1,
-      "cuda_free": true
+      "registrations": 1
     },
     "JuicerHashContractTests": {
       "protocol": "gtest",
@@ -223,7 +219,7 @@
     "Scanner.Host.CorrectionProducts": 1
   },
   "rust_cohorts": {
-    "film-juicer-core": 83,
+    "film-juicer-core": 89,
     "film-juicer-core::assets": 17,
     "film-juicer-core::calibration": 6,
     "film-juicer-core::color": 8,
@@ -241,7 +237,7 @@
     "film-juicer-core::profile": 41,
     "film-juicer-core::sampled_profile": 7,
     "film-juicer-core::tc_lut": 1,
-    "film-juicer-plugin": 10
+    "film-juicer-plugin": 11
   },
   "gtest_cohorts": {
     "AllocationRetry.CapacityRetriesOnceRegardlessOfDiagnostic": 1,
@@ -288,6 +284,8 @@
     "PreparedSpans.NoiseRequiresExactCheckedProductsAndPointers": 1,
     "PreparedSpans.PrintTablesAndIlluminantsRequireExactStorage": 1,
     "PreparedStateAbi.DiagnosticTruncationPreservesStatusAndOwner": 1,
+    "PreparedStateAbi.InstanceCaptureWriteAdmissionC11Protocol": 1,
+    "PreparedStateAbi.InstanceDiagnosticsAreBoundedAndDestroyConsumesMalformedRecord": 1,
     "PreparedStateAbi.InputHullFaultsBelongToActualOwnerAndRetainedWarmEntry": 1,
     "PreparedStateProducts.CalibrationBeforePrintGamma": 1,
     "PreparedStateProducts.CameraAndEnlargerOptics": 1,

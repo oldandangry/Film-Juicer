@@ -8,6 +8,7 @@ from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from compact_exposure_fixtures import compact_expected_blocks, expand_expected_blocks
 from shared_fixture import load_shared_fixture, original_capture_bytes
@@ -58,6 +59,27 @@ def _safe_relative_path(value):
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_production_header_generation_requires_no_native_execution(self):
+        import production_contract
+
+        self.subtest_cases = ("linux-release", "windows-clang-release")
+        for preset in self.subtest_cases:
+            with self.subTest(case=preset), TemporaryDirectory(prefix="production header ü ") as temporary:
+                directory = Path(temporary)
+                with patch.object(production_contract, "execute", side_effect=AssertionError("native execution")), \
+                     patch.object(production_contract, "arguments", None), \
+                     patch.object(production_contract, "build", None):
+                    production_contract.main(["--preset", preset, "--artifacts", str(directory),
+                                              "--generate-expected-header"])
+                header = (directory / "production-film-expected.h").read_text()
+                fixture = json.loads((Path(__file__).parents[1] / "film/fixtures" / (preset + ".json")).read_text())
+                profile = fixture["profiles"]["kodak_portra_400"]
+                self.assertIn("#define FILM_N " + str(len(profile["axis"])) + "U\n", header)
+                self.assertIn("#define FILM_NORMALIZED_HASH UINT64_C(" + str(profile["normalized_hash"]) + ")\n", header)
+                self.assertIn("static const uint64_t correction_hashes[28]", header)
+
+    test_production_header_generation_requires_no_native_execution.required_subtests = True
+
     def _assert_prepared_projection_identity(self, payload, preset, entry):
         self.assertEqual(set(payload), {"schema_version", "preset", "producer", "toolchain", "configuration", "inputs", "cases"})
         self.assertIs(type(payload["schema_version"]), int)

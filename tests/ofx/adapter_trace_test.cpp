@@ -1,11 +1,13 @@
 #include "frame_geometry_test_hooks.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/print_illuminant_fixture.h"
+#include "../ffi/prepared_product_fixture.h"
 #include "../ffi/spatial_optics_fixture.h"
 #include "../ffi/juicer_test_api.h"
 #include "../ffi/case_results.h"
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <thread>
 #include <array>
 #include <bit>
@@ -49,13 +51,13 @@
 #include <nlohmann/json.hpp>
 
 #include "JuicerEffect.h"
+#include "ProcessRuntime.h"
 #include "JuicerState.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
 #include "PreparedState.h"
 #include "RenderControls.h"
 #include "RenderValues.h"
-#include "ResourceAssetLibrary.h"
 #include "juicer_cuda_owner.h"
 #include "ColorTransforms.h"
 #include "ofxMemory.h"
@@ -87,7 +89,6 @@ namespace JuicerTestSupport {
             DirCouplersControls pendingDir;
             std::uint64_t pendingFullHash = 0;
             std::uint64_t buildCounter = 0;
-            std::uint64_t buildCounterNext = 0;
             std::uint64_t recipeHash = 0;
             std::uint64_t lastParamHash = 0;
             bool directPublished = false;
@@ -100,82 +101,72 @@ namespace JuicerTestSupport {
 
         static Snapshot snapshot(JuicerEffect& effect) {
             Snapshot result{};
-            InstanceState& state = *effect._state;
-            {
-                std::lock_guard<std::mutex> lock(state.pending.m);
-                if (const auto* valid =
-                        std::get_if<PendingParamsState::Valid>(&state.pending.value)) {
-                    result.pendingValid = true;
-                    result.pendingOptics.cameraDiffusion = valid->params.cameraDiffusion;
-                    result.pendingOptics.enlargerDiffusion = valid->params.enlargerDiffusion;
-                    result.pendingOptics.scatterHalation = valid->params.scatterHalationControls;
-                    result.pendingExposureEv =
-                        valid->params.cameraExposureCompensationEv;
-                    result.pendingFilmGamma = valid->params.filmGammaFactor;
-                    result.pendingEffects = {valid->params.filmDustAmount, valid->params.filmScratchAmount, valid->params.gateDustAmount, valid->params.gateScratchAmount, valid->params.gateWeaveAmount};
-                    result.pendingPrintGamma = valid->params.printGammaFactor;
-                    result.pendingGrain = valid->params.grainControls;
-                    result.pendingDir = valid->params.dirCouplers;
-                    result.pendingFullHash = valid->fullHash;
-                    result.pendingPrintRoute =
-                        Spektrafilm::scan_route_is_print(
-                            valid->params.scanRoute);
-                    result.pendingRoute = valid->params.scanRoute;
-                } else if (std::holds_alternative<
-                               PendingParamsState::InvalidSnapshotControls>(
-                               state.pending.value)) {
-                    result.pendingInvalid = true;
-                    result.pendingDiagnostic = std::get<
-                                                   PendingParamsState::InvalidSnapshotControls>(
-                                                   state.pending.value)
-                                                   .diagnostic;
-                }
+            NativeSubmissionState& submissionState = *effect._submissionState;
+            const auto observation = PublicationObserver::observe(effect._publication);
+            const auto& view = observation.view;
+            result.pendingValid = view.pending_kind == 4;
+            result.pendingInvalid = view.pending_kind == 5;
+            if (result.pendingValid) {
+                const auto params = captured_snapshot(view.captured);
+                result.pendingOptics.cameraDiffusion = params.cameraDiffusion;
+                result.pendingOptics.enlargerDiffusion = params.enlargerDiffusion;
+                result.pendingOptics.scatterHalation = params.scatterHalationControls;
+                result.pendingExposureEv = params.cameraExposureCompensationEv;
+                result.pendingFilmGamma = params.filmGammaFactor;
+                result.pendingEffects = {params.filmDustAmount, params.filmScratchAmount, params.gateDustAmount, params.gateScratchAmount, params.gateWeaveAmount};
+                result.pendingPrintGamma = params.printGammaFactor;
+                result.pendingGrain = params.grainControls;
+                result.pendingDir = params.dirCouplers;
+                result.pendingFullHash = view.input_identity;
+                result.pendingPrintRoute = Spektrafilm::scan_route_is_print(params.scanRoute);
+                result.pendingRoute = params.scanRoute;
+            } else if (result.pendingInvalid) {
+                result.pendingDiagnostic.assign(view.diagnostic.data, view.diagnostic.count);
             }
-            const auto direct =
-                JuicerAtomic::load_shared_ptr(&state.activeDirectState);
-            const auto print =
-                JuicerAtomic::load_shared_ptr(&state.activePrintState);
-            result.directPublished = bool(direct);
-            result.printPublished = bool(print);
-            if ((result.pendingPrintRoute || !direct) && print) {
-                result.buildCounter = print->buildCounter;
-                FjPreparedStateView view{};
-                std::array<char, 2048> text{};
-                FjErrorBuffer error{text.data(), text.size(), 0};
-                const auto status = print->prepared.view(view, error);
-                if (status.category != FJ_STATUS_SUCCESS)
-                    throw std::runtime_error("cannot inspect published print PreparedState");
-                result.recipeHash = view.recipe_hash;
-            } else if (direct) {
-                result.buildCounter = direct->buildCounter;
-                FjPreparedStateView view{};
-                std::array<char, 2048> text{};
-                FjErrorBuffer error{text.data(), text.size(), 0};
-                const auto status = direct->prepared.view(view, error);
-                if (status.category != FJ_STATUS_SUCCESS)
-                    throw std::runtime_error("cannot inspect published direct PreparedState");
-                result.recipeHash = view.recipe_hash;
-            }
-            result.lastParamHash = state.lastHash.load(std::memory_order_acquire);
-            result.buildCounterNext =
-                state.buildCounterNext.load(std::memory_order_acquire);
-            result.paramEventsSuppressed = state.suppressParamEvents;
+            result.directPublished = view.build != 0 && (view.published.route & 1u) == 0;
+            result.printPublished = view.build != 0 && (view.published.route & 1u) != 0;
+            result.buildCounter = view.build;
+            result.recipeHash = view.published.recipe_hash;
+            result.lastParamHash = view.published_identity;
+            result.paramEventsSuppressed = effect.plugin_edit_suppressed();
             {
                 std::lock_guard<std::mutex> lock(
-                    state.submissionSnapshotLatchMutex);
-                result.latchValid = state.submissionSnapshotLatchValid;
+                    submissionState.submissionSnapshotLatchMutex);
+                result.latchValid = submissionState.submissionSnapshotLatchValid;
                 if (result.latchValid) {
                     result.latchSnapshotId =
-                        state.submissionSnapshotLatch.snapshotId;
+                        submissionState.submissionSnapshotLatch.snapshotId;
                     result.latchFrameToken =
-                        state.submissionSnapshotLatch.frameToken.value;
+                        submissionState.submissionSnapshotLatch.frameToken.value;
                 }
             }
             return result;
         }
 
-        static PendingRenderAdmissionResult admit(JuicerEffect& effect) {
-            return admit_pending_render_state(*effect._state);
+        static PublicationAdmission admit(JuicerEffect& effect) {
+            return JuicerTestSupport::admit(effect._runtime.borrow().assets, effect._publication);
+        }
+        static ParamSnapshot captured(JuicerEffect& effect) {
+            return captured_snapshot(effect._publication);
+        }
+        static ParamSnapshot read_host_snapshot(JuicerEffect& effect) {
+            ParamSnapshot snapshot;
+            std::string diagnostic;
+            if (!effect.snapshotParams(snapshot, diagnostic)) {
+                throw std::runtime_error(diagnostic);
+            }
+            return snapshot;
+        }
+        static bool capture_is_current(JuicerEffect& effect, std::uint64_t ticket) {
+            std::uint32_t current = 0;
+            FjErrorBuffer error{nullptr, 0, 0};
+            if (effect._publication.capture_is_current(ticket, current, error).category != FJ_STATUS_SUCCESS) {
+                throw std::runtime_error("cannot query current capture");
+            }
+            return current != 0;
+        }
+        static PublicationMetrics metrics(JuicerEffect& effect) {
+            return PublicationObserver::metrics(effect._publication);
         }
     };
 
@@ -185,7 +176,7 @@ namespace {
 
     struct PropertyBag {
         using IntWriteObserver =
-            void (*)(void*, const char*, const char*, int);
+            OfxStatus (*)(void*, const char*, const char*, int);
 
         std::map<std::string, std::vector<std::string>> strings;
         std::map<std::string, std::vector<int>> ints;
@@ -291,7 +282,7 @@ namespace {
         if (status == kOfxStatOK && properties.intWriteObserver &&
             (std::string_view(name) == kOfxParamPropEnabled ||
              std::string_view(name) == kOfxParamPropSecret)) {
-            properties.intWriteObserver(
+            return properties.intWriteObserver(
                 properties.intWriteContext,
                 properties.owningParamName.c_str(),
                 name,
@@ -789,28 +780,26 @@ namespace {
     class NativeHost final {
     public:
         NativeHost() {
-            if (s_active) {
-                throw std::runtime_error("only one native adapter host may be active");
-            }
             s_active = this;
-            configure_suites();
-            configure_host();
-            configure_effect();
-            configure_descriptor();
-            configure_clips();
-            configure_params();
-            OFX::Private::gPropSuite = &_propertySuite;
-            OFX::Private::gEffectSuite = &_effectSuite;
-            OFX::Private::gParamSuite = &_parameterSuite;
-            OFX::Private::gMessageSuite = &_messageSuite;
+            try {
+                configure_suites();
+                configure_host();
+                configure_effect();
+                configure_descriptor();
+                configure_clips();
+                configure_params();
+                OFX::Private::gPropSuite = &_propertySuite;
+                OFX::Private::gEffectSuite = &_effectSuite;
+                OFX::Private::gParamSuite = &_parameterSuite;
+                OFX::Private::gMessageSuite = &_messageSuite;
+            } catch (...) {
+                restore_host_suites();
+                throw;
+            }
         }
 
         ~NativeHost() {
-            OFX::Private::gMessageSuite = nullptr;
-            OFX::Private::gParamSuite = nullptr;
-            OFX::Private::gEffectSuite = nullptr;
-            OFX::Private::gPropSuite = nullptr;
-            s_active = nullptr;
+            restore_host_suites();
         }
 
         OfxImageEffectHandle effect_handle() noexcept {
@@ -918,6 +907,29 @@ namespace {
             return _propertyReentryFailed;
         }
 
+        using ParameterHook = std::function<OfxStatus(const std::string&)>;
+        void set_getter_hook(ParameterHook hook) {
+            _getterHook = std::move(hook);
+        }
+        void set_setter_hooks(ParameterHook before) {
+            _beforeSetterHook = std::move(before);
+            _afterSetterHook = {};
+        }
+        void set_after_setter_hook(ParameterHook after) {
+            _afterSetterHook = std::move(after);
+        }
+        void fail_property_once(const char* param, const char* property, OfxStatus status) {
+            _propertyFailureParam = param;
+            _propertyFailureProperty = property;
+            _propertyFailureStatus = status;
+        }
+        int int_value(const char* name) const {
+            return find_param(name).value.integer;
+        }
+        std::array<double, 3> double3_value(const char* name) const {
+            return find_param(name).value.numbers;
+        }
+
         void dispatch_event(
             JuicerEffect& effect,
             const char* name,
@@ -996,7 +1008,17 @@ namespace {
             }
         }
 
+        enum class ExceptionClass : std::uint8_t {
+            None,
+            Allocation,
+            Suite,
+            Unexpected
+        };
         struct RenderResult {
+            ExceptionClass exceptionClass = ExceptionClass::None;
+            OfxStatus suiteStatus = kOfxStatOK;
+            std::size_t releasedBeforeException = 0;
+            std::vector<std::string> releaseOrder;
             bool succeeded = false;
             bool rejected = false;
             std::uint64_t outputSignature = 0;
@@ -1058,13 +1080,31 @@ namespace {
             try {
                 effect.render(arguments);
                 result.succeeded = true;
-            } catch (...) {
+            } catch (const std::bad_alloc&) {
+                result.exceptionClass = ExceptionClass::Allocation;
                 result.rejected = true;
+                result.releasedBeforeException = _imageReleaseOrder.size();
+                if (!expectRejection) {
+                    unexpected = std::current_exception();
+                }
+            } catch (const OFX::Exception::Suite& exception) {
+                result.exceptionClass = ExceptionClass::Suite;
+                result.suiteStatus = exception.status();
+                result.rejected = true;
+                result.releasedBeforeException = _imageReleaseOrder.size();
+                if (!expectRejection) {
+                    unexpected = std::current_exception();
+                }
+            } catch (...) {
+                result.exceptionClass = ExceptionClass::Unexpected;
+                result.rejected = true;
+                result.releasedBeforeException = _imageReleaseOrder.size();
                 if (!expectRejection) {
                     unexpected = std::current_exception();
                 }
             }
             result.releasedImages = finish_image_audit(phase);
+            result.releaseOrder = _imageReleaseOrder;
             if (unexpected) {
                 std::rethrow_exception(unexpected);
             }
@@ -1185,6 +1225,7 @@ namespace {
                 throw std::runtime_error("adapter image audit already active");
             }
             _imageLeases.clear();
+            _imageReleaseOrder.clear();
             _imageAuditError.clear();
             _imageAuditActive = true;
         }
@@ -1227,6 +1268,7 @@ namespace {
                     "duplicate image release for " + found->second.label);
             }
             ++found->second.releases;
+            _imageReleaseOrder.push_back(found->second.label);
             _trace.push_back("IMAGE_RELEASE clip=" + found->second.label);
         }
 
@@ -1842,7 +1884,7 @@ namespace {
                        : kOfxStatFailed;
         }
 
-        static void observe_property_int_write(
+        static OfxStatus observe_property_int_write(
             void* context,
             const char* owningParam,
             const char* property,
@@ -1852,10 +1894,14 @@ namespace {
                 "PROPERTY_SET_INT param=" + std::string(owningParam) +
                 " property=" + property + " value=" +
                 std::to_string(value));
+            if (host._propertyFailureStatus != kOfxStatOK &&
+                host._propertyFailureParam == owningParam && host._propertyFailureProperty == property) {
+                return std::exchange(host._propertyFailureStatus, kOfxStatOK);
+            }
             if (!host._propertyReentryArmed ||
                 host._propertyReentryOwningParam != owningParam ||
                 host._propertyReentryProperty != property) {
-                return;
+                return kOfxStatOK;
             }
 
             host._propertyReentryArmed = false;
@@ -1878,6 +1924,7 @@ namespace {
             } catch (...) {
                 host._propertyReentryFailed = true;
             }
+            return kOfxStatOK;
         }
 
         static OfxStatus effect_properties(
@@ -2175,7 +2222,8 @@ namespace {
                 case ParamKind::PushButton:
                     return kOfxStatErrUnsupported;
             }
-            return kOfxStatOK;
+            const auto hook = host._getterHook;
+            return hook ? hook(param.name) : kOfxStatOK;
         }
 
         static OfxStatus parameter_get_value(OfxParamHandle handle, ...) {
@@ -2213,6 +2261,13 @@ namespace {
             }
             NativeHost& host = active();
             NativeParam& param = *reinterpret_cast<NativeParam*>(handle);
+            const auto beforeHook = host._beforeSetterHook;
+            if (beforeHook) {
+                const OfxStatus status = beforeHook(param.name);
+                if (status != kOfxStatOK) {
+                    return status;
+                }
+            }
             switch (param.kind) {
                 case ParamKind::Double:
                     param.value.numbers[0] = va_arg(arguments, double);
@@ -2243,7 +2298,8 @@ namespace {
                 "SET_CURRENT name=" + param.name +
                 " time=" + number_string(host._time));
             host.dispatch_nested_event(param.name);
-            return kOfxStatOK;
+            const auto afterHook = host._afterSetterHook;
+            return afterHook ? afterHook(param.name) : kOfxStatOK;
         }
 
         static OfxStatus parameter_set_value(OfxParamHandle handle, ...) {
@@ -2376,7 +2432,19 @@ namespace {
             _messageSuite.message = message;
         }
 
+        void restore_host_suites() noexcept {
+            OFX::Private::gPropSuite = _previousPropSuite;
+            OFX::Private::gEffectSuite = _previousEffectSuite;
+            OFX::Private::gParamSuite = _previousParamSuite;
+            OFX::Private::gMessageSuite = _previousMessageSuite;
+            s_active = _previousHost;
+        }
         inline static NativeHost* s_active = nullptr;
+        NativeHost* _previousHost = s_active;
+        decltype(OFX::Private::gPropSuite) _previousPropSuite = OFX::Private::gPropSuite;
+        decltype(OFX::Private::gEffectSuite) _previousEffectSuite = OFX::Private::gEffectSuite;
+        decltype(OFX::Private::gParamSuite) _previousParamSuite = OFX::Private::gParamSuite;
+        decltype(OFX::Private::gMessageSuite) _previousMessageSuite = OFX::Private::gMessageSuite;
         OfxPropertySuiteV1 _propertySuite{};
         OfxImageEffectSuiteV1 _effectSuite{};
         OfxParameterSuiteV1 _parameterSuite{};
@@ -2399,6 +2467,13 @@ namespace {
         unsigned _canonicalQueries = 0;
         double _canonicalTime = -1;
         std::map<OfxPropertySetHandle, ImageLeaseRecord> _imageLeases;
+        std::vector<std::string> _imageReleaseOrder;
+        ParameterHook _getterHook;
+        ParameterHook _beforeSetterHook;
+        ParameterHook _afterSetterHook;
+        std::string _propertyFailureParam;
+        std::string _propertyFailureProperty;
+        OfxStatus _propertyFailureStatus = kOfxStatOK;
         std::string _imageAuditError;
         bool _imageAuditActive = false;
         bool _observeStreamRelease = false;
@@ -2425,6 +2500,458 @@ namespace {
     void require(bool condition, const std::string& message) {
         if (!condition) {
             throw std::runtime_error(message);
+        }
+    }
+
+    void run_publication_contract_rows(JuicerProcess::ProcessRuntime& runtime) {
+        using Observer = JuicerTestSupport::EffectTraceObserver;
+        const std::vector<std::string> ids{
+            "older-capture-success", "older-capture-getter-failure", "capturing-admission", "superseded-before-write-grant", "late-initial-gamma-write-success", "late-initial-gamma-write-partial-failure", "late-gamma-write-retained-hold", "partial-preset-failure", "property-failure-after-edits", "current-getter-failure", "initial-getter-failure", "current-capture-allocation", "current-preparation-allocation", "current-development-allocation", "current-preparation-rejection", "obsolete-preparation-allocation", "unrelated-thread-overlap", "another-effect-chain", "overlapping-writes-old-first", "overlapping-writes-new-first", "overlapping-write-first-failure"};
+        JuicerTests::Cohort rows("publication_capture", ids);
+        struct CallbackPause {
+            std::mutex mutex;
+            std::condition_variable condition;
+            bool arrived = false, released = false, timedOut = false;
+            void pause() {
+                std::unique_lock<std::mutex> lock(mutex);
+                arrived = true;
+                condition.notify_all();
+                if (!condition.wait_for(lock, std::chrono::seconds(10), [&]() {
+                        return released;
+                    })) {
+                    timedOut = true;
+                }
+            }
+            bool await() {
+                std::unique_lock<std::mutex> lock(mutex);
+                return condition.wait_for(lock, std::chrono::seconds(10), [&]() {
+                    return arrived;
+                });
+            }
+            void release() {
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    released = true;
+                }
+                condition.notify_all();
+            }
+        };
+        const auto released_failure = [](const NativeHost::RenderResult& result, NativeHost::ExceptionClass kind, OfxStatus suite = kOfxStatOK) {
+            require(result.rejected && !result.succeeded && result.exceptionClass == kind &&
+                        (kind != NativeHost::ExceptionClass::Suite || result.suiteStatus == suite) &&
+                        result.releasedImages == 2 && result.releasedBeforeException == 2 &&
+                        result.releaseOrder == std::vector<std::string>{"Output", "Source"},
+                    "exact adapter exception and image release order");
+        };
+        for (const auto& id : ids) {
+            auto row = rows.case_event(id);
+            NativeHost host;
+            host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(Spektrafilm::ScanRoute::NegativeDirectScan));
+            host.set_int_value(JuicerParams::kDirCouplersActive, 1);
+            host.set_int_value(JuicerParams::kDirCouplersGammaUseStock, 1);
+            JuicerEffect effect(host.effect_handle(), runtime);
+            host.bind_effect(effect);
+            DeviceFrame frame;
+            const bool initial = id == "superseded-before-write-grant" || id == "late-initial-gamma-write-success" ||
+                                 id == "late-initial-gamma-write-partial-failure" || id == "initial-getter-failure";
+            JuicerTestSupport::PublicationAdmission held;
+            std::uint64_t heldHash = 0;
+            if (!initial) {
+                require(host.render(effect, frame, "publication-baseline").succeeded, "publication baseline render");
+                held = Observer::admit(effect);
+                heldHash = JuicerTestSupport::published_view(held).recipe_hash;
+            }
+            const auto before = Observer::metrics(effect);
+            if (id == "older-capture-success" || id == "older-capture-getter-failure") {
+                host.set_double_value(kParamExposure, 0.25);
+                bool fired = false;
+                host.set_getter_hook([&](const std::string& name) {
+                    if (name != kParamExposure || fired) {
+                        return kOfxStatOK;
+                    }
+                    fired = true;
+                    host.set_getter_hook({});
+                    host.set_double_value(kParamExposure, 0.75);
+                    host.dispatch_event(effect, kParamExposure, OFX::eChangeTime);
+                    const auto current = Observer::admit(effect);
+                    require(current.state && current.state->input_identity() == Observer::snapshot(effect).pendingFullHash, "newer actual callback installs B");
+                    return id == "older-capture-getter-failure" ? kOfxStatErrBadHandle : kOfxStatOK;
+                });
+                OfxStatus actionStatus = kOfxStatOK;
+                try {
+                    host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                } catch (const OFX::Exception::Suite& error) {
+                    actionStatus = error.status();
+                }
+                require(fired && actionStatus == (id == "older-capture-getter-failure" ? kOfxStatErrBadHandle : kOfxStatOK), "obsolete action retains its own result");
+                const auto after = Observer::snapshot(effect);
+                require(after.pendingValid && after.pendingDiagnostic.empty() && after.pendingExposureEv == 0.75 &&
+                            after.buildCounter == before.build + 1 && host.render(effect, frame, id).succeeded,
+                        "old completion cannot replace or invalidate B");
+            } else if (id == "capturing-admission") {
+                host.set_double_value(kParamExposure, 0.5);
+                bool fired = false;
+                host.set_getter_hook([&](const std::string& name) {
+                    if (name != kParamExposure || fired) {
+                        return kOfxStatOK;
+                    }
+                    fired = true;
+                    host.set_getter_hook({});
+                    const auto rejected = host.render(effect, frame, id, true);
+                    released_failure(rejected, NativeHost::ExceptionClass::Suite, kOfxStatFailed);
+                    require(rejected.state.latchSnapshotId == 1 && Observer::metrics(effect).build == before.build,
+                            "capturing admission submits no new work or publication");
+                    return kOfxStatOK;
+                });
+                host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                require(fired && host.render(effect, frame, "capturing-completed").succeeded, "completed capture permits subsequent render");
+            } else if (id == "superseded-before-write-grant") {
+                bool fired = false;
+                unsigned setters = 0;
+                host.set_setter_hooks([&](const std::string& name) {
+                    if (name == JuicerParams::kDirCouplersGammaSameLayerRgb) {
+                        ++setters;
+                    }
+                    return kOfxStatOK;
+                });
+                host.set_getter_hook([&](const std::string& name) {
+                    if (name != JuicerParams::kFilmProfileKey || fired) {
+                        return kOfxStatOK;
+                    }
+                    fired = true;
+                    host.set_getter_hook({});
+                    require(Observer::capture_is_current(effect, Observer::metrics(effect).issued) && Observer::metrics(effect).pendingKind == 1 && Observer::metrics(effect).outstandingWrites == 0, "successful current query still does not grant a write");
+                    host.set_double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb, {0.71, 0.72, 0.73});
+                    host.dispatch_event(effect, JuicerParams::kDirCouplersGammaSameLayerRgb, OFX::eChangeUserEdit);
+                    return kOfxStatOK;
+                });
+                require(host.render(effect, frame, id).succeeded && fired && setters == 0 &&
+                            host.double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb)[0] == 0.71 &&
+                            host.int_value(JuicerParams::kDirCouplersGammaUseStock) == 0,
+                        "superseded old grant never enters setter");
+            } else if (id == "late-initial-gamma-write-success" || id == "late-initial-gamma-write-partial-failure" || id == "late-gamma-write-retained-hold") {
+                const bool partial = id == "late-initial-gamma-write-partial-failure";
+                bool fired = false;
+                unsigned gammaSetters = 0;
+                host.set_setter_hooks([&](const std::string& name) {
+                    if (name != JuicerParams::kDirCouplersGammaSameLayerRgb) {
+                        return kOfxStatOK;
+                    }
+                    ++gammaSetters;
+                    if (fired) {
+                        return kOfxStatOK;
+                    }
+                    fired = true;
+                    const auto granted = Observer::metrics(effect);
+                    require(granted.outstandingWrites == 1, "write registered before host commitment");
+                    host.set_double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb, {0.91, 0.92, 0.93});
+                    const auto traceBegin = host.trace_size();
+                    host.dispatch_event(effect, JuicerParams::kDirCouplersGammaSameLayerRgb, OFX::eChangeUserEdit);
+                    const auto deferred = Observer::metrics(effect);
+                    require(deferred.pendingKind == 2 && deferred.outstandingWrites == 1 && deferred.build == before.build,
+                            "newer action defers complete read while late write may commit");
+                    for (std::size_t i = traceBegin; i < host.trace_size(); ++i) {
+                        require(host.trace()[i].find("GET_CURRENT name=Exposure ") == std::string::npos, "Deferred issues no complete snapshot getter");
+                    }
+                    const auto rejected = Observer::admit(effect);
+                    require(rejected.kind == FJ_ADMISSION_CAPTURING && !rejected.state, "late pre-commit write blocks admission");
+                    return kOfxStatOK;
+                });
+                host.set_after_setter_hook([&](const std::string& name) {
+                    return partial && name == JuicerParams::kDirCouplersGammaSameLayerRgb ? kOfxStatErrBadHandle : kOfxStatOK;
+                });
+                if (initial) {
+                    const auto rendered = host.render(effect, frame, id, partial);
+                    if (partial) {
+                        released_failure(rendered, NativeHost::ExceptionClass::Suite, kOfxStatErrBadHandle);
+                    } else {
+                        require(rendered.succeeded, "late initial successful writer completes bounded refresh");
+                    }
+                } else {
+                    host.dispatch_event(effect, JuicerParams::kDirCouplersGammaUseStock, OFX::eChangeUserEdit);
+                }
+                host.set_setter_hooks({});
+                require(fired && gammaSetters == 1 && host.int_value(JuicerParams::kDirCouplersGammaUseStock) == 0 &&
+                            host.double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb)[0] != 0.91,
+                        "late write changes actual controls; old later setters stop");
+                const auto after = Observer::metrics(effect);
+                require(after.outstandingWrites == 0 && !Observer::snapshot(effect).paramEventsSuppressed, "host-write and suppression obligations balanced");
+                if (partial) {
+                    require(after.pendingKind == 5 && after.build == before.build && after.issued == 2, "late partial failure blocks without automatic refresh");
+                    released_failure(host.render(effect, frame, "late-failure-blocked", true), NativeHost::ExceptionClass::Suite, kOfxStatErrFatal);
+                    host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                    require(host.render(effect, frame, "late-failure-recovered").succeeded, "fresh complete callback recovers after drainage");
+                } else {
+                    const auto expected = Observer::read_host_snapshot(effect);
+                    const auto actual = Observer::captured(effect);
+                    require(after.pendingKind == 4 && after.inputIdentity == hash_params(expected) && hash_params(actual) == hash_params(expected) &&
+                                actual.dirCouplers.gammaSameLayerRgb[0] == static_cast<float>(host.double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb)[0]) &&
+                                !actual.dirCouplers.gammaUseStock && after.issued == before.issued + 3,
+                            "one getter-only refresh selects complete actual final host controls");
+                }
+            } else if (id == "partial-preset-failure" || id == "property-failure-after-edits") {
+                host.set_double_value(JuicerParams::kGrainAmplitude, 3.0);
+                host.set_int_value(JuicerParams::kGrainPreset, 1);
+                if (id == "partial-preset-failure") {
+                    host.set_setter_hooks([&](const std::string& name) {
+                        return name == JuicerParams::kGrainBlur ? kOfxStatErrBadHandle : kOfxStatOK;
+                    });
+                } else {
+                    host.fail_property_once(JuicerParams::kGrainChroma, kOfxParamPropEnabled, kOfxStatErrBadHandle);
+                }
+                OfxStatus actionStatus = kOfxStatOK;
+                try {
+                    host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangeUserEdit);
+                } catch (const OFX::Exception::Suite& error) {
+                    actionStatus = error.status();
+                }
+                host.set_setter_hooks({});
+                require(actionStatus == kOfxStatErrBadHandle && host.double_value(JuicerParams::kGrainAmplitude) != 3.0 &&
+                            Observer::metrics(effect).pendingKind == 5 && Observer::metrics(effect).build == before.build &&
+                            !Observer::snapshot(effect).paramEventsSuppressed,
+                        "partial edit/property failure records failed capture without rollback");
+                released_failure(host.render(effect, frame, id, true), NativeHost::ExceptionClass::Suite, kOfxStatErrFatal);
+                host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                require(host.render(effect, frame, "partial-edit-recovered").succeeded, "genuine change recovers without preset replay");
+            } else if (id == "current-getter-failure" || id == "initial-getter-failure" || id == "current-capture-allocation") {
+                bool fired = false;
+                host.set_getter_hook([&](const std::string& name) -> OfxStatus {
+                    if (name != kParamExposure || fired) {
+                        return kOfxStatOK;
+                    }
+                    fired = true;
+                    if (id == "current-capture-allocation") {
+                        return kOfxStatErrMemory;
+                    }
+                    return kOfxStatErrBadHandle;
+                });
+                if (initial) {
+                    released_failure(host.render(effect, frame, id, true), NativeHost::ExceptionClass::Suite, kOfxStatErrBadHandle);
+                } else {
+                    bool allocation = false;
+                    OfxStatus status = kOfxStatOK;
+                    try {
+                        host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                    } catch (const std::bad_alloc&) {
+                        allocation = true;
+                    } catch (const OFX::Exception::Suite& error) {
+                        status = error.status();
+                    }
+                    require(id == "current-capture-allocation" ? allocation : status == kOfxStatErrBadHandle, "current action keeps original exception");
+                }
+                host.set_getter_hook({});
+                require(fired && Observer::metrics(effect).pendingKind == 5 && !Observer::snapshot(effect).paramEventsSuppressed, "current getter completes failed capture");
+                const bool allocation = id == "current-capture-allocation";
+                released_failure(host.render(effect, frame, "failed-capture-admission", true), allocation ? NativeHost::ExceptionClass::Allocation : NativeHost::ExceptionClass::Suite, kOfxStatErrFatal);
+                host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                require(host.render(effect, frame, "getter-failure-recovered").succeeded, "fresh action recovers getter failure");
+            } else if (id == "current-preparation-allocation" || id == "current-development-allocation" || id == "current-preparation-rejection" || id == "obsolete-preparation-allocation") {
+                host.set_double_value(kParamExposure, 0.25);
+                host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                if (id == "current-development-allocation") {
+                    require(fj_test_development_construction_fault(1).category == FJ_STATUS_SUCCESS, "arm actual development allocation");
+                } else if (id == "current-preparation-rejection") {
+                    require(fj_test_development_construction_fault(2).category == FJ_STATUS_SUCCESS, "arm actual development rejection");
+                } else {
+                    fj_test_prepared_contents_reservation_failure();
+                }
+                if (id == "current-preparation-allocation") {
+                    FrameGeometryCase missing;
+                    missing.missingSource = true;
+                    missing.expectedLeases = 1;
+                    require(host.render(effect, frame, "allocation-missing-image", false, &missing).succeeded && !fj_test_prepared_contents_reservation_failure_consumed(), "missing image precedes allocation admission");
+                    FrameGeometryCase empty;
+                    empty.window.x2 = empty.window.x1;
+                    require(host.render(effect, frame, "allocation-empty-image", false, &empty).succeeded && !fj_test_prepared_contents_reservation_failure_consumed(), "empty window precedes allocation admission");
+                }
+                if (id == "obsolete-preparation-allocation") {
+                    struct NewerCapture {
+                        NativeHost* host;
+                        JuicerEffect* effect;
+                        bool fired = false;
+                        std::exception_ptr failure;
+                    } newer{&host, &effect, false, {}};
+                    fj_test_instance_prepare_hooks(nullptr, [](void* user) noexcept {
+                        auto& newer = *static_cast<NewerCapture*>(user);
+                        if (std::exchange(newer.fired, true)) {
+                            return;
+                        }
+                        fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
+                        try {
+                            newer.host->set_double_value(kParamExposure, 0.75);
+                            newer.host->dispatch_event(*newer.effect, kParamExposure, OFX::eChangeTime);
+                        } catch (...) {
+                            newer.failure = std::current_exception();
+                        }
+                    },
+                                                   &newer);
+                    const auto rendered = host.render(effect, frame, id);
+                    fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
+                    if (newer.failure) {
+                        std::rethrow_exception(newer.failure);
+                    }
+                    require(newer.fired && rendered.succeeded && rendered.exceptionClass == NativeHost::ExceptionClass::None &&
+                                fj_test_prepared_contents_reservation_failure_consumed() && rendered.state.pendingExposureEv == 0.75 &&
+                                rendered.state.buildCounter == before.build + 1,
+                            "obsolete allocation retries newer input before external error mapping");
+                } else {
+                    const bool allocation = id != "current-preparation-rejection";
+                    const auto failed = host.render(effect, frame, id, true);
+                    released_failure(failed, allocation ? NativeHost::ExceptionClass::Allocation : NativeHost::ExceptionClass::Suite, kOfxStatErrFatal);
+                    require(Observer::metrics(effect).build == before.build && Observer::metrics(effect).backingIdentity == before.backingIdentity &&
+                                failed.state.latchSnapshotId == 1,
+                            "typed preparation failure preserves committed publication and submission latch");
+                    if (id == "current-preparation-allocation") {
+                        require(fj_test_prepared_contents_reservation_failure_consumed(), "actual substantial reservation fault consumed");
+                    }
+                    require(host.render(effect, frame, "preparation-failure-recovered").succeeded, "one-shot ordinary preparation failure recovers current input");
+                }
+            } else if (id == "unrelated-thread-overlap") {
+                CallbackPause pause;
+                std::exception_ptr workerFailure;
+                host.set_double_value(kParamExposure, 0.25);
+                host.set_getter_hook([&](const std::string& name) {
+                    if (name != kParamExposure) {
+                        return kOfxStatOK;
+                    }
+                    host.set_getter_hook({});
+                    pause.pause();
+                    return kOfxStatOK;
+                });
+                std::jthread worker([&]() {
+                    try {
+                        host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                    } catch (...) {
+                        workerFailure = std::current_exception();
+                    }
+                });
+                const bool paused = pause.await();
+                std::exception_ptr mainFailure;
+                try {
+                    if (paused) {
+                        host.set_double_value(kParamExposure, 0.75);
+                        host.dispatch_event(effect, kParamExposure, OFX::eChangeTime);
+                    }
+                } catch (...) {
+                    mainFailure = std::current_exception();
+                }
+                pause.release();
+                worker.join();
+                if (mainFailure) {
+                    std::rethrow_exception(mainFailure);
+                }
+                if (workerFailure) {
+                    std::rethrow_exception(workerFailure);
+                }
+                require(paused && !pause.timedOut && Observer::snapshot(effect).pendingExposureEv == 0.75 && host.render(effect, frame, id).succeeded,
+                        "unrelated callback on another thread supersedes old read without suppression");
+            } else if (id == "another-effect-chain") {
+                bool fired = false;
+                bool otherStarted = false;
+                host.set_setter_hooks([&](const std::string& name) {
+                    if (name != JuicerParams::kDirCouplersGammaSameLayerRgb || fired) {
+                        return kOfxStatOK;
+                    }
+                    fired = true;
+                    NativeHost otherHost;
+                    JuicerEffect other(otherHost.effect_handle(), runtime);
+                    otherHost.bind_effect(other);
+                    otherHost.dispatch_event(other, kParamExposure, OFX::eChangePluginEdit);
+                    otherStarted = Observer::metrics(other).issued == 1 && Observer::snapshot(other).pendingValid;
+                    return kOfxStatOK;
+                });
+                host.dispatch_event(effect, JuicerParams::kDirCouplersGammaUseStock, OFX::eChangeUserEdit);
+                require(fired && otherStarted && !Observer::snapshot(effect).paramEventsSuppressed, "another concrete effect is not suppressed by outer host-write chain");
+            } else {
+                CallbackPause olderPause, newerPause;
+                std::exception_ptr olderFailure, newerFailure;
+                host.set_double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb, {0.71, 0.72, 0.73});
+                const bool failOlder = id == "overlapping-write-first-failure";
+                host.set_setter_hooks([&](const std::string& name) {
+                    if (name == JuicerParams::kDirCouplersGammaSameLayerRgb) {
+                        olderPause.pause();
+                    }
+                    if (name == JuicerParams::kDirCouplersGammaUseStock) {
+                        newerPause.pause();
+                    }
+                    return kOfxStatOK;
+                });
+                host.set_after_setter_hook([&](const std::string& name) {
+                    return failOlder && name == JuicerParams::kDirCouplersGammaSameLayerRgb ? kOfxStatErrBadHandle : kOfxStatOK;
+                });
+                std::jthread older([&]() {
+                    try {
+                        host.dispatch_event(effect, JuicerParams::kDirCouplersGammaUseStock, OFX::eChangeUserEdit);
+                    } catch (...) {
+                        olderFailure = std::current_exception();
+                    }
+                });
+                const bool olderArrived = olderPause.await();
+                std::jthread newer([&]() {
+                    try {
+                        host.dispatch_event(effect, JuicerParams::kDirCouplersGammaSameLayerRgb, OFX::eChangeUserEdit);
+                    } catch (...) {
+                        newerFailure = std::current_exception();
+                    }
+                });
+                const bool newerArrived = newerPause.await();
+                const bool registered = Observer::metrics(effect).outstandingWrites == 2;
+                bool intermediateBlocked = false;
+                if (id == "overlapping-writes-new-first") {
+                    newerPause.release();
+                    newer.join();
+                    intermediateBlocked = Observer::metrics(effect).outstandingWrites == 1 &&
+                                          Observer::metrics(effect).pendingKind == 2 && Observer::admit(effect).kind == FJ_ADMISSION_CAPTURING;
+                    olderPause.release();
+                    older.join();
+                } else {
+                    olderPause.release();
+                    older.join();
+                    const auto interim = Observer::admit(effect);
+                    intermediateBlocked = Observer::metrics(effect).outstandingWrites == 1 && !interim.state &&
+                                          interim.kind == (failOlder ? FJ_ADMISSION_CAPTURE_FAILED : FJ_ADMISSION_CAPTURING);
+                    newerPause.release();
+                    newer.join();
+                }
+                host.set_setter_hooks({});
+                if (newerFailure) {
+                    std::rethrow_exception(newerFailure);
+                }
+                if (!failOlder && olderFailure) {
+                    std::rethrow_exception(olderFailure);
+                }
+                require(olderArrived && newerArrived && !olderPause.timedOut && !newerPause.timedOut && registered && intermediateBlocked &&
+                            Observer::metrics(effect).outstandingWrites == 0 && !Observer::snapshot(effect).paramEventsSuppressed,
+                        "both registered physical writes complete once in either order");
+                if (failOlder) {
+                    bool expectedError = false;
+                    try {
+                        if (olderFailure) {
+                            std::rethrow_exception(olderFailure);
+                        }
+                    } catch (const OFX::Exception::Suite& error) {
+                        expectedError = error.status() == kOfxStatErrBadHandle;
+                    }
+                    require(expectedError && Observer::metrics(effect).pendingKind == 5 && host.int_value(JuicerParams::kDirCouplersGammaUseStock) == 0 &&
+                                host.double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb)[0] != 0.71,
+                            "later successful write does not erase partial-write failure or roll back host controls");
+                    released_failure(host.render(effect, frame, id, true), NativeHost::ExceptionClass::Suite, kOfxStatErrFatal);
+                    host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                } else {
+                    const auto expected = Observer::read_host_snapshot(effect);
+                    require(Observer::metrics(effect).inputIdentity == hash_params(expected) && !expected.dirCouplers.gammaUseStock &&
+                                host.double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb)[0] != 0.71 &&
+                                Observer::metrics(effect).issued == before.issued + (id == "overlapping-writes-new-first" ? 3u : 2u),
+                            "successful drainage captures actual final controls with one normal or Refresh completion");
+                }
+                require(host.render(effect, frame, "overlapping-write-complete").succeeded, "drained write sequence permits rendering");
+            }
+            host.set_getter_hook({});
+            host.set_setter_hooks({});
+            if (held.state) {
+                require(JuicerTestSupport::published_view(held).recipe_hash == heldHash && held.state->build() == before.build, "already-admitted backing survives callback overlap/failure");
+            }
+            row.passed();
         }
     }
 
@@ -2966,7 +3493,7 @@ namespace {
         return {{"camera", optics_project(c.controls.cameraDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(c.controls.cameraLensBlurUm)}, {"halation_active", h.active}, {"halation_f32", optics_words(std::array<float, 4>{h.scatterAmount, h.scatterSpatialScale, h.halationAmount, h.halationSpatialScale})}, {"first_sigma_f32", optics_words(c.firstSigmaUm)}, {"primary_f32", optics_words(c.primaryAmount)}, {"enlarger", optics_project(c.controls.enlargerDiffusion)}, {"print", c.print}};
     }
 
-    void check_optics_capture(const std::filesystem::path& grainManifest, const char* preset) {
+    void check_optics_capture(JuicerProcess::ProcessRuntime& runtime, const std::filesystem::path& grainManifest, const char* preset) {
         const auto path = grainManifest.parent_path().parent_path() / "optics-fixtures/manifest.json";
         std::ifstream manifestStream(path);
         require(bool(manifestStream), "optics manifest open");
@@ -2985,7 +3512,7 @@ namespace {
         unsigned visits = 0;
         for (unsigned route = 0; route < 4; ++route) {
             NativeHost host;
-            JuicerEffect effect(host.effect_handle());
+            JuicerEffect effect(host.effect_handle(), runtime);
             host.bind_effect(effect);
             host.set_time(0);
             host.set_str_choice_value(JuicerParams::kFilmProfileKey, route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f");
@@ -3025,11 +3552,9 @@ namespace {
                         getters.push_back(host.trace()[i]);
                 auto admission = JuicerTestSupport::EffectTraceObserver::admit(effect);
                 FjPreparedStateView preparedView{};
-                const bool admitted = bool(admission.printState) || bool(admission.directState);
-                if (admission.printState)
-                    read_prepared_view(admission.printState->prepared, preparedView);
-                else if (admission.directState)
-                    read_prepared_view(admission.directState->prepared, preparedView);
+                const bool admitted = bool(admission.state);
+                if (admission.state)
+                    read_prepared_view(*admission.state, preparedView);
                 OpticsCase captured;
                 captured.controls.cameraDiffusion = observed.pendingOptics.cameraDiffusion;
                 captured.controls.enlargerDiffusion = observed.pendingOptics.enlargerDiffusion;
@@ -3046,7 +3571,7 @@ namespace {
         require(visits == intended.size(), "optics capture visit count matches declared route/input extent");
         std::cout << "PASS adapter/96-frozen-optics-capture-publications-four-routes\n";
     }
-    void check_physical_capture(NativeHost& host, const std::filesystem::path& grainManifest, const char* preset) {
+    void check_physical_capture(JuicerProcess::ProcessRuntime& runtime, NativeHost& host, const std::filesystem::path& grainManifest, const char* preset) {
         const auto manifestPath = grainManifest.parent_path().parent_path() / "effects-fixtures/manifest.json";
         std::ifstream manifestStream(manifestPath);
         require(bool(manifestStream), "effects capture manifest open");
@@ -3065,7 +3590,7 @@ namespace {
                 intended.push_back("route-" + std::to_string(row.at("route").get<unsigned>()) + "/policy-" + std::to_string(policy) + "/index-" + std::to_string(index));
         }
         JuicerTests::Cohort rows("physical_capture", intended);
-        JuicerEffect effect(host.effect_handle());
+        JuicerEffect effect(host.effect_handle(), runtime);
         host.bind_effect(effect);
         host.set_time(0);
         const std::array<const char*, 5> getters{JuicerParams::kFilmDustAmount, JuicerParams::kGateDustAmount, JuicerParams::kFilmScratchAmount, JuicerParams::kGateScratchAmount, JuicerParams::kGateWeaveAmount};
@@ -3101,9 +3626,9 @@ namespace {
             const auto words = nlohmann::json::array({std::bit_cast<std::uint32_t>(controls.filmDustAmount), std::bit_cast<std::uint32_t>(controls.filmScratchAmount), std::bit_cast<std::uint32_t>(controls.gateDustAmount), std::bit_cast<std::uint32_t>(controls.gateScratchAmount)});
             require(words == row.at("controls").at("amounts") && std::bit_cast<std::uint64_t>(controls.gateWeaveAmount) == row.at("controls").at("weave") && observed.pendingFullHash == row.at("snapshot_hash"), "frozen native captured f32/f64 controls and snapshot identity");
             const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
-            require(print ? bool(admitted.printState) : bool(admitted.directState), "physical capture completes actual route publication");
+            require(bool(admitted.state), "physical capture completes actual route publication");
             FjPreparedStateView preparedView{};
-            read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, preparedView);
+            read_prepared_view(*admitted.state, preparedView);
             const auto& effects = preparedView.effects;
             const nlohmann::json projection{{"film_dust", physical_words(effects.film_dust)}, {"film_scratch", physical_words(effects.film_scratch)}, {"gate_dust", physical_words(effects.gate_dust)}, {"gate_scratch", physical_words(effects.gate_scratch)}, {"weave", std::bit_cast<std::uint64_t>(effects.gate_weave_amount)}, {"active", effects.active != 0}, {"hash", effects.hash}};
             require(projection == row.at("recipe") && preparedView.grain.hash == row.at("grain_hash") && preparedView.recipe_hash == row.at("final_hash"), "actual OFX snapshot to completed grain to exact Rust effects and final publication");
@@ -3158,7 +3683,7 @@ namespace {
             ids.push_back(std::string("shared/") + name);
         return ids;
     }
-    void run_frame_geometry_cases(const FrameGeometryFixturePaths& fixtures, const char* preset, const std::filesystem::path& tracePath) {
+    void run_frame_geometry_cases(JuicerProcess::ProcessRuntime& runtime, const FrameGeometryFixturePaths& fixtures, const char* preset, const std::filesystem::path& tracePath) {
         using namespace JuicerFrame::FrameGeometryTest;
         const auto& manifestPath = fixtures.geometry;
         const auto& halationManifestPath = fixtures.halation;
@@ -3183,7 +3708,7 @@ namespace {
             throw std::runtime_error("missing frozen frame geometry case");
         };
         NativeHost host;
-        JuicerEffect effect(host.effect_handle());
+        JuicerEffect effect(host.effect_handle(), runtime);
         host.bind_effect(effect);
         host.set_time(12.5);
         host.set_double_value(JuicerParams::kCameraFilmFormatMm, 36.0);
@@ -3216,9 +3741,8 @@ namespace {
                     std::string(name) + " production entry does not call retired native frame builders");
             if (policy.count) {
                 const auto admission = JuicerTestSupport::EffectTraceObserver::admit(effect);
-                const bool printPublication = admission.status == PendingRenderAdmissionStatus::AdmittedPrint;
                 FjPreparedStateView published{};
-                read_prepared_view(printPublication ? admission.printState->prepared : admission.directState->prepared, published);
+                read_prepared_view(*admission.state, published);
                 require(policy.route == published.route && policy.policy.recipe_hash == published.recipe_hash,
                         "frame policy comes from the currently admitted route publication");
                 const auto& extent = policy.policy.geometry.full_frame;
@@ -3620,7 +4144,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
             operation_id = "loaded_module";
     }
     JuicerTests::CaseEvent operation("adapter_operation", operation_id);
-    JuicerCuda::Owner cudaOwner;
+    JuicerProcess::ProcessRuntime runtime;
     try {
         if (argc == 5 && (std::string_view(argv[1]) == "--loaded-module" || std::string_view(argv[1]) == "--stream-contract") &&
             std::string_view(argv[3]) == "--trace-output") {
@@ -3631,10 +4155,10 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
             return 0;
         }
         if (argc == 7 && std::string_view(argv[1]) == "--frame-geometry") {
-            cudaOwner.create(JuicerProcess::data_directory());
+            runtime.create(JuicerProcess::data_directory());
             if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess)
                 throw std::runtime_error("CUDA initialization failed");
-            run_frame_geometry_cases({.geometry = argv[2], .halation = argv[5], .diffusion = argv[6]}, argv[3], argv[4]);
+            run_frame_geometry_cases(runtime, {.geometry = argv[2], .halation = argv[5], .diffusion = argv[6]}, argv[3], argv[4]);
             operation.passed();
             case_log.finish();
             return 0;
@@ -3645,15 +4169,16 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 "--loaded-module MODULE --trace-output PATH");
         }
         const std::filesystem::path tracePath = argv[2];
-        cudaOwner.create(JuicerProcess::data_directory());
+        runtime.create(JuicerProcess::data_directory());
         if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
             throw std::runtime_error("CUDA initialization failed");
         }
         if (argc == 6)
-            check_optics_capture(argv[4], argv[5]);
+            check_optics_capture(runtime, argv[4], argv[5]);
+        run_publication_contract_rows(runtime);
         NativeHost host;
         if (argc == 6)
-            check_physical_capture(host, argv[4], argv[5]);
+            check_physical_capture(runtime, host, argv[4], argv[5]);
         ParamSnapshot routeSnapshot;
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
         std::optional<PreparedState> routeProduct;
@@ -3661,7 +4186,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         const auto prepareRoute = [&] {
             std::array<char, 2048> text{};
             FjErrorBuffer error{text.data(), text.size(), 0};
-            const FjStatus status = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(),
+            const FjStatus status = prepare_state(runtime.borrow().assets,
                                                   routeSnapshot,
                                                   routeProduct,
                                                   error);
@@ -3718,7 +4243,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
             RouteFaultTest::fail_on_call(failedCall);
             bool creationFailed = false;
             try {
-                JuicerEffect failedEffect(host.effect_handle());
+                JuicerEffect failedEffect(host.effect_handle(), runtime);
             } catch (const OFX::Exception::Suite&) {
                 creationFailed = true;
             }
@@ -3739,7 +4264,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         const std::array<std::string, 3> recovery_ids{{"1", "2", "3"}};
         JuicerTests::Cohort route_recovery_rows("route_failure_recovery", std::vector<std::string>(recovery_ids.begin(), recovery_ids.end()));
         {
-            JuicerEffect effect(host.effect_handle());
+            JuicerEffect effect(host.effect_handle(), runtime);
             host.bind_effect(effect);
 
             host.set_time(0.0);
@@ -3761,56 +4286,25 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                  ++failureIndex) {
                 auto row = route_recovery_rows.case_event(std::to_string(failureIndex + 1));
                 const int failedCall = static_cast<int>(failureIndex) + 1;
-                const PendingRenderAdmissionResult retained =
+                const auto retainedSnapshot = JuicerTestSupport::EffectTraceObserver::captured(effect);
+                const JuicerTestSupport::PublicationAdmission retained =
                     JuicerTestSupport::EffectTraceObserver::admit(effect);
-                const bool retainedPrint =
-                    retained.status == PendingRenderAdmissionStatus::AdmittedPrint;
-                require(
-                    (retainedPrint && retained.printState &&
-                     !retained.directState) ||
-                        (retained.status ==
-                             PendingRenderAdmissionStatus::AdmittedDirect &&
-                         retained.directState && !retained.printState),
-                    "could not retain an admitted route state before failure");
-                const void* const retainedStateIdentity = retainedPrint
-                                                              ? static_cast<const void*>(
-                                                                    retained.printState.get())
-                                                              : static_cast<const void*>(
-                                                                    retained.directState.get());
-                const std::uint64_t retainedBuildCounter =
-                    retainedPrint ? retained.printState->buildCounter
-                                  : retained.directState->buildCounter;
-                const std::uint64_t retainedRecipeHash =
-                    retainedPrint ? prepared_recipe_hash(retained.printState->prepared)
-                                  : prepared_recipe_hash(retained.directState->prepared);
-                const Spektrafilm::ScanRoute retainedRoute =
-                    retained.snapshot.scanRoute;
-                const double retainedExposureEv =
-                    retained.snapshot.cameraExposureCompensationEv;
-
+                const bool retainedPrint = (JuicerTestSupport::published_view(retained).route & 1u) != 0;
+                require(retained.kind == FJ_ADMISSION_READY && retained.state,
+                        "could not retain an admitted route state before failure");
+                const auto retainedMetrics = JuicerTestSupport::EffectTraceObserver::metrics(effect);
+                const std::size_t retainedStateIdentity = retainedMetrics.backingIdentity;
+                const std::uint64_t retainedBuildCounter = retained.state->build();
+                const std::uint64_t retainedRecipeHash = prepared_recipe_hash(*retained.state);
+                const Spektrafilm::ScanRoute retainedRoute = retainedSnapshot.scanRoute;
+                const double retainedExposureEv = retainedSnapshot.cameraExposureCompensationEv;
                 const auto retained_state_unchanged = [&]() {
-                    if (retained.snapshot.scanRoute != retainedRoute ||
-                        !double_matches(retained.snapshot.cameraExposureCompensationEv,
-                                        retainedExposureEv)) {
-                        return false;
-                    }
-                    return retainedPrint
-                               ? retained.status == PendingRenderAdmissionStatus::AdmittedPrint &&
-                                     !retained.directState && retained.printState &&
-                                     retained.printState.get() ==
-                                         retainedStateIdentity &&
-                                     retained.printState->buildCounter ==
-                                         retainedBuildCounter &&
-                                     prepared_recipe_hash(retained.printState->prepared) ==
-                                         retainedRecipeHash
-                               : retained.status == PendingRenderAdmissionStatus::AdmittedDirect &&
-                                     !retained.printState && retained.directState &&
-                                     retained.directState.get() ==
-                                         retainedStateIdentity &&
-                                     retained.directState->buildCounter ==
-                                         retainedBuildCounter &&
-                                     prepared_recipe_hash(retained.directState->prepared) ==
-                                         retainedRecipeHash;
+                    const auto view = JuicerTestSupport::published_view(retained);
+                    return retained.kind == FJ_ADMISSION_READY && retained.state &&
+                           view.route == static_cast<std::uint32_t>(retainedRoute) &&
+                           retained.state->build() == retainedBuildCounter &&
+                           prepared_recipe_hash(*retained.state) == retainedRecipeHash &&
+                           double_matches(retainedSnapshot.cameraExposureCompensationEv, retainedExposureEv);
                 };
 
                 host.set_double_value(
@@ -3821,7 +4315,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
                 const auto invalid =
                     JuicerTestSupport::EffectTraceObserver::snapshot(effect);
-                const PendingRenderAdmissionResult blocked =
+                const JuicerTestSupport::PublicationAdmission blocked =
                     JuicerTestSupport::EffectTraceObserver::admit(effect);
                 const auto rejected = host.render(
                     effect, frame, "route-bridge-failure", true);
@@ -3830,48 +4324,32 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 require(invalid.pendingInvalid &&
                             invalid.pendingDiagnostic.find("RouteResolutionFailure") !=
                                 std::string::npos &&
-                            blocked.status ==
-                                PendingRenderAdmissionStatus::InvalidSnapshotControls &&
-                            !blocked.directState && !blocked.printState &&
+                            blocked.kind == FJ_ADMISSION_CAPTURE_FAILED &&
+                            !blocked.state &&
                             rejected.rejected && rejected.state.pendingInvalid &&
                             failure_ui_trace_matches(failureTrace, failedCall) &&
                             retained_state_unchanged(),
                         "route bridge failure did not block new admission while retaining the admitted state");
                 host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
-                const PendingRenderAdmissionResult recoveredAdmission =
+                const auto recoveredSnapshot = JuicerTestSupport::EffectTraceObserver::captured(effect);
+                const JuicerTestSupport::PublicationAdmission recoveredAdmission =
                     JuicerTestSupport::EffectTraceObserver::admit(effect);
                 const auto recoveredRoute =
                     host.render(effect, frame, "route-bridge-recovery");
-                require(
-                    retainedPrint
-                        ? recoveredAdmission.status ==
-                                  PendingRenderAdmissionStatus::AdmittedPrint &&
-                              recoveredAdmission.printState &&
-                              !recoveredAdmission.directState
-                        : recoveredAdmission.status ==
-                                  PendingRenderAdmissionStatus::AdmittedDirect &&
-                              recoveredAdmission.directState &&
-                              !recoveredAdmission.printState,
-                    "valid route recovery did not return the expected admission type");
-                const void* const recoveredStateIdentity = retainedPrint
-                                                               ? static_cast<const void*>(
-                                                                     recoveredAdmission.printState.get())
-                                                               : static_cast<const void*>(
-                                                                     recoveredAdmission.directState.get());
-                const std::uint64_t recoveredBuildCounter = retainedPrint
-                                                                ? recoveredAdmission.printState->buildCounter
-                                                                : recoveredAdmission.directState->buildCounter;
-                const std::uint64_t recoveredRecipeHash = retainedPrint
-                                                              ? prepared_recipe_hash(recoveredAdmission.printState->prepared)
-                                                              : prepared_recipe_hash(recoveredAdmission.directState->prepared);
+                require(recoveredAdmission.kind == FJ_ADMISSION_READY && recoveredAdmission.state &&
+                            ((JuicerTestSupport::published_view(recoveredAdmission).route & 1u) != 0) == retainedPrint,
+                        "valid route recovery did not return the expected admission type");
+                const std::size_t recoveredStateIdentity = JuicerTestSupport::EffectTraceObserver::metrics(effect).backingIdentity;
+                const std::uint64_t recoveredBuildCounter = recoveredAdmission.state->build();
+                const std::uint64_t recoveredRecipeHash = prepared_recipe_hash(*recoveredAdmission.state);
                 require(recoveredRoute.succeeded &&
                             !recoveredRoute.state.pendingInvalid &&
                             exposure_matches(
                                 recoveredRoute,
                                 recoveryExposureEv[failureIndex]) &&
-                            recoveredAdmission.snapshot.scanRoute == retainedRoute &&
+                            recoveredSnapshot.scanRoute == retainedRoute &&
                             double_matches(
-                                recoveredAdmission.snapshot
+                                recoveredSnapshot
                                     .cameraExposureCompensationEv,
                                 recoveryExposureEv[failureIndex]) &&
                             recoveredStateIdentity != retainedStateIdentity &&
@@ -4251,7 +4729,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 host.set_double_value(JuicerParams::kPrintGammaFactor, 1.0);
                 host.dispatch_event(effect, JuicerParams::kPrintGammaFactor, OFX::eChangeUserEdit);
                 const auto retained = JuicerTestSupport::EffectTraceObserver::admit(effect);
-                require(print ? bool(retained.printState) : bool(retained.directState),
+                require(bool(retained.state),
                         "gamma recovery failed to admit a complete state");
                 print_range_row.passed();
                 const std::array<double, 3> invalid_gammas{std::nextafter(0.05, 0.0), std::nextafter(4.0, 5.0), std::numeric_limits<double>::quiet_NaN()};
@@ -4261,8 +4739,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     host.set_double_value(JuicerParams::kFilmGammaFactor, invalid);
                     host.dispatch_event(effect, JuicerParams::kFilmGammaFactor, OFX::eChangeUserEdit);
                     require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingInvalid &&
-                                JuicerTestSupport::EffectTraceObserver::admit(effect).status ==
-                                    PendingRenderAdmissionStatus::InvalidSnapshotControls,
+                                JuicerTestSupport::EffectTraceObserver::admit(effect).kind == FJ_ADMISSION_CAPTURE_FAILED,
                             "invalid authored film gamma admitted an older publication");
                     row.passed();
                 }
@@ -4284,10 +4761,10 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                                 grain.chromaIndependentWeight == std::sqrt(0.375f),
                             "OFX grain policy or resolved amount/chroma capture changed");
                     const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
-                    require(print ? bool(admitted.printState) : bool(admitted.directState),
+                    require(bool(admitted.state),
                             "grain capture did not admit a complete state");
                     FjPreparedStateView view{};
-                    read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, view);
+                    read_prepared_view(*admitted.state, view);
                     require((view.film_development.density_layers[0][0].count != 0) == (policy == 2) &&
                                 (policy == 0 || view.grain.amplitude == grain.amplitude),
                             "development repeated or changed resolved grain policy");
@@ -4353,9 +4830,9 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                             }
                             require(ordered, "all grain current getters retain exact order even disabled");
                             const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
-                            require(print ? bool(admitted.printState) : bool(admitted.directState), "grain capture completes route");
+                            require(bool(admitted.state), "grain capture completes route");
                             FjPreparedStateView view{};
-                            read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, view);
+                            read_prepared_view(*admitted.state, view);
                             const auto& recipe = view.grain;
                             const bool hasDensityLayers = view.film_development.density_layers[0][0].count != 0;
                             require(hasDensityLayers == (policy == 2) &&
@@ -4427,9 +4904,9 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     require(observed.pendingValid, "grain edit capture valid");
                     const auto& g = observed.pendingGrain;
                     const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
-                    require(print ? bool(admitted.printState) : bool(admitted.directState), "grain edit completes publication");
+                    require(bool(admitted.state), "grain edit completes publication");
                     FjPreparedStateView view{};
-                    read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, view);
+                    read_prepared_view(*admitted.state, view);
                     const auto& recipe = view.grain;
                     grainCapture << "GRAIN_EDIT_CAPTURE " << print << ' ' << label;
                     grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleAreaUm2);
@@ -4462,7 +4939,10 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     grainCapture << ' ' << g.debugView;
                     grainCapture << ' ' << recipe.hash << ' ' << recipe.layers_hash << ' ' << view.recipe_hash << '\n';
                     const auto repeated = JuicerTestSupport::EffectTraceObserver::admit(effect);
-                    require(print ? repeated.printState == admitted.printState : repeated.directState == admitted.directState, "same-time capture repeats reuse immutable publication");
+                    require(repeated.kind == FJ_ADMISSION_READY && repeated.state &&
+                                repeated.state->build() == admitted.state->build() &&
+                                JuicerTestSupport::PublicationObserver::backing(*repeated.state) == JuicerTestSupport::PublicationObserver::backing(*admitted.state),
+                            "same-time capture repeats reuse immutable publication");
                 };
                 for (int choice : {-8, 0, 1, 2, 8}) {
                     grain_events.push_back(std::make_unique<JuicerTests::CaseEvent>("grain_edit", routeName + "/choice/" + std::to_string(choice)));
@@ -4633,7 +5113,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     observed = capture();
                     require(observed.pendingValid, "OFX DIR controls recover");
                     const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
-                    require(print ? bool(admitted.printState) : bool(admitted.directState), "captured DIR controls admit complete route");
+                    require(bool(admitted.state), "captured DIR controls admit complete route");
                     host.set_int_value(JuicerParams::kDirCouplersActive, 0);
                     host.set_int_value(JuicerParams::kDirCouplersGammaUseStock, 1);
                     host.set_double3_value(JuicerParams::kDirCouplersLangmuirDonorKRgb, {1, 1, 1});
@@ -4663,23 +5143,23 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                         }
                         const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
                         if (expectPublication) {
-                            require(print ? bool(admitted.printState) : bool(admitted.directState),
+                            require(bool(admitted.state),
                                     "scanner controls admit complete route: positive=" + std::to_string(positive) +
                                         " print=" + std::to_string(print) + " status=" +
-                                        std::to_string(static_cast<unsigned>(admitted.status)) + " diagnostic=" + admitted.diagnostic);
+                                        std::to_string(static_cast<unsigned>(admitted.kind)) + " diagnostic=" + admitted.diagnostic);
                         } else {
-                            require(admitted.status == PendingRenderAdmissionStatus::RebuildFailed &&
-                                        !admitted.directState && !admitted.printState,
+                            require(admitted.kind == FJ_ADMISSION_PREPARATION_FAILED &&
+                                        !admitted.state,
                                     "scanner constructor failure blocks route admission: positive=" +
                                         std::to_string(positive) + " print=" + std::to_string(print) +
-                                        " status=" + std::to_string(static_cast<unsigned>(admitted.status)) +
+                                        " status=" + std::to_string(static_cast<unsigned>(admitted.kind)) +
                                         " diagnostic=" + admitted.diagnostic);
                         }
                         return admitted;
                     };
                     const auto output = [&](const auto& admitted) {
                         FjPreparedStateView view{};
-                        read_prepared_view(print ? admitted.printState->prepared : admitted.directState->prepared, view);
+                        read_prepared_view(*admitted.state, view);
                         return view.scanner_policy;
                     };
                     constexpr double black = 0.01234567890123;
@@ -4699,7 +5179,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     }
                     auto recovery_row = scanner_rows.case_event(routeName + "/sanitation-and-recovery");
                     const auto held = capture();
-                    const auto heldHash = print ? prepared_recipe_hash(held.printState->prepared) : prepared_recipe_hash(held.directState->prepared);
+                    const auto heldHash = prepared_recipe_hash(*held.state);
                     const auto active = host.render(effect, frame, "scanner-active");
                     require(active.succeeded, "active scanner correction renders for selected polarity/route");
 
@@ -4723,6 +5203,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                                                                    ? "MalformedRequiredProfileData phase=8B print corrected midgray"
                                                                    : "MalformedRequiredProfileData phase=8B direct corrected midgray";
                         const auto failedAdmission = capture(false);
+                        const auto failedSnapshot = JuicerTestSupport::EffectTraceObserver::captured(effect);
                         require(failedAdmission.diagnostic == expectedDiagnostic,
                                 "scanner constructor failure preserves owning corrected-midgray diagnostic: " +
                                     failedAdmission.diagnostic);
@@ -4732,8 +5213,8 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                         FjErrorBuffer constructorError{
                             constructorText.data(), constructorText.size(), 0};
                         const FjStatus constructorStatus = prepare_state(
-                            JuicerProcess::root().assets().borrow_rust_assets(),
-                            failedAdmission.snapshot,
+                            runtime.borrow().assets,
+                            failedSnapshot,
                             failedConstructor,
                             constructorError);
                         const std::string constructorDiagnostic(
@@ -4747,16 +5228,15 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
 
                         const auto failedState = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
                         require(failedState.pendingValid &&
-                                    failedState.pendingFullHash == hash_params(failedAdmission.snapshot) &&
+                                    failedState.pendingFullHash == hash_params(failedSnapshot) &&
                                     failedState.pendingFullHash != beforeFailure.pendingFullHash &&
                                     failedState.lastParamHash == beforeFailure.lastParamHash &&
-                                    failedState.buildCounterNext == beforeFailure.buildCounterNext &&
-                                    !failedState.directPublished && !failedState.printPublished,
-                                "failed scanner construction keeps controls valid, clears the selected slot, leaves no alternate publication, and does not publish a new hash or counter");
+                                    failedState.buildCounter == beforeFailure.buildCounter &&
+                                    failedState.directPublished == beforeFailure.directPublished && failedState.printPublished == beforeFailure.printPublished,
+                                "failed scanner construction keeps controls valid, retains the old publication privately, and does not publish a new hash or counter");
                         require(output(held).black_level == static_cast<float>(black) &&
                                     output(held).white_level == static_cast<float>(white) &&
-                                    (print ? prepared_recipe_hash(held.printState->prepared)
-                                           : prepared_recipe_hash(held.directState->prepared)) == heldHash,
+                                    (prepared_recipe_hash(*held.state)) == heldHash,
                                 "held immutable scanner recipe survives constructor failure");
 
                         const auto failed = host.render(effect, frame, "scanner-constructor-midgray-failure", true);
@@ -4764,14 +5244,14 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                                 "OFX admission rejects the current constructor failure and releases both image leases");
                         require(failed.state.pendingFullHash == failedState.pendingFullHash &&
                                     failed.state.lastParamHash == beforeFailure.lastParamHash &&
-                                    failed.state.buildCounterNext == beforeFailure.buildCounterNext &&
-                                    !failed.state.directPublished && !failed.state.printPublished &&
+                                    failed.state.buildCounter == beforeFailure.buildCounter &&
+                                    failed.state.directPublished == beforeFailure.directPublished && failed.state.printPublished == beforeFailure.printPublished &&
                                     failed.state.latchValid == beforeFailure.latchValid &&
                                     failed.state.latchSnapshotId == beforeFailure.latchSnapshotId &&
                                     failed.state.latchFrameToken == beforeFailure.latchFrameToken,
                                 "failed OFX admission does not select an older publication or alter the submission latch");
                         require(output(held).black_level == static_cast<float>(black) && output(held).white_level == static_cast<float>(white) &&
-                                    (print ? prepared_recipe_hash(held.printState->prepared) : prepared_recipe_hash(held.directState->prepared)) == heldHash,
+                                    (prepared_recipe_hash(*held.state)) == heldHash,
                                 "held immutable scanner recipe remains readable after failed OFX admission");
                     }
                     host.set_double_value(JuicerParams::kScannerBlackLevel, black);
@@ -4779,14 +5259,14 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                     const auto restored = capture();
                     const auto recoveredScanner = host.render(effect, frame, "scanner-recovery");
                     require(recoveredScanner.succeeded && recoveredScanner.outputSignature == active.outputSignature &&
-                                (print ? prepared_recipe_hash(restored.printState->prepared) : prepared_recipe_hash(restored.directState->prepared)) == heldHash,
+                                (prepared_recipe_hash(*restored.state)) == heldHash,
                             "scanner valid recovery restores recipe and output identity");
                     if (positive || print) {
                         const auto recoveredState = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
                         require(recoveredState.pendingValid &&
                                     (print ? recoveredState.printPublished : recoveredState.directPublished) &&
                                     recoveredState.lastParamHash == recoveredState.pendingFullHash &&
-                                    recoveredState.buildCounterNext == beforeFailure.buildCounterNext + 1,
+                                    recoveredState.buildCounter == beforeFailure.buildCounter + 1,
                                 "scanner constructor failure recovers through one new complete publication");
                     }
                     recovery_row.passed();
@@ -4797,7 +5277,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                         host.at_time_get_count() == 0,
                     "adapter getter selection was not current-value-only");
         }
-        require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_SUCCESS,
+        require(runtime.shutdown().category == FJ_STATUS_SUCCESS,
                 "adapter terminal shutdown failed");
         host.write_trace(tracePath);
         operation.passed();
@@ -4817,11 +5297,11 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL adapter trace: " << error.what() << '\n';
-        fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+        runtime.shutdown();
         return 1;
     } catch (...) {
         std::cerr << "FAIL adapter trace: unknown exception\n";
-        fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+        runtime.shutdown();
         return 1;
     }
 } catch (const std::exception& error) {

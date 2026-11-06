@@ -1028,7 +1028,7 @@ class RustBoundaryTests(unittest.TestCase):
             self.assertRegex(text, retired)
         self.assertFalse((ROOT / "src/ProfileAssets.h").exists())
         self.assertFalse((ROOT / "src/RustFilmInputBridge.cpp").exists())
-        bridge = (ROOT / "src/RustAssetBridge.cpp").read_text(encoding="utf-8")
+        bridge = (ROOT / "tests/ffi/test_asset_bridge.cpp").read_text(encoding="utf-8")
         for text in ("ConversionSlots", "FilmSource::", "PrintProfileSource::", "copy_tables("):
             self.assertNotIn(text, bridge)
         self.assertIn("AssetBridge::film_defaults(", bridge)
@@ -1041,11 +1041,15 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertIn("grain::Recipe::new(&acquired.development, params.grain)", complete)
         preparation = (ROOT / "rust/film-juicer-plugin/src/preparation.rs").read_text(encoding="utf-8")
         self.assertIn("let completed = recipe::prepare(assets, params)", preparation)
-        self.assertIn("state.push(completed)", preparation)
+        self.assertIn("FjPreparedState::from_state(Arc::new(completed))", preparation)
         owner = complete.split("pub struct RenderState {", 1)[1].split("\n}", 1)[0]
-        self.assertIn("development: film::Development", owner)
+        self.assertIn("contents: Vec<Contents>", owner)
+        contents = complete.split("struct Contents {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("development: film::Development", contents)
+        self.assertIn("backing.push(contents)", complete)
         public_fields = r"\bpub(?:\([^)]*\))?\s+\w+\s*:"
         self.assertNotRegex(owner, public_fields)
+        self.assertNotRegex(contents, public_fields)
         self.assertRegex("pub development: film::Development", public_fields)
         self.assertRegex("pub(crate) development: film::Development", public_fields)
 
@@ -1419,6 +1423,7 @@ class RustBoundaryTests(unittest.TestCase):
             ("film-juicer-plugin", "asset_spectral.rs"),
             ("film-juicer-plugin", "asset_noise.rs"),
             ("film-juicer-plugin", "asset_calibration.rs"),
+            ("film-juicer-plugin", "instance.rs"),
         )
         self.subtest_cases = tuple(
             f"{package}/{source}|{'release' if release else 'debug'}"
@@ -1534,8 +1539,8 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_prepared_state_is_complete_private_and_borrowed(self) -> None:
         cases = (('prepared_state_complete', None),
-         ('prepared_state_private', {'E0616': ('state.hash',), 'E0603': ('crate::preparation::project_state',)}),
-         ('prepared_state_construction', {'E0451': ('RenderState { ..state }',)}),
+         ('prepared_state_private', {'E0616': ('state.contents',), 'E0603': ('crate::preparation::project_state',)}),
+         ('prepared_state_construction', {'E0451': ('contents: Vec::new()',)}),
          ('prepared_state_default', {'E0599': ('RenderState::default()',)}),
          ('prepared_state_mutation', {'E0594': ('state.s_inverse()[0]',)}),
          ('prepared_state_borrow', {'E0515': ('state.s_inverse()',), 'E0505': ('drop(state)',)}))
@@ -1558,6 +1563,25 @@ class RustBoundaryTests(unittest.TestCase):
          ('cuda_render_projection_private', {'E0603': ('crate::cuda::projection::host_data',)}),
          ('cuda_render_state_borrow', {'E0505': ('drop(state)',)}),
          ('cuda_render_owner_thread', {'E0277': ('std::thread::spawn(move || owner)',)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
+        self.check_fixture_cases(
+            "film-juicer-plugin/src/lib.rs",
+            "film-juicer-plugin",
+            cases=cases,
+            feature_forms=(False, True),
+        )
+
+    def test_runtime_owner_borrows_and_terminal_consumption(self) -> None:
+        cases = (('runtime_complete', None),
+         ('runtime_private', {'E0616': ('runtime.assets', 'runtime.native', 'owner.handle')}),
+         ('runtime_escape', {'E0515': ('runtime.assets()',)}),
+         ('runtime_close_borrow', {'E0505': ('runtime.close()',)}),
+         ('runtime_native_reuse', {'E0382': ('owner.raw()',)}),
+         ('runtime_owner_borrow_send', {'E0277': ('std::thread::spawn(move || owner)',)}))
         feature_forms = (False, True)
         self.subtest_cases = tuple(
             f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
@@ -1611,6 +1635,7 @@ RustBoundaryTests.test_complete_tc_lut_privacy_and_borrowing.required_subtests =
 RustBoundaryTests.test_complete_input_hull_privacy_and_borrows.required_subtests = True
 RustBoundaryTests.test_prepared_state_is_complete_private_and_borrowed.required_subtests = True
 RustBoundaryTests.test_cuda_render_borrows_complete_owners_and_hides_projection.required_subtests = True
+RustBoundaryTests.test_runtime_owner_borrows_and_terminal_consumption.required_subtests = True
 
 
 def exercise_scratch_lifetime_controls(test_case, owner):

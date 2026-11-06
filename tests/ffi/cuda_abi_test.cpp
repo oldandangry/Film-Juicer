@@ -7,6 +7,7 @@
 #include <type_traits>
 
 #include "juicer_cuda_api.h"
+#include "juicer_legacy_api.h"
 #include "cuda_abi_test.h"
 #include "case_results.h"
 
@@ -22,12 +23,24 @@
 #undef FJ_ABI_VALUE
 
 static_assert(std::is_same_v<FjAbortQuery, std::uint32_t (*)(void*)>);
-static_assert(std::is_same_v<decltype(&fj_cuda_create), FjStatus (*)(FjPathView, FjCuda**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_cuda_create), FjStatus (*)(FjCuda**, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_inspect), FjStatus (*)(FjCuda*, const FjFrame*, FjCudaContext*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_render), FjRenderOutcome (*)(FjCuda*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, FjAbortCallback, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_retire_instance), FjStatus (*)(FjCuda*, std::uint64_t, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_shutdown), FjStatus (*)(FjCuda*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_destroy), FjStatus (*)(FjCuda*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_cuda_check_terminal), FjStatus (*)(FjCuda*, FjErrorBuffer*)>);
+
+static_assert(std::is_same_v<decltype(&fj_legacy_runtime_create), FjStatus (*)(FjPathView, FjRuntime**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_legacy_runtime_borrow), FjStatus (*)(const FjRuntime*, FjRuntimeView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_legacy_runtime_check_close), FjStatus (*)(const FjRuntime*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_legacy_runtime_shutdown), FjStatus (*)(const FjRuntime*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_legacy_runtime_destroy), FjStatus (*)(FjRuntime*, FjErrorBuffer*)>);
+static_assert(std::is_standard_layout_v<FjRuntimeView>);
+static_assert(sizeof(FjRuntimeView) == sizeof(const FjAssets*) + sizeof(FjCuda*));
+static_assert(alignof(FjRuntimeView) == alignof(const FjAssets*));
+static_assert(offsetof(FjRuntimeView, assets) == 0);
+static_assert(offsetof(FjRuntimeView, cuda) >= sizeof(const FjAssets*));
 
 int main(int argc, char** argv) try {
     JuicerTests::CaseLog case_log;

@@ -137,26 +137,20 @@ pub(crate) struct FjPreparationParams {
 }
 
 pub(crate) struct FjPreparedState {
-    // A fallible substantial allocation, moved once after complete preparation.
-    // The foreign Box owns only this small header; projections never self-point.
-    state: Vec<recipe::RenderState>,
+    state: Arc<recipe::RenderState>,
 }
 impl FjPreparedState {
     pub(crate) fn render_state(&self) -> &recipe::RenderState {
-        &self.state[0]
+        &self.state
     }
-}
-#[cfg(feature = "test-support")]
-static LIVE_STATES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-#[cfg(feature = "test-support")]
-impl Drop for FjPreparedState {
-    fn drop(&mut self) {
-        LIVE_STATES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+
+    pub(crate) fn from_state(state: Arc<recipe::RenderState>) -> Self {
+        Self { state }
     }
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn live_states() -> usize {
-    LIVE_STATES.load(std::sync::atomic::Ordering::Relaxed)
+    recipe::testing::live_states()
 }
 #[cfg(feature = "test-support")]
 #[repr(C)]
@@ -322,7 +316,7 @@ unsafe fn key(input: &crate::cuda::sys::FjStringView) -> Result<String, Failure>
 /// # Safety
 /// input is one initialized immutable snapshot and its borrowed keys retain
 /// their complete authorized extents until this synchronous conversion returns.
-unsafe fn params(input: &FjPreparationParams) -> Result<recipe::Params, Failure> {
+pub(crate) unsafe fn params(input: &FjPreparationParams) -> Result<recipe::Params, Failure> {
     let FjPreparationParams {
         print_exposure,
         print_preflash_exposure,
@@ -496,12 +490,18 @@ fn construct(assets: &Assets, params: &recipe::Params) -> Result<FjPreparedState
         recipe::PrepareError::Asset(error) => Failure::Asset(error),
         error => Failure::Preparation(error),
     })?;
-    let mut state = Vec::new();
-    state.try_reserve_exact(1).map_err(Failure::Capacity)?;
-    state.push(completed);
-    #[cfg(feature = "test-support")]
-    LIVE_STATES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(FjPreparedState { state })
+    Ok(FjPreparedState::from_state(Arc::new(completed)))
+}
+
+/// # Safety
+/// The caller borrows one live matching prepared-state owner until return.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn state_identity(owner: *const FjPreparedState) -> usize {
+    if !aligned(owner) {
+        return 0;
+    }
+    // SAFETY: The caller authorizes this live matching owner and excludes release.
+    unsafe { (*owner).render_state() as *const recipe::RenderState as usize }
 }
 
 /// # Safety
@@ -821,7 +821,7 @@ fn scratch_projection(value: &effects::Scratch) -> sys::FjScratch {
 }
 
 fn project_state(owner: &FjPreparedState) -> FjPreparedStateView {
-    let state = &owner.state[0];
+    let state = owner.render_state();
     let film = state.film_profile();
     let input = state.input();
     let development = state.development();
@@ -2345,13 +2345,14 @@ cache_export!(fj_legacy_assets_output_boundary_acquire(assets: *const FjAssets, 
 cache_export!(fj_legacy_output_boundary_view(owner: *const FjOutputBoundaryOwner, out: *mut FjOutputBoundaryView, error: *mut FjErrorBuffer) => boundary_view(owner, out, error));
 cache_export!(fj_legacy_output_boundary_release(owner: *mut FjOutputBoundaryOwner, error: *mut FjErrorBuffer) => boundary_release(owner, error));
 
-cache_export!(fj_legacy_prepared_state_create(assets: *mut FjAssets, params: *const FjPreparationParams, out: *mut *mut FjPreparedState, error: *mut FjErrorBuffer) => state_create(assets, params, out, error));
+cache_export!(fj_legacy_prepared_state_create(assets: *const FjAssets, params: *const FjPreparationParams, out: *mut *mut FjPreparedState, error: *mut FjErrorBuffer) => state_create(assets, params, out, error));
 cache_export!(fj_legacy_prepared_state_view(owner: *const FjPreparedState, out: *mut FjPreparedStateView, error: *mut FjErrorBuffer) => state_view(owner, out, error));
 cache_export!(fj_legacy_prepared_state_release(owner: *mut FjPreparedState, error: *mut FjErrorBuffer) => state_release(owner, error));
 
 pub(crate) fn failure_category(error: &recipe::PrepareError) -> u32 {
     use recipe::PrepareError as E;
     match error {
+        E::ContentsAllocation(_) => FJ_STATUS_ALLOCATION_FAILURE,
         E::Control(
             recipe::ControlError::InputColorSpace
             | recipe::ControlError::ReconstructionMethod

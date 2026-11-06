@@ -3,10 +3,14 @@
 #include <memory>
 #include <string>
 #include <cstdint>
+#include <mutex>
+
+#include "PreparedState.h"
+#include "ProcessRuntime.h"
 
 #include "ofxsImageEffect.h"
 
-struct InstanceState;
+struct NativeSubmissionState;
 struct ParamSnapshot;
 struct VisualGrainControls;
 
@@ -49,7 +53,7 @@ namespace JuicerTestSupport {
 
 class JuicerEffect : public OFX::ImageEffect {
 public:
-    explicit JuicerEffect(OfxImageEffectHandle handle);
+    JuicerEffect(OfxImageEffectHandle handle, JuicerProcess::ProcessRuntime& runtime);
     ~JuicerEffect() override;
 
     void render(const OFX::RenderArguments& args) override;
@@ -87,6 +91,7 @@ private:
     void applyGrainPresetDefaults(int presetIndex);
     void resetGrainAdvancedControls();
     void updateGrainPresetLabel(bool custom);
+    void cacheGrainMaster(double& target, double value);
     void updateGrainChromaEnabled();
     bool resolveDiffusionControlRoute(Spektrafilm::ScanRoute& outRoute, std::string& outDiagnostic);
     bool resolveGammaControlRoute(
@@ -101,7 +106,9 @@ private:
     [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
     bool snapshotParams(ParamSnapshot& out, std::string& outDiagnostic) const;
     void onParamsPossiblyChanged(const char* changedNameOrNull);
-    void initialize_pending_render_state();
+    void acquire_render_capture(std::uint32_t mode);
+    void finish_capture();
+    bool plugin_edit_suppressed() const noexcept;
 
     OFX::Clip* _src = nullptr;
     OFX::Clip* _dst = nullptr;
@@ -213,7 +220,10 @@ private:
     OFX::DoubleParam* _pGlareCompRemovalDensity = nullptr;
     OFX::DoubleParam* _pGlareCompRemovalTransition = nullptr;
 
-    std::unique_ptr<InstanceState> _state;
+    JuicerProcess::ProcessRuntime& _runtime;
+    RenderInstance _publication;
+    std::mutex _uiMutex;
+    std::unique_ptr<NativeSubmissionState> _submissionState;
 
     double _grainParticleScaleMasterLast = 0.0;
     double _grainParticleScaleLayersMasterLast = 0.0;

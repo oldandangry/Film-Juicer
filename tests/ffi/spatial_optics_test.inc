@@ -423,7 +423,7 @@ namespace OpticsTest {
         const auto& captured = fixtures.products;
         const auto& literals = fixtures.literals;
         const auto& ofx = fixtures.ofx;
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         const auto find = [&](const char* id) -> const Json& {
             for (const auto& row : literals.at("cases"))
@@ -466,7 +466,7 @@ namespace OpticsTest {
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             std::optional<PreparedState> product;
-            auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+            const auto* assets = owner.borrow().assets;
             const FjStatus result = prepare_state(assets, params, product, error);
             const bool built = result.category == FJ_STATUS_SUCCESS && product.has_value();
             const std::string observedDiagnostic(diagnostic.data(), error.length);
@@ -498,43 +498,54 @@ namespace OpticsTest {
             baseline.outputGamutCompressionEnabled = 0;
             baseline.grainControls.active = false;
             baseline.cameraDiffusion.active = true;
-            InstanceState state;
-            const auto pending = [&](const ParamSnapshot& value) {
-                std::lock_guard<std::mutex> lock(state.pending.m);
-                state.pending.value = PendingParamsState::Valid{value, hash_params(value)};
-            };
-            pending(baseline);
-            const auto admitted = admit_pending_render_state(state);
-            require(route % 2 ? bool(admitted.printState) : bool(admitted.directState), "complete optics publication on both polarities/routes");
+            RenderInstance state;
+            JuicerTestSupport::capture(state, baseline);
+            const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(admitted.kind == FJ_ADMISSION_READY && admitted.state,
+                    "complete optics publication on both polarities/routes");
             const auto held = JuicerTestSupport::published_view(admitted);
             const auto hash = held.recipe_hash;
-            const auto counter = state.buildCounterNext.load();
+            const auto baselineMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
             auto invalid = baseline;
             invalid.cameraDiffusion.active = false;
             invalid.cameraDiffusion.strength = invalidStrength;
-            pending(invalid);
-            const auto rejected = admit_pending_render_state(state);
-            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && !rejected.directState && !rejected.printState && rejected.diagnostic == "ResourceDescriptorMismatch phase=6A component=camera_diffusion field=strength" && held.recipe_hash == hash && state.buildCounterNext.load() == counter, "disabled invalid camera blocks admission without partial publication or revoking held state");
-            pending(baseline);
-            const auto recovered = admit_pending_render_state(state);
-            require(route % 2 ? bool(recovered.printState) : bool(recovered.directState), "optics failure recovery");
-            const auto repeated = admit_pending_render_state(state);
-            require(repeated.directState == recovered.directState && repeated.printState == recovered.printState, "unchanged recovered publication reuses state");
+            JuicerTestSupport::capture(state, invalid);
+            const auto rejected = JuicerTestSupport::admit(owner.borrow().assets, state);
+            const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+            require(rejected.delivery.category == FJ_STATUS_PREPARATION_FAILURE &&
+                        rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state &&
+                        rejected.diagnostic == "ResourceDescriptorMismatch phase=6A component=camera_diffusion field=strength" &&
+                        held.recipe_hash == hash && failedMetrics.build == baselineMetrics.build &&
+                        failedMetrics.publishedIdentity == baselineMetrics.publishedIdentity &&
+                        failedMetrics.backingIdentity == baselineMetrics.backingIdentity,
+                    "disabled invalid camera blocks admission without partial publication or revoking held state");
+            JuicerTestSupport::capture(state, baseline);
+            const auto recovered = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(recovered.kind == FJ_ADMISSION_READY && recovered.state &&
+                        JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
+                    "optics failure recovery returns to the last complete state");
+            const auto repeated = JuicerTestSupport::admit(owner.borrow().assets, state);
+            require(repeated.kind == FJ_ADMISSION_READY && repeated.state &&
+                        JuicerTestSupport::PublicationObserver::backing(*repeated.state) == baselineMetrics.backingIdentity &&
+                        JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
+                    "unchanged recovered publication reuses state");
             auto unused = baseline;
             unused.enlargerDiffusion.family = static_cast<Spektrafilm::DiffusionFilterFamily>(255);
             unused.enlargerDiffusion.strength = invalidStrength;
             std::string diagnostic;
+            FjStatus delivery{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
             const auto build = [&](const ParamSnapshot& input) {
-                pending(input);
-                const auto result = admit_pending_render_state(state);
+                JuicerTestSupport::capture(state, input);
+                const auto result = JuicerTestSupport::admit(owner.borrow().assets, state);
+                delivery = result.delivery;
                 diagnostic = result.diagnostic;
-                return route % 2 ? bool(result.printState) : bool(result.directState);
+                return result.kind == FJ_ADMISSION_READY && bool(result.state);
             };
             const bool success = build(unused);
             if (route % 2)
                 require(!success && diagnostic == "ResourceDescriptorMismatch phase=6A component=enlarger_diffusion field=family", "print domain validates enlarger family before finite controls");
             else {
-                const auto direct = admit_pending_render_state(state);
+                const auto direct = JuicerTestSupport::admit(owner.borrow().assets, state);
                 const auto directView = JuicerTestSupport::published_view(direct);
                 require(success && directView.optics.hash == held.optics.hash && hash_params(unused) != hash_params(baseline), "direct ignores enlarger policy while native authored snapshot still changes");
             }
@@ -543,14 +554,13 @@ namespace OpticsTest {
             status(fj_test_prepared_optics_resolved_hash_fault());
             const std::string bareInputDiagnostic = "UnsupportedMode phase=3B field=input_color_space";
             require(!build(badInput) &&
-                        diagnostic == "RenderStateConstructionFailure category=UnsupportedInput route=" +
-                                          std::to_string(route) + " film=" + baseline.filmProfileKey +
-                                          " print=" + baseline.printProfileKey + " operation=" + bareInputDiagnostic,
-                    "actual admission preserves the unsupported-input category envelope and leaves optics fault pending");
+                        delivery.category == FJ_STATUS_UNSUPPORTED_INPUT && delivery.api == FJ_API_NONE &&
+                        delivery.native_code == 0 && diagnostic == bareInputDiagnostic,
+                    "actual admission preserves the bare unsupported-input diagnostic and leaves optics fault pending");
             std::array<char, 2048> rawDiagnosticText{};
             FjErrorBuffer rawError{rawDiagnosticText.data(), rawDiagnosticText.size(), 0};
             std::optional<PreparedState> rawProduct;
-            const auto rawStatus = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), badInput, rawProduct, rawError);
+            const auto rawStatus = prepare_state(owner.borrow().assets, badInput, rawProduct, rawError);
             const std::string observedRawDiagnostic(rawDiagnosticText.data(), rawError.length);
             require(rawStatus.category == FJ_STATUS_UNSUPPORTED_INPUT && rawStatus.api == FJ_API_NONE &&
                         rawStatus.native_code == 0 && !rawProduct && observedRawDiagnostic == bareInputDiagnostic,

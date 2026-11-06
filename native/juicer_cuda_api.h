@@ -773,10 +773,13 @@ typedef struct FjPreparedHostData {
  * No function resets a live host-owned CUDA context; no exception may escape.
  * Non-null record pointers denote one live initialized record for this call. */
 
-/* data_directory: module bootstrap -> native Root bootstrap, copied if retained.
- * Host metadata only: no CUDA discovery. Success publishes exactly one owner in
+/* Native metadata only: no resource path, host Assets or CUDA discovery.
+ * Success publishes exactly one owner in
  * out_cuda; failure publishes none. A duplicate active runtime is rejected. */
-FjStatus fj_cuda_create(FjPathView data_directory, FjCuda** out_cuda, FjErrorBuffer* error);
+FjStatus fj_cuda_create(FjCuda** out_cuda, FjErrorBuffer* error);
+
+/* Non-consuming registration/reentry precheck; no drain or lifetime exclusion. */
+FjStatus fj_cuda_check_terminal(FjCuda* cuda, FjErrorBuffer* error);
 
 /* Borrows owner/frame; writes exact discovered identity on success only.
  * Coverage, supported strides/aliases and stream completion are qualified by

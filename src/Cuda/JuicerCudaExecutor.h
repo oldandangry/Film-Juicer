@@ -81,6 +81,7 @@ namespace JuicerCuda {
         Spektrafilm::AutoExposureMethod method);
 
     void execute_prepared(
+        JuicerProcess::Root& root,
         const PreparedExecutionInput& input,
         PendingContextLossRecovery& recovery,
         FjAbortCallback abortCallback = {});

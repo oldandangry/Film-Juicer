@@ -109,6 +109,73 @@ if(UNIX)
     set_property(TARGET JuicerProductionPreparedRenderProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 
+# These existing C11 value/ABI probes need the real native dependency of the
+# production Rust archive. CMake owns their final link; normal builds exclude them.
+set(JUICER_PRODUCTION_C_PROBES)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    enable_language(C)
+    find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Interpreter)
+    if(WIN32)
+        set(probe_preset windows-clang-release)
+    else()
+        set(probe_preset linux-release)
+    endif()
+    set(probe_fixture_directories
+        tests/film/fixtures tests/film/input-fixtures tests/film/reference-fixtures
+        tests/film/dir-fixtures tests/film/grain-fixtures tests/film/effects-fixtures
+        tests/print/balance-fixtures tests/scanner/correction-fixtures
+        tests/scanner/color-fixtures tests/dir/boundary-fixtures
+        tests/film/effects-frame-fixtures tests/grain/frame-fixtures
+        tests/dir/frame-fixtures tests/diffusion/frame-fixtures
+        tests/scatter_halation/frame-fixtures tests/frame/geometry-fixtures
+        tests/scanner/post-effects-fixtures tests/scanner/descriptor-fixtures)
+    set(probe_fixture_inputs)
+    foreach(directory IN LISTS probe_fixture_directories)
+        file(GLOB_RECURSE fixture_inputs CONFIGURE_DEPENDS
+            "${PROJECT_SOURCE_DIR}/${directory}/*.json")
+        list(APPEND probe_fixture_inputs ${fixture_inputs})
+    endforeach()
+    set(probe_expected_header "${CMAKE_BINARY_DIR}/production-probes/production-film-expected.h")
+    add_custom_command(OUTPUT "${probe_expected_header}"
+        COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/ffi/production_contract.py"
+            --preset "${probe_preset}" --artifacts "${CMAKE_BINARY_DIR}/production-probes"
+            --generate-expected-header
+        DEPENDS ${probe_fixture_inputs}
+            tests/ffi/production_contract.py tests/ffi/shared_fixture.py
+            tests/ffi/compact_exposure_fixtures.py tests/ffi/grain_probe_contract.py
+            tests/ffi/effects_frame_probe_contract.py
+        COMMENT "Generating C11 production fixture expectations"
+        VERBATIM)
+    foreach(probe IN ITEMS Film OutputColor)
+        if(probe STREQUAL "Film")
+            set(probe_source tests/ffi/production-film.c.in)
+        else()
+            set(probe_source tests/ffi/production-output-color.c.in)
+        endif()
+        set(probe_target JuicerProduction${probe}Probe)
+        set_source_files_properties(${probe_source} PROPERTIES LANGUAGE C)
+        add_executable(${probe_target} EXCLUDE_FROM_ALL ${probe_source})
+        if(probe STREQUAL "Film")
+            target_sources(${probe_target} PRIVATE "${probe_expected_header}")
+        endif()
+        set_target_properties(${probe_target} PROPERTIES
+            C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+            LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
+        target_include_directories(${probe_target} PRIVATE
+            "${PROJECT_SOURCE_DIR}/tests/ffi" "${CMAKE_BINARY_DIR}/production-probes")
+        target_link_libraries(${probe_target} PRIVATE
+            juicer_core film_juicer_rust juicer_dependencies)
+        # Preserve the probes' original C compilation and active assertions.
+        if(WIN32)
+            target_compile_options(${probe_target} PRIVATE /W4 /WX /Od /Ob0 /UNDEBUG)
+        else()
+            target_compile_options(${probe_target} PRIVATE -Wall -Wextra -Werror -O0 -UNDEBUG)
+            set_property(TARGET ${probe_target} PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+        endif()
+        list(APPEND JUICER_PRODUCTION_C_PROBES ${probe_target})
+    endforeach()
+endif()
+
 include(cmake/JuicerBundle.cmake)
 
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
@@ -117,4 +184,5 @@ if(BUILD_TESTING)
     add_subdirectory(tests EXCLUDE_FROM_ALL)
 endif()
 
-juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe ${JUICER_RUST_TEST_CONSUMERS})
+juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe
+    ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS})

@@ -4347,9 +4347,7 @@ namespace JuicerProcess {
 #endif
     }
 
-    Root::Root(const std::filesystem::path& dataDirectory)
-        : _assets(std::make_unique<JuicerAssets::Library>(dataDirectory)) {
-    }
+    Root::Root() = default;
 
     Root::~Root() = default;
 
@@ -4391,13 +4389,6 @@ namespace JuicerProcess {
             // Release outside the map lock. Re-find the next membership after
             // relocking; no iterator or CUDA destruction crosses that lock.
         }
-    }
-
-    JuicerAssets::Library& Root::assets() {
-        if (!_assets) {
-            throw std::logic_error("terminal CUDA owner has no host assets");
-        }
-        return *_assets;
     }
 
     Root::FramePreparationToken Root::begin_frame_preparation() noexcept {
@@ -5312,14 +5303,6 @@ namespace JuicerProcess {
             JuicerLogging::discard_current_exception();
             return false;
         }
-    }
-
-    FjStatus Root::release_process_host_services(FjErrorBuffer* error) noexcept {
-        return _assets ? _assets->release_cached_payloads(error) : JuicerCuda::write_status({FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, {}, error);
-    }
-
-    std::unique_ptr<JuicerAssets::Library> Root::detach_host_assets() noexcept {
-        return std::move(_assets);
     }
 
     bool Root::stop_frame_preparation() noexcept {

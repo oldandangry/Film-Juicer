@@ -619,7 +619,7 @@ typedef FjStatus (*VisualGrainPrepare)(const FjFilmDevelopmentOwner*, const FjVi
 _Static_assert(_Generic(&fj_legacy_visual_grain_prepare, VisualGrainPrepare: 1, default: 0), "OFF visual-grain C11 signature");
 _Static_assert(sizeof(FjVisualGrainParams) == 120 && _Alignof(FjVisualGrainParams) == 4, "OFF grain params layout");
 _Static_assert(sizeof(FjVisualGrainRecipe) == 344 && _Alignof(FjVisualGrainRecipe) == 8, "OFF grain recipe layout");
-static void grain_fill(void* field, size_t count, uint32_t word) {
+static void grain_fill(size_t count, void* field, uint32_t word) {
     for (size_t i = 0; i < count; ++i)
         memcpy((unsigned char*)field + i * sizeof(word), &word, sizeof(word));
 }
@@ -631,7 +631,7 @@ static int grain_words(const void* field, const uint32_t* expected, size_t count
     }
     return 1;
 }
-static int grain_zero_words(const void* field, size_t count, uint32_t expected) {
+static int grain_has_repeated_word(size_t count, const void* field, uint32_t expected) {
     for (size_t i = 0; i < count; ++i) {
         uint32_t word;
         memcpy(&word, (const unsigned char*)field + i * sizeof(word), sizeof(word));
@@ -668,51 +668,51 @@ static void grain_seed(FjVisualGrainRecipe* out) {
     out->active = out->sublayers_active = 9;
     out->sublayer_count = out->debug_view = 9;
     out->layers_hash = out->hash = 9;
-    grain_fill(&out->particle_area_um2, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->particle_scale_cmy, 3, UINT32_C(0x3f800000));
-    grain_fill(&out->particle_scale_layers, 3, UINT32_C(0x3f800000));
-    grain_fill(&out->particle_density_min_cmy, 3, UINT32_C(0x3f800000));
-    grain_fill(&out->uniformity_cmy, 3, UINT32_C(0x3f800000));
-    grain_fill(&out->correlation_sigma_px, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->dye_cloud_blur_um, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->micro_structure, 2, UINT32_C(0x3f800000));
-    grain_fill(&out->amplitude, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->chroma_mix, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->chroma_shared_weight, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->chroma_independent_weight, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->fine_weight, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->mid_weight, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->coarse_weight, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->size_mix_scale, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->clump_temporal_mix, 1, UINT32_C(0x3f800000));
-    grain_fill(&out->clump_morph_period_sec, 1, UINT32_C(0x3f800000));
+    grain_fill(1, &out->particle_area_um2, UINT32_C(0x3f800000));
+    grain_fill(3, &out->particle_scale_cmy, UINT32_C(0x3f800000));
+    grain_fill(3, &out->particle_scale_layers, UINT32_C(0x3f800000));
+    grain_fill(3, &out->particle_density_min_cmy, UINT32_C(0x3f800000));
+    grain_fill(3, &out->uniformity_cmy, UINT32_C(0x3f800000));
+    grain_fill(1, &out->correlation_sigma_px, UINT32_C(0x3f800000));
+    grain_fill(1, &out->dye_cloud_blur_um, UINT32_C(0x3f800000));
+    grain_fill(2, &out->micro_structure, UINT32_C(0x3f800000));
+    grain_fill(1, &out->amplitude, UINT32_C(0x3f800000));
+    grain_fill(1, &out->chroma_mix, UINT32_C(0x3f800000));
+    grain_fill(1, &out->chroma_shared_weight, UINT32_C(0x3f800000));
+    grain_fill(1, &out->chroma_independent_weight, UINT32_C(0x3f800000));
+    grain_fill(1, &out->fine_weight, UINT32_C(0x3f800000));
+    grain_fill(1, &out->mid_weight, UINT32_C(0x3f800000));
+    grain_fill(1, &out->coarse_weight, UINT32_C(0x3f800000));
+    grain_fill(1, &out->size_mix_scale, UINT32_C(0x3f800000));
+    grain_fill(1, &out->clump_temporal_mix, UINT32_C(0x3f800000));
+    grain_fill(1, &out->clump_morph_period_sec, UINT32_C(0x3f800000));
     for (size_t channel = 0; channel < 3; ++channel) {
         out->axis_finite_cmy[channel] = 9;
-        grain_fill(out->axis_block_prefix_max_cmy[channel], 16, UINT32_C(0x3f800000));
+        grain_fill(16, out->axis_block_prefix_max_cmy[channel], UINT32_C(0x3f800000));
     }
 }
 static int grain_cleared(const FjVisualGrainRecipe* value, uint32_t size_scale) {
     if (value->active || value->sublayers_active || value->sublayer_count || value->debug_view || value->layers_hash || value->hash) return 0;
-    if (!grain_zero_words(&value->particle_area_um2, 1, 0)) return 0;
-    if (!grain_zero_words(&value->particle_scale_cmy, 3, 0)) return 0;
-    if (!grain_zero_words(&value->particle_scale_layers, 3, 0)) return 0;
-    if (!grain_zero_words(&value->particle_density_min_cmy, 3, 0)) return 0;
-    if (!grain_zero_words(&value->uniformity_cmy, 3, 0)) return 0;
-    if (!grain_zero_words(&value->correlation_sigma_px, 1, 0)) return 0;
-    if (!grain_zero_words(&value->dye_cloud_blur_um, 1, 0)) return 0;
-    if (!grain_zero_words(&value->micro_structure, 2, 0)) return 0;
-    if (!grain_zero_words(&value->amplitude, 1, 0)) return 0;
-    if (!grain_zero_words(&value->chroma_mix, 1, 0)) return 0;
-    if (!grain_zero_words(&value->chroma_shared_weight, 1, 0)) return 0;
-    if (!grain_zero_words(&value->chroma_independent_weight, 1, 0)) return 0;
-    if (!grain_zero_words(&value->fine_weight, 1, 0)) return 0;
-    if (!grain_zero_words(&value->mid_weight, 1, 0)) return 0;
-    if (!grain_zero_words(&value->coarse_weight, 1, 0)) return 0;
-    if (!grain_zero_words(&value->size_mix_scale, 1, size_scale)) return 0;
-    if (!grain_zero_words(&value->clump_temporal_mix, 1, 0)) return 0;
-    if (!grain_zero_words(&value->clump_morph_period_sec, 1, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->particle_area_um2, 0)) return 0;
+    if (!grain_has_repeated_word(3, &value->particle_scale_cmy, 0)) return 0;
+    if (!grain_has_repeated_word(3, &value->particle_scale_layers, 0)) return 0;
+    if (!grain_has_repeated_word(3, &value->particle_density_min_cmy, 0)) return 0;
+    if (!grain_has_repeated_word(3, &value->uniformity_cmy, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->correlation_sigma_px, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->dye_cloud_blur_um, 0)) return 0;
+    if (!grain_has_repeated_word(2, &value->micro_structure, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->amplitude, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->chroma_mix, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->chroma_shared_weight, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->chroma_independent_weight, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->fine_weight, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->mid_weight, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->coarse_weight, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->size_mix_scale, size_scale)) return 0;
+    if (!grain_has_repeated_word(1, &value->clump_temporal_mix, 0)) return 0;
+    if (!grain_has_repeated_word(1, &value->clump_morph_period_sec, 0)) return 0;
     for (size_t channel = 0; channel < 3; ++channel)
-        if (value->axis_finite_cmy[channel] || !grain_zero_words(value->axis_block_prefix_max_cmy[channel], 16, 0)) return 0;
+        if (value->axis_finite_cmy[channel] || !grain_has_repeated_word(16, value->axis_block_prefix_max_cmy[channel], 0)) return 0;
     return 1;
 }
 static int grain_active(const FjVisualGrainRecipe* value) {
@@ -804,7 +804,7 @@ static int film_recipes(FjFilmDevelopmentOwner* owner, uint32_t route) {
 }
 typedef FjStatus (*FilmInputPrepare)(const FjFilmProfile*, const FjFilmInputParams*, const FjFilmInputResources*, FjFilmInput*, FjFilmInputFailure*, FjErrorBuffer*);
 _Static_assert(_Generic(&fj_legacy_film_input_prepare, FilmInputPrepare: 1, default: 0), "OFF film-input C11 signature");
-_Static_assert(sizeof(((FjFilmInput*)0)->sensitivity_rgb) == 81 * 3 * sizeof(float), "OFF fixed RGB sensitivity extent");
+_Static_assert(sizeof(((FjFilmInput*)0)->sensitivity_rgb) == sizeof(float) * 81 * 3, "OFF fixed RGB sensitivity extent");
 static int input_zero(const FjFilmInput* value) {
     const float* spans[] = {value->color.rgb_to_xyz, value->color.xyz_adapt, value->xyz_to_linear_srgb, value->nominal_white_xyz, value->projection_white_xyz, &value->manual_exposure_ev, &value->film_format_long_edge_mm, value->uv, value->ir, &value->hanatos_spectral_blur, value->hanatos_window, &value->recipe_mallett_green_scale};
     const size_t counts[] = {9, 9, 9, 3, 3, 1, 1, 3, 3, 1, 4, 1};
@@ -1566,7 +1566,7 @@ static int scanner_correction_values(void) {
         CHECK(trace.outcome == correction_trace[i][0] && trace.hash == (out.active ? out.hash : 0));
         const float trace_scalars[8] = {trace.reference_black_y, trace.reference_white_y, trace.target_black_linear, trace.target_white_linear, trace.xyz_slope, trace.xyz_offset, trace.corrected_midgray, trace.exposure_scale};
         if (trace.outcome == FJ_SCANNER_CORRECTION_TRACE_NONE)
-            CHECK(grain_zero_words(trace_scalars, 8, 0));
+            CHECK(grain_has_repeated_word(8, trace_scalars, 0));
         if (out.active) {
             const float projected[7] = {trace.target_black_linear, trace.target_white_linear, trace.reference_black_y, trace.reference_white_y, trace.xyz_slope, trace.xyz_offset, trace.exposure_scale};
             CHECK(words(projected, correction_words[i], 7) && isfinite(trace.corrected_midgray) && trace.corrected_midgray > 0);
@@ -3323,9 +3323,9 @@ static int prepared_state_values(FjPathView path) {
         CHECK(status(fj_legacy_prepared_state_view(state, &view, &error), FJ_STATUS_SUCCESS) && error.length == 0);
         CHECK(view.route == route && view.polarity == 0 && view.recipe_hash && view.recipe_hash == view.upload_core_hash && view.scanner_hash);
         CHECK(view.dir_recipe.hash && !view.optics.hash && !view.grain.hash && !view.effects.hash);
-        CHECK(view.film_development.log_exposure.count == FILM_N && view.film_development.density_rgb.count == 3 * FILM_N);
+        CHECK(view.film_development.log_exposure.count == FILM_N && view.film_development.density_rgb.count == (size_t)FILM_N * 3);
         CHECK(words(view.film_development.log_exposure.data, film_axis, FILM_N));
-        CHECK(words(view.film_development.density_rgb.data, film_normalized, 3 * FILM_N));
+        CHECK(words(view.film_development.density_rgb.data, film_normalized, (size_t)FILM_N * 3));
         CHECK(view.film_development.density_curves_hash == FILM_NORMALIZED_HASH);
         FjIlluminantsOwner* illuminants = NULL;
         FjInputHullOwner* hull = NULL;
@@ -3357,7 +3357,7 @@ static int prepared_state_values(FjPathView path) {
         CHECK(status(fj_legacy_input_hull_release(hull, &error), FJ_STATUS_SUCCESS));
         CHECK(status(fj_legacy_output_boundary_release(boundary, &error), FJ_STATUS_SUCCESS));
         CHECK(status(fj_legacy_prepared_state_view(state, &view, &error), FJ_STATUS_SUCCESS) && view.recipe_hash == identity);
-        CHECK(words(view.film_development.density_rgb.data, film_normalized, 3 * FILM_N));
+        CHECK(words(view.film_development.density_rgb.data, film_normalized, (size_t)FILM_N * 3));
         FjErrorBuffer malformed = {NULL, 1, 99};
         CHECK(status(fj_legacy_prepared_state_release(state, &malformed), FJ_STATUS_UNSUPPORTED_INPUT));
         state = NULL;
@@ -3371,7 +3371,7 @@ static int prepared_state_values(FjPathView path) {
         state = (FjPreparedState*)(uintptr_t)1;
         CHECK(status(fj_legacy_prepared_state_create(assets, &params, &state, &error), FJ_STATUS_UNSUPPORTED_INPUT) && !state);
         CHECK(status(fj_legacy_assets_destroy(assets, NULL), FJ_STATUS_SUCCESS));
-        printf("PREPARED_STATE_RESULT {\"case\":\"negative-%s\",\"envelope\":[0,0,0],\"axis_count\":%u,\"density_count\":%u,\"cache_holds\":3,\"expiry_and_clearing\":true}\n", route ? "print" : "direct", (unsigned)FILM_N, (unsigned)(3 * FILM_N));
+        printf("PREPARED_STATE_RESULT {\"case\":\"negative-%s\",\"envelope\":[0,0,0],\"axis_count\":%u,\"density_count\":%u,\"cache_holds\":3,\"expiry_and_clearing\":true}\n", route ? "print" : "direct", (unsigned)FILM_N, (unsigned)((size_t)FILM_N * 3));
     }
     return 0;
 }
@@ -3435,8 +3435,8 @@ int main(int argc, char** argv) {
         CHECK(status(fj_legacy_film_development_acquire(profile, route, 1.0f, 1, &owner, NULL), FJ_STATUS_SUCCESS));
         FjFilmDevelopmentView view = {0};
         CHECK(status(fj_legacy_film_development_view(owner, &view, NULL), FJ_STATUS_SUCCESS));
-        CHECK(view.route == route && view.polarity == 0 && view.layers_required == 1 && view.log_exposure.count == FILM_N && view.authored_curves_cmy.count == 3 * FILM_N && view.normalized_curves_cmy.count == 3 * FILM_N);
-        CHECK(words(view.log_exposure.data, film_axis, FILM_N) && words(view.authored_curves_cmy.data, film_authored, 3 * FILM_N) && words(view.normalized_curves_cmy.data, film_normalized, 3 * FILM_N));
+        CHECK(view.route == route && view.polarity == 0 && view.layers_required == 1 && view.log_exposure.count == FILM_N && view.authored_curves_cmy.count == (size_t)FILM_N * 3 && view.normalized_curves_cmy.count == (size_t)FILM_N * 3);
+        CHECK(words(view.log_exposure.data, film_axis, FILM_N) && words(view.authored_curves_cmy.data, film_authored, (size_t)FILM_N * 3) && words(view.normalized_curves_cmy.data, film_normalized, (size_t)FILM_N * 3));
         CHECK(words(view.gamma_rgb, film_gamma, 3) && words(view.minimum_cmy, film_minimum, 3) && words(view.maximum_cmy, film_maximum, 3));
         CHECK(view.normalized_curves_hash == FILM_NORMALIZED_HASH && view.layers_hash == FILM_LAYERS_HASH && view.hash == FILM_HASH);
         CHECK(film_recipes(owner, route) == 0);
@@ -3466,7 +3466,7 @@ int main(int argc, char** argv) {
     CHECK(status(fj_legacy_assets_release_cached_payloads(assets, NULL), FJ_STATUS_SUCCESS));
     FjFilmDevelopmentView retained = {0};
     CHECK(status(fj_legacy_film_development_view(owner, &retained, NULL), FJ_STATUS_SUCCESS));
-    CHECK(words(retained.normalized_curves_cmy.data, film_normalized, 3 * FILM_N) && retained.layers_hash == 0);
+    CHECK(words(retained.normalized_curves_cmy.data, film_normalized, (size_t)FILM_N * 3) && retained.layers_hash == 0);
     for (size_t layer = 0; layer < 3; ++layer)
         for (size_t channel = 0; channel < 3; ++channel)
             CHECK(retained.density_curves_layers[layer][channel].data == NULL && retained.density_curves_layers[layer][channel].count == 0);

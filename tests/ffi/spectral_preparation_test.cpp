@@ -15,7 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Cuda/JuicerCudaExecutor.h"
-#include "RustAssetBridge.h"
+#include "NativePath.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_test_api.h"

@@ -43,7 +43,7 @@ namespace GaussianTest {
         Json rows = Json::array();
         for (const auto& input : cohort.at("cases"))
             rows.push_back(kernel_case(input.at("name"), input.at("radius"), std::bit_cast<float>(input.at("sigma_bits").get<std::uint32_t>())));
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         for (unsigned route = 0; route < 4; ++route) {
             ParamSnapshot p;
@@ -56,7 +56,7 @@ namespace GaussianTest {
             p.dirCouplers.diffusionSizeUm = 20.0f;
             p.dirCouplers.diffusionTailUm = 200.0f;
             p.dirCouplers.diffusionTailWeight = 0.03f;
-            auto product = JuicerTestSupport::prepare_product(p);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, p);
             FjPreparedStateView view{};
             FjErrorBuffer viewError{};
             status(product.view(view, viewError));
