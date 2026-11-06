@@ -36,6 +36,16 @@ namespace IlluminantConstruction {
         if (!condition)
             throw std::runtime_error(diagnostic);
     }
+    void require_poisoned(RenderInstance& state, const std::string& context) {
+        FjCaptureStart capture{};
+        FjErrorBuffer error{nullptr, 0, 0};
+        const auto captureStatus = state.begin_capture(FJ_CAPTURE_CHANGE, capture, error);
+        require(captureStatus.category == FJ_STATUS_INTERNAL_FAILURE && capture.kind == FJ_CAPTURE_START_NONE && capture.capture == 0,
+                context + " rejects future capture on terminal instance");
+        const auto admission = JuicerTestSupport::admit(state);
+        require(admission.delivery.category == FJ_STATUS_INTERNAL_FAILURE && admission.kind == FJ_ADMISSION_POISONED && !admission.state,
+                context + " rejects future admission on terminal instance");
+    }
     template <typename Range>
     Json bits(const Range& values) {
         Json out = Json::array();
@@ -669,10 +679,6 @@ namespace IlluminantConstruction {
             std::ofstream changed(path);
             changed << film;
         }
-        const auto pending = [](InstanceState& state, const ParamSnapshot& p) {
-            std::lock_guard<std::mutex> lock(state.pending.m);
-            state.pending.value = PendingParamsState::Valid{p, hash_params(p)};
-        };
         JuicerTests::GtestCohort admission_fault_cases("construction-operation-faults", 18u);
         std::size_t admission_fault_index = 0;
         for (std::uint32_t operation : {1u, 2u, 3u, 4u, 5u, 6u})
@@ -680,8 +686,8 @@ namespace IlluminantConstruction {
                 auto admission_fault_case = admission_fault_cases.case_event(std::to_string(admission_fault_index++));
                 auto controls = snapshot(operation == 3 ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan);
                 controls.enlIll = 7;
-                InstanceState cold;
-                pending(cold, controls);
+                RenderInstance cold;
+                JuicerTestSupport::capture(cold, controls);
                 status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
                 if (operation == 2 || operation == 3)
                     status(fj_test_illuminant_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
@@ -690,33 +696,45 @@ namespace IlluminantConstruction {
                 if (fault == 3) {
                     bool allocationFailed = false;
                     try {
-                        (void)admit_pending_render_state(cold);
+                        (void)JuicerTestSupport::admit(cold);
                     } catch (const std::bad_alloc&) {
                         allocationFailed = true;
                     }
                     ASSERT_TRUE(allocationFailed) << "cold allocation admitted";
                 } else {
-                    EXPECT_EQ(admit_pending_render_state(cold).status, PendingRenderAdmissionStatus::RebuildFailed);
+                    const auto coldFailure = JuicerTestSupport::admit(cold);
+                    if (fault == 2) {
+                        EXPECT_EQ(coldFailure.delivery.category, FJ_STATUS_INTERNAL_FAILURE);
+                        EXPECT_EQ(coldFailure.kind, FJ_ADMISSION_POISONED);
+                        require_poisoned(cold, "cold illuminant panic");
+                    } else {
+                        EXPECT_EQ(coldFailure.kind, FJ_ADMISSION_PREPARATION_FAILED);
+                    }
                 }
                 if (operation != 2 && operation != 3) {
                     std::uint32_t consumed = 0;
                     status(fj_test_assets_illuminant_operation_consumed(assets.borrow_rust_assets(), &consumed, nullptr), FJ_STATUS_SUCCESS);
                     EXPECT_EQ(consumed, 1u);
                 }
-                EXPECT_FALSE(JuicerAtomic::load_shared_ptr(&cold.activeDirectState));
-                EXPECT_FALSE(JuicerAtomic::load_shared_ptr(&cold.activePrintState));
-                EXPECT_EQ(cold.lastHash.load(), 0u);
-                EXPECT_EQ(cold.buildCounterNext.load(), 0u);
-                const auto coldRecovery = admit_pending_render_state(cold);
-                ASSERT_TRUE(coldRecovery.directState || coldRecovery.printState);
-                InstanceState state;
-                pending(state, controls);
-                const auto old = admit_pending_render_state(state);
-                ASSERT_TRUE(old.directState || old.printState);
-                const auto hash = state.lastHash.load(), counter = state.buildCounterNext.load();
+                EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(cold).build, 0u);
+                RenderInstance coldRetry;
+                if (fault == 2)
+                    JuicerTestSupport::capture(coldRetry, controls);
+                const auto coldRecovery = fault == 2 ? JuicerTestSupport::admit(coldRetry) : JuicerTestSupport::admit(cold);
+                ASSERT_EQ(coldRecovery.kind, FJ_ADMISSION_READY);
+                RenderInstance state;
+                JuicerTestSupport::capture(state, controls);
+                const auto old = JuicerTestSupport::admit(state);
+                ASSERT_EQ(old.kind, FJ_ADMISSION_READY);
+                FjPreparedStateView oldView{};
+                std::array<char, 1024> oldViewText{};
+                FjErrorBuffer oldViewError{oldViewText.data(), oldViewText.size(), 0};
+                ASSERT_EQ(old.state->view(oldView, oldViewError).category, FJ_STATUS_SUCCESS);
+                const auto oldRecipeHash = oldView.recipe_hash;
+                const auto previous = JuicerTestSupport::PublicationObserver::metrics(state);
                 auto changed = controls;
                 changed.cameraExposureCompensationEv = 1.25;
-                pending(state, changed);
+                JuicerTestSupport::capture(state, changed);
                 status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
                 if (operation == 2 || operation == 3)
                     status(fj_test_illuminant_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
@@ -725,20 +743,28 @@ namespace IlluminantConstruction {
                 if (fault == 3) {
                     bool allocationFailed = false;
                     try {
-                        (void)admit_pending_render_state(state);
+                        (void)JuicerTestSupport::admit(state);
                     } catch (const std::bad_alloc&) {
                         allocationFailed = true;
                     }
                     ASSERT_TRUE(allocationFailed) << "allocation failure admitted";
                 } else {
-                    const auto failure = admit_pending_render_state(state);
-                    EXPECT_EQ(failure.status, PendingRenderAdmissionStatus::RebuildFailed);
-                    EXPECT_EQ(failure.directState, nullptr);
+                    const auto failure = JuicerTestSupport::admit(state);
+                    if (fault == 2) {
+                        EXPECT_EQ(failure.delivery.category, FJ_STATUS_INTERNAL_FAILURE);
+                        EXPECT_EQ(failure.kind, FJ_ADMISSION_POISONED);
+                    } else {
+                        EXPECT_EQ(failure.kind, FJ_ADMISSION_PREPARATION_FAILED);
+                    }
+                    EXPECT_FALSE(failure.state);
                 }
-                EXPECT_EQ(JuicerAtomic::load_shared_ptr(&state.activeDirectState), old.directState);
-                EXPECT_EQ(JuicerAtomic::load_shared_ptr(&state.activePrintState), old.printState);
-                EXPECT_EQ(state.lastHash.load(), hash);
-                EXPECT_EQ(state.buildCounterNext.load(), counter);
+                const auto afterFailure = JuicerTestSupport::PublicationObserver::metrics(state);
+                EXPECT_EQ(afterFailure.build, previous.build);
+                EXPECT_EQ(afterFailure.publishedIdentity, previous.publishedIdentity);
+                EXPECT_EQ(afterFailure.backingIdentity, previous.backingIdentity);
+                FjPreparedStateView retainedView{};
+                ASSERT_EQ(old.state->view(retainedView, oldViewError).category, FJ_STATUS_SUCCESS);
+                EXPECT_EQ(retainedView.recipe_hash, oldRecipeHash);
                 EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
                 EXPECT_EQ(fj_test_csv_live_owners(), 0u);
                 if (operation != 2 && operation != 3) {
@@ -746,9 +772,25 @@ namespace IlluminantConstruction {
                     status(fj_test_assets_illuminant_operation_consumed(assets.borrow_rust_assets(), &consumed, nullptr), FJ_STATUS_SUCCESS);
                     EXPECT_EQ(consumed, 1u);
                 }
-                const auto recovered = admit_pending_render_state(state);
-                ASSERT_TRUE(recovered.directState || recovered.printState);
-                EXPECT_TRUE(recovered.directState != old.directState || recovered.printState != old.printState);
+                if (fault == 2) {
+                    require_poisoned(state, "current illuminant panic");
+                    RenderInstance retry;
+                    JuicerTestSupport::capture(retry, changed);
+                    const auto recovered = JuicerTestSupport::admit(retry);
+                    ASSERT_EQ(recovered.kind, FJ_ADMISSION_READY);
+                    EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(retry).build, 1u);
+                } else {
+                    JuicerTestSupport::capture(state, controls);
+                    const auto reused = JuicerTestSupport::admit(state);
+                    ASSERT_EQ(reused.kind, FJ_ADMISSION_READY);
+                    ASSERT_TRUE(reused.state);
+                    EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*reused.state), JuicerTestSupport::PublicationObserver::backing(*old.state));
+                    EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).build, previous.build);
+                    JuicerTestSupport::capture(state, changed);
+                    const auto recovered = JuicerTestSupport::admit(state);
+                    ASSERT_EQ(recovered.kind, FJ_ADMISSION_READY);
+                    EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).build, previous.build + 1);
+                }
 
                 admission_fault_case.passed();
             }
@@ -808,67 +850,88 @@ namespace IlluminantConstruction {
 
         // Actual complete-state publication for EQUAL faults is independent
         // from the raw factory diagnostics above.
-        InstanceState equalPublisher;
+        auto equalPublisher = std::make_unique<RenderInstance>();
         auto retainedControls = controls;
-        pending(equalPublisher, retainedControls);
-        auto retainedPublication = admit_pending_render_state(equalPublisher);
-        ASSERT_TRUE(retainedPublication.printState);
-        ASSERT_EQ(JuicerAtomic::load_shared_ptr(&equalPublisher.activePrintState), retainedPublication.printState);
-        const auto retainedCounterStart = equalPublisher.buildCounterNext.load();
+        JuicerTestSupport::capture(*equalPublisher, retainedControls);
+        auto retainedPublication = JuicerTestSupport::admit(*equalPublisher);
+        ASSERT_EQ(retainedPublication.kind, FJ_ADMISSION_READY);
+        ASSERT_TRUE(retainedPublication.state);
+        const auto retainedCounterStart = JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build;
         JuicerTests::GtestCohort preflash_fault_cases("preflash-faults", 4u);
         std::size_t preflash_fault_index = 0;
         for (std::uint32_t fault : {1u, 2u, 3u, 4u}) {
             auto preflash_fault_case = preflash_fault_cases.case_event(std::to_string(preflash_fault_index++));
             auto changed = retainedControls;
             changed.cameraExposureCompensationEv += static_cast<double>(fault) * 0.01;
-            pending(equalPublisher, changed);
-            const auto previousPrint = retainedPublication.printState;
-            const auto previousDirect = JuicerAtomic::load_shared_ptr(&equalPublisher.activeDirectState);
-            const auto previousHash = equalPublisher.lastHash.load();
-            const auto previousCounter = equalPublisher.buildCounterNext.load();
+            JuicerTestSupport::capture(*equalPublisher, changed);
+            const auto previousMetrics = JuicerTestSupport::PublicationObserver::metrics(*equalPublisher);
+            const auto previousCounter = previousMetrics.build;
+            const auto priorPublicationHold = retainedPublication;
             const auto previousValues = complete_result(JuicerTestSupport::published_view(retainedPublication), retainedControls);
             status(fj_test_illuminant_arm_fault(3, 1, fault), FJ_STATUS_SUCCESS);
 
             bool failed = false;
-            PendingRenderAdmissionResult failure;
+            JuicerTestSupport::PublicationAdmission failure;
             if (fault == 3) {
                 try {
-                    (void)admit_pending_render_state(equalPublisher);
+                    (void)JuicerTestSupport::admit(*equalPublisher);
                     FAIL() << "actual publisher allocation fault admitted";
                 } catch (const std::bad_alloc&) {
                     failed = true;
                 }
             } else {
-                failure = admit_pending_render_state(equalPublisher);
-                failed = failure.status == PendingRenderAdmissionStatus::RebuildFailed;
+                failure = JuicerTestSupport::admit(*equalPublisher);
+                if (fault == 2)
+                    failed = failure.delivery.category == FJ_STATUS_INTERNAL_FAILURE && failure.kind == FJ_ADMISSION_POISONED;
+                else
+                    failed = failure.kind == FJ_ADMISSION_PREPARATION_FAILED;
             }
             ASSERT_TRUE(failed) << "actual equal-energy publisher fault=" << fault;
-            EXPECT_EQ(equalPublisher.lastHash.load(), previousHash);
-            EXPECT_EQ(equalPublisher.buildCounterNext.load(), previousCounter);
-            EXPECT_EQ(JuicerAtomic::load_shared_ptr(&equalPublisher.activeDirectState), previousDirect);
-            if (fault == 4) {
-                EXPECT_EQ(JuicerAtomic::load_shared_ptr(&equalPublisher.activePrintState), nullptr);
-                EXPECT_FALSE(failure.printState);
-            } else {
-                EXPECT_EQ(JuicerAtomic::load_shared_ptr(&equalPublisher.activePrintState), previousPrint);
-            }
+            const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(*equalPublisher);
+            EXPECT_EQ(failedMetrics.build, previousCounter);
+            EXPECT_EQ(failedMetrics.publishedIdentity, previousMetrics.publishedIdentity);
+            EXPECT_EQ(failedMetrics.backingIdentity, previousMetrics.backingIdentity);
+            EXPECT_FALSE(failure.state);
             EXPECT_EQ(complete_result(JuicerTestSupport::published_view(retainedPublication), retainedControls), previousValues);
+            EXPECT_EQ(complete_result(JuicerTestSupport::published_view(priorPublicationHold), retainedControls), previousValues);
 
-            retainedPublication = admit_pending_render_state(equalPublisher);
-            ASSERT_TRUE(retainedPublication.printState) << "equal-energy retry fault=" << fault;
-            EXPECT_NE(retainedPublication.printState, previousPrint);
-            EXPECT_EQ(equalPublisher.lastHash.load(), hash_params(changed));
-            EXPECT_EQ(equalPublisher.buildCounterNext.load(), previousCounter + 1);
+            std::uint64_t recoveredBuild = 0;
+            if (fault == 2) {
+                require_poisoned(*equalPublisher, "equal-energy panic");
+                equalPublisher = std::make_unique<RenderInstance>();
+                JuicerTestSupport::capture(*equalPublisher, retainedControls);
+                retainedPublication = JuicerTestSupport::admit(*equalPublisher);
+                ASSERT_EQ(retainedPublication.kind, FJ_ADMISSION_READY) << "fresh publisher rebuilds retained A after terminal panic";
+                EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build, 1u);
+                JuicerTestSupport::capture(*equalPublisher, changed);
+                retainedPublication = JuicerTestSupport::admit(*equalPublisher);
+                ASSERT_EQ(retainedPublication.kind, FJ_ADMISSION_READY) << "fresh publisher retries equal-energy fault";
+                recoveredBuild = 2;
+            } else {
+                JuicerTestSupport::capture(*equalPublisher, retainedControls);
+                const auto reused = JuicerTestSupport::admit(*equalPublisher);
+                ASSERT_EQ(reused.kind, FJ_ADMISSION_READY) << "failed attempt retained previous state fault=" << fault;
+                ASSERT_TRUE(reused.state);
+                EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*reused.state), JuicerTestSupport::PublicationObserver::backing(*retainedPublication.state));
+                EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build, previousCounter);
+                JuicerTestSupport::capture(*equalPublisher, changed);
+                retainedPublication = JuicerTestSupport::admit(*equalPublisher);
+                ASSERT_EQ(retainedPublication.kind, FJ_ADMISSION_READY) << "equal-energy retry fault=" << fault;
+                recoveredBuild = previousCounter + 1;
+            }
+            EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).inputIdentity, hash_params(changed));
+            EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build, recoveredBuild);
             const auto retryValues = complete_result(JuicerTestSupport::published_view(retainedPublication), changed);
             EXPECT_NE(retryValues, previousValues);
-            const auto warm = admit_pending_render_state(equalPublisher);
-            EXPECT_EQ(warm.printState, retainedPublication.printState);
-            EXPECT_EQ(equalPublisher.buildCounterNext.load(), previousCounter + 1);
+            const auto warm = JuicerTestSupport::admit(*equalPublisher);
+            ASSERT_TRUE(warm.state);
+            EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*warm.state), JuicerTestSupport::PublicationObserver::backing(*retainedPublication.state));
+            EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build, recoveredBuild);
             retainedControls = changed;
 
             preflash_fault_case.passed();
         }
-        EXPECT_EQ(equalPublisher.buildCounterNext.load(), retainedCounterStart + 4);
+        EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build, retainedCounterStart + 3);
     }
 
 } // namespace IlluminantConstruction

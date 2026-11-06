@@ -436,27 +436,28 @@ namespace PrintBalanceTest {
                 row_event.passed();
             }
         p = PrintPreflashTest::controls();
-        InstanceState state;
-        const auto pending = [&](const ParamSnapshot& params) {
-            std::lock_guard<std::mutex> lock(state.pending.m);
-            state.pending.value = PendingParamsState::Valid{params, hash_params(params)};
-        };
-        pending(p);
-        const auto original = admit_pending_render_state(state);
-        require(bool(original.printState), "balance actual publication baseline");
+        RenderInstance state;
+        JuicerTestSupport::capture(state, p);
+        const auto original = JuicerTestSupport::admit(state);
+        require(original.kind == FJ_ADMISSION_READY && original.state, "balance actual publication baseline");
         const auto originalView = JuicerTestSupport::published_view(original);
         const auto originalBalance = project(originalView.print_balance);
-        const auto counter = state.buildCounterNext.load();
+        const auto originalMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+        const auto counter = originalMetrics.build;
         status(fj_test_film_recipe_fault(12, 1));
-        const auto reused = admit_pending_render_state(state);
-        require(reused.printState == original.printState && state.buildCounterNext.load() == counter, "identical current snapshot reuses complete publication without balance construction");
+        const auto reused = JuicerTestSupport::admit(state);
+        require(reused.kind == FJ_ADMISSION_READY && reused.state && reused.state->build() == counter &&
+                    JuicerTestSupport::PublicationObserver::backing(*reused.state) == originalMetrics.backingIdentity &&
+                    JuicerTestSupport::PublicationObserver::metrics(state).build == counter,
+                "identical current snapshot reuses complete publication without balance construction");
         p.cameraExposureCompensationEv = .25;
-        pending(p);
-        const auto published = admit_pending_render_state(state);
-        require(published.status == PendingRenderAdmissionStatus::AdmittedPrint && published.printState &&
-                    published.printState != original.printState &&
-                    JuicerAtomic::load_shared_ptr(&state.activePrintState) == published.printState &&
-                    state.lastHash.load() == hash_params(p) && state.buildCounterNext.load() == counter + 1,
+        JuicerTestSupport::capture(state, p);
+        const auto published = JuicerTestSupport::admit(state);
+        const auto publishedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+        require(published.kind == FJ_ADMISSION_READY && published.state &&
+                    JuicerTestSupport::PublicationObserver::backing(*published.state) != originalMetrics.backingIdentity &&
+                    publishedMetrics.publishedIdentity == hash_params(p) && publishedMetrics.build == counter + 1 &&
+                    published.state->build() == counter + 1,
                 "complete Rust balance construction publishes without visiting the raw facade fault");
         require(project(JuicerTestSupport::published_view(original).print_balance) == originalBalance,
                 "already admitted immutable balance remains readable through complete replacement");

@@ -287,7 +287,7 @@ pub(crate) enum Failure {
     Internal(&'static str),
 }
 impl Failure {
-    fn category(&self) -> u32 {
+    pub(crate) fn category(&self) -> u32 {
         match self {
             Self::Film(error) => match error {
                 film_juicer_core::film::Error::InvalidGamma

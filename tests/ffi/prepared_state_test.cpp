@@ -40,6 +40,8 @@
 #include "gtest_cases.h"
 
 extern "C" const std::size_t* fj_test_prepared_state_c_facts(std::size_t*);
+extern "C" const std::size_t* fj_test_instance_c_facts(std::size_t*);
+extern "C" std::uint32_t fj_test_instance_c_witness(FjAssets*, const FjPreparationParams*, std::uint32_t);
 extern "C" const std::size_t* fj_test_prepared_call_c_facts(std::size_t*);
 extern "C" int fj_test_host_preparation_c_call();
 extern "C" const std::size_t* fj_test_prepared_call_abi_facts(std::size_t*);
@@ -59,6 +61,27 @@ extern "C" FjStatus fj_test_prepared_boundary_release_c(FjOutputBoundaryOwner*, 
 static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_create), decltype(&fj_test_prepared_state_create_c)>);
 static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_view), decltype(&fj_test_prepared_state_view_c)>);
 static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_release), decltype(&fj_test_prepared_state_release_c)>);
+
+using FjInstanceCreateFn = FjStatus (*)(FjInstance**, FjErrorBuffer*);
+using FjBeginCaptureFn = FjStatus (*)(FjInstance*, std::uint32_t, FjCaptureStart*, FjErrorBuffer*);
+using FjCaptureCurrentFn = FjStatus (*)(const FjInstance*, std::uint64_t, std::uint32_t*, FjErrorBuffer*);
+using FjBeginHostWriteFn = FjStatus (*)(FjInstance*, std::uint64_t, FjHostWrite**, std::uint32_t*, FjErrorBuffer*);
+using FjHostWriteFinishFn = FjStatus (*)(FjHostWrite*, std::uint32_t, FjStringView, std::uint32_t*, FjErrorBuffer*);
+using FjBeginSnapshotFn = FjStatus (*)(FjInstance*, std::uint64_t, FjSnapshotStart*, FjErrorBuffer*);
+using FjInstallFn = FjStatus (*)(FjInstance*, std::uint64_t, std::uint64_t, const FjPreparationParams*, std::uint64_t, std::uint32_t*, FjErrorBuffer*);
+using FjInvalidateFn = FjStatus (*)(FjInstance*, std::uint64_t, std::uint32_t, FjStringView, std::uint32_t*, FjErrorBuffer*);
+using FjInstanceAdmitFn = FjStatus (*)(FjInstance*, const FjAssets*, FjAdmission*, FjErrorBuffer*);
+using FjInstanceDestroyFn = FjStatus (*)(FjInstance*, FjErrorBuffer*);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_create), FjInstanceCreateFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_begin_capture), FjBeginCaptureFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_capture_is_current), FjCaptureCurrentFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_begin_host_write), FjBeginHostWriteFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_host_write_finish), FjHostWriteFinishFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_begin_snapshot), FjBeginSnapshotFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_install), FjInstallFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_invalidate), FjInvalidateFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_admit), FjInstanceAdmitFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_destroy), FjInstanceDestroyFn>);
 
 using FjCallPrecheckFn = FjStatus (*)(void*, FjErrorBuffer*);
 using FjCallAdmitFn = FjStatus (*)(void*, FjErrorBuffer*);
@@ -1295,7 +1318,7 @@ namespace {
             const auto count = capacity == 0 ? 0 : std::min(expected.size(), capacity - 1);
             EXPECT_EQ(error.length, count);
             if (capacity != 0) {
-                EXPECT_EQ(std::string(bytes.data(), count), expected.substr(0, count));
+                EXPECT_EQ(std::string(bytes.data(), count), std::string(expected.substr(0, count)));
                 EXPECT_EQ(bytes[count], '\0');
             }
             caseEvent.passed();
@@ -1338,6 +1361,131 @@ namespace {
         EXPECT_EQ(first.scanner_tables.dyes_cmy[2].data, second.scanner_tables.dyes_cmy[2].data);
         EXPECT_EQ(fj_test_prepared_state_release_c(hold.release(), nullptr).category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(fj_test_prepared_state_release_c(nullptr, nullptr).category, FJ_STATUS_SUCCESS);
+    }
+
+    TEST(PreparedStateAbi, InstanceBoundaryLayoutAndC11Signatures) {
+        static_assert(std::is_same_v<decltype(FjCaptureStart::capture), std::uint64_t>);
+        static_assert(std::is_same_v<decltype(FjCaptureStart::kind), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjSnapshotStart::write_revision), std::uint64_t>);
+        static_assert(std::is_same_v<decltype(FjSnapshotStart::kind), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjAdmission::state), FjPreparedState*>);
+        static_assert(std::is_same_v<decltype(FjAdmission::input_identity), std::uint64_t>);
+        static_assert(std::is_same_v<decltype(FjAdmission::build), std::uint64_t>);
+        static_assert(std::is_same_v<decltype(FjAdmission::kind), std::uint32_t>);
+        static_assert(std::is_same_v<decltype(FjAdmission::route), std::uint32_t>);
+        static_assert(FJ_CAPTURE_INITIAL == 0 && FJ_CAPTURE_CHANGE == 1 && FJ_CAPTURE_REFRESH == 2);
+        static_assert(FJ_CAPTURE_START_NONE == 0 && FJ_CAPTURE_STARTED == 1 && FJ_CAPTURE_NOT_STARTED == 2);
+        static_assert(FJ_HOST_WRITE_NONE == 0 && FJ_HOST_WRITE_STARTED == 1 && FJ_HOST_WRITE_IGNORED == 2 && FJ_HOST_WRITE_SUCCEEDED == 0);
+        static_assert(FJ_SNAPSHOT_NONE == 0 && FJ_SNAPSHOT_READY == 1 && FJ_SNAPSHOT_DEFERRED == 2 && FJ_SNAPSHOT_IGNORED == 3);
+        static_assert(FJ_UPDATE_NONE == 0 && FJ_UPDATE_APPLIED == 1 && FJ_UPDATE_IGNORED == 2 && FJ_UPDATE_DEFERRED == 3);
+        static_assert(FJ_CAPTURE_INVALID_CONTROLS == 1 && FJ_CAPTURE_HOST_FAILURE == 2 && FJ_CAPTURE_ALLOCATION_FAILURE == 3);
+        static_assert(FJ_ADMISSION_NONE == 0 && FJ_ADMISSION_READY == 1 && FJ_ADMISSION_NEEDS_CAPTURE == 2 && FJ_ADMISSION_CAPTURING == 3 && FJ_ADMISSION_CAPTURE_FAILED == 4 && FJ_ADMISSION_PREPARATION_FAILED == 5 && FJ_ADMISSION_POISONED == 6 && FJ_ADMISSION_NEEDS_REFRESH == 7);
+        static_assert(sizeof(FjCaptureStart) == 16 && alignof(FjCaptureStart) == 8);
+        static_assert(offsetof(FjCaptureStart, capture) == 0 && offsetof(FjCaptureStart, kind) == 8);
+        static_assert(sizeof(FjSnapshotStart) == 16 && alignof(FjSnapshotStart) == 8);
+        static_assert(offsetof(FjSnapshotStart, write_revision) == 0 && offsetof(FjSnapshotStart, kind) == 8);
+        static_assert(sizeof(FjAdmission) == 32 && alignof(FjAdmission) == 8);
+        static_assert(offsetof(FjAdmission, state) == 0 && offsetof(FjAdmission, input_identity) == 8 &&
+                      offsetof(FjAdmission, build) == 16 && offsetof(FjAdmission, kind) == 24 &&
+                      offsetof(FjAdmission, route) == 28);
+        const std::size_t cppFacts[] = {
+            sizeof(FjCaptureStart), alignof(FjCaptureStart), offsetof(FjCaptureStart, capture), offsetof(FjCaptureStart, kind), sizeof(FjSnapshotStart), alignof(FjSnapshotStart), offsetof(FjSnapshotStart, write_revision), offsetof(FjSnapshotStart, kind), sizeof(FjAdmission), alignof(FjAdmission), offsetof(FjAdmission, state), offsetof(FjAdmission, input_identity), offsetof(FjAdmission, build), offsetof(FjAdmission, kind), offsetof(FjAdmission, route), FJ_CAPTURE_INITIAL, FJ_CAPTURE_CHANGE, FJ_CAPTURE_REFRESH, FJ_CAPTURE_START_NONE, FJ_CAPTURE_STARTED, FJ_CAPTURE_NOT_STARTED, FJ_HOST_WRITE_NONE, FJ_HOST_WRITE_STARTED, FJ_HOST_WRITE_IGNORED, FJ_HOST_WRITE_SUCCEEDED, FJ_SNAPSHOT_NONE, FJ_SNAPSHOT_READY, FJ_SNAPSHOT_DEFERRED, FJ_SNAPSHOT_IGNORED, FJ_UPDATE_NONE, FJ_UPDATE_APPLIED, FJ_UPDATE_IGNORED, FJ_UPDATE_DEFERRED, FJ_CAPTURE_INVALID_CONTROLS, FJ_CAPTURE_HOST_FAILURE, FJ_CAPTURE_ALLOCATION_FAILURE, FJ_ADMISSION_NONE, FJ_ADMISSION_READY, FJ_ADMISSION_NEEDS_CAPTURE, FJ_ADMISSION_CAPTURING, FJ_ADMISSION_CAPTURE_FAILED, FJ_ADMISSION_PREPARATION_FAILED, FJ_ADMISSION_POISONED, FJ_ADMISSION_NEEDS_REFRESH};
+        std::size_t cCount = 0;
+        const auto* cFacts = fj_test_instance_c_facts(&cCount);
+        ASSERT_EQ(cCount, std::size(cppFacts));
+        for (std::size_t i = 0; i < cCount; ++i) {
+            SCOPED_TRACE(i);
+            EXPECT_EQ(cFacts[i], cppFacts[i]);
+        }
+        std::size_t rustCount = 0;
+        const auto* rustFacts = fj_test_instance_abi_facts(&rustCount);
+        ASSERT_EQ(rustCount, 15u);
+        ASSERT_GE(cCount, rustCount);
+        for (std::size_t i = 0; i < rustCount; ++i) {
+            SCOPED_TRACE(i);
+            EXPECT_EQ(rustFacts[i], cppFacts[i]);
+        }
+    }
+
+    TEST(PreparedStateAbi, InstanceCaptureWriteAdmissionC11Protocol) {
+        constexpr std::array<std::string_view, 10> ids{
+            "capture-write-refresh-ready-retain", "current-failure-applied", "obsolete-failure-ignored", "malformed-finish-consumed", "c-output-clearing-invalid-ticket-revision", "decode-failure-current-and-superseded", "capture-failure-status-pairing", "preparation-failure-retry", "panic-poisons-instance", "malformed-diagnostic-finish-consumed"};
+        std::vector<std::string> cohortIds;
+        cohortIds.reserve(ids.size());
+        for (auto id : ids)
+            cohortIds.emplace_back(id);
+        JuicerTests::GtestCohort cohort("instance-c11-protocol", cohortIds);
+        ParamSnapshot params;
+        params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
+        params.grainControls.active = false;
+        const FjPreparationParams wire = preparation_params(params);
+        constexpr std::array<std::uint32_t, 10> scenarios{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+        for (std::size_t i = 0; i < scenarios.size(); ++i) {
+            auto caseEvent = cohort.case_event(ids[i]);
+            SCOPED_TRACE(ids[i]);
+            ASSERT_EQ(fj_test_instance_c_witness(assets(), &wire, scenarios[i]), 0u);
+            caseEvent.passed();
+        }
+    }
+
+    TEST(PreparedStateAbi, InstanceDiagnosticsAreBoundedAndDestroyConsumesMalformedRecord) {
+        constexpr std::string_view expected = "instance boundary panic";
+        constexpr std::array<std::size_t, 5> capacities{0, 1, 8, expected.size(), expected.size() + 1};
+        std::vector<std::string> ids;
+        ids.reserve(capacities.size() + 1);
+        for (const auto capacity : capacities)
+            ids.push_back("panic/capacity/" + std::to_string(capacity));
+        ids.push_back("destroy/malformed-diagnostic");
+        JuicerTests::GtestCohort cohort("instance-diagnostic-capacity", ids);
+
+        ParamSnapshot snapshot;
+        snapshot.grainControls.active = false;
+        const FjPreparationParams wire = preparation_params(snapshot);
+        for (const auto capacity : capacities) {
+            auto caseEvent = cohort.case_event("panic/capacity/" + std::to_string(capacity));
+            FjInstance* instance = nullptr;
+            ASSERT_EQ(fj_legacy_instance_create(&instance, nullptr).category, FJ_STATUS_SUCCESS);
+            ASSERT_NE(instance, nullptr);
+            FjCaptureStart capture{};
+            ASSERT_EQ(fj_legacy_instance_begin_capture(instance, FJ_CAPTURE_INITIAL, &capture, nullptr).category, FJ_STATUS_SUCCESS);
+            ASSERT_EQ(capture.kind, FJ_CAPTURE_STARTED);
+            FjSnapshotStart read{};
+            ASSERT_EQ(fj_legacy_instance_begin_snapshot(instance, capture.capture, &read, nullptr).category, FJ_STATUS_SUCCESS);
+            ASSERT_EQ(read.kind, FJ_SNAPSHOT_READY);
+            std::uint32_t update = FJ_UPDATE_NONE;
+            ASSERT_EQ(fj_legacy_instance_install(instance, capture.capture, read.write_revision, &wire, 11, &update, nullptr).category, FJ_STATUS_SUCCESS);
+            ASSERT_EQ(update, FJ_UPDATE_APPLIED);
+
+            std::array<char, 32> bytes{};
+            bytes.fill('#');
+            FjErrorBuffer error{capacity == 0 ? reinterpret_cast<char*>(std::uintptr_t{1}) : bytes.data(), capacity, 99};
+            FjAdmission admission{};
+            ASSERT_EQ(fj_test_spectral_arm_fault(3, 1, 2).category, FJ_STATUS_SUCCESS);
+            const auto status = fj_legacy_instance_admit(instance, assets(), &admission, &error);
+            EXPECT_EQ(status.category, FJ_STATUS_INTERNAL_FAILURE);
+            EXPECT_EQ(admission.kind, FJ_ADMISSION_POISONED);
+            EXPECT_EQ(admission.state, nullptr);
+            const auto count = capacity == 0 ? 0 : std::min(expected.size(), capacity - 1);
+            EXPECT_EQ(error.length, count);
+            if (capacity != 0) {
+                EXPECT_EQ(std::string(bytes.data(), count), expected.substr(0, count));
+                EXPECT_EQ(bytes[count], '\0');
+            }
+
+            // Destroy consumes the instance even if its diagnostic record is malformed.
+            FjErrorBuffer malformed{nullptr, 1, 99};
+            EXPECT_EQ(fj_legacy_instance_destroy(instance, &malformed).category, FJ_STATUS_UNSUPPORTED_INPUT);
+            EXPECT_EQ(malformed.length, 0u);
+            caseEvent.passed();
+        }
+
+        auto destroyEvent = cohort.case_event("destroy/malformed-diagnostic");
+        FjInstance* instance = nullptr;
+        ASSERT_EQ(fj_legacy_instance_create(&instance, nullptr).category, FJ_STATUS_SUCCESS);
+        FjErrorBuffer malformed{nullptr, 1, 99};
+        EXPECT_EQ(fj_legacy_instance_destroy(instance, &malformed).category, FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(malformed.length, 0u);
+        destroyEvent.passed();
     }
 
     TEST(PreparedStateAbi, CallScopeLayoutAndRustC11Witnesses) {

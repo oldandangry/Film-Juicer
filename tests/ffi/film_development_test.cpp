@@ -6,7 +6,6 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
-#include <mutex>
 #include <optional>
 #include <new>
 #include <string>
@@ -279,18 +278,16 @@ namespace {
                 controls.outputGamutCompressionEnabled = 0;
                 controls.grainControls.active = true;
                 controls.grainControls.sublayersActive = layers;
-                InstanceState state;
-                const auto pending = [&state](const ParamSnapshot& snapshot) {
-                    std::lock_guard<std::mutex> lock(state.pending.m);
-                    state.pending.value = PendingParamsState::Valid{snapshot, hash_params(snapshot)};
-                };
-                pending(controls);
-                auto publication = admit_pending_render_state(state);
-                require(route % 2 ? bool(publication.printState) : bool(publication.directState), "failure baseline complete admission");
-                require(fj_test_prepared_live_states() == 1 && fj_test_development_curve_count(0) == 1,
+                RenderInstance instance;
+                JuicerTestSupport::capture(instance, controls);
+                auto publication = JuicerTestSupport::admit(instance);
+                require(publication.kind == FJ_ADMISSION_READY && publication.state, "failure baseline complete admission");
+                require(fj_test_development_curve_count(0) == 1,
                         "one complete state owns the baseline normalized curves");
-                std::uint64_t counter = state.buildCounterNext.load();
-                std::uint64_t identity = state.lastHash.load();
+                auto metrics = JuicerTestSupport::PublicationObserver::metrics(instance);
+                std::uint64_t counter = metrics.build;
+                std::uint64_t identity = metrics.publishedIdentity;
+                std::size_t backingIdentity = metrics.backingIdentity;
                 FjPreparedStateView oldView = JuicerTestSupport::published_view(publication);
                 Json oldCurveWords = words(oldView.film_development.density_rgb.data,
                                            oldView.film_development.density_rgb.count);
@@ -305,6 +302,7 @@ namespace {
                     return result;
                 };
                 Json oldLayerWords = layer_words(oldView);
+                ParamSnapshot committedControls = controls;
                 unsigned attempt = 0;
                 for (const unsigned fault : {1u, 2u, 3u, 4u}) {
                     if (fault == 4 && !layers)
@@ -313,9 +311,7 @@ namespace {
                     auto changed = controls;
                     changed.filmGammaFactor = 1.1f + 0.1f * static_cast<float>(attempt++);
                     const std::uint64_t changedHash = hash_params(changed);
-                    pending(changed);
-                    auto previousDirect = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
-                    auto previousPrint = JuicerAtomic::load_shared_ptr(&state.activePrintState);
+                    JuicerTestSupport::capture(instance, changed);
                     const std::string_view expectedDiagnostic = fault == 1
                                                                     ? "film development normalized table reservation failed"
                                                                 : fault == 4
@@ -333,17 +329,17 @@ namespace {
                     const auto dropsBefore = fj_test_development_curve_count(2);
                     status(fj_test_development_construction_fault(fault));
                     bool allocationThrown = false;
-                    PendingRenderAdmissionResult rejected;
+                    JuicerTestSupport::PublicationAdmission rejected;
                     try {
-                        rejected = admit_pending_render_state(state);
+                        rejected = JuicerTestSupport::admit(instance);
                     } catch (const std::bad_alloc&) {
                         allocationThrown = true;
                     }
                     if (fault == 1) {
                         require(allocationThrown, "core development reservation maps to bad_alloc at actual admission");
                     } else {
-                        require(!allocationThrown && rejected.status == PendingRenderAdmissionStatus::RebuildFailed &&
-                                    !rejected.directState && !rejected.printState && rejected.diagnostic == expectedDiagnostic,
+                        require(!allocationThrown && rejected.delivery.category == FJ_STATUS_PREPARATION_FAILURE &&
+                                    rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state && rejected.diagnostic == expectedDiagnostic,
                                 "core development identity/layer failure keeps its preparation diagnostic");
                     }
                     const std::size_t temporaryAllocations = fault == 1 ? 0 : 1;
@@ -352,18 +348,10 @@ namespace {
                                 fj_test_development_curve_count(2) == dropsBefore + temporaryAllocations,
                             "failed reservation allocates nothing; later failures reclaim the actual temporary normalized curves");
                     ++failureRows;
-                    const bool retainPublication = fault == 1;
-                    auto expectedDirect = route % 2 == 0 && !retainPublication
-                                              ? std::shared_ptr<const DirectRenderState>{}
-                                              : previousDirect;
-                    auto expectedPrint = route % 2 != 0 && !retainPublication
-                                             ? std::shared_ptr<const PrintRenderState>{}
-                                             : previousPrint;
-                    require(state.buildCounterNext.load() == counter && state.lastHash.load() == identity &&
-                                state.lastHash.load() != changedHash &&
-                                JuicerAtomic::load_shared_ptr(&state.activeDirectState) == expectedDirect &&
-                                JuicerAtomic::load_shared_ptr(&state.activePrintState) == expectedPrint,
-                            "development failure preserves counters/hash and applies its route-slot policy");
+                    metrics = JuicerTestSupport::PublicationObserver::metrics(instance);
+                    require(metrics.build == counter && metrics.publishedIdentity == identity &&
+                                metrics.inputIdentity == changedHash && metrics.backingIdentity == backingIdentity,
+                            "development failure preserves the old publication metadata while current controls remain changed");
                     const auto heldAfterFailure = JuicerTestSupport::published_view(publication);
                     require(heldAfterFailure.recipe_hash == oldView.recipe_hash &&
                                 heldAfterFailure.film_development.hash == oldView.film_development.hash &&
@@ -373,11 +361,20 @@ namespace {
                                       heldAfterFailure.film_development.density_rgb.count) == oldCurveWords &&
                                 layer_words(heldAfterFailure) == oldLayerWords,
                             "failed construction leaves the admitted state and borrowed curves readable");
-                    require(fj_test_prepared_live_states() == 1 && fj_test_film_development_live_owners() == 0,
-                            "failed complete construction publishes no opaque state and creates no legacy foreign owner");
+                    require(fj_test_film_development_live_owners() == 0,
+                            "failed complete construction creates no legacy foreign owner");
 
-                    const auto recovered = admit_pending_render_state(state);
-                    require(route % 2 ? bool(recovered.printState) : bool(recovered.directState),
+                    JuicerTestSupport::capture(instance, committedControls);
+                    auto reused = JuicerTestSupport::admit(instance);
+                    require(reused.kind == FJ_ADMISSION_READY && reused.state &&
+                                JuicerTestSupport::PublicationObserver::metrics(instance).build == counter &&
+                                JuicerTestSupport::PublicationObserver::backing(*reused.state) == backingIdentity &&
+                                JuicerTestSupport::published_view(reused).recipe_hash == oldView.recipe_hash,
+                            "returning to the last admitted identity reuses its complete state after failure");
+                    reused.state.reset();
+                    JuicerTestSupport::capture(instance, changed);
+                    auto recovered = JuicerTestSupport::admit(instance);
+                    require(recovered.kind == FJ_ADMISSION_READY && recovered.state,
                             "development one-shot failure retry publishes the selected route");
                     const auto recoveredView = JuicerTestSupport::published_view(recovered);
                     require(recoveredView.recipe_hash != oldView.recipe_hash &&
@@ -387,32 +384,32 @@ namespace {
                                 words(recoveredView.film_development.density_rgb.data,
                                       recoveredView.film_development.density_rgb.count) == oldCurveWords &&
                                 layer_words(recoveredView) == oldLayerWords &&
-                                state.buildCounterNext.load() == counter + 1 && state.lastHash.load() == changedHash,
+                                JuicerTestSupport::PublicationObserver::metrics(instance).build == counter + 1 &&
+                                JuicerTestSupport::PublicationObserver::metrics(instance).publishedIdentity == changedHash,
                             "retry publishes once with exact curve/layer content and updated identity");
                     require(fj_test_development_curve_count(0) == 2 &&
                                 fj_test_development_curve_count(1) == allocationsBefore + temporaryAllocations + 1 &&
                                 fj_test_development_curve_count(2) == dropsBefore + temporaryAllocations,
                             "retry holds both old and new actual normalized allocations without reclaiming the admitted one");
-                    require(fj_test_prepared_live_states() == 2,
-                            "recovery publication coexists with the prior admitted state");
-                    publication = recovered;
+                    publication = std::move(recovered);
+                    committedControls = changed;
                     oldView = recoveredView;
                     oldCurveWords = words(oldView.film_development.density_rgb.data,
                                           oldView.film_development.density_rgb.count);
                     oldLayerWords = layer_words(oldView);
-                    counter = state.buildCounterNext.load();
-                    identity = state.lastHash.load();
-                    expectedDirect.reset();
-                    expectedPrint.reset();
-                    previousDirect.reset();
-                    previousPrint.reset();
-                    require(fj_test_prepared_live_states() == 1 && fj_test_development_curve_count(0) == 1 &&
+                    metrics = JuicerTestSupport::PublicationObserver::metrics(instance);
+                    counter = metrics.build;
+                    identity = metrics.publishedIdentity;
+                    backingIdentity = metrics.backingIdentity;
+                    require(fj_test_development_curve_count(0) == 1 &&
                                 fj_test_development_curve_count(2) == dropsBefore + temporaryAllocations + 1,
                             "replacing the test hold releases only the prior complete state and its actual normalized curves");
                     row_event.passed();
                 }
-                const auto warm = admit_pending_render_state(state);
-                require(warm.directState == publication.directState && warm.printState == publication.printState,
+                const auto warm = JuicerTestSupport::admit(instance);
+                require(warm.kind == FJ_ADMISSION_READY && warm.state &&
+                            JuicerTestSupport::PublicationObserver::metrics(instance).build == counter &&
+                            JuicerTestSupport::PublicationObserver::metrics(instance).backingIdentity == backingIdentity,
                         "identical current snapshot reuses the complete state");
             }
         }

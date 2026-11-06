@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <new>
+#include <utility>
 
 #include "JuicerState.h"
 #include "juicer_cuda_call_scope.h"
@@ -84,15 +86,25 @@ FjPreparationParams preparation_params(const ParamSnapshot& p) {
 
 PreparedState::PreparedState(FjPreparedState* owner, AdoptTag) noexcept : owner_(owner) {}
 
-PreparedState::PreparedState(PreparedState&& other) noexcept : owner_(other.owner_) {
+PreparedState::PreparedState(const FjAdmission& admission, AdoptTag) noexcept
+    : owner_(admission.state), inputIdentity_(admission.input_identity), build_(admission.build) {}
+
+PreparedState::PreparedState(PreparedState&& other) noexcept
+    : owner_(other.owner_), inputIdentity_(other.inputIdentity_), build_(other.build_) {
     other.owner_ = nullptr;
+    other.inputIdentity_ = 0;
+    other.build_ = 0;
 }
 
 PreparedState& PreparedState::operator=(PreparedState&& other) noexcept {
     if (this != &other) {
         release();
         owner_ = other.owner_;
+        inputIdentity_ = other.inputIdentity_;
+        build_ = other.build_;
         other.owner_ = nullptr;
+        other.inputIdentity_ = 0;
+        other.build_ = 0;
     }
     return *this;
 }
@@ -132,6 +144,14 @@ FjCallCompletionResult PreparedState::reject_missing_instance(
         assets, owner_, FJ_UNAVAILABLE_INSTANCE, access, &frame, abort, &error);
 }
 
+std::uint64_t PreparedState::input_identity() const noexcept {
+    return inputIdentity_;
+}
+
+std::uint64_t PreparedState::build() const noexcept {
+    return build_;
+}
+
 FjCallCompletionResult reject_missing_render_state(
     FjAssets* assets, FjCudaCallAccess access, const FjFrame& frame, FjAbortCallback abort, FjErrorBuffer& error) {
     return fj_legacy_prepared_unavailable(
@@ -160,5 +180,175 @@ FjStatus prepare_state(
     }
 
     out.emplace(PreparedState(owner, PreparedState::AdoptTag{}));
+    return status;
+}
+
+HostWrite::HostWrite(FjHostWrite* owner) noexcept : owner_(owner) {}
+
+HostWrite::HostWrite(HostWrite&& other) noexcept : owner_(other.owner_) {
+    other.owner_ = nullptr;
+}
+
+HostWrite& HostWrite::operator=(HostWrite&& other) noexcept {
+    if (this != &other) {
+        fail_if_active();
+        owner_ = other.owner_;
+        other.owner_ = nullptr;
+    }
+    return *this;
+}
+
+HostWrite::~HostWrite() {
+    fail_if_active();
+}
+
+FjStatus HostWrite::finish(
+    std::uint32_t failureKind,
+    FjStringView diagnostic,
+    std::uint32_t& outRefresh,
+    FjErrorBuffer& error) noexcept {
+    outRefresh = 0;
+    FjHostWrite* owner = owner_;
+    owner_ = nullptr;
+    if (!owner) {
+        return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
+    }
+    return fj_legacy_host_write_finish(owner, failureKind, diagnostic, &outRefresh, &error);
+}
+
+void HostWrite::fail_if_active() noexcept {
+    if (!owner_) {
+        return;
+    }
+    static constexpr char kAbandonedWriteDiagnostic[] = "host write abandoned before completion";
+    FjHostWrite* owner = owner_;
+    owner_ = nullptr;
+    std::uint32_t ignoredRefresh = 0;
+    FjErrorBuffer ignoredError{nullptr, 0, 0};
+    const FjStringView diagnostic{kAbandonedWriteDiagnostic, sizeof(kAbandonedWriteDiagnostic) - 1};
+    (void)fj_legacy_host_write_finish(
+        owner,
+        FJ_CAPTURE_HOST_FAILURE,
+        diagnostic,
+        &ignoredRefresh,
+        &ignoredError);
+}
+
+RenderInstance::RenderInstance() {
+    FjInstance* created = nullptr;
+    FjErrorBuffer error{nullptr, 0, 0};
+    const FjStatus status = fj_legacy_instance_create(&created, &error);
+    if (status.category != FJ_STATUS_SUCCESS || !created) {
+        if (created) {
+            FjErrorBuffer ignored{nullptr, 0, 0};
+            (void)fj_legacy_instance_destroy(created, &ignored);
+        }
+        if (status.category == FJ_STATUS_ALLOCATION_FAILURE) {
+            throw std::bad_alloc();
+        }
+        throw CreationFailure{};
+    }
+    owner_ = created;
+}
+
+RenderInstance::~RenderInstance() {
+    FjInstance* owner = owner_;
+    owner_ = nullptr;
+    if (owner) {
+        FjErrorBuffer ignored{nullptr, 0, 0};
+        (void)fj_legacy_instance_destroy(owner, &ignored);
+    }
+}
+
+FjStatus RenderInstance::begin_capture(
+    std::uint32_t mode,
+    FjCaptureStart& out,
+    FjErrorBuffer& error) {
+    out = {};
+    return fj_legacy_instance_begin_capture(owner_, mode, &out, &error);
+}
+
+FjStatus RenderInstance::capture_is_current(
+    std::uint64_t ticket,
+    std::uint32_t& outCurrent,
+    FjErrorBuffer& error) const {
+    outCurrent = 0;
+    return fj_legacy_instance_capture_is_current(owner_, ticket, &outCurrent, &error);
+}
+
+FjStatus RenderInstance::begin_snapshot(
+    std::uint64_t ticket,
+    FjSnapshotStart& out,
+    FjErrorBuffer& error) {
+    out = {};
+    return fj_legacy_instance_begin_snapshot(owner_, ticket, &out, &error);
+}
+
+FjStatus RenderInstance::install(
+    std::uint64_t ticket,
+    std::uint64_t revision,
+    const ParamSnapshot& snapshot,
+    std::uint64_t inputIdentity,
+    std::uint32_t& outUpdate,
+    FjErrorBuffer& error) {
+    outUpdate = FJ_UPDATE_NONE;
+    const FjPreparationParams params = preparation_params(snapshot);
+    return fj_legacy_instance_install(owner_, ticket, revision, &params, inputIdentity, &outUpdate, &error);
+}
+
+FjStatus RenderInstance::invalidate(
+    std::uint64_t ticket,
+    std::uint32_t failureKind,
+    FjStringView diagnostic,
+    std::uint32_t& outUpdate,
+    FjErrorBuffer& error) {
+    outUpdate = FJ_UPDATE_NONE;
+    return fj_legacy_instance_invalidate(owner_, ticket, failureKind, diagnostic, &outUpdate, &error);
+}
+
+FjStatus RenderInstance::admit(
+    FjAssets* assets,
+    std::uint32_t& outKind,
+    std::optional<PreparedState>& outState,
+    FjErrorBuffer& error) {
+    outKind = FJ_ADMISSION_NONE;
+    outState.reset();
+    FjAdmission admission{};
+    const FjStatus status = fj_legacy_instance_admit(owner_, assets, &admission, &error);
+    outKind = admission.kind;
+    if (status.category == FJ_STATUS_SUCCESS && admission.kind == FJ_ADMISSION_READY && admission.state) {
+        outState.emplace(PreparedState(admission, PreparedState::AdoptTag{}));
+        admission.state = nullptr;
+    } else if (admission.state) {
+        FjErrorBuffer ignored{nullptr, 0, 0};
+        (void)fj_legacy_prepared_state_release(admission.state, &ignored);
+    }
+    if (status.category == FJ_STATUS_SUCCESS && admission.kind == FJ_ADMISSION_READY && !outState) {
+        return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
+    }
+    return status;
+}
+
+FjStatus RenderInstance::begin_host_write(
+    std::uint64_t ticket,
+    std::uint32_t& outKind,
+    std::optional<HostWrite>& outWrite,
+    FjErrorBuffer& error) {
+    outKind = FJ_HOST_WRITE_NONE;
+    outWrite.reset();
+    FjHostWrite* owner = nullptr;
+    const FjStatus status = fj_legacy_instance_begin_host_write(owner_, ticket, &owner, &outKind, &error);
+    if (status.category == FJ_STATUS_SUCCESS && outKind == FJ_HOST_WRITE_STARTED && owner) {
+        outWrite = HostWrite(owner);
+    } else if (owner) {
+        std::uint32_t ignoredRefresh = 0;
+        FjErrorBuffer ignored{nullptr, 0, 0};
+        static constexpr char kUnexpectedWriteDiagnostic[] = "native host-write result was not Started";
+        const FjStringView diagnostic{kUnexpectedWriteDiagnostic, sizeof(kUnexpectedWriteDiagnostic) - 1};
+        (void)fj_legacy_host_write_finish(owner, FJ_CAPTURE_HOST_FAILURE, diagnostic, &ignoredRefresh, &ignored);
+    }
+    if (status.category == FJ_STATUS_SUCCESS && outKind == FJ_HOST_WRITE_STARTED && !outWrite) {
+        return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
+    }
     return status;
 }

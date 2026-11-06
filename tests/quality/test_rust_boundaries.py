@@ -1041,11 +1041,15 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertIn("grain::Recipe::new(&acquired.development, params.grain)", complete)
         preparation = (ROOT / "rust/film-juicer-plugin/src/preparation.rs").read_text(encoding="utf-8")
         self.assertIn("let completed = recipe::prepare(assets, params)", preparation)
-        self.assertIn("state.push(completed)", preparation)
+        self.assertIn("FjPreparedState::from_state(Arc::new(completed))", preparation)
         owner = complete.split("pub struct RenderState {", 1)[1].split("\n}", 1)[0]
-        self.assertIn("development: film::Development", owner)
+        self.assertIn("contents: Vec<Contents>", owner)
+        contents = complete.split("struct Contents {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("development: film::Development", contents)
+        self.assertIn("backing.push(contents)", complete)
         public_fields = r"\bpub(?:\([^)]*\))?\s+\w+\s*:"
         self.assertNotRegex(owner, public_fields)
+        self.assertNotRegex(contents, public_fields)
         self.assertRegex("pub development: film::Development", public_fields)
         self.assertRegex("pub(crate) development: film::Development", public_fields)
 
@@ -1419,6 +1423,7 @@ class RustBoundaryTests(unittest.TestCase):
             ("film-juicer-plugin", "asset_spectral.rs"),
             ("film-juicer-plugin", "asset_noise.rs"),
             ("film-juicer-plugin", "asset_calibration.rs"),
+            ("film-juicer-plugin", "instance.rs"),
         )
         self.subtest_cases = tuple(
             f"{package}/{source}|{'release' if release else 'debug'}"
@@ -1534,8 +1539,8 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_prepared_state_is_complete_private_and_borrowed(self) -> None:
         cases = (('prepared_state_complete', None),
-         ('prepared_state_private', {'E0616': ('state.hash',), 'E0603': ('crate::preparation::project_state',)}),
-         ('prepared_state_construction', {'E0451': ('RenderState { ..state }',)}),
+         ('prepared_state_private', {'E0616': ('state.contents',), 'E0603': ('crate::preparation::project_state',)}),
+         ('prepared_state_construction', {'E0451': ('contents: Vec::new()',)}),
          ('prepared_state_default', {'E0599': ('RenderState::default()',)}),
          ('prepared_state_mutation', {'E0594': ('state.s_inverse()[0]',)}),
          ('prepared_state_borrow', {'E0515': ('state.s_inverse()',), 'E0505': ('drop(state)',)}))

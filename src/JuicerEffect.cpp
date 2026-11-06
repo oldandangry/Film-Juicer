@@ -47,7 +47,9 @@ namespace {
         return {domain.x, domain.y, domain.width, domain.height};
     }
 
+#if JUICER_DIAGNOSTICS_COMPILED
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback);
+#endif
 
     struct RenderFatalTrace {
         const char* tag = nullptr;
@@ -75,11 +77,11 @@ namespace {
         return value ? 1 : 0;
     }
 
+#if JUICER_DIAGNOSTICS_COMPILED
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback) {
         return value ? value : fallback;
     }
 
-#if JUICER_DIAGNOSTICS_COMPILED
     inline std::size_t cstr_len_or_zero(const char* value) {
         return value ? std::strlen(value) : 0u;
     }
@@ -87,10 +89,6 @@ namespace {
 
     inline bool requires_nonfloat_copy(OFX::BitDepthEnum depth, int nComponents) {
         return depth != OFX::eBitDepthFloat || nComponents == 0;
-    }
-
-    inline bool param_events_suppressed(const InstanceState& state) {
-        return state.suppressParamEvents;
     }
 
     inline void trace_changed_param_gate(
@@ -124,55 +122,6 @@ namespace {
 
     inline bool user_edit_param_is(bool userEdit, const std::string& paramName, const char* expected) {
         return userEdit && param_name_is(paramName, expected);
-    }
-
-    inline std::shared_ptr<const DirectRenderState> load_active_direct_state(const InstanceState& state) {
-        return JuicerAtomic::load_shared_ptr(&state.activeDirectState);
-    }
-
-    inline std::shared_ptr<const PrintRenderState> load_active_print_state(const InstanceState& state) {
-        return JuicerAtomic::load_shared_ptr(&state.activePrintState);
-    }
-
-    struct ProfileKeyLabels {
-        const char* printProfileKey = nullptr;
-        const char* filmKey = nullptr;
-        const char* paperLabel = "<null>";
-        const char* filmLabel = "<null>";
-    };
-
-    inline ProfileKeyLabels resolve_profile_key_labels(const ParamSnapshot& snapshot) {
-        ProfileKeyLabels labels{};
-        labels.printProfileKey = snapshot.printProfileKey.empty() ? nullptr : snapshot.printProfileKey.c_str();
-        labels.filmKey = snapshot.filmProfileKey.empty() ? nullptr : snapshot.filmProfileKey.c_str();
-        labels.paperLabel = cstr_or_default_if_null(labels.printProfileKey, "<null>");
-        labels.filmLabel = cstr_or_default_if_null(labels.filmKey, "<null>");
-        return labels;
-    }
-
-    inline bool pending_snapshot_acquisition_needed(InstanceState& state) {
-        std::lock_guard<std::mutex> lock(state.pending.m);
-        return std::holds_alternative<PendingParamsState::Uninitialized>(
-            state.pending.value);
-    }
-
-    inline void store_pending_valid_snapshot(
-        InstanceState& state,
-        const ParamSnapshot& snapshot) {
-        PendingParamsState::Valid valid;
-        valid.params = snapshot;
-        valid.fullHash = hash_params(snapshot);
-        std::lock_guard<std::mutex> lock(state.pending.m);
-        state.pending.value = std::move(valid);
-    }
-
-    inline void store_pending_invalid_snapshot(
-        InstanceState& state,
-        std::string diagnostic) {
-        PendingParamsState::InvalidSnapshotControls invalid;
-        invalid.diagnostic = std::move(diagnostic);
-        std::lock_guard<std::mutex> lock(state.pending.m);
-        state.pending.value = std::move(invalid);
     }
 
     inline bool is_grain_preset_input_param(const std::string& paramName) {
@@ -231,49 +180,12 @@ namespace {
                param_name_is(paramName, JuicerParams::kDirCouplersGammaInterlayerBToRg);
     }
 
-    inline bool changed_param_suppressed(const InstanceState& state) {
-        return param_events_suppressed(state);
-    }
-
     inline bool grain_preset_param_changed_by_user(bool userEdit, const std::string& paramName) {
         return user_edit_param_is(userEdit, paramName, JuicerParams::kGrainPreset);
     }
 
     inline bool grain_reset_advanced_param_changed_by_user(bool userEdit, const std::string& paramName) {
         return user_edit_param_is(userEdit, paramName, JuicerParams::kGrainResetAdvanced);
-    }
-
-    inline void trace_param_change_verbose_if(
-        bool traceVerbose,
-        const ParamSnapshot& snapshot,
-        const InstanceState& state,
-        const char* changedNameOrNull) {
-        if (!traceVerbose) {
-            return;
-        }
-        const ProfileKeyLabels labels = resolve_profile_key_labels(snapshot);
-        std::uint64_t activeBuild = 0;
-        if (Spektrafilm::scan_route_is_print(snapshot.scanRoute)) {
-            const std::shared_ptr<const PrintRenderState> active = load_active_print_state(state);
-            activeBuild = active ? active->buildCounter : 0;
-        } else {
-            const std::shared_ptr<const DirectRenderState> active = load_active_direct_state(state);
-            activeBuild = active ? active->buildCounter : 0;
-        }
-        const std::uint64_t lastHash = state.lastHash.load(std::memory_order_acquire);
-        std::string msg;
-        msg.reserve(224);
-        msg = "params change name=";
-        msg += cstr_or_default_if_null(changedNameOrNull, "<null>");
-        msg += " printKey=";
-        msg += labels.paperLabel;
-        msg += " filmKey=";
-        msg += labels.filmLabel;
-        msg += " activeBuild=";
-        msg += std::to_string(activeBuild);
-        msg += " lastHash=";
-        msg += std::to_string(lastHash);
-        JTRACE_VERBOSE("PRINTDBG", msg);
     }
 
     inline double sanitize_finite_or(double value, double fallback) {
@@ -545,23 +457,193 @@ namespace {
         return values;
     }
 
+    void require_instance_success(FjStatus status) {
+        if (status.category == FJ_STATUS_SUCCESS) {
+            return;
+        }
+        if (status.category == FJ_STATUS_ALLOCATION_FAILURE) {
+            throw std::bad_alloc();
+        }
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    // Callback provenance is thread-local; publication ordering stays in Rust.
+    class CaptureAction {
+    public:
+        CaptureAction(RenderInstance& instance, std::uint32_t mode, bool claimInitial = false)
+            : instance(instance), previous(current) {
+            FjErrorBuffer error{nullptr, 0, 0};
+            FjCaptureStart start{};
+            if (claimInitial) {
+                require_instance_success(instance.begin_capture(FJ_CAPTURE_INITIAL, start, error));
+                initial = start.kind == FJ_CAPTURE_STARTED;
+            }
+            if (!claimInitial || !initial) {
+                require_instance_success(instance.begin_capture(mode, start, error));
+            }
+            if (start.kind == FJ_CAPTURE_STARTED) {
+                ticket = start.capture;
+                armed = true;
+            }
+            current = this;
+        }
+        ~CaptureAction() {
+            fail(FJ_CAPTURE_HOST_FAILURE, "parameter action abandoned");
+            current = previous;
+        }
+        CaptureAction(const CaptureAction&) = delete;
+        CaptureAction& operator=(const CaptureAction&) = delete;
+
+        std::uint32_t fail(std::uint32_t kind, const char* diagnostic) noexcept {
+            if (!armed) {
+                return completion;
+            }
+            FjErrorBuffer error{nullptr, 0, 0};
+            std::uint32_t update = FJ_UPDATE_NONE;
+            const FjStringView text{diagnostic, std::strlen(diagnostic)};
+            (void)instance.invalidate(ticket, kind, text, update, error);
+            armed = false;
+            completion = update;
+            return update;
+        }
+        bool is_current() const {
+            if (!ticket) {
+                return false;
+            }
+            FjErrorBuffer error{nullptr, 0, 0};
+            std::uint32_t result = 0;
+            require_instance_success(instance.capture_is_current(ticket, result, error));
+            return result != 0;
+        }
+
+        static thread_local CaptureAction* current;
+        RenderInstance& instance;
+        std::uint64_t ticket = 0;
+        bool armed = false;
+        bool initial = false;
+        bool refresh = false;
+        bool physicalWriteFailed = false;
+        std::uint32_t completion = FJ_UPDATE_IGNORED;
+
+    private:
+        CaptureAction* previous;
+    };
+    thread_local CaptureAction* CaptureAction::current = nullptr;
+
+    // UI-only constructor calls have a context with no capture ticket.
+    class HostEditScope {
+    public:
+        explicit HostEditScope(RenderInstance& instance)
+            : instance(instance), action(CaptureAction::current), previous(current) {
+            current = this;
+        }
+        ~HostEditScope() {
+            current = previous;
+        }
+        static thread_local HostEditScope* current;
+        RenderInstance& instance;
+        CaptureAction* action;
+
+    private:
+        HostEditScope* previous;
+    };
+    thread_local HostEditScope* HostEditScope::current = nullptr;
+
+    class HostCallScope {
+    public:
+        explicit HostCallScope(RenderInstance& instance)
+            : instance(instance), previous(current) {
+            current = this;
+        }
+        ~HostCallScope() {
+            current = previous;
+        }
+        static thread_local HostCallScope* current;
+        RenderInstance& instance;
+
+    private:
+        HostCallScope* previous;
+    };
+    thread_local HostCallScope* HostCallScope::current = nullptr;
+
+    template <typename Setter>
+    void registered_host_write(Setter&& setter) {
+        CaptureAction* action = CaptureAction::current;
+        if (!action || !action->ticket) {
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        FjErrorBuffer error{nullptr, 0, 0};
+        std::optional<HostWrite> write;
+        std::uint32_t kind = FJ_HOST_WRITE_NONE;
+        require_instance_success(action->instance.begin_host_write(action->ticket, kind, write, error));
+        if (kind == FJ_HOST_WRITE_IGNORED) {
+            return;
+        }
+        if (!write) {
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        auto finish = [&](std::uint32_t failure, const char* text) {
+            std::uint32_t refresh = 0;
+            const FjStatus status = write->finish(failure, {text, std::strlen(text)}, refresh, error);
+            write.reset();
+            action->refresh = action->refresh || refresh != 0;
+            return status;
+        };
+        try {
+            const HostCallScope hostCall(action->instance);
+            setter();
+        } catch (const std::bad_alloc&) {
+            action->physicalWriteFailed = true;
+            (void)finish(FJ_CAPTURE_ALLOCATION_FAILURE, "host parameter write allocation failed");
+            throw;
+        } catch (...) {
+            action->physicalWriteFailed = true;
+            (void)finish(FJ_CAPTURE_HOST_FAILURE, "host parameter write failed");
+            throw;
+        }
+        require_instance_success(finish(FJ_HOST_WRITE_SUCCEEDED, ""));
+    }
+
+    template <typename Property>
+    void host_property(Property&& property) {
+        CaptureAction* action = CaptureAction::current;
+        HostEditScope* scope = HostEditScope::current;
+        RenderInstance* instance = scope && scope->action == action ? &scope->instance : (action ? &action->instance : nullptr);
+        if (action && instance == &action->instance && !action->is_current()) {
+            return;
+        }
+        if (!instance) {
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        const HostCallScope hostCall(*instance);
+        property();
+    }
+
     inline void set_bool_param(OFX::BooleanParam* param, bool value) {
-        param->setValue(value);
+        registered_host_write([&]() {
+            param->setValue(value);
+        });
     }
 
     inline void set_double_param(OFX::DoubleParam* param, double value) {
-        param->setValue(value);
+        registered_host_write([&]() {
+            param->setValue(value);
+        });
     }
 
     inline void set_str_choice_param(OFX::StrChoiceParam* param, const char* value) {
-        param->setValue(value);
+        registered_host_write([&]() {
+            param->setValue(value);
+        });
     }
 
     inline void set_double2_param(
         OFX::Double2DParam* param,
         double x,
         double y) {
-        param->setValue(x, y);
+        registered_host_write([&]() {
+            param->setValue(x, y);
+        });
     }
 
     inline void set_double3_param(
@@ -569,23 +651,33 @@ namespace {
         double x,
         double y,
         double z) {
-        param->setValue(x, y, z);
+        registered_host_write([&]() {
+            param->setValue(x, y, z);
+        });
     }
 
     inline void set_choice_label(OFX::ChoiceParam* param, const std::string& label) {
-        param->setLabel(label);
+        host_property([&]() {
+            param->setLabel(label);
+        });
     }
 
     inline void set_double_param_hint(OFX::DoubleParam* param, const std::string& hint) {
-        param->setHint(hint);
+        host_property([&]() {
+            param->setHint(hint);
+        });
     }
 
     inline void set_double_param_hint(OFX::DoubleParam* param, const char* hint) {
-        param->setHint(hint);
+        host_property([&]() {
+            param->setHint(hint);
+        });
     }
 
     inline void set_double_param_enabled(OFX::DoubleParam* param, bool enabled) {
-        param->setEnabled(enabled);
+        host_property([&]() {
+            param->setEnabled(enabled);
+        });
     }
 
     inline std::array<double, 3> read_sanitized_double3(
@@ -913,22 +1005,6 @@ namespace {
         return is_finite(scale) ? scale : 1.0f;
     }
 
-    class ScopedParamEventSuppression {
-    public:
-        explicit ScopedParamEventSuppression(InstanceState& state)
-            : _state(state),
-              _previous(state.suppressParamEvents) {
-            _state.suppressParamEvents = true;
-        }
-
-        ~ScopedParamEventSuppression() {
-            _state.suppressParamEvents = _previous;
-        }
-
-    private:
-        InstanceState& _state;
-        bool _previous = false;
-    };
 
 } // namespace
 
@@ -1096,10 +1172,7 @@ namespace {
         OFX::Double3DParam* param,
         double master,
         const std::array<double, 3>& ratio) {
-        param->setValue(
-            master * ratio[0],
-            master * ratio[1],
-            master * ratio[2]);
+        set_double3_param(param, master * ratio[0], master * ratio[1], master * ratio[2]);
     }
 
     inline void set_scaled_triplet_clamped(
@@ -1108,10 +1181,7 @@ namespace {
         const std::array<double, 3>& ratio,
         double lo,
         double hi) {
-        param->setValue(
-            std::clamp(master * ratio[0], lo, hi),
-            std::clamp(master * ratio[1], lo, hi),
-            std::clamp(master * ratio[2], lo, hi));
+        set_double3_param(param, std::clamp(master * ratio[0], lo, hi), std::clamp(master * ratio[1], lo, hi), std::clamp(master * ratio[2], lo, hi));
     }
 
 } // namespace
@@ -1208,7 +1278,7 @@ Spektrafilm::VisualGrainControls JuicerEffect::gatherGrainUi() const {
 
 void JuicerEffect::applyGrainPresetDefaults(int presetIndex) {
     const GrainPresetDefaults preset = grain_preset_defaults(presetIndex);
-    const ScopedParamEventSuppression suppressEvents(*_state);
+    const HostEditScope suppressEvents(_publication);
 
     const GrainAdvancedDefaults advancedDefaults = compute_grain_advanced_defaults(
         preset,
@@ -1226,16 +1296,16 @@ void JuicerEffect::applyGrainPresetDefaults(int presetIndex) {
 
     set_double_param(_pGrainParticleAreaUm2, preset.particleAreaUm2);
     set_double_param(_pGrainParticleScaleMaster, preset.particleScaleMaster);
-    _grainParticleScaleMasterLast = preset.particleScaleMaster;
+    cacheGrainMaster(_grainParticleScaleMasterLast, preset.particleScaleMaster);
     set_scaled_triplet_clamped(_pGrainParticleScale, preset.particleScaleMaster, ratios.scale, 0.0, 10.0);
     set_double_param(_pGrainParticleScaleLayersMaster, preset.particleScaleLayersMaster);
-    _grainParticleScaleLayersMasterLast = preset.particleScaleLayersMaster;
+    cacheGrainMaster(_grainParticleScaleLayersMasterLast, preset.particleScaleLayersMaster);
     set_scaled_triplet_clamped(_pGrainParticleScaleLayers, preset.particleScaleLayersMaster, ratios.scaleLayers, 0.0, 10.0);
     set_double_param(_pGrainDensityMinMaster, preset.densityMinMaster);
-    _grainDensityMinMasterLast = preset.densityMinMaster;
+    cacheGrainMaster(_grainDensityMinMasterLast, preset.densityMinMaster);
     set_scaled_triplet_clamped(_pGrainDensityMin, preset.densityMinMaster, ratios.densityMin, 0.0, 1.0);
     set_double_param(_pGrainUniformityMaster, preset.uniformityMaster);
-    _grainUniformityMasterLast = preset.uniformityMaster;
+    cacheGrainMaster(_grainUniformityMasterLast, preset.uniformityMaster);
     set_scaled_triplet_clamped(_pGrainUniformity, preset.uniformityMaster, ratios.uniformity, 0.0, 1.0);
     set_double_param(_pGrainBlurDyeCloudsUm, std::clamp(advancedDefaults.blurDyeClouds, 0.0, 10.0));
     set_double_param(_pGrainSizeMixWeight, std::clamp(advancedDefaults.sizeMixWeight, 0.0, 1.0));
@@ -1275,20 +1345,20 @@ void JuicerEffect::resetGrainAdvancedControls() {
     const double clumpMorphPeriodSec = 8.0;
 
     const GrainRatioSet ratios = normalized_default_grain_ratios();
-    const ScopedParamEventSuppression suppressEvents(*_state);
+    const HostEditScope suppressEvents(_publication);
 
     set_double_param(_pGrainParticleAreaUm2, particleArea);
     set_double_param(_pGrainParticleScaleMaster, particleScaleMaster);
-    _grainParticleScaleMasterLast = particleScaleMaster;
+    cacheGrainMaster(_grainParticleScaleMasterLast, particleScaleMaster);
     set_scaled_triplet(_pGrainParticleScale, particleScaleMaster, ratios.scale);
     set_double_param(_pGrainParticleScaleLayersMaster, particleScaleLayersMaster);
-    _grainParticleScaleLayersMasterLast = particleScaleLayersMaster;
+    cacheGrainMaster(_grainParticleScaleLayersMasterLast, particleScaleLayersMaster);
     set_scaled_triplet(_pGrainParticleScaleLayers, particleScaleLayersMaster, ratios.scaleLayers);
     set_double_param(_pGrainDensityMinMaster, densityMinMaster);
-    _grainDensityMinMasterLast = densityMinMaster;
+    cacheGrainMaster(_grainDensityMinMasterLast, densityMinMaster);
     set_scaled_triplet(_pGrainDensityMin, densityMinMaster, ratios.densityMin);
     set_double_param(_pGrainUniformityMaster, uniformityMaster);
-    _grainUniformityMasterLast = uniformityMaster;
+    cacheGrainMaster(_grainUniformityMasterLast, uniformityMaster);
     set_scaled_triplet(_pGrainUniformity, uniformityMaster, ratios.uniformity);
     set_double_param(_pGrainBlurDyeCloudsUm, advancedDefaults.blurDyeClouds);
     set_double_param(_pGrainSizeMixWeight, advancedDefaults.sizeMixWeight);
@@ -1301,8 +1371,22 @@ void JuicerEffect::resetGrainAdvancedControls() {
     updateGrainChromaEnabled();
 }
 
+void JuicerEffect::cacheGrainMaster(double& target, double value) {
+    if (CaptureAction::current && &CaptureAction::current->instance == &_publication && !CaptureAction::current->is_current()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_uiMutex);
+    target = value;
+}
+
 void JuicerEffect::updateGrainPresetLabel(bool custom) {
-    _grainPresetCustom = custom;
+    if (CaptureAction::current && &CaptureAction::current->instance == &_publication && !CaptureAction::current->is_current()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_uiMutex);
+        _grainPresetCustom = custom;
+    }
     const std::string label = custom
                                   ? (_grainPresetLabel + " (Custom)")
                                   : _grainPresetLabel;
@@ -1350,8 +1434,12 @@ void JuicerEffect::updateDiffusionControlState(Spektrafilm::ScanRoute selectedRo
     const bool printEnabled = read_bool_param(_printDiffusionUi.enabled);
 
     auto setControlState = [](auto* param, bool visible, bool enabled) {
-        param->setIsSecret(!visible);
-        param->setEnabled(enabled);
+        host_property([&]() {
+            param->setIsSecret(!visible);
+        });
+        host_property([&]() {
+            param->setEnabled(enabled);
+        });
     };
     auto setStageControlState = [&](const DiffusionUiParams& params,
                                     bool visible,
@@ -1387,27 +1475,43 @@ bool JuicerEffect::resolveGammaControlRoute(
 void JuicerEffect::updateGammaControlState(
     Spektrafilm::ScanRoute selectedRoute,
     const std::string&) {
-    _pPrintGammaFactor->setEnabled(
-        Spektrafilm::scan_route_is_print(selectedRoute));
+    host_property([&]() {
+        _pPrintGammaFactor->setEnabled(
+            Spektrafilm::scan_route_is_print(selectedRoute));
+    });
     const bool dirActive = read_bool_param(_pCouplersActive);
     const double coreUm = read_double_param(_pCouplersDiffusionSizeUm);
     const double tailWeight = read_double_param(_pCouplersDiffusionTailWeight);
     const bool positive =
         Spektrafilm::scan_route_metadata(selectedRoute).capturePolarity ==
         Spektrafilm::ProfilePolarity::Positive;
-    _pCouplersLangmuirDonorKRgb->setEnabled(dirActive && !positive);
-    _pCouplersLangmuirReceiverKRgb->setEnabled(dirActive && positive);
-    _pCouplersDiffusionTailWeight->setEnabled(dirActive && coreUm > 0.0);
-    _pCouplersDiffusionTailUm->setEnabled(
-        dirActive && coreUm > 0.0 && tailWeight > 0.0);
+    host_property([&]() {
+        _pCouplersLangmuirDonorKRgb->setEnabled(dirActive && !positive);
+    });
+    host_property([&]() {
+        _pCouplersLangmuirReceiverKRgb->setEnabled(dirActive && positive);
+    });
+    host_property([&]() {
+        _pCouplersDiffusionTailWeight->setEnabled(dirActive && coreUm > 0.0);
+    });
+    host_property([&]() {
+        _pCouplersDiffusionTailUm->setEnabled(
+            dirActive && coreUm > 0.0 && tailWeight > 0.0);
+    });
 }
 
 void JuicerEffect::updateSpectralControlState() {
     const int mode = read_choice_param(_pSpectralMode);
-    _pInputCompression->setEnabled(mode != 1);
+    host_property([&]() {
+        _pInputCompression->setEnabled(mode != 1);
+    });
     const bool hanatos = mode == 0;
-    _pHanatos2025AdaptationWindow->setEnabled(hanatos);
-    _pHanatos2025AdaptationSurface->setEnabled(hanatos);
+    host_property([&]() {
+        _pHanatos2025AdaptationWindow->setEnabled(hanatos);
+    });
+    host_property([&]() {
+        _pHanatos2025AdaptationSurface->setEnabled(hanatos);
+    });
 }
 
 void JuicerEffect::applyDirGammaProfileDefaults() {
@@ -1438,7 +1542,7 @@ void JuicerEffect::applyDirGammaProfileDefaults() {
         throw JuicerCuda::ExecutionFailure{std::move(failure)};
     }
 
-    const ScopedParamEventSuppression suppressEvents(*_state);
+    const HostEditScope suppressEvents(_publication);
     set_double3_param(
         _pCouplersGammaSameLayerRgb,
         digest.gamma_samelayer_rgb[0],
@@ -1458,245 +1562,248 @@ void JuicerEffect::applyDirGammaProfileDefaults() {
         digest.gamma_interlayer_b_to_rg[1]);
 }
 
-JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
-    : OFX::ImageEffect(handle) {
-    _src = fetchClip(kOfxImageEffectSimpleSourceClipName);
-    _dst = fetchClip(kOfxImageEffectOutputClipName);
+JuicerEffect::JuicerEffect(OfxImageEffectHandle handle) try
+    : OFX
+    ::ImageEffect(handle) {
+        _src = fetchClip(kOfxImageEffectSimpleSourceClipName);
+        _dst = fetchClip(kOfxImageEffectOutputClipName);
 
-    // Cache parameter handles (wrappers)
-    _pExposure = fetchDoubleParam(kParamExposure);
-    _pCameraAutoExposure = fetchBooleanParam(kParamCameraAutoExposure);
-    _pCameraFilmFormatPreset =
-        fetchChoiceParam(JuicerParams::kCameraFilmFormatPreset);
-    _pCameraFilmFormat = fetchDoubleParam(JuicerParams::kCameraFilmFormatMm);
-    _pCameraMeteringMethod = fetchChoiceParam(JuicerParams::kCameraMeteringMethod);
-    _pFilmProfileKey = fetchStrChoiceParam(JuicerParams::kFilmProfileKey);
-    _pSpectralMode = fetchChoiceParam(kParamSpectralMode);
-    _pPrintProfileKey = fetchStrChoiceParam(JuicerParams::kPrintProfileKey);
-    _pRefIll = fetchChoiceParam("ReferenceIlluminant");
-    _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
-    _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
-    _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
-    _pInputCompression = fetchBooleanParam(JuicerParams::kInputCompression);
-    _pHanatos2025AdaptationWindow =
-        fetchBooleanParam(JuicerParams::kHanatos2025AdaptationWindow);
-    _pHanatos2025AdaptationSurface =
-        fetchBooleanParam(JuicerParams::kHanatos2025AdaptationSurface);
-    _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
-    _pFilmGammaFactor = fetchDoubleParam(JuicerParams::kFilmGammaFactor);
-    _pPrintGammaFactor = fetchDoubleParam(JuicerParams::kPrintGammaFactor);
-    _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
-    _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
-    _pOutputGamutCompression =
-        fetchBooleanParam(JuicerParams::kOutputGamutCompression);
+        // Cache parameter handles (wrappers)
+        _pExposure = fetchDoubleParam(kParamExposure);
+        _pCameraAutoExposure = fetchBooleanParam(kParamCameraAutoExposure);
+        _pCameraFilmFormatPreset =
+            fetchChoiceParam(JuicerParams::kCameraFilmFormatPreset);
+        _pCameraFilmFormat = fetchDoubleParam(JuicerParams::kCameraFilmFormatMm);
+        _pCameraMeteringMethod = fetchChoiceParam(JuicerParams::kCameraMeteringMethod);
+        _pFilmProfileKey = fetchStrChoiceParam(JuicerParams::kFilmProfileKey);
+        _pSpectralMode = fetchChoiceParam(kParamSpectralMode);
+        _pPrintProfileKey = fetchStrChoiceParam(JuicerParams::kPrintProfileKey);
+        _pRefIll = fetchChoiceParam("ReferenceIlluminant");
+        _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
+        _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
+        _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
+        _pInputCompression = fetchBooleanParam(JuicerParams::kInputCompression);
+        _pHanatos2025AdaptationWindow =
+            fetchBooleanParam(JuicerParams::kHanatos2025AdaptationWindow);
+        _pHanatos2025AdaptationSurface =
+            fetchBooleanParam(JuicerParams::kHanatos2025AdaptationSurface);
+        _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
+        _pFilmGammaFactor = fetchDoubleParam(JuicerParams::kFilmGammaFactor);
+        _pPrintGammaFactor = fetchDoubleParam(JuicerParams::kPrintGammaFactor);
+        _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
+        _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
+        _pOutputGamutCompression =
+            fetchBooleanParam(JuicerParams::kOutputGamutCompression);
 
-    _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
-    _pCouplersAmount = fetchDoubleParam(JuicerParams::kDirCouplersAmount);
-    _pCouplersInhibitionSameLayer =
-        fetchDoubleParam(JuicerParams::kDirCouplersInhibitionSameLayer);
-    _pCouplersInhibitionInterlayer =
-        fetchDoubleParam(JuicerParams::kDirCouplersInhibitionInterlayer);
-    _pCouplersDiffusionSizeUm =
-        fetchDoubleParam(JuicerParams::kDirCouplersDiffusionSizeUm);
-    _pCouplersLangmuirDonorKRgb =
-        fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirDonorKRgb);
-    _pCouplersLangmuirReceiverKRgb =
-        fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirReceiverKRgb);
-    _pCouplersDiffusionTailUm =
-        fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailUm);
-    _pCouplersDiffusionTailWeight =
-        fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailWeight);
-    _pCouplersGammaUseStock =
-        fetchBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
-    _pCouplersGammaSameLayerRgb =
-        fetchDouble3DParam(JuicerParams::kDirCouplersGammaSameLayerRgb);
-    _pCouplersGammaInterlayerRToGb =
-        fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerRToGb);
-    _pCouplersGammaInterlayerGToRb =
-        fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerGToRb);
-    _pCouplersGammaInterlayerBToRg =
-        fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerBToRg);
+        _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
+        _pCouplersAmount = fetchDoubleParam(JuicerParams::kDirCouplersAmount);
+        _pCouplersInhibitionSameLayer =
+            fetchDoubleParam(JuicerParams::kDirCouplersInhibitionSameLayer);
+        _pCouplersInhibitionInterlayer =
+            fetchDoubleParam(JuicerParams::kDirCouplersInhibitionInterlayer);
+        _pCouplersDiffusionSizeUm =
+            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionSizeUm);
+        _pCouplersLangmuirDonorKRgb =
+            fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirDonorKRgb);
+        _pCouplersLangmuirReceiverKRgb =
+            fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirReceiverKRgb);
+        _pCouplersDiffusionTailUm =
+            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailUm);
+        _pCouplersDiffusionTailWeight =
+            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailWeight);
+        _pCouplersGammaUseStock =
+            fetchBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
+        _pCouplersGammaSameLayerRgb =
+            fetchDouble3DParam(JuicerParams::kDirCouplersGammaSameLayerRgb);
+        _pCouplersGammaInterlayerRToGb =
+            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerRToGb);
+        _pCouplersGammaInterlayerGToRb =
+            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerGToRb);
+        _pCouplersGammaInterlayerBToRg =
+            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerBToRg);
 
-    _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
-    _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
-    _pScannerBlackCorrection =
-        fetchBooleanParam(JuicerParams::kScannerBlackCorrection);
-    _pScannerWhiteCorrection =
-        fetchBooleanParam(JuicerParams::kScannerWhiteCorrection);
-    _pScannerBlackLevel = fetchDoubleParam(JuicerParams::kScannerBlackLevel);
-    _pScannerWhiteLevel = fetchDoubleParam(JuicerParams::kScannerWhiteLevel);
-    _pScannerLutResolution = fetchIntParam(JuicerParams::kScannerLutResolution);
+        _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
+        _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
+        _pScannerBlackCorrection =
+            fetchBooleanParam(JuicerParams::kScannerBlackCorrection);
+        _pScannerWhiteCorrection =
+            fetchBooleanParam(JuicerParams::kScannerWhiteCorrection);
+        _pScannerBlackLevel = fetchDoubleParam(JuicerParams::kScannerBlackLevel);
+        _pScannerWhiteLevel = fetchDoubleParam(JuicerParams::kScannerWhiteLevel);
+        _pScannerLutResolution = fetchIntParam(JuicerParams::kScannerLutResolution);
 
-    _pPrintExposure = fetchDoubleParam("PrintExposure");
-    _pPrintPreflash = fetchDoubleParam("PrintPreflash");
-    _pPrintExposureComp = fetchBooleanParam("PrintExposureCompensation");
-    _pEnlargerY = fetchDoubleParam("EnlargerY");
-    _pEnlargerM = fetchDoubleParam("EnlargerM");
-    _pEnlargerC = fetchDoubleParam("EnlargerC");
+        _pPrintExposure = fetchDoubleParam("PrintExposure");
+        _pPrintPreflash = fetchDoubleParam("PrintPreflash");
+        _pPrintExposureComp = fetchBooleanParam("PrintExposureCompensation");
+        _pEnlargerY = fetchDoubleParam("EnlargerY");
+        _pEnlargerM = fetchDoubleParam("EnlargerM");
+        _pEnlargerC = fetchDoubleParam("EnlargerC");
 
-    _pHalationActive = fetchBooleanParam(JuicerParams::kHalationActive);
-    _pHalationScatterAmount =
-        fetchDoubleParam(JuicerParams::kHalationScatterAmount);
-    _pHalationScatterSpatialScale =
-        fetchDoubleParam(JuicerParams::kHalationScatterSpatialScale);
-    _pHalationAmount = fetchDoubleParam(JuicerParams::kHalationAmount);
-    _pHalationSpatialScale =
-        fetchDoubleParam(JuicerParams::kHalationSpatialScale);
+        _pHalationActive = fetchBooleanParam(JuicerParams::kHalationActive);
+        _pHalationScatterAmount =
+            fetchDoubleParam(JuicerParams::kHalationScatterAmount);
+        _pHalationScatterSpatialScale =
+            fetchDoubleParam(JuicerParams::kHalationScatterSpatialScale);
+        _pHalationAmount = fetchDoubleParam(JuicerParams::kHalationAmount);
+        _pHalationSpatialScale =
+            fetchDoubleParam(JuicerParams::kHalationSpatialScale);
 
-    _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
-    _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
-    _pGrainPreset = fetchChoiceParam(JuicerParams::kGrainPreset);
-    _pGrainParticleAreaUm2 = fetchDoubleParam(JuicerParams::kGrainParticleAreaUm2);
-    _pGrainAmplitude = fetchDoubleParam(JuicerParams::kGrainAmplitude);
-    _pGrainSharpness = fetchDoubleParam(JuicerParams::kGrainSharpness);
-    _pGrainChroma = fetchDoubleParam(JuicerParams::kGrainChroma);
-    _pGrainTexture = fetchDoubleParam(JuicerParams::kGrainTexture);
-    _pGrainParticleScaleMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleMaster);
-    _pGrainParticleScaleLayersMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleLayersMaster);
-    _pGrainDensityMinMaster = fetchDoubleParam(JuicerParams::kGrainDensityMinMaster);
-    _pGrainUniformityMaster = fetchDoubleParam(JuicerParams::kGrainUniformityMaster);
-    _pGrainParticleScale = fetchDouble3DParam(JuicerParams::kGrainParticleScale);
-    _pGrainParticleScaleLayers = fetchDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
-    _pGrainDensityMin = fetchDouble3DParam(JuicerParams::kGrainDensityMin);
-    _pGrainUniformity = fetchDouble3DParam(JuicerParams::kGrainUniformity);
-    _pGrainBlur = fetchDoubleParam(JuicerParams::kGrainBlur);
-    _pGrainBlurDyeCloudsUm = fetchDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
-    _pGrainSizeMixWeight = fetchDoubleParam(JuicerParams::kGrainSizeMixWeight);
-    _pGrainSizeMixWeightMid = fetchDoubleParam(JuicerParams::kGrainSizeMixWeightMid);
-    _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
-    _pGrainClumpTemporalMix = fetchDoubleParam(JuicerParams::kGrainClumpTemporalMix);
-    _pGrainClumpMorphPeriodSec = fetchDoubleParam(JuicerParams::kGrainClumpMorphPeriodSec);
-    _pGrainDebugView = fetchChoiceParam(JuicerParams::kGrainDebugView);
-    _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
-    _pGrainResetAdvanced = fetchPushButtonParam(JuicerParams::kGrainResetAdvanced);
-    _pGateWeaveAmount = fetchDoubleParam(JuicerParams::kGateWeaveAmount);
-    _pFilmDustAmount = fetchDoubleParam(JuicerParams::kFilmDustAmount);
-    _pGateDustAmount = fetchDoubleParam(JuicerParams::kGateDustAmount);
-    _pFilmScratchAmount = fetchDoubleParam(JuicerParams::kFilmScratchAmount);
-    _pGateScratchAmount = fetchDoubleParam(JuicerParams::kGateScratchAmount);
+        _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
+        _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
+        _pGrainPreset = fetchChoiceParam(JuicerParams::kGrainPreset);
+        _pGrainParticleAreaUm2 = fetchDoubleParam(JuicerParams::kGrainParticleAreaUm2);
+        _pGrainAmplitude = fetchDoubleParam(JuicerParams::kGrainAmplitude);
+        _pGrainSharpness = fetchDoubleParam(JuicerParams::kGrainSharpness);
+        _pGrainChroma = fetchDoubleParam(JuicerParams::kGrainChroma);
+        _pGrainTexture = fetchDoubleParam(JuicerParams::kGrainTexture);
+        _pGrainParticleScaleMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleMaster);
+        _pGrainParticleScaleLayersMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleLayersMaster);
+        _pGrainDensityMinMaster = fetchDoubleParam(JuicerParams::kGrainDensityMinMaster);
+        _pGrainUniformityMaster = fetchDoubleParam(JuicerParams::kGrainUniformityMaster);
+        _pGrainParticleScale = fetchDouble3DParam(JuicerParams::kGrainParticleScale);
+        _pGrainParticleScaleLayers = fetchDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
+        _pGrainDensityMin = fetchDouble3DParam(JuicerParams::kGrainDensityMin);
+        _pGrainUniformity = fetchDouble3DParam(JuicerParams::kGrainUniformity);
+        _pGrainBlur = fetchDoubleParam(JuicerParams::kGrainBlur);
+        _pGrainBlurDyeCloudsUm = fetchDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
+        _pGrainSizeMixWeight = fetchDoubleParam(JuicerParams::kGrainSizeMixWeight);
+        _pGrainSizeMixWeightMid = fetchDoubleParam(JuicerParams::kGrainSizeMixWeightMid);
+        _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
+        _pGrainClumpTemporalMix = fetchDoubleParam(JuicerParams::kGrainClumpTemporalMix);
+        _pGrainClumpMorphPeriodSec = fetchDoubleParam(JuicerParams::kGrainClumpMorphPeriodSec);
+        _pGrainDebugView = fetchChoiceParam(JuicerParams::kGrainDebugView);
+        _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
+        _pGrainResetAdvanced = fetchPushButtonParam(JuicerParams::kGrainResetAdvanced);
+        _pGateWeaveAmount = fetchDoubleParam(JuicerParams::kGateWeaveAmount);
+        _pFilmDustAmount = fetchDoubleParam(JuicerParams::kFilmDustAmount);
+        _pGateDustAmount = fetchDoubleParam(JuicerParams::kGateDustAmount);
+        _pFilmScratchAmount = fetchDoubleParam(JuicerParams::kFilmScratchAmount);
+        _pGateScratchAmount = fetchDoubleParam(JuicerParams::kGateScratchAmount);
 
-    _cameraDiffusionUi.enabled =
-        fetchBooleanParam(JuicerParams::kCameraDiffusionEnabled);
-    _cameraDiffusionUi.family =
-        fetchChoiceParam(JuicerParams::kCameraDiffusionFamily);
-    _cameraDiffusionUi.strength =
-        fetchDoubleParam(JuicerParams::kCameraDiffusionStrength);
-    _cameraDiffusionUi.spatialScale =
-        fetchDoubleParam(JuicerParams::kCameraDiffusionSpatialScale);
-    _cameraDiffusionUi.haloWarmth =
-        fetchDoubleParam(JuicerParams::kCameraDiffusionHaloWarmth);
-    _cameraDiffusionUi.coreIntensity =
-        fetchDoubleParam(JuicerParams::kCameraDiffusionCoreIntensity);
-    _cameraDiffusionUi.coreSize =
-        fetchDoubleParam(JuicerParams::kCameraDiffusionCoreSize);
-    _cameraDiffusionUi.haloIntensity =
-        fetchDoubleParam(JuicerParams::kCameraDiffusionHaloIntensity);
-    _cameraDiffusionUi.haloSize =
-        fetchDoubleParam(JuicerParams::kCameraDiffusionHaloSize);
-    _cameraDiffusionUi.bloomIntensity =
-        fetchDoubleParam(JuicerParams::kCameraDiffusionBloomIntensity);
-    _cameraDiffusionUi.bloomSize =
-        fetchDoubleParam(JuicerParams::kCameraDiffusionBloomSize);
+        _cameraDiffusionUi.enabled =
+            fetchBooleanParam(JuicerParams::kCameraDiffusionEnabled);
+        _cameraDiffusionUi.family =
+            fetchChoiceParam(JuicerParams::kCameraDiffusionFamily);
+        _cameraDiffusionUi.strength =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionStrength);
+        _cameraDiffusionUi.spatialScale =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionSpatialScale);
+        _cameraDiffusionUi.haloWarmth =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloWarmth);
+        _cameraDiffusionUi.coreIntensity =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionCoreIntensity);
+        _cameraDiffusionUi.coreSize =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionCoreSize);
+        _cameraDiffusionUi.haloIntensity =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloIntensity);
+        _cameraDiffusionUi.haloSize =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloSize);
+        _cameraDiffusionUi.bloomIntensity =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionBloomIntensity);
+        _cameraDiffusionUi.bloomSize =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionBloomSize);
 
-    _printDiffusionUi.enabled =
-        fetchBooleanParam(JuicerParams::kPrintDiffusionEnabled);
-    _printDiffusionUi.family =
-        fetchChoiceParam(JuicerParams::kPrintDiffusionFamily);
-    _printDiffusionUi.strength =
-        fetchDoubleParam(JuicerParams::kPrintDiffusionStrength);
-    _printDiffusionUi.spatialScale =
-        fetchDoubleParam(JuicerParams::kPrintDiffusionSpatialScale);
-    _printDiffusionUi.haloWarmth =
-        fetchDoubleParam(JuicerParams::kPrintDiffusionHaloWarmth);
-    _printDiffusionUi.coreIntensity =
-        fetchDoubleParam(JuicerParams::kPrintDiffusionCoreIntensity);
-    _printDiffusionUi.coreSize =
-        fetchDoubleParam(JuicerParams::kPrintDiffusionCoreSize);
-    _printDiffusionUi.haloIntensity =
-        fetchDoubleParam(JuicerParams::kPrintDiffusionHaloIntensity);
-    _printDiffusionUi.haloSize =
-        fetchDoubleParam(JuicerParams::kPrintDiffusionHaloSize);
-    _printDiffusionUi.bloomIntensity =
-        fetchDoubleParam(JuicerParams::kPrintDiffusionBloomIntensity);
-    _printDiffusionUi.bloomSize =
-        fetchDoubleParam(JuicerParams::kPrintDiffusionBloomSize);
+        _printDiffusionUi.enabled =
+            fetchBooleanParam(JuicerParams::kPrintDiffusionEnabled);
+        _printDiffusionUi.family =
+            fetchChoiceParam(JuicerParams::kPrintDiffusionFamily);
+        _printDiffusionUi.strength =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionStrength);
+        _printDiffusionUi.spatialScale =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionSpatialScale);
+        _printDiffusionUi.haloWarmth =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloWarmth);
+        _printDiffusionUi.coreIntensity =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionCoreIntensity);
+        _printDiffusionUi.coreSize =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionCoreSize);
+        _printDiffusionUi.haloIntensity =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloIntensity);
+        _printDiffusionUi.haloSize =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloSize);
+        _printDiffusionUi.bloomIntensity =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionBloomIntensity);
+        _printDiffusionUi.bloomSize =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionBloomSize);
 
-    _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
-    _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
-    _pGlareRoughness = fetchDoubleParam(JuicerParams::kGlareRoughness);
-    _pGlareBlurSigmaPx = fetchDoubleParam(JuicerParams::kGlareBlurSigmaPx);
-    _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kPrintShadowCompensationFactor);
-    _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kPrintShadowCompensationDensity);
-    _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kPrintShadowCompensationTransition);
+        _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
+        _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
+        _pGlareRoughness = fetchDoubleParam(JuicerParams::kGlareRoughness);
+        _pGlareBlurSigmaPx = fetchDoubleParam(JuicerParams::kGlareBlurSigmaPx);
+        _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kPrintShadowCompensationFactor);
+        _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kPrintShadowCompensationDensity);
+        _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kPrintShadowCompensationTransition);
 
-    std::string grainPresetLabel;
-    _pGrainPreset->getLabel(grainPresetLabel);
-    if (!grainPresetLabel.empty()) {
-        _grainPresetLabel = grainPresetLabel;
-    }
-    const std::string grainChromaHint = _pGrainChroma->getHint();
-    if (!grainChromaHint.empty()) {
-        _grainChromaHint = grainChromaHint;
-    }
-
-    auto initMasterCache = [](OFX::DoubleParam* param, double& outValue) {
-        double v = 0.0;
-        param->getValue(v);
-        outValue = v;
-    };
-    initMasterCache(_pGrainParticleScaleMaster, _grainParticleScaleMasterLast);
-    initMasterCache(_pGrainParticleScaleLayersMaster, _grainParticleScaleLayersMasterLast);
-    initMasterCache(_pGrainDensityMinMaster, _grainDensityMinMasterLast);
-    initMasterCache(_pGrainUniformityMaster, _grainUniformityMasterLast);
-
-    // Own per-instance state
-    _state = std::make_unique<InstanceState>();
-    JuicerAtomic::store_shared_ptr(&_state->activeDirectState, std::shared_ptr<const DirectRenderState>{});
-    JuicerAtomic::store_shared_ptr(&_state->activePrintState, std::shared_ptr<const PrintRenderState>{});
-    {
-        const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-        const std::uint64_t seedFields[2] = {
-            static_cast<std::uint64_t>(now),
-            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))};
-        std::uint64_t seed = Hash::hash_bytes(seedFields, sizeof(seedFields));
-        if (seed == 0) {
-            seed = 1;
+        std::string grainPresetLabel;
+        _pGrainPreset->getLabel(grainPresetLabel);
+        if (!grainPresetLabel.empty()) {
+            _grainPresetLabel = grainPresetLabel;
         }
-        _state->sessionSeed = seed;
-        _state->instanceToken = seed;
-    }
-
-    std::string routeDiagnostic;
-    std::string gammaFilmProfileKey;
-    Spektrafilm::ScanRoute diffusionRoute{};
-    Spektrafilm::ScanRoute gammaRoute{};
-    // Both route reads must succeed before either helper changes route-dependent UI.
-    if (!resolveDiffusionControlRoute(diffusionRoute, routeDiagnostic) ||
-        !resolveGammaControlRoute(gammaRoute, gammaFilmProfileKey, routeDiagnostic)) {
-        JTRACE("BUILD", routeDiagnostic);
-        try {
-            sendMessage(OFX::Message::eMessageError, "FilmJuicerRouteResolution", routeDiagnostic);
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
+        const std::string grainChromaHint = _pGrainChroma->getHint();
+        if (!grainChromaHint.empty()) {
+            _grainChromaHint = grainChromaHint;
         }
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-    updateDiffusionControlState(diffusionRoute);
-    updateGammaControlState(gammaRoute, gammaFilmProfileKey);
-    updateSpectralControlState();
 
-    // Defer initial pending render state publication until the first parameter change.
+        auto initMasterCache = [&](OFX::DoubleParam* param, double& outValue) {
+            double v = 0.0;
+            param->getValue(v);
+            cacheGrainMaster(outValue, v);
+        };
+        initMasterCache(_pGrainParticleScaleMaster, _grainParticleScaleMasterLast);
+        initMasterCache(_pGrainParticleScaleLayersMaster, _grainParticleScaleLayersMasterLast);
+        initMasterCache(_pGrainDensityMinMaster, _grainDensityMinMasterLast);
+        initMasterCache(_pGrainUniformityMaster, _grainUniformityMasterLast);
+
+        // Own per-instance state
+        _submissionState = std::make_unique<NativeSubmissionState>();
+        {
+            const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+            const std::uint64_t seedFields[2] = {
+                static_cast<std::uint64_t>(now),
+                static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))};
+            std::uint64_t seed = Hash::hash_bytes(seedFields, sizeof(seedFields));
+            if (seed == 0) {
+                seed = 1;
+            }
+            _submissionState->sessionSeed = seed;
+            _submissionState->instanceToken = seed;
+        }
+
+        const HostEditScope uiContext(_publication);
+        std::string routeDiagnostic;
+        std::string gammaFilmProfileKey;
+        Spektrafilm::ScanRoute diffusionRoute{};
+        Spektrafilm::ScanRoute gammaRoute{};
+        // Both route reads must succeed before either helper changes route-dependent UI.
+        if (!resolveDiffusionControlRoute(diffusionRoute, routeDiagnostic) ||
+            !resolveGammaControlRoute(gammaRoute, gammaFilmProfileKey, routeDiagnostic)) {
+            JTRACE("BUILD", routeDiagnostic);
+            try {
+                sendMessage(OFX::Message::eMessageError, "FilmJuicerRouteResolution", routeDiagnostic);
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        updateDiffusionControlState(diffusionRoute);
+        updateGammaControlState(gammaRoute, gammaFilmProfileKey);
+        updateSpectralControlState();
+
+        // Defer initial pending render state publication until the first parameter change.
+    }
+catch (const RenderInstance::CreationFailure&) {
+    throw OFX::Exception::Suite(kOfxStatErrFatal);
 }
 
 JuicerEffect::~JuicerEffect() {
     try {
         std::array<char, 512> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-        const auto result = fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), _state->instanceToken, &error);
+        const auto result = fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), _submissionState->instanceToken, &error);
         if (result.category != FJ_STATUS_SUCCESS) {
             JTRACE("MSLCY", diagnostic.data());
         }
-        _state.reset();
+        _submissionState.reset();
     } catch (...) {
         JuicerLogging::discard_current_exception();
     }
@@ -1777,68 +1884,47 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const bool fullFrame = (roi.x1 == fullBounds.x1 && roi.y1 == fullBounds.y1 &&
                             roi.x2 == fullBounds.x2 && roi.y2 == fullBounds.y2);
 
-    PendingRenderAdmissionResult admission = admit_pending_render_state(*_state);
-    if (admission.status == PendingRenderAdmissionStatus::NeedsSnapshotAcquisition) {
-        initialize_pending_render_state();
-        admission = admit_pending_render_state(*_state);
+    std::array<char, 2048> admissionText{};
+    FjErrorBuffer admissionError{admissionText.data(), admissionText.size(), 0};
+    std::uint32_t admissionKind = FJ_ADMISSION_NONE;
+    std::optional<PreparedState> admitted;
+    FjAssets* assets = JuicerProcess::root().assets().borrow_rust_assets();
+    FjStatus admissionStatus = _publication.admit(assets, admissionKind, admitted, admissionError);
+    if (admissionKind == FJ_ADMISSION_NEEDS_CAPTURE || admissionKind == FJ_ADMISSION_NEEDS_REFRESH) {
+        acquire_render_capture(admissionKind == FJ_ADMISSION_NEEDS_CAPTURE ? FJ_CAPTURE_INITIAL : FJ_CAPTURE_REFRESH);
+        admissionStatus = _publication.admit(assets, admissionKind, admitted, admissionError);
     }
-    switch (admission.status) {
-        case PendingRenderAdmissionStatus::NeedsSnapshotAcquisition:
-            trace_and_throw_render_fatal(RenderFatalTrace{
-                "BUILD",
-                "FATAL: focused render snapshot acquisition did not publish state"});
-        case PendingRenderAdmissionStatus::InvalidSnapshotControls:
-        case PendingRenderAdmissionStatus::RebuildFailed: {
-            try {
-                std::string deliveryText = admission.diagnostic.empty()
-                                               ? "focused render admission failed"
-                                               : admission.diagnostic;
-                for (std::size_t position = 0;
-                     (position = deliveryText.find('%', position)) !=
-                     std::string::npos;
-                     position += 2u) {
-                    deliveryText.insert(position, 1u, '%');
-                }
-                sendMessage(
-                    OFX::Message::eMessageError,
-                    "FilmJuicerRenderAdmission",
-                    deliveryText);
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
-            trace_and_throw_render_fatal(RenderFatalTrace{
-                "BUILD",
-                admission.diagnostic.empty()
-                    ? "FATAL: focused render admission failed"
-                    : admission.diagnostic.c_str()});
+    if (admissionKind == FJ_ADMISSION_NEEDS_CAPTURE || admissionKind == FJ_ADMISSION_NEEDS_REFRESH ||
+        admissionKind == FJ_ADMISSION_CAPTURING) {
+        throw OFX::Exception::Suite(kOfxStatFailed);
+    }
+    if (admissionStatus.category != FJ_STATUS_SUCCESS || admissionKind != FJ_ADMISSION_READY || !admitted) {
+        if (admissionStatus.category == FJ_STATUS_ALLOCATION_FAILURE) {
+            throw std::bad_alloc();
         }
-        case PendingRenderAdmissionStatus::AdmittedDirect:
-        case PendingRenderAdmissionStatus::AdmittedPrint:
-            break;
+        try {
+            std::string deliveryText(admissionText.data(), admissionError.length);
+            for (std::size_t position = 0; (position = deliveryText.find('%', position)) != std::string::npos; position += 2u) {
+                deliveryText.insert(position, 1u, '%');
+            }
+            sendMessage(OFX::Message::eMessageError, "FilmJuicerRenderAdmission", deliveryText);
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", admissionText.data()});
     }
-
-    const bool printRoute =
-        admission.status == PendingRenderAdmissionStatus::AdmittedPrint;
-    const bool directCudaRoute = cudaRoute && !printRoute;
-    if (!fullFrame && !directCudaRoute) {
-        JTRACE("RENDER", "FATAL: render window must match full frame; tiles/ROIs are unsupported");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
-    const std::shared_ptr<const DirectRenderState> directState = admission.directState;
-    const std::shared_ptr<const PrintRenderState> printState = admission.printState;
-    const PreparedState& prepared = printRoute ? printState->prepared : directState->prepared;
+    const PreparedState& prepared = *admitted;
     std::array<char, 2048> stateText{};
     FjErrorBuffer stateError{stateText.data(), stateText.size(), 0};
     FjPreparedStateView stateView{};
-    const FjStatus viewStatus = prepared.view(stateView, stateError);
-    if (viewStatus.category != FJ_STATUS_SUCCESS) {
-        JTRACE("CUDA", std::string(stateText.data(), stateError.length));
+    require_instance_success(prepared.view(stateView, stateError));
+    if (stateView.route > static_cast<std::uint32_t>(Spektrafilm::ScanRoute::PositivePrintScan)) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    if (stateView.route > static_cast<std::uint32_t>(Spektrafilm::ScanRoute::PositivePrintScan) ||
-        Spektrafilm::scan_route_is_print(static_cast<Spektrafilm::ScanRoute>(stateView.route)) != printRoute) {
-        JTRACE("CUDA", "FATAL: prepared route does not match its direct/print publication");
+    const bool printRoute = Spektrafilm::scan_route_is_print(static_cast<Spektrafilm::ScanRoute>(stateView.route));
+    const bool directCudaRoute = cudaRoute && !printRoute;
+    if (!fullFrame && !directCudaRoute) {
+        JTRACE("RENDER", "FATAL: render window must match full frame; tiles/ROIs are unsupported");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
@@ -1862,7 +1948,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 #endif
     if (traceVerbose) {
         std::string msg = printRoute ? "render print state build=" : "render direct state build=";
-        msg += std::to_string(printRoute ? printState->buildCounter : directState->buildCounter);
+        msg += std::to_string(prepared.build());
         msg += " recipe_hash=";
         msg += std::to_string(framePolicy.recipe_hash);
         JTRACE_VERBOSE("RENDER", msg);
@@ -1893,31 +1979,31 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     images.src = srcImg.get();
     images.dst = dstImg.get();
     proc.setSrcDst(images);
-    proc.setInstanceState(_state.get());
+    proc.setSubmissionState(_submissionState.get());
     const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
 
     if (printRoute) {
         JuicerProcessor::PrintFrameRequest frameRequest{};
-        frameRequest.state = printState;
+        frameRequest.renderState = &prepared;
         frameRequest.framePolicy = framePolicy;
         frameRequest.renderWindow = roi;
         frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;
-        frameRequest.sessionSeed = _state->sessionSeed;
-        frameRequest.instanceToken = _state->instanceToken;
+        frameRequest.sessionSeed = _submissionState->sessionSeed;
+        frameRequest.instanceToken = _submissionState->instanceToken;
         frameRequest.clipToken = renderClipToken;
         frameRequest.frameTime = args.time;
         frameRequest.frameRate = getFrameRate();
         proc.setPrintFrameRequest(frameRequest);
     } else {
         JuicerProcessor::DirectFrameRequest frameRequest{};
-        frameRequest.state = directState;
+        frameRequest.renderState = &prepared;
         frameRequest.framePolicy = framePolicy;
         frameRequest.renderWindow = roi;
         frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;
-        frameRequest.sessionSeed = _state->sessionSeed;
-        frameRequest.instanceToken = _state->instanceToken;
+        frameRequest.sessionSeed = _submissionState->sessionSeed;
+        frameRequest.instanceToken = _submissionState->instanceToken;
         frameRequest.clipToken = renderClipToken;
         frameRequest.frameTime = args.time;
         frameRequest.frameRate = getFrameRate();
@@ -1929,297 +2015,321 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.process();
 }
 
+bool JuicerEffect::plugin_edit_suppressed() const noexcept {
+    return HostCallScope::current && &HostCallScope::current->instance == &_publication;
+}
+
 void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std::string& paramName) {
     const bool traceInfo = JTRACE_ENABLED(1);
 
     // Suppress recursion while we are programmatically setting params
-    if (changed_param_suppressed(*_state)) {
+    if (args.reason == OFX::eChangePluginEdit && plugin_edit_suppressed()) {
         trace_changed_param_gate(traceInfo, paramName, "changedParam suppressed for '");
         return;
     }
 
-    auto apply_action_then_rebuild = [&](const auto& applyFn) {
-        applyFn();
-        onParamsPossiblyChanged(paramName.c_str());
-    };
+    bool refresh = false;
+    {
+        CaptureAction action(_publication, FJ_CAPTURE_CHANGE, true);
+        try {
+            [&]() {
+                auto apply_action_then_rebuild = [&](const auto& applyFn) {
+                    applyFn();
+                    onParamsPossiblyChanged(paramName.c_str());
+                };
 
-    const bool userEdit = (args.reason == OFX::eChangeUserEdit);
+                const bool userEdit = (args.reason == OFX::eChangeUserEdit);
 
-    if (userEdit && param_name_is(paramName, JuicerParams::kCameraFilmFormatPreset)) {
-        const int presetIndex = read_choice_param_clamped(
-            _pCameraFilmFormatPreset,
-            0,
-            static_cast<int>(JuicerParams::kCameraFilmFormatPresets.size()));
-        if (presetIndex > 0) {
-            const ScopedParamEventSuppression suppressEvents(*_state);
-            set_double_param(
-                _pCameraFilmFormat,
-                JuicerParams::kCameraFilmFormatPresets[static_cast<std::size_t>(presetIndex - 1)]
-                    .longEdgeMm);
+                if (userEdit && param_name_is(paramName, JuicerParams::kCameraFilmFormatPreset)) {
+                    const int presetIndex = read_choice_param_clamped(
+                        _pCameraFilmFormatPreset,
+                        0,
+                        static_cast<int>(JuicerParams::kCameraFilmFormatPresets.size()));
+                    if (presetIndex > 0) {
+                        const HostEditScope suppressEvents(_publication);
+                        set_double_param(
+                            _pCameraFilmFormat,
+                            JuicerParams::kCameraFilmFormatPresets[static_cast<std::size_t>(presetIndex - 1)]
+                                .longEdgeMm);
+                    }
+                } else if (userEdit && param_name_is(paramName, JuicerParams::kCameraFilmFormatMm)) {
+                    const HostEditScope suppressEvents(_publication);
+                    registered_host_write([&]() {
+                        _pCameraFilmFormatPreset->setValue(0);
+                    });
+                }
+
+                if (userEdit && is_coupler_gamma_numeric_param_name(paramName)) {
+                    const HostEditScope suppressEvents(_publication);
+                    set_bool_param(_pCouplersGammaUseStock, false);
+                }
+
+                if (param_name_is(paramName, JuicerParams::kFilmProfileKey)) {
+                    const std::string filmKey =
+                        read_str_choice_param_or_empty(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+                    const Spektrafilm::ProfilePolarity polarity = capture_profile_polarity_for_key(filmKey);
+                    const Spektrafilm::ScanRoute defaultRoute = Spektrafilm::default_scan_route_for_polarity(polarity);
+                    const HostEditScope suppressEvents(_publication);
+                    set_str_choice_param(_pScanRoute, Spektrafilm::scan_route_key(defaultRoute));
+                }
+
+                auto should_apply_grain_preset_defaults = [&]() {
+                    return grain_preset_param_changed_by_user(userEdit, paramName);
+                };
+
+                auto should_apply_grain_reset_advanced_defaults = [&]() {
+                    return grain_reset_advanced_param_changed_by_user(userEdit, paramName);
+                };
+
+                auto resolve_grain_preset_index_for_user_edit = [&]() {
+                    return read_choice_param_clamped(_pGrainPreset, 0, 2);
+                };
+
+                auto apply_grain_preset_defaults_then_rebuild = [&](int presetIndex) {
+                    apply_action_then_rebuild([&]() {
+                        applyGrainPresetDefaults(presetIndex);
+                    });
+                };
+
+                auto apply_grain_reset_advanced_then_rebuild = [&]() {
+                    apply_action_then_rebuild([&]() {
+                        resetGrainAdvancedControls();
+                    });
+                };
+
+                auto process_immediate_rebuild_actions = [&]() -> bool {
+                    if (should_apply_grain_preset_defaults()) {
+                        const int presetIndex = resolve_grain_preset_index_for_user_edit();
+                        apply_grain_preset_defaults_then_rebuild(presetIndex);
+                        return true;
+                    }
+                    if (should_apply_grain_reset_advanced_defaults()) {
+                        apply_grain_reset_advanced_then_rebuild();
+                        return true;
+                    }
+                    return false;
+                };
+
+                if (process_immediate_rebuild_actions()) {
+                    return;
+                }
+
+                auto read_master_value = [&](OFX::DoubleParam* masterParam, double lo, double hi, double& master) -> bool {
+                    master = read_double_param(masterParam);
+                    if (!is_finite(master)) {
+                        return false;
+                    }
+                    master = std::clamp(master, lo, hi);
+                    return true;
+                };
+
+                auto sanitize_triplet_values = [&](std::array<double, 3>& values, double fallback, double lo, double hi) {
+                    for (double& value : values) {
+                        value = is_finite(value) ? std::clamp(value, lo, hi) : fallback;
+                    }
+                };
+
+                auto set_triplet_suppressed = [&](OFX::Double3DParam* advParam, const std::array<double, 3>& values) {
+                    const HostEditScope suppressEvents(_publication);
+                    set_double3_param(advParam, values[0], values[1], values[2]);
+                };
+
+                auto compute_triplet_mean = [&](const std::array<double, 3>& values) {
+                    return (values[0] + values[1] + values[2]) / 3.0;
+                };
+
+                auto write_triplet_from_ratio =
+                    [&](std::array<double, 3>& values, double master, const std::array<double, 3>& ratio, double lo, double hi) {
+                        double* valueIt = values.data();
+                        const double* ratioIt = ratio.data();
+                        for (int i = 0; i < 3; ++i, ++valueIt, ++ratioIt) {
+                            *valueIt = std::clamp(master * *ratioIt, lo, hi);
+                        }
+                    };
+
+                auto apply_ratio_master = [&](OFX::DoubleParam* masterParam,
+                                              OFX::Double3DParam* advParam,
+                                              const std::array<double, 3>& fallbackRatio,
+                                              double& masterCache,
+                                              double lo,
+                                              double hi) {
+                    double master = 0.0;
+                    if (!read_master_value(masterParam, lo, hi, master)) {
+                        return;
+                    }
+
+                    std::array<double, 3> values{{0.0, 0.0, 0.0}};
+                    advParam->getValue(values[0], values[1], values[2]);
+                    sanitize_triplet_values(values, master, lo, hi);
+
+                    std::array<double, 3> ratio = fallbackRatio;
+                    const double mean = compute_triplet_mean(values);
+                    if (is_positive_finite(mean)) {
+                        double* ratioIt = ratio.data();
+                        const double* valueIt = values.data();
+                        for (int i = 0; i < 3; ++i, ++ratioIt, ++valueIt) {
+                            *ratioIt = *valueIt / mean;
+                        }
+                    }
+                    write_triplet_from_ratio(values, master, ratio, lo, hi);
+                    set_triplet_suppressed(advParam, values);
+                    cacheGrainMaster(masterCache, master);
+                };
+
+                struct RatioMasterUpdateBinding {
+                    OFX::DoubleParam* masterParam = nullptr;
+                    OFX::Double3DParam* tripletParam = nullptr;
+                    const std::array<double, 3>* fallbackRatio = nullptr;
+                    double* masterCache = nullptr;
+                    double lo = 0.0;
+                    double hi = 0.0;
+                };
+
+                auto resolve_grain_ratio_update =
+                    [&](GrainRatioMasterSelector selector, const GrainRatioSet& ratios) -> RatioMasterUpdateBinding {
+                    switch (selector) {
+                        case GrainRatioMasterSelector::Scale:
+                            return {_pGrainParticleScaleMaster, _pGrainParticleScale, &ratios.scale, &_grainParticleScaleMasterLast, 0.0, 10.0};
+                        case GrainRatioMasterSelector::ScaleLayers:
+                            return {_pGrainParticleScaleLayersMaster, _pGrainParticleScaleLayers, &ratios.scaleLayers, &_grainParticleScaleLayersMasterLast, 0.0, 10.0};
+                        case GrainRatioMasterSelector::DensityMin:
+                            return {_pGrainDensityMinMaster, _pGrainDensityMin, &ratios.densityMin, &_grainDensityMinMasterLast, 0.0, 1.0};
+                        case GrainRatioMasterSelector::Uniformity:
+                            return {_pGrainUniformityMaster, _pGrainUniformity, &ratios.uniformity, &_grainUniformityMasterLast, 0.0, 1.0};
+                        case GrainRatioMasterSelector::None:
+                        default:
+                            return {};
+                    }
+                };
+
+                auto try_read_grain_user_edit_unit =
+                    [&](const char* expectedParam, OFX::DoubleParam* sourceParam, double& valueOut) -> bool {
+                    if (!grain_user_edit_active(userEdit, paramName, expectedParam)) {
+                        return false;
+                    }
+                    return read_finite_unit_interval(sourceParam, valueOut);
+                };
+
+                auto with_param_event_suppression = [&](const auto& applyFn) {
+                    const HostEditScope suppressEvents(_publication);
+                    applyFn();
+                };
+
+                struct GrainTextureLinkedValues {
+                    double sizeMixWeight = 0.0;
+                    double microCell = 0.0;
+                    double microSigma = 0.0;
+                };
+
+                auto compute_grain_texture_linked_values = [&](double texture) -> GrainTextureLinkedValues {
+                    GrainTextureLinkedValues values{};
+                    values.sizeMixWeight = std::clamp(grain_lerp(0.072, 0.38, texture), 0.0, 1.0);
+                    values.microCell = std::clamp(grain_lerp(50.0, 70.0, texture), 0.0, 1000.0);
+                    values.microSigma = std::clamp(grain_lerp(140.0, 200.0, texture), 0.0, 1000.0);
+                    return values;
+                };
+
+                auto apply_grain_linked_unit_edit =
+                    [&](const char* expectedParam, OFX::DoubleParam* sourceParam, const auto& applyFn) {
+                        double value = 0.0;
+                        if (!try_read_grain_user_edit_unit(expectedParam, sourceParam, value)) {
+                            return;
+                        }
+                        applyFn(value);
+                    };
+
+                auto write_grain_blur_dye_clouds = [&](double blurDyeClouds) {
+                    with_param_event_suppression([&]() {
+                        set_double_param(_pGrainBlurDyeCloudsUm, blurDyeClouds);
+                    });
+                };
+
+                auto write_grain_texture_linked_values = [&](const GrainTextureLinkedValues& linked) {
+                    with_param_event_suppression([&]() {
+                        set_double_param(_pGrainSizeMixWeight, linked.sizeMixWeight);
+                        set_double2_param(_pGrainMicroStructure, linked.microCell, linked.microSigma);
+                    });
+                };
+
+                auto should_mark_grain_preset_custom = [&]() {
+                    return userEdit && is_grain_preset_input_param(paramName);
+                };
+
+                auto should_process_grain_preset_custom_label = [&]() {
+                    return should_mark_grain_preset_custom();
+                };
+
+                auto apply_grain_sharpness_linked_update = [&]() {
+                    apply_grain_linked_unit_edit(
+                        JuicerParams::kGrainSharpness,
+                        _pGrainSharpness,
+                        [&](double sharpness) {
+                            const double blurDyeClouds = std::clamp(grain_lerp(1.40, 0.60, sharpness), 0.0, 10.0);
+                            write_grain_blur_dye_clouds(blurDyeClouds);
+                        });
+                };
+
+                auto apply_grain_texture_linked_update = [&]() {
+                    apply_grain_linked_unit_edit(
+                        JuicerParams::kGrainTexture,
+                        _pGrainTexture,
+                        [&](double texture) {
+                            const GrainTextureLinkedValues linked = compute_grain_texture_linked_values(texture);
+                            write_grain_texture_linked_values(linked);
+                        });
+                };
+
+                auto apply_grain_linked_updates = [&]() {
+                    apply_grain_sharpness_linked_update();
+                    apply_grain_texture_linked_update();
+                };
+
+                if (should_process_grain_preset_custom_label()) {
+                    updateGrainPresetLabel(true);
+                }
+
+                updateGrainChromaEnabled();
+
+                const GrainRatioMasterSelector grainMaster =
+                    userEdit ? grain_ratio_master_selector(paramName) : GrainRatioMasterSelector::None;
+                if (grainMaster != GrainRatioMasterSelector::None) {
+                    const GrainRatioSet ratios = normalized_default_grain_ratios();
+                    const RatioMasterUpdateBinding ratioBinding = resolve_grain_ratio_update(grainMaster, ratios);
+                    apply_ratio_master(
+                        ratioBinding.masterParam,
+                        ratioBinding.tripletParam,
+                        *ratioBinding.fallbackRatio,
+                        *ratioBinding.masterCache,
+                        ratioBinding.lo,
+                        ratioBinding.hi);
+                }
+                apply_grain_linked_updates();
+                std::string routeDiagnostic;
+                std::string gammaFilmProfileKey;
+                Spektrafilm::ScanRoute diffusionRoute{};
+                Spektrafilm::ScanRoute gammaRoute{};
+                if (!resolveDiffusionControlRoute(diffusionRoute, routeDiagnostic) ||
+                    !resolveGammaControlRoute(gammaRoute, gammaFilmProfileKey, routeDiagnostic)) {
+                    CaptureAction::current->fail(FJ_CAPTURE_INVALID_CONTROLS, routeDiagnostic.c_str());
+                    return;
+                }
+                updateDiffusionControlState(diffusionRoute);
+                updateGammaControlState(gammaRoute, gammaFilmProfileKey);
+                updateSpectralControlState();
+                onParamsPossiblyChanged(paramName.c_str());
+            }();
+        } catch (const std::bad_alloc&) {
+            action.fail(FJ_CAPTURE_ALLOCATION_FAILURE, "host parameter action allocation failed");
+            throw;
+        } catch (...) {
+            action.fail(FJ_CAPTURE_HOST_FAILURE, "host parameter action failed");
+            throw;
         }
-    } else if (userEdit && param_name_is(paramName, JuicerParams::kCameraFilmFormatMm)) {
-        const ScopedParamEventSuppression suppressEvents(*_state);
-        _pCameraFilmFormatPreset->setValue(0);
+        refresh = action.refresh;
     }
-
-    if (userEdit && is_coupler_gamma_numeric_param_name(paramName)) {
-        const ScopedParamEventSuppression suppressEvents(*_state);
-        set_bool_param(_pCouplersGammaUseStock, false);
+    if (refresh) {
+        acquire_render_capture(FJ_CAPTURE_REFRESH);
     }
-
-    if (param_name_is(paramName, JuicerParams::kFilmProfileKey)) {
-        const std::string filmKey =
-            read_str_choice_param_or_empty(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
-        const Spektrafilm::ProfilePolarity polarity = capture_profile_polarity_for_key(filmKey);
-        const Spektrafilm::ScanRoute defaultRoute = Spektrafilm::default_scan_route_for_polarity(polarity);
-        const ScopedParamEventSuppression suppressEvents(*_state);
-        set_str_choice_param(_pScanRoute, Spektrafilm::scan_route_key(defaultRoute));
-    }
-
-    auto should_apply_grain_preset_defaults = [&]() {
-        return grain_preset_param_changed_by_user(userEdit, paramName);
-    };
-
-    auto should_apply_grain_reset_advanced_defaults = [&]() {
-        return grain_reset_advanced_param_changed_by_user(userEdit, paramName);
-    };
-
-    auto resolve_grain_preset_index_for_user_edit = [&]() {
-        return read_choice_param_clamped(_pGrainPreset, 0, 2);
-    };
-
-    auto apply_grain_preset_defaults_then_rebuild = [&](int presetIndex) {
-        apply_action_then_rebuild([&]() {
-            applyGrainPresetDefaults(presetIndex);
-        });
-    };
-
-    auto apply_grain_reset_advanced_then_rebuild = [&]() {
-        apply_action_then_rebuild([&]() {
-            resetGrainAdvancedControls();
-        });
-    };
-
-    auto process_immediate_rebuild_actions = [&]() -> bool {
-        if (should_apply_grain_preset_defaults()) {
-            const int presetIndex = resolve_grain_preset_index_for_user_edit();
-            apply_grain_preset_defaults_then_rebuild(presetIndex);
-            return true;
-        }
-        if (should_apply_grain_reset_advanced_defaults()) {
-            apply_grain_reset_advanced_then_rebuild();
-            return true;
-        }
-        return false;
-    };
-
-    if (process_immediate_rebuild_actions()) {
-        return;
-    }
-
-    auto read_master_value = [&](OFX::DoubleParam* masterParam, double lo, double hi, double& master) -> bool {
-        master = read_double_param(masterParam);
-        if (!is_finite(master)) {
-            return false;
-        }
-        master = std::clamp(master, lo, hi);
-        return true;
-    };
-
-    auto sanitize_triplet_values = [&](std::array<double, 3>& values, double fallback, double lo, double hi) {
-        for (double& value : values) {
-            value = is_finite(value) ? std::clamp(value, lo, hi) : fallback;
-        }
-    };
-
-    auto set_triplet_suppressed = [&](OFX::Double3DParam* advParam, const std::array<double, 3>& values) {
-        const ScopedParamEventSuppression suppressEvents(*_state);
-        set_double3_param(advParam, values[0], values[1], values[2]);
-    };
-
-    auto compute_triplet_mean = [&](const std::array<double, 3>& values) {
-        return (values[0] + values[1] + values[2]) / 3.0;
-    };
-
-    auto write_triplet_from_ratio =
-        [&](std::array<double, 3>& values, double master, const std::array<double, 3>& ratio, double lo, double hi) {
-            double* valueIt = values.data();
-            const double* ratioIt = ratio.data();
-            for (int i = 0; i < 3; ++i, ++valueIt, ++ratioIt) {
-                *valueIt = std::clamp(master * *ratioIt, lo, hi);
-            }
-        };
-
-    auto apply_ratio_master = [&](OFX::DoubleParam* masterParam,
-                                  OFX::Double3DParam* advParam,
-                                  const std::array<double, 3>& fallbackRatio,
-                                  double& masterCache,
-                                  double lo,
-                                  double hi) {
-        double master = 0.0;
-        if (!read_master_value(masterParam, lo, hi, master)) {
-            return;
-        }
-
-        std::array<double, 3> values{{0.0, 0.0, 0.0}};
-        advParam->getValue(values[0], values[1], values[2]);
-        sanitize_triplet_values(values, master, lo, hi);
-
-        std::array<double, 3> ratio = fallbackRatio;
-        const double mean = compute_triplet_mean(values);
-        if (is_positive_finite(mean)) {
-            double* ratioIt = ratio.data();
-            const double* valueIt = values.data();
-            for (int i = 0; i < 3; ++i, ++ratioIt, ++valueIt) {
-                *ratioIt = *valueIt / mean;
-            }
-        }
-        write_triplet_from_ratio(values, master, ratio, lo, hi);
-        set_triplet_suppressed(advParam, values);
-        masterCache = master;
-    };
-
-    struct RatioMasterUpdateBinding {
-        OFX::DoubleParam* masterParam = nullptr;
-        OFX::Double3DParam* tripletParam = nullptr;
-        const std::array<double, 3>* fallbackRatio = nullptr;
-        double* masterCache = nullptr;
-        double lo = 0.0;
-        double hi = 0.0;
-    };
-
-    auto resolve_grain_ratio_update =
-        [&](GrainRatioMasterSelector selector, const GrainRatioSet& ratios) -> RatioMasterUpdateBinding {
-        switch (selector) {
-            case GrainRatioMasterSelector::Scale:
-                return {_pGrainParticleScaleMaster, _pGrainParticleScale, &ratios.scale, &_grainParticleScaleMasterLast, 0.0, 10.0};
-            case GrainRatioMasterSelector::ScaleLayers:
-                return {_pGrainParticleScaleLayersMaster, _pGrainParticleScaleLayers, &ratios.scaleLayers, &_grainParticleScaleLayersMasterLast, 0.0, 10.0};
-            case GrainRatioMasterSelector::DensityMin:
-                return {_pGrainDensityMinMaster, _pGrainDensityMin, &ratios.densityMin, &_grainDensityMinMasterLast, 0.0, 1.0};
-            case GrainRatioMasterSelector::Uniformity:
-                return {_pGrainUniformityMaster, _pGrainUniformity, &ratios.uniformity, &_grainUniformityMasterLast, 0.0, 1.0};
-            case GrainRatioMasterSelector::None:
-            default:
-                return {};
-        }
-    };
-
-    auto try_read_grain_user_edit_unit =
-        [&](const char* expectedParam, OFX::DoubleParam* sourceParam, double& valueOut) -> bool {
-        if (!grain_user_edit_active(userEdit, paramName, expectedParam)) {
-            return false;
-        }
-        return read_finite_unit_interval(sourceParam, valueOut);
-    };
-
-    auto with_param_event_suppression = [&](const auto& applyFn) {
-        const ScopedParamEventSuppression suppressEvents(*_state);
-        applyFn();
-    };
-
-    struct GrainTextureLinkedValues {
-        double sizeMixWeight = 0.0;
-        double microCell = 0.0;
-        double microSigma = 0.0;
-    };
-
-    auto compute_grain_texture_linked_values = [&](double texture) -> GrainTextureLinkedValues {
-        GrainTextureLinkedValues values{};
-        values.sizeMixWeight = std::clamp(grain_lerp(0.072, 0.38, texture), 0.0, 1.0);
-        values.microCell = std::clamp(grain_lerp(50.0, 70.0, texture), 0.0, 1000.0);
-        values.microSigma = std::clamp(grain_lerp(140.0, 200.0, texture), 0.0, 1000.0);
-        return values;
-    };
-
-    auto apply_grain_linked_unit_edit =
-        [&](const char* expectedParam, OFX::DoubleParam* sourceParam, const auto& applyFn) {
-            double value = 0.0;
-            if (!try_read_grain_user_edit_unit(expectedParam, sourceParam, value)) {
-                return;
-            }
-            applyFn(value);
-        };
-
-    auto write_grain_blur_dye_clouds = [&](double blurDyeClouds) {
-        with_param_event_suppression([&]() {
-            set_double_param(_pGrainBlurDyeCloudsUm, blurDyeClouds);
-        });
-    };
-
-    auto write_grain_texture_linked_values = [&](const GrainTextureLinkedValues& linked) {
-        with_param_event_suppression([&]() {
-            set_double_param(_pGrainSizeMixWeight, linked.sizeMixWeight);
-            set_double2_param(_pGrainMicroStructure, linked.microCell, linked.microSigma);
-        });
-    };
-
-    auto should_mark_grain_preset_custom = [&]() {
-        return userEdit && is_grain_preset_input_param(paramName);
-    };
-
-    auto should_process_grain_preset_custom_label = [&]() {
-        return should_mark_grain_preset_custom();
-    };
-
-    auto apply_grain_sharpness_linked_update = [&]() {
-        apply_grain_linked_unit_edit(
-            JuicerParams::kGrainSharpness,
-            _pGrainSharpness,
-            [&](double sharpness) {
-                const double blurDyeClouds = std::clamp(grain_lerp(1.40, 0.60, sharpness), 0.0, 10.0);
-                write_grain_blur_dye_clouds(blurDyeClouds);
-            });
-    };
-
-    auto apply_grain_texture_linked_update = [&]() {
-        apply_grain_linked_unit_edit(
-            JuicerParams::kGrainTexture,
-            _pGrainTexture,
-            [&](double texture) {
-                const GrainTextureLinkedValues linked = compute_grain_texture_linked_values(texture);
-                write_grain_texture_linked_values(linked);
-            });
-    };
-
-    auto apply_grain_linked_updates = [&]() {
-        apply_grain_sharpness_linked_update();
-        apply_grain_texture_linked_update();
-    };
-
-    if (should_process_grain_preset_custom_label()) {
-        updateGrainPresetLabel(true);
-    }
-
-    updateGrainChromaEnabled();
-
-    const GrainRatioMasterSelector grainMaster =
-        userEdit ? grain_ratio_master_selector(paramName) : GrainRatioMasterSelector::None;
-    if (grainMaster != GrainRatioMasterSelector::None) {
-        const GrainRatioSet ratios = normalized_default_grain_ratios();
-        const RatioMasterUpdateBinding ratioBinding = resolve_grain_ratio_update(grainMaster, ratios);
-        apply_ratio_master(
-            ratioBinding.masterParam,
-            ratioBinding.tripletParam,
-            *ratioBinding.fallbackRatio,
-            *ratioBinding.masterCache,
-            ratioBinding.lo,
-            ratioBinding.hi);
-    }
-    apply_grain_linked_updates();
-    std::string routeDiagnostic;
-    std::string gammaFilmProfileKey;
-    Spektrafilm::ScanRoute diffusionRoute{};
-    Spektrafilm::ScanRoute gammaRoute{};
-    if (!resolveDiffusionControlRoute(diffusionRoute, routeDiagnostic) ||
-        !resolveGammaControlRoute(gammaRoute, gammaFilmProfileKey, routeDiagnostic)) {
-        store_pending_invalid_snapshot(*_state, std::move(routeDiagnostic));
-        return;
-    }
-    updateDiffusionControlState(diffusionRoute);
-    updateGammaControlState(gammaRoute, gammaFilmProfileKey);
-    updateSpectralControlState();
-    onParamsPossiblyChanged(paramName.c_str());
 }
 
 bool JuicerEffect::snapshotParams(
@@ -2364,52 +2474,76 @@ bool JuicerEffect::snapshotParams(
     return true;
 }
 
-void JuicerEffect::initialize_pending_render_state() {
-    JTRACE("BUILD", "publishing initial pending render state");
-    applyDirGammaProfileDefaults();
-    ParamSnapshot params;
-    std::string diagnostic;
-    if (snapshotParams(params, diagnostic)) {
-        store_pending_valid_snapshot(*_state, params);
-    } else {
-        store_pending_invalid_snapshot(*_state, std::move(diagnostic));
+void JuicerEffect::acquire_render_capture(std::uint32_t mode) {
+    bool refresh = false;
+    {
+        CaptureAction action(_publication, mode);
+        if (!action.ticket) {
+            return;
+        }
+        try {
+            if (mode == FJ_CAPTURE_INITIAL) {
+                applyDirGammaProfileDefaults();
+            }
+            finish_capture();
+        } catch (const std::bad_alloc&) {
+            if (action.fail(FJ_CAPTURE_ALLOCATION_FAILURE, "host parameter capture allocation failed") != FJ_UPDATE_IGNORED || action.physicalWriteFailed) {
+                throw;
+            }
+        } catch (...) {
+            if (action.fail(FJ_CAPTURE_HOST_FAILURE, "host parameter capture failed") != FJ_UPDATE_IGNORED || action.physicalWriteFailed) {
+                throw;
+            }
+        }
+        refresh = action.refresh;
+    }
+    if (refresh) {
+        acquire_render_capture(FJ_CAPTURE_REFRESH);
     }
 }
 
-void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
-    if (param_events_suppressed(*_state)) {
-        JTRACE("BUILD", "onParamsPossiblyChanged suppressed");
+void JuicerEffect::finish_capture() {
+    CaptureAction& action = *CaptureAction::current;
+    FjErrorBuffer error{nullptr, 0, 0};
+    FjSnapshotStart start{};
+    require_instance_success(_publication.begin_snapshot(action.ticket, start, error));
+    if (start.kind == FJ_SNAPSHOT_DEFERRED || start.kind == FJ_SNAPSHOT_IGNORED) {
+        action.armed = false;
+        action.completion = start.kind == FJ_SNAPSHOT_DEFERRED ? FJ_UPDATE_DEFERRED : FJ_UPDATE_IGNORED;
         return;
     }
-    if (pending_snapshot_acquisition_needed(*_state)) {
-        initialize_pending_render_state();
-        return;
+    if (start.kind != FJ_SNAPSHOT_READY) {
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-
-    const bool filmProfileChanged =
-        param_name_is(changedNameOrNull, JuicerParams::kFilmProfileKey);
-    const bool stockGammaEnabled =
-        param_name_is(changedNameOrNull, JuicerParams::kDirCouplersGammaUseStock) &&
-        read_bool_param(_pCouplersGammaUseStock);
-    if (filmProfileChanged || stockGammaEnabled) {
-        applyDirGammaProfileDefaults();
-    }
-
     ParamSnapshot params;
     std::string diagnostic;
     if (!snapshotParams(params, diagnostic)) {
-        store_pending_invalid_snapshot(*_state, std::move(diagnostic));
+        action.fail(FJ_CAPTURE_INVALID_CONTROLS, diagnostic.c_str());
         return;
     }
-    trace_param_change_verbose_if(
-        JTRACE_ENABLED(3),
-        params,
-        *_state,
-        changedNameOrNull);
-    if (Spektrafilm::scan_route_is_print(params.scanRoute)) {
-        JTRACE_VERBOSE(
-            "SPEKTRAFILM",
-            "parameter change queued focused print recipe publication");
+    // SF_TEMP_BRIDGE_CAPTURED_INPUT_IDENTITY: S6 moves this definition with capture.
+    const std::uint64_t identity = hash_params(params);
+    std::uint32_t update = FJ_UPDATE_NONE;
+    const FjStatus status = _publication.install(action.ticket, start.write_revision, params, identity, update, error);
+    if (update == FJ_UPDATE_APPLIED || update == FJ_UPDATE_IGNORED || update == FJ_UPDATE_DEFERRED) {
+        action.armed = false;
+        action.completion = update;
     }
-    store_pending_valid_snapshot(*_state, params);
+    require_instance_success(status);
+}
+
+void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
+    CaptureAction& action = *CaptureAction::current;
+    if (action.initial) {
+        applyDirGammaProfileDefaults();
+        finish_capture();
+        return;
+    }
+    const bool filmProfileChanged = param_name_is(changedNameOrNull, JuicerParams::kFilmProfileKey);
+    const bool stockGammaEnabled = param_name_is(changedNameOrNull, JuicerParams::kDirCouplersGammaUseStock) &&
+                                   read_bool_param(_pCouplersGammaUseStock);
+    if (filmProfileChanged || stockGammaEnabled) {
+        applyDirGammaProfileDefaults();
+    }
+    finish_capture();
 }

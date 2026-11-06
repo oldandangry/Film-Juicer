@@ -364,35 +364,36 @@ namespace PrintIlluminantTest {
         controls.cameraAutoExposureEnabled = 0;
         controls.inputCompressionEnabled = 0;
         controls.outputGamutCompressionEnabled = 0;
-        InstanceState state;
-        const auto pending = [&](const ParamSnapshot& snapshot) {
-            std::lock_guard<std::mutex> lock(state.pending.m);
-            state.pending.value = PendingParamsState::Valid{snapshot, hash_params(snapshot)};
-        };
-        pending(controls);
-        const auto original = admit_pending_render_state(state);
-        require(original.status == PendingRenderAdmissionStatus::AdmittedPrint && bool(original.printState), "print illuminant publication baseline");
+        RenderInstance state;
+        JuicerTestSupport::capture(state, controls);
+        const auto original = JuicerTestSupport::admit(state);
+        require(original.kind == FJ_ADMISSION_READY && original.state, "print illuminant publication baseline");
         const auto originalView = JuicerTestSupport::published_view(original);
         require(originalView.print.main_illuminant.count == 81, "baseline publishes all main illuminant samples");
         const auto originalHash = originalView.recipe_hash;
         const auto originalMain = words(originalView.print.main_illuminant.data, originalView.print.main_illuminant.count);
-        const auto counter = state.buildCounterNext.load();
+        const auto originalMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+        const auto counter = originalMetrics.build;
         controls.printUiYmcCc[0] = 2.5;
-        pending(controls);
+        JuicerTestSupport::capture(state, controls);
         status(fj_test_film_recipe_fault(10, 1));
-        const auto admitted = admit_pending_render_state(state);
-        require(admitted.status == PendingRenderAdmissionStatus::AdmittedPrint && bool(admitted.printState) &&
-                    admitted.printState != original.printState,
+        const auto admitted = JuicerTestSupport::admit(state);
+        const auto admittedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+        require(admitted.kind == FJ_ADMISSION_READY && admitted.state &&
+                    JuicerTestSupport::PublicationObserver::backing(*admitted.state) != originalMetrics.backingIdentity,
                 "actual main illuminant publication skips the legacy facade-only panic");
-        require(state.buildCounterNext.load() == counter + 1 &&
-                    JuicerAtomic::load_shared_ptr(&state.activePrintState) == admitted.printState &&
+        require(admittedMetrics.build == counter + 1 && admittedMetrics.publishedIdentity == hash_params(controls) &&
+                    admitted.state->build() == counter + 1 &&
                     originalView.recipe_hash == originalHash &&
                     words(originalView.print.main_illuminant.data, originalView.print.main_illuminant.count) == originalMain,
                 "complete main illuminant publication advances once and preserves prior held values");
         const auto held = JuicerTestSupport::published_view(admitted);
         raw_main_illuminant_followup(held);
-        const auto repeated = admit_pending_render_state(state);
-        require(repeated.printState == admitted.printState && state.buildCounterNext.load() == counter + 1,
+        const auto repeated = JuicerTestSupport::admit(state);
+        require(repeated.kind == FJ_ADMISSION_READY && repeated.state &&
+                    JuicerTestSupport::PublicationObserver::backing(*repeated.state) == admittedMetrics.backingIdentity &&
+                    repeated.state->build() == counter + 1 &&
+                    JuicerTestSupport::PublicationObserver::metrics(state).build == counter + 1,
                 "unchanged main illuminant publication reuses after raw facade panic/retry");
 
         std::string diagnostic;

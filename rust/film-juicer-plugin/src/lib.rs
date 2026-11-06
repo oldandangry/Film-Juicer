@@ -16,6 +16,14 @@ mod cuda;
 
 mod asset_catalog;
 
+mod instance;
+
+#[allow(
+    unsafe_code,
+    reason = "the instance C edge validates foreign records and consumes host-write and admission handles"
+)]
+mod instance_bridge;
+
 #[allow(
     unsafe_code,
     reason = "the private production asset edge checks foreign extents and owns consume-once handles"

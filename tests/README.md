@@ -468,14 +468,24 @@ and included-fixture freshness. CTest discovers/runs these built binaries withou
 invoking another build. For a focused Rust rebuild, select
 `cmake --build --preset <preset> --target juicer_rust_tests` before CTest.
 
-`Rust.Core` exercises safe `state::Publication` with real, resource-backed
-`recipe::prepare` results. Its cases cover supplied input identity (including
-zero and equivalent updates), all four routes, invalid controls, failed/obsolete
-preparation, concurrent admission, poisoned synchronization, and admitted holds
-surviving replacement/cache release through final-hold destruction. A test-only
-contention observation and bounded rendezvous establish overlapping admission;
-scoped workers join before completion. Production still uses native admission.
-These core tests do not establish OFX getter, UI callback or host reentrancy behavior.
+`Rust.Core` exercises the production `state::Publication` authority with real,
+resource-backed `recipe::prepare` results. Its cases cover ordered capture
+tickets, registered host writes, revision-stamped snapshots, deferred reads and
+conditional refresh, supplied input identity (including zero and equivalent
+updates), all four routes, typed failures, obsolete outcomes and committed build
+numbering. Concurrent admission, panic/poison/overflow blocking, fallible complete
+backing and admitted holds through replacement/close/final destruction are also
+covered. Test-only observations and bounded rendezvous establish overlap; scoped
+workers join before completion.
+
+Production `RenderInstance` delegates through the private C edge to safe Rust
+`Instance` and `Publication`. The render callback retains one immutable admitted
+`PreparedState` while the processor borrows it through synchronous processing.
+Native capture identity and temporal/submission ownership remain separate from
+publication. `Ffi.Host.PreparedState` checks the actual C11 protocol, while
+`Ofx.Gpu.AdapterTrace` exercises getters, setters, callback reentry, late host-write
+completion and exception/image-release behavior through the real adapter. These
+fixture results do not establish installed Resolve retry behavior.
 
 The presets use four CTest workers. GPU groups share `juicer_gpu`, the
 product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run

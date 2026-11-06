@@ -302,8 +302,11 @@ class NativeBoundary(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         state = (ROOT / "src/JuicerState.cpp").read_text()
         self.assertNotIn("developmentHold", state)
-        self.assertIn("prepare_published_state(", state)
-        self.assertIn("JuicerProcess::root().assets().borrow_rust_assets(), params, out, error", state)
+        self.assertNotIn("prepare_published_state(", state)
+        instance = (ROOT / "rust/film-juicer-plugin/src/instance.rs").read_text()
+        self.assertIn("publication: Arc<state::Publication>", instance)
+        self.assertIn("self.publication.admit(|params| {", instance)
+        self.assertIn("let outcome = recipe::prepare(assets, params);", instance)
         self.assertNotIn("DevelopmentHold", (ROOT / "src/JuicerState.h").read_text())
         self.assertNotIn("film_reference_samples", (ROOT / "src/RustAssetBridge.h").read_text())
         reader = (ROOT / "tests/ffi/illuminant_calibration_test.cpp").read_text()
@@ -314,14 +317,23 @@ class NativeBoundary(unittest.TestCase):
         self.assertNotIn("result.developmentHold = std::move(film.developmentHold)", source)
         preparation = (ROOT / "rust/film-juicer-plugin/src/preparation.rs").read_text()
         self.assertIn("let completed = recipe::prepare(assets, params)", preparation)
-        self.assertIn("state.push(completed)", preparation)
+        self.assertIn("FjPreparedState::from_state(Arc::new(completed))", preparation)
         self.assertIn("fn project_state(owner: &FjPreparedState)", preparation)
         self.assertNotIn("pub(crate) fn project_state(", preparation)
         owner = preparation.split("pub(crate) struct FjPreparedState {", 1)[1].split("\n}", 1)[0]
-        self.assertIn("state: Vec<recipe::RenderState>", owner)
+        self.assertIn("state: Arc<recipe::RenderState>", owner)
         public_state = r"\bpub(?:\([^)]*\))?\s+state\s*:"
         self.assertNotRegex(owner, public_state)
-        self.assertRegex("pub(crate) state: Vec<recipe::RenderState>", public_state)
+        self.assertRegex("pub(crate) state: Arc<recipe::RenderState>", public_state)
+
+        contents_owner = recipe.split("pub struct RenderState {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("contents: Vec<Contents>", contents_owner)
+        self.assertNotRegex(contents_owner, r"\bpub(?:\([^)]*\))?\s+contents\s*:")
+        contents = recipe.split("struct Contents {", 1)[1].split("\n}", 1)[0]
+        self.assertNotRegex(contents, r"\bpub(?:\([^)]*\))?\s+")
+        self.assertIn(".try_reserve_exact(if reject_reservation { usize::MAX } else { 1 })", recipe)
+        self.assertIn(".map_err(PrepareError::ContentsAllocation)?;", recipe)
+        self.assertIn("backing.push(contents);", recipe)
 
     def test_film_input_construction_and_hash_definitions_stay_deleted(self):
         paths = [path for directory in (ROOT / "src", ROOT / "native")
@@ -537,8 +549,30 @@ class NativeBoundary(unittest.TestCase):
                      "build_focused_route_resource_input()", "derive_print_resource_input()"):
             self.assertRegex(text, model)
         self.assertFalse((ROOT / "src/FocusedRenderPayload.h").exists())
-        self.assertEqual(state.count("PreparedState prepared;"), 2)
-        self.assertIn("prepare_published_state(", state)
+        retired_publications = (
+            r"\b(?:InstanceState|PendingParamsState|DirectRenderState|PrintRenderState|JuicerAtomic)\b|"
+            r"\b(?:admit_pending_render_state|prepare_published_state|rebuild_direct_render_state|"
+            r"rebuild_print_render_state|set_pending_capture_test_hook)\s*\(")
+        self.assertEqual(forbidden_uses(native_sources(ROOT), retired_publications), [])
+        for name in ("InstanceState", "PendingParamsState", "DirectRenderState", "PrintRenderState"):
+            self.assertRegex("struct " + name + " {};", retired_publications)
+        self.assertRegex("namespace JuicerAtomic {}", retired_publications)
+        for name in ("admit_pending_render_state", "prepare_published_state", "rebuild_direct_render_state",
+                     "rebuild_print_render_state", "set_pending_capture_test_hook"):
+            self.assertRegex(name + "()", retired_publications)
+        cmake = (ROOT / "tests/CMakeLists.txt").read_text()
+        retired_hooks = r"\b(?:JUICER_ADMISSION_TEST_HOOK|juicer_admission_test_state)\b"
+        self.assertNotRegex(cmake, retired_hooks)
+        for name in ("JUICER_ADMISSION_TEST_HOOK", "juicer_admission_test_state"):
+            self.assertRegex(name, retired_hooks)
+        self.assertIn("struct NativeSubmissionState", state)
+        effect = (ROOT / "src/JuicerEffect.cpp").read_text()
+        effect_header = (ROOT / "src/JuicerEffect.h").read_text()
+        self.assertIn("RenderInstance _publication;", effect_header)
+        self.assertIn("std::optional<PreparedState> admitted;", effect)
+        self.assertIn("const PreparedState& prepared = *admitted;", effect)
+        self.assertIn("frameRequest.renderState = &prepared;", effect)
+        self.assertIn("std::exchange(_renderState, nullptr)", source)
         self.assertIn("std::optional<JuicerCuda::PrintResourceInput> print;", root)
         self.assertIn("const FocusedRouteResourceInput& input", root)
         self.assertIn("const PrintResourceInput& input", root)
@@ -549,6 +583,9 @@ class NativeBoundary(unittest.TestCase):
         self.assertEqual(provider.count("_call->render("), 1)
         holder = (ROOT / "src/PreparedState.cpp").read_text(encoding="utf-8")
         self.assertEqual(holder.count("return fj_legacy_prepared_state_render("), 1)
+        self.assertIn("fj_legacy_instance_admit(owner_, assets, &admission, &error)", holder)
+        instance = (ROOT / "rust/film-juicer-plugin/src/instance_bridge.rs").read_text()
+        self.assertIn("FjPreparedState::from_state(admission.into_state())", instance)
         boundary = (ROOT / "native/juicer_cuda_api.cpp").read_text(encoding="utf-8")
         self.assertEqual(boundary.count("JuicerCuda::execute_prepared_host_data("), 1)
         self.assertEqual(boundary.count("FjRenderOutcome JuicerCuda::NativeCall::render("), 1)

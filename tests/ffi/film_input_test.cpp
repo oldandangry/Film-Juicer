@@ -12,7 +12,6 @@
 #include <new>
 #include <optional>
 #include <source_location>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -100,12 +99,13 @@ namespace {
     void status(FjStatus value, std::uint32_t category = FJ_STATUS_SUCCESS, std::source_location location = std::source_location::current());
     struct PreparedInputLifetimeWitness {
         FjAssets* assets = nullptr;
-        InstanceState* state = nullptr;
+        RenderInstance* publication = nullptr;
         std::string filmKey;
         std::uint64_t counterBefore = 0;
-        std::uint64_t hashBefore = 0;
         unsigned calls = 0;
         bool stateUnpublished = false;
+        bool prepareOutsideStateLock = false;
+        std::exception_ptr failure;
         std::uintptr_t selectedLogExposureAddress = 0;
         std::uint64_t selectedProfileToken = 0;
         std::vector<std::uint32_t> selectedLogExposureWords;
@@ -118,9 +118,10 @@ namespace {
         std::uintptr_t reloadedHullAddress = 0;
         std::uint64_t reloadedHullHash = 0;
         std::vector<std::uint32_t> reloadedHullWords;
-        std::exception_ptr failure;
     };
     thread_local PreparedInputLifetimeWitness* preparedInputLifetimeWitness = nullptr;
+    extern "C" void observe_before_instance_prepare(void*) noexcept;
+    extern "C" void observe_after_instance_prepare(void*) noexcept;
 
     std::vector<std::uint32_t> span_words(FjFloatSpan span) {
         if (!span.data || span.count == 0)
@@ -149,11 +150,8 @@ namespace {
             witness->selectedHullAddress = reinterpret_cast<std::uintptr_t>(selectedHullXy.data);
             witness->selectedHullHash = selectedHullHash;
             witness->selectedHullWords = span_words(selectedHullXy);
-            witness->stateUnpublished =
-                !JuicerAtomic::load_shared_ptr(&witness->state->activeDirectState) &&
-                !JuicerAtomic::load_shared_ptr(&witness->state->activePrintState) &&
-                witness->state->buildCounterNext.load(std::memory_order_acquire) == witness->counterBefore &&
-                witness->state->lastHash.load(std::memory_order_acquire) == witness->hashBefore;
+            const auto metrics = JuicerTestSupport::PublicationObserver::metrics(*witness->publication);
+            witness->stateUnpublished = metrics.publishedIdentity == 0 && metrics.build == witness->counterBefore;
 
             const FjStatus released = JuicerProcess::root().assets().release_cached_payloads();
             status(released);
@@ -200,8 +198,10 @@ namespace {
         explicit PreparedInputLifetimeObserverScope(PreparedInputLifetimeWitness& witness) {
             preparedInputLifetimeWitness = &witness;
             fj_test_prepared_input_observer(observe_prepared_input_lifetime);
+            fj_test_instance_prepare_hooks(observe_before_instance_prepare, observe_after_instance_prepare, &witness);
         }
         ~PreparedInputLifetimeObserverScope() {
+            fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
             fj_test_prepared_input_observer(nullptr);
             preparedInputLifetimeWitness = nullptr;
         }
@@ -210,17 +210,52 @@ namespace {
     };
 
     struct InputSupersession {
+        RenderInstance* publication = nullptr;
         ParamSnapshot newer;
         bool fired = false;
+        std::exception_ptr failure;
     };
-    void supersede_input_snapshot(InstanceState& state, void* context) {
+    extern "C" void observe_before_instance_prepare(void* context) noexcept {
+        auto* witness = static_cast<PreparedInputLifetimeWitness*>(context);
+        try {
+            const auto metrics = JuicerTestSupport::PublicationObserver::metrics(*witness->publication);
+            witness->prepareOutsideStateLock = metrics.publishedIdentity == 0 && metrics.build == witness->counterBefore;
+        } catch (...) {
+            witness->failure = std::current_exception();
+        }
+    }
+    extern "C" void observe_after_instance_prepare(void* context) noexcept {
+        auto* witness = static_cast<PreparedInputLifetimeWitness*>(context);
+        try {
+            const auto metrics = JuicerTestSupport::PublicationObserver::metrics(*witness->publication);
+            witness->prepareOutsideStateLock = witness->prepareOutsideStateLock &&
+                                               metrics.publishedIdentity == 0 && metrics.build == witness->counterBefore;
+        } catch (...) {
+            witness->failure = std::current_exception();
+        }
+    }
+    extern "C" void supersede_input_snapshot(void* context) noexcept {
         auto& selection = *static_cast<InputSupersession*>(context);
         if (selection.fired)
             return;
-        std::lock_guard<std::mutex> lock(state.pending.m);
-        state.pending.value = PendingParamsState::Valid{selection.newer, hash_params(selection.newer)};
-        selection.fired = true;
+        try {
+            JuicerTestSupport::capture(*selection.publication, selection.newer);
+            selection.fired = true;
+        } catch (...) {
+            selection.failure = std::current_exception();
+        }
     }
+    class InstancePrepareHookScope final {
+    public:
+        InstancePrepareHookScope(void (*before)(void*), void* context) {
+            fj_test_instance_prepare_hooks(before, nullptr, context);
+        }
+        ~InstancePrepareHookScope() {
+            fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
+        }
+        InstancePrepareHookScope(const InstancePrepareHookScope&) = delete;
+        InstancePrepareHookScope& operator=(const InstancePrepareHookScope&) = delete;
+    };
     void require(bool condition, const char* message) {
         if (!condition) {
             throw std::runtime_error(message);
@@ -455,29 +490,26 @@ namespace {
             controls.inputCompressionEnabled = 1;
             controls.outputGamutCompressionEnabled = 0;
             controls.grainControls.active = false;
-            InstanceState state;
-            const auto pending = [&state](const ParamSnapshot& snapshot) {
-                std::lock_guard<std::mutex> lock(state.pending.m);
-                state.pending.value = PendingParamsState::Valid{snapshot, hash_params(snapshot)};
-            };
-            pending(controls);
+            RenderInstance publication;
+            JuicerTestSupport::capture(publication, controls);
             PreparedInputLifetimeWitness lifetime;
             lifetime.assets = JuicerProcess::root().assets().borrow_rust_assets();
-            lifetime.state = &state;
+            lifetime.publication = &publication;
             lifetime.filmKey = controls.filmProfileKey;
-            lifetime.counterBefore = state.buildCounterNext.load(std::memory_order_acquire);
-            lifetime.hashBefore = state.lastHash.load(std::memory_order_acquire);
+            lifetime.counterBefore = JuicerTestSupport::PublicationObserver::metrics(publication).build;
             require(lifetime.assets != nullptr, "actual preparation has process Rust assets owner");
             const auto old = [&] {
                 PreparedInputLifetimeObserverScope observer(lifetime);
-                return admit_pending_render_state(state);
+                return JuicerTestSupport::admit(publication);
             }();
-            require(route % 2 ? bool(old.printState) : bool(old.directState), "profile-source release during synchronous preparation still completes");
+            require(old.kind == FJ_ADMISSION_READY && old.state, "profile-source release during synchronous preparation still completes");
             require(lifetime.calls == 1, "actual complete-state preparation reached its profile/hull lifetime midpoint once");
             if (lifetime.failure)
                 std::rethrow_exception(lifetime.failure);
-            require(lifetime.stateUnpublished && state.buildCounterNext.load(std::memory_order_acquire) == lifetime.counterBefore + 1,
-                    "profile and hull were observed before route publication and counter advancement");
+            auto metrics = JuicerTestSupport::PublicationObserver::metrics(publication);
+            require(lifetime.stateUnpublished && lifetime.prepareOutsideStateLock &&
+                        metrics.build == lifetime.counterBefore + 1 && metrics.publishedIdentity == hash_params(controls),
+                    "profile and hull preparation runs outside the state lock and publishes once afterward");
             require(lifetime.selectedProfileToken != 0 && lifetime.reloadedProfileToken == lifetime.selectedProfileToken &&
                         lifetime.selectedLogExposureAddress != 0 && lifetime.reloadedLogExposureAddress != lifetime.selectedLogExposureAddress &&
                         lifetime.reloadedLogExposureWords == lifetime.selectedLogExposureWords,
@@ -501,49 +533,69 @@ namespace {
                         heldView.film_exposure.sensitivity_rgb.count == std::size_t{81} * 3u,
                     "published state remains readable after profile source cache detachment");
             const auto heldHash = heldView.recipe_hash;
-            const auto counter = state.buildCounterNext.load();
-            const auto identity = state.lastHash.load();
+            const auto initialMetrics = JuicerTestSupport::PublicationObserver::metrics(publication);
             auto changed = controls;
             changed.cameraExposureCompensationEv = 0.25;
-            pending(changed);
+            JuicerTestSupport::capture(publication, changed);
             status(fj_test_exposure_arm_fault(2, 1, 4));
-            const auto rejected = admit_pending_render_state(state);
+            const auto rejected = JuicerTestSupport::admit(publication);
             require(fj_test_exposure_fault_consumed(2, 4) == 1, "shared checked sensitivity producer consumed the returned preparation failure");
-            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && !rejected.directState && !rejected.printState, "returned input failure prevents old-state admission");
-            require(!JuicerAtomic::load_shared_ptr(&state.activeDirectState) && !JuicerAtomic::load_shared_ptr(&state.activePrintState) &&
-                        state.lastHash.load() == identity && state.buildCounterNext.load() == counter && heldView.recipe_hash == heldHash,
-                    "ordinary input failure clears selected slot without publishing or revoking admitted holds");
-            pending(controls);
-            const auto recovered = admit_pending_render_state(state);
-            require(route % 2 ? bool(recovered.printState) : bool(recovered.directState), "ordinary input failure recovers");
-            const auto direct = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
-            const auto print = JuicerAtomic::load_shared_ptr(&state.activePrintState);
-            pending(changed);
+            require(rejected.delivery.category == FJ_STATUS_PREPARATION_FAILURE &&
+                        rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state,
+                    "current preparation failure does not admit the previous state for changed controls");
+            metrics = JuicerTestSupport::PublicationObserver::metrics(publication);
+            require(metrics.inputIdentity == hash_params(changed) && metrics.publishedIdentity == initialMetrics.publishedIdentity &&
+                        metrics.build == initialMetrics.build && metrics.backingIdentity == initialMetrics.backingIdentity &&
+                        JuicerTestSupport::published_view(old).recipe_hash == heldHash,
+                    "typed preparation failure retains the prior publication and its admitted hold");
+            JuicerTestSupport::capture(publication, controls);
+            const auto recoveredA = JuicerTestSupport::admit(publication);
+            require(recoveredA.kind == FJ_ADMISSION_READY && recoveredA.state &&
+                        JuicerTestSupport::PublicationObserver::metrics(publication).build == initialMetrics.build &&
+                        JuicerTestSupport::PublicationObserver::metrics(publication).backingIdentity == initialMetrics.backingIdentity,
+                    "returning to the last admitted input reuses its retained publication");
+
+            JuicerTestSupport::capture(publication, changed);
             status(fj_test_exposure_arm_fault(2, 1, 1));
-            const auto unsupported = admit_pending_render_state(state);
+            const auto unsupported = JuicerTestSupport::admit(publication);
             require(fj_test_exposure_fault_consumed(2, 1) == 1 &&
-                        unsupported.status == PendingRenderAdmissionStatus::RebuildFailed && !unsupported.directState && !unsupported.printState &&
-                        JuicerAtomic::load_shared_ptr(&state.activeDirectState) == direct && JuicerAtomic::load_shared_ptr(&state.activePrintState) == print,
-                    "unsupported input failure retains publication but cannot admit it for changed controls");
-            pending(changed);
-            status(fj_test_exposure_arm_fault(2, 1, 2));
-            const auto thrown = admit_pending_render_state(state);
-            require(fj_test_exposure_fault_consumed(2, 2) == 1, "shared checked sensitivity producer contained the panic");
-            require(thrown.status == PendingRenderAdmissionStatus::RebuildFailed && !thrown.directState && !thrown.printState &&
-                        JuicerAtomic::load_shared_ptr(&state.activeDirectState) == direct && JuicerAtomic::load_shared_ptr(&state.activePrintState) == print,
-                    "thrown input failure retains publication but cannot admit it for changed controls");
+                        unsupported.delivery.category == FJ_STATUS_UNSUPPORTED_INPUT &&
+                        unsupported.kind == FJ_ADMISSION_PREPARATION_FAILED && !unsupported.state &&
+                        JuicerTestSupport::PublicationObserver::metrics(publication).backingIdentity == initialMetrics.backingIdentity,
+                    "unsupported preparation failure retains the prior publication but admits no stale state");
+
             auto newer = changed;
             newer.cameraExposureCompensationEv = 0.5;
-            InputSupersession supersession{newer};
-            set_pending_capture_test_hook(supersede_input_snapshot, &supersession);
+            JuicerTestSupport::capture(publication, changed);
+            InputSupersession supersession{&publication, newer, false, {}};
             status(fj_test_exposure_arm_fault(2, 1, 4));
-            const auto superseded = admit_pending_render_state(state);
-            set_pending_capture_test_hook(nullptr, nullptr);
+            const auto superseded = [&] {
+                InstancePrepareHookScope hooks(supersede_input_snapshot, &supersession);
+                return JuicerTestSupport::admit(publication);
+            }();
             require(fj_test_exposure_fault_consumed(2, 4) == 1, "superseded sensitivity producer preparation failure was consumed");
-            require(route % 2 ? bool(superseded.printState) : bool(superseded.directState), "superseded input failure recovers to a complete newer state");
+            if (supersession.failure)
+                std::rethrow_exception(supersession.failure);
+            require(superseded.kind == FJ_ADMISSION_READY && superseded.state, "superseded input failure recovers to a complete newer state");
             const auto currentView = JuicerTestSupport::published_view(superseded);
             require(supersession.fired && currentView.film_exposure.manual_exposure_ev == 0.5f && heldView.recipe_hash == heldHash,
                     "superseded failed input preparation retries only newer controls and retains old immutable holds");
+            const auto supersededMetrics = JuicerTestSupport::PublicationObserver::metrics(publication);
+            require(supersededMetrics.inputIdentity == hash_params(newer) && supersededMetrics.publishedIdentity == hash_params(newer) &&
+                        supersededMetrics.build == initialMetrics.build + 1,
+                    "only the committed newer input advances publication metadata");
+
+            JuicerTestSupport::capture(publication, changed);
+            status(fj_test_exposure_arm_fault(2, 1, 2));
+            const auto thrown = JuicerTestSupport::admit(publication);
+            require(fj_test_exposure_fault_consumed(2, 2) == 1 &&
+                        thrown.delivery.category == FJ_STATUS_INTERNAL_FAILURE &&
+                        thrown.kind == FJ_ADMISSION_POISONED && !thrown.state,
+                    "preparation panic is contained and blocks admission");
+            metrics = JuicerTestSupport::PublicationObserver::metrics(publication);
+            require(metrics.pendingKind == 6 && metrics.publishedIdentity == hash_params(newer) &&
+                        metrics.build == supersededMetrics.build && JuicerTestSupport::published_view(superseded).recipe_hash == currentView.recipe_hash,
+                    "panic retains already-admitted holds while blocking new state selection");
             for (unsigned selector = 0; selector < 3; ++selector) {
                 auto selector_event = signed_selectors.case_event(std::to_string(route) + "/" + std::to_string(selector));
                 auto invalid = controls;
@@ -573,7 +625,7 @@ namespace {
                 selector_event.passed();
             }
         }
-        std::puts("PASS actual source/hull lifetimes, slot return/throw distinctions, admission, supersession, recovery and selector priority");
+        std::puts("PASS actual source/hull lifetimes, retained publication recovery, supersession, panic blocking and selector priority");
     }
     void cases(const std::filesystem::path& root, const Json& fixture) {
         const auto* assets = JuicerProcess::root().assets().borrow_rust_assets();

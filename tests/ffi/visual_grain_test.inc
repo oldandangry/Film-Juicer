@@ -445,27 +445,35 @@ namespace {
             params.cameraAutoExposureEnabled = 0;
             params.inputCompressionEnabled = 0;
             params.outputGamutCompressionEnabled = 0;
-            InstanceState state;
-            const auto pending = [&](const ParamSnapshot& v) {
-                std::lock_guard<std::mutex> lock(state.pending.m);
-                state.pending.value = PendingParamsState::Valid{v, hash_params(v)};
-            };
-            pending(params);
-            const auto admitted = admit_pending_render_state(state);
-            require(route % 2 ? bool(admitted.printState) : bool(admitted.directState), "grain publication baseline");
+            RenderInstance state;
+            JuicerTestSupport::capture(state, params);
+            const auto admitted = JuicerTestSupport::admit(state);
+            require(admitted.kind == FJ_ADMISSION_READY && admitted.state, "grain publication baseline");
             const auto held = JuicerTestSupport::published_view(admitted);
             const auto hash = held.recipe_hash;
-            const auto counter = state.buildCounterNext.load();
+            const auto baselineMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
             auto changed = params;
             changed.grainControls.particleAreaUm2 = 0;
-            pending(changed);
-            const auto rejected = admit_pending_render_state(state);
-            require(rejected.status == PendingRenderAdmissionStatus::RebuildFailed && rejected.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain" && !rejected.directState && !rejected.printState && state.buildCounterNext.load() == counter && held.recipe_hash == hash, "ordinary grain failure never publishes partial state or revokes admitted holds");
-            pending(params);
-            const auto recovered = admit_pending_render_state(state);
-            require(route % 2 ? bool(recovered.printState) : bool(recovered.directState), "grain recovery");
-            const auto repeat = admit_pending_render_state(state);
-            require(repeat.directState == recovered.directState && repeat.printState == recovered.printState, "unchanged grain publication reuses state");
+            JuicerTestSupport::capture(state, changed);
+            const auto rejected = JuicerTestSupport::admit(state);
+            const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
+            require(rejected.delivery.category == FJ_STATUS_PREPARATION_FAILURE &&
+                        rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state &&
+                        rejected.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain" &&
+                        failedMetrics.build == baselineMetrics.build &&
+                        failedMetrics.publishedIdentity == baselineMetrics.publishedIdentity &&
+                        failedMetrics.backingIdentity == baselineMetrics.backingIdentity && held.recipe_hash == hash,
+                    "ordinary grain failure never publishes partial state or revokes admitted holds");
+            JuicerTestSupport::capture(state, params);
+            const auto recovered = JuicerTestSupport::admit(state);
+            require(recovered.kind == FJ_ADMISSION_READY && recovered.state &&
+                        JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
+                    "grain recovery reuses last complete state");
+            const auto repeat = JuicerTestSupport::admit(state);
+            require(repeat.kind == FJ_ADMISSION_READY && repeat.state &&
+                        JuicerTestSupport::PublicationObserver::backing(*repeat.state) == baselineMetrics.backingIdentity &&
+                        JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
+                    "unchanged grain publication reuses state");
             event.passed();
         }
         JuicerTests::CaseEvent drain_event("cpp", "grain/product-owner-drain");

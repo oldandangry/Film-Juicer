@@ -1537,7 +1537,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
 }
 
 OFX::ImageEffect* JuicerPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum /*context*/) {
-    // Create our effect instance (constructor attaches InstanceState + runs bootstrap).
+    // Create our effect instance (constructor attaches NativeSubmissionState + runs bootstrap).
     return new JuicerEffect(handle);
 }
 

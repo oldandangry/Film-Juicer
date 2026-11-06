@@ -612,6 +612,37 @@ FjStatus fj_test_effects_frame_fault(uint32_t);
 int fj_test_effects_frame_c_check(uint32_t, const FjEffectsFrameInput*, const FjEffectsFrameMath*, FjStatus, FjEffectsFrameFailure, const char*);
 int fj_test_effects_frame_c_raw(uint32_t, const FjEffectsFrameInput*, uint32_t, const FjEffectsFrameMath*);
 
+/* Test-support-only immutable observations from the actual publication owner.
+ * Borrowed snapshot strings/spans expire when observation is released. This
+ * does not prepare/admit/recover state. Acquire/release consume one owner. */
+const size_t* fj_test_instance_abi_facts(size_t* count);
+size_t fj_test_prepared_state_identity(const FjPreparedState*);
+typedef struct FjInstanceObservation FjInstanceObservation;
+typedef struct FjInstanceObservationView {
+    uint32_t pending_kind; /* 0 uninitialized, 1 capturing, 2 awaiting writes,
+                            3 needs refresh, 4 valid, 5 failed, 6 blocked */
+    uint32_t failure_kind;
+    uint64_t issued;
+    uint64_t write_revision;
+    uint64_t outstanding_writes;
+    uint64_t input_identity;
+    uint64_t published_identity;
+    uint64_t build;
+    size_t backing_identity;
+    FjStringView diagnostic;
+    FjPreparationParams captured;
+    FjPreparedStateView published;
+} FjInstanceObservationView;
+FjStatus fj_test_instance_observation_acquire(const FjInstance*, FjInstanceObservation**, FjErrorBuffer*);
+FjStatus fj_test_instance_observation_view(const FjInstanceObservation*, FjInstanceObservationView*, FjErrorBuffer*);
+FjStatus fj_test_instance_observation_release(FjInstanceObservation*, FjErrorBuffer*);
+/* Thread-local hooks run after input selection / after complete preparation,
+ * outside the state lock. Fixture callbacks contain exceptions; their context
+ * stays live until cleared. Hooks are never present in a production archive. */
+void fj_test_instance_prepare_hooks(void (*before_prepare)(void*), void (*after_prepare)(void*), void* context);
+void fj_test_prepared_contents_reservation_failure(void);
+uint32_t fj_test_prepared_contents_reservation_failure_consumed(void);
+
 #ifdef __cplusplus
 }
 #endif

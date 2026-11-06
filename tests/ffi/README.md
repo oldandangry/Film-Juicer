@@ -279,10 +279,22 @@ post-preparation cancellation checkpoints, actual pinned allocation/copy/event
 failures, quarantine, idle retirement and actual deferred destruction/drain after
 Rust expiry. Rust
 holds do not replace native staging, frame fences, finish/abort or retirement.
-Native immutable route publications retain one move-only `PreparedState` and a
-build counter. Production borrows that same Rust state through its private render
-projection; native staging, frame work and exact-context resources retain their
-existing ownership.
+The production `RenderInstance` owns one Rust Publication. Capture tickets order
+host actions; registered write guards prevent snapshot reads and admission while
+a setter can still commit. Successful write drainage can request a conditional
+read-only refresh. Current capture failures block admission without revoking
+earlier admitted holds. Rust owns reuse, final preparation recheck and committed
+build numbering. Each admitted `PreparedState` retains the same complete backing
+and its input/build metadata, including after instance destruction. The core's
+substantial backing uses a fallible reservation after scientific preparation.
+
+The C11 protocol rows cover capture/write/snapshot/admission tags, revisions,
+consuming completion, bounded diagnostics and close. AdapterTrace exercises real
+getter/setter overlap, partial failures, exception status and image-release order.
+These adapter results do not establish that Resolve retries an in-progress render
+rejection. Production borrows the admitted Rust state through its private render
+projection; native temporal submission, staging, frame work and exact-context
+resources retain their existing ownership.
 
 ```sh
 cmake --build --preset <preset> --target JuicerPreparedStateTests JuicerPreparedBoundaryProbe

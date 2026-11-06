@@ -25,7 +25,6 @@
 #include <limits>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -806,7 +805,7 @@ namespace {
         PreparedRenderCompletion* = nullptr,
         bool = false);
 
-    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability availability = PublishedRequestAvailability::Complete, [[maybe_unused]] std::string_view invocationPhase = "cold") {
+    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, NativeSubmissionState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability availability = PublishedRequestAvailability::Complete, [[maybe_unused]] std::string_view invocationPhase = "cold") {
         const int width = test.width;
         const int height = test.height;
         const int pitch = width * test.components + 5;
@@ -903,23 +902,44 @@ namespace {
                 NarrowEffect effect(reinterpret_cast<OfxImageEffectHandle>(&effectProperties));
                 OFX::Image sourceImage(sourceHandle);
                 OFX::Image destinationImage(destinationHandle);
-                {
-                    std::lock_guard<std::mutex> lock(state.pending.m);
-                    state.pending.value = PendingParamsState::Valid{parameters, hash_params(parameters)};
-                }
-                PendingRenderAdmissionResult admitted = admit_pending_render_state(state);
-                const bool print = Spektrafilm::scan_route_is_print(test.route);
-                if (admitted.status != (print ? PendingRenderAdmissionStatus::AdmittedPrint
-                                              : PendingRenderAdmissionStatus::AdmittedDirect)) {
-                    throw std::runtime_error(std::string(test.name) + ": admission failed: " + admitted.diagnostic);
-                }
-                if ((print && !admitted.printState) || (!print && !admitted.directState)) {
-                    throw std::runtime_error("admitted fixture state unavailable");
-                }
-                const PreparedState& prepared = print ? admitted.printState->prepared : admitted.directState->prepared;
-                FjPreparedStateView stateView{};
+                RenderInstance renderInstance;
                 std::array<char, 2048> stateText{};
                 FjErrorBuffer stateError{stateText.data(), stateText.size(), 0};
+                FjCaptureStart capture{};
+                if (renderInstance.begin_capture(FJ_CAPTURE_CHANGE, capture, stateError).category != FJ_STATUS_SUCCESS ||
+                    capture.kind != FJ_CAPTURE_STARTED) {
+                    throw std::runtime_error(std::string(test.name) + ": instance capture start failed");
+                }
+                FjSnapshotStart snapshot{};
+                stateError.length = 0;
+                if (renderInstance.begin_snapshot(capture.capture, snapshot, stateError).category != FJ_STATUS_SUCCESS ||
+                    snapshot.kind != FJ_SNAPSHOT_READY) {
+                    throw std::runtime_error(std::string(test.name) + ": instance snapshot start failed");
+                }
+                std::uint32_t update = FJ_UPDATE_NONE;
+                stateError.length = 0;
+                if (renderInstance.install(
+                                      capture.capture,
+                                      snapshot.write_revision,
+                                      parameters,
+                                      hash_params(parameters),
+                                      update,
+                                      stateError)
+                            .category != FJ_STATUS_SUCCESS ||
+                    update != FJ_UPDATE_APPLIED) {
+                    throw std::runtime_error(std::string(test.name) + ": instance snapshot install failed");
+                }
+                std::optional<PreparedState> admittedState;
+                std::uint32_t admissionKind = FJ_ADMISSION_NONE;
+                stateError.length = 0;
+                auto& assets = JuicerProcess::root().assets();
+                if (renderInstance.admit(assets.borrow_rust_assets(), admissionKind, admittedState, stateError).category != FJ_STATUS_SUCCESS ||
+                    admissionKind != FJ_ADMISSION_READY || !admittedState) {
+                    throw std::runtime_error(std::string(test.name) + ": instance admission failed");
+                }
+                const bool print = Spektrafilm::scan_route_is_print(test.route);
+                const PreparedState& prepared = *admittedState;
+                FjPreparedStateView stateView{};
                 if (prepared.view(stateView, stateError).category != FJ_STATUS_SUCCESS) {
                     throw std::runtime_error(std::string(test.name) + ": published prepared state view failed");
                 }
@@ -954,9 +974,9 @@ namespace {
                     1.0};
                 if (print) {
                     JuicerProcessor::PrintFrameRequest request;
-                    request.state = admitted.printState;
-                    if (availability == PublishedRequestAvailability::MissingState)
-                        request.state.reset();
+                    request.renderState = availability == PublishedRequestAvailability::MissingState
+                                              ? nullptr
+                                              : &*admittedState;
                     request.framePolicy = framePolicy;
                     request.renderWindow = renderWindow;
                     request.fullFrameExtent = fullBounds;
@@ -969,9 +989,9 @@ namespace {
                     processor.setPrintFrameRequest(request);
                 } else {
                     JuicerProcessor::DirectFrameRequest request;
-                    request.state = admitted.directState;
-                    if (availability == PublishedRequestAvailability::MissingState)
-                        request.state.reset();
+                    request.renderState = availability == PublishedRequestAvailability::MissingState
+                                              ? nullptr
+                                              : &*admittedState;
                     request.framePolicy = framePolicy;
                     request.renderWindow = renderWindow;
                     request.fullFrameExtent = fullBounds;
@@ -983,7 +1003,7 @@ namespace {
                     request.effectsGeometry = effectsGeometry;
                     processor.setDirectFrameRequest(request);
                 }
-                processor.setInstanceState(availability == PublishedRequestAvailability::MissingInstance ? nullptr : &state);
+                processor.setSubmissionState(availability == PublishedRequestAvailability::MissingInstance ? nullptr : &state);
                 auto preparation = JuicerProcess::root().begin_frame_preparation();
                 if (!preparation.active())
                     throw std::runtime_error("frame preparation guard unavailable");
@@ -1105,7 +1125,7 @@ namespace {
         for (const unsigned checkpoint : {1U, 3U, 4U, 5U})
             intended.push_back(std::string(test.name) + "/cancel/" + std::to_string(checkpoint));
         JuicerTests::Cohort rows(std::string("cutover_callback/") + test.name, intended);
-        InstanceState state;
+        NativeSubmissionState state;
         auto disjoint_row = rows.case_event(std::string(test.name) + "/disjoint-rows");
         compare_pixels("same allocation disjoint rows", render_case(test, parameters_for(test), state, false, ExecutionPath::Processor, DestinationLayout::DisjointRows), expected);
         disjoint_row.passed();
@@ -1255,7 +1275,7 @@ namespace {
         const std::uint64_t instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
         if (fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), instanceToken, nullptr).category != FJ_STATUS_SUCCESS)
             throw std::runtime_error("retire instance before physical fixture");
-        InstanceState state;
+        NativeSubmissionState state;
         auto off = parameters_for(test);
         off.grainControls.active = false;
         off.filmDustAmount = 0;
@@ -2045,7 +2065,7 @@ namespace {
             for (std::size_t i = 0; i < expected.size(); ++i) {
                 expected[i] = std::bit_cast<float>(words.at(i).get<std::uint32_t>());
             }
-            InstanceState state;
+            NativeSubmissionState state;
             JuicerCuda::ExecutorTest::reset_workspace_transitions();
             compare_pixels(test.name, render_case(test, parameters_for(test), state, false, ExecutionPath::Direct, DestinationLayout::Matching, next++), expected);
             require(JuicerCuda::ExecutorTest::workspaceHandoff.has_value(), "actual schedule handoff not observed");
@@ -2062,7 +2082,7 @@ namespace {
             require(arm_workspace_rejection(reject, kind), "workspace seam configuration rejected");
             require(!arm_workspace_rejection(7, kind) && !arm_workspace_rejection(1, static_cast<WorkspaceRejection>(255)),
                     "invalid seam configuration replaced armed input");
-            InstanceState state;
+            NativeSubmissionState state;
             bool failed = false;
             JuicerCuda::Failure failure;
             try {
@@ -3290,7 +3310,7 @@ namespace {
                                 ? "print_scan_error_stage"
                                 : "direct_scan_error_stage";
         JuicerCuda::ExecutorTest::observation = &observation;
-        InstanceState state;
+        NativeSubmissionState state;
         bool fatal = false;
         try {
             (void)render_case(test, parameters_for(test), state);
@@ -3382,7 +3402,7 @@ namespace {
 
     void check_resource_failure(const Case& test,
                                 const ParamSnapshot& parameters,
-                                InstanceState& state,
+                                NativeSubmissionState& state,
                                 JuicerCuda::ExecutorTest::ResourceFailures& failures,
                                 const JuicerCuda::Failure& expectedFailure,
                                 const char* stage,
@@ -3461,7 +3481,7 @@ namespace {
         }
         JuicerTests::Cohort rows("scanner_lut_upload", intended);
         for (const auto& test : cases) {
-            InstanceState state;
+            NativeSubmissionState state;
             auto parameters = parameters_for(test);
             parameters.grainControls.active = false;
             for (unsigned position = 1; position <= 6; ++position) {
@@ -3490,7 +3510,7 @@ namespace {
                     intended.push_back(std::string(test.name) + "/" + timing + "/" + std::to_string(code));
         JuicerTests::Cohort rows("defect_fence", intended);
         for (const Case& test : cases) {
-            InstanceState state;
+            NativeSubmissionState state;
             for (const bool failCreate : {true, false}) {
                 const std::array codes{cudaErrorContextIsDestroyed, cudaErrorInvalidResourceHandle, cudaErrorMemoryAllocation};
                 for (std::size_t codeIndex = 0; codeIndex < codes.size(); ++codeIndex) {
@@ -3616,7 +3636,7 @@ namespace {
         auto& rootAssets = JuicerProcess::root().assets();
         for (const Case& test : cases) {
             const std::string route = Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct";
-            InstanceState state;
+            NativeSubmissionState state;
             auto active = parameters_for(test);
             active.grainControls.active = true;
             for (bool cold : {true, false}) {
@@ -3654,7 +3674,7 @@ namespace {
             const std::string route = Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct";
             auto active = parameters_for(test);
             active.grainControls.active = true;
-            InstanceState state;
+            NativeSubmissionState state;
             const bool latchValidBefore = state.submissionSnapshotLatchValid;
             const auto run = [&](PublishedRequestAvailability availability, unsigned cancelAt, bool expectFatal) {
                 const char* const availability_name = availability == PublishedRequestAvailability::MissingState ? "missing-state" : "missing-instance";
@@ -4073,7 +4093,7 @@ namespace {
                 for (std::size_t uploadIndex = 0; uploadIndex < uploads.size(); ++uploadIndex) {
                     auto row = rows.case_event(std::string(test.name) + "/wording/" + std::to_string(wordingIndex) + "/upload/" + std::to_string(uploadIndex));
                     const auto& upload = uploads[uploadIndex];
-                    InstanceState state;
+                    NativeSubmissionState state;
                     auto parameters = parameters_for(test);
                     parameters.grainControls.active = true;
                     JuicerCuda::ExecutorTest::ResourceFailures failures;
@@ -4150,7 +4170,7 @@ namespace {
             parameters.grainControls.active = false;
             parameters.glareActive = false;
             parameters.glarePercent = 0.03;
-            InstanceState state;
+            NativeSubmissionState state;
             const auto pixels = render_case(test, parameters, state);
             compare_pixels(name, pixels, decode(capture.at("output_bits")));
             std::cerr << name << ": exact stored CUDA samples within retained pixel bounds\n";
@@ -4542,7 +4562,7 @@ int main(int argc, char** argv) try {
             JuicerTests::Cohort lifetime_rows("state_lifetime", intended);
             for (std::size_t index = 0; index < 2; ++index) {
                 auto route_row = route_rows.case_event(cases[index].name);
-                InstanceState unused;
+                NativeSubmissionState unused;
                 for (const auto& [name, lifetimeCase] : lifetime_cases) {
                     auto row = lifetime_rows.case_event(std::string(cases[index].name) + "/" + name);
                     (void)render_case(cases[index], parameters_for(cases[index]), unused, false, ExecutionPath::StateLifetime, DestinationLayout::Matching, 1, lifetimeCase);
@@ -4629,14 +4649,14 @@ int main(int argc, char** argv) try {
             // Each CTest case starts a fresh process and owner. C crosses the
             // boundary first, so no other caller can hide its table uploads.
             std::cerr << "cold C case: " << test.name << '\n';
-            InstanceState boundaryState;
+            NativeSubmissionState boundaryState;
             JuicerTests::CaseEvent boundary_path("processor_render_path", std::string(test.name) + "/boundary-cold");
             const auto boundary = render_case(test, parameters_for(test), boundaryState, false, stateContract ? ExecutionPath::StateContract : ExecutionPath::Boundary);
             JuicerTests::CaseEvent warm_boundary_path("processor_render_path", std::string(test.name) + "/boundary-warm");
             const auto warmBoundary = render_case(test, parameters_for(test), boundaryState, false, stateContract ? ExecutionPath::State : ExecutionPath::Boundary, DestinationLayout::Matching, 1, JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability::Complete, "warm");
             JuicerTests::CaseEvent direct_path("processor_render_path", std::string(test.name) + "/direct-executor");
             const auto direct = [&] {
-                InstanceState directState;
+                NativeSubmissionState directState;
                 return render_case(test, parameters_for(test), directState, false, ExecutionPath::Direct);
             }();
 #endif
@@ -4645,7 +4665,7 @@ int main(int argc, char** argv) try {
 #endif
             std::cerr << "processor case: " << test.name << '\n';
             const std::vector<float> pixels = [&] {
-                InstanceState state;
+                NativeSubmissionState state;
                 auto rendered = render_case(test, parameters_for(test), state);
 #if !defined(JUICER_PREPARED_BOUNDARY_TEST)
                 if (sequentialOwners) {
@@ -4718,7 +4738,7 @@ int main(int argc, char** argv) try {
                     // off-center float samples. Normalized diffusion preserves a
                     // constant exposure. Both controls use the immutable first pixel.
                     {
-                        InstanceState control;
+                        NativeSubmissionState control;
                         compare_pixels("uniform direct control", render_case(uniform, parameters_for(uniform), control), uniformExpected);
                     }
                     if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {
@@ -4728,7 +4748,7 @@ int main(int argc, char** argv) try {
                     {
                         auto parameters = parameters_for(uniform);
                         parameters.cameraDiffusion.active = true;
-                        InstanceState diffusionState;
+                        NativeSubmissionState diffusionState;
                         compare_pixels("uniform direct diffusion", render_case(uniform, parameters, diffusionState), uniformExpected);
                         JuicerCuda::ResourceManager::RegistryContextSnapshot admitted;
                         const auto& key = diffusionState.submissionSnapshotLatch.deviceContextKey;
@@ -4744,9 +4764,9 @@ int main(int argc, char** argv) try {
                     }
                 }
                 if (sequentialOwners && !test.combined) {
-                    InstanceState originState;
+                    NativeSubmissionState originState;
                     compare_pixels(std::string(test.name) + ": independent destination origin", render_case(test, parameters_for(test), originState, false, ExecutionPath::Processor, DestinationLayout::Offset), expected);
-                    InstanceState rejectedState;
+                    NativeSubmissionState rejectedState;
                     bool fatal = false;
                     try {
                         (void)render_case(test, parameters_for(test), rejectedState, false, ExecutionPath::Processor, DestinationLayout::Uncovered);
@@ -4766,7 +4786,7 @@ int main(int argc, char** argv) try {
                 if (stateContract) {
                     auto grainParameters = parameters_for(test);
                     grainParameters.grainControls.active = true;
-                    InstanceState grainState;
+                    NativeSubmissionState grainState;
                     JuicerTests::CaseEvent grain_path("processor_render_path", std::string(test.name) + "/grain-boundary");
                     (void)render_case(test, grainParameters, grainState, false, ExecutionPath::Boundary, DestinationLayout::Matching, 2);
                     grain_path.passed();
@@ -4801,12 +4821,12 @@ int main(int argc, char** argv) try {
             if (std::equal(freshPlus.begin(), freshPlus.end(), freshMinus.begin())) {
                 throw std::runtime_error("signed-zero fresh print renders did not differ");
             }
-            InstanceState transition;
+            NativeSubmissionState transition;
             compare_pixels("glare plus to minus initial", render_case(cases[5], parameters_for(cases[5]), transition), freshPlus);
             compare_pixels("glare plus to minus", render_case(cases[6], parameters_for(cases[6]), transition), freshMinus);
             compare_pixels("glare minus to plus", render_case(cases[5], parameters_for(cases[5]), transition), freshPlus);
         }
-        InstanceState emptyWindowState;
+        NativeSubmissionState emptyWindowState;
         (void)render_case(cases[0], parameters_for(cases[0]), emptyWindowState, true);
 #endif
         if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {

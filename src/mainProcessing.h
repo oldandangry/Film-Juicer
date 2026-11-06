@@ -2,7 +2,6 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 
 #include "ofxsImageEffect.h"
 #include "ofxsProcessing.h"
@@ -10,9 +9,8 @@
 #include "RenderValues.h"
 #include "juicer_cuda_frame_values.h"
 
-struct InstanceState;
-struct DirectRenderState;
-struct PrintRenderState;
+struct NativeSubmissionState;
+class PreparedState;
 
 // Full class declaration
 class JuicerProcessor : public OFX::ImageProcessor {
@@ -25,7 +23,8 @@ public:
     };
 
     struct DirectFrameRequest {
-        std::shared_ptr<const DirectRenderState> state;
+        // Borrowed through the synchronous process() call; never retained beyond it.
+        const PreparedState* renderState = nullptr;
         FjPreparedFramePolicy framePolicy{};
         OfxRectI renderWindow{0, 0, 0, 0};
         Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
@@ -38,7 +37,8 @@ public:
     };
 
     struct PrintFrameRequest {
-        std::shared_ptr<const PrintRenderState> state;
+        // Borrowed through the synchronous process() call; never retained beyond it.
+        const PreparedState* renderState = nullptr;
         FjPreparedFramePolicy framePolicy{};
         OfxRectI renderWindow{0, 0, 0, 0};
         Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
@@ -53,16 +53,15 @@ public:
     void setSrcDst(const SourceDestinationImages& images);
     void setDirectFrameRequest(const DirectFrameRequest& request);
     void setPrintFrameRequest(const PrintFrameRequest& request);
-    void setInstanceState(InstanceState* s);
+    void setSubmissionState(NativeSubmissionState* s);
 
     void process() override;
     void processImagesCUDA() override;
 
 private:
     OFX::Image* _srcImg = nullptr;
-    std::shared_ptr<const DirectRenderState> _directStateHold;
-    std::shared_ptr<const PrintRenderState> _printStateHold;
-    InstanceState* _instanceState = nullptr;
+    const PreparedState* _renderState = nullptr;
+    NativeSubmissionState* _submissionState = nullptr;
     std::uint64_t _sessionSeed = 1;
     std::uint64_t _instanceToken = 1;
     std::uintptr_t _clipToken = 0;
