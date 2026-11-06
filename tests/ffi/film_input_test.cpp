@@ -21,11 +21,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ProcessRuntime.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "ResourceAssetLibrary.h"
-#include "RustAssetBridge.h"
+#include "NativePath.h"
 #include "spectral_source_fixture.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
@@ -98,7 +98,7 @@ namespace {
     void require(bool condition, const char* message);
     void status(FjStatus value, std::uint32_t category = FJ_STATUS_SUCCESS, std::source_location location = std::source_location::current());
     struct PreparedInputLifetimeWitness {
-        FjAssets* assets = nullptr;
+        const FjAssets* assets = nullptr;
         RenderInstance* publication = nullptr;
         std::string filmKey;
         std::uint64_t counterBefore = 0;
@@ -153,7 +153,7 @@ namespace {
             const auto metrics = JuicerTestSupport::PublicationObserver::metrics(*witness->publication);
             witness->stateUnpublished = metrics.publishedIdentity == 0 && metrics.build == witness->counterBefore;
 
-            const FjStatus released = JuicerProcess::root().assets().release_cached_payloads();
+            const FjStatus released = fj_legacy_assets_release_cached_payloads(witness->assets, nullptr);
             status(released);
 
             FjFilmProfile* acquiredProfile = nullptr;
@@ -434,7 +434,7 @@ namespace {
         }
         require(out.color.adapt_xyz == 0 && out.projection_illuminant == 0, "adaptation and projection tag clear");
     }
-    void native_products(const std::filesystem::path& resources, const Json& fixture) {
+    void native_products(const FjAssets* assets, const std::filesystem::path& resources, const Json& fixture) {
         for (std::size_t row_index = 0; row_index < fixture.at("rows").size(); ++row_index) {
             const auto& row = fixture.at("rows")[row_index];
             JuicerTests::CaseEvent event("film_input.products", row_id(row, row_index));
@@ -462,7 +462,7 @@ namespace {
                 controls.cameraFilterUV = {0.314159265358979, 413.123456789012, 9.123456789012};
                 controls.cameraFilterIR = {0.271828182845904, 679.123456789012, 17.123456789012};
             }
-            auto product = JuicerTestSupport::prepare_product(controls);
+            auto product = JuicerTestSupport::prepare_product(assets, controls);
             std::array<char, 2048> errorText{};
             FjErrorBuffer error{errorText.data(), errorText.size(), 0};
             FjPreparedStateView view{};
@@ -476,7 +476,7 @@ namespace {
         }
         std::puts("PASS 140 actual native direct/print family, final and snapshot products");
     }
-    void lifetime_and_admission() {
+    void lifetime_and_admission(const FjAssets* assets) {
         std::vector<std::string> selector_ids;
         for (unsigned route = 0; route < 4; ++route)
             for (unsigned selector = 0; selector < 3; ++selector)
@@ -493,14 +493,14 @@ namespace {
             RenderInstance publication;
             JuicerTestSupport::capture(publication, controls);
             PreparedInputLifetimeWitness lifetime;
-            lifetime.assets = JuicerProcess::root().assets().borrow_rust_assets();
+            lifetime.assets = assets;
             lifetime.publication = &publication;
             lifetime.filmKey = controls.filmProfileKey;
             lifetime.counterBefore = JuicerTestSupport::PublicationObserver::metrics(publication).build;
             require(lifetime.assets != nullptr, "actual preparation has process Rust assets owner");
             const auto old = [&] {
                 PreparedInputLifetimeObserverScope observer(lifetime);
-                return JuicerTestSupport::admit(publication);
+                return JuicerTestSupport::admit(assets, publication);
             }();
             require(old.kind == FJ_ADMISSION_READY && old.state, "profile-source release during synchronous preparation still completes");
             require(lifetime.calls == 1, "actual complete-state preparation reached its profile/hull lifetime midpoint once");
@@ -527,7 +527,7 @@ namespace {
                         reinterpret_cast<std::uintptr_t>(heldView.input_hull.xy.data) == lifetime.selectedHullAddress &&
                         heldView.input_hull.xy.count == lifetime.selectedHullWords.size() && span_words(heldView.input_hull.xy) == lifetime.selectedHullWords,
                     "published state retains the exact selected profile axis and hull backing/words");
-            require(JuicerProcess::root().assets().release_cached_payloads().category == FJ_STATUS_SUCCESS,
+            require(fj_legacy_assets_release_cached_payloads(assets, nullptr).category == FJ_STATUS_SUCCESS,
                     "release the reloaded profile source cache after complete preparation; hull cache remains fixed");
             require(JuicerTestSupport::published_view(old).recipe_hash == heldView.recipe_hash &&
                         heldView.film_exposure.sensitivity_rgb.count == std::size_t{81} * 3u,
@@ -538,7 +538,7 @@ namespace {
             changed.cameraExposureCompensationEv = 0.25;
             JuicerTestSupport::capture(publication, changed);
             status(fj_test_exposure_arm_fault(2, 1, 4));
-            const auto rejected = JuicerTestSupport::admit(publication);
+            const auto rejected = JuicerTestSupport::admit(assets, publication);
             require(fj_test_exposure_fault_consumed(2, 4) == 1, "shared checked sensitivity producer consumed the returned preparation failure");
             require(rejected.delivery.category == FJ_STATUS_PREPARATION_FAILURE &&
                         rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state,
@@ -549,7 +549,7 @@ namespace {
                         JuicerTestSupport::published_view(old).recipe_hash == heldHash,
                     "typed preparation failure retains the prior publication and its admitted hold");
             JuicerTestSupport::capture(publication, controls);
-            const auto recoveredA = JuicerTestSupport::admit(publication);
+            const auto recoveredA = JuicerTestSupport::admit(assets, publication);
             require(recoveredA.kind == FJ_ADMISSION_READY && recoveredA.state &&
                         JuicerTestSupport::PublicationObserver::metrics(publication).build == initialMetrics.build &&
                         JuicerTestSupport::PublicationObserver::metrics(publication).backingIdentity == initialMetrics.backingIdentity,
@@ -557,7 +557,7 @@ namespace {
 
             JuicerTestSupport::capture(publication, changed);
             status(fj_test_exposure_arm_fault(2, 1, 1));
-            const auto unsupported = JuicerTestSupport::admit(publication);
+            const auto unsupported = JuicerTestSupport::admit(assets, publication);
             require(fj_test_exposure_fault_consumed(2, 1) == 1 &&
                         unsupported.delivery.category == FJ_STATUS_UNSUPPORTED_INPUT &&
                         unsupported.kind == FJ_ADMISSION_PREPARATION_FAILED && !unsupported.state &&
@@ -571,7 +571,7 @@ namespace {
             status(fj_test_exposure_arm_fault(2, 1, 4));
             const auto superseded = [&] {
                 InstancePrepareHookScope hooks(supersede_input_snapshot, &supersession);
-                return JuicerTestSupport::admit(publication);
+                return JuicerTestSupport::admit(assets, publication);
             }();
             require(fj_test_exposure_fault_consumed(2, 4) == 1, "superseded sensitivity producer preparation failure was consumed");
             if (supersession.failure)
@@ -587,7 +587,7 @@ namespace {
 
             JuicerTestSupport::capture(publication, changed);
             status(fj_test_exposure_arm_fault(2, 1, 2));
-            const auto thrown = JuicerTestSupport::admit(publication);
+            const auto thrown = JuicerTestSupport::admit(assets, publication);
             require(fj_test_exposure_fault_consumed(2, 2) == 1 &&
                         thrown.delivery.category == FJ_STATUS_INTERNAL_FAILURE &&
                         thrown.kind == FJ_ADMISSION_POISONED && !thrown.state,
@@ -612,23 +612,22 @@ namespace {
                 std::optional<PreparedState> product;
                 std::array<char, 2048> errorText{};
                 FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-                const auto invalidResult = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), invalid, product, error);
+                const auto invalidResult = prepare_state(assets, invalid, product, error);
                 require(invalidResult.category == FJ_STATUS_UNSUPPORTED_INPUT && std::string_view(errorText.data(), error.length).starts_with("UnsupportedMode phase=3B field="), "native signed selectors retain ordinary precheck failure before raw packing");
                 error = {errorText.data(), errorText.size(), 0};
-                const auto propagated = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls, product, error);
+                const auto propagated = prepare_state(assets, controls, product, error);
                 require(propagated.category == FJ_STATUS_UNSUPPORTED_INPUT && propagated.api == FJ_API_NONE && propagated.native_code == 0 && !product &&
                             std::string_view(errorText.data(), error.length) == "exposure production boundary fault",
                         "complete-state selector precheck preserves the shared matrix fault and its exact core status/diagnostic");
                 error = {errorText.data(), errorText.size(), 0};
-                status(prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls, product, error));
+                status(prepare_state(assets, controls, product, error));
                 require(product.has_value(), "matrix fault is consumed once before complete-state retry");
                 selector_event.passed();
             }
         }
         std::puts("PASS actual source/hull lifetimes, retained publication recovery, supersession, panic blocking and selector priority");
     }
-    void cases(const std::filesystem::path& root, const Json& fixture) {
-        const auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+    void cases(const FjAssets* assets, const std::filesystem::path& root, const Json& fixture) {
         JuicerTestSupport::CmfSource cmf(assets);
         const JuicerTestSupport::HanatosSource hanatos(assets);
         const JuicerTestSupport::ArcticSource arctic(assets);
@@ -892,7 +891,7 @@ namespace {
             row_event.passed();
         }
         status(fj_legacy_assets_release_cached_payloads(profile.assets, nullptr));
-        status(JuicerProcess::root().assets().release_cached_payloads());
+        status(fj_legacy_assets_release_cached_payloads(assets, nullptr));
         status(fj_legacy_film_input_prepare(profile.film, &input, &resources, &result, &failure, nullptr));
         require(result.hash == fixture.at("rows")[0].at("raw").at("hash"), "held source and arrays survive cache release");
         resources.reference_white_xyz = {nullptr, 0};
@@ -950,15 +949,15 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
     std::ifstream stream(argv[2]);
     const auto fixture = PrintIlluminantFixtures::apply(argv[2], Json::parse(stream));
     require(fixture.at("rows").size() == 140, "exact nonempty native case membership");
-    JuicerCuda::Owner owner;
+    JuicerProcess::ProcessRuntime owner;
     owner.create(std::filesystem::path(argv[1]));
     if (argc == 4) {
-        native_products(argv[1], fixture);
+        native_products(owner.borrow().assets, argv[1], fixture);
         JuicerTests::CaseEvent event("film_input", "lifetime_and_admission");
-        lifetime_and_admission();
+        lifetime_and_admission(owner.borrow().assets);
         event.passed();
     } else {
-        cases(argv[1], fixture);
+        cases(owner.borrow().assets, argv[1], fixture);
     }
     case_log.finish();
     std::puts("PASS 140 native film-input cases through core facade, legacy wrapper and C11 caller; raw failures");

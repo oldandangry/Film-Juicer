@@ -18,6 +18,14 @@ mod asset_catalog;
 
 mod instance;
 
+mod runtime;
+
+#[allow(
+    unsafe_code,
+    reason = "the private process edge admits native paths and projects synchronous borrows and consume-once Runtime ownership"
+)]
+mod runtime_bridge;
+
 #[allow(
     unsafe_code,
     reason = "the instance C edge validates foreign records and consumes host-write and admission handles"

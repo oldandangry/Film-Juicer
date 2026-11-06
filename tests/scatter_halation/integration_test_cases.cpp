@@ -1513,6 +1513,7 @@ namespace {
     }
 
     void run_captured_route(
+        JuicerProcess::ProcessRuntime& runtime,
         Spektrafilm::ScanRoute route,
         const nlohmann::json& fixture,
         const std::vector<std::uint8_t>& binary,
@@ -1530,6 +1531,7 @@ namespace {
         cameraDiffusion.strength = 1.0e-12;
         cameraDiffusion.spatialScale = 1.0e-12;
         PreparedRouteInputs inputs = build_prepared_route_inputs(
+            runtime,
             route,
             row.controls,
             cameraDiffusion,
@@ -1674,6 +1676,9 @@ namespace ScatterHalationValidation {
         JuicerTests::Cohort routeCohort(
             "scatter_halation.captured_carrier_route", routeIds);
         try {
+            if (!arguments.runtimeOwner) {
+                throw std::runtime_error("captured carrier rows require a live process Runtime");
+            }
             const nlohmann::json manifest = read_manifest(
                 arguments.fixtureRoot / "manifest.json");
             const auto fixture = std::find_if(
@@ -1696,6 +1701,7 @@ namespace ScatterHalationValidation {
             const SemanticPlanes<double> expected = read_planes<double>(
                 fixture->at("expected"), binary, "<f8", row.width, row.height);
             run_captured_route(
+                *arguments.runtimeOwner,
                 Spektrafilm::ScanRoute::NegativeDirectScan,
                 *fixture,
                 binary,
@@ -1705,6 +1711,7 @@ namespace ScatterHalationValidation {
                 results,
                 0x4101);
             run_captured_route(
+                *arguments.runtimeOwner,
                 Spektrafilm::ScanRoute::NegativePrintScan,
                 *fixture,
                 binary,
@@ -1722,6 +1729,9 @@ namespace ScatterHalationValidation {
         const Arguments& arguments,
         Results& results) {
         try {
+            if (!arguments.runtimeOwner) {
+                throw std::runtime_error("performance rows require a live process Runtime");
+            }
             require_cuda(cudaSetDevice(arguments.deviceIndex), "cudaSetDevice");
             const nlohmann::json manifest = read_manifest(
                 arguments.fixtureRoot / "manifest.json");
@@ -1745,6 +1755,7 @@ namespace ScatterHalationValidation {
                               std::max(arguments.performanceWidth,
                                        arguments.performanceHeight)));
             PreparedRouteInputs inputs = build_prepared_route_inputs(
+                *arguments.runtimeOwner,
                 Spektrafilm::ScanRoute::NegativeDirectScan,
                 controls,
                 {},

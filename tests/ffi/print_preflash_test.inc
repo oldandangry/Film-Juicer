@@ -46,14 +46,14 @@ namespace PrintPreflashTest {
         JuicerTests::Cohort density_cases("print_preflash.primitive_density_grid", density_ids);
         for (std::size_t index = 0; index < authored.size(); ++index)
             densities.emplace_back("authored/" + std::to_string(index), authored[index]);
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
-        auto& assets = JuicerProcess::root().assets();
+        const FjAssets* assets = owner.borrow().assets;
         for (const char* key : {"kodak_portra_400", "fujifilm_provia_100f"}) {
             auto profile_event = profiles.case_event(key);
             const std::string selectedKey = key;
             FjFilmProfile* acquired = nullptr;
-            status(fj_legacy_film_profile_acquire(assets.borrow_rust_assets(), {selectedKey.data(), selectedKey.size()}, &acquired, nullptr));
+            status(fj_legacy_film_profile_acquire(assets, {selectedKey.data(), selectedKey.size()}, &acquired, nullptr));
             const auto releaseProfile = [](FjFilmProfile* held) {
                 (void)fj_legacy_film_profile_release(held, nullptr);
             };
@@ -103,9 +103,9 @@ namespace PrintPreflashTest {
     Json product_observations(const std::filesystem::path& resources, const Json& expectedProducts) {
         Json products = Json::array();
         {
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create(resources.string().c_str());
-            auto& assets = JuicerProcess::root().assets();
+            const FjAssets* assets = owner.borrow().assets;
             std::vector<std::string> product_ids;
             for (unsigned route = 0; route < 4; ++route)
                 for (int mode = 0; mode < 3; ++mode)
@@ -136,7 +136,7 @@ namespace PrintPreflashTest {
                         std::array<char, 2048> diagnostic{};
                         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
                         std::optional<PreparedState> product;
-                        const auto statusValue = prepare_state(assets.borrow_rust_assets(), p, product, error);
+                        const auto statusValue = prepare_state(assets, p, product, error);
                         require(statusValue.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
                         FjPreparedStateView view{};
                         status(product->view(view, error));
@@ -391,8 +391,8 @@ namespace PrintPreflashTest {
         p.printPreflashExposure = 0.125;
         return p;
     }
-    PreparedState build(const ParamSnapshot& p) {
-        return JuicerTestSupport::prepare_product(p);
+    PreparedState build(const FjAssets* assets, const ParamSnapshot& p) {
+        return JuicerTestSupport::prepare_product(assets, p);
     }
     FrameFixture::FrameFacts frame_facts(const ParamSnapshot& p) {
         FrameFixture::FrameFacts facts;
@@ -451,7 +451,8 @@ namespace PrintPreflashTest {
         zero(output);
         return true;
     }
-    void prepare_cache(PreparedState& state,
+    void prepare_cache(const FjAssets* assets,
+                       PreparedState& state,
                        const ParamSnapshot& p,
                        JuicerCuda::Resources& resources,
                        JuicerCuda::Failure& failure,
@@ -459,13 +460,13 @@ namespace PrintPreflashTest {
         CacheCall call{&resources, &failure, consumeFault};
         std::string diagnostic;
         require(FrameFixture::with_prepared_frame_inputs(
-                    state, frame_facts(p), &call, &prepare_cache, diagnostic),
+                    assets, state, frame_facts(p), &call, &prepare_cache, diagnostic),
                 diagnostic.c_str());
     }
-    void consume_fault(PreparedState& state, const ParamSnapshot& p) {
+    void consume_fault(const FjAssets* assets, PreparedState& state, const ParamSnapshot& p) {
         std::string diagnostic;
         require(FrameFixture::with_prepared_frame_inputs(
-                    state, frame_facts(p), nullptr, &consume_cache_fault, diagnostic),
+                    assets, state, frame_facts(p), nullptr, &consume_cache_fault, diagnostic),
                 diagnostic.c_str());
     }
     void expect_panic(const auto& operation) {
@@ -555,32 +556,32 @@ namespace PrintPreflashTest {
         return true;
     }
     void caller(const std::filesystem::path& resources) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         auto p = controls();
-        auto active = build(p);
+        auto active = build(owner.borrow().assets, p);
         auto disabledControls = p;
         disabledControls.printPreflashExposure = 0;
-        auto disabled = build(disabledControls);
+        auto disabled = build(owner.borrow().assets, disabledControls);
         std::string diagnostic;
         CallerInputFacts disabledFacts;
         status(fj_test_film_recipe_fault(11, 1));
         require(FrameFixture::with_prepared_frame_inputs(
-                    disabled, frame_facts(disabledControls), &disabledFacts, &inspect_caller_input, diagnostic),
+                    owner.borrow().assets, disabled, frame_facts(disabledControls), &disabledFacts, &inspect_caller_input, diagnostic),
                 diagnostic.c_str());
         require(disabledFacts.preflashCount == 0 && disabledFacts.descriptorHash == 0 && disabledFacts.heldHash == 0 &&
                     words(disabledFacts.expectedRaw.data(), 3) == Json::array({0, 0, 0}),
                 "disabled supplied input omits raw construction and remains zero");
         CallerInputFacts activeFacts{true};
         require(FrameFixture::with_prepared_frame_inputs(
-                    active, frame_facts(controls()), &activeFacts, &inspect_caller_input, diagnostic),
+                    owner.borrow().assets, active, frame_facts(controls()), &activeFacts, &inspect_caller_input, diagnostic),
                 diagnostic.c_str());
         require(activeFacts.preflashCount == 81 && activeFacts.descriptorHash != 0 &&
                     activeFacts.descriptorHash == activeFacts.heldHash,
                 "active supplied input carries complete preflash light and matching raw identity");
         CallerInputFacts firstRecovered;
         require(FrameFixture::with_prepared_frame_inputs(
-                    active, frame_facts(controls()), &firstRecovered, &prepare_caller_raw, diagnostic),
+                    owner.borrow().assets, active, frame_facts(controls()), &firstRecovered, &prepare_caller_raw, diagnostic),
                 diagnostic.c_str());
         require(firstRecovered.expectedRaw == activeFacts.expectedRaw &&
                     firstRecovered.descriptorHash == activeFacts.descriptorHash &&
@@ -590,11 +591,11 @@ namespace PrintPreflashTest {
             status(fj_test_film_recipe_fault(11, 1));
             CallerInputFacts faultFacts{true};
             require(FrameFixture::with_prepared_frame_inputs(
-                        active, frame_facts(controls()), &faultFacts, &inspect_caller_input, diagnostic),
+                        owner.borrow().assets, active, frame_facts(controls()), &faultFacts, &inspect_caller_input, diagnostic),
                     diagnostic.c_str());
             CallerInputFacts recoveredFacts;
             require(FrameFixture::with_prepared_frame_inputs(
-                        active, frame_facts(controls()), &recoveredFacts, &prepare_caller_raw, diagnostic),
+                        owner.borrow().assets, active, frame_facts(controls()), &recoveredFacts, &prepare_caller_raw, diagnostic),
                     diagnostic.c_str());
             require(recoveredFacts.expectedRaw == activeFacts.expectedRaw &&
                         recoveredFacts.descriptorHash == activeFacts.descriptorHash &&
@@ -603,7 +604,7 @@ namespace PrintPreflashTest {
         }
         auto directControls = controls();
         directControls.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        const auto direct = build(directControls);
+        const auto direct = build(owner.borrow().assets, directControls);
         std::array<char, 2048> text{};
         FjErrorBuffer error{text.data(), text.size(), 0};
         FjPreparedStateView directView{};
@@ -618,7 +619,7 @@ namespace PrintPreflashTest {
     }
     void cache(const std::filesystem::path& resources, const Json& captured) {
         JuicerTests::CaseEvent cache_event("cpp", "print-preflash/cache");
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         cuda_ok(cudaSetDevice(0));
         cuda_ok(cudaFree(nullptr));
@@ -631,15 +632,15 @@ namespace PrintPreflashTest {
         require(bool(ledger), diagnostic.c_str());
         require(ledger->bind_or_validate_cap(kBudgetBytes, diagnostic), diagnostic.c_str());
         auto p = controls();
-        auto product = build(p);
+        auto product = build(owner.borrow().assets, p);
         JuicerCuda::Failure failure;
         {
             JuicerCuda::Resources cached(key, 1, ledger);
             const auto prepare = [&](PreparedState& state, const ParamSnapshot& controls, bool consumeFault = false) {
-                prepare_cache(state, controls, cached, failure, consumeFault);
+                prepare_cache(owner.borrow().assets, state, controls, cached, failure, consumeFault);
             };
             const auto consume_preflash_fault = [&](PreparedState& state, const ParamSnapshot& controls) {
-                PrintPreflashTest::consume_fault(state, controls);
+                PrintPreflashTest::consume_fault(owner.borrow().assets, state, controls);
             };
             prepare(product, p);
             const auto originalHash = cached.printPreflashRawDescriptorHash;
@@ -658,7 +659,7 @@ namespace PrintPreflashTest {
                     changedControls.printUiYmcCc = {2.1234567890123, 3.2345678901234, 4.3456789012345};
                 if (variant == 4)
                     changedControls.outputCctfEncoding = 0;
-                auto changed = build(changedControls);
+                auto changed = build(owner.borrow().assets, changedControls);
                 status(fj_test_film_recipe_fault(11, 1));
                 prepare(changed, changedControls, true);
                 require(cached.printPreflashRawDescriptorHash == originalHash && cached.printPreflashIlluminantDescriptorHash == originalLightHash && cached.printPreflashIllumFiltered == originalLight && words(cached.printPreflashRaw, 3) == originalRaw, "amount/main-only/output edits preserve raw reuse and illumination residency");
@@ -675,7 +676,7 @@ namespace PrintPreflashTest {
                 auto changedControls = p;
                 changedControls.filmProfileKey = film ? "kodak_ektar_100" : p.filmProfileKey;
                 changedControls.printProfileKey = film ? p.printProfileKey : "fujifilm_crystal_archive_typeii";
-                auto changed = build(changedControls);
+                auto changed = build(owner.borrow().assets, changedControls);
                 status(fj_test_film_recipe_fault(11, 1));
                 consume_preflash_fault(changed, changedControls);
                 require(cached.printPreflashRawDescriptorHash == originalHash, "source identity failure preserves old committed raw key");
@@ -687,7 +688,7 @@ namespace PrintPreflashTest {
             auto changedControls = p;
             changedControls.preflashMFilterCc = 5;
             changedControls.preflashYFilterCc = -3;
-            auto changed = build(changedControls);
+            auto changed = build(owner.borrow().assets, changedControls);
             prepare(changed, changedControls);
             require(cached.printPreflashRawDescriptorHash != originalHash && cached.printPreflashIlluminantDescriptorHash != originalLightHash, "preflash offsets invalidate both light and raw families");
             std::vector<std::string> offset_ids;
@@ -703,7 +704,7 @@ namespace PrintPreflashTest {
                 }
             auto disabledControls = p;
             disabledControls.printPreflashExposure = 0;
-            auto disabled = build(disabledControls);
+            auto disabled = build(owner.borrow().assets, disabledControls);
             status(fj_test_film_recipe_fault(11, 1));
             prepare(disabled, disabledControls, false);
             require(!cached.printPreflashValid && cached.printPreflashRawDescriptorHash == 0 && cached.printPreflashIlluminantDescriptorHash == 0 && words(cached.printPreflashRaw, 3) == Json::array({0, 0, 0}), "disabled route clears preflash validity/value/keys");

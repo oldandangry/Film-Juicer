@@ -8,6 +8,7 @@
 
 #include "RenderValues.h"
 #include "juicer_cuda_frame_values.h"
+#include "juicer_legacy_api.h"
 
 struct NativeSubmissionState;
 class PreparedState;
@@ -15,7 +16,7 @@ class PreparedState;
 // Full class declaration
 class JuicerProcessor : public OFX::ImageProcessor {
 public:
-    explicit JuicerProcessor(OFX::ImageEffect& effect);
+    JuicerProcessor(OFX::ImageEffect& effect, FjRuntimeView runtime);
 
     struct SourceDestinationImages {
         OFX::Image* src = nullptr;
@@ -59,6 +60,8 @@ public:
     void processImagesCUDA() override;
 
 private:
+    // SF_TEMP_BRIDGE_RUNTIME_CALL_VIEW: same callback Runtime; remove S6.
+    FjRuntimeView _runtime;
     OFX::Image* _srcImg = nullptr;
     const PreparedState* _renderState = nullptr;
     NativeSubmissionState* _submissionState = nullptr;

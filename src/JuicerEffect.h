@@ -6,6 +6,7 @@
 #include <mutex>
 
 #include "PreparedState.h"
+#include "ProcessRuntime.h"
 
 #include "ofxsImageEffect.h"
 
@@ -52,7 +53,7 @@ namespace JuicerTestSupport {
 
 class JuicerEffect : public OFX::ImageEffect {
 public:
-    explicit JuicerEffect(OfxImageEffectHandle handle);
+    JuicerEffect(OfxImageEffectHandle handle, JuicerProcess::ProcessRuntime& runtime);
     ~JuicerEffect() override;
 
     void render(const OFX::RenderArguments& args) override;
@@ -219,6 +220,7 @@ private:
     OFX::DoubleParam* _pGlareCompRemovalDensity = nullptr;
     OFX::DoubleParam* _pGlareCompRemovalTransition = nullptr;
 
+    JuicerProcess::ProcessRuntime& _runtime;
     RenderInstance _publication;
     std::mutex _uiMutex;
     std::unique_ptr<NativeSubmissionState> _submissionState;

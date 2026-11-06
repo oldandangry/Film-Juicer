@@ -1673,11 +1673,10 @@ const _: () = {
         [::core::mem::offset_of!(FjPreparedHostData, noise) - 6064usize];
 };
 unsafe extern "C" {
-    pub fn fj_cuda_create(
-        data_directory: FjPathView,
-        out_cuda: *mut *mut FjCuda,
-        error: *mut FjErrorBuffer,
-    ) -> FjStatus;
+    pub fn fj_cuda_create(out_cuda: *mut *mut FjCuda, error: *mut FjErrorBuffer) -> FjStatus;
+}
+unsafe extern "C" {
+    pub fn fj_cuda_check_terminal(cuda: *mut FjCuda, error: *mut FjErrorBuffer) -> FjStatus;
 }
 unsafe extern "C" {
     pub fn fj_cuda_inspect(

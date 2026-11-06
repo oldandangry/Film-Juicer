@@ -17,10 +17,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ProcessRuntime.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "RustAssetBridge.h"
+#include "NativePath.h"
 #include "juicer_test_api.h"
 #include "prepared_product_fixture.h"
 #include "case_results.h"
@@ -229,7 +230,7 @@ namespace {
         failure_event.passed();
     }
     void products(const std::filesystem::path& root, const Json& fixture) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(root);
         std::size_t count = 0;
         for (const auto& row : fixture.at("cases")) {
@@ -246,7 +247,7 @@ namespace {
             controls.filmGammaFactor = std::bit_cast<float>(row.at("development").at("gamma")[0].get<std::uint32_t>());
             controls.grainControls.active = row.at("grain_policy") != 0;
             controls.grainControls.sublayersActive = row.at("grain_policy") != 1;
-            auto product = JuicerTestSupport::prepare_product(controls);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             std::array<char, 2048> errorText{};
             FjErrorBuffer error{errorText.data(), errorText.size(), 0};
             FjPreparedStateView view{};
@@ -280,7 +281,7 @@ namespace {
                 controls.grainControls.sublayersActive = layers;
                 RenderInstance instance;
                 JuicerTestSupport::capture(instance, controls);
-                auto publication = JuicerTestSupport::admit(instance);
+                auto publication = JuicerTestSupport::admit(owner.borrow().assets, instance);
                 require(publication.kind == FJ_ADMISSION_READY && publication.state, "failure baseline complete admission");
                 require(fj_test_development_curve_count(0) == 1,
                         "one complete state owns the baseline normalized curves");
@@ -321,7 +322,7 @@ namespace {
                     std::optional<PreparedState> failedOwner;
                     std::array<char, 4096> constructionText{};
                     FjErrorBuffer constructionError{constructionText.data(), constructionText.size(), 0};
-                    status(prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), changed, failedOwner, constructionError),
+                    status(prepare_state(owner.borrow().assets, changed, failedOwner, constructionError),
                            fault == 1 ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_PREPARATION_FAILURE);
                     require(!failedOwner && std::string_view(constructionText.data(), constructionError.length) == expectedDiagnostic,
                             "complete constructor reports the real leaf category/diagnostic and returns no partial owner");
@@ -331,7 +332,7 @@ namespace {
                     bool allocationThrown = false;
                     JuicerTestSupport::PublicationAdmission rejected;
                     try {
-                        rejected = JuicerTestSupport::admit(instance);
+                        rejected = JuicerTestSupport::admit(owner.borrow().assets, instance);
                     } catch (const std::bad_alloc&) {
                         allocationThrown = true;
                     }
@@ -365,7 +366,7 @@ namespace {
                             "failed complete construction creates no legacy foreign owner");
 
                     JuicerTestSupport::capture(instance, committedControls);
-                    auto reused = JuicerTestSupport::admit(instance);
+                    auto reused = JuicerTestSupport::admit(owner.borrow().assets, instance);
                     require(reused.kind == FJ_ADMISSION_READY && reused.state &&
                                 JuicerTestSupport::PublicationObserver::metrics(instance).build == counter &&
                                 JuicerTestSupport::PublicationObserver::backing(*reused.state) == backingIdentity &&
@@ -373,7 +374,7 @@ namespace {
                             "returning to the last admitted identity reuses its complete state after failure");
                     reused.state.reset();
                     JuicerTestSupport::capture(instance, changed);
-                    auto recovered = JuicerTestSupport::admit(instance);
+                    auto recovered = JuicerTestSupport::admit(owner.borrow().assets, instance);
                     require(recovered.kind == FJ_ADMISSION_READY && recovered.state,
                             "development one-shot failure retry publishes the selected route");
                     const auto recoveredView = JuicerTestSupport::published_view(recovered);
@@ -406,7 +407,7 @@ namespace {
                             "replacing the test hold releases only the prior complete state and its actual normalized curves");
                     row_event.passed();
                 }
-                const auto warm = JuicerTestSupport::admit(instance);
+                const auto warm = JuicerTestSupport::admit(owner.borrow().assets, instance);
                 require(warm.kind == FJ_ADMISSION_READY && warm.state &&
                             JuicerTestSupport::PublicationObserver::metrics(instance).build == counter &&
                             JuicerTestSupport::PublicationObserver::metrics(instance).backingIdentity == backingIdentity,

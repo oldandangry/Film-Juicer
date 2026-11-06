@@ -38,7 +38,7 @@
 #include "ColorTransforms.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
-#include "juicer_cuda_owner.h"
+#include "ProcessRuntime.h"
 
 // === Resolve support library factory (Step 1) ===
 // The factory owns the plugin identity and wires descriptor/instance creation.
@@ -48,6 +48,12 @@
 #define kPluginIdentifier "com.juicer.Juicer"
 #define kPluginVersionMajor 1
 #define kPluginVersionMinor 0
+
+#if defined(JUICER_OWNER_UNLOAD_TEST)
+namespace JuicerProcess::TestSupport {
+    FjStatus borrow_plugin_factory_runtime_for_test(OFX::PluginFactory& factory, FjRuntimeView& out) noexcept;
+}
+#endif
 
 class JuicerPluginFactory : public OFX::PluginFactoryHelper<JuicerPluginFactory> {
 public:
@@ -64,16 +70,25 @@ public:
     OFX::ImageEffect* createInstance(OfxImageEffectHandle handle, OFX::ContextEnum context) override;
 
 private:
-    JuicerCuda::Owner _cuda;
+#if defined(JUICER_OWNER_UNLOAD_TEST)
+    friend FjStatus JuicerProcess::TestSupport::borrow_plugin_factory_runtime_for_test(OFX::PluginFactory& factory, FjRuntimeView& out) noexcept;
+#endif
+    JuicerProcess::ProcessRuntime _runtime;
 };
+
+#if defined(JUICER_OWNER_UNLOAD_TEST)
+FjStatus JuicerProcess::TestSupport::borrow_plugin_factory_runtime_for_test(OFX::PluginFactory& factory, FjRuntimeView& out) noexcept {
+    return static_cast<JuicerPluginFactory&>(factory)._runtime.borrow(out);
+}
+#endif
 
 
 void JuicerPluginFactory::load() {
-    _cuda.create(JuicerProcess::data_directory());
+    _runtime.create(JuicerProcess::data_directory());
 }
 
 void JuicerPluginFactory::unload() {
-    if (_cuda.close().category != FJ_STATUS_SUCCESS) {
+    if (_runtime.close().category != FJ_STATUS_SUCCESS) {
         // Retaining the native graph does not make module unload safe.
         OFX::throwSuiteStatusException(kOfxStatErrFatal);
     }
@@ -106,6 +121,8 @@ void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc) {
 void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context) {
     if (context != OFX::eContextFilter)
         return;
+
+    const Spektrafilm::ProfileCatalog& profileCatalog = _runtime.spektrafilm_profile_catalog();
 
     // Clips
     {
@@ -192,8 +209,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setEvaluateOnChange(true);
     }
 
-    if (!spektrafilm_profile_catalog_ready()) {
-        JTRACE("CATALOG", std::string("FATAL: spektrafilm profile catalog descriptor failure: ") + spektrafilm_profile_catalog_failure());
+    if (!spektrafilm_profile_catalog_ready(profileCatalog)) {
+        JTRACE("CATALOG", std::string("FATAL: spektrafilm profile catalog descriptor failure: ") + spektrafilm_profile_catalog_failure(profileCatalog));
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
@@ -201,9 +218,9 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
     {
         OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kFilmProfileKey);
         p->setLabel("Film stock");
-        const int stockCount = film_profile_option_count();
+        const int stockCount = film_profile_option_count(profileCatalog);
         for (int i = 0; i < stockCount; ++i) {
-            p->appendOption(film_profile_option_key(i), film_profile_option_label(i));
+            p->appendOption(film_profile_option_key(profileCatalog, i), film_profile_option_label(profileCatalog, i));
         }
         p->setDefault(Spektrafilm::kDefaultFilmProfileKey); // kodak_portra_400
         if (grpInput)
@@ -295,9 +312,9 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kPrintProfileKey);
             p->setLabel("Print paper");
-            const int paperCount = print_profile_option_count();
+            const int paperCount = print_profile_option_count(profileCatalog);
             for (int i = 0; i < paperCount; ++i) {
-                p->appendOption(print_profile_option_key(i), print_profile_option_label(i));
+                p->appendOption(print_profile_option_key(profileCatalog, i), print_profile_option_label(profileCatalog, i));
             }
             p->setDefault(Spektrafilm::kDefaultPrintProfileKey); // kodak_portra_endura
             if (grpPrint)
@@ -1538,7 +1555,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
 
 OFX::ImageEffect* JuicerPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum /*context*/) {
     // Create our effect instance (constructor attaches NativeSubmissionState + runs bootstrap).
-    return new JuicerEffect(handle);
+    return new JuicerEffect(handle, _runtime);
 }
 
 // Resolve support library entry: register our factory.

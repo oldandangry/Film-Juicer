@@ -391,7 +391,7 @@ namespace {
         require(fj_test_film_development_live_owners() == 0, "grain failure/concurrency holds drain");
     }
     void grain_products(const std::filesystem::path& resources, const Json& captured) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
         std::size_t product_index = 0;
         for (const auto& row : captured.at("products")) {
@@ -406,7 +406,7 @@ namespace {
             params.inputCompressionEnabled = 0;
             params.outputGamutCompressionEnabled = 0;
             params.grainControls = native_grain_controls(grain_params(row.at("controls")));
-            auto product = JuicerTestSupport::prepare_product(params);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
@@ -421,14 +421,14 @@ namespace {
             auto* const originalMinimum = view.grain_minimum.cmy;
             auto changed = params;
             changed.grainControls.visualParticleDensityMinCmy[0] = 0.5f;
-            auto changedProduct = JuicerTestSupport::prepare_product(changed);
+            auto changedProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, changed);
             FjPreparedStateView changedView{};
             status(changedProduct.view(changedView, error));
             require(changedView.grain.hash != originalGrainHash && changedView.scanner_bounds.hash == originalBoundsHash && std::equal(changedView.grain_minimum.cmy, changedView.grain_minimum.cmy + 3, originalMinimum), "visual particle minimum remains distinct from scanner GrainContract");
             changed = params;
             changed.grainControls.chromaMix = 0.5f;
             require(hash_params(changed) == hash_params(params), "synthetic chroma-only change retains intentional snapshot omission");
-            auto chromaProduct = JuicerTestSupport::prepare_product(changed);
+            auto chromaProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, changed);
             FjPreparedStateView chromaView{};
             status(chromaProduct.view(chromaView, error));
             require(chromaView.grain.hash != originalGrainHash, "resolved recipe independently includes chroma mix");
@@ -447,7 +447,7 @@ namespace {
             params.outputGamutCompressionEnabled = 0;
             RenderInstance state;
             JuicerTestSupport::capture(state, params);
-            const auto admitted = JuicerTestSupport::admit(state);
+            const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(admitted.kind == FJ_ADMISSION_READY && admitted.state, "grain publication baseline");
             const auto held = JuicerTestSupport::published_view(admitted);
             const auto hash = held.recipe_hash;
@@ -455,7 +455,7 @@ namespace {
             auto changed = params;
             changed.grainControls.particleAreaUm2 = 0;
             JuicerTestSupport::capture(state, changed);
-            const auto rejected = JuicerTestSupport::admit(state);
+            const auto rejected = JuicerTestSupport::admit(owner.borrow().assets, state);
             const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
             require(rejected.delivery.category == FJ_STATUS_PREPARATION_FAILURE &&
                         rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state &&
@@ -465,11 +465,11 @@ namespace {
                         failedMetrics.backingIdentity == baselineMetrics.backingIdentity && held.recipe_hash == hash,
                     "ordinary grain failure never publishes partial state or revokes admitted holds");
             JuicerTestSupport::capture(state, params);
-            const auto recovered = JuicerTestSupport::admit(state);
+            const auto recovered = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(recovered.kind == FJ_ADMISSION_READY && recovered.state &&
                         JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
                     "grain recovery reuses last complete state");
-            const auto repeat = JuicerTestSupport::admit(state);
+            const auto repeat = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(repeat.kind == FJ_ADMISSION_READY && repeat.state &&
                         JuicerTestSupport::PublicationObserver::backing(*repeat.state) == baselineMetrics.backingIdentity &&
                         JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,

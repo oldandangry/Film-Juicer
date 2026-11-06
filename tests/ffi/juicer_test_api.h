@@ -31,7 +31,7 @@ FjStatus fj_test_input_hull_release(FjInputHullOwner*, FjErrorBuffer*);
 FjStatus fj_test_assets_output_boundary_acquire(const FjAssets*, const FjOutputBoundarySource*, uint64_t expected_contract_hash, FjOutputBoundaryOwner**, FjErrorBuffer*);
 FjStatus fj_test_output_boundary_view(const FjOutputBoundaryOwner*, FjOutputBoundaryView*, FjErrorBuffer*);
 FjStatus fj_test_output_boundary_release(FjOutputBoundaryOwner*, FjErrorBuffer*);
-FjStatus fj_test_prepared_state_create(FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
+FjStatus fj_test_prepared_state_create(const FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
 FjStatus fj_test_prepared_state_view(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*);
 FjStatus fj_test_prepared_state_release(FjPreparedState*, FjErrorBuffer*);
 /* Test-only borrowed observation immediately before a complete prepared state
@@ -372,6 +372,11 @@ void fj_test_profile_fault(uint32_t fault);
 size_t fj_test_profile_live_owners(void);
 size_t fj_test_print_density_live_owners(void);
 void fj_test_cache_release_failure(void);
+/* Consume-once Runtime faults: 1/2 before/after native construction allocation
+ * failures, 3 post-terminal host cleanup failure, 4/5 corresponding panics. */
+void fj_test_runtime_fault(uint32_t stage);
+void fj_test_runtime_cache_hold(uint32_t hold);
+size_t fj_test_runtime_cache_attempts(void);
 size_t fj_test_assets_live_owners(void);
 size_t fj_test_catalog_live_owners(void);
 

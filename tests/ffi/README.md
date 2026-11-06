@@ -74,16 +74,34 @@ ctest --preset linux-debug -R '^(Ffi\.Host\.CudaAbi|Rust\.Bridge)$'
 
 ## Native owner lifecycle
 
-`Ffi.Host.CudaOwner` exercises the actual native owner with no GPU discovery:
-invalid creation does not publish, duplicate creation cannot replace the
-registered root, uninitialized teardown does not create a root, and scoped
-close/reload constructs a fresh metadata owner. It also checks diagnostic
-truncation and that callers cannot directly construct or destroy `Root`.
+The OFX factory owns one move-only `JuicerProcess::ProcessRuntime` for each
+loaded process module. `load()` creates it from the module data directory;
+effects retain an explicit reference and borrow a callback-local
+`FjRuntimeView` containing borrowed Assets and native-handle projections. Both
+projections expire before Runtime close. Product callbacks receive these owners explicitly. There is no
+ambient process-owner lookup. The native CUDA `Root` remains the owner of CUDA
+resources, contexts, epochs and frame admission/retirement; the process runtime
+binds that native owner to Rust's Assets lifetime.
 
-Its final case keeps a metadata-only registry submission active to make borrowed
-shutdown fail before CUDA access. After ending that submission, consuming close
-and the wrapper destructor must leave the same blocked graph registered, without
-retrying retirement or permitting a replacement owner.
+The private Runtime C boundary consists of
+`fj_legacy_runtime_create`, `fj_legacy_runtime_borrow`,
+`fj_legacy_runtime_check_close`, `fj_legacy_runtime_shutdown` and
+`fj_legacy_runtime_destroy`. Borrowed shutdown leaves the runtime owner in
+place. `ProcessRuntime::close()` first checks whether consuming close is
+currently allowed, and only then exchanges and consumes its handle. A rejected
+precheck preserves the live owner. The destructor makes one nonthrowing close
+attempt, reports an actual cleanup error through the existing logging path, and
+does not retry a rejected or uncertain teardown. Native shutdown has precedence
+over host cleanup: uncertain native teardown retains only the native graph,
+never Rust Assets or host-side borrowed storage.
+
+`Ffi.Host.CudaOwner` and `Ffi.Host.CudaTerminal.*` retain their existing native
+CUDA-owner lifecycle coverage: no-GPU creation, terminal transition, error
+buffer, admission/drain serialization and native graph retention cases. These
+tests exercise the native CUDA lifecycle boundary, not an ambient production
+owner registry. A failed native close retains the native graph without
+permitting replacement; the wrapper does not retry retirement. The factory
+unload case checks that an actual close error maps to fatal OFX status.
 
 `Ffi.Host.CudaTerminal.*` tests the three terminal C entries through isolated API
 objects. It covers closed/repeated shutdown, accepting destroy, exception
@@ -100,15 +118,18 @@ The C boundary has these ownership transitions:
 
 | Operation | Ownership after return |
 | --- | --- |
-| `fj_cuda_shutdown` succeeds | Caller owns a closed handle; repeated shutdown succeeds without another drain. |
-| `fj_cuda_shutdown` fails | Caller owns a blocked handle and the retained native graph; repeated shutdown returns the saved failure. |
-| `fj_cuda_destroy` receives accepting ownership | Caller has taken/cleared its pointer; exactly one shutdown attempt leads to deletion or failed native retention. |
+| `fj_cuda_shutdown` succeeds | Caller retains a closed native handle; repeated shutdown succeeds without another drain. |
+| `fj_cuda_shutdown` fails | Caller retains the blocked native handle and graph; repeated shutdown returns the saved failure. |
+| `fj_cuda_destroy` receives accepting ownership | The caller consumes its pointer; one shutdown attempt leads to deletion or failed native retention. |
 | `fj_cuda_destroy` receives closed ownership | The closed graph is deleted once and a later create can establish a new owner. |
-| `fj_cuda_destroy` receives blocked ownership | Caller ownership is consumed, the graph remains registered and retained, and no retry/destructor traversal occurs. |
+| `fj_cuda_destroy` receives blocked ownership | Native ownership is consumed, the graph remains retained, and no retry/destructor traversal occurs. |
 
-`JuicerCuda::Owner::close()` takes its pointer before invoking consuming destroy.
-Its destructor uses that same path only if explicit close has not consumed it.
-Closed or blocked owners reject inspect, render and instance retirement.
+Rust `cuda::Owner` takes its optional native handle before invoking consuming
+destroy. Drop uses that path only for an unconsumed handle. Runtime keeps Assets
+alive through the native attempt and then releases host state on every consuming
+result, including native failure. Successful borrowed shutdown releases caches
+once through Rust's saved result; repeated calls reuse that outcome. Closed or blocked native owners reject inspect, render and
+instance retirement.
 Shutdown stops Root admission and drains outer preparation guards before taking
 the native-call gate; it never waits on those guards while holding that gate.
 `Root` no longer has a separate public shutdown or bootstrap-reopen path.
@@ -137,10 +158,12 @@ controlled failure fixture, not real driver-loss or forced-unload qualification.
 Ordinary prepared-frame/lifecycle and native failure/cancellation fixtures use
 the same typed terminal operations for final cleanup.
 
-Direct native fixtures use `JuicerCuda::Owner` for their process scope, just as
-the OFX factory owns one handle across load/unload. Root lookup only borrows that
-registered owner. Both production routes now use callback-local C-record
-projection and the admitted body shared with `fj_cuda_render`.
+Fixtures that need Runtime-owned Assets use `JuicerProcess::ProcessRuntime`.
+Isolated native lifecycle cases create `FjCuda` directly with `fj_cuda_create`
+and consume it with `fj_cuda_destroy`.
+Production effects use their factory-supplied `ProcessRuntime` reference and
+callback-local C-record projection; both production routes share the admitted
+body with `fj_cuda_render`.
 
 The native execution object target has no OFX include or link dependency. Its
 objects, current C++ host preparation, and OFX adapter objects enter one
@@ -448,7 +471,7 @@ and obey the same lifetime; native invocation expiry still applies.
 The host fixture creates isolated resources beneath the preset's
 `out/validation/<preset>/ffi/profile-owner-resources`, including both required
 catalog roles/default keys. It never writes Resources or checked-in fixtures,
-links no CUDA runtime and performs no driver operation. Detailed pointer,
+runs host-only value checks through the complete plug-in boundary and links the real native engine. Detailed pointer,
 concurrency, status, diagnostic and consume-on-every-outcome rules are beside
 its declarations in `juicer_test_api.h`. Incidental small Box/Arc/path/parser
 allocation aborts remain outside panic recovery. Normal `BUILD_TESTING=OFF`
@@ -465,7 +488,7 @@ numerical oracle remain independent of the production profile records.
 `Ffi.Host.CatalogOwner` checks the private production catalog ABI in C11,
 C++20 and Rust, the retained-owner lifetime, failure-output clearing,
 concurrent acquisition, source-error stickiness and native conversion retry.
-It calls the actual native option accessors and Rust-owned catalog/source boundary.
+It calls the actual Runtime catalog boundary and Rust-owned catalog/source boundary.
 `FjCatalogEntryView` contains key, label and polarity only
 (40 bytes, alignment 8 on both supported x64 targets). Counts are role-local
 entry counts; indices are zero-based. Text is length-delimited UTF-8, including
@@ -483,42 +506,39 @@ invalid UTF-8 bytes; it removes those fixture files on exit. Windows uses its
 configured artifact directory. Other resource families still use their existing
 root-string conversion until their own cutovers.
 
-Assets create is lazy and performs no discovery or CUDA initialization. One
-Assets belongs to the process Library. Catalog acquisition retains an immutable
-Arc; independent handles survive Assets destruction and each other's release.
-Reads allocate nothing. Catalog paths do not cross this boundary.
-Caller excludes Assets destruction from acquisitions, and catalog release from
-all reads and outstanding view uses. Outputs and diagnostics are aligned,
-exclusive and disjoint. Every valid output is cleared before validation.
-Malformed diagnostics skip ordinary work, but destroy/release consume their
-owner once on every result. Truncation changes text only. Native `call_once`
-publishes a complete conversion or complete ordinary source failure. Conversion
-allocation/internal failure leaves it incomplete; subsequent explicit requests
-retry against the unchanged Rust snapshot without a second parser or reload.
+Runtime creation is lazy with respect to catalog discovery and performs no CUDA
+initialization. Safe Rust Runtime owns the process Assets and the sole native
+`FjCuda` owner. Catalog acquisition retains an immutable Rust `Arc`; independent
+handles survive Runtime destruction and each other's release. Reads allocate
+nothing. Catalog paths do not cross this boundary. Caller excludes Runtime
+destruction from acquisitions and catalog release from reads and outstanding
+view uses. Outputs and diagnostics are aligned, exclusive and disjoint. Every
+valid output is cleared before validation. Malformed diagnostics skip ordinary
+work, while destroy/release consume their owner once on every result.
+Truncation changes text only. Rust publishes one cached catalog result,
+including ordinary source failure. Native `ProcessRuntime` copies the result's
+keys, labels, roles, defaults and order into its UI presentation, then releases
+the temporary `FjCatalog`; it retains no owning catalog handle. An internal
+native presentation-conversion failure can retry against that same cached Rust
+result. Conversion and publication test hooks remain at their actual production
+points.
 
-Root owns the whole Library through a detachable unique_ptr. Legal terminal
-close requires the host to exclude **all** option/catalog/profile/rebuild readers,
-render/preparation calls and outstanding views. A drained preparation count or
-failed GPU drain does not establish that condition. Registered reentry retains
-active host borrows and its blocked graph; it is not legal reader-excluded
-terminal completion. Registration is checked before dereference. Under legal
-terminal exclusion, Library detachment is allocation-free and precedes throwing
-owner admission. It stays alive through the single native close attempt, then
-Rust owners and native catalog values are consumed outside every native lock.
-Native failure keeps precedence over host/diagnostic cleanup failure; cleanup
-never retries uncertain CUDA teardown. The retained native graph has no Library,
-Rust owner or borrowed Rust/OFX storage, and asset access fails after detachment.
-Successful or failed borrowed shutdown keeps Library attached; successful cache
-release runs after native locks unwind and retains catalog ownership.
-Construction and rejected-candidate destruction likewise run outside registration
-locks. Terminal construction/reentry/lock-failure tests use isolated API objects;
-catalog conversion seams and Rust owner/fault probes are test-only.
+The native factory holds `ProcessRuntime` as a wrapper for the safe Rust owner.
+Borrowed shutdown leaves the Runtime and Assets owner in place. Native shutdown
+failure has precedence and prevents borrowed host-cache cleanup.
+Consuming close first calls `check_close`; a rejected precheck preserves the
+handle and presentation. Consuming close releases Rust host state after the native
+terminal attempt on every result, preserving native failure precedence. Uncertain native teardown retains only the native CUDA
+graph, never Rust Assets or host-side borrowed storage. Test-only Bridge and
+Library convenience wrappers live under `tests/ffi/test_asset_*`; they are
+standalone fixtures, not a second product owner or ambient service locator.
+Fixtures calling production APIs borrow Assets explicitly from their owning
+`ProcessRuntime`.
 
 The catalog path transport/Windows encoding/native selected-profile opening
-bridge has been removed. Native root-path transport remains an actual consumer.
-I7 removed the native asset conversions; bounded Library/Root forwarding remains
-assigned to S5.C. The fallible cache-clear export invokes the existing Rust cache-release operation.
-Later-family production acquisition remains outside this boundary. Installed Resolve acceptance remains
+bridge has been removed. Native root-path transport remains an actual consumer
+and continues to use the existing `NativePath` ABI. Later-family production
+acquisition remains outside this boundary. Installed Resolve acceptance remains
 separate from these automated ABI, host and GPU checks.
 
 ## Production profile and gamma bridge
@@ -542,13 +562,11 @@ broader interpolation axes and active DIR prerequisites, direct builds with an
 unselected malformed print, and the three consuming Hanatos window cases.
 They create scratch resources and do not modify fixture expectations or Resources.
 
-CUDA terminal cases distinguish native close from fallible host cache release.
-Concurrent successful borrowed shutdown calls observe one recorded host outcome
-outside native locks; repeated calls do not purge or retire CUDA again. Native
-failure stays primary and prevents borrowed cache release. Consuming destroy
-always detaches/consumes the host graph under the existing reader-exclusion
-precondition; native close alone decides graph deletion or uncertain retention.
-The retained uncertain graph contains no Rust profile source or build lease.
+CUDA terminal cases distinguish borrowed native shutdown from prechecked,
+consuming process close. Native failure stays primary and prevents Rust host
+cache release. Consuming close first checks the native owner; only accepted
+close consumes the Runtime. Native-only uncertain retention contains no Rust
+profile source or build lease.
 
 
 ## Production spectral sources
@@ -583,8 +601,7 @@ Capacity receipts report requested payload bytes and actual capacities, excludin
 allocator metadata/RSS. Each LUT has one 11,943,936-byte Rust source; opaque raw
 holds retain its backing without an equally sized native copy. Source and
 complete-state views borrow their owners. Native conversion/global storage is
-removed; remaining Library/Root forwarding stays assigned to S5.C. Installed
-Resolve and real recovery qualification stay separate.
+removed. Installed Resolve and real recovery qualification stay separate.
 
 
 ## Illuminant and calibration source boundary
@@ -898,19 +915,20 @@ actual C11 layouts/calls, D1–D5 optional diagnostics, cleared failures, canari
 and consume-once transport. `binding` exercises native typed failure mapping.
 
 `Gamut.Host.Output.Cache` executes finite, acknowledged W1–W7 schedules through
-isolated actual Library/binding objects. It checks selection across clear,
+isolated test-only Library/binding holders. It checks selection across clear,
 successful stale private returns, matching/conflicting same-generation controls,
 own failure/retry, exhaustion and cleanup precedence, immutable retained arrays,
 A8 hull retention and destruction outside the cache lock. These concurrent owner
 observations qualify the changed cache contract; they are not native parity.
-Library destruction still excludes active host readers. Existing production
-CUDA groups retain their route, disabled-work and asynchronous staging witnesses.
+The fixture holders still exclude active readers during destruction. Existing
+production CUDA groups retain their route, disabled-work and asynchronous
+staging witnesses.
 
-Native bindings expose completed fixed values; bounded Library forwarding
-remains assigned to S5.C. Rust privately owns complete immutable mathematical
-values and one fallibly reserved temporary table, copied once per successful
-cold candidate. Warm Library hits introduce no foreign call, table copy or
-rehash. Test-support copy timings are absent from ordinary production builds.
+Native bindings expose completed fixed values. Rust privately owns complete
+immutable mathematical values and one fallibly reserved temporary table, copied
+once per successful cold candidate. Warm test-holder hits introduce no foreign
+call, table copy or rehash. Test-support copy timings are absent from ordinary
+production builds.
 Injection demonstrates status/panic/zero-identity transport, not real OOM,
 a zero-hash preimage or process-abort recovery. The capacity-overflow test
 exercises the same actual fallible reserve boundary separately.

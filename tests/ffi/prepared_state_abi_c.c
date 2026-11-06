@@ -63,7 +63,7 @@ const size_t* fj_test_instance_c_facts(size_t* count) {
 }
 
 /* Returns zero on success; nonzero values identify the failed protocol row. */
-uint32_t fj_test_instance_c_witness(FjAssets* assets, const FjPreparationParams* params, uint32_t scenario) {
+uint32_t fj_test_instance_c_witness(const FjAssets* assets, const FjPreparationParams* params, uint32_t scenario) {
     FjInstance* instance = NULL;
     FjHostWrite* write = NULL;
     FjPreparedState* prepared = NULL;
@@ -468,8 +468,8 @@ const size_t* fj_test_prepared_state_c_facts(size_t* count) {
     return facts;
 }
 
-FjStatus fj_test_prepared_state_create_c(FjAssets* assets, const FjPreparationParams* params, FjPreparedState** out, FjErrorBuffer* error) {
-    FjStatus (*call)(FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*) = fj_legacy_prepared_state_create;
+FjStatus fj_test_prepared_state_create_c(const FjAssets* assets, const FjPreparationParams* params, FjPreparedState** out, FjErrorBuffer* error) {
+    FjStatus (*call)(const FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*) = fj_legacy_prepared_state_create;
     return call(assets, params, out, error);
 }
 FjStatus fj_test_prepared_state_view_c(const FjPreparedState* state, FjPreparedStateView* out, FjErrorBuffer* error) {

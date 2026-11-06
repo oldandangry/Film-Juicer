@@ -19,7 +19,9 @@
 #include "JuicerState.h"
 #include "ColorTransforms.h"
 #include "ProcessRoot.h"
-#include "RustAssetBridge.h"
+#include "ProcessRuntime.h"
+#include "NativePath.h"
+#include "test_asset_bridge.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
@@ -206,66 +208,102 @@ namespace {
     void sticky_source_and_retry(const fs::path& scratch) {
         const auto root = scratch / "retry";
         minimal_catalog(root);
-        JuicerAssets::Library library(root);
-        JuicerTests::Cohort source_faults("catalog_owner.source_fault", {"allocation", "panic"});
-        for (unsigned fault : {1u, 2u}) {
-            auto event = source_faults.case_event(fault == 1 ? "allocation" : "panic");
-            conversionFault = fault;
-            bool rejected = false;
-            try {
-                (void)library.spektrafilm_profile_catalog();
-            } catch (const std::bad_alloc&) {
-                rejected = fault == 1;
-            } catch (const JuicerCuda::ExecutionFailure& error) {
-                rejected = fault == 2 && error.failure.status.category == FJ_STATUS_PREPARATION_FAILURE;
+        {
+            JuicerProcess::ProcessRuntime runtime;
+            runtime.create(root);
+            JuicerTests::Cohort source_faults("catalog_owner.source_fault", {"allocation", "panic"});
+            for (unsigned fault : {1u, 2u}) {
+                auto event = source_faults.case_event(fault == 1 ? "allocation" : "panic");
+                conversionFault = fault;
+                bool rejected = false;
+                try {
+                    (void)runtime.spektrafilm_profile_catalog();
+                } catch (const std::bad_alloc&) {
+                    rejected = fault == 1;
+                } catch (const JuicerCuda::ExecutionFailure& error) {
+                    rejected = fault == 2 && error.failure.status.category == FJ_STATUS_PREPARATION_FAILURE;
+                }
+                require(rejected && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
+                        "incomplete Runtime catalog candidate published or leaked");
+                event.passed();
             }
-            require(rejected && fj_test_catalog_live_owners() == 0, "incomplete native candidate published or leaked");
-            event.passed();
-        }
-        fs::remove_all(root / "profiles");
-        const auto& catalog = library.spektrafilm_profile_catalog();
-        require(catalog.valid && catalog.filmProfiles.size() == 1 && catalog.printProfiles.size() == 1, "native retry rediscovered source");
-        std::size_t nativeSize = 0;
-        std::size_t nativeCapacity = 0;
-        for (const auto* entries : {&catalog.filmProfiles, &catalog.printProfiles}) {
-            nativeSize += entries->size() * sizeof(Spektrafilm::ProfileCatalogEntry);
-            nativeCapacity += entries->capacity() * sizeof(Spektrafilm::ProfileCatalogEntry);
-            for (const auto& entry : *entries) {
-                nativeSize += entry.key.size() + entry.label.size();
-                nativeCapacity += entry.key.capacity() + entry.label.capacity();
+            fs::remove_all(root / "profiles");
+            const auto& catalog = runtime.spektrafilm_profile_catalog();
+            require(catalog.valid && catalog.filmProfiles.size() == 1 && catalog.printProfiles.size() == 1,
+                    "Runtime retry rediscovered source");
+            std::size_t nativeSize = 0;
+            std::size_t nativeCapacity = 0;
+            for (const auto* entries : {&catalog.filmProfiles, &catalog.printProfiles}) {
+                nativeSize += entries->size() * sizeof(Spektrafilm::ProfileCatalogEntry);
+                nativeCapacity += entries->capacity() * sizeof(Spektrafilm::ProfileCatalogEntry);
+                for (const auto& entry : *entries) {
+                    nativeSize += entry.key.size() + entry.label.size();
+                    nativeCapacity += entry.key.capacity() + entry.label.capacity();
+                }
             }
+            std::printf("Catalog cold native copy logical=%zu bytes capacity=%zu bytes; zero retained Rust catalog handles, two discarded cold candidates, warm publication reused\n",
+                        nativeSize,
+                        nativeCapacity);
+            const auto* label = catalog.printProfiles.front().label.data();
+            require(&runtime.spektrafilm_profile_catalog() == &catalog &&
+                        runtime.spektrafilm_profile_catalog().printProfiles.front().label.data() == label &&
+                        fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
+                    "warm Runtime catalog copied or retained a Rust catalog handle");
+            require(runtime.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 &&
+                        fj_test_catalog_live_owners() == 0,
+                    "Runtime retry owner did not close cleanly");
         }
-        std::printf("Catalog cold native copy logical=%zu bytes capacity=%zu bytes; one retained handle, two discarded cold candidates, warm publication reused\n", nativeSize, nativeCapacity);
-        const auto* label = catalog.printProfiles.front().label.data();
-        require(library.spektrafilm_profile_catalog().printProfiles.front().label.data() == label, "warm native catalog copied");
 
         const auto missing = scratch / "sticky-error";
-        JuicerAssets::Library failed(missing);
-        diagnosticFault = true;
-        bool rejected = false;
-        try {
-            (void)failed.spektrafilm_profile_catalog();
-        } catch (const std::bad_alloc&) {
-            rejected = true;
+        {
+            JuicerProcess::ProcessRuntime failed;
+            failed.create(missing);
+            diagnosticFault = true;
+            bool rejected = false;
+            try {
+                (void)failed.spektrafilm_profile_catalog();
+            } catch (const std::bad_alloc&) {
+                rejected = true;
+            }
+            require(rejected && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
+                    "source diagnostic allocation published an incomplete Runtime catalog");
+            minimal_catalog(missing);
+            const auto& sticky = failed.spektrafilm_profile_catalog();
+            require(!sticky.valid && !sticky.failure.empty() && fj_test_assets_live_owners() == 1 &&
+                        fj_test_catalog_live_owners() == 0,
+                    "Runtime source error lost stickiness or retained a Rust catalog handle");
+            require(failed.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 &&
+                        fj_test_catalog_live_owners() == 0,
+                    "sticky-error Runtime did not close cleanly");
         }
-        require(rejected, "source diagnostic allocation published incomplete unavailable catalog");
-        minimal_catalog(missing);
-        require(!failed.spektrafilm_profile_catalog().valid && !failed.spektrafilm_profile_catalog().failure.empty(), "source error lost stickiness");
+
         JuicerTests::Cohort catalog_rejections("catalog_owner.key_rejection", {"duplicate-film-key", "missing-print-default"});
         const auto duplicate = scratch / "duplicate";
         minimal_catalog(duplicate);
         fs::copy_file(duplicate / "profiles/film.json", duplicate / "profiles/duplicate.json");
-        JuicerAssets::Library duplicates(duplicate);
-        auto duplicate_event = catalog_rejections.case_event("duplicate-film-key");
-        require(!duplicates.spektrafilm_profile_catalog().valid, "duplicate key accepted");
-        duplicate_event.passed();
+        {
+            JuicerProcess::ProcessRuntime duplicates;
+            duplicates.create(duplicate);
+            auto duplicate_event = catalog_rejections.case_event("duplicate-film-key");
+            require(!duplicates.spektrafilm_profile_catalog().valid && fj_test_assets_live_owners() == 1 &&
+                        fj_test_catalog_live_owners() == 0,
+                    "duplicate key accepted or retained a Rust catalog handle");
+            duplicate_event.passed();
+            require(duplicates.close().category == FJ_STATUS_SUCCESS, "duplicate-key Runtime did not close cleanly");
+        }
         const auto absentDefault = scratch / "missing-default";
         minimal_catalog(absentDefault);
         fs::remove(absentDefault / "profiles/print.json");
-        JuicerAssets::Library noDefault(absentDefault);
-        auto default_event = catalog_rejections.case_event("missing-print-default");
-        require(!noDefault.spektrafilm_profile_catalog().valid, "missing default accepted");
-        default_event.passed();
+        {
+            JuicerProcess::ProcessRuntime noDefault;
+            noDefault.create(absentDefault);
+            auto default_event = catalog_rejections.case_event("missing-print-default");
+            require(!noDefault.spektrafilm_profile_catalog().valid && fj_test_assets_live_owners() == 1 &&
+                        fj_test_catalog_live_owners() == 0,
+                    "missing default accepted or retained a Rust catalog handle");
+            default_event.passed();
+            require(noDefault.close().category == FJ_STATUS_SUCCESS, "missing-default Runtime did not close cleanly");
+        }
     }
 
     void exact_paths_and_consumers(const fs::path& scratch) {
@@ -315,25 +353,27 @@ namespace {
         }
         fs::copy_file(bundled / "profiles/kodak_portra_400.json", filmPath);
         fs::copy_file(bundled / "profiles/kodak_portra_endura.json", printPath);
-        JuicerCuda::Owner owner;
-        owner.create(root);
-        auto& library = JuicerProcess::root().assets();
-        const auto& catalog = library.spektrafilm_profile_catalog();
-        require(catalog.valid && catalog.filmProfiles.front().key == "kodak_portra_400" && catalog.printProfiles.front().key == "kodak_portra_endura", "catalog changed native file units");
-        require(film_profile_option_count() == 1 && print_profile_option_count() == 1 &&
-                    std::string(film_profile_option_key(0)) == "kodak_portra_400" && std::string(print_profile_option_key(0)) == "kodak_portra_endura" &&
-                    std::string(film_profile_option_label(0)) == catalog.filmProfiles.front().label,
-                "production OFX option accessors did not consume Rust publication");
-        std::printf("PASS native root and Rust film/print opens: %s\n", JuicerAssets::path_diagnostic(root).c_str());
-        require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1, "borrowed shutdown consumed host/catalog");
-        require(catalog.filmProfiles.front().key == "kodak_portra_400", "borrowed shutdown expired options");
-        require(owner.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "terminal cleanup did not consume host owners");
+        JuicerProcess::ProcessRuntime runtime;
+        runtime.create(root);
+        {
+            const auto& catalog = runtime.spektrafilm_profile_catalog();
+            require(catalog.valid && catalog.filmProfiles.front().key == "kodak_portra_400" && catalog.printProfiles.front().key == "kodak_portra_endura", "catalog changed native file units");
+            require(film_profile_option_count(catalog) == 1 && print_profile_option_count(catalog) == 1 &&
+                        std::string(film_profile_option_key(catalog, 0)) == "kodak_portra_400" && std::string(print_profile_option_key(catalog, 0)) == "kodak_portra_endura" &&
+                        std::string(film_profile_option_label(catalog, 0)) == catalog.filmProfiles.front().label,
+                    "production OFX option accessors did not consume Rust publication");
+            std::printf("PASS native root and Rust film/print opens: %s\n", JuicerAssets::path_diagnostic(root).c_str());
+            require(runtime.shutdown().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0, "borrowed shutdown consumed Runtime Assets or retained an owning catalog handle");
+            require(catalog.filmProfiles.front().key == "kodak_portra_400", "borrowed shutdown expired options");
+        }
+        require(runtime.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "terminal cleanup did not consume Runtime owners");
     }
 
     void bundled_cold_and_warm_publication() {
         const auto root = JuicerProcess::data_directory();
-        JuicerAssets::Library library(root);
-        const auto& catalog = library.spektrafilm_profile_catalog();
+        JuicerProcess::ProcessRuntime runtime;
+        runtime.create(root);
+        const auto& catalog = runtime.spektrafilm_profile_catalog();
         require(catalog.valid, "bundled production catalog unavailable");
         std::size_t logical = 0;
         std::size_t capacity = 0;
@@ -348,12 +388,17 @@ namespace {
         const auto* publication = &catalog;
         const auto* label = catalog.filmProfiles.front().label.data();
         for (unsigned i = 0; i < 32; ++i) {
-            const auto& warm = library.spektrafilm_profile_catalog();
+            const auto& warm = runtime.spektrafilm_profile_catalog();
             require(&warm == publication && warm.filmProfiles.front().label.data() == label &&
-                        fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1,
-                    "warm publication converted or accumulated owners");
+                        fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 0,
+                    "warm Runtime publication converted or retained Rust catalog handles");
         }
-        std::printf("Catalog bundled cold native record-plus-field logical=%zu bytes capacity=%zu bytes; transient native candidate peak=one complete copy; cold conversions=1 warm calls=32 retained owners=1/1\n", logical, capacity);
+        std::printf("Catalog bundled cold native record-plus-field logical=%zu bytes capacity=%zu bytes; transient native candidate peak=one complete copy; cold conversions=1 warm calls=32 Runtime owners=1/0\n",
+                    logical,
+                    capacity);
+        require(runtime.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 &&
+                    fj_test_catalog_live_owners() == 0,
+                "bundled Runtime publication did not close cleanly");
     }
 } // namespace
 

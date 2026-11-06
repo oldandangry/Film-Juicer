@@ -24,6 +24,7 @@
 #include "ColorTransforms.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "ProcessRuntime.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "output_encoding_oracle.h"
@@ -405,6 +406,7 @@ namespace {
     namespace FrameFixture = JuicerCudaTest::PreparedFrameFixture;
 
     struct RouteInputs {
+        JuicerProcess::ProcessRuntime& runtime;
         std::optional<PreparedState> state;
         ParamSnapshot controls;
         Scanner::ScannerSpectralLutDescriptor scanner;
@@ -428,9 +430,9 @@ namespace {
             controls.scanRoute = route;
             return controls;
         }
-        RouteInputs(Spektrafilm::ScanRoute route, int space, bool gamut)
-            : RouteInputs(controls_for_route(route), space, gamut) {}
-        RouteInputs(ParamSnapshot controls, int space, bool gamut) {
+        RouteInputs(JuicerProcess::ProcessRuntime& processRuntime, Spektrafilm::ScanRoute route, int space, bool gamut)
+            : RouteInputs(processRuntime, controls_for_route(route), space, gamut) {}
+        RouteInputs(JuicerProcess::ProcessRuntime& processRuntime, ParamSnapshot controls, int space, bool gamut) : runtime(processRuntime) {
             const Spektrafilm::ScanRoute route = controls.scanRoute;
             controls.grainControls.active = false;
             controls.dirCouplers.active = false;
@@ -441,7 +443,7 @@ namespace {
                 controls.filmProfileKey = "fujifilm_provia_100f";
             }
             this->controls = controls;
-            state.emplace(JuicerTestSupport::prepare_product(this->controls));
+            state.emplace(JuicerTestSupport::prepare_product(runtime.borrow().assets, this->controls));
 
             FrameFixture::FrameFacts facts;
             facts.renderExtent = {0, 0, 17, 9};
@@ -456,7 +458,7 @@ namespace {
             facts.frameRate = 24.0;
             std::string diagnostic;
             require(FrameFixture::with_prepared_frame_inputs(
-                        *state, facts, this, &capture_metadata, diagnostic),
+                        runtime.borrow().assets, *state, facts, this, &capture_metadata, diagnostic),
                     diagnostic);
         }
 
@@ -486,6 +488,7 @@ namespace {
     };
 
     struct RootFrameCall {
+        JuicerProcess::Root& root;
         const JuicerCuda::ResourceManager::DeviceContextKey* key = nullptr;
         const JuicerCuda::ResourceManager::SubmissionSnapshot* snapshot = nullptr;
         cudaStream_t stream = nullptr;
@@ -497,7 +500,7 @@ namespace {
                             const FrameFixture::Inputs& prepared,
                             std::string& diagnostic) {
         auto& call = *static_cast<RootFrameCall*>(user);
-        call.frame = JuicerProcess::root().prepare_cuda_frame(
+        call.frame = call.root.prepare_cuda_frame(
             *call.key, *call.snapshot, prepared.preparation, {}, call.stream, call.failure, prepared.hostPreparation);
         if (!call.frame.active()) {
             diagnostic = call.failure.diagnostic;
@@ -643,6 +646,15 @@ namespace {
 
     class ScannerRoutes : public testing::Test {
     protected:
+        inline static JuicerProcess::ProcessRuntime runtime;
+
+        static void SetUpTestSuite() {
+            runtime.create(JuicerProcess::data_directory());
+        }
+        static void TearDownTestSuite() {
+            require(runtime.close().category == FJ_STATUS_SUCCESS, "scanner Runtime close failed");
+        }
+
         void SetUp() override {
             check_cuda(cudaSetDevice(0));
             check_cuda(cudaFree(nullptr));
@@ -653,7 +665,7 @@ namespace {
         void TearDown() override {
             check_cuda(cudaDeviceSynchronize());
             std::string error;
-            require(JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error), error);
+            require(JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, key.contextOpaque, error), error);
         }
         JuicerProcess::Root::PreparedCudaFrame prepare_route(
             const RouteInputs& inputs,
@@ -668,7 +680,7 @@ namespace {
                 inputs.dirHash,
                 inputs.scannerHash,
                 0);
-            RootFrameCall call{&key, &snapshot, nullptr, {}, {}};
+            RootFrameCall call{JuicerCuda::borrow_root(inputs.runtime.borrow().cuda), &key, &snapshot, nullptr, {}, {}};
             FrameFixture::FrameFacts facts;
             facts.renderExtent = {0, 0, image.width, image.height};
             facts.fullFrameExtent = facts.renderExtent;
@@ -685,7 +697,7 @@ namespace {
             facts.frameRate = 24.0;
             std::string diagnostic;
             require(FrameFixture::with_prepared_frame_inputs(
-                        *inputs.state, facts, &call, &prepare_root_frame, diagnostic),
+                        inputs.runtime.borrow().assets, *inputs.state, facts, &call, &prepare_root_frame, diagnostic),
                     diagnostic.empty() ? call.failure.diagnostic : diagnostic);
             return std::move(call.frame);
         }
@@ -896,12 +908,13 @@ namespace {
             return result;
         }
         struct PreparedExecutionCall {
+            JuicerProcess::Root& root;
             JuicerCuda::ResourceManager::DeviceContextKey* key = nullptr;
             Image* image = nullptr;
             FrameFixture::FrameFacts facts{};
             std::uint64_t snapshotId = 0;
             FjStatus status{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-            std::string diagnostic;
+            std::string diagnostic{}; // NOLINT(readability-redundant-member-init): GCC 13 requires explicit aggregate initialization.
             bool recoveryPending = false;
         };
 
@@ -965,7 +978,7 @@ namespace {
                 prepared.hostPreparation};
             JuicerCuda::PendingContextLossRecovery recovery;
             try {
-                JuicerCuda::execute_prepared(input, recovery);
+                JuicerCuda::execute_prepared(call.root, input, recovery);
             } catch (const JuicerCuda::ExecutionFailure& failure) {
                 call.status = failure.failure.status;
                 call.diagnostic = failure.failure.diagnostic;
@@ -977,9 +990,9 @@ namespace {
 
         FjStatus execute_correction(const RouteInputs& inputs, Image& image, std::string& diagnostic) {
             image.clear_output();
-            auto preparation = JuicerProcess::root().begin_frame_preparation();
+            auto preparation = JuicerCuda::borrow_root(runtime.borrow().cuda).begin_frame_preparation();
             require(preparation.active(), "scanner actual-caller frame preparation admission");
-            PreparedExecutionCall call;
+            PreparedExecutionCall call{JuicerCuda::borrow_root(inputs.runtime.borrow().cuda)};
             call.key = &key;
             call.image = &image;
             call.snapshotId = nextIdentity++;
@@ -998,7 +1011,7 @@ namespace {
             call.facts.sessionSeed = 0x534334;
             call.facts.clipToken = 0x5343414e;
             require(FrameFixture::with_prepared_frame_inputs(
-                        *inputs.state, call.facts, &call, &execute_prepared_scanner, diagnostic),
+                        inputs.runtime.borrow().assets, *inputs.state, call.facts, &call, &execute_prepared_scanner, diagnostic),
                     diagnostic);
             diagnostic = call.diagnostic;
             EXPECT_FALSE(call.recoveryPending);
@@ -1036,9 +1049,9 @@ namespace {
             auto controls = RouteInputs::controls_for_route(route);
             controls.glareActive = false;
             controls.scannerLutResolution = 17;
-            RouteInputs off(controls, 0, true);
+            RouteInputs off(runtime, controls, 0, true);
             controls.scannerBlackCorrection = controls.scannerWhiteCorrection = 1;
-            RouteInputs held(controls, 0, true);
+            RouteInputs held(runtime, controls, 0, true);
             const auto heldHash = held.recipeHash;
             const auto heldScannerHash = held.scannerRecipeHash;
             Image image({31, 19}, 4);
@@ -1073,7 +1086,7 @@ namespace {
                 std::optional<PreparedState> rejectedState;
                 std::array<char, 1024> text{};
                 FjErrorBuffer error{text.data(), text.size(), 0};
-                auto* const assets = JuicerProcess::root().assets().borrow_rust_assets();
+                const auto* const assets = runtime.borrow().assets;
                 ASSERT_NE(assets, nullptr);
                 const auto status = prepare_state(
                     assets,
@@ -1126,8 +1139,8 @@ namespace {
             controls.glareActive = false;
             controls.scannerLutResolution = 17;
             controls.scannerBlackCorrection = controls.scannerWhiteCorrection = 1;
-            RouteInputs disabled(controls, 0, false);
-            RouteInputs enabled(controls, 0, true);
+            RouteInputs disabled(runtime, controls, 0, false);
+            RouteInputs enabled(runtime, controls, 0, true);
             const auto disabledHash = disabled.outputGamut.hash;
             const auto enabledHash = enabled.outputGamut.hash;
             ASSERT_NE(disabledHash, 0u);
@@ -1203,7 +1216,7 @@ namespace {
             controls.glareBlurSigmaPx = 0.75f;
             controls.scannerLensBlurSigmaPx = 0.75f;
             controls.scannerUnsharpMask = {0.75, 0.8};
-            RouteInputs inputs(controls, 0, false);
+            RouteInputs inputs(runtime, controls, 0, false);
             Image image({17, 9}, 4);
             ASSERT_TRUE(inputs.post);
             const auto original = *inputs.post;
@@ -1245,7 +1258,7 @@ namespace {
             require(warm.finish(nullptr, failure), failure.diagnostic);
             auto changedControls = controls;
             changedControls.scannerLensBlurSigmaPx = 1.25f;
-            RouteInputs changedInputs(changedControls, 0, false);
+            RouteInputs changedInputs(runtime, changedControls, 0, false);
             ASSERT_TRUE(changedInputs.post);
             auto changed = prepare_route(changedInputs, image);
             view = changed.scanner_post_effects_resources(changed.workspace_lease(), changedInputs.post->hash);
@@ -1291,7 +1304,7 @@ namespace {
             offControls.glareBlurSigmaPx = 0.0f;
             offControls.scannerLensBlurSigmaPx = 0.0f;
             offControls.scannerUnsharpMask = {0.0, 0.0};
-            RouteInputs offInputs(offControls, 0, false);
+            RouteInputs offInputs(runtime, offControls, 0, false);
             EXPECT_FALSE(offInputs.post);
             const auto offAcquires = fj_test_gaussian_kernel_acquires();
             auto off = prepare_route(offInputs, image);
@@ -1322,7 +1335,7 @@ namespace {
                     auto row = cases.case_event(route_case_key(route) + "/gamut-" +
                                                 (gamut ? "on" : "off") + "/space-" + std::to_string(space));
                     SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " space=" << space << " gamut=" << gamut);
-                    RouteInputs inputs(route, space, gamut);
+                    RouteInputs inputs(runtime, route, space, gamut);
                     if (Spektrafilm::scan_route_is_print(route)) {
                         check_route<JuicerCuda::PrintPipelineRunParams>(inputs);
                     } else {
@@ -1337,18 +1350,18 @@ namespace {
     TEST_F(ScannerRoutes, RequiredLutFailuresAreReportedByBothScannerCallers) {
         JuicerTests::GtestCohort cases("caller", {"direct", "print"});
         auto directRow = cases.case_event("direct");
-        RouteInputs direct(
-            Spektrafilm::ScanRoute::NegativeDirectScan,
-            0,
-            false);
+        RouteInputs direct(runtime,
+                           Spektrafilm::ScanRoute::NegativeDirectScan,
+                           0,
+                           false);
         check_required_lut_failures<JuicerCuda::DirectPipelineRunParams>(direct, "direct");
         directRow.passed();
 
         auto printRow = cases.case_event("print");
-        RouteInputs print(
-            Spektrafilm::ScanRoute::PositivePrintScan,
-            0,
-            false);
+        RouteInputs print(runtime,
+                          Spektrafilm::ScanRoute::PositivePrintScan,
+                          0,
+                          false);
         check_required_lut_failures<JuicerCuda::PrintPipelineRunParams>(print, "print");
         printRow.passed();
     }
@@ -1366,7 +1379,7 @@ namespace {
                 ids.push_back(route_case_key(route) + "/readback-" + std::to_string(bits));
         JuicerTests::GtestCohort cases("route-readback-bits", ids);
         for (const auto route : routes) {
-            RouteInputs inputs(route, 0, false);
+            RouteInputs inputs(runtime, route, 0, false);
             Image image({17, 9}, 4);
             // Product readback contract: bit 0 is scanner RGB; bit 8 is DIR,
             // with the failed DIR channels in bits 9-11.
@@ -1423,8 +1436,8 @@ namespace {
             controls17.scannerLutResolution = 17;
             ParamSnapshot controls33 = controls17;
             controls33.scannerLutResolution = 33;
-            RouteInputs inputs17(controls17, 0, false);
-            RouteInputs inputs33(controls33, 0, false);
+            RouteInputs inputs17(runtime, controls17, 0, false);
+            RouteInputs inputs33(runtime, controls33, 0, false);
 
             ASSERT_EQ(inputs17.scanner.lutResolution, 17u);
             ASSERT_EQ(inputs33.scanner.lutResolution, 33u);
@@ -1466,13 +1479,13 @@ namespace {
             RouteInputs::controls_for_route(Spektrafilm::ScanRoute::NegativePrintScan);
         ParamSnapshot gammaControls = defaultControls;
         gammaControls.printGammaFactor = 1.1;
-        RouteInputs retainedDefault(defaultControls, 0, false);
-        RouteInputs retainedGamma(gammaControls, 0, false);
+        RouteInputs retainedDefault(runtime, defaultControls, 0, false);
+        RouteInputs retainedGamma(runtime, gammaControls, 0, false);
 
         auto check_print = [&](const char* scenario, ParamSnapshot controls) {
             SCOPED_TRACE(scenario);
             auto row = cases.case_event(scenario);
-            RouteInputs inputs(std::move(controls), 0, false);
+            RouteInputs inputs(runtime, std::move(controls), 0, false);
             check_route<JuicerCuda::PrintPipelineRunParams>(inputs);
             row.passed();
         };
@@ -1534,7 +1547,7 @@ namespace {
             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
             auto controls = RouteInputs::controls_for_route(route);
             controls.scannerLutResolution = 17;
-            RouteInputs inputs(controls, 0, false);
+            RouteInputs inputs(runtime, controls, 0, false);
             Image image({31, 19}, 4);
             std::string diagnostic;
             const auto reject = [&](const RouteInputs& selected, std::uint32_t category, const char* message) {
@@ -1557,7 +1570,7 @@ namespace {
             require(execute_correction(inputs, image, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
             const auto original = bit_patterns(image.output.download());
             controls.scannerLutResolution = 33;
-            RouteInputs replacement(controls, 0, false);
+            RouteInputs replacement(runtime, controls, 0, false);
             {
                 auto row = cases.case_event(route_case_key(route) + "/cache-hit-armed-fault");
                 ASSERT_EQ(fj_test_scanner_lut_fault(0, 2).category, FJ_STATUS_SUCCESS);
@@ -1598,13 +1611,13 @@ namespace {
             controls.filmProfileKey = "kodak_portra_400";
             controls.printProfileKey = "kodak_portra_endura";
             controls.scannerLutResolution = 17;
-            RouteInputs original(controls, 0, false);
+            RouteInputs original(runtime, controls, 0, false);
             const bool print = Spektrafilm::scan_route_is_print(route);
             if (print)
                 controls.printProfileKey = "kodak_2383";
             else
                 controls.filmProfileKey = "kodak_portra_800";
-            RouteInputs changed(controls, 0, false);
+            RouteInputs changed(runtime, controls, 0, false);
             EXPECT_NE(original.scanner.channelDensityHash, changed.scanner.channelDensityHash);
             EXPECT_NE(original.scanner.densityBoundsHash, changed.scanner.densityBoundsHash);
             if (print) {
@@ -1659,7 +1672,7 @@ namespace {
             controls.outputGamutCompressionEnabled = 0;
             controls.printPreflashExposure = 0.125;
             controls.scannerLutResolution = 17;
-            RouteInputs inputs(controls, 0, false);
+            RouteInputs inputs(runtime, controls, 0, false);
             const bool print = Spektrafilm::scan_route_is_print(route);
             ASSERT_EQ(inputs.scanner.hash, row.at("descriptor_hash").get<std::uint64_t>());
             const auto capture = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs);
@@ -1678,13 +1691,10 @@ int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
     if (testing::GTEST_FLAG(list_tests))
         return RUN_ALL_TESTS();
-    JuicerCuda::Owner cudaOwner;
-    cudaOwner.create(JuicerProcess::data_directory());
     JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
     case_log.finish();
-    const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
-    return closed.category == FJ_STATUS_SUCCESS ? result : 1;
+    return result;
 } catch (...) {
     return 1;
 }

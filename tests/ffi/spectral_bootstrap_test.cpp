@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include "ProcessRuntime.h"
 #include "gtest_cases.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "JuicerState.h"
@@ -50,8 +51,9 @@ namespace {
         JuicerTestSupport::copy_direct_preparation_assets(resources, root);
         return root;
     }
-    void expect_no_cuda() {
-        EXPECT_TRUE(JuicerProcess::TestSupport::RootLifetimeObserver::has_no_cuda(JuicerProcess::root()));
+    void expect_no_cuda(const JuicerProcess::ProcessRuntime& runtime) {
+        EXPECT_TRUE(JuicerProcess::TestSupport::RootLifetimeObserver::has_no_cuda(
+            JuicerCuda::borrow_root(runtime.borrow().cuda)));
     }
     ParamSnapshot controls(unsigned method) {
         ParamSnapshot snapshot;
@@ -67,10 +69,10 @@ namespace {
 
     TEST(SpectralBootstrap, ColdOrderWarmReuseAndNativeLifetime) {
         const auto root = source_root("warm-reuse");
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(root);
         EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
-        auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+        const auto* assets = owner.borrow().assets;
         {
             // Explicit raw acquisitions observe source cache ownership, not production stage order.
             std::array<std::array<const float*, 4>, 8> backing{};
@@ -113,7 +115,7 @@ namespace {
             EXPECT_EQ(arctic.view().asset_hash, UINT64_C(0x9262ffb765e3289e));
             // Removing these source inputs is the existing cache-lifetime stimulus.
             fs::remove_all(root);
-            EXPECT_EQ(JuicerProcess::root().assets().release_cached_payloads().category, FJ_STATUS_SUCCESS);
+            EXPECT_EQ(fj_legacy_assets_release_cached_payloads(owner.borrow().assets, nullptr).category, FJ_STATUS_SUCCESS);
             for (unsigned i = 0; i < 8; ++i) {
                 const JuicerTestSupport::CmfSource warmCmf(assets);
                 const JuicerTestSupport::HanatosSource warmHanatos(assets);
@@ -124,7 +126,7 @@ namespace {
                 EXPECT_EQ(warmArctic.view().samples.data, arctic.view().samples.data);
                 EXPECT_EQ(warmBasis.samples().data, basis.samples().data);
             }
-            expect_no_cuda();
+            expect_no_cuda(owner);
             EXPECT_EQ(owner.close().category, FJ_STATUS_SUCCESS);
             EXPECT_EQ(fj_test_assets_live_owners(), 0u);
             EXPECT_EQ(fj_test_spectral_live_owners(), 4u);
@@ -143,9 +145,9 @@ namespace {
             auto cmf_failures_case = cmf_failures_cases.case_event(std::to_string(cmf_failures_index++));
             SCOPED_TRACE(failure);
             {
-                JuicerCuda::Owner first;
+                JuicerProcess::ProcessRuntime first;
                 first.create(resources);
-                const JuicerTestSupport::CmfSource previousCmf(JuicerProcess::root().assets().borrow_rust_assets());
+                const JuicerTestSupport::CmfSource previousCmf(first.borrow().assets);
                 ASSERT_EQ(previousCmf.x().count, 81u);
             }
             auto root = consumer_root(std::string("cmf-") + failure);
@@ -162,14 +164,14 @@ namespace {
                 std::ofstream file(root / "cie1931_2deg.csv", std::ios::trunc);
                 file << "380,nan,1,2\n";
             }
-            JuicerCuda::Owner second;
+            JuicerProcess::ProcessRuntime second;
             second.create(root);
             EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
 
             std::optional<PreparedState> product;
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-            auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+            const auto* assets = second.borrow().assets;
             const auto result = prepare_state(assets, controls(1), product, error);
             const bool rustSourceSucceeds = std::strcmp(failure, "axis") == 0;
             if (rustSourceSucceeds) {
@@ -198,7 +200,7 @@ namespace {
                 EXPECT_GT(error.length, 0u);
             }
             EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
-            expect_no_cuda();
+            expect_no_cuda(second);
 
             cmf_failures_case.passed();
         }
@@ -211,7 +213,7 @@ namespace {
             SCOPED_TRACE(missing);
             const auto root = consumer_root(std::string("missing-") + missing);
             fs::remove(SpectralFixture::source_path(root, missing));
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create(root);
             const unsigned absent = missing == SpectralFixture::kHanatos ? 0u : (missing == SpectralFixture::kArctic ? 2u : 1u);
             for (unsigned method : {0u, 1u, 2u}) {
@@ -219,7 +221,7 @@ namespace {
                 bool success = false;
                 std::string diagnostic;
                 if (method != absent) {
-                    auto state = JuicerTestSupport::prepare_product(controls(method));
+                    auto state = JuicerTestSupport::prepare_product(owner.borrow().assets, controls(method));
                     std::array<char, 2048> viewText{};
                     FjErrorBuffer viewError{viewText.data(), viewText.size(), 0};
                     FjPreparedStateView view{};
@@ -230,7 +232,7 @@ namespace {
                     std::optional<PreparedState> state;
                     std::array<char, 2048> errorText{};
                     FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-                    const auto result = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls(method), state, error);
+                    const auto result = prepare_state(owner.borrow().assets, controls(method), state, error);
                     success = result.category == FJ_STATUS_SUCCESS;
                     diagnostic.assign(errorText.data(), error.length);
                 }
@@ -241,16 +243,16 @@ namespace {
 
                 missing_family_method_case.passed();
             }
-            expect_no_cuda();
+            expect_no_cuda(owner);
         }
     }
 
     TEST(SpectralBootstrap, NonfiniteHanatosReachesSelectedComputation) {
         const auto root = consumer_root("nonfinite-hanatos");
         SpectralFixture::write_npy(root, SpectralFixture::kHanatos, {.elementBytes = 4, .sampleCount = SpectralFixture::kLutCount}, {0x7fc12345u});
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(root);
-        auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+        const FjAssets* assets = owner.borrow().assets;
         const JuicerTestSupport::HanatosSource source(assets);
         EXPECT_EQ(std::bit_cast<std::uint32_t>(source.view().samples.data[0]), 0x7fc12345u);
         EXPECT_NE(source.view().asset_hash, 0u);
@@ -292,7 +294,7 @@ namespace {
         EXPECT_NE(preparedStatus.category, FJ_STATUS_SUCCESS);
         EXPECT_FALSE(product);
         EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;
-        expect_no_cuda();
+        expect_no_cuda(owner);
     }
 
     TEST(SpectralBootstrap, SupportedWidthsChangedExtremaAndSignedSpecials) {
@@ -313,9 +315,9 @@ namespace {
             SpectralFixture::write_npy(root, SpectralFixture::kHanatos, {.elementBytes = width, .sampleCount = SpectralFixture::kLutCount}, bits);
             SpectralFixture::write_npy(root, SpectralFixture::kArctic, {.elementBytes = width, .sampleCount = SpectralFixture::kLutCount}, bits);
             SpectralFixture::write_npy(root, SpectralFixture::kMallett, {.elementBytes = width, .sampleCount = 243, .shape = "81,3"}, bits);
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create(root);
-            auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+            const FjAssets* assets = owner.borrow().assets;
             const JuicerTestSupport::HanatosSource hanatos(assets);
             const JuicerTestSupport::ArcticSource arctic(assets);
             const JuicerTestSupport::MallettSource mallettSource(assets);
@@ -368,7 +370,7 @@ namespace {
             EXPECT_EQ(integrated.samples.count, 0u);
             EXPECT_EQ(integrated.capacity, 0u);
             EXPECT_EQ(fj_test_reconstruction_release_tc_lut(&integrated).category, FJ_STATUS_SUCCESS);
-            expect_no_cuda();
+            expect_no_cuda(owner);
 
             source_widths_case.passed();
         }
@@ -385,9 +387,9 @@ namespace {
             } else {
                 SpectralFixture::write_npy(root, SpectralFixture::kArctic, {.elementBytes = 4, .sampleCount = SpectralFixture::kLutCount}, {0x42c80000u, 0xc2480000u});
             }
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create(root);
-            auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+            const FjAssets* assets = owner.borrow().assets;
             const JuicerTestSupport::HanatosSource hanatos(assets);
             const JuicerTestSupport::ArcticSource arctic(assets);
             if (overflow) {
@@ -395,7 +397,7 @@ namespace {
                 std::optional<PreparedState> product;
                 std::array<char, 2048> errorText{};
                 FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-                const auto result = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), controls(0), product, error);
+                const auto result = prepare_state(owner.borrow().assets, controls(0), product, error);
                 const std::string diagnostic(errorText.data(), error.length);
                 EXPECT_NE(result.category, FJ_STATUS_SUCCESS);
                 EXPECT_FALSE(product);
@@ -404,13 +406,13 @@ namespace {
                 EXPECT_EQ(arctic.view().samples.data[0], 100.0f);
                 EXPECT_EQ(arctic.view().samples.data[1], -50.0f);
                 EXPECT_NE(arctic.view().asset_hash, UINT64_C(0x9262ffb765e3289e));
-                auto product = JuicerTestSupport::prepare_product(controls(2));
+                auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, controls(2));
                 std::array<char, 2048> errorText{};
                 FjErrorBuffer error{errorText.data(), errorText.size(), 0};
                 FjPreparedStateView view{};
                 EXPECT_EQ(product.view(view, error).category, FJ_STATUS_SUCCESS);
             }
-            expect_no_cuda();
+            expect_no_cuda(owner);
 
             source_overflow_case.passed();
         }
@@ -446,9 +448,9 @@ namespace {
                 file.seekp(static_cast<std::streamoff>(offset));
                 file.write(failure == 4 ? ">f4" : "True ", failure == 4 ? 3 : 5);
             }
-            JuicerCuda::Owner owner;
+            JuicerProcess::ProcessRuntime owner;
             owner.create(root);
-            auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+            const FjAssets* assets = owner.borrow().assets;
             if (failure == 0) {
                 FjMallettBasis* rejected = nullptr;
                 const auto result = fj_legacy_mallett_acquire(assets, &rejected, nullptr);
@@ -486,7 +488,7 @@ namespace {
                 EXPECT_NE(hanatos.view().asset_hash, 0u);
                 EXPECT_EQ(basis.samples().count, 243u);
             }
-            expect_no_cuda();
+            expect_no_cuda(owner);
             EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
 
             malformed_sources_case.passed();
@@ -499,10 +501,10 @@ namespace {
 #else
         const auto root = source_root(fs::temp_directory_path() / fs::path(std::string("juicer-spectral-byte-") + static_cast<char>(0xff)));
 #endif
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(root);
         {
-            auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+            const FjAssets* assets = owner.borrow().assets;
             const JuicerTestSupport::HanatosSource hanatos(assets);
             const JuicerTestSupport::ArcticSource arctic(assets);
             const JuicerTestSupport::MallettSource basis(assets);
@@ -511,7 +513,7 @@ namespace {
             EXPECT_EQ(arctic.view().asset_hash, UINT64_C(0x9262ffb765e3289e));
             EXPECT_EQ(basis.samples().count, 243u);
             EXPECT_EQ(cmf.x().count, 81u);
-            expect_no_cuda();
+            expect_no_cuda(owner);
         }
         EXPECT_EQ(owner.close().category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(fj_test_spectral_live_owners(), 0u);

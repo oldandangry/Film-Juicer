@@ -39,7 +39,7 @@ namespace FilmReferenceTest {
     }
 
     Json products(const std::filesystem::path& resources, const Json& expectedProducts) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
         Json rows = Json::array();
         for (unsigned method = 0; method < 3; ++method)
@@ -47,7 +47,7 @@ namespace FilmReferenceTest {
                 for (unsigned variant = 0; variant < 3; ++variant) {
                     JuicerTests::CaseEvent case_event("cpp", "film-reference/" + std::to_string(route) + "/" + std::to_string(method) + "/" + std::to_string(variant));
                     const auto params = controls(method, static_cast<Spektrafilm::ScanRoute>(route), variant);
-                    auto state = JuicerTestSupport::prepare_product(params);
+                    auto state = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
                     FjPreparedStateView product{};
                     FjErrorBuffer error{};
                     status(state.view(product, error));
@@ -117,7 +117,7 @@ namespace FilmReferenceTest {
 
     void boundary(const std::filesystem::path& resources, const Json& captured) {
         check_primitives(captured);
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
         Assets assets(resources);
         const auto case_base = [](const Json& row) {
@@ -317,8 +317,8 @@ namespace FilmReferenceTest {
                     // This independent complete state stays held while raw
                     // numerical mutations exercise their source/development
                     // facade. No borrowed projection becomes a second owner.
-                    auto heldState = JuicerTestSupport::prepare_product(
-                        controls(row.at("method"), Spektrafilm::ScanRoute::NegativeDirectScan, row.at("variant")));
+                    auto heldState = JuicerTestSupport::prepare_product(owner.borrow().assets,
+                                                                        controls(row.at("method"), Spektrafilm::ScanRoute::NegativeDirectScan, row.at("variant")));
                     FjPreparedStateView heldBefore{};
                     std::array<char, 2048> heldText{};
                     FjErrorBuffer heldError{heldText.data(), heldText.size(), 0};
@@ -403,7 +403,7 @@ namespace FilmReferenceTest {
     }
 
     void callers(const std::filesystem::path& resources) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
         std::vector<std::string> caller_fault_ids, supersession_ids;
         for (unsigned method = 0; method < 3; ++method)
@@ -426,7 +426,7 @@ namespace FilmReferenceTest {
                 auto params = controls(method, static_cast<Spektrafilm::ScanRoute>(route), 0);
                 auto state = std::make_unique<RenderInstance>();
                 JuicerTestSupport::capture(*state, params);
-                auto current = JuicerTestSupport::admit(*state);
+                auto current = JuicerTestSupport::admit(owner.borrow().assets, *state);
                 require(current.kind == FJ_ADMISSION_READY && current.state, "complete reference publication");
                 const auto publication_view = [&](const JuicerTestSupport::PublicationAdmission& value) {
                     require(value.kind == FJ_ADMISSION_READY && value.state, "complete reference publication");
@@ -447,7 +447,7 @@ namespace FilmReferenceTest {
                             status(tc ? fj_test_tc_lut_arm_fault(operation, index + 1, fault) : fj_test_exposure_arm_fault(operation, index, fault));
                             const auto before = JuicerTestSupport::PublicationObserver::metrics(*state);
                             const auto counter = before.build;
-                            const auto reused = JuicerTestSupport::admit(*state);
+                            const auto reused = JuicerTestSupport::admit(owner.borrow().assets, *state);
                             require(reused.kind == FJ_ADMISSION_READY && reused.state &&
                                         JuicerTestSupport::PublicationObserver::backing(*reused.state) == JuicerTestSupport::PublicationObserver::backing(*current.state) &&
                                         JuicerTestSupport::PublicationObserver::metrics(*state).build == counter,
@@ -458,7 +458,7 @@ namespace FilmReferenceTest {
                             JuicerTestSupport::PublicationAdmission failed;
                             bool allocationFailed = false;
                             try {
-                                failed = JuicerTestSupport::admit(*state);
+                                failed = JuicerTestSupport::admit(owner.borrow().assets, *state);
                             } catch (const std::bad_alloc&) {
                                 allocationFailed = true;
                             }
@@ -473,12 +473,12 @@ namespace FilmReferenceTest {
                                 require(blocked.pendingKind == kBlockedPendingKind && blocked.build == counter, "reference panic blocks the owner without changing the committed build");
                                 require(project(JuicerTestSupport::published_view(original).film_reference) == originalReference,
                                         "admitted immutable reference remains readable after terminal poison");
-                                const auto future = JuicerTestSupport::admit(*state);
+                                const auto future = JuicerTestSupport::admit(owner.borrow().assets, *state);
                                 require(future.kind == FJ_ADMISSION_POISONED && !future.state && future.delivery.category == FJ_STATUS_INTERNAL_FAILURE,
                                         "future reference admission on the poisoned owner is rejected");
                                 state = std::make_unique<RenderInstance>();
                                 JuicerTestSupport::capture(*state, params);
-                                current = JuicerTestSupport::admit(*state);
+                                current = JuicerTestSupport::admit(owner.borrow().assets, *state);
                                 publication_view(current);
                             } else {
                                 if (!allocationFailed)
@@ -486,7 +486,7 @@ namespace FilmReferenceTest {
                                 const auto retained = JuicerTestSupport::PublicationObserver::metrics(*state);
                                 require(retained.publishedIdentity == before.publishedIdentity && retained.build == counter,
                                         "ordinary reference failure retains the private publication");
-                                current = JuicerTestSupport::admit(*state);
+                                current = JuicerTestSupport::admit(owner.borrow().assets, *state);
                                 publication_view(current);
                                 require(current.state->build() == counter + 1 && fj_test_film_development_live_owners() == 0,
                                         "one-shot reference recovery commits once and releases the hold");
@@ -508,7 +508,7 @@ namespace FilmReferenceTest {
                 PendingCaptureSupersession supersession{state.get(), &latest, false, {}};
                 fj_test_instance_prepare_hooks(nullptr, supersede_after_prepare, &supersession);
                 status(fj_test_exposure_arm_fault(5, 2, 4));
-                current = JuicerTestSupport::admit(*state);
+                current = JuicerTestSupport::admit(owner.borrow().assets, *state);
                 fj_test_instance_prepare_hooks(nullptr, nullptr, nullptr);
                 if (supersession.failure)
                     std::rethrow_exception(supersession.failure);

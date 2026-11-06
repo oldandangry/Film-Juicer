@@ -399,7 +399,7 @@ void JuicerCudaTest::RawPreparedStateDeleter::operator()(FjPreparedState* owner)
     (void)fj_test_prepared_state_release(owner, nullptr);
 }
 
-JuicerCudaTest::RawPreparedStateHold JuicerCudaTest::prepare_raw_state(FjAssets* assets, const ParamSnapshot& snapshot, FjStatus& status, std::string& diagnostic) {
+JuicerCudaTest::RawPreparedStateHold JuicerCudaTest::prepare_raw_state(const FjAssets* assets, const ParamSnapshot& snapshot, FjStatus& status, std::string& diagnostic) {
     diagnostic.clear();
     const auto params = preparation_params(snapshot);
     std::array<char, 1024> text{};
@@ -410,7 +410,7 @@ JuicerCudaTest::RawPreparedStateHold JuicerCudaTest::prepare_raw_state(FjAssets*
     return RawPreparedStateHold(owner);
 }
 
-std::optional<PreparedState> JuicerCudaTest::prepare_state(FjAssets* assets, const ParamSnapshot& snapshot, FjStatus& status, std::string& diagnostic) {
+std::optional<PreparedState> JuicerCudaTest::prepare_state(const FjAssets* assets, const ParamSnapshot& snapshot, FjStatus& status, std::string& diagnostic) {
     diagnostic.clear();
     std::array<char, 1024> text{};
     FjErrorBuffer error{text.data(), text.size(), 0};

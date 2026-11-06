@@ -18,7 +18,7 @@ namespace DirFrameTest {
     }
 
     Json products(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
         std::size_t expectedIndex = 0;
@@ -30,7 +30,7 @@ namespace DirFrameTest {
             params.dirCouplers.diffusionSizeUm = 20.0f;
             params.dirCouplers.diffusionTailUm = 200.0f;
             params.dirCouplers.diffusionTailWeight = 0.03f;
-            auto product = JuicerTestSupport::prepare_product(params);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));

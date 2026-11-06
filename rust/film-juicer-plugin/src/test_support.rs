@@ -35,7 +35,7 @@ preparation_export!(fj_test_input_hull_release(owner: *mut FjInputHullOwner, err
 preparation_export!(fj_test_assets_output_boundary_acquire(assets: *const FjAssets, source: *const FjOutputBoundarySource, expected: u64, out: *mut *mut FjOutputBoundaryOwner, error: *mut FjErrorBuffer) => boundary_acquire(assets, source, expected, out, error));
 preparation_export!(fj_test_output_boundary_view(owner: *const FjOutputBoundaryOwner, out: *mut FjOutputBoundaryView, error: *mut FjErrorBuffer) => boundary_view(owner, out, error));
 preparation_export!(fj_test_output_boundary_release(owner: *mut FjOutputBoundaryOwner, error: *mut FjErrorBuffer) => boundary_release(owner, error));
-preparation_export!(fj_test_prepared_state_create(assets: *mut FjAssets, params: *const FjPreparationParams, out: *mut *mut FjPreparedState, error: *mut FjErrorBuffer) => state_create(assets, params, out, error));
+preparation_export!(fj_test_prepared_state_create(assets: *const FjAssets, params: *const FjPreparationParams, out: *mut *mut FjPreparedState, error: *mut FjErrorBuffer) => state_create(assets, params, out, error));
 preparation_export!(fj_test_prepared_state_view(owner: *const FjPreparedState, out: *mut FjPreparedStateView, error: *mut FjErrorBuffer) => state_view(owner, out, error));
 preparation_export!(fj_test_prepared_state_release(owner: *mut FjPreparedState, error: *mut FjErrorBuffer) => state_release(owner, error));
 #[unsafe(no_mangle)]

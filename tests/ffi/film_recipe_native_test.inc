@@ -94,7 +94,7 @@ namespace {
     }
 
     void products(const std::filesystem::path& resources, const Json& captured) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
         for (const auto& row : captured.at("cases")) {
             JuicerTests::CaseEvent case_event("cpp", film_case_id("film/products", row));
@@ -110,7 +110,7 @@ namespace {
             controls.outputGamutCompressionEnabled = 0;
             controls.grainControls.active = false;
             const bool print = Spektrafilm::scan_route_is_print(controls.scanRoute);
-            auto product = JuicerTestSupport::prepare_product(controls);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
@@ -139,7 +139,7 @@ namespace {
             controls.grainControls.active = false;
             RenderInstance state;
             JuicerTestSupport::capture(state, controls);
-            const auto admitted = JuicerTestSupport::admit(state);
+            const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(admitted.kind == FJ_ADMISSION_READY && admitted.state,
                     "complete DIR admission baseline");
             const auto original = JuicerTestSupport::published_view(admitted);
@@ -152,7 +152,7 @@ namespace {
             changed.dirCouplers.amount = 0.5f;
             JuicerTestSupport::capture(state, changed);
             status(fj_test_film_recipe_fault(5, 3));
-            const auto rejected = JuicerTestSupport::admit(state);
+            const auto rejected = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state &&
                         rejected.diagnostic == "MalformedRequiredProfileData phase=3D-3 field=dirCouplers",
                     "checked Rust DIR producer failure blocks complete-state admission");
@@ -163,15 +163,15 @@ namespace {
                     "failed current DIR preparation blocks admission while retaining the prior complete publication");
             require(fj_test_film_dir_live_owners() == 0, "failed Rust DIR construction retains no foreign DIR owner");
             JuicerTestSupport::capture(state, controls);
-            const auto reusedA = JuicerTestSupport::admit(state);
+            const auto reusedA = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(reusedA.kind == FJ_ADMISSION_READY && reusedA.state && reusedA.state->build() == counter &&
                         JuicerTestSupport::PublicationObserver::backing(*reusedA.state) == originalMetrics.backingIdentity,
                     "restoring A reuses its retained publication after B fails");
             JuicerTestSupport::capture(state, changed);
-            const auto recovered = JuicerTestSupport::admit(state);
+            const auto recovered = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(recovered.kind == FJ_ADMISSION_READY && recovered.state && recovered.state->build() == counter + 1,
                     "DIR recovery commits B once");
-            const auto warm = JuicerTestSupport::admit(state);
+            const auto warm = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(warm.kind == FJ_ADMISSION_READY && warm.state &&
                         JuicerTestSupport::PublicationObserver::backing(*warm.state) == JuicerTestSupport::PublicationObserver::backing(*recovered.state) &&
                         warm.state->build() == recovered.state->build(),
@@ -183,7 +183,7 @@ namespace {
             else
                 unused.dirCouplers.langmuirDonorKRgb[0] = 2;
             JuicerTestSupport::capture(state, unused);
-            const auto unusedState = JuicerTestSupport::admit(state);
+            const auto unusedState = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(unusedState.kind == FJ_ADMISSION_READY && unusedState.state, "unused captured K admission");
             const auto unusedView = JuicerTestSupport::published_view(unusedState);
             require(unusedView.dir_recipe.hash == recoveredView.dir_recipe.hash, "unused captured K preserves family identity");
@@ -199,7 +199,7 @@ namespace {
             JuicerTestSupport::PublicationAdmission superseded;
             {
                 RecipePrepareHook hook(selection);
-                superseded = JuicerTestSupport::admit(state);
+                superseded = JuicerTestSupport::admit(owner.borrow().assets, state);
             }
             if (selection.failure)
                 std::rethrow_exception(selection.failure);

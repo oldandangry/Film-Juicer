@@ -19,6 +19,125 @@ import execution
 import process_tree
 
 
+class ReceiptPublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="process receipt ü ")
+        self.addCleanup(self.temporary.cleanup)
+        self.receipt = Path(self.temporary.name) / "command.process.json"
+        self.previous = {"status": "running", "drained": False}
+        self.record = {"status": "completed", "drained": True, "returncode": 101}
+        self.receipt.write_text(json.dumps(self.previous), encoding="utf-8")
+
+    def test_complete_record_replaces_previous_receipt(self):
+        process_tree.save_receipt(self.receipt, self.record)
+        self.assertEqual(json.loads(self.receipt.read_text()), self.record)
+        self.assertFalse(self.receipt.with_suffix(".tmp").exists())
+
+    def test_write_failure_cannot_publish_or_retry(self):
+        with patch.object(Path, "write_text", side_effect=PermissionError("write denied")), \
+             patch.object(Path, "replace") as replace, \
+             patch.object(process_tree.time, "sleep") as sleep, \
+             self.assertRaises(PermissionError):
+            process_tree.save_receipt(self.receipt, self.record)
+        replace.assert_not_called()
+        sleep.assert_not_called()
+        self.assertEqual(json.loads(self.receipt.read_text()), self.previous)
+
+    def test_unrelated_replacement_error_propagates_without_retry(self):
+        error = OSError("invalid handle")
+        error.winerror = 6
+        with patch.object(Path, "replace", side_effect=error) as replace, \
+             patch.object(process_tree.time, "sleep") as sleep, \
+             self.assertRaises(OSError) as failure:
+            process_tree.save_receipt(self.receipt, self.record)
+        self.assertIs(failure.exception, error)
+        replace.assert_called_once()
+        sleep.assert_not_called()
+        self.assertEqual(json.loads(self.receipt.read_text()), self.previous)
+        self.assertEqual(json.loads(self.receipt.with_suffix(".tmp").read_text()), self.record)
+
+    @unittest.skipIf(os.name == "nt", "non-Windows error policy")
+    def test_non_windows_denial_is_not_retried(self):
+        error = PermissionError("denied")
+        error.winerror = 5
+        with patch.object(Path, "replace", side_effect=error) as replace, \
+             patch.object(process_tree.time, "sleep") as sleep, \
+             self.assertRaises(PermissionError):
+            process_tree.save_receipt(self.receipt, self.record)
+        replace.assert_called_once()
+        sleep.assert_not_called()
+
+    def hold_reader(self):
+        from ctypes import wintypes
+
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        api.CreateFileW.restype = wintypes.HANDLE
+        api.CloseHandle.argtypes = [wintypes.HANDLE]
+        api.CloseHandle.restype = wintypes.BOOL
+        # GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING: replacement is denied.
+        handle = api.CreateFileW(str(self.receipt), 0x80000000, 1, None, 3, 0, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        def release():
+            nonlocal handle
+            if handle is not None:
+                self.assertTrue(api.CloseHandle(handle))
+                handle = None
+
+        self.addCleanup(release)
+        return release
+
+    @unittest.skipUnless(os.name == "nt", "native Windows file sharing")
+    def test_transient_reader_allows_complete_publication_after_retry(self):
+        release = self.hold_reader()
+        real_sleep = time.sleep
+
+        def release_after_denial(delay):
+            self.assertEqual(json.loads(self.receipt.read_text()), self.previous)
+            release()
+            real_sleep(delay)
+
+        with patch.object(process_tree.time, "sleep", side_effect=release_after_denial) as sleep:
+            process_tree.save_receipt(self.receipt, self.record)
+        self.assertGreaterEqual(sleep.call_count, 1)
+        self.assertEqual(json.loads(self.receipt.read_text()), self.record)
+        self.assertFalse(self.receipt.with_suffix(".tmp").exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows file sharing")
+    def test_persistent_reader_fails_with_both_records_intact(self):
+        release = self.hold_reader()
+        started = time.monotonic()
+        with self.assertRaises(OSError) as failure:
+            process_tree.save_receipt(self.receipt, self.record)
+        elapsed = time.monotonic() - started
+        self.assertIn(failure.exception.winerror, (5, 32))
+        self.assertGreaterEqual(elapsed, 0.5)
+        self.assertLess(elapsed, 5)
+        self.assertEqual(json.loads(self.receipt.read_text()), self.previous)
+        self.assertEqual(json.loads(self.receipt.with_suffix(".tmp").read_text()), self.record)
+        release()
+
+    @unittest.skipUnless(os.name == "nt", "native Windows error classification")
+    def test_sharing_violation_retries_the_atomic_replacement(self):
+        original_replace = Path.replace
+        attempts = 0
+
+        def replace(path, target):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ctypes.WinError(32)
+            return original_replace(path, target)
+
+        with patch.object(Path, "replace", replace):
+            process_tree.save_receipt(self.receipt, self.record)
+        self.assertGreaterEqual(attempts, 2)
+        self.assertEqual(json.loads(self.receipt.read_text()), self.record)
+
+
 class NativeRunTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="native run ü ")

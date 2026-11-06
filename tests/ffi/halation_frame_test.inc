@@ -34,7 +34,7 @@ namespace HalationFrameTest {
     }
 
     Json products(const std::filesystem::path& resources, const Json& pixelBits, const Json& expectedRows) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
         std::size_t expectedIndex = 0;
@@ -45,7 +45,7 @@ namespace HalationFrameTest {
                 params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
                 params.printProfileKey = "kodak_portra_endura";
                 params.scatterHalationControls = {active, 1, 1, 1, 1};
-                auto product = JuicerTestSupport::prepare_product(params);
+                auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
                 FjPreparedStateView view{};
                 FjErrorBuffer viewError{};
                 status(product.view(view, viewError));

@@ -5,12 +5,10 @@
 #include <mutex>
 #include <string>
 
-#include "GamutCompression.h"
 #include "ProfileCatalog.h"
-#include "RustAssetBridge.h"
+#include "test_asset_bridge.h"
 
 namespace JuicerAssets {
-
     class Library {
     public:
         explicit Library(const std::filesystem::path& resourceRoot);
@@ -43,5 +41,4 @@ namespace JuicerAssets {
         AssetBridge _bridge;
         Spektrafilm::ProfileCatalog _spektrafilmProfileCatalog;
     };
-
 } // namespace JuicerAssets

@@ -13,6 +13,25 @@ import time
 from pathlib import Path
 
 
+def save_receipt(receipt, record):
+    temporary = receipt.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    deadline = time.monotonic() + 0.5
+    while True:
+        try:
+            temporary.replace(receipt)
+            return
+        except OSError as error:
+            if os.name != "nt" or getattr(error, "winerror", None) not in (5, 32):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            # Brief Windows readers can deny replacement. Keep the old receipt
+            # intact and retry the same complete bytes; persistent denial fails.
+            time.sleep(min(0.01, remaining))
+
+
 class LinuxChildren:
     def __init__(self):
         # Isolate subreaping in this supervisor, never in the campaign caller.
@@ -367,9 +386,7 @@ def main():
         record.update(vctip_cleanup=cleanup, vctip_terminated=[])
 
     def save():
-        temporary = receipt.with_suffix(".tmp")
-        temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(receipt)
+        save_receipt(receipt, record)
 
     save()
     try:

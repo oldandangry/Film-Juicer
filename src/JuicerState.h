@@ -97,11 +97,11 @@ struct NativeSubmissionState {
     JuicerCuda::ResourceManager::SubmissionSnapshot submissionSnapshotLatch{};
 };
 
-bool spektrafilm_profile_catalog_ready();
-const char* spektrafilm_profile_catalog_failure();
-int film_profile_option_count();
-const char* film_profile_option_key(int index);
-const char* film_profile_option_label(int index);
-int print_profile_option_count();
-const char* print_profile_option_key(int index);
-const char* print_profile_option_label(int index);
+bool spektrafilm_profile_catalog_ready(const Spektrafilm::ProfileCatalog& catalog);
+const char* spektrafilm_profile_catalog_failure(const Spektrafilm::ProfileCatalog& catalog);
+int film_profile_option_count(const Spektrafilm::ProfileCatalog& catalog);
+const char* film_profile_option_key(const Spektrafilm::ProfileCatalog& catalog, int index);
+const char* film_profile_option_label(const Spektrafilm::ProfileCatalog& catalog, int index);
+int print_profile_option_count(const Spektrafilm::ProfileCatalog& catalog);
+const char* print_profile_option_key(const Spektrafilm::ProfileCatalog& catalog, int index);
+const char* print_profile_option_label(const Spektrafilm::ProfileCatalog& catalog, int index);

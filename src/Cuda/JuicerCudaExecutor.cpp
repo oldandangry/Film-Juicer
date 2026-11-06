@@ -2453,7 +2453,7 @@ namespace JuicerCuda {
         }
     }
 
-    static void execute_direct_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
+    static void execute_direct_schedule(JuicerProcess::Root& root, const ScheduleInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
         const auto& frame = input.frame;
         const auto& requestedSnapshot = input.snapshot;
         const auto& deviceContextKey = requestedSnapshot.deviceContextKey;
@@ -2491,7 +2491,7 @@ namespace JuicerCuda {
         JuicerCuda::Failure directPrepareError;
         check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-            JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, directPrepareError, input.hostPreparation);
+            root.prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, directPrepareError, input.hostPreparation);
         if (!preparedFrame.active()) {
             errors.fail_submission(
                 preparedFrame.failure_stage_tag(),
@@ -2719,7 +2719,7 @@ namespace JuicerCuda {
         return;
     }
 
-    static void execute_print_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
+    static void execute_print_schedule(JuicerProcess::Root& root, const ScheduleInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
         const auto& frame = input.frame;
         const auto& requestedSnapshot = input.snapshot;
         const auto& deviceContextKey = requestedSnapshot.deviceContextKey;
@@ -2761,7 +2761,7 @@ namespace JuicerCuda {
         JuicerCuda::Failure prepareError;
         check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-            JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, prepareError, input.hostPreparation);
+            root.prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, prepareError, input.hostPreparation);
         if (!preparedFrame.active()) {
             errors.fail_submission(
                 preparedFrame.failure_stage_tag(),
@@ -3026,7 +3026,7 @@ namespace JuicerCuda {
         }
         return;
     }
-    void execute_prepared(const PreparedExecutionInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
+    void execute_prepared(JuicerProcess::Root& root, const PreparedExecutionInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
         const bool print = Spektrafilm::scan_route_is_print(input.descriptors.route);
         const ExecutionErrors errors{recovery, input.frame.traceInfo, print ? "CUDA print route blocked" : "CUDA direct route blocked"};
         if (!print && input.frame.autoExposureDescriptor.method == Spektrafilm::AutoExposureMethod::Median) {
@@ -3042,9 +3042,9 @@ namespace JuicerCuda {
         const RouteDescriptors descriptors{input.descriptors.scanner, input.descriptors.post, input.descriptors.spatialDir, input.descriptors.grain, input.descriptors.effects};
         const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainPayload, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.recipeHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, input.preparation, input.descriptors.correction, input.printExposure, input.preflashExposure, input.hostPreparation};
         if (Spektrafilm::scan_route_is_print(input.descriptors.route)) {
-            execute_print_schedule(schedule, recovery, abortCallback);
+            execute_print_schedule(root, schedule, recovery, abortCallback);
         } else {
-            execute_direct_schedule(schedule, recovery, abortCallback);
+            execute_direct_schedule(root, schedule, recovery, abortCallback);
         }
     }
 

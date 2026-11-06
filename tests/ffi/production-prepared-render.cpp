@@ -23,7 +23,7 @@
 #include "case_results.h"
 #include "JuicerState.h"
 #include "PreparedState.h"
-#include "ProcessRoot.h"
+#include "ProcessRuntime.h"
 
 namespace {
 
@@ -155,7 +155,7 @@ namespace {
             (void)close();
         }
 
-        void capture_and_admit(FjAssets* assets, const ParamSnapshot& parameters, FjAdmission& admission, FjErrorBuffer& error) {
+        void capture_and_admit(const FjAssets* assets, const ParamSnapshot& parameters, FjAdmission& admission, FjErrorBuffer& error) {
             const std::uint64_t inputIdentity = hash_params(parameters);
             FjCaptureStart capture{};
             error.length = 0;
@@ -400,7 +400,8 @@ namespace {
         const std::vector<float>& expected;
     };
 
-    Json run_pass(const Case& test, std::string_view pass, const PassPixels& pixels, std::vector<std::uint32_t>* coldWords, std::uint64_t* coldRecipeHash, DeviceBuffers& device, InstanceOwner& instance, bool summary) {
+    Json run_pass(const Case& test, std::string_view pass, const PassPixels& pixels, std::vector<std::uint32_t>* coldWords, std::uint64_t* coldRecipeHash, DeviceBuffers& device, InstanceOwner& instance, FjRuntimeView runtime, bool summary) {
+        require(runtime.assets && runtime.cuda, "production prepared render requires a live Runtime view");
         const auto& source = pixels.source;
         const auto& expected = pixels.expected;
         const int pitch = kWidth * test.components + kPitchPadding;
@@ -427,11 +428,10 @@ namespace {
 
         std::array<char, 2048> errorStorage{};
         FjErrorBuffer error{errorStorage.data(), errorStorage.size(), 0};
-        auto& assets = JuicerProcess::root().assets();
         PreparedOwner prepared;
         FjAdmission admission{};
         const ParamSnapshot parameters = parameters_for(test);
-        instance.capture_and_admit(assets.borrow_rust_assets(), parameters, admission, error);
+        instance.capture_and_admit(runtime.assets, parameters, admission, error);
         prepared.take(admission);
         if (pass == "warm") {
             require(instance.close(), "instance close before warm admitted render failed");
@@ -448,13 +448,13 @@ namespace {
 
         CompletionState completion;
         const auto route = static_cast<std::uint32_t>(test.route);
-        JuicerCuda::CallScope scope(JuicerCuda::borrowed_owner(), route, complete_call, &completion);
+        JuicerCuda::CallScope scope(runtime.cuda, route, complete_call, &completion);
         std::uint64_t submissionId = 1;
         const FjSubmissionAccess submission{kInstanceToken + route, 37, &submissionId, select_submission};
         CUcontext contextBefore = nullptr;
         require_driver(cuCtxGetCurrent(&contextBefore), "inspect CUDA context before submission");
         const FjCallCompletionResult result = fj_legacy_prepared_state_render(
-            assets.borrow_rust_assets(), prepared.get(), scope.access(), &frame, &policy, submission, {}, &error);
+            runtime.assets, prepared.get(), scope.access(), &frame, &policy, submission, {}, &error);
         view.reset();
         const bool viewsReleased = !view.has_value();
         const bool stateReleased = prepared.release() && prepared.get() == nullptr;
@@ -552,7 +552,7 @@ int main(int argc, char** argv) {
         ContextRestore contextRestore(original);
 
         require_cuda(cudaSetDevice(0), "select CUDA device");
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
 
         const auto expected = expected_pixels(fixture, updatesJson);
@@ -575,9 +575,9 @@ int main(int argc, char** argv) {
             const PassPixels pixels{.source = source, .expected = expected[caseIndex]};
             cases.event("production-prepared-render", std::string(test.id) + "/cold", "start");
             InstanceOwner instance;
-            rows.push_back(run_pass(test, "cold", pixels, &coldWords, &coldRecipeHash, device, instance, summary));
+            rows.push_back(run_pass(test, "cold", pixels, &coldWords, &coldRecipeHash, device, instance, owner.borrow(), summary));
             cases.event("production-prepared-render", std::string(test.id) + "/warm", "start");
-            rows.push_back(run_pass(test, "warm", pixels, &coldWords, &coldRecipeHash, device, instance, summary));
+            rows.push_back(run_pass(test, "warm", pixels, &coldWords, &coldRecipeHash, device, instance, owner.borrow(), summary));
 
             require_cuda(cudaFree(device.destination), "free destination buffer");
             device.destination = nullptr;

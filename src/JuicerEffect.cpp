@@ -20,7 +20,6 @@
 #include "ColorTransforms.h"
 #include "DiffusionHostBehavior.h"
 #include "ParamNames.h"
-#include "ProcessRoot.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaFailure.h"
 #include "juicer_cuda_owner.h"
@@ -395,9 +394,9 @@ namespace {
         return value.empty() ? fallback : value;
     }
 
-    inline Spektrafilm::ProfilePolarity capture_profile_polarity_for_key(const std::string& filmProfileKey) {
-        const Spektrafilm::ProfileCatalog& catalog =
-            JuicerProcess::root().assets().spektrafilm_profile_catalog();
+    inline Spektrafilm::ProfilePolarity capture_profile_polarity_for_key(
+        const Spektrafilm::ProfileCatalog& catalog,
+        const std::string& filmProfileKey) {
         for (const Spektrafilm::ProfileCatalogEntry& entry : catalog.filmProfiles) {
             if (entry.key == filmProfileKey) {
                 return entry.polarity;
@@ -407,12 +406,13 @@ namespace {
     }
 
     inline bool read_resolved_scan_route(
+        const Spektrafilm::ProfileCatalog& catalog,
         OFX::StrChoiceParam* scanRouteParam,
         const std::string& filmProfileKey,
         Spektrafilm::ScanRoute& outRoute,
         std::string& outDiagnostic) {
         const Spektrafilm::ProfilePolarity capturePolarity =
-            capture_profile_polarity_for_key(filmProfileKey);
+            capture_profile_polarity_for_key(catalog, filmProfileKey);
         const Spektrafilm::ScanRoute defaultRoute =
             Spektrafilm::default_scan_route_for_polarity(capturePolarity);
         const std::string routeKey =
@@ -806,12 +806,14 @@ namespace {
     };
 
     inline bool read_profile_snapshot_choices(
+        const Spektrafilm::ProfileCatalog& catalog,
         const ProfileSnapshotChoiceParams& params,
         ParamSnapshot& snapshot,
         std::string& outDiagnostic) {
         snapshot.filmProfileKey = read_str_choice_param_or_empty(params.filmProfileKey, snapshot.filmProfileKey);
         snapshot.printProfileKey = read_str_choice_param_or_empty(params.printProfileKey, snapshot.printProfileKey);
         if (!read_resolved_scan_route(
+                catalog,
                 params.scanRoute,
                 snapshot.filmProfileKey,
                 snapshot.scanRoute,
@@ -1425,7 +1427,7 @@ bool JuicerEffect::resolveDiffusionControlRoute(
     std::string& outDiagnostic) {
     const std::string filmProfileKey =
         read_str_choice_param_or_empty(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
-    return read_resolved_scan_route(_pScanRoute, filmProfileKey, outRoute, outDiagnostic);
+    return read_resolved_scan_route(_runtime.spektrafilm_profile_catalog(), _pScanRoute, filmProfileKey, outRoute, outDiagnostic);
 }
 
 void JuicerEffect::updateDiffusionControlState(Spektrafilm::ScanRoute selectedRoute) {
@@ -1469,7 +1471,7 @@ bool JuicerEffect::resolveGammaControlRoute(
         read_str_choice_param_or_empty(
             _pFilmProfileKey,
             Spektrafilm::kDefaultFilmProfileKey);
-    return read_resolved_scan_route(_pScanRoute, outFilmProfileKey, outRoute, outDiagnostic);
+    return read_resolved_scan_route(_runtime.spektrafilm_profile_catalog(), _pScanRoute, outFilmProfileKey, outRoute, outDiagnostic);
 }
 
 void JuicerEffect::updateGammaControlState(
@@ -1524,8 +1526,7 @@ void JuicerEffect::applyDirGammaProfileDefaults() {
     FjFilmDigest digest{};
     std::array<char, 1024> message{};
     FjErrorBuffer error{message.data(), message.size(), 0};
-    const FjStatus status =
-        JuicerProcess::root().assets().film_defaults(filmKey, digest, error);
+    const FjStatus status = _runtime.film_defaults(filmKey, digest, error);
     if (status.category != FJ_STATUS_SUCCESS) {
         if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
             JTRACE("SPEKTRAFILM", "MissingRequiredResource field=dir_gamma_profile_defaults");
@@ -1562,9 +1563,10 @@ void JuicerEffect::applyDirGammaProfileDefaults() {
         digest.gamma_interlayer_b_to_rg[1]);
 }
 
-JuicerEffect::JuicerEffect(OfxImageEffectHandle handle) try
+JuicerEffect::JuicerEffect(OfxImageEffectHandle handle, JuicerProcess::ProcessRuntime& runtime) try
     : OFX
-    ::ImageEffect(handle) {
+    ::ImageEffect(handle),
+        _runtime(runtime) {
         _src = fetchClip(kOfxImageEffectSimpleSourceClipName);
         _dst = fetchClip(kOfxImageEffectOutputClipName);
 
@@ -1799,7 +1801,8 @@ JuicerEffect::~JuicerEffect() {
     try {
         std::array<char, 512> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-        const auto result = fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), _submissionState->instanceToken, &error);
+        const FjRuntimeView runtimeView = _runtime.borrow();
+        const auto result = fj_cuda_retire_instance(runtimeView.cuda, _submissionState->instanceToken, &error);
         if (result.category != FJ_STATUS_SUCCESS) {
             JTRACE("MSLCY", diagnostic.data());
         }
@@ -1843,7 +1846,8 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (!cudaRoute) {
         throw_spektrafilm_phase1a_render_cutoff(args);
     }
-    auto framePreparation = JuicerProcess::root().begin_frame_preparation();
+    const FjRuntimeView runtimeView = _runtime.borrow();
+    auto framePreparation = JuicerCuda::borrow_root(runtimeView.cuda).begin_frame_preparation();
     if (!framePreparation.active()) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
@@ -1888,7 +1892,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     FjErrorBuffer admissionError{admissionText.data(), admissionText.size(), 0};
     std::uint32_t admissionKind = FJ_ADMISSION_NONE;
     std::optional<PreparedState> admitted;
-    FjAssets* assets = JuicerProcess::root().assets().borrow_rust_assets();
+    const FjAssets* assets = runtimeView.assets;
     FjStatus admissionStatus = _publication.admit(assets, admissionKind, admitted, admissionError);
     if (admissionKind == FJ_ADMISSION_NEEDS_CAPTURE || admissionKind == FJ_ADMISSION_NEEDS_REFRESH) {
         acquire_render_capture(admissionKind == FJ_ADMISSION_NEEDS_CAPTURE ? FJ_CAPTURE_INITIAL : FJ_CAPTURE_REFRESH);
@@ -1974,7 +1978,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
 
     // The callback retains image leases through inspection and CUDA submission.
-    JuicerProcessor proc(*this);
+    JuicerProcessor proc(*this, runtimeView);
     JuicerProcessor::SourceDestinationImages images{};
     images.src = srcImg.get();
     images.dst = dstImg.get();
@@ -2011,7 +2015,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
     proc.setGPURenderArgs(args);
 
-    // Dispatch to support library's threaded/tiled CPU path
+    // Dispatch synchronously while the prepared state and Runtime borrows remain live.
     proc.process();
 }
 
@@ -2067,7 +2071,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
                 if (param_name_is(paramName, JuicerParams::kFilmProfileKey)) {
                     const std::string filmKey =
                         read_str_choice_param_or_empty(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
-                    const Spektrafilm::ProfilePolarity polarity = capture_profile_polarity_for_key(filmKey);
+                    const Spektrafilm::ProfilePolarity polarity = capture_profile_polarity_for_key(_runtime.spektrafilm_profile_catalog(), filmKey);
                     const Spektrafilm::ScanRoute defaultRoute = Spektrafilm::default_scan_route_for_polarity(polarity);
                     const HostEditScope suppressEvents(_publication);
                     set_str_choice_param(_pScanRoute, Spektrafilm::scan_route_key(defaultRoute));
@@ -2368,7 +2372,7 @@ bool JuicerEffect::snapshotParams(
     profileChoiceParams.spectralMode = _pSpectralMode;
     profileChoiceParams.referenceIlluminant = _pRefIll;
     profileChoiceParams.enlargerIlluminant = _pEnlIll;
-    if (!read_profile_snapshot_choices(profileChoiceParams, P, outDiagnostic)) {
+    if (!read_profile_snapshot_choices(_runtime.spektrafilm_profile_catalog(), profileChoiceParams, P, outDiagnostic)) {
         return false;
     }
     double authoredFilmGammaFactor = 1.0;

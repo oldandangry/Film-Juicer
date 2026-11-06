@@ -313,6 +313,28 @@ FjStatus fj_legacy_exposure_mallett_reference_raw(const FjMallettReferenceInput*
  * Categories: success, unsupported input, preparation, allocation, internal;
  * api/native_code are zero. Diagnostic truncation never changes the status. */
 typedef struct FjAssets FjAssets;
+typedef struct FjRuntime FjRuntime;
+
+/* SF_TEMP_BRIDGE_RUNTIME_CALL_VIEW: synchronous adapter projection; remove S6.
+ * Both fields borrow the same live Runtime; neither is an owning handle. Do not
+ * store/transfer this view or destroy its Assets. Host terminal exclusion covers
+ * all callbacks, asset readers and outstanding views independently of GPU drain.
+ * Required record/output pointers are live, aligned, initialized and disjoint.
+ * Outputs clear before fallible work. Paths retain native bytes/UTF-16 units.
+ * check_close rejects reentry without consuming or establishing host exclusion.
+ * After successful precheck under host exclusion, destroy consumes exactly once
+ * on every result, including malformed diagnostics and contained panic. Assets
+ * outlives the native terminal attempt; native failure retains precedence.
+ */
+typedef struct FjRuntimeView {
+    const FjAssets* assets;
+    FjCuda* cuda;
+} FjRuntimeView;
+FjStatus fj_legacy_runtime_create(FjPathView resource_dir, FjRuntime** out, FjErrorBuffer* error);
+FjStatus fj_legacy_runtime_borrow(const FjRuntime* runtime, FjRuntimeView* out, FjErrorBuffer* error);
+FjStatus fj_legacy_runtime_check_close(const FjRuntime* runtime, FjErrorBuffer* error);
+FjStatus fj_legacy_runtime_shutdown(const FjRuntime* runtime, FjErrorBuffer* error);
+FjStatus fj_legacy_runtime_destroy(FjRuntime* runtime, FjErrorBuffer* error);
 typedef struct FjCatalog FjCatalog;
 #define FJ_PROFILE_ROLE_FILM UINT32_C(0)
 #define FJ_PROFILE_ROLE_PRINT UINT32_C(1)
@@ -2052,7 +2074,7 @@ typedef struct FjPreparedStateView {
     uint64_t scanner_recipe_hash, print_recipe_hash, print_filters_hash, print_exposure_hash, print_illuminant_hash, print_curves_hash;
 } FjPreparedStateView;
 typedef struct FjPreparedState FjPreparedState;
-FjStatus fj_legacy_prepared_state_create(FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
+FjStatus fj_legacy_prepared_state_create(const FjAssets*, const FjPreparationParams*, FjPreparedState**, FjErrorBuffer*);
 FjStatus fj_legacy_prepared_state_view(const FjPreparedState*, FjPreparedStateView*, FjErrorBuffer*);
 FjStatus fj_legacy_prepared_state_release(FjPreparedState*, FjErrorBuffer*);
 

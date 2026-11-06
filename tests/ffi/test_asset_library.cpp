@@ -1,4 +1,4 @@
-#include "ResourceAssetLibrary.h"
+#include "test_asset_library.h"
 
 #include <filesystem>
 #include <memory>

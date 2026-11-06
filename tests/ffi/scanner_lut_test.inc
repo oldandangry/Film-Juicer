@@ -380,7 +380,7 @@ namespace ScannerLutTest {
 
 namespace ScannerLutTest {
     void check_products(const std::filesystem::path& resources, const Json& captured) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         require(captured.at("products").size() == 4, "exact actual scanner product membership");
         for (unsigned route = 0; route < 4; ++route) {
@@ -392,7 +392,7 @@ namespace ScannerLutTest {
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             std::optional<PreparedState> product;
-            const auto prepared = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), params, product, error);
+            const auto prepared = prepare_state(owner.borrow().assets, params, product, error);
             const bool print = route % 2 != 0;
             require(prepared.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
             FjPreparedStateView view{};

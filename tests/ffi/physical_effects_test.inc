@@ -391,7 +391,7 @@ namespace {
         event.passed();
     }
     void effects_products(const std::filesystem::path& resources, const Json& captured) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         require(captured.at("products").size() == 92, "exact physical effects product membership");
         for (const auto& row : captured.at("products")) {
@@ -412,7 +412,7 @@ namespace {
             params.gateWeaveAmount = controls.gate_weave_amount;
             params.grainControls.active = controls.grain_active != 0;
             params.grainControls.debugView = controls.grain_debug_view;
-            auto product = JuicerTestSupport::prepare_product(params);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
@@ -437,7 +437,7 @@ namespace {
             params.gateWeaveAmount = 0.1;
             RenderInstance state;
             JuicerTestSupport::capture(state, params);
-            const auto admitted = JuicerTestSupport::admit(state);
+            const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(admitted.kind == FJ_ADMISSION_READY && admitted.state, "effects publication baseline");
             const auto held = JuicerTestSupport::published_view(admitted);
             const auto hash = held.recipe_hash;
@@ -446,7 +446,7 @@ namespace {
             changed.gateWeaveAmount = 0.2;
             JuicerTestSupport::capture(state, changed);
             status(fj_test_prepared_effects_probability_fault());
-            const auto rejected = JuicerTestSupport::admit(state);
+            const auto rejected = JuicerTestSupport::admit(owner.borrow().assets, state);
             const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
             require(rejected.delivery.category == FJ_STATUS_PREPARATION_FAILURE &&
                         rejected.kind == FJ_ADMISSION_PREPARATION_FAILED && !rejected.state &&
@@ -456,11 +456,11 @@ namespace {
                         failedMetrics.backingIdentity == baselineMetrics.backingIdentity && held.recipe_hash == hash,
                     "effects guard failure publishes no partial route and preserves admitted holds");
             JuicerTestSupport::capture(state, params);
-            const auto recovered = JuicerTestSupport::admit(state);
+            const auto recovered = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(recovered.kind == FJ_ADMISSION_READY && recovered.state &&
                         JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
                     "effects publication returns to last complete state after consumed fault");
-            const auto repeated = JuicerTestSupport::admit(state);
+            const auto repeated = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(repeated.kind == FJ_ADMISSION_READY && repeated.state &&
                         JuicerTestSupport::PublicationObserver::backing(*repeated.state) == baselineMetrics.backingIdentity &&
                         JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
@@ -471,7 +471,7 @@ namespace {
             invalidGrain.grainControls.particleAreaUm2 = 0;
             JuicerTestSupport::capture(state, invalidGrain);
             status(fj_test_prepared_effects_probability_fault());
-            const auto preceding = JuicerTestSupport::admit(state);
+            const auto preceding = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(preceding.kind == FJ_ADMISSION_PREPARATION_FAILED && !preceding.state &&
                         preceding.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain",
                     "required grain failure precedes effects suppression or injected guard");
@@ -479,7 +479,7 @@ namespace {
             badDir.dirCouplers.active = true;
             badDir.dirCouplers.amount = -1;
             JuicerTestSupport::capture(state, badDir);
-            const auto blockedDir = JuicerTestSupport::admit(state);
+            const auto blockedDir = JuicerTestSupport::admit(owner.borrow().assets, state);
             const auto finalMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
             require(blockedDir.kind == FJ_ADMISSION_PREPARATION_FAILED && !blockedDir.state &&
                         blockedDir.diagnostic == "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy" &&

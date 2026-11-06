@@ -8,7 +8,6 @@
 #include <string>
 
 #include "Hash.h"
-#include "ProcessRoot.h"
 
 namespace {
 
@@ -366,20 +365,18 @@ uint64_t hash_params(const ParamSnapshot& p) {
 }
 
 namespace {
-    const Spektrafilm::ProfileCatalog& current_profile_catalog() {
-        return JuicerProcess::root().assets().spektrafilm_profile_catalog();
-    }
-
-    const Spektrafilm::ProfileCatalogEntry* film_profile_entry_for_index(int index) {
-        const Spektrafilm::ProfileCatalog& catalog = current_profile_catalog();
+    const Spektrafilm::ProfileCatalogEntry* film_profile_entry_for_index(
+        const Spektrafilm::ProfileCatalog& catalog,
+        int index) {
         if (index < 0 || index >= static_cast<int>(catalog.filmProfiles.size())) {
             return nullptr;
         }
         return &catalog.filmProfiles[static_cast<std::size_t>(index)];
     }
 
-    const Spektrafilm::ProfileCatalogEntry* print_profile_entry_for_index(int index) {
-        const Spektrafilm::ProfileCatalog& catalog = current_profile_catalog();
+    const Spektrafilm::ProfileCatalogEntry* print_profile_entry_for_index(
+        const Spektrafilm::ProfileCatalog& catalog,
+        int index) {
         if (index < 0 || index >= static_cast<int>(catalog.printProfiles.size())) {
             return nullptr;
         }
@@ -387,39 +384,38 @@ namespace {
     }
 } // namespace
 
-bool spektrafilm_profile_catalog_ready() {
-    return current_profile_catalog().valid;
+bool spektrafilm_profile_catalog_ready(const Spektrafilm::ProfileCatalog& catalog) {
+    return catalog.valid;
 }
 
-const char* spektrafilm_profile_catalog_failure() {
-    const Spektrafilm::ProfileCatalog& catalog = current_profile_catalog();
+const char* spektrafilm_profile_catalog_failure(const Spektrafilm::ProfileCatalog& catalog) {
     return catalog.failure.empty() ? "" : catalog.failure.c_str();
 }
 
-int film_profile_option_count() {
-    return static_cast<int>(current_profile_catalog().filmProfiles.size());
+int film_profile_option_count(const Spektrafilm::ProfileCatalog& catalog) {
+    return static_cast<int>(catalog.filmProfiles.size());
 }
 
-const char* film_profile_option_key(int index) {
-    const Spektrafilm::ProfileCatalogEntry* entry = film_profile_entry_for_index(index);
+const char* film_profile_option_key(const Spektrafilm::ProfileCatalog& catalog, int index) {
+    const Spektrafilm::ProfileCatalogEntry* entry = film_profile_entry_for_index(catalog, index);
     return entry ? entry->key.c_str() : "";
 }
 
-const char* film_profile_option_label(int index) {
-    const Spektrafilm::ProfileCatalogEntry* entry = film_profile_entry_for_index(index);
+const char* film_profile_option_label(const Spektrafilm::ProfileCatalog& catalog, int index) {
+    const Spektrafilm::ProfileCatalogEntry* entry = film_profile_entry_for_index(catalog, index);
     return entry ? entry->label.c_str() : "";
 }
 
-int print_profile_option_count() {
-    return static_cast<int>(current_profile_catalog().printProfiles.size());
+int print_profile_option_count(const Spektrafilm::ProfileCatalog& catalog) {
+    return static_cast<int>(catalog.printProfiles.size());
 }
 
-const char* print_profile_option_key(int index) {
-    const Spektrafilm::ProfileCatalogEntry* entry = print_profile_entry_for_index(index);
+const char* print_profile_option_key(const Spektrafilm::ProfileCatalog& catalog, int index) {
+    const Spektrafilm::ProfileCatalogEntry* entry = print_profile_entry_for_index(catalog, index);
     return entry ? entry->key.c_str() : "";
 }
 
-const char* print_profile_option_label(int index) {
-    const Spektrafilm::ProfileCatalogEntry* entry = print_profile_entry_for_index(index);
+const char* print_profile_option_label(const Spektrafilm::ProfileCatalog& catalog, int index) {
+    const Spektrafilm::ProfileCatalogEntry* entry = print_profile_entry_for_index(catalog, index);
     return entry ? entry->label.c_str() : "";
 }

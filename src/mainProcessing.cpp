@@ -57,6 +57,7 @@ namespace {
     }
 
     void recover_context_loss_state(
+        JuicerProcess::Root& root,
         NativeSubmissionState* submissionState,
         const JuicerCuda::ResourceManager::DeviceContextKey& key,
         const char* stage,
@@ -72,13 +73,13 @@ namespace {
 #if JUICER_DIAGNOSTICS_COMPILED
         const char* stageName = nonempty_cstr_or(stage, "unknown_stage");
         const bool traceInfo = JTRACE_ENABLED(1);
-        const bool retireAccepted = JuicerProcess::root().retire_reset_context(
+        const bool retireAccepted = root.retire_reset_context(
             key.deviceId,
             key.contextOpaque,
             retireError);
 #else
         (void)stage;
-        JuicerProcess::root().retire_reset_context(
+        root.retire_reset_context(
             key.deviceId,
             key.contextOpaque,
             retireError);
@@ -251,6 +252,7 @@ namespace {
 
     struct RenderCompletion final {
         OFX::ImageEffect* effect = nullptr;
+        FjCuda* runtime = nullptr;
         NativeSubmissionState* submissionState = nullptr;
         JuicerCuda::CallScope* callScope = nullptr;
         const AbortAccess* abortAccess = nullptr;
@@ -326,8 +328,9 @@ namespace {
                 JuicerCuda::ExecutorTest::observe_recovery_start(recovery.pending);
 #endif
                 if (recovery.pending) {
-                    JuicerCuda::NativeCall recoveryCall(JuicerCuda::borrowed_owner());
+                    JuicerCuda::NativeCall recoveryCall(completion->runtime);
                     recover_context_loss_state(
+                        recoveryCall.root(),
                         completion->submissionState,
                         {input->inspected_context.device_id,
                          reinterpret_cast<void*>(input->inspected_context.context)},
@@ -383,8 +386,8 @@ bool curve_ok(const Spectral::Curve& c) {
 
 // JuicerProcessor method definitions matching JuicerProcessing.h
 
-JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
-    : OFX::ImageProcessor(effect) {
+JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect, FjRuntimeView runtime)
+    : OFX::ImageProcessor(effect), _runtime(runtime) {
 }
 
 void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
@@ -505,9 +508,9 @@ void JuicerProcessor::processImagesCUDA() {
         route = stateView.route;
     }
 
-    RenderCompletion completion{&_effect, _submissionState, nullptr, nullptr};
+    RenderCompletion completion{&_effect, _runtime.cuda, _submissionState, nullptr, nullptr};
     JuicerCuda::CallScope callScope(
-        JuicerCuda::borrowed_owner(), route, &complete_render_call, &completion);
+        _runtime.cuda, route, &complete_render_call, &completion);
     completion.callScope = &callScope;
 
     auto should_abort_effect = [this]() -> bool {
@@ -524,14 +527,13 @@ void JuicerProcessor::processImagesCUDA() {
 
     std::array<char, 2048> errorText{};
     FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-    auto& assets = JuicerProcess::root().assets();
     FjCallCompletionResult result{};
     if (!prepared) {
         result = reject_missing_render_state(
-            assets.borrow_rust_assets(), callScope.access(), rawFrame, abortCallback, error);
+            _runtime.assets, callScope.access(), rawFrame, abortCallback, error);
     } else if (!_submissionState) {
         result = prepared->reject_missing_instance(
-            assets.borrow_rust_assets(), callScope.access(), rawFrame, abortCallback, error);
+            _runtime.assets, callScope.access(), rawFrame, abortCallback, error);
     } else {
         const FjSubmissionAccess submission{
             _instanceToken,
@@ -542,7 +544,7 @@ void JuicerProcessor::processImagesCUDA() {
         FjSubmissionAccess selectedSubmission = submission;
         selectedSubmission.user = &selection;
         result = prepared->render(
-            assets.borrow_rust_assets(),
+            _runtime.assets,
             callScope.access(),
             rawFrame,
             _framePolicy,

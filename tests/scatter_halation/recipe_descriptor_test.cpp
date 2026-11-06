@@ -16,7 +16,7 @@
 #include "ColorTransforms.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "juicer_cuda_owner.h"
+#include "ProcessRuntime.h"
 #include "ProfileCatalog.h"
 #include "ScatterHalation.h"
 #include "spatial_optics_fixture.h"
@@ -24,6 +24,21 @@
 #include "juicer_legacy_api.h"
 
 namespace {
+
+    class ScatterHalationBootstrapTest : public testing::Test {
+    protected:
+        static void SetUpTestSuite() {
+            runtime.create(JuicerProcess::data_directory());
+        }
+
+        static void TearDownTestSuite() {
+            EXPECT_EQ(runtime.close().category, FJ_STATUS_SUCCESS);
+        }
+
+        static JuicerProcess::ProcessRuntime runtime;
+    };
+
+    JuicerProcess::ProcessRuntime ScatterHalationBootstrapTest::runtime;
 
     std::uint32_t float_bits(float value) {
         return std::bit_cast<std::uint32_t>(value);
@@ -387,16 +402,16 @@ namespace {
         EXPECT_FALSE(descriptor);
     }
 
-    TEST(ScatterHalationBootstrap, LoadsPublishedProfilesWithoutCuda) {
+    TEST_F(ScatterHalationBootstrapTest, LoadsPublishedProfilesWithoutCuda) {
         const Spektrafilm::ProfileCatalog& catalog =
-            JuicerProcess::root().assets().spektrafilm_profile_catalog();
+            runtime.spektrafilm_profile_catalog();
         ASSERT_TRUE(catalog.valid) << catalog.failure;
         EXPECT_TRUE(catalog.defaultFilmPresent);
         EXPECT_TRUE(catalog.defaultPrintPresent);
 
         const std::string key = Spektrafilm::kDefaultFilmProfileKey;
         FjFilmProfile* acquired = nullptr;
-        ASSERT_EQ(fj_legacy_film_profile_acquire(JuicerProcess::root().assets().borrow_rust_assets(), {key.data(), key.size()}, &acquired, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_legacy_film_profile_acquire(runtime.borrow().assets, {key.data(), key.size()}, &acquired, nullptr).category, FJ_STATUS_SUCCESS);
         const auto releaseProfile = [](FjFilmProfile* held) {
             (void)fj_legacy_film_profile_release(held, nullptr);
         };
@@ -415,17 +430,14 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) noexcept {
-    JuicerCuda::Owner cudaOwner;
     try {
         testing::InitGoogleTest(&argc, argv);
         if (::testing::GTEST_FLAG(list_tests))
             return RUN_ALL_TESTS();
-        cudaOwner.create(JuicerProcess::data_directory());
         JuicerTests::CaseLog case_log;
         const int result = RUN_ALL_TESTS();
         case_log.finish();
-        const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
-        return closed.category == FJ_STATUS_SUCCESS ? result : 1;
+        return result;
     } catch (const std::exception& error) {
         std::fprintf(
             stderr,
@@ -436,6 +448,5 @@ int main(int argc, char** argv) noexcept {
             "FATAL scatter/halation recipe test: unknown exception\n",
             stderr);
     }
-    fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
     return 2;
 }

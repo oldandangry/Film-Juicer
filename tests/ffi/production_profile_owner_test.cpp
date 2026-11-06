@@ -21,9 +21,10 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include "ProcessRuntime.h"
 #include "gtest_cases.h"
 #include "Cuda/JuicerCudaExecutor.h"
-#include "ResourceAssetLibrary.h"
+#include "test_asset_library.h"
 #include "test_asset_workspace.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
@@ -31,7 +32,8 @@
 #include "Hash.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "juicer_cuda_owner.h"
-#include "RustAssetBridge.h"
+#include "NativePath.h"
+#include "test_asset_bridge.h"
 #include "PreparedState.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
@@ -556,12 +558,12 @@ namespace {
         JuicerTestSupport::copy_print_preparation_assets(resources, root);
         return root;
     }
-    void save_film(const fs::path& root, const Json& document) {
+    void save_film(const FjAssets* assets, const fs::path& root, const Json& document) {
         {
             std::ofstream file(root / "profiles/kodak_portra_400.json");
             file << document;
         }
-        expect_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
+        expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
     }
     ParamSnapshot direct_controls() {
         ParamSnapshot controls;
@@ -573,6 +575,7 @@ namespace {
     }
 
     bool prepared_view(
+        const FjAssets* assets,
         const ParamSnapshot& controls,
         std::optional<PreparedState>& owner,
         FjPreparedStateView& view,
@@ -581,7 +584,7 @@ namespace {
         std::array<char, 1024> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
         FjStatus status = prepare_state(
-            JuicerProcess::root().assets().borrow_rust_assets(),
+            assets,
             controls,
             owner,
             error);
@@ -620,7 +623,7 @@ namespace {
     TEST(ProductionProfileConsumer, TypedOriginalBbReachesEveryProfileIlluminantConsumer) {
         const auto root = consumer_resources("bb-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(root);
         JuicerTests::GtestCohort typed_blackbody_cases("typed-blackbody", 3u);
         std::size_t typed_blackbody_index = 0;
@@ -630,13 +633,13 @@ namespace {
             auto changed = original;
             changed["info"]["reference_illuminant"] = item.first;
             changed["info"]["viewing_illuminant"] = item.first;
-            save_film(root, changed);
+            save_film(owner.borrow().assets, root, changed);
             auto controls = direct_controls();
             std::string diagnostic;
             std::optional<PreparedState> prepared;
             FjPreparedStateView preparedState{};
-            ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
-            Film filmSource(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+            ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
+            Film filmSource(owner.borrow().assets, "kodak_portra_400");
             const FjFilmProfileView filmView = filmSource.view();
             EXPECT_EQ(filmView.reference_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
             EXPECT_EQ(filmView.viewing_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
@@ -684,12 +687,12 @@ namespace {
                 std::ofstream file(root / "profiles/kodak_portra_endura.json");
                 file << printDocument;
             }
-            expect_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
+            expect_status(fj_legacy_assets_release_cached_payloads(owner.borrow().assets, nullptr), FJ_STATUS_SUCCESS);
             controls.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
             prepared.reset();
-            ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
+            ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
             expect_span_bits(preparedState.scanner_tables.illuminant, expected);
-            Print printSource(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_endura");
+            Print printSource(owner.borrow().assets, "kodak_portra_endura");
             const FjPrintProfileView printView = printSource.view();
             EXPECT_EQ(printView.viewing_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
             EXPECT_EQ(
@@ -708,14 +711,14 @@ namespace {
             auto invalid_blackbody_case = invalid_blackbody_cases.case_event(std::to_string(invalid_blackbody_index++));
             auto changed = original;
             changed["info"]["reference_illuminant"] = label;
-            save_film(root, changed);
-            Film selected(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+            save_film(owner.borrow().assets, root, changed);
+            Film selected(owner.borrow().assets, "kodak_portra_400");
             const FjFilmProfileView selectedView = selected.view();
             EXPECT_EQ(selectedView.reference_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
             std::optional<PreparedState> rejected;
             FjPreparedStateView rejectedView{};
             std::string diagnostic;
-            EXPECT_FALSE(prepared_view(direct_controls(), rejected, rejectedView, diagnostic));
+            EXPECT_FALSE(prepared_view(owner.borrow().assets, direct_controls(), rejected, rejectedView, diagnostic));
             EXPECT_FALSE(rejected.has_value());
             EXPECT_FALSE(diagnostic.empty());
 
@@ -727,7 +730,7 @@ namespace {
         const auto root = consumer_resources("canonical-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
         const auto canonicalProfile = read_json(resources / "profiles/kodak_portra_400.json");
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(root);
         auto controls = direct_controls();
         controls.printProfileKey = "missing-unselected-print";
@@ -738,7 +741,7 @@ namespace {
         std::string diagnostic;
         std::optional<PreparedState> prepared;
         FjPreparedStateView preparedState{};
-        ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
+        ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
         const auto baselineFilmVersion = preparedState.film_profile_asset_version;
         const auto baselineExposureLambda = copy_span(preparedState.exposure_tables.lambda_nm);
         const auto baselineScannerLambda = copy_span(preparedState.scanner_tables.lambda_nm);
@@ -749,22 +752,22 @@ namespace {
         for (std::size_t i = 0; i < 81; ++i) {
             changed["data"]["wavelengths"][i] = 381.0 + 5.0 * static_cast<double>(i);
         }
-        save_film(root, changed);
-        ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
+        save_film(owner.borrow().assets, root, changed);
+        ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
         EXPECT_NE(preparedState.film_profile_asset_version, baselineFilmVersion);
         expect_span_bits(preparedState.exposure_tables.lambda_nm, baselineExposureLambda);
         expect_span_bits(preparedState.scanner_tables.lambda_nm, baselineScannerLambda);
         expect_span_bits(preparedState.exposure_tables.dyes_cmy[0], baselineExposureEpsC);
         expect_span_bits(preparedState.scanner_tables.dyes_cmy[0], baselineScannerEpsC);
         expect_span_bits(preparedState.film_exposure.sensitivity_rgb, baselineSensitivity);
-        Film shiftedSource(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+        Film shiftedSource(owner.borrow().assets, "kodak_portra_400");
         const FjFilmProfileView shiftedView = shiftedSource.view();
         EXPECT_EQ(preparedState.film_profile_asset_version, shiftedView.asset_token);
         EXPECT_EQ(shiftedView.wavelengths.data[0], 381.0f);
         changed["data"]["wavelengths"][0] = 1e40;
-        save_film(root, changed);
-        ASSERT_TRUE(prepared_view(controls, prepared, preparedState, diagnostic)) << diagnostic;
-        Film nonfiniteSource(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+        save_film(owner.borrow().assets, root, changed);
+        ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
+        Film nonfiniteSource(owner.borrow().assets, "kodak_portra_400");
         const FjFilmProfileView nonfiniteView = nonfiniteSource.view();
         EXPECT_TRUE(std::isinf(nonfiniteView.wavelengths.data[0]));
         expect_span_bits(preparedState.exposure_tables.lambda_nm, baselineExposureLambda);
@@ -776,7 +779,7 @@ namespace {
     TEST(ProductionProfileConsumer, HanatosWindowBroaderValuesReachAcceptedFormula) {
         const auto root = consumer_resources("hanatos-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(root);
         auto controls = direct_controls();
         controls.spectralUpsamplingMode = 0;
@@ -789,8 +792,8 @@ namespace {
             SCOPED_TRACE(width);
             auto changed = original;
             changed["data"]["hanatos2025_adaptation_window_params"] = {380.0, width, 780.0, 100.0};
-            save_film(root, changed);
-            Film source(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+            save_film(owner.borrow().assets, root, changed);
+            Film source(owner.borrow().assets, "kodak_portra_400");
             const FjFilmProfileView sourceView = source.view();
             ASSERT_EQ(sourceView.hanatos_window.count, 4u);
             EXPECT_EQ(sourceView.hanatos_window.data[1], static_cast<float>(width));
@@ -798,7 +801,7 @@ namespace {
             FjPreparedStateView preparedState{};
             std::string preparedDiagnostic;
             const bool preparedBuilt = prepared_view(
-                controls, prepared, preparedState, preparedDiagnostic);
+                owner.borrow().assets, controls, prepared, preparedState, preparedDiagnostic);
             if (width == 0.0) {
                 EXPECT_FALSE(preparedBuilt);
                 EXPECT_FALSE(prepared.has_value());
@@ -817,7 +820,7 @@ namespace {
     TEST(ProductionProfileConsumer, BroaderAxesAreCopiedAndReachLocalComputations) {
         const auto root = consumer_resources("axis-consumers");
         const auto original = read_json(root / "profiles/kodak_portra_400.json");
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(root);
         const std::array<Json, 4> axes{Json::array({0.0}), Json::array({-1.0, 0.0, 0.0, 1.0}), Json::array({1.00000004, 1.00000003}), Json::array({-1e40, 0.0, 1e40})};
         JuicerTests::GtestCohort broader_axes_cases("broader-axes", axes.size());
@@ -827,8 +830,8 @@ namespace {
             SCOPED_TRACE(axis.dump());
             auto changed = original;
             changed["data"]["log_exposure"] = axis;
-            save_film(root, changed);
-            Film source(JuicerProcess::root().assets().borrow_rust_assets(), "kodak_portra_400");
+            save_film(owner.borrow().assets, root, changed);
+            Film source(owner.borrow().assets, "kodak_portra_400");
             const FjFilmProfileView sourceView = source.view();
             ASSERT_EQ(sourceView.tables.log_exposure.count, axis.size());
             ASSERT_EQ(sourceView.tables.density_curves_cmy.count, axis.size() * 3);
@@ -839,7 +842,7 @@ namespace {
             FjPreparedStateView preparedState{};
             std::string preparedDiagnostic;
             const bool preparedBuilt = prepared_view(
-                direct_controls(), prepared, preparedState, preparedDiagnostic);
+                owner.borrow().assets, direct_controls(), prepared, preparedState, preparedDiagnostic);
             if (preparedBuilt) {
                 EXPECT_EQ(std::string(preparedState.film_profile_key.data,
                                       preparedState.film_profile_key.count),
@@ -855,7 +858,7 @@ namespace {
             active.dirCouplers.active = true;
             if (axis.size() == 1 || std::isinf(sourceView.tables.log_exposure.data[0])) {
                 std::optional<PreparedState> activePrepared;
-                EXPECT_FALSE(prepared_view(active, activePrepared, preparedState, preparedDiagnostic));
+                EXPECT_FALSE(prepared_view(owner.borrow().assets, active, activePrepared, preparedState, preparedDiagnostic));
                 EXPECT_FALSE(activePrepared.has_value());
                 EXPECT_FALSE(preparedDiagnostic.empty());
             }

@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include "ProcessRuntime.h"
 #include "gtest_cases.h"
 #include "asset_lookup_test.h"
 #include "juicer_cuda_owner.h"
@@ -411,7 +412,7 @@ namespace {
         EXPECT_EQ(reference_value(failed), ReferenceValue{});
         EXPECT_EQ(reference_value(successful), retained);
 
-        JuicerCuda::Owner processOwner;
+        JuicerProcess::ProcessRuntime processOwner;
         processOwner.create(std::filesystem::path(JUICER_LOOKUP_RESOURCE_DIR));
         auto controls = lookup_controls();
         // An earlier development-construction failure must leave the later
@@ -421,7 +422,7 @@ namespace {
         invalid.filmGammaFactor = 0.0f;
         JuicerTestSupport::capture(early, invalid);
         ASSERT_NO_THROW(set_lookup_fault(1));
-        const auto early_failure = JuicerTestSupport::admit(early);
+        const auto early_failure = JuicerTestSupport::admit(processOwner.borrow().assets, early);
         EXPECT_EQ(early_failure.kind, FJ_ADMISSION_PREPARATION_FAILED);
         EXPECT_FALSE(early_failure.state);
         EXPECT_EQ(fj_test_film_reference_lookup_fault_consumed(), 0u);
@@ -429,7 +430,7 @@ namespace {
 
         RenderInstance state;
         JuicerTestSupport::capture(state, controls);
-        const auto initial = JuicerTestSupport::admit(state);
+        const auto initial = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(initial.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(initial.state);
         const PublishedReference old_value = published_reference(initial);
@@ -446,7 +447,7 @@ namespace {
         EXPECT_EQ(unsupported_mode.category, FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(unsupported_mode.api, FJ_API_NONE);
         EXPECT_EQ(unsupported_mode.native_code, 0);
-        const auto rejected = JuicerTestSupport::admit(state);
+        const auto rejected = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         EXPECT_EQ(fj_test_film_reference_lookup_fault_consumed(), 1u);
         EXPECT_EQ(rejected.kind, FJ_ADMISSION_PREPARATION_FAILED);
         EXPECT_FALSE(rejected.state);
@@ -458,25 +459,25 @@ namespace {
         EXPECT_EQ(published_reference(initial), old_value);
 
         JuicerTestSupport::capture(state, controls);
-        const auto reused_old = JuicerTestSupport::admit(state);
+        const auto reused_old = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(reused_old.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(reused_old.state);
         EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*reused_old.state), JuicerTestSupport::PublicationObserver::backing(*initial.state));
         EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).build, previous.build);
 
         JuicerTestSupport::capture(state, changed);
-        const auto retry = JuicerTestSupport::admit(state);
+        const auto retry = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(retry.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(retry.state);
         auto retry_metrics = JuicerTestSupport::PublicationObserver::metrics(state);
         EXPECT_EQ(retry_metrics.inputIdentity, hash_params(changed));
         EXPECT_EQ(retry_metrics.build, previous.build + 1);
-        const auto reused = JuicerTestSupport::admit(state);
+        const auto reused = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(reused.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(reused.state);
         EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*reused.state), JuicerTestSupport::PublicationObserver::backing(*retry.state));
         EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).build, retry_metrics.build);
-        ASSERT_EQ(JuicerProcess::root().assets().release_cached_payloads().category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_legacy_assets_release_cached_payloads(processOwner.borrow().assets, nullptr).category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(published_reference(initial), old_value);
         EXPECT_EQ(processOwner.close().category, FJ_STATUS_SUCCESS);
     }

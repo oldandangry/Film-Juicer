@@ -28,10 +28,9 @@
 
 #include "Cuda/JuicerCudaExecutor.h"
 #include "GamutCompression.h"
-#include "ProcessRoot.h"
-#include "ResourceAssetLibrary.h"
+#include "ProcessRuntime.h"
+#include "test_asset_library.h"
 #include "RustGamutBridge.h"
-#include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 #include "spectral_allocation_probe.h"
@@ -558,7 +557,7 @@ namespace {
     }
 } // namespace
 int main(int argc, char** argv) {
-    JuicerCuda::Owner owner;
+    JuicerProcess::ProcessRuntime runtime;
     try {
         JuicerTests::CaseLog case_log;
         if (argc == 5 && std::string_view(argv[argc - 1]) == "--list-cases") {
@@ -567,7 +566,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         require(argc == 4, "resources, fixture manifest, preset");
-        owner.create(argv[1]);
+        runtime.create(argv[1]);
         std::ifstream input(argv[2]);
         Json manifest;
         input >> manifest;
@@ -675,7 +674,7 @@ int main(int argc, char** argv) {
         JuicerTests::CaseEvent controls_event("output_gamut_cache", "controls");
         controls(argv[1], {b, conflict});
         require(Hooks::violations.load() == 0 && rustAllocations.load() > 0 && rustDestructions.load() > 0, "allocation/free/foreign/format/wait scope controls");
-        status(owner.close(), FJ_STATUS_SUCCESS);
+        status(runtime.close(), FJ_STATUS_SUCCESS);
         controls_event.passed();
         case_log.finish();
         std::puts("W1-W7, own failures/retries, same-generation, mismatch order, exhaustion/precedence/Rust cleanup, destruction scopes and A8 lifetime PASS");

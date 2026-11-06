@@ -133,13 +133,13 @@ FjStatus PreparedState::frame_policy(
 }
 
 FjCallCompletionResult PreparedState::render(
-    FjAssets* assets, FjCudaCallAccess access, const FjFrame& frame, const FjPreparedFramePolicy& policy, FjSubmissionAccess submission, FjAbortCallback abort, FjErrorBuffer& error) const {
+    const FjAssets* assets, FjCudaCallAccess access, const FjFrame& frame, const FjPreparedFramePolicy& policy, FjSubmissionAccess submission, FjAbortCallback abort, FjErrorBuffer& error) const {
     return fj_legacy_prepared_state_render(
         assets, owner_, access, &frame, &policy, submission, abort, &error);
 }
 
 FjCallCompletionResult PreparedState::reject_missing_instance(
-    FjAssets* assets, FjCudaCallAccess access, const FjFrame& frame, FjAbortCallback abort, FjErrorBuffer& error) const {
+    const FjAssets* assets, FjCudaCallAccess access, const FjFrame& frame, FjAbortCallback abort, FjErrorBuffer& error) const {
     return fj_legacy_prepared_unavailable(
         assets, owner_, FJ_UNAVAILABLE_INSTANCE, access, &frame, abort, &error);
 }
@@ -153,13 +153,13 @@ std::uint64_t PreparedState::build() const noexcept {
 }
 
 FjCallCompletionResult reject_missing_render_state(
-    FjAssets* assets, FjCudaCallAccess access, const FjFrame& frame, FjAbortCallback abort, FjErrorBuffer& error) {
+    const FjAssets* assets, FjCudaCallAccess access, const FjFrame& frame, FjAbortCallback abort, FjErrorBuffer& error) {
     return fj_legacy_prepared_unavailable(
         assets, nullptr, FJ_UNAVAILABLE_STATE, access, &frame, abort, &error);
 }
 
 FjStatus prepare_state(
-    FjAssets* assets,
+    const FjAssets* assets,
     const ParamSnapshot& snapshot,
     std::optional<PreparedState>& out,
     FjErrorBuffer& error) {
@@ -307,7 +307,7 @@ FjStatus RenderInstance::invalidate(
 }
 
 FjStatus RenderInstance::admit(
-    FjAssets* assets,
+    const FjAssets* assets,
     std::uint32_t& outKind,
     std::optional<PreparedState>& outState,
     FjErrorBuffer& error) {

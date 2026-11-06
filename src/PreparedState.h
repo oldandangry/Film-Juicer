@@ -32,9 +32,9 @@ public:
 
     FjStatus frame_policy(const FjExtent&, FjPreparedFramePolicy&, FjErrorBuffer&) const;
     FjCallCompletionResult render(
-        FjAssets*, FjCudaCallAccess, const FjFrame&, const FjPreparedFramePolicy&, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer&) const;
+        const FjAssets*, FjCudaCallAccess, const FjFrame&, const FjPreparedFramePolicy&, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer&) const;
     FjCallCompletionResult reject_missing_instance(
-        FjAssets*, FjCudaCallAccess, const FjFrame&, FjAbortCallback, FjErrorBuffer&) const;
+        const FjAssets*, FjCudaCallAccess, const FjFrame&, FjAbortCallback, FjErrorBuffer&) const;
     std::uint64_t input_identity() const noexcept;
     std::uint64_t build() const noexcept;
 
@@ -50,7 +50,7 @@ private:
     std::uint64_t build_ = 0;
 
     friend FjStatus prepare_state(
-        FjAssets*, const ParamSnapshot&, std::optional<PreparedState>&, FjErrorBuffer&);
+        const FjAssets*, const ParamSnapshot&, std::optional<PreparedState>&, FjErrorBuffer&);
     friend class RenderInstance;
     friend class JuicerTestSupport::PublicationObserver;
 };
@@ -109,7 +109,7 @@ public:
         std::uint32_t& outUpdate,
         FjErrorBuffer& error);
     FjStatus admit(
-        FjAssets* assets,
+        const FjAssets* assets,
         std::uint32_t& outKind,
         std::optional<PreparedState>& outState,
         FjErrorBuffer& error);
@@ -125,10 +125,10 @@ private:
 };
 
 FjStatus prepare_state(
-    FjAssets* assets,
+    const FjAssets* assets,
     const ParamSnapshot& snapshot,
     std::optional<PreparedState>& out,
     FjErrorBuffer& error);
 
 FjCallCompletionResult reject_missing_render_state(
-    FjAssets*, FjCudaCallAccess, const FjFrame&, FjAbortCallback, FjErrorBuffer&);
+    const FjAssets*, FjCudaCallAccess, const FjFrame&, FjAbortCallback, FjErrorBuffer&);

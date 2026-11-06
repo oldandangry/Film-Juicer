@@ -51,13 +51,13 @@
 #include <nlohmann/json.hpp>
 
 #include "JuicerEffect.h"
+#include "ProcessRuntime.h"
 #include "JuicerState.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
 #include "PreparedState.h"
 #include "RenderControls.h"
 #include "RenderValues.h"
-#include "ResourceAssetLibrary.h"
 #include "juicer_cuda_owner.h"
 #include "ColorTransforms.h"
 #include "ofxMemory.h"
@@ -144,7 +144,7 @@ namespace JuicerTestSupport {
         }
 
         static PublicationAdmission admit(JuicerEffect& effect) {
-            return JuicerTestSupport::admit(effect._publication);
+            return JuicerTestSupport::admit(effect._runtime.borrow().assets, effect._publication);
         }
         static ParamSnapshot captured(JuicerEffect& effect) {
             return captured_snapshot(effect._publication);
@@ -2503,7 +2503,7 @@ namespace {
         }
     }
 
-    void run_publication_contract_rows() {
+    void run_publication_contract_rows(JuicerProcess::ProcessRuntime& runtime) {
         using Observer = JuicerTestSupport::EffectTraceObserver;
         const std::vector<std::string> ids{
             "older-capture-success", "older-capture-getter-failure", "capturing-admission", "superseded-before-write-grant", "late-initial-gamma-write-success", "late-initial-gamma-write-partial-failure", "late-gamma-write-retained-hold", "partial-preset-failure", "property-failure-after-edits", "current-getter-failure", "initial-getter-failure", "current-capture-allocation", "current-preparation-allocation", "current-development-allocation", "current-preparation-rejection", "obsolete-preparation-allocation", "unrelated-thread-overlap", "another-effect-chain", "overlapping-writes-old-first", "overlapping-writes-new-first", "overlapping-write-first-failure"};
@@ -2549,7 +2549,7 @@ namespace {
             host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(Spektrafilm::ScanRoute::NegativeDirectScan));
             host.set_int_value(JuicerParams::kDirCouplersActive, 1);
             host.set_int_value(JuicerParams::kDirCouplersGammaUseStock, 1);
-            JuicerEffect effect(host.effect_handle());
+            JuicerEffect effect(host.effect_handle(), runtime);
             host.bind_effect(effect);
             DeviceFrame frame;
             const bool initial = id == "superseded-before-write-grant" || id == "late-initial-gamma-write-success" ||
@@ -2854,7 +2854,7 @@ namespace {
                     }
                     fired = true;
                     NativeHost otherHost;
-                    JuicerEffect other(otherHost.effect_handle());
+                    JuicerEffect other(otherHost.effect_handle(), runtime);
                     otherHost.bind_effect(other);
                     otherHost.dispatch_event(other, kParamExposure, OFX::eChangePluginEdit);
                     otherStarted = Observer::metrics(other).issued == 1 && Observer::snapshot(other).pendingValid;
@@ -3493,7 +3493,7 @@ namespace {
         return {{"camera", optics_project(c.controls.cameraDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(c.controls.cameraLensBlurUm)}, {"halation_active", h.active}, {"halation_f32", optics_words(std::array<float, 4>{h.scatterAmount, h.scatterSpatialScale, h.halationAmount, h.halationSpatialScale})}, {"first_sigma_f32", optics_words(c.firstSigmaUm)}, {"primary_f32", optics_words(c.primaryAmount)}, {"enlarger", optics_project(c.controls.enlargerDiffusion)}, {"print", c.print}};
     }
 
-    void check_optics_capture(const std::filesystem::path& grainManifest, const char* preset) {
+    void check_optics_capture(JuicerProcess::ProcessRuntime& runtime, const std::filesystem::path& grainManifest, const char* preset) {
         const auto path = grainManifest.parent_path().parent_path() / "optics-fixtures/manifest.json";
         std::ifstream manifestStream(path);
         require(bool(manifestStream), "optics manifest open");
@@ -3512,7 +3512,7 @@ namespace {
         unsigned visits = 0;
         for (unsigned route = 0; route < 4; ++route) {
             NativeHost host;
-            JuicerEffect effect(host.effect_handle());
+            JuicerEffect effect(host.effect_handle(), runtime);
             host.bind_effect(effect);
             host.set_time(0);
             host.set_str_choice_value(JuicerParams::kFilmProfileKey, route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f");
@@ -3571,7 +3571,7 @@ namespace {
         require(visits == intended.size(), "optics capture visit count matches declared route/input extent");
         std::cout << "PASS adapter/96-frozen-optics-capture-publications-four-routes\n";
     }
-    void check_physical_capture(NativeHost& host, const std::filesystem::path& grainManifest, const char* preset) {
+    void check_physical_capture(JuicerProcess::ProcessRuntime& runtime, NativeHost& host, const std::filesystem::path& grainManifest, const char* preset) {
         const auto manifestPath = grainManifest.parent_path().parent_path() / "effects-fixtures/manifest.json";
         std::ifstream manifestStream(manifestPath);
         require(bool(manifestStream), "effects capture manifest open");
@@ -3590,7 +3590,7 @@ namespace {
                 intended.push_back("route-" + std::to_string(row.at("route").get<unsigned>()) + "/policy-" + std::to_string(policy) + "/index-" + std::to_string(index));
         }
         JuicerTests::Cohort rows("physical_capture", intended);
-        JuicerEffect effect(host.effect_handle());
+        JuicerEffect effect(host.effect_handle(), runtime);
         host.bind_effect(effect);
         host.set_time(0);
         const std::array<const char*, 5> getters{JuicerParams::kFilmDustAmount, JuicerParams::kGateDustAmount, JuicerParams::kFilmScratchAmount, JuicerParams::kGateScratchAmount, JuicerParams::kGateWeaveAmount};
@@ -3683,7 +3683,7 @@ namespace {
             ids.push_back(std::string("shared/") + name);
         return ids;
     }
-    void run_frame_geometry_cases(const FrameGeometryFixturePaths& fixtures, const char* preset, const std::filesystem::path& tracePath) {
+    void run_frame_geometry_cases(JuicerProcess::ProcessRuntime& runtime, const FrameGeometryFixturePaths& fixtures, const char* preset, const std::filesystem::path& tracePath) {
         using namespace JuicerFrame::FrameGeometryTest;
         const auto& manifestPath = fixtures.geometry;
         const auto& halationManifestPath = fixtures.halation;
@@ -3708,7 +3708,7 @@ namespace {
             throw std::runtime_error("missing frozen frame geometry case");
         };
         NativeHost host;
-        JuicerEffect effect(host.effect_handle());
+        JuicerEffect effect(host.effect_handle(), runtime);
         host.bind_effect(effect);
         host.set_time(12.5);
         host.set_double_value(JuicerParams::kCameraFilmFormatMm, 36.0);
@@ -4144,7 +4144,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
             operation_id = "loaded_module";
     }
     JuicerTests::CaseEvent operation("adapter_operation", operation_id);
-    JuicerCuda::Owner cudaOwner;
+    JuicerProcess::ProcessRuntime runtime;
     try {
         if (argc == 5 && (std::string_view(argv[1]) == "--loaded-module" || std::string_view(argv[1]) == "--stream-contract") &&
             std::string_view(argv[3]) == "--trace-output") {
@@ -4155,10 +4155,10 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
             return 0;
         }
         if (argc == 7 && std::string_view(argv[1]) == "--frame-geometry") {
-            cudaOwner.create(JuicerProcess::data_directory());
+            runtime.create(JuicerProcess::data_directory());
             if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess)
                 throw std::runtime_error("CUDA initialization failed");
-            run_frame_geometry_cases({.geometry = argv[2], .halation = argv[5], .diffusion = argv[6]}, argv[3], argv[4]);
+            run_frame_geometry_cases(runtime, {.geometry = argv[2], .halation = argv[5], .diffusion = argv[6]}, argv[3], argv[4]);
             operation.passed();
             case_log.finish();
             return 0;
@@ -4169,16 +4169,16 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                 "--loaded-module MODULE --trace-output PATH");
         }
         const std::filesystem::path tracePath = argv[2];
-        cudaOwner.create(JuicerProcess::data_directory());
+        runtime.create(JuicerProcess::data_directory());
         if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
             throw std::runtime_error("CUDA initialization failed");
         }
         if (argc == 6)
-            check_optics_capture(argv[4], argv[5]);
-        run_publication_contract_rows();
+            check_optics_capture(runtime, argv[4], argv[5]);
+        run_publication_contract_rows(runtime);
         NativeHost host;
         if (argc == 6)
-            check_physical_capture(host, argv[4], argv[5]);
+            check_physical_capture(runtime, host, argv[4], argv[5]);
         ParamSnapshot routeSnapshot;
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
         std::optional<PreparedState> routeProduct;
@@ -4186,7 +4186,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         const auto prepareRoute = [&] {
             std::array<char, 2048> text{};
             FjErrorBuffer error{text.data(), text.size(), 0};
-            const FjStatus status = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(),
+            const FjStatus status = prepare_state(runtime.borrow().assets,
                                                   routeSnapshot,
                                                   routeProduct,
                                                   error);
@@ -4243,7 +4243,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
             RouteFaultTest::fail_on_call(failedCall);
             bool creationFailed = false;
             try {
-                JuicerEffect failedEffect(host.effect_handle());
+                JuicerEffect failedEffect(host.effect_handle(), runtime);
             } catch (const OFX::Exception::Suite&) {
                 creationFailed = true;
             }
@@ -4264,7 +4264,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         const std::array<std::string, 3> recovery_ids{{"1", "2", "3"}};
         JuicerTests::Cohort route_recovery_rows("route_failure_recovery", std::vector<std::string>(recovery_ids.begin(), recovery_ids.end()));
         {
-            JuicerEffect effect(host.effect_handle());
+            JuicerEffect effect(host.effect_handle(), runtime);
             host.bind_effect(effect);
 
             host.set_time(0.0);
@@ -5213,7 +5213,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                         FjErrorBuffer constructorError{
                             constructorText.data(), constructorText.size(), 0};
                         const FjStatus constructorStatus = prepare_state(
-                            JuicerProcess::root().assets().borrow_rust_assets(),
+                            runtime.borrow().assets,
                             failedSnapshot,
                             failedConstructor,
                             constructorError);
@@ -5277,7 +5277,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
                         host.at_time_get_count() == 0,
                     "adapter getter selection was not current-value-only");
         }
-        require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_SUCCESS,
+        require(runtime.shutdown().category == FJ_STATUS_SUCCESS,
                 "adapter terminal shutdown failed");
         host.write_trace(tracePath);
         operation.passed();
@@ -5297,11 +5297,11 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL adapter trace: " << error.what() << '\n';
-        fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+        runtime.shutdown();
         return 1;
     } catch (...) {
         std::cerr << "FAIL adapter trace: unknown exception\n";
-        fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+        runtime.shutdown();
         return 1;
     }
 } catch (const std::exception& error) {

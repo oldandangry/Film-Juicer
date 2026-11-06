@@ -183,7 +183,7 @@ namespace ScannerPostTest {
         lifetime_event.passed();
     }
     void callers(const std::filesystem::path& resources, const Json& rows) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
         for (unsigned route = 0; route < 4; ++route) {
             JuicerTests::CaseEvent route_event("cpp", "scanner-post/route/" + std::to_string(route));
@@ -199,19 +199,19 @@ namespace ScannerPostTest {
             controls.scannerLensBlurSigmaPx = source.lens_blur_sigma_px;
             controls.scannerUnsharpMask = {source.unsharp_sigma_px, source.unsharp_amount};
             controls.glareActive = source.glare_active != 0;
-            auto product = JuicerTestSupport::prepare_product(controls);
+            auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
             const auto initial = view.scanner_post_effects;
             require(project(initial) == rows.at(rowIndex).at("native").at("descriptor"), "actual route schedule complete post product");
             controls.scannerLensBlurSigmaPx = 2.0;
-            auto changedProduct = JuicerTestSupport::prepare_product(controls);
+            auto changedProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView changed{};
             status(changedProduct.view(changed, error));
             require(changed.scanner_post_effects.hash != initial.hash && changed.scanner_lut.hash == view.scanner_lut.hash, "post-only change preserves actual LUT descriptor dependency");
             controls.scannerLensBlurSigmaPx = source.lens_blur_sigma_px;
-            auto warmProduct = JuicerTestSupport::prepare_product(controls);
+            auto warmProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView warm{};
             status(warmProduct.view(warm, error));
             require(project(warm.scanner_post_effects) == project(initial), "warm route constructor preserves complete post identity");
@@ -220,7 +220,7 @@ namespace ScannerPostTest {
             const auto prepare = [&](std::optional<PreparedState>& out, std::array<char, 2048>& text) {
                 FjErrorBuffer prepareError{text.data(), text.size(), 0};
                 return prepare_state(
-                    JuicerProcess::root().assets().borrow_rust_assets(),
+                    owner.borrow().assets,
                     controls,
                     out,
                     prepareError);
@@ -238,7 +238,7 @@ namespace ScannerPostTest {
             post = postFailure.category == FJ_STATUS_INTERNAL_FAILURE && !failedProduct;
             require(post && std::string_view(failureText.data()) == "asset boundary panic", "actual post failure retains typed timing and leaves later frame stages unbuilt");
             require(post, "every warm route invocation visits post constructor");
-            auto recoveredProduct = JuicerTestSupport::prepare_product(controls);
+            auto recoveredProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
             FjPreparedStateView recovered{};
             status(recoveredProduct.view(recovered, error));
             require(project(recovered.scanner_post_effects) == project(initial), "actual route recovers after one-shot failure");

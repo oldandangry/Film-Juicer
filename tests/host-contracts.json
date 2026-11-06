@@ -9,18 +9,15 @@
   "targets": {
     "JuicerCudaAbiTests": {
       "protocol": "custom",
-      "registrations": 1,
-      "cuda_free": true
+      "registrations": 1
     },
     "JuicerProfileOwnerTests": {
       "protocol": "gtest",
-      "registrations": 1,
-      "cuda_free": true
+      "registrations": 1
     },
     "JuicerSpectralOwnerTests": {
       "protocol": "gtest",
-      "registrations": 1,
-      "cuda_free": true
+      "registrations": 1
     },
     "JuicerNoiseOwnerTests": {
       "protocol": "gtest",
@@ -64,8 +61,7 @@
     },
     "JuicerRouteBridgeTests": {
       "protocol": "custom",
-      "registrations": 1,
-      "cuda_free": true
+      "registrations": 1
     },
     "JuicerHashContractTests": {
       "protocol": "gtest",

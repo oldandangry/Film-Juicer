@@ -21,12 +21,12 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "GamutCompression.h"
 #include "ProcessRoot.h"
-#include "ResourceAssetLibrary.h"
+#include "ProcessRuntime.h"
+#include "test_asset_library.h"
 #include "RenderValues.h"
 #include "JuicerState.h"
 #include "RustGamutBridge.h"
 #include "SpectralData.h"
-#include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 #include "PreparedState.h"
@@ -42,8 +42,8 @@
 #undef FJ_HULL_FIELD
 
 extern "C" FjStatus fj_test_input_hull_abi_c(const FjInputHullSource*, FjInputHull*, FjErrorBuffer*);
-void fj_test_input_hull_products(const nlohmann::json&, const std::filesystem::path&);
-void fj_test_input_hull_admission(std::uint32_t fault);
+void fj_test_input_hull_products(const FjAssets*, const nlohmann::json&, const std::filesystem::path&);
+void fj_test_input_hull_admission(const FjAssets*, std::uint32_t fault);
 
 
 namespace {
@@ -621,11 +621,11 @@ int main(int argc, char** argv) {
         else if (mode == "binding")
             binding(fixture);
         else {
-            JuicerCuda::Owner owner;
-            owner.create(argv[2]);
+            JuicerProcess::ProcessRuntime runtime;
+            runtime.create(argv[2]);
             if (mode == "products") {
                 JuicerTests::CaseEvent event("input_hull", mode);
-                fj_test_input_hull_products(fixture, directory / member["tables"].get<std::string>());
+                fj_test_input_hull_products(runtime.borrow().assets, fixture, directory / member["tables"].get<std::string>());
                 event.passed();
             } else if (mode == "cache") {
                 JuicerTests::CaseEvent event("input_hull", mode);
@@ -633,12 +633,12 @@ int main(int argc, char** argv) {
                 event.passed();
             } else if (mode.starts_with("admission-")) {
                 JuicerTests::CaseEvent event("input_hull", mode);
-                fj_test_input_hull_admission(static_cast<std::uint32_t>(std::stoul(mode.substr(10))));
+                fj_test_input_hull_admission(runtime.borrow().assets, static_cast<std::uint32_t>(std::stoul(mode.substr(10))));
                 event.passed();
             } else
                 throw std::runtime_error("unknown input hull case");
             JuicerTests::CaseEvent close_event("input_hull", "owner_close");
-            status(owner.close(), FJ_STATUS_SUCCESS);
+            status(runtime.close(), FJ_STATUS_SUCCESS);
             close_event.passed();
         }
         std::puts("PASS input hull contract");

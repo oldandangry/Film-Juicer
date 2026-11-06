@@ -209,7 +209,7 @@ namespace EffectsFrameTest {
                 {"strength_max", std::bit_cast<std::uint32_t>(v.strength_max)}};
     }
     Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
         std::size_t expectedIndex = 0;
@@ -229,7 +229,7 @@ namespace EffectsFrameTest {
                 params.gateDustAmount = scalar(spec.at("amounts")[2]);
                 params.gateScratchAmount = scalar(spec.at("amounts")[3]);
                 params.gateWeaveAmount = wide(spec.at("weave"));
-                auto product = JuicerTestSupport::prepare_product(params);
+                auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
                 FjPreparedStateView view{};
                 FjErrorBuffer viewError{};
                 status(product.view(view, viewError));

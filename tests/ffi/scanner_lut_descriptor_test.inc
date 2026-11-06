@@ -11,8 +11,7 @@ namespace ScannerDescriptorTest {
             out.push_back(static_cast<char>(byte.get<unsigned>()));
         return out;
     }
-    Json prepared_input(const FjPreparedStateView& prepared, std::string_view observer) {
-        auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+    Json prepared_input(const FjPreparedStateView& prepared, std::string_view observer, const FjAssets* assets) {
         require(assets != nullptr, "prepared scanner descriptor has process Rust assets");
         FjFilmProfile* filmOwner = nullptr;
         FjPrintProfile* printOwner = nullptr;
@@ -88,7 +87,7 @@ namespace ScannerDescriptorTest {
         return result;
     }
     Json products(const std::filesystem::path& resources, const Json& expected) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
         Json rows = Json::array();
         for (unsigned r = 0; r < 4; ++r) {
@@ -97,11 +96,11 @@ namespace ScannerDescriptorTest {
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             std::optional<PreparedState> product;
-            const auto result = prepare_state(JuicerProcess::root().assets().borrow_rust_assets(), params, product, error);
+            const auto result = prepare_state(owner.borrow().assets, params, product, error);
             require(result.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
             FjPreparedStateView view{};
             status(product->view(view, error));
-            const auto value = prepared_input(view, "CIE1931_2deg");
+            const auto value = prepared_input(view, "CIE1931_2deg", owner.borrow().assets);
             const Json described{{"success", true}, {"exception", false}, {"diagnostic", ""}, {"descriptor", project(describe(value))}};
             rows.push_back({{"route", r}, {"input", value}, {"native", described}, {"snapshot_hash", hash_params(params)}, {"final_hash", view.recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"upload_hash", view.upload_core_hash}});
             require(rows.back() == expected.at(r), "actual route descriptor product matches its frozen row");
@@ -369,7 +368,7 @@ namespace ScannerDescriptorTest {
         lifetime_event.passed();
     }
     void callers(const std::filesystem::path& resources) {
-        JuicerCuda::Owner owner;
+        JuicerProcess::ProcessRuntime owner;
         owner.create(resources);
         struct ClearReferenceFault {
             ~ClearReferenceFault() {
@@ -389,7 +388,7 @@ namespace ScannerDescriptorTest {
             std::array<char, 2048> message{};
             FjErrorBuffer error{message.data(), message.size(), 0};
             std::optional<PreparedState> prepared;
-            auto* const assets = JuicerProcess::root().assets().borrow_rust_assets();
+            const auto* const assets = owner.borrow().assets;
             auto preparedStatus = prepare_state(assets, controls, prepared, error);
             require(preparedStatus.category == FJ_STATUS_PREPARATION_FAILURE && !prepared,
                     "actual Rust owner rejects the early scanner descriptor fault");
@@ -420,7 +419,7 @@ namespace ScannerDescriptorTest {
                     "actual Rust state construction recovers after both one-shot faults");
             FjPreparedStateView actual{};
             status(prepared->view(actual, error));
-            const auto described = describe(prepared_input(actual, "CIE1931_2deg_380_780_5nm"));
+            const auto described = describe(prepared_input(actual, "CIE1931_2deg_380_780_5nm", assets));
             require(project(actual.scanner_lut) == project(described),
                     "actual held-state scanner descriptor matches the raw descriptor consumer");
 

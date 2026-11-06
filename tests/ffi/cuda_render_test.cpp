@@ -271,7 +271,8 @@ namespace {
 } // namespace
 
 namespace JuicerCudaTest {
-    void check_prepared_state_lifetime(std::optional<PreparedState>& owner, FjAssets* assets, FjCuda* cuda, const FjCudaContext& context, const FjFrame& inputFrame, const FjSubmission& submission, FjPreparedHostData& prepared, FjErrorBuffer* error, StateLifetimeCase lifetimeCase) {
+    void check_prepared_state_lifetime(std::optional<PreparedState>& owner, const FjAssets* assets, FjCuda* cuda, const FjCudaContext& context, const FjFrame& inputFrame, const FjSubmission& submission, FjPreparedHostData& prepared, FjErrorBuffer* error, StateLifetimeCase lifetimeCase) {
+        JuicerProcess::Root& root = JuicerCuda::borrow_root(cuda);
         require(prepared.spatial_dir.hash != 0 && prepared.optics.flags == 0 && prepared.grain.hash == 0 && prepared.effects.hash == 0, "held-state lifetime retains active spatial DIR");
         const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
         const auto route = prepared.route;
@@ -284,7 +285,7 @@ namespace JuicerCudaTest {
             frame.flags &= ~FJ_FRAME_STREAM_PRESENT;
         JuicerCuda::RenderTest::ExpiringUpload upload;
         upload.lifetimeCase = lifetimeCase;
-        upload.resources = JuicerProcess::TestSupport::RootLifetimeObserver::resources(JuicerProcess::root(), key);
+        upload.resources = JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, key);
         require(upload.resources != nullptr, "held-state expiry has native resources");
         std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deferredLedger;
         if (lifetimeCase == StateLifetimeCase::DeferredDestruction) {
@@ -376,7 +377,7 @@ namespace JuicerCudaTest {
         } else if (lifetimeCase == StateLifetimeCase::IdleRetirement) {
             const std::weak_ptr<JuicerCuda::Resources> nativeOwner = upload.resources;
             std::string diagnostic;
-            require(JuicerProcess::root().retire_idle_context(context.device_id, reinterpret_cast<void*>(context.context), diagnostic), "retire native owner after Rust state expiry");
+            require(root.retire_idle_context(context.device_id, reinterpret_cast<void*>(context.context), diagnostic), "retire native owner after Rust state expiry");
             require(!nativeOwner.expired(), "test retains native retirement owner independently of Rust state");
             upload.resources.reset();
             require(nativeOwner.expired(), "final native retirement owner released");
@@ -553,6 +554,7 @@ namespace JuicerCudaTest {
     }
 
     FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error, const std::string& invocationContext) {
+        JuicerProcess::Root& root = JuicerCuda::borrow_root(cuda);
         constexpr FjStatus unsupported{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
         constexpr FjStatus preparationFailure{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         constexpr FjStatus success{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
@@ -563,10 +565,10 @@ namespace JuicerCudaTest {
         };
         AbortQuery beforeEnqueue;
         beforeEnqueue.cancelAt = 1;
-        require(JuicerProcess::TestSupport::RootLifetimeObserver::fences(JuicerProcess::root()) == 0, "cold cancellation starts without resources");
+        require(JuicerProcess::TestSupport::RootLifetimeObserver::fences(root) == 0, "cold cancellation starts without resources");
         require_status(render({AbortQuery::query, &beforeEnqueue}), cancelled, "cancel before first preparation");
         require(beforeEnqueue.calls == 1 && beforeEnqueue.sameThread, "pre-enqueue callback");
-        require(JuicerProcess::TestSupport::RootLifetimeObserver::fences(JuicerProcess::root()) == 0, "pre-enqueue cancellation created no frame fence");
+        require(JuicerProcess::TestSupport::RootLifetimeObserver::fences(root) == 0, "pre-enqueue cancellation created no frame fence");
         constexpr std::array<const char*, 7> argumentFaultIds{"null-owner", "null-context", "null-frame", "null-submission", "null-prepared", "malformed-error-buffer", "null-error-output"};
         JuicerTests::Cohort argumentFaults(invocationContext + "/render-null-arguments", std::vector<std::string>(argumentFaultIds.begin(), argumentFaultIds.end()));
         for (int fault = 0; fault < 7; ++fault) {
@@ -882,7 +884,7 @@ namespace JuicerCudaTest {
                     // The accepted scratch-shed path may synchronize on abort.
                     // Otherwise every outstanding frame must retain its fence.
                     if (completion == cudaErrorNotReady) {
-                        require(JuicerProcess::TestSupport::RootLifetimeObserver::fences(JuicerProcess::root()) != 0, "aborted frame retains its use fence");
+                        require(JuicerProcess::TestSupport::RootLifetimeObserver::fences(root) != 0, "aborted frame retains its use fence");
                     }
                     std::cout << "cancel checkpoint=" << checkpoint << " completed=" << (completion == cudaSuccess) << '\n';
                 }
@@ -955,7 +957,7 @@ namespace JuicerCudaTest {
             auto row = uploadStorage.case_event(uploadStorageIds[storageIndex]);
             const JuicerCuda::ResourceManager::DeviceContextKey uploadKey{context.device_id, reinterpret_cast<void*>(context.context)};
             JuicerCuda::RenderTest::ExpiringUpload upload;
-            upload.resources = JuicerProcess::TestSupport::RootLifetimeObserver::resources(JuicerProcess::root(), uploadKey);
+            upload.resources = JuicerProcess::TestSupport::RootLifetimeObserver::resources(root, uploadKey);
             require(upload.resources != nullptr, "expiry has a real native resource owner");
             upload.stream = reinterpret_cast<cudaStream_t>(frame.stream);
             require(cudaMalloc(&upload.first, upload.kBytes) == cudaSuccess &&
@@ -1031,7 +1033,7 @@ namespace JuicerCudaTest {
         require(JuicerCuda::ResourceManager::registry_note_submission_end(key), "end epoch observation");
         require(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame.stream)) == cudaSuccess, "complete before idle retirement");
         std::string retirement;
-        require(JuicerProcess::root().retire_idle_context(context.device_id, reinterpret_cast<void*>(context.context), retirement), "retire idle resources without resetting host context");
+        require(root.retire_idle_context(context.device_id, reinterpret_cast<void*>(context.context), retirement), "retire idle resources without resetting host context");
         require_status(render(), success, "render after native epoch transition");
         JuicerCuda::ResourceManager::RegistryContextSnapshot newEpoch;
         require(JuicerCuda::ResourceManager::registry_begin_submission(key, newEpoch), "observe replacement epoch");

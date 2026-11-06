@@ -1,6 +1,5 @@
 #pragma once
 
-#include <filesystem>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -8,13 +7,16 @@
 #include "juicer_cuda_api.h"
 
 struct FjHostPreparation;
+namespace JuicerProcess {
+    class Root;
+}
 
 namespace JuicerCuda {
 
     struct PendingContextLossRecovery;
 
-    // Callback-local borrow of the registered owner; never constructs one.
-    FjCuda* borrowed_owner() noexcept;
+    // Callback-local binding from the supplied registered handle; never creates.
+    JuicerProcess::Root& borrow_root(FjCuda* cuda);
 
     // Registration/reentry precheck only: no lock, reservation or lifecycle admission.
     void check_native_call_admission(FjCuda* cuda);
@@ -30,6 +32,8 @@ namespace JuicerCuda {
         ~NativeCall();
         NativeCall(const NativeCall&) = delete;
         NativeCall& operator=(const NativeCall&) = delete;
+
+        JuicerProcess::Root& root() const noexcept;
 
         FjStatus inspect(const FjFrame* frame, FjCudaContext* outContext, FjErrorBuffer* error);
 
@@ -56,29 +60,9 @@ namespace JuicerCuda {
         void after_construct();
         void before_owner_lock();
         void before_shutdown();
-        void before_host_cleanup() noexcept;
         void before_retire_instance();
         void owner_destroyed() noexcept;
     } // namespace TerminalTest
 #endif
-
-    // Temporary C++ runtime holder; replaced by the Rust owner at its cutover.
-    // Host load/unload excludes all asset/options/profile readers, outstanding
-    // borrowed views, and render/preparation calls from legal terminal close.
-    class Owner final {
-    public:
-        Owner() noexcept = default;
-        ~Owner();
-
-        Owner(const Owner&) = delete;
-        Owner& operator=(const Owner&) = delete;
-
-        void create(const std::filesystem::path& dataDirectory);
-        // Consumes the handle even on failure; destruction never retries it.
-        FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
-
-    private:
-        FjCuda* _cuda = nullptr;
-    };
 
 } // namespace JuicerCuda

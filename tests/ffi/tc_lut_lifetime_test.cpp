@@ -9,8 +9,7 @@
 #include <thread>
 
 #include "JuicerState.h"
-#include "ProcessRoot.h"
-#include "ResourceAssetLibrary.h"
+#include "ProcessRuntime.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
@@ -55,11 +54,11 @@ namespace {
         p.inputCompressionEnabled = 0;
         return p;
     }
-    void publication(bool positive, bool fromPrint, int action) {
+    void publication(JuicerProcess::ProcessRuntime& runtime, bool positive, bool fromPrint, int action) {
         RenderInstance instance;
         auto p = snapshot(positive, fromPrint);
         JuicerTestSupport::capture(instance, p);
-        auto publication = JuicerTestSupport::admit(instance);
+        auto publication = JuicerTestSupport::admit(runtime.borrow().assets, instance);
         require(publication.kind == FJ_ADMISSION_READY && publication.state, "initial actual publication");
         const auto initialMetrics = JuicerTestSupport::PublicationObserver::metrics(instance);
         Witness observation;
@@ -73,7 +72,7 @@ namespace {
         if (action == 2) {
             require(fj_test_tc_lut_arm_fault(1, 1, 4).category == FJ_STATUS_SUCCESS, "ordinary failure injection");
             JuicerTestSupport::capture(instance, p);
-            const auto failed = JuicerTestSupport::admit(instance);
+            const auto failed = JuicerTestSupport::admit(runtime.borrow().assets, instance);
             require(failed.delivery.category == FJ_STATUS_PREPARATION_FAILURE &&
                         failed.kind == FJ_ADMISSION_PREPARATION_FAILED && !failed.state,
                     "TC production failure is returned without admitting the retained previous state");
@@ -85,7 +84,7 @@ namespace {
             require(current_pointer(*publication.state) == observation.wanted,
                     "admitted TC backing remains readable after current preparation failure");
             JuicerTestSupport::capture(instance, snapshot(positive, fromPrint));
-            auto reused = JuicerTestSupport::admit(instance);
+            auto reused = JuicerTestSupport::admit(runtime.borrow().assets, instance);
             require(reused.kind == FJ_ADMISSION_READY && reused.state &&
                         JuicerTestSupport::PublicationObserver::metrics(instance).build == initialMetrics.build &&
                         JuicerTestSupport::PublicationObserver::metrics(instance).backingIdentity == initialMetrics.backingIdentity,
@@ -95,7 +94,7 @@ namespace {
         }
 
         JuicerTestSupport::capture(instance, p);
-        auto replacement = JuicerTestSupport::admit(instance);
+        auto replacement = JuicerTestSupport::admit(runtime.borrow().assets, instance);
         require(replacement.kind == FJ_ADMISSION_READY && replacement.state, "successful replacement admission");
         const auto replacementMetrics = JuicerTestSupport::PublicationObserver::metrics(instance);
         require(replacementMetrics.build == initialMetrics.build + 1 &&
@@ -141,11 +140,11 @@ namespace {
                 "retired TC handle is released after replacement while the new handle remains live");
         std::printf("F1 positive=%d from_print=%d action=%d release_count=1 state_lock_free=1\n", positive, fromPrint, action);
     }
-    void retained_reader() {
+    void retained_reader(JuicerProcess::ProcessRuntime& runtime) {
         RenderInstance instance;
         auto p = snapshot(false, false);
         JuicerTestSupport::capture(instance, p);
-        auto held = JuicerTestSupport::admit(instance);
+        auto held = JuicerTestSupport::admit(runtime.borrow().assets, instance);
         require(held.kind == FJ_ADMISSION_READY && held.state, "retained initial");
         FjPreparedStateView view{};
         std::array<char, 2048> diagnostic{};
@@ -156,11 +155,11 @@ namespace {
         require(samples.count == std::size_t{192} * 192u * 4u, "retained complete TC LUT span");
         p.cameraExposureCompensationEv += .5;
         JuicerTestSupport::capture(instance, p);
-        auto replacement = JuicerTestSupport::admit(instance);
+        auto replacement = JuicerTestSupport::admit(runtime.borrow().assets, instance);
         require(replacement.kind == FJ_ADMISSION_READY && replacement.state, "retained replacement");
         FjPreparedStateView retained{};
         require(held.state->view(retained, error).category == FJ_STATUS_SUCCESS && retained.film_exposure.tc_lut_rgba.data == address, "retained original allocation");
-        require(JuicerProcess::root().assets().release_cached_payloads().category == FJ_STATUS_SUCCESS, "cache release");
+        require(fj_legacy_assets_release_cached_payloads(runtime.borrow().assets, &error).category == FJ_STATUS_SUCCESS, "cache release");
         std::array<float, 3> rgb{};
         const std::array<float, 3> xyz{1, 0, 0};
         require(fj_legacy_reconstruction_sample_tc_lut(retained.film_exposure.tc_lut_rgba, xyz.data(), rgb.data(), &error).category == FJ_STATUS_SUCCESS, "retained sampling after replacement/cache release");
@@ -182,20 +181,20 @@ int main(int argc, char** argv) {
             return 0;
         }
         require(argc == 2, "resource root required");
-        JuicerCuda::Owner owner;
-        owner.create(argv[1]);
+        JuicerProcess::ProcessRuntime runtime;
+        runtime.create(argv[1]);
         for (bool positive : {false, true})
             for (bool print : {false, true})
                 for (int action = 0; action < 3; ++action) {
                     const std::string route = std::string(positive ? "positive_" : "negative_") + (print ? "print" : "direct");
                     JuicerTests::CaseEvent event("tc_lut_lifetime", route + ".publication." + std::to_string(action));
-                    publication(positive, print, action);
+                    publication(runtime, positive, print, action);
                     event.passed();
                 }
         JuicerTests::CaseEvent retained_event("tc_lut_lifetime", "retained_reader");
-        retained_reader();
+        retained_reader(runtime);
         retained_event.passed();
-        require(owner.close().category == FJ_STATUS_SUCCESS, "close host owner");
+        require(runtime.close().category == FJ_STATUS_SUCCESS, "close Runtime");
         case_log.finish();
         return 0;
     } catch (const std::exception& error) {

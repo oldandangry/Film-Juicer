@@ -161,6 +161,10 @@ def execute(arguments):
     out = arguments.artifacts.resolve()
     out.mkdir(parents=True, exist_ok=True)
     commands = []
+    probe_header_directory = build / "production-probes"
+    probe_header_directory.mkdir(parents=True, exist_ok=True)
+    probe_expected_header = probe_header_directory / "production-film-expected.h"
+    shutil.copyfile(out / "production-film-expected.h", probe_expected_header)
 
     def run(name, command, timeout=None):
         result = subprocess.run(command, cwd=root, capture_output=True, timeout=timeout)
@@ -223,7 +227,7 @@ def execute(arguments):
     build_hashes.update({
         str(path): digest(path)
         for path in [production_features, production_stamp, native, archive, module, prepared_executable,
-                     *([build / "juicer.pdb"] if windows else [])]
+                     probe_expected_header, *([build / "juicer.pdb"] if windows else [])]
     })
     processor_fixture = root / "tests/ofx/fixtures/exposure" / f"processor-{arguments.preset}.dat"
     print_updates = root / "tests/print/illuminant-fixtures/product-updates.json"
@@ -236,7 +240,7 @@ def execute(arguments):
                       fixtures / "production-film.c.in",
                       fixtures / "production-output-color.c.in", fixtures / "grain_frame_abi_assertions.inc",
                       fixtures / "grain_probe_contract.py", Path(__file__),
-                      out / "production-film-expected.h"]
+                      out / "production-film-expected.h", probe_expected_header]
     for directory in [root / "Resources", root / "tests/film/fixtures",
                       root / "tests/film/input-fixtures", root / "tests/film/dir-fixtures"]:
         consumed_paths.extend(path for path in directory.rglob("*") if path.is_file())
@@ -373,8 +377,9 @@ def execute(arguments):
         scan(module, "module-symbols", "llvm-nm", ["--defined-only", "--demangle"])
     assert sorted(module_export_names) == sorted(PRODUCTION_MODULE_EXPORTS), module_export_names
     probes = [
-        ("film", fixtures / "production-film.c.in"),
-        ("accepted-output-color", fixtures / "production-output-color.c.in"),
+        ("film", fixtures / "production-film.c.in", "JuicerProductionFilmProbe"),
+        ("accepted-output-color", fixtures / "production-output-color.c.in",
+         "JuicerProductionOutputColorProbe"),
     ]
     probe_records = []
     grain_results = []
@@ -394,60 +399,39 @@ def execute(arguments):
     effects_frame_results = []
     reference_results = []
     prepared_state_results = []
-    for name, source in probes:
-        executable = out / (name + suffix)
+    for name, source, target in probes:
+        executable = build / "tests/bin" / (target + suffix)
         target_source = out / (name + ".c")
         target_source.write_bytes(source.read_bytes())
-        source = target_source
         source_sha256 = digest(source)
+        source_entry = next(
+            (row for row in compdb if Path(row["file"]).resolve() == source.resolve()), None
+        )
+        assert source_entry is not None, f"missing compile command for C11 probe source {source}"
+        compile_command = source_entry.get("command")
+        if compile_command is None:
+            compile_command = " ".join(source_entry["arguments"])
+        compiler = (source_entry.get("arguments") or [None])[0]
+        if compiler is None:
+            compiler_match = re.match(r'^\s*(?:"([^"]+)"|(\S+))', compile_command)
+            assert compiler_match is not None, (target, compile_command)
+            compiler = compiler_match.group(1) or compiler_match.group(2)
+        normalized_command = compile_command.replace("\\", "/").lower()
+        assert re.search(r"(?:[/-]std:c11|-std=c11)", normalized_command), (target, compile_command)
         if windows:
-            command = [
-                str(llvm / "clang-cl.exe"),
-                "/nologo",
-                "/TC",
-                "/std:c11",
-                "/MD",
-                "/W4",
-                "/WX",
-                "/Inative",
-                "/Itests/ffi",
-                "/I" + str(out),
-                str(source),
-                "/Fe:" + str(executable),
-                "/Fo:" + str(out / (name + ".obj")),
-                "/link",
-                str(archive),
-                "kernel32.lib",
-                "ntdll.lib",
-                "userenv.lib",
-                "ws2_32.lib",
-                "dbghelp.lib",
-                "advapi32.lib",
-                "/defaultlib:msvcrt",
-            ]
+            assert "clang-cl" in normalized_command, (target, compile_command)
+            assert re.search(r"(?:^|\s)[/-]tc(?:\s|$)", normalized_command), (target, compile_command)
+            assert all(flag in normalized_command for flag in ("/w4", "/wx", "/od", "/ob0", "/undebug")), (target, compile_command)
         else:
-            command = [
-                "gcc-13",
-                "-std=c11",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                "-Inative",
-                "-Itests/ffi",
-                "-I" + str(out),
-                str(source),
-                str(archive),
-                "-lgcc_s",
-                "-lutil",
-                "-lrt",
-                "-lpthread",
-                "-lm",
-                "-ldl",
-                "-lc",
-                "-o",
-                str(executable),
-            ]
-        run(name + "-compile", command)
+            assert re.search(r"(?:^|[/ ])gcc-?13(?:[ /]|$)", normalized_command), (target, compile_command)
+            assert re.search(r"(?:^|\s)-x\s+c(?:\s|$)", normalized_command), (target, compile_command)
+            assert all(flag in normalized_command for flag in ("-wall", "-wextra", "-werror", "-o0", "-undebug")), (target, compile_command)
+        assert str(probe_header_directory).replace("\\", "/").lower() in normalized_command, (
+            target, "generated expected-header include directory missing from compile command"
+        )
+        run(name + "-compile", ["cmake", "--build", str(build), "--config", "Release",
+                                 "--target", target, "--verbose"])
+        build_hashes[str(executable)] = digest(executable)
         linked = digest(executable)
         before = digest(executable)
         assert before == linked
@@ -458,12 +442,22 @@ def execute(arguments):
         )
         after = digest(executable)
         assert after == before
-        assert digest(source) == source_sha256, "generated probe source changed during execution"
+        assert digest(source) == source_sha256, "tracked probe source changed during execution"
+        assert digest(target_source) == source_sha256, "C11 source evidence copy changed"
         probe_records.append({"name": name, "executable": str(executable),
                               "linked_sha256": linked, "before_run_sha256": before,
                               "after_run_sha256": after, "source": str(source),
-                              "source_sha256": source_sha256, "archive": str(archive),
-                              "archive_sha256": build_hashes[str(archive)]})
+                              "source_sha256": source_sha256,
+                              "source_evidence_copy": str(target_source),
+                              "source_evidence_copy_sha256": digest(target_source),
+                              "compiler": compiler,
+                              "compile_command": compile_command,
+                              "compile_command_sha256": hashlib.sha256(compile_command.encode()).hexdigest(),
+                              "archive": str(archive), "archive_sha256": build_hashes[str(archive)],
+                              "native_archive": str(native), "native_archive_sha256": build_hashes[str(native)],
+                              "cmake_target": target,
+                              "expected_header": str(probe_expected_header),
+                              "expected_header_sha256": build_hashes[str(probe_expected_header)]})
         if name == "film":
             prepared_state_results = [json.loads(line.removeprefix("PREPARED_STATE_RESULT "))
                                       for line in output.splitlines() if line.startswith("PREPARED_STATE_RESULT ")]

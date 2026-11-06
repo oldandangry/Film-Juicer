@@ -10,8 +10,7 @@
 
 #include "JuicerState.h"
 #include "PreparedState.h"
-#include "ProcessRoot.h"
-#include "ResourceAssetLibrary.h"
+#include "ProcessRuntime.h"
 #include "juicer_test_api.h"
 
 namespace JuicerTestSupport {
@@ -228,12 +227,12 @@ namespace JuicerTestSupport {
         }
     }
 
-    inline PublicationAdmission admit(RenderInstance& publication) {
+    inline PublicationAdmission admit(const FjAssets* assets, RenderInstance& publication) {
         std::array<char, 2048> text{};
         FjErrorBuffer error{text.data(), text.size(), 0};
         PublicationAdmission result;
         std::optional<PreparedState> state;
-        result.delivery = publication.admit(JuicerProcess::root().assets().borrow_rust_assets(), result.kind, state, error);
+        result.delivery = publication.admit(assets, result.kind, state, error);
         result.diagnostic.assign(text.data(), error.length);
         if (result.delivery.category == FJ_STATUS_ALLOCATION_FAILURE) {
             throw std::bad_alloc();
@@ -256,8 +255,7 @@ namespace JuicerTestSupport {
         return view;
     }
 
-    inline PreparedState prepare_product(const ParamSnapshot& snapshot) {
-        auto* assets = JuicerProcess::root().assets().borrow_rust_assets();
+    inline PreparedState prepare_product(const FjAssets* assets, const ParamSnapshot& snapshot) {
         if (assets == nullptr)
             throw std::runtime_error("prepared product has no process Rust assets owner");
 
