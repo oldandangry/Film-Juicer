@@ -172,6 +172,10 @@ publication. NativeSubmissionState/temporal/latch work remains S5.D; capture/UI 
 adapter replacement remain S6. Full S5 and installed-host/Resolve acceptance are
 not established. MultiDevice remains optional and unexecuted.
 
+`Ffi.Host.OfxAbi` supplies the independent C11/C++20/Rust OFX declaration
+boundary in six cases. It is a product-linked host registration; see the
+[FFI inventory and maintenance guide](ffi/README.md#ofx-c-abi-evidence).
+
 ## Validation cadence
 
 Choose checks from the changed contract and the checkpoint being completed.

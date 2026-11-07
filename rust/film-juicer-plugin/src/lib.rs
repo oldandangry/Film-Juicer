@@ -13,6 +13,7 @@ mod test_cases;
 mod legacy_bridge;
 
 mod cuda;
+mod ofx;
 
 mod asset_catalog;
 

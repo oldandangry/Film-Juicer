@@ -128,6 +128,19 @@ if(NOT JUICER_CUDA_FREE_TESTS)
     add_test(NAME Ffi.Host.CudaAbi COMMAND JuicerCudaAbiTests)
     set_tests_properties(Ffi.Host.CudaAbi PROPERTIES LABELS "host" TIMEOUT 0)
 
+    add_executable(JuicerOfxAbiTests ffi/ofx_abi_c.c ffi/ofx_abi_test.cpp)
+    set_target_properties(JuicerOfxAbiTests PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(JuicerOfxAbiTests PRIVATE "${JUICER_TEST_ROOT}/native")
+    target_link_libraries(JuicerOfxAbiTests PRIVATE film_juicer_rust_test_support juicer_ofx_headers)
+    if(WIN32)
+        target_compile_options(JuicerOfxAbiTests PRIVATE /W3 /WX)
+    else()
+        target_compile_options(JuicerOfxAbiTests PRIVATE -Wall -Wextra -Werror -pedantic-errors)
+    endif()
+    add_test(NAME Ffi.Host.OfxAbi COMMAND JuicerOfxAbiTests)
+    set_tests_properties(Ffi.Host.OfxAbi PROPERTIES LABELS "host;boundary" TIMEOUT 0)
+
     add_executable(JuicerProfileOwnerTests ffi/profile_abi_c.c ffi/profile_owner_test.cpp)
     set_target_properties(JuicerProfileOwnerTests PROPERTIES
         C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
@@ -330,7 +343,7 @@ endif()
 
 # Preserve the selected production/test-support Rust variant; the native core
 # supplies its actual runtime dependency without introducing substitute symbols.
-foreach(target IN ITEMS JuicerCudaAbiTests JuicerProfileOwnerTests
+foreach(target IN ITEMS JuicerCudaAbiTests JuicerOfxAbiTests JuicerProfileOwnerTests
         JuicerSpectralOwnerTests JuicerRouteBridgeTests)
     target_link_libraries(${target} PRIVATE juicer_test_core)
 endforeach()
@@ -1442,7 +1455,7 @@ juicer_add_python_test(NAME Ffi.Host.BuildArtifacts
 set_tests_properties(Ffi.Host.BuildArtifacts PROPERTIES LABELS "host" TIMEOUT 0)
 
 # Relevance and runtime prerequisites are independent. Every group has one owner.
-set(juicer_boundary_tests Ffi.Gpu.ProductionPreparedRender Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
+set(juicer_boundary_tests Ffi.Host.OfxAbi Ffi.Gpu.ProductionPreparedRender Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
