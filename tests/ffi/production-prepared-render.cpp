@@ -198,18 +198,32 @@ namespace {
             }
         }
 
+        FjInstance* get() const noexcept {
+            return instance_;
+        }
+
+        void bind_submission(FjCuda* cuda, std::uint64_t seed, std::uint64_t token, FjErrorBuffer& error) {
+            require(fj_legacy_instance_bind_identity(instance_, seed, token, &error).category == FJ_STATUS_SUCCESS,
+                    "submission identity binding failed");
+            cuda_ = cuda;
+            token_ = token;
+        }
+
         bool close() noexcept {
+            FjErrorBuffer ignored{nullptr, 0, 0};
+            FjCuda* retiredCuda = cuda_;
+            cuda_ = nullptr;
+            const bool retired = !retiredCuda || fj_cuda_retire_instance(retiredCuda, token_, &ignored).category == FJ_STATUS_SUCCESS;
             FjInstance* instance = instance_;
             instance_ = nullptr;
-            if (instance) {
-                FjErrorBuffer ignored{nullptr, 0, 0};
-                return fj_legacy_instance_destroy(instance, &ignored).category == FJ_STATUS_SUCCESS;
-            }
-            return true;
+            const bool destroyed = !instance || fj_legacy_instance_destroy(instance, &ignored).category == FJ_STATUS_SUCCESS;
+            return retired && destroyed;
         }
 
     private:
         FjInstance* instance_ = nullptr;
+        FjCuda* cuda_ = nullptr;
+        std::uint64_t token_ = 0;
     };
 
     struct Case final {
@@ -386,13 +400,20 @@ namespace {
         return {input->outcome, state.valid ? 0u : 1u};
     }
 
-    FjStatus select_submission(void* user, const FjCudaContext*, const FjSubmission* requested, FjSubmission* selected, FjErrorBuffer*) noexcept {
-        if (!requested || !selected) {
-            return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
+    struct SubmissionObservation final {
+        unsigned calls = 0;
+        FjSubmission submission{};
+        std::uint32_t reused = 0;
+    };
+
+    thread_local SubmissionObservation* submissionObservation = nullptr;
+
+    void trace_submission(void*, const FjSubmission* submission, std::uint32_t reused) noexcept {
+        if (submissionObservation && submission) {
+            ++submissionObservation->calls;
+            submissionObservation->submission = *submission;
+            submissionObservation->reused = reused;
         }
-        *selected = *requested;
-        selected->submission_id = *static_cast<const std::uint64_t*>(user);
-        return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
     }
 
     struct PassPixels final {
@@ -400,7 +421,12 @@ namespace {
         const std::vector<float>& expected;
     };
 
-    Json run_pass(const Case& test, std::string_view pass, const PassPixels& pixels, std::vector<std::uint32_t>* coldWords, std::uint64_t* coldRecipeHash, DeviceBuffers& device, InstanceOwner& instance, FjRuntimeView runtime, bool summary) {
+    struct PassOwners final {
+        InstanceOwner& producer;
+        InstanceOwner& submission;
+    };
+
+    Json run_pass(const Case& test, std::string_view pass, const PassPixels& pixels, std::vector<std::uint32_t>* coldWords, std::uint64_t* coldRecipeHash, DeviceBuffers& device, const PassOwners& owners, FjRuntimeView runtime, bool summary) {
         require(runtime.assets && runtime.cuda, "production prepared render requires a live Runtime view");
         const auto& source = pixels.source;
         const auto& expected = pixels.expected;
@@ -431,10 +457,10 @@ namespace {
         PreparedOwner prepared;
         FjAdmission admission{};
         const ParamSnapshot parameters = parameters_for(test);
-        instance.capture_and_admit(runtime.assets, parameters, admission, error);
+        owners.producer.capture_and_admit(runtime.assets, parameters, admission, error);
         prepared.take(admission);
         if (pass == "warm") {
-            require(instance.close(), "instance close before warm admitted render failed");
+            require(owners.producer.close(), "instance close before warm admitted render failed");
         }
         std::optional<FjPreparedStateView> view(std::in_place);
         require(fj_legacy_prepared_state_view(prepared.get(), &*view, &error).category == FJ_STATUS_SUCCESS,
@@ -449,12 +475,15 @@ namespace {
         CompletionState completion;
         const auto route = static_cast<std::uint32_t>(test.route);
         JuicerCuda::CallScope scope(runtime.cuda, route, complete_call, &completion);
-        std::uint64_t submissionId = 1;
-        const FjSubmissionAccess submission{kInstanceToken + route, 37, &submissionId, select_submission};
+        SubmissionObservation observation;
+        submissionObservation = &observation;
+        FjCudaCallAccess access = scope.access();
+        access.trace_submission = trace_submission;
         CUcontext contextBefore = nullptr;
         require_driver(cuCtxGetCurrent(&contextBefore), "inspect CUDA context before submission");
         const FjCallCompletionResult result = fj_legacy_prepared_state_render(
-            runtime.assets, prepared.get(), scope.access(), &frame, &policy, submission, {}, &error);
+            runtime.assets, prepared.get(), access, &frame, &policy, owners.submission.get(), 37, {}, &error);
+        submissionObservation = nullptr;
         view.reset();
         const bool viewsReleased = !view.has_value();
         const bool stateReleased = prepared.release() && prepared.get() == nullptr;
@@ -464,6 +493,10 @@ namespace {
         const bool submitted = result.outcome.status.category == FJ_STATUS_SUCCESS && result.fatal == 0 && completion.called && completion.valid;
         require(submitted, scope.diagnostic().empty() ? (error.length ? std::string(error.data, error.length) : "prepared render submission failed") : scope.diagnostic());
         require(stateReleased, "prepared state release after submission failed");
+        require(observation.calls == 1 && observation.submission.instance_token == kInstanceToken + route &&
+                    observation.submission.frame_token == 37 && observation.submission.submission_id == 1 &&
+                    observation.reused == (pass == "warm" ? 1u : 0u),
+                "Rust submission identity differs from the fixed fixture identity");
 
         require_cuda(cudaStreamSynchronize(device.stream), "wait for submitted CUDA stream");
         const bool streamCompleted = true;
@@ -575,9 +608,14 @@ int main(int argc, char** argv) {
             const PassPixels pixels{.source = source, .expected = expected[caseIndex]};
             cases.event("production-prepared-render", std::string(test.id) + "/cold", "start");
             InstanceOwner instance;
-            rows.push_back(run_pass(test, "cold", pixels, &coldWords, &coldRecipeHash, device, instance, owner.borrow(), summary));
+            InstanceOwner submissionOwner;
+            FjErrorBuffer identityError{nullptr, 0, 0};
+            submissionOwner.bind_submission(owner.borrow().cuda, kSessionSeed, kInstanceToken + static_cast<std::uint32_t>(test.route), identityError);
+            const PassOwners owners{.producer = instance, .submission = submissionOwner};
+            rows.push_back(run_pass(test, "cold", pixels, &coldWords, &coldRecipeHash, device, owners, owner.borrow(), summary));
             cases.event("production-prepared-render", std::string(test.id) + "/warm", "start");
-            rows.push_back(run_pass(test, "warm", pixels, &coldWords, &coldRecipeHash, device, instance, owner.borrow(), summary));
+            rows.push_back(run_pass(test, "warm", pixels, &coldWords, &coldRecipeHash, device, owners, owner.borrow(), summary));
+            require(submissionOwner.close(), "submission instance close failed");
 
             require_cuda(cudaFree(device.destination), "free destination buffer");
             device.destination = nullptr;

@@ -56,17 +56,31 @@ type Gaussian = unsafe extern "C" fn(
     *mut crate::optics_bridge::FjGaussianKernelFailure,
     *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus;
-type Select = unsafe extern "C" fn(
-    *mut core::ffi::c_void,
-    *const sys::FjCudaContext,
-    *const sys::FjSubmission,
-    *mut sys::FjSubmission,
-    *mut sys::FjErrorBuffer,
-) -> sys::FjStatus;
+type TraceSubmission = unsafe extern "C" fn(*mut core::ffi::c_void, *const sys::FjSubmission, u32);
 type PolicyEntry = unsafe extern "C" fn(
     *const super::FjPreparedState,
     *const sys::FjExtent,
     *mut super::FjPreparedFramePolicy,
+    *mut sys::FjErrorBuffer,
+) -> sys::FjStatus;
+type BindSubmissionIdentity = unsafe extern "C" fn(
+    *const crate::instance_bridge::FjInstance,
+    u64,
+    u64,
+    *mut sys::FjErrorBuffer,
+) -> sys::FjStatus;
+type ReadSubmissionIdentity = unsafe extern "C" fn(
+    *const crate::instance_bridge::FjInstance,
+    *mut u32,
+    *mut u64,
+    *mut u64,
+    *mut sys::FjErrorBuffer,
+) -> sys::FjStatus;
+type InvalidateSubmission = unsafe extern "C" fn(
+    *const crate::instance_bridge::FjInstance,
+    i32,
+    usize,
+    *mut u32,
     *mut sys::FjErrorBuffer,
 ) -> sys::FjStatus;
 type RenderEntry = unsafe extern "C" fn(
@@ -75,7 +89,8 @@ type RenderEntry = unsafe extern "C" fn(
     super::FjCudaCallAccess,
     *const sys::FjFrame,
     *const super::FjPreparedFramePolicy,
-    super::FjSubmissionAccess,
+    *const crate::instance_bridge::FjInstance,
+    u64,
     sys::FjAbortCallback,
     *mut sys::FjErrorBuffer,
 ) -> super::FjCallCompletionResult;
@@ -92,6 +107,9 @@ type UnavailableEntry = unsafe extern "C" fn(
 const _: PolicyEntry = super::fj_legacy_prepared_state_frame_policy;
 const _: RenderEntry = super::fj_legacy_prepared_state_render;
 const _: UnavailableEntry = super::fj_legacy_prepared_unavailable;
+const _: BindSubmissionIdentity = crate::instance_bridge::fj_legacy_instance_bind_identity;
+const _: ReadSubmissionIdentity = crate::instance_bridge::fj_legacy_instance_identity;
+const _: InvalidateSubmission = crate::instance_bridge::fj_legacy_instance_invalidate_submission;
 
 const _: fn(&super::FjCudaCallAccess) = |access| {
     let _: &Option<Precheck> = &access.precheck;
@@ -104,10 +122,10 @@ const _: fn(&super::FjCudaCallAccess) = |access| {
     let _: &Option<Complete> = &access.complete;
 };
 
-const _: fn(&super::FjHostPreparation, &super::FjSubmissionAccess) = |host, submission| {
+const _: fn(&super::FjHostPreparation, &super::FjCudaCallAccess) = |host, access| {
     let _: &Option<ScannerLut> = &host.scanner_lut;
     let _: &Option<Gaussian> = &host.gaussian;
-    let _: &Option<Select> = &submission.select;
+    let _: &Option<TraceSubmission> = &access.trace_submission;
 };
 
 static FACTS: &[usize] = &[
@@ -176,12 +194,7 @@ static FACTS: &[usize] = &[
     offset_of!(super::FjCudaCallAccess, frame_descriptors),
     offset_of!(super::FjCudaCallAccess, render),
     offset_of!(super::FjCudaCallAccess, complete),
-    size_of::<super::FjSubmissionAccess>(),
-    align_of::<super::FjSubmissionAccess>(),
-    offset_of!(super::FjSubmissionAccess, instance_token),
-    offset_of!(super::FjSubmissionAccess, frame_token),
-    offset_of!(super::FjSubmissionAccess, user),
-    offset_of!(super::FjSubmissionAccess, select),
+    offset_of!(super::FjCudaCallAccess, trace_submission),
     0, // FJ_UNAVAILABLE_STATE
     1, // FJ_UNAVAILABLE_INSTANCE
 ];

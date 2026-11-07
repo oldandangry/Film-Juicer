@@ -210,6 +210,14 @@ namespace JuicerCuda::ExecutorTest {
         bool armed = true;
         FjStatus classifiedStatus{};
         bool failureDiagnosticMatches = false;
+        bool retirementObserved = false;
+        bool retirementAccepted = false;
+        FjStatus invalidationStatus{};
+        bool invalidationCleared = false;
+        bool completionObserved = false;
+        FjRenderOutcome completionOutcome{};
+        bool completionFatal = false;
+        bool completionDiagnosticMatches = false;
 
         void record(Event event) noexcept {
             if (count < events.size()) {
@@ -358,15 +366,39 @@ namespace JuicerCuda::ExecutorTest {
             observation->record(Event::FrameAborted);
         }
     }
+    thread_local void (*recoveryStartHook)(void*) noexcept = nullptr;
+    thread_local void* recoveryStartHookUser = nullptr;
+
     void observe_recovery_start(bool pending) noexcept {
         if (observation) {
             observation->adapterRecoveryPending = pending;
             observation->record(Event::RecoveryStarted);
         }
+        if (recoveryStartHook) {
+            auto* hook = recoveryStartHook;
+            recoveryStartHook = nullptr;
+            hook(recoveryStartHookUser);
+        }
     }
     void observe_recovery_end() noexcept {
         if (observation) {
             observation->record(Event::RecoveryEnded);
+        }
+    }
+    void observe_context_retirement(bool accepted, FjStatus invalidation, bool cleared) noexcept {
+        if (observation) {
+            observation->retirementObserved = true;
+            observation->retirementAccepted = accepted;
+            observation->invalidationStatus = invalidation;
+            observation->invalidationCleared = cleared;
+        }
+    }
+    void observe_adapter_completion(FjRenderOutcome outcome, bool fatal, std::string_view diagnostic) noexcept {
+        if (observation) {
+            observation->completionObserved = true;
+            observation->completionOutcome = outcome;
+            observation->completionFatal = fatal;
+            observation->completionDiagnosticMatches = observation->diagnostic && diagnostic == observation->diagnostic;
         }
     }
 } // namespace JuicerCuda::ExecutorTest
@@ -789,7 +821,54 @@ namespace {
     enum class PublishedRequestAvailability : std::uint8_t {
         Complete,
         MissingState,
-        MissingInstance
+        MissingInstance,
+        UninitializedIdentity,
+        MissingStateUninitialized
+    };
+
+    struct MembershipRetirement {
+        JuicerProcess::ProcessRuntime& runtime;
+        const RenderInstance& instance;
+        bool active = true;
+
+        bool close() noexcept {
+            if (!std::exchange(active, false))
+                return true;
+            std::uint32_t initialized = 0;
+            std::uint64_t seed = 0, token = 0;
+            FjErrorBuffer error{nullptr, 0, 0};
+            if (fj_legacy_instance_identity(instance.borrow(), &initialized, &seed, &token, &error).category != FJ_STATUS_SUCCESS)
+                return false;
+            if (!initialized)
+                return true;
+            try {
+                return fj_cuda_retire_instance(runtime.borrow().cuda, token, &error).category == FJ_STATUS_SUCCESS;
+            } catch (...) {
+                return false;
+            }
+        }
+        ~MembershipRetirement() noexcept(false) {
+            if (!close() && std::uncaught_exceptions() == 0)
+                throw std::runtime_error("fixture submission membership retirement failed");
+        }
+    };
+
+    struct ScopedSubmissionOwner {
+        RenderInstance instance;
+        FjCuda* cuda = nullptr;
+        std::uint64_t token = 0;
+
+        bool close() noexcept {
+            if (!cuda)
+                return true;
+            FjErrorBuffer ignored{nullptr, 0, 0};
+            FjCuda* retiredCuda = cuda;
+            cuda = nullptr;
+            return fj_cuda_retire_instance(retiredCuda, token, &ignored).category == FJ_STATUS_SUCCESS;
+        }
+        ~ScopedSubmissionOwner() {
+            (void)close();
+        }
     };
 
     struct FrameDescriptorObservation;
@@ -799,16 +878,41 @@ namespace {
         const PreparedState&,
         const FjFrame&,
         std::uint64_t,
-        std::uint64_t,
         FjAbortCallback,
         FrameDescriptorObservation*,
         bool*,
         std::string&,
         const FjAssets* = nullptr,
         PreparedRenderCompletion* = nullptr,
-        bool = false);
+        bool = false,
+        RenderInstance* = nullptr);
 
-    std::vector<float> render_case(JuicerProcess::ProcessRuntime& runtime, const Case& test, const ParamSnapshot& parameters, NativeSubmissionState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability availability = PublishedRequestAvailability::Complete, [[maybe_unused]] std::string_view invocationPhase = "cold") {
+    struct DirSubmissionWitness {
+        unsigned selectedCalls = 0;
+        unsigned renderCalls = 0;
+        std::uint64_t completedDirHash = ~std::uint64_t{};
+        FjSubmission selected{};
+        FjSubmission consumed{};
+        const FjInstance* instance = nullptr;
+        bool traceUnlocked = false;
+        FjRenderOutcome (*forward)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*) = nullptr;
+    };
+    thread_local DirSubmissionWitness* dirSubmissionWitness = nullptr;
+
+    std::vector<float> render_case(JuicerProcess::ProcessRuntime& runtime, const Case& test, const ParamSnapshot& parameters, RenderInstance& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1, [[maybe_unused]] JuicerCudaTest::StateLifetimeCase lifetimeCase = JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability availability = PublishedRequestAvailability::Complete, [[maybe_unused]] std::string_view invocationPhase = "cold") {
+        std::array<char, 512> identityText{};
+        FjErrorBuffer identityError{identityText.data(), identityText.size(), 0};
+        std::uint32_t initialized = 0;
+        std::uint64_t seed = 0, token = 0;
+        if (fj_legacy_instance_identity(state.borrow(), &initialized, &seed, &token, &identityError).category != FJ_STATUS_SUCCESS)
+            throw std::runtime_error("reference instance identity read failed");
+        const std::uint64_t expectedToken = 0x641207ull + static_cast<std::uint64_t>(test.route) + (test.combined ? 4ull : 0ull);
+        const bool leaveUninitialized = availability == PublishedRequestAvailability::UninitializedIdentity ||
+                                        availability == PublishedRequestAvailability::MissingStateUninitialized;
+        if (!initialized && !leaveUninitialized && state.bind_identity(0x20260923, expectedToken, identityError).category != FJ_STATUS_SUCCESS)
+            throw std::runtime_error("reference instance identity bind failed");
+        if (initialized && (seed != 0x20260923 || token != expectedToken))
+            throw std::runtime_error("reference instance identity changed");
         const int width = test.width;
         const int height = test.height;
         const int pitch = width * test.components + 5;
@@ -978,14 +1082,13 @@ namespace {
                     1.0};
                 if (print) {
                     JuicerProcessor::PrintFrameRequest request;
-                    request.renderState = availability == PublishedRequestAvailability::MissingState
+                    request.renderState = (availability == PublishedRequestAvailability::MissingState || availability == PublishedRequestAvailability::MissingStateUninitialized)
                                               ? nullptr
                                               : &*admittedState;
                     request.framePolicy = framePolicy;
                     request.renderWindow = renderWindow;
                     request.fullFrameExtent = fullBounds;
-                    request.sessionSeed = 0x20260923;
-                    request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
+                    request.instance = availability == PublishedRequestAvailability::MissingInstance ? nullptr : state.borrow();
                     request.clipToken = 0x5312;
                     request.frameTime = test.time;
                     request.frameRate = 24.0;
@@ -993,21 +1096,19 @@ namespace {
                     processor.setPrintFrameRequest(request);
                 } else {
                     JuicerProcessor::DirectFrameRequest request;
-                    request.renderState = availability == PublishedRequestAvailability::MissingState
+                    request.renderState = (availability == PublishedRequestAvailability::MissingState || availability == PublishedRequestAvailability::MissingStateUninitialized)
                                               ? nullptr
                                               : &*admittedState;
                     request.framePolicy = framePolicy;
                     request.renderWindow = renderWindow;
                     request.fullFrameExtent = fullBounds;
-                    request.sessionSeed = 0x20260923;
-                    request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
+                    request.instance = availability == PublishedRequestAvailability::MissingInstance ? nullptr : state.borrow();
                     request.clipToken = 0x5312;
                     request.frameTime = test.time;
                     request.frameRate = 24.0;
                     request.effectsGeometry = effectsGeometry;
                     processor.setDirectFrameRequest(request);
                 }
-                processor.setSubmissionState(availability == PublishedRequestAvailability::MissingInstance ? nullptr : &state);
                 auto preparation = JuicerCuda::borrow_root(runtime.borrow().cuda).begin_frame_preparation();
                 if (!preparation.active())
                     throw std::runtime_error("frame preparation guard unavailable");
@@ -1059,7 +1160,7 @@ namespace {
 #endif
                     } else {
                         const auto rendered = render_held_prepared_state(
-                            runtime, prepared, rawFrame, instanceToken, snapshotId, {}, nullptr, nullptr, diagnostic);
+                            runtime, prepared, rawFrame, instanceToken, {}, nullptr, nullptr, diagnostic, nullptr, nullptr, false, &state);
                         if (rendered.outcome.status.category != FJ_STATUS_SUCCESS) {
                             throw JuicerCuda::ExecutionFailure{{rendered.outcome.status, diagnostic}};
                         }
@@ -1124,15 +1225,72 @@ namespace {
     [[maybe_unused]] void check_cutover_callbacks(JuicerProcess::ProcessRuntime& runtime, const Case& test, const std::vector<float>& expected) {
         std::vector<std::string> intended;
         intended.reserve(12);
-        for (const char* id : {"disjoint-rows", "initial-uniform", "changed-geometry-time-scale", "sequential-supplied-stream", "worker-thread", "second-context", "throwing-cancellation", "render-after-cancellation"})
+        for (const char* id : {"disjoint-rows", "preflight-keeps-submission", "dir-disabled-submission", "initial-uniform", "changed-geometry-time-scale", "sequential-supplied-stream", "worker-thread", "second-context", "throwing-cancellation", "render-after-cancellation"})
             intended.push_back(std::string(test.name) + "/" + id);
-        for (const unsigned checkpoint : {1U, 3U, 4U, 5U})
+        for (const unsigned checkpoint : {1U, 2U, 3U, 4U, 5U})
             intended.push_back(std::string(test.name) + "/cancel/" + std::to_string(checkpoint));
         JuicerTests::Cohort rows(std::string("cutover_callback/") + test.name, intended);
-        NativeSubmissionState state;
+        RenderInstance state;
+        MembershipRetirement stateRetirement{runtime, state};
         auto disjoint_row = rows.case_event(std::string(test.name) + "/disjoint-rows");
         compare_pixels("same allocation disjoint rows", render_case(runtime, test, parameters_for(test), state, false, ExecutionPath::Processor, DestinationLayout::DisjointRows), expected);
         disjoint_row.passed();
+        const auto sameSubmission = [](const JuicerTestSupport::SubmissionObservation& left, const JuicerTestSupport::SubmissionObservation& right) {
+            const auto& a = left.submission;
+            const auto& b = right.submission;
+            return left.valid && right.valid && left.context.device_id == right.context.device_id && left.context.context == right.context.context &&
+                   a.instance_token == b.instance_token && a.frame_token == b.frame_token && a.submission_id == b.submission_id &&
+                   a.upload_core_hash == b.upload_core_hash && a.dir_hash == b.dir_hash &&
+                   a.scanner_hash == b.scanner_hash && a.auto_exposure_hash == b.auto_exposure_hash;
+        };
+        auto preflight_row = rows.case_event(std::string(test.name) + "/preflight-keeps-submission");
+        const auto beforePreflight = JuicerTestSupport::submission_observation(state);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        fj_test_prepared_noise_observation_reset();
+#endif
+        bool preflightFatal = false;
+        try {
+            (void)render_case(runtime, test, parameters_for(test), state, false, ExecutionPath::Processor, DestinationLayout::Uncovered);
+        } catch (const OFX::Exception::Suite& error) {
+            preflightFatal = error.status() == kOfxStatErrFatal;
+        }
+        if (!preflightFatal || !sameSubmission(beforePreflight, JuicerTestSupport::submission_observation(state)))
+            throw std::runtime_error("preflight failure changed the existing submission");
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        FjPreparedNoiseObservation preflightObservation{};
+        if (fj_test_prepared_noise_observation(&preflightObservation).category != FJ_STATUS_SUCCESS || preflightObservation.native_render_calls != 0)
+            throw std::runtime_error("preflight failure reached native rendering");
+#endif
+        preflight_row.passed();
+        auto dir_row = rows.case_event(std::string(test.name) + "/dir-disabled-submission");
+        auto dirDisabled = parameters_for(test);
+        dirDisabled.dirCouplers.active = false;
+        DirSubmissionWitness firstDir{};
+        DirSubmissionWitness repeatDir{};
+        try {
+            dirSubmissionWitness = &firstDir;
+            const auto firstPixels = render_case(runtime, test, dirDisabled, state, false, ExecutionPath::Direct);
+            dirSubmissionWitness = &repeatDir;
+            const auto repeatPixels = render_case(runtime, test, dirDisabled, state, false, ExecutionPath::Direct);
+            dirSubmissionWitness = nullptr;
+            compare_pixels("DIR-disabled repeat", repeatPixels, firstPixels);
+        } catch (...) {
+            dirSubmissionWitness = nullptr;
+            throw;
+        }
+        const auto validDir = [](const DirSubmissionWitness& witness) {
+            const auto& selected = witness.selected;
+            const auto& consumed = witness.consumed;
+            return witness.completedDirHash == 0 && witness.selectedCalls == 1 && witness.renderCalls == 1 && witness.traceUnlocked &&
+                   selected.upload_core_hash != 0 && selected.dir_hash == 1 && selected.scanner_hash != 0 && selected.auto_exposure_hash != 0 &&
+                   selected.submission_id != 0 && consumed.submission_id == selected.submission_id &&
+                   consumed.instance_token == selected.instance_token && consumed.frame_token == selected.frame_token &&
+                   consumed.upload_core_hash == selected.upload_core_hash && consumed.dir_hash == selected.dir_hash &&
+                   consumed.scanner_hash == selected.scanner_hash && consumed.auto_exposure_hash == selected.auto_exposure_hash;
+        };
+        if (!validDir(firstDir) || !validDir(repeatDir) || firstDir.selected.submission_id != repeatDir.selected.submission_id)
+            throw std::runtime_error("DIR-disabled completed, selected, or native submission identity changed");
+        dir_row.passed();
         Case uniform = test;
         uniform.uniform = true;
         auto uniformParameters = parameters_for(uniform);
@@ -1155,7 +1313,7 @@ namespace {
         };
         compare_pixels("initial uniform callback", initialUniform, uniform_expected(uniform));
         initial_row.passed();
-        const auto firstId = state.submissionSnapshotLatch.snapshotId;
+        const auto firstId = JuicerTestSupport::submission_observation(state).submission.submission_id;
         uniform.width += 2;
         uniform.height -= 2;
         uniform.originX = -11;
@@ -1166,15 +1324,15 @@ namespace {
         const auto changedExpected = uniform_expected(uniform);
         auto changed_row = rows.case_event(std::string(test.name) + "/changed-geometry-time-scale");
         compare_pixels("changed geometry time and scale", render_case(runtime, uniform, uniformParameters, state), changedExpected);
-        const auto changedId = state.submissionSnapshotLatch.snapshotId;
-        if (changedId == firstId || state.submissionSnapshotLatch.frameToken.value != static_cast<std::uint64_t>(std::int64_t{-18})) {
+        const auto changedId = JuicerTestSupport::submission_observation(state).submission.submission_id;
+        if (changedId == firstId || JuicerTestSupport::submission_observation(state).submission.frame_token != static_cast<std::uint64_t>(std::int64_t{-18})) {
             throw std::runtime_error("changed callback facts reused the previous latch");
         }
         changed_row.passed();
         // Each render_case allocates a new supplied stream; the same facts reuse the latch.
         auto supplied_stream_row = rows.case_event(std::string(test.name) + "/sequential-supplied-stream");
         compare_pixels("sequential supplied stream", render_case(runtime, uniform, uniformParameters, state), changedExpected);
-        if (state.submissionSnapshotLatch.snapshotId != changedId) {
+        if (JuicerTestSupport::submission_observation(state).submission.submission_id != changedId) {
             throw std::runtime_error("unchanged callback facts failed to reuse the latch");
         }
         supplied_stream_row.passed();
@@ -1207,7 +1365,7 @@ namespace {
         auto context_row = rows.case_event(std::string(test.name) + "/second-context");
         try {
             compare_pixels("second context on same device", render_case(runtime, uniform, uniformParameters, state), changedExpected);
-            if (state.submissionSnapshotLatch.deviceContextKey.contextOpaque != other) {
+            if (reinterpret_cast<void*>(JuicerTestSupport::submission_observation(state).context.context) != other) {
                 throw std::runtime_error("callback retained prior context identity");
             }
             std::string diagnostic;
@@ -1224,7 +1382,9 @@ namespace {
             throw std::runtime_error("release fixture context");
         }
         context_row.passed();
-        for (const unsigned checkpoint : {1U, 3U, 4U, 5U}) {
+        JuicerTestSupport::SubmissionObservation selectedOnCancel{};
+        for (const unsigned checkpoint : {1U, 2U, 3U, 4U, 5U}) {
+            const auto beforeCancel = JuicerTestSupport::submission_observation(state);
             auto cancel_row = rows.case_event(std::string(test.name) + "/cancel/" + std::to_string(checkpoint));
             AbortObservation observation;
             observation.cancelAt = checkpoint;
@@ -1239,6 +1399,13 @@ namespace {
             if (observation.calls != checkpoint || !observation.sameThread) {
                 throw std::runtime_error("production abort delivery or callback lifetime changed");
             }
+            const auto afterCancel = JuicerTestSupport::submission_observation(state);
+            if (checkpoint <= 2 && !sameSubmission(beforeCancel, afterCancel))
+                throw std::runtime_error("early cancellation changed the existing submission");
+            if (checkpoint == 3)
+                selectedOnCancel = afterCancel;
+            if (checkpoint >= 3 && (!afterCancel.valid || (checkpoint > 3 && !sameSubmission(selectedOnCancel, afterCancel))))
+                throw std::runtime_error("post-selection cancellation failed to commit or reuse the submission");
             cancel_row.passed();
         }
         auto throwing_row = rows.case_event(std::string(test.name) + "/throwing-cancellation");
@@ -1255,15 +1422,18 @@ namespace {
             throw;
         }
         s_abortObservation = nullptr;
-        if (!fatal || throwing.calls != 4 || !throwing.sameThread) {
+        if (!fatal || throwing.calls != 4 || !throwing.sameThread ||
+            !sameSubmission(selectedOnCancel, JuicerTestSupport::submission_observation(state))) {
             throw std::runtime_error("abort suite exception escaped or became successful cancellation");
         }
         throwing_row.passed();
         auto recovery_row = rows.case_event(std::string(test.name) + "/render-after-cancellation");
         compare_pixels("render after cancellation", render_case(runtime, test, parameters_for(test), state), expected);
+        if (!sameSubmission(selectedOnCancel, JuicerTestSupport::submission_observation(state)))
+            throw std::runtime_error("render after cancellation did not reuse the committed submission");
         // This fixture's next case reuses its deterministic instance token with
         // a fresh counter. Match real instance teardown before that reuse.
-        if (fj_cuda_retire_instance(runtime.borrow().cuda, state.submissionSnapshotLatch.instanceToken.value, nullptr).category != FJ_STATUS_SUCCESS) {
+        if (!stateRetirement.close()) {
             throw std::runtime_error("retire cutover fixture instance");
         }
         recovery_row.passed();
@@ -1279,7 +1449,8 @@ namespace {
         const std::uint64_t instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
         if (fj_cuda_retire_instance(runtime.borrow().cuda, instanceToken, nullptr).category != FJ_STATUS_SUCCESS)
             throw std::runtime_error("retire instance before physical fixture");
-        NativeSubmissionState state;
+        RenderInstance state;
+        MembershipRetirement stateRetirement{runtime, state};
         auto off = parameters_for(test);
         off.grainControls.active = false;
         off.filmDustAmount = 0;
@@ -1333,7 +1504,7 @@ namespace {
         debug.gateWeaveAmount = 10;
         if (!same_bits(render_case(runtime, test, debug, state), debugOff))
             throw std::runtime_error("completed grain debug did not suppress physical effects");
-        if (fj_cuda_retire_instance(runtime.borrow().cuda, instanceToken, nullptr).category != FJ_STATUS_SUCCESS)
+        if (!stateRetirement.close())
             throw std::runtime_error("retire instance after physical fixture");
         std::cout << test.name << " physical families/off/debug/alpha CUDA paths passed\n";
     }
@@ -1381,6 +1552,10 @@ namespace {
 
     struct PreparedRenderCompletion {
         unsigned calls = 0;
+        bool retirementFailed = false;
+        bool gateEntered = false;
+        std::optional<JuicerCuda::NativeCall>* gate = nullptr;
+        FjCuda* gateCuda = nullptr;
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
         bool observationRead = false;
         FjPreparedNoiseObservation noise{};
@@ -1391,6 +1566,14 @@ namespace {
         auto* const completion = static_cast<PreparedRenderCompletion*>(user);
         if (completion) {
             ++completion->calls;
+            if (completion->gate) {
+                try {
+                    completion->gate->emplace(completion->gateCuda);
+                    completion->gateEntered = true;
+                } catch (...) {
+                    completion->gateEntered = false;
+                }
+            }
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
             completion->observationRead =
                 fj_test_prepared_noise_observation(&completion->noise).category == FJ_STATUS_SUCCESS;
@@ -1400,42 +1583,46 @@ namespace {
                      : FjCallCompletionResult{{{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, 0}, 1};
     }
 
-    struct PreparedSubmissionSelection {
+    struct PreparedSubmissionObservation {
         FjSubmission expected{};
         unsigned calls = 0;
         bool matched = true;
     };
 
-    FjStatus select_prepared_submission(
-        void* user,
-        const FjCudaContext*,
-        const FjSubmission* requested,
-        FjSubmission* out,
-        FjErrorBuffer*) {
-        auto* const selection = static_cast<PreparedSubmissionSelection*>(user);
-        if (!selection || !requested || !out)
-            return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
-        ++selection->calls;
-        selection->matched = requested->instance_token == selection->expected.instance_token &&
-                             requested->frame_token == selection->expected.frame_token &&
-                             requested->upload_core_hash == selection->expected.upload_core_hash &&
-                             requested->dir_hash == selection->expected.dir_hash &&
-                             requested->scanner_hash == selection->expected.scanner_hash &&
-                             requested->auto_exposure_hash == selection->expected.auto_exposure_hash;
-        if (!selection->matched)
-            return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
-        *out = *requested;
-        out->submission_id = selection->expected.submission_id;
-        const auto normalized = JuicerCuda::ResourceManager::make_key_digests(
-            selection->expected.upload_core_hash,
-            selection->expected.dir_hash,
-            selection->expected.scanner_hash,
-            selection->expected.auto_exposure_hash);
-        out->upload_core_hash = normalized.uploadCoreHash;
-        out->dir_hash = normalized.dirHash;
-        out->scanner_hash = normalized.scannerHash;
-        out->auto_exposure_hash = normalized.autoExposureHash;
-        return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+    thread_local PreparedSubmissionObservation* preparedSubmissionObservation = nullptr;
+
+    void observe_prepared_submission(void*, const FjSubmission* selected, std::uint32_t) noexcept {
+        auto* observation = preparedSubmissionObservation;
+        if (!observation || !selected)
+            return;
+        ++observation->calls;
+        if (dirSubmissionWitness) {
+            ++dirSubmissionWitness->selectedCalls;
+            dirSubmissionWitness->selected = *selected;
+            std::uint32_t valid = 0;
+            FjSubmission observed{};
+            FjCudaContext context{};
+            const auto status = fj_test_instance_submission(dirSubmissionWitness->instance, &valid, &observed, &context, nullptr);
+            dirSubmissionWitness->traceUnlocked = status.category == FJ_STATUS_SUCCESS && valid != 0 &&
+                                                  observed.submission_id == selected->submission_id && observed.instance_token == selected->instance_token &&
+                                                  observed.frame_token == selected->frame_token && observed.upload_core_hash == selected->upload_core_hash &&
+                                                  observed.dir_hash == selected->dir_hash && observed.scanner_hash == selected->scanner_hash &&
+                                                  observed.auto_exposure_hash == selected->auto_exposure_hash;
+        }
+        const auto& expected = observation->expected;
+        observation->matched = selected->instance_token == expected.instance_token &&
+                               selected->frame_token == expected.frame_token && selected->submission_id != 0 &&
+                               selected->upload_core_hash == expected.upload_core_hash && selected->dir_hash == expected.dir_hash &&
+                               selected->scanner_hash == expected.scanner_hash && selected->auto_exposure_hash == expected.auto_exposure_hash;
+    }
+
+    FjRenderOutcome observe_native_submission(void* user, const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, const FjHostPreparation* host, FjAbortCallback abort, FjErrorBuffer* error) noexcept {
+        auto* witness = dirSubmissionWitness;
+        if (!witness || !witness->forward || !submission)
+            return {{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, 0};
+        ++witness->renderCalls;
+        witness->consumed = *submission;
+        return witness->forward(user, context, frame, submission, prepared, host, abort, error);
     }
 
     FjCallCompletionResult render_held_prepared_state(
@@ -1443,14 +1630,14 @@ namespace {
         const PreparedState& state,
         const FjFrame& frame,
         std::uint64_t instanceToken,
-        std::uint64_t submissionId,
         FjAbortCallback abort,
         FrameDescriptorObservation* descriptorObservation,
         bool* recoveryPending,
         std::string& diagnostic,
         const FjAssets* assetOwner,
         PreparedRenderCompletion* completionObservation,
-        bool missingInstance) {
+        bool missingInstance,
+        RenderInstance* sharedSubmissionOwner) {
         diagnostic.clear();
         const FjRuntimeView runtimeView = runtime.borrow();
         std::array<char, 2048> text{};
@@ -1461,6 +1648,8 @@ namespace {
             diagnostic.assign(text.data(), error.length);
             return {{viewed, 0}, 0};
         }
+        if (dirSubmissionWitness)
+            dirSubmissionWitness->completedDirHash = view.dir_recipe.hash;
         const FjExtent full{frame.full_frame_extent.x1,
                             frame.full_frame_extent.y1,
                             frame.full_frame_extent.x2 - frame.full_frame_extent.x1,
@@ -1478,25 +1667,39 @@ namespace {
                                               frame.source.bounds.y2};
         const auto preview = JuicerCuda::make_auto_exposure_preview_descriptor(
             frameRect, frameRect, static_cast<Spektrafilm::AutoExposureMethod>(view.input_policy.meter));
-        PreparedSubmissionSelection selection{};
+        const auto normalized = JuicerCuda::ResourceManager::make_key_digests(
+            view.upload_core_hash, view.dir_recipe.hash, view.scanner_hash, preview.hash);
+        PreparedSubmissionObservation selection{};
         selection.expected = {instanceToken,
                               static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(frame.time_frames))),
-                              submissionId,
-                              view.upload_core_hash,
-                              view.dir_recipe.hash,
-                              view.scanner_hash,
-                              preview.hash};
+                              1,
+                              normalized.uploadCoreHash,
+                              normalized.dirHash,
+                              normalized.scannerHash,
+                              normalized.autoExposureHash};
         PreparedRenderCompletion completion{};
+        if (completionObservation) {
+            completion.gate = completionObservation->gate;
+            completion.gateCuda = completionObservation->gateCuda;
+        }
         JuicerCuda::CallScope activeScope(runtimeView.cuda, view.route, &prepared_render_complete, &completion);
         FjCudaCallAccess access = activeScope.access();
         if (descriptorObservation) {
             descriptorObservation->forward = access.frame_descriptors;
             access.frame_descriptors = &observe_frame_descriptors;
         }
-        const FjSubmissionAccess latch{selection.expected.instance_token,
-                                       selection.expected.frame_token,
-                                       &selection,
-                                       &select_prepared_submission};
+        ScopedSubmissionOwner localSubmissionOwner;
+        RenderInstance& submissionOwner = sharedSubmissionOwner ? *sharedSubmissionOwner : localSubmissionOwner.instance;
+        if (!sharedSubmissionOwner && submissionOwner.bind_identity(frame.session_seed, instanceToken, error).category != FJ_STATUS_SUCCESS) {
+            diagnostic = "prepared submission identity bind failed";
+            return {{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, 0}, 1};
+        }
+        access.trace_submission = &observe_prepared_submission;
+        if (dirSubmissionWitness) {
+            dirSubmissionWitness->instance = submissionOwner.borrow();
+            dirSubmissionWitness->forward = access.render;
+            access.render = &observe_native_submission;
+        }
         FjCallCompletionResult result{};
         auto admission = JuicerCuda::borrow_root(runtimeView.cuda).begin_frame_preparation();
         if (!admission.active()) {
@@ -1506,9 +1709,15 @@ namespace {
         const FjAssets* const renderAssets = assetOwner ? assetOwner : runtimeView.assets;
         {
             ScopedFrameDescriptorObservation overrideScope(descriptorObservation);
+            preparedSubmissionObservation = &selection;
             result = missingInstance
                          ? state.reject_missing_instance(renderAssets, access, frame, abort, error)
-                         : state.render(renderAssets, access, frame, policy, latch, abort, error);
+                         : state.render(renderAssets, access, frame, policy, submissionOwner.borrow(), selection.expected.frame_token, abort, error);
+            preparedSubmissionObservation = nullptr;
+        }
+        if (!sharedSubmissionOwner && selection.calls != 0) {
+            localSubmissionOwner.cuda = runtimeView.cuda;
+            localSubmissionOwner.token = instanceToken;
         }
         if (completion.calls != 1 || selection.calls > 1 || !selection.matched) {
             diagnostic = activeScope.diagnostic();
@@ -1523,11 +1732,20 @@ namespace {
         }
         if (recoveryPending)
             *recoveryPending = activeScope.recovery().pending;
-        if (completionObservation)
-            *completionObservation = completion;
         diagnostic = activeScope.diagnostic();
         if (diagnostic.empty() && error.length != 0)
             diagnostic.assign(text.data(), error.length);
+        completion.retirementFailed = !sharedSubmissionOwner && !localSubmissionOwner.close();
+        if (completionObservation)
+            *completionObservation = completion;
+        if (completion.retirementFailed) {
+            if (result.outcome.status.category == FJ_STATUS_SUCCESS && result.fatal == 0) {
+                diagnostic = "prepared submission owner retirement failed";
+                return {{{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, 0}, 1};
+            }
+            if (!completionObservation)
+                (void)std::fputs("secondary failure: prepared submission owner retirement failed\n", stderr);
+        }
         return result;
     }
 } // namespace
@@ -2075,7 +2293,8 @@ namespace {
             for (std::size_t i = 0; i < expected.size(); ++i) {
                 expected[i] = std::bit_cast<float>(words.at(i).get<std::uint32_t>());
             }
-            NativeSubmissionState state;
+            RenderInstance state;
+            MembershipRetirement stateRetirement{runtime, state};
             JuicerCuda::ExecutorTest::reset_workspace_transitions();
             compare_pixels(test.name, render_case(runtime, test, parameters_for(test), state, false, ExecutionPath::Direct, DestinationLayout::Matching, next++), expected);
             require(JuicerCuda::ExecutorTest::workspaceHandoff.has_value(), "actual schedule handoff not observed");
@@ -2092,7 +2311,8 @@ namespace {
             require(arm_workspace_rejection(reject, kind), "workspace seam configuration rejected");
             require(!arm_workspace_rejection(7, kind) && !arm_workspace_rejection(1, static_cast<WorkspaceRejection>(255)),
                     "invalid seam configuration replaced armed input");
-            NativeSubmissionState state;
+            RenderInstance state;
+            MembershipRetirement stateRetirement{runtime, state};
             bool failed = false;
             JuicerCuda::Failure failure;
             try {
@@ -2494,7 +2714,7 @@ namespace {
                                                               ? FjAbortCallback{}
                                                               : actualAbort;
                     const FjCallCompletionResult rendered = render_held_prepared_state(
-                        runtime, state, prepared_raw_frame(frame), 0x645700 + route, runs, selectedAbort, &frameMath, &recoveryPending, failureText);
+                        runtime, state, prepared_raw_frame(frame), 0x645700 + route, selectedAbort, &frameMath, &recoveryPending, failureText);
                     result = rendered.outcome.status;
                     abortCalls = selectedAbort.query == &abort_after_native_descriptor ? stagedAbort.calls : 0;
                     observed = JuicerCuda::ExecutorTest::effects_frame_observation();
@@ -2835,7 +3055,7 @@ namespace {
                                                               ? FjAbortCallback{}
                                                               : actualAbort;
                     const FjCallCompletionResult rendered = render_held_prepared_state(
-                        runtime, state, prepared_raw_frame(frame), 0x645600 + route, runs, selectedAbort, &frameMath, &recoveryPending, failureText);
+                        runtime, state, prepared_raw_frame(frame), 0x645600 + route, selectedAbort, &frameMath, &recoveryPending, failureText);
                     result = rendered.outcome.status;
                     abortCalls = selectedAbort.query == &abort_after_native_descriptor ? stagedAbort.calls : 0;
                     observed = JuicerCuda::ExecutorTest::grain_frame_observation();
@@ -3169,7 +3389,7 @@ namespace {
                                                               ? FjAbortCallback{}
                                                               : actualAbort;
                     const FjCallCompletionResult rendered = render_held_prepared_state(
-                        runtime, state, prepared_raw_frame(frame), 0x641300 + route, runs, selectedAbort, &frameMath, &recoveryPending, failureText);
+                        runtime, state, prepared_raw_frame(frame), 0x641300 + route, selectedAbort, &frameMath, &recoveryPending, failureText);
                     status = rendered.outcome.status;
                     abortCalls = selectedAbort.query == &abort_after_native_descriptor ? stagedAbort.calls : 0;
                     observed = JuicerCuda::ExecutorTest::dir_frame_observation();
@@ -3316,7 +3536,8 @@ namespace {
                                 ? "print_scan_error_stage"
                                 : "direct_scan_error_stage";
         JuicerCuda::ExecutorTest::observation = &observation;
-        NativeSubmissionState state;
+        RenderInstance state;
+        MembershipRetirement stateRetirement{runtime, state};
         bool fatal = false;
         try {
             (void)render_case(runtime, test, parameters_for(test), state);
@@ -3339,12 +3560,184 @@ namespace {
             observation.nativeRecoveryPending != contextLoss ||
             observation.adapterRecoveryPending != contextLoss ||
             (deferredDirFailure && !observation.messageMatches) ||
-            state.submissionSnapshotLatchValid == contextLoss) {
+            JuicerTestSupport::submission_observation(state).valid == contextLoss) {
             throw std::runtime_error(std::string(test.name) + ": executor failure order or host mapping changed");
         }
         std::cout << test.name << " dir=" << deferredDirFailure << " context_loss=" << contextLoss
                   << " delivery=" << static_cast<int>(delivery)
                   << " classify/abort/message/recovery/fatal order passed\n";
+    }
+
+    void check_mismatching_recovery(JuicerProcess::ProcessRuntime& runtime, const Case& test) {
+        using namespace JuicerCuda::ExecutorTest;
+        CUcontext original = nullptr;
+        CUcontext other = nullptr;
+        if (cuCtxGetCurrent(&original) != CUDA_SUCCESS || !original || cuCtxCreate(&other, nullptr, 0, 0) != CUDA_SUCCESS ||
+            cuCtxSetCurrent(original) != CUDA_SUCCESS)
+            throw std::runtime_error("create mismatch recovery contexts failed");
+        struct HookState {
+            JuicerProcess::ProcessRuntime* runtime;
+            const Case* test;
+            RenderInstance* instance;
+            CUcontext original;
+            CUcontext other;
+            std::exception_ptr failure;
+            JuicerTestSupport::SubmissionObservation selected;
+        } hook{&runtime, &test, nullptr, original, other, {}, {}};
+        RenderInstance state;
+        MembershipRetirement stateRetirement{runtime, state};
+        hook.instance = &state;
+        FailureObservation failure;
+        failure.delivery = Delivery::Success;
+        failure.status = JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED);
+        failure.diagnostic = "mismatching context recovery";
+        failure.scanResult = JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed;
+        failure.stage = Spektrafilm::scan_route_is_print(test.route) ? "print_scan_error_stage" : "direct_scan_error_stage";
+        observation = &failure;
+        recoveryStartHookUser = &hook;
+        recoveryStartHook = [](void* user) noexcept {
+            auto& data = *static_cast<HookState*>(user);
+            auto* saved = observation;
+            observation = nullptr;
+            try {
+                if (cuCtxSetCurrent(data.other) != CUDA_SUCCESS)
+                    throw std::runtime_error("set nested recovery context failed");
+                (void)render_case(*data.runtime, *data.test, parameters_for(*data.test), *data.instance);
+                data.selected = JuicerTestSupport::submission_observation(*data.instance);
+            } catch (...) {
+                data.failure = std::current_exception();
+            }
+            if (cuCtxSetCurrent(data.original) != CUDA_SUCCESS && !data.failure)
+                data.failure = std::make_exception_ptr(std::runtime_error("restore recovery context failed"));
+            observation = saved;
+        };
+        bool fatal = false;
+        try {
+            (void)render_case(runtime, test, parameters_for(test), state);
+        } catch (const OFX::Exception::Suite& error) {
+            fatal = error.status() == kOfxStatErrFatal;
+        } catch (...) {
+            hook.failure = std::current_exception();
+        }
+        recoveryStartHook = nullptr;
+        recoveryStartHookUser = nullptr;
+        observation = nullptr;
+        if (hook.failure)
+            std::rethrow_exception(hook.failure);
+        const auto after = JuicerTestSupport::submission_observation(state);
+        if (!fatal || !hook.selected.valid || !after.valid || after.context.context != reinterpret_cast<std::uintptr_t>(other) ||
+            after.submission.submission_id != hook.selected.submission.submission_id)
+            throw std::runtime_error("old-context recovery cleared the new-context submission");
+        if (cuCtxSetCurrent(other) != CUDA_SUCCESS)
+            throw std::runtime_error("restore nested context failed");
+        (void)render_case(runtime, test, parameters_for(test), state);
+        const auto reused = JuicerTestSupport::submission_observation(state);
+        if (!reused.valid || reused.submission.submission_id != after.submission.submission_id)
+            throw std::runtime_error("new-context submission was not reused after old-context recovery");
+        std::string diagnostic;
+        {
+            JuicerCuda::NativeCall admission(runtime.borrow().cuda);
+            if (!JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, other, diagnostic))
+                throw std::runtime_error(diagnostic);
+        }
+        if (cuCtxDestroy(other) != CUDA_SUCCESS || cuCtxSetCurrent(original) != CUDA_SUCCESS)
+            throw std::runtime_error("release mismatch recovery context failed");
+        if (!stateRetirement.close())
+            throw std::runtime_error("retire mismatch recovery instance failed");
+    }
+
+    void check_recovery_interference(JuicerProcess::ProcessRuntime& runtime, const Case& test, bool holdGate) {
+        using namespace JuicerCuda::ExecutorTest;
+        RenderInstance state;
+        MembershipRetirement stateRetirement{runtime, state};
+        struct HookState {
+            FjCuda* cuda = nullptr;
+            RenderInstance* instance = nullptr;
+            bool holdGate = false;
+            std::optional<JuicerCuda::NativeCall> gate;
+            JuicerCuda::ResourceManager::DeviceContextKey key{};
+            bool registryHeld = false;
+            bool failed = false;
+            JuicerTestSupport::SubmissionObservation selected{};
+            bool release() noexcept {
+                gate.reset();
+                if (!std::exchange(registryHeld, false))
+                    return true;
+                return JuicerCuda::ResourceManager::registry_note_submission_end(key);
+            }
+            ~HookState() {
+                (void)release();
+            }
+        } hook;
+        hook.cuda = runtime.borrow().cuda;
+        hook.instance = &state;
+        hook.holdGate = holdGate;
+        FailureObservation failure;
+        failure.delivery = Delivery::Success;
+        failure.status = JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED);
+        failure.diagnostic = "recovery interference original failure";
+        failure.scanResult = JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed;
+        failure.stage = Spektrafilm::scan_route_is_print(test.route) ? "print_scan_error_stage" : "direct_scan_error_stage";
+        observation = &failure;
+        recoveryStartHookUser = &hook;
+        recoveryStartHook = [](void* user) noexcept {
+            auto& data = *static_cast<HookState*>(user);
+            try {
+                data.selected = JuicerTestSupport::submission_observation(*data.instance);
+                if (!data.selected.valid) {
+                    data.failed = true;
+                    return;
+                }
+                data.key = {data.selected.context.device_id, reinterpret_cast<void*>(data.selected.context.context)};
+                if (data.holdGate) {
+                    data.gate.emplace(data.cuda);
+                } else {
+                    JuicerCuda::ResourceManager::RegistryContextSnapshot snapshot;
+                    data.registryHeld = JuicerCuda::ResourceManager::registry_begin_submission(data.key, snapshot);
+                    data.failed = !data.registryHeld;
+                }
+            } catch (...) {
+                data.failed = true;
+            }
+        };
+        bool fatal = false;
+        try {
+            (void)render_case(runtime, test, parameters_for(test), state);
+        } catch (const OFX::Exception::Suite& error) {
+            fatal = error.status() == kOfxStatErrFatal;
+            failure.record(Event::FatalMapped);
+        } catch (...) {
+            recoveryStartHook = nullptr;
+            recoveryStartHookUser = nullptr;
+            observation = nullptr;
+            (void)hook.release();
+            throw;
+        }
+        recoveryStartHook = nullptr;
+        recoveryStartHookUser = nullptr;
+        observation = nullptr;
+        if (!hook.release())
+            throw std::runtime_error("recovery interference registry release failed");
+        const std::vector<Event> expected = holdGate
+                                                ? std::vector<Event>{Event::Injected, Event::Classified, Event::FrameAborted, Event::RecoveryStarted, Event::FatalMapped}
+                                                : std::vector<Event>{Event::Injected, Event::Classified, Event::FrameAborted, Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped};
+        const auto after = JuicerTestSupport::submission_observation(state);
+        const auto& outcome = failure.completionOutcome;
+        if (!fatal || hook.failed || !hook.selected.valid || failure.overflow || failure.count != expected.size() ||
+            !std::equal(expected.begin(), expected.end(), failure.events.begin()) || !failure.failureStageMatches ||
+            !failure.failureStatusMatches || !failure.failureDiagnosticMatches || !failure.nativeRecoveryPending ||
+            !failure.adapterRecoveryPending || !failure.completionObserved || !failure.completionFatal ||
+            !failure.completionDiagnosticMatches || outcome.status.category != failure.status.category ||
+            outcome.status.api != failure.status.api || outcome.status.native_code != failure.status.native_code || outcome.flags != 0 ||
+            (holdGate && (failure.retirementObserved || !after.valid || after.submission.submission_id != hook.selected.submission.submission_id)) ||
+            (!holdGate && (!failure.retirementObserved || failure.retirementAccepted ||
+                           failure.invalidationStatus.category != FJ_STATUS_SUCCESS || !failure.invalidationCleared || after.valid)))
+            throw std::runtime_error("recovery interference changed original failure or latch behavior");
+        (void)render_case(runtime, test, parameters_for(test), state);
+        const auto recovered = JuicerTestSupport::submission_observation(state);
+        if (!recovered.valid || (holdGate ? recovered.submission.submission_id != hook.selected.submission.submission_id
+                                          : recovered.submission.submission_id <= hook.selected.submission.submission_id))
+            throw std::runtime_error("recovery interference subsequent submission behavior changed");
     }
 
     void run_failure_order_cases(JuicerProcess::ProcessRuntime& runtime) {
@@ -3358,7 +3751,7 @@ namespace {
             for (unsigned status = 0; status < 4; ++status)
                 for (unsigned wording = 0; wording < 3; ++wording)
                     intended.push_back(std::string(test.name) + "/status/" + std::to_string(status) + "/wording/" + std::to_string(wording));
-            for (const char* terminal : {"context-loss", "non-dir-failure", "long-diagnostic"})
+            for (const char* terminal : {"context-loss", "mismatching-context", "gate-reentry", "active-submission", "non-dir-failure", "long-diagnostic"})
                 intended.push_back(std::string(test.name) + "/terminal/" + terminal);
         }
         JuicerTests::Cohort rows("failure_order", intended);
@@ -3384,6 +3777,16 @@ namespace {
                     row.passed();
                 }
             }
+            for (const bool holdGate : {true, false}) {
+                auto row = rows.case_event(std::string(test.name) + "/terminal/" + (holdGate ? "gate-reentry" : "active-submission"));
+                check_recovery_interference(runtime, test, holdGate);
+                row.passed();
+            }
+            {
+                auto row = rows.case_event(std::string(test.name) + "/terminal/mismatching-context");
+                check_mismatching_recovery(runtime, test);
+                row.passed();
+            }
             {
                 auto row = rows.case_event(std::string(test.name) + "/terminal/context-loss");
                 check_failure_order(runtime, test, JuicerCuda::ExecutorTest::Delivery::Success, false, JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED), "test component=scanner 100% renamed diagnostic");
@@ -3406,7 +3809,7 @@ namespace {
     FjPreparedNoiseObservation prepared_noise_observation();
     bool noise_ordered_through_completion(const FjPreparedNoiseObservation& observation);
 
-    void check_resource_failure(JuicerProcess::ProcessRuntime& runtime, const Case& test, const ParamSnapshot& parameters, NativeSubmissionState& state, JuicerCuda::ExecutorTest::ResourceFailures& failures, const JuicerCuda::Failure& expectedFailure, const char* stage, bool preparationFailure = false) {
+    void check_resource_failure(JuicerProcess::ProcessRuntime& runtime, const Case& test, const ParamSnapshot& parameters, RenderInstance& state, JuicerCuda::ExecutorTest::ResourceFailures& failures, const JuicerCuda::Failure& expectedFailure, const char* stage, bool preparationFailure = false) {
         using JuicerCuda::ExecutorTest::Event;
         if (parameters.grainControls.active) {
             fj_test_prepared_noise_observation_reset();
@@ -3451,7 +3854,7 @@ namespace {
             !observation.failureDiagnosticMatches ||
             observation.nativeRecoveryPending != contextLoss ||
             observation.adapterRecoveryPending != contextLoss ||
-            state.submissionSnapshotLatchValid == contextLoss) {
+            JuicerTestSupport::submission_observation(state).valid == contextLoss) {
             throw std::runtime_error(std::string(test.name) + ": resource failure propagation changed; category=" +
                                      std::to_string(observation.classifiedStatus.category) + " api=" +
                                      std::to_string(observation.classifiedStatus.api) + " code=" +
@@ -3481,7 +3884,8 @@ namespace {
         }
         JuicerTests::Cohort rows("scanner_lut_upload", intended);
         for (const auto& test : cases) {
-            NativeSubmissionState state;
+            RenderInstance state;
+            MembershipRetirement stateRetirement{runtime, state};
             auto parameters = parameters_for(test);
             parameters.grainControls.active = false;
             for (unsigned position = 1; position <= 6; ++position) {
@@ -3510,7 +3914,8 @@ namespace {
                     intended.push_back(std::string(test.name) + "/" + timing + "/" + std::to_string(code));
         JuicerTests::Cohort rows("defect_fence", intended);
         for (const Case& test : cases) {
-            NativeSubmissionState state;
+            RenderInstance state;
+            MembershipRetirement stateRetirement{runtime, state};
             for (const bool failCreate : {true, false}) {
                 const std::array codes{cudaErrorContextIsDestroyed, cudaErrorInvalidResourceHandle, cudaErrorMemoryAllocation};
                 for (std::size_t codeIndex = 0; codeIndex < codes.size(); ++codeIndex) {
@@ -3636,7 +4041,8 @@ namespace {
         const FjAssets* rootAssets = runtime.borrow().assets;
         for (const Case& test : cases) {
             const std::string route = Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct";
-            NativeSubmissionState state;
+            RenderInstance state;
+            MembershipRetirement stateRetirement{runtime, state};
             auto active = parameters_for(test);
             active.grainControls.active = true;
             for (bool cold : {true, false}) {
@@ -3666,7 +4072,7 @@ namespace {
         std::vector<std::string> intended;
         intended.reserve(8);
         for (const char* route : {"direct", "print"})
-            for (const char* availability : {"missing-state", "missing-instance"})
+            for (const char* availability : {"missing-state", "missing-instance", "uninitialized-instance", "missing-state-uninitialized"})
                 for (const char* cancellation : {"cancel", "no-cancel"})
                     intended.push_back(std::string(route) + "/" + availability + "/" + cancellation);
         JuicerTests::Cohort rows("noise_unavailable_request", intended);
@@ -3674,10 +4080,13 @@ namespace {
             const std::string route = Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct";
             auto active = parameters_for(test);
             active.grainControls.active = true;
-            NativeSubmissionState state;
-            const bool latchValidBefore = state.submissionSnapshotLatchValid;
             const auto run = [&](PublishedRequestAvailability availability, unsigned cancelAt, bool expectFatal) {
-                const char* const availability_name = availability == PublishedRequestAvailability::MissingState ? "missing-state" : "missing-instance";
+                RenderInstance state;
+                MembershipRetirement stateRetirement{runtime, state};
+                const bool latchValidBefore = JuicerTestSupport::submission_observation(state).valid;
+                const char* const availability_name = availability == PublishedRequestAvailability::MissingState ? "missing-state" : availability == PublishedRequestAvailability::MissingInstance     ? "missing-instance"
+                                                                                                                                 : availability == PublishedRequestAvailability::UninitializedIdentity ? "uninitialized-instance"
+                                                                                                                                                                                                       : "missing-state-uninitialized";
                 auto case_event = rows.case_event(route + "/" + availability_name + "/" + (cancelAt ? "cancel" : "no-cancel"));
                 fj_test_prepared_noise_observation_reset();
                 AbortObservation abort{};
@@ -3696,11 +4105,11 @@ namespace {
                 s_abortObservation = nullptr;
                 const auto observation = prepared_noise_observation();
                 if (fatal != expectFatal || (cancelAt && (abort.calls != cancelAt || !pixels.empty())) ||
-                    state.submissionSnapshotLatchValid != latchValidBefore ||
+                    JuicerTestSupport::submission_observation(state).valid != latchValidBefore ||
                     observation.complete_calls != 1 || observation.native_render_calls != 0) {
                     throw std::runtime_error(std::string(test.name) + ": unavailable processor request admitted a latch, rendered, or skipped completion");
                 }
-                if (availability == PublishedRequestAvailability::MissingState) {
+                if (availability == PublishedRequestAvailability::MissingState || availability == PublishedRequestAvailability::MissingStateUninitialized) {
                     if (observation.acquisition_attempts != 0 || observation.held_at_complete != 0 ||
                         observation.drops_after_complete != 0 || observation.arc_references_at_complete != 0 ||
                         observation.inspection_order <= observation.admission_order ||
@@ -3721,6 +4130,10 @@ namespace {
             run(PublishedRequestAvailability::MissingState, 0, true);
             run(PublishedRequestAvailability::MissingInstance, 1, false);
             run(PublishedRequestAvailability::MissingInstance, 0, true);
+            run(PublishedRequestAvailability::UninitializedIdentity, 1, false);
+            run(PublishedRequestAvailability::UninitializedIdentity, 0, true);
+            run(PublishedRequestAvailability::MissingStateUninitialized, 1, false);
+            run(PublishedRequestAvailability::MissingStateUninitialized, 0, true);
         }
         std::puts("PASS actual JuicerProcessor missing-state and missing-instance requests: inspect/abort precedence, source hold, no latch and no render");
     }
@@ -3728,7 +4141,7 @@ namespace {
     void run_scratch_noise_failure_recovery_cases(JuicerProcess::ProcessRuntime& runtime) {
         const std::array cases{Case{"noise-held-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                Case{"noise-held-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}};
-        const std::array<std::string, 2> intended{{"direct", "print"}};
+        const std::array<std::string, 6> intended{{"direct", "print", "direct/retire-cancel", "direct/retire-abort-failure", "print/retire-cancel", "print/retire-abort-failure"}};
         JuicerTests::Cohort rows("noise_scratch_failure", std::vector<std::string>(intended.begin(), intended.end()));
         for (const Case& test : cases) {
             auto case_event = rows.case_event(Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct");
@@ -3845,11 +4258,11 @@ namespace {
             PreparedRenderCompletion failedCompletion{};
             std::string diagnostic;
             const auto failed = render_held_prepared_state(
-                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), 1, {}, nullptr, nullptr, diagnostic, assets.get(), &failedCompletion);
+                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, diagnostic, assets.get(), &failedCompletion);
             const auto failedObservation = prepared_noise_observation();
             if (failed.outcome.status.category != FJ_STATUS_PREPARATION_FAILURE ||
                 diagnostic.find("stbn_scalar_512x512x256_u8.bin") == std::string::npos ||
-                !failedCompletion.observationRead || failedCompletion.noise.held_at_complete != 1 ||
+                !failedCompletion.observationRead || failedCompletion.retirementFailed || failedCompletion.noise.held_at_complete != 1 ||
                 failedCompletion.noise.preparation_failures != 1 ||
                 failedCompletion.noise.drops_after_complete != 0 ||
                 failedCompletion.noise.arc_references_at_complete < 2 ||
@@ -3864,10 +4277,10 @@ namespace {
             PreparedRenderCompletion cancelledCompletion{};
             diagnostic.clear();
             const auto cancelled = render_held_prepared_state(
-                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), 2, cancel, nullptr, nullptr, diagnostic, assets.get(), &cancelledCompletion);
+                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), cancel, nullptr, nullptr, diagnostic, assets.get(), &cancelledCompletion);
             const auto cancelledObservation = prepared_noise_observation();
             if (cancelled.outcome.status.category != FJ_STATUS_CANCELLED ||
-                !cancelledCompletion.observationRead || cancelledCompletion.noise.held_at_complete != 1 ||
+                !cancelledCompletion.observationRead || cancelledCompletion.retirementFailed || cancelledCompletion.noise.held_at_complete != 1 ||
                 cancelledCompletion.noise.preparation_failures != 1 ||
                 cancelledObservation.native_render_calls != 0 ||
                 !noise_ordered_through_completion(cancelledObservation)) {
@@ -3880,11 +4293,11 @@ namespace {
             PreparedRenderCompletion inspectionCompletion{};
             diagnostic.clear();
             const auto inspection = render_held_prepared_state(
-                runtime, *prepared, inspectionFrame, 0x641207 + static_cast<int>(test.route), 3, {}, nullptr, nullptr, diagnostic, assets.get(), &inspectionCompletion);
+                runtime, *prepared, inspectionFrame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, diagnostic, assets.get(), &inspectionCompletion);
             const auto inspectionObservation = prepared_noise_observation();
             if (inspection.outcome.status.category == FJ_STATUS_SUCCESS ||
                 diagnostic.find("stbn_scalar_512x512x256_u8.bin") != std::string::npos ||
-                !inspectionCompletion.observationRead || inspectionCompletion.noise.held_at_complete != 1 ||
+                !inspectionCompletion.observationRead || inspectionCompletion.retirementFailed || inspectionCompletion.noise.held_at_complete != 1 ||
                 inspectionCompletion.noise.preparation_failures != 1 ||
                 inspectionObservation.native_render_calls != 0 ||
                 !noise_ordered_through_completion(inspectionObservation)) {
@@ -3895,11 +4308,11 @@ namespace {
             PreparedRenderCompletion missingInstanceCompletion{};
             diagnostic.clear();
             const auto missingInstance = render_held_prepared_state(
-                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), 4, {}, nullptr, nullptr, diagnostic, assets.get(), &missingInstanceCompletion, true);
+                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, diagnostic, assets.get(), &missingInstanceCompletion, true);
             const auto missingInstanceObservation = prepared_noise_observation();
             if (missingInstance.outcome.status.category != FJ_STATUS_PREPARATION_FAILURE ||
                 diagnostic.find("instance state missing") == std::string::npos ||
-                !missingInstanceCompletion.observationRead || missingInstanceCompletion.noise.held_at_complete != 1 ||
+                !missingInstanceCompletion.observationRead || missingInstanceCompletion.retirementFailed || missingInstanceCompletion.noise.held_at_complete != 1 ||
                 missingInstanceCompletion.noise.preparation_failures != 1 ||
                 missingInstanceObservation.native_render_calls != 0 ||
                 !noise_ordered_through_completion(missingInstanceObservation)) {
@@ -3933,10 +4346,10 @@ namespace {
             PreparedRenderCompletion recoveredCompletion{};
             diagnostic.clear();
             const auto recovered = render_held_prepared_state(
-                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), 5, {}, nullptr, nullptr, diagnostic, assets.get(), &recoveredCompletion);
+                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, diagnostic, assets.get(), &recoveredCompletion);
             const auto recoveredObservation = prepared_noise_observation();
             if (recovered.outcome.status.category != FJ_STATUS_SUCCESS ||
-                !recoveredCompletion.observationRead || recoveredCompletion.noise.held_at_complete != 1 ||
+                !recoveredCompletion.observationRead || recoveredCompletion.retirementFailed || recoveredCompletion.noise.held_at_complete != 1 ||
                 recoveredCompletion.noise.successful_results != 1 || recoveredObservation.native_render_calls != 1 ||
                 recoveredObservation.drops_after_complete != 1 || recoveredObservation.arc_references_at_complete < 2 ||
                 !noise_ordered_through_completion(recoveredObservation)) {
@@ -3958,11 +4371,11 @@ namespace {
             PreparedRenderCompletion allocationCompletion{};
             diagnostic.clear();
             const auto allocationFailure = render_held_prepared_state(
-                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), 6, {}, nullptr, nullptr, diagnostic, assets.get(), &allocationCompletion);
+                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, diagnostic, assets.get(), &allocationCompletion);
             const auto allocationObservation = prepared_noise_observation();
             if (allocationFailure.outcome.status.category != FJ_STATUS_ALLOCATION_FAILURE ||
                 diagnostic.empty() || fj_test_noise_reservation_consumed() != 1 ||
-                !allocationCompletion.observationRead || allocationCompletion.noise.held_at_complete != 1 ||
+                !allocationCompletion.observationRead || allocationCompletion.retirementFailed || allocationCompletion.noise.held_at_complete != 1 ||
                 allocationCompletion.noise.allocation_failures != 1 ||
                 allocationCompletion.noise.preparation_failures != 0 ||
                 allocationCompletion.noise.internal_failures != 0 ||
@@ -3977,10 +4390,10 @@ namespace {
             PreparedRenderCompletion allocationRecoveryCompletion{};
             diagnostic.clear();
             const auto allocationRecovery = render_held_prepared_state(
-                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), 7, {}, nullptr, nullptr, diagnostic, assets.get(), &allocationRecoveryCompletion);
+                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, diagnostic, assets.get(), &allocationRecoveryCompletion);
             const auto allocationRecoveryObservation = prepared_noise_observation();
             if (allocationRecovery.outcome.status.category != FJ_STATUS_SUCCESS ||
-                !allocationRecoveryCompletion.observationRead || allocationRecoveryCompletion.noise.held_at_complete != 1 ||
+                !allocationRecoveryCompletion.observationRead || allocationRecoveryCompletion.retirementFailed || allocationRecoveryCompletion.noise.held_at_complete != 1 ||
                 allocationRecoveryCompletion.noise.successful_results != 1 || allocationRecoveryObservation.native_render_calls != 1 ||
                 allocationRecoveryObservation.drops_after_complete != 1 || allocationRecoveryObservation.arc_references_at_complete < 2 ||
                 !noise_ordered_through_completion(allocationRecoveryObservation)) {
@@ -4002,11 +4415,11 @@ namespace {
             PreparedRenderCompletion internalCompletion{};
             diagnostic.clear();
             const auto internalFailure = render_held_prepared_state(
-                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), 8, {}, nullptr, nullptr, diagnostic, poisonedAssets.get(), &internalCompletion);
+                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, diagnostic, poisonedAssets.get(), &internalCompletion);
             const auto internalObservation = prepared_noise_observation();
             if (internalFailure.outcome.status.category != FJ_STATUS_INTERNAL_FAILURE ||
                 diagnostic.find("noise cache poisoned") == std::string::npos ||
-                !internalCompletion.observationRead || internalCompletion.noise.held_at_complete != 1 ||
+                !internalCompletion.observationRead || internalCompletion.retirementFailed || internalCompletion.noise.held_at_complete != 1 ||
                 internalCompletion.noise.internal_failures != 1 || internalCompletion.noise.preparation_failures != 0 ||
                 internalCompletion.noise.allocation_failures != 0 || internalCompletion.noise.arc_references_at_complete != 0 ||
                 internalCompletion.noise.drops_after_complete != 0 || internalObservation.internal_failures != 1 ||
@@ -4020,10 +4433,10 @@ namespace {
             PreparedRenderCompletion internalRecoveryCompletion{};
             diagnostic.clear();
             const auto internalRecovery = render_held_prepared_state(
-                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), 9, {}, nullptr, nullptr, diagnostic, freshAssets.get(), &internalRecoveryCompletion);
+                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, diagnostic, freshAssets.get(), &internalRecoveryCompletion);
             const auto internalRecoveryObservation = prepared_noise_observation();
             if (internalRecovery.outcome.status.category != FJ_STATUS_SUCCESS ||
-                !internalRecoveryCompletion.observationRead || internalRecoveryCompletion.noise.held_at_complete != 1 ||
+                !internalRecoveryCompletion.observationRead || internalRecoveryCompletion.retirementFailed || internalRecoveryCompletion.noise.held_at_complete != 1 ||
                 internalRecoveryCompletion.noise.successful_results != 1 || internalRecoveryObservation.native_render_calls != 1 ||
                 internalRecoveryObservation.drops_after_complete != 1 || internalRecoveryObservation.arc_references_at_complete < 2 ||
                 !noise_ordered_through_completion(internalRecoveryObservation)) {
@@ -4042,16 +4455,58 @@ namespace {
             PreparedRenderCompletion malformedCompletion{};
             diagnostic.clear();
             const auto malformedView = render_held_prepared_state(
-                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), 10, {}, nullptr, nullptr, diagnostic, freshAssets.get(), &malformedCompletion);
+                runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, diagnostic, freshAssets.get(), &malformedCompletion);
             const auto malformedObservation = prepared_noise_observation();
             if (malformedView.outcome.status.category != FJ_STATUS_UNSUPPORTED_INPUT ||
                 diagnostic.find("MalformedPreparedHostData field=noise.stbn") == std::string::npos ||
                 fj_test_prepared_noise_short_view_consumed() != 1 ||
-                !malformedCompletion.observationRead || malformedCompletion.noise.held_at_complete != 1 ||
+                !malformedCompletion.observationRead || malformedCompletion.retirementFailed || malformedCompletion.noise.held_at_complete != 1 ||
                 malformedCompletion.noise.successful_results != 1 || malformedCompletion.noise.arc_references_at_complete < 2 ||
                 malformedCompletion.noise.drops_after_complete != 0 || malformedObservation.native_render_calls != 1 ||
                 malformedObservation.drops_after_complete != 1 || !noise_ordered_through_completion(malformedObservation)) {
                 throw std::runtime_error(std::string(test.name) + ": malformed borrowed noise view did not reach and fail the raw callback while held");
+            }
+            const std::string route = Spektrafilm::scan_route_is_print(test.route) ? "print" : "direct";
+            for (const bool invalidAbort : {false, true}) {
+                auto retirementCase = rows.case_event(route + (invalidAbort ? "/retire-abort-failure" : "/retire-cancel"));
+                struct AbortAtSelection {
+                    unsigned calls = 0;
+                    bool invalid = false;
+                } abortState{0, invalidAbort};
+                const FjAbortCallback abort{[](void* user) noexcept -> std::uint32_t {
+                                                auto& observed = *static_cast<AbortAtSelection*>(user);
+                                                ++observed.calls;
+                                                return observed.calls < 3 ? FJ_ABORT_CONTINUE : (observed.invalid ? 2u : FJ_ABORT_REQUESTED);
+                                            },
+                                            &abortState};
+                PreparedRenderCompletion baselineCompletion{};
+                std::string baselineDiagnostic;
+                const auto baseline = render_held_prepared_state(runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), abort, nullptr, nullptr, baselineDiagnostic, freshAssets.get(), &baselineCompletion);
+                if (abortState.calls != 3 || baselineCompletion.calls != 1 || baselineCompletion.retirementFailed ||
+                    baseline.outcome.status.category != (invalidAbort ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_CANCELLED) ||
+                    baseline.outcome.status.api != FJ_API_NONE || baseline.outcome.status.native_code != 0 ||
+                    (invalidAbort && baselineDiagnostic != "invalid CUDA abort query result"))
+                    throw std::runtime_error("retirement precedence control did not reach the expected abort outcome");
+                abortState.calls = 0;
+                std::optional<JuicerCuda::NativeCall> gate;
+                PreparedRenderCompletion heldCompletion{};
+                heldCompletion.gate = &gate;
+                heldCompletion.gateCuda = runtime.borrow().cuda;
+                std::string heldDiagnostic;
+                const auto held = render_held_prepared_state(runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), abort, nullptr, nullptr, heldDiagnostic, freshAssets.get(), &heldCompletion);
+                const bool gateHeld = gate.has_value();
+                gate.reset();
+                if (abortState.calls != 3 || heldCompletion.calls != 1 || !heldCompletion.gateEntered || !gateHeld || !heldCompletion.retirementFailed ||
+                    held.outcome.status.category != baseline.outcome.status.category || held.outcome.status.api != baseline.outcome.status.api ||
+                    held.outcome.status.native_code != baseline.outcome.status.native_code || held.outcome.flags != baseline.outcome.flags ||
+                    held.fatal != baseline.fatal || heldDiagnostic != baselineDiagnostic)
+                    throw std::runtime_error("retirement failure changed the original abort outcome");
+                PreparedRenderCompletion recoveredCompletion{};
+                std::string recoveredDiagnostic;
+                const auto recovered = render_held_prepared_state(runtime, *prepared, frame, 0x641207 + static_cast<int>(test.route), {}, nullptr, nullptr, recoveredDiagnostic, freshAssets.get(), &recoveredCompletion);
+                if (recovered.outcome.status.category != FJ_STATUS_SUCCESS || recovered.fatal != 0 || recoveredCompletion.calls != 1 || recoveredCompletion.retirementFailed)
+                    throw std::runtime_error("render did not recover after retirement failure");
+                retirementCase.passed();
             }
             scratch.mark_verified();
             case_event.passed();
@@ -4093,7 +4548,8 @@ namespace {
                 for (std::size_t uploadIndex = 0; uploadIndex < uploads.size(); ++uploadIndex) {
                     auto row = rows.case_event(std::string(test.name) + "/wording/" + std::to_string(wordingIndex) + "/upload/" + std::to_string(uploadIndex));
                     const auto& upload = uploads[uploadIndex];
-                    NativeSubmissionState state;
+                    RenderInstance state;
+                    MembershipRetirement stateRetirement{runtime, state};
                     auto parameters = parameters_for(test);
                     parameters.grainControls.active = true;
                     JuicerCuda::ExecutorTest::ResourceFailures failures;
@@ -4170,7 +4626,8 @@ namespace {
             parameters.grainControls.active = false;
             parameters.glareActive = false;
             parameters.glarePercent = 0.03;
-            NativeSubmissionState state;
+            RenderInstance state;
+            MembershipRetirement stateRetirement{runtime, state};
             const auto pixels = render_case(runtime, test, parameters, state);
             compare_pixels(name, pixels, decode(capture.at("output_bits")));
             std::cerr << name << ": exact stored CUDA samples within retained pixel bounds\n";
@@ -4245,11 +4702,14 @@ int main(int argc, char** argv) try {
                 for (const char* cache : {"cold", "warm"})
                     JuicerTests::list_case("noise_published_call", std::string(route) + "/" + cache);
             for (const char* route : {"direct", "print"})
-                for (const char* availability : {"missing-state", "missing-instance"})
+                for (const char* availability : {"missing-state", "missing-instance", "uninitialized-instance", "missing-state-uninitialized"})
                     for (const char* cancellation : {"cancel", "no-cancel"})
                         JuicerTests::list_case("noise_unavailable_request", std::string(route) + "/" + availability + "/" + cancellation);
-            for (const char* route : {"direct", "print"})
+            for (const char* route : {"direct", "print"}) {
                 JuicerTests::list_case("noise_scratch_failure", route);
+                for (const char* failure : {"retire-cancel", "retire-abort-failure"})
+                    JuicerTests::list_case("noise_scratch_failure", std::string(route) + "/" + failure);
+            }
             return 0;
         }
         if (argc == 3 && std::string_view(argv[1]) == "--failure-order") {
@@ -4260,7 +4720,7 @@ int main(int argc, char** argv) try {
                 for (unsigned status = 0; status < 4; ++status)
                     for (unsigned wording = 0; wording < 3; ++wording)
                         JuicerTests::list_case("failure_order", std::string(route) + "/status/" + std::to_string(status) + "/wording/" + std::to_string(wording));
-                for (const char* terminal : {"context-loss", "non-dir-failure", "long-diagnostic"})
+                for (const char* terminal : {"context-loss", "mismatching-context", "gate-reentry", "active-submission", "non-dir-failure", "long-diagnostic"})
                     JuicerTests::list_case("failure_order", std::string(route) + "/terminal/" + terminal);
             }
             return 0;
@@ -4353,9 +4813,9 @@ int main(int argc, char** argv) try {
                 for (const char* family : {"film-dust", "film-scratch", "gate-dust", "gate-scratch", "gate-weave"})
                     JuicerTests::list_case(std::string("physical_effect_pixels/") + name, std::string(name) + "/" + family);
             for (const char* name : {"negative-direct", "negative-print"}) {
-                for (const char* id : {"disjoint-rows", "initial-uniform", "changed-geometry-time-scale", "sequential-supplied-stream", "worker-thread", "second-context", "throwing-cancellation", "render-after-cancellation"})
+                for (const char* id : {"disjoint-rows", "preflight-keeps-submission", "dir-disabled-submission", "initial-uniform", "changed-geometry-time-scale", "sequential-supplied-stream", "worker-thread", "second-context", "throwing-cancellation", "render-after-cancellation"})
                     JuicerTests::list_case(std::string("cutover_callback/") + name, std::string(name) + "/" + id);
-                for (const unsigned checkpoint : {1U, 3U, 4U, 5U})
+                for (const unsigned checkpoint : {1U, 2U, 3U, 4U, 5U})
                     JuicerTests::list_case(std::string("cutover_callback/") + name, std::string(name) + "/cancel/" + std::to_string(checkpoint));
             }
             return 0;
@@ -4568,12 +5028,15 @@ int main(int argc, char** argv) try {
             JuicerTests::Cohort lifetime_rows("state_lifetime", intended);
             for (std::size_t index = 0; index < 2; ++index) {
                 auto route_row = route_rows.case_event(cases[index].name);
-                NativeSubmissionState unused;
+                RenderInstance unused;
+                MembershipRetirement unusedRetirement{runtime, unused};
                 for (const auto& [name, lifetimeCase] : lifetime_cases) {
                     auto row = lifetime_rows.case_event(std::string(cases[index].name) + "/" + name);
                     (void)render_case(runtime, cases[index], parameters_for(cases[index]), unused, false, ExecutionPath::StateLifetime, DestinationLayout::Matching, 1, lifetimeCase);
                     row.passed();
                 }
+                if (!unusedRetirement.close())
+                    throw std::runtime_error("held-state lifetime instance retirement failed");
                 if (runtime.close().category != FJ_STATUS_SUCCESS)
                     throw std::runtime_error("held-state lifetime owner close");
                 if (index == 0) {
@@ -4655,14 +5118,16 @@ int main(int argc, char** argv) try {
             // Each CTest case starts a fresh process and owner. C crosses the
             // boundary first, so no other caller can hide its table uploads.
             std::cerr << "cold C case: " << test.name << '\n';
-            NativeSubmissionState boundaryState;
+            RenderInstance boundaryState;
+            MembershipRetirement boundaryStateRetirement{runtime, boundaryState};
             JuicerTests::CaseEvent boundary_path("processor_render_path", std::string(test.name) + "/boundary-cold");
             const auto boundary = render_case(runtime, test, parameters_for(test), boundaryState, false, stateContract ? ExecutionPath::StateContract : ExecutionPath::Boundary);
             JuicerTests::CaseEvent warm_boundary_path("processor_render_path", std::string(test.name) + "/boundary-warm");
             const auto warmBoundary = render_case(runtime, test, parameters_for(test), boundaryState, false, stateContract ? ExecutionPath::State : ExecutionPath::Boundary, DestinationLayout::Matching, 1, JuicerCudaTest::StateLifetimeCase::SuppliedStream, PublishedRequestAvailability::Complete, "warm");
             JuicerTests::CaseEvent direct_path("processor_render_path", std::string(test.name) + "/direct-executor");
             const auto direct = [&] {
-                NativeSubmissionState directState;
+                RenderInstance directState;
+                MembershipRetirement directStateRetirement{runtime, directState};
                 return render_case(runtime, test, parameters_for(test), directState, false, ExecutionPath::Direct);
             }();
 #endif
@@ -4671,17 +5136,19 @@ int main(int argc, char** argv) try {
 #endif
             std::cerr << "processor case: " << test.name << '\n';
             const std::vector<float> pixels = [&] {
-                NativeSubmissionState state;
+                RenderInstance state;
+                MembershipRetirement stateRetirement{runtime, state};
                 auto rendered = render_case(runtime, test, parameters_for(test), state);
 #if !defined(JUICER_PREPARED_BOUNDARY_TEST)
                 if (sequentialOwners) {
-                    const auto& snapshot = state.submissionSnapshotLatch;
+                    const auto observed = JuicerTestSupport::submission_observation(state);
+                    const JuicerCuda::ResourceManager::DeviceContextKey key{observed.context.device_id, reinterpret_cast<void*>(observed.context.context)};
                     JuicerCuda::ResourceManager::RegistryContextSnapshot admitted;
-                    if (snapshot.deviceContextKey.contextOpaque != initialContext ||
-                        !JuicerCuda::ResourceManager::registry_begin_submission(snapshot.deviceContextKey, admitted)) {
+                    if (key.contextOpaque != initialContext ||
+                        !JuicerCuda::ResourceManager::registry_begin_submission(key, admitted)) {
                         throw std::runtime_error("sequential owner changed or failed to admit the live context");
                     }
-                    const bool ended = JuicerCuda::ResourceManager::registry_note_submission_end(snapshot.deviceContextKey);
+                    const bool ended = JuicerCuda::ResourceManager::registry_note_submission_end(key);
                     if (!ended || admitted.contextEpoch <= previousEpoch) {
                         throw std::runtime_error("owner recreation did not advance the native epoch");
                     }
@@ -4744,7 +5211,8 @@ int main(int argc, char** argv) try {
                     // off-center float samples. Normalized diffusion preserves a
                     // constant exposure. Both controls use the immutable first pixel.
                     {
-                        NativeSubmissionState control;
+                        RenderInstance control;
+                        MembershipRetirement controlRetirement{runtime, control};
                         compare_pixels("uniform direct control", render_case(runtime, uniform, parameters_for(uniform), control), uniformExpected);
                     }
                     if (runtime.close().category != FJ_STATUS_SUCCESS) {
@@ -4754,10 +5222,12 @@ int main(int argc, char** argv) try {
                     {
                         auto parameters = parameters_for(uniform);
                         parameters.cameraDiffusion.active = true;
-                        NativeSubmissionState diffusionState;
+                        RenderInstance diffusionState;
+                        MembershipRetirement diffusionStateRetirement{runtime, diffusionState};
                         compare_pixels("uniform direct diffusion", render_case(runtime, uniform, parameters, diffusionState), uniformExpected);
                         JuicerCuda::ResourceManager::RegistryContextSnapshot admitted;
-                        const auto& key = diffusionState.submissionSnapshotLatch.deviceContextKey;
+                        const auto observed = JuicerTestSupport::submission_observation(diffusionState);
+                        const JuicerCuda::ResourceManager::DeviceContextKey key{observed.context.device_id, reinterpret_cast<void*>(observed.context.context)};
                         if (key.contextOpaque != initialContext || !JuicerCuda::ResourceManager::registry_begin_submission(key, admitted)) {
                             throw std::runtime_error("direct diffusion context admission failed");
                         }
@@ -4770,16 +5240,18 @@ int main(int argc, char** argv) try {
                     }
                 }
                 if (sequentialOwners && !test.combined) {
-                    NativeSubmissionState originState;
+                    RenderInstance originState;
+                    MembershipRetirement originStateRetirement{runtime, originState};
                     compare_pixels(std::string(test.name) + ": independent destination origin", render_case(runtime, test, parameters_for(test), originState, false, ExecutionPath::Processor, DestinationLayout::Offset), expected);
-                    NativeSubmissionState rejectedState;
+                    RenderInstance rejectedState;
+                    MembershipRetirement rejectedStateRetirement{runtime, rejectedState};
                     bool fatal = false;
                     try {
                         (void)render_case(runtime, test, parameters_for(test), rejectedState, false, ExecutionPath::Processor, DestinationLayout::Uncovered);
                     } catch (const OFX::Exception::Suite& error) {
                         fatal = error.status() == kOfxStatErrFatal;
                     }
-                    if (!fatal || rejectedState.submissionSnapshotLatchValid) {
+                    if (!fatal || JuicerTestSupport::submission_observation(rejectedState).valid) {
                         throw std::runtime_error("uncovered destination was not rejected before submission latch publication");
                     }
                 }
@@ -4792,7 +5264,8 @@ int main(int argc, char** argv) try {
                 if (stateContract) {
                     auto grainParameters = parameters_for(test);
                     grainParameters.grainControls.active = true;
-                    NativeSubmissionState grainState;
+                    RenderInstance grainState;
+                    MembershipRetirement grainStateRetirement{runtime, grainState};
                     JuicerTests::CaseEvent grain_path("processor_render_path", std::string(test.name) + "/grain-boundary");
                     (void)render_case(runtime, test, grainParameters, grainState, false, ExecutionPath::Boundary, DestinationLayout::Matching, 2);
                     grain_path.passed();
@@ -4827,13 +5300,17 @@ int main(int argc, char** argv) try {
             if (std::equal(freshPlus.begin(), freshPlus.end(), freshMinus.begin())) {
                 throw std::runtime_error("signed-zero fresh print renders did not differ");
             }
-            NativeSubmissionState transition;
+            RenderInstance transition;
+            MembershipRetirement transitionRetirement{runtime, transition};
             compare_pixels("glare plus to minus initial", render_case(runtime, cases[5], parameters_for(cases[5]), transition), freshPlus);
             compare_pixels("glare plus to minus", render_case(runtime, cases[6], parameters_for(cases[6]), transition), freshMinus);
             compare_pixels("glare minus to plus", render_case(runtime, cases[5], parameters_for(cases[5]), transition), freshPlus);
         }
-        NativeSubmissionState emptyWindowState;
+        RenderInstance emptyWindowState;
+        MembershipRetirement emptyWindowStateRetirement{runtime, emptyWindowState};
         (void)render_case(runtime, cases[0], parameters_for(cases[0]), emptyWindowState, true);
+        if (!emptyWindowStateRetirement.close())
+            throw std::runtime_error("empty-window instance retirement failed");
 #endif
         if (runtime.close().category != FJ_STATUS_SUCCESS) {
             throw std::runtime_error("final native owner close failed");

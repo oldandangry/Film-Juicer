@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -206,6 +207,8 @@ namespace JuicerCuda {
         void observe_frame_abort() noexcept;
         void observe_recovery_start(bool pending) noexcept;
         void observe_recovery_end() noexcept;
+        void observe_context_retirement(bool accepted, FjStatus invalidation, bool cleared) noexcept;
+        void observe_adapter_completion(FjRenderOutcome, bool fatal, std::string_view diagnostic) noexcept;
     } // namespace ExecutorTest
 #endif
 

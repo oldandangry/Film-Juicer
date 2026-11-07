@@ -97,9 +97,7 @@ impl fmt::Debug for Failure {
     }
 }
 
-pub(crate) use edge::{
-    Abort, Frame, FramePolicy, OwnerBorrow, RenderError, RenderOutcome, SubmissionLatch,
-};
+pub(crate) use edge::{Abort, Frame, FramePolicy, OwnerBorrow, RenderError, RenderOutcome};
 pub(crate) use render::render;
 
 #[cfg(feature = "test-support")]

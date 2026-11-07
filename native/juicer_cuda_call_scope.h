@@ -41,20 +41,15 @@ typedef struct FjCudaCallAccess {
     FjStatus (*frame_descriptors)(void*, const FjFrameMathInput*, FjNativeFrameDescriptors*, FjErrorBuffer*);
     FjRenderOutcome (*render)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*);
     FjCallCompletionResult (*complete)(void*, const FjCallCompletionInput*);
+    /* Optional synchronous observation of the committed Rust selection, after unlock. */
+    void (*trace_submission)(void*, const FjSubmission*, uint32_t reused);
 } FjCudaCallAccess;
-
-typedef struct FjSubmissionAccess {
-    uint64_t instance_token;
-    uint64_t frame_token;
-    void* user;
-    FjStatus (*select)(void*, const FjCudaContext*, const FjSubmission*, FjSubmission*, FjErrorBuffer*);
-} FjSubmissionAccess;
 
 #define FJ_UNAVAILABLE_STATE 0U
 #define FJ_UNAVAILABLE_INSTANCE 1U
 
 FjStatus fj_legacy_prepared_state_frame_policy(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
-FjCallCompletionResult fj_legacy_prepared_state_render(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer*);
+FjCallCompletionResult fj_legacy_prepared_state_render(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, const FjInstance*, uint64_t, FjAbortCallback, FjErrorBuffer*);
 FjCallCompletionResult fj_legacy_prepared_unavailable(const FjAssets*, const FjPreparedState*, uint32_t, FjCudaCallAccess, const FjFrame*, FjAbortCallback, FjErrorBuffer*);
 
 #ifdef __cplusplus
@@ -92,6 +87,7 @@ namespace JuicerCuda {
         static FjStatus frame_descriptors(void*, const FjFrameMathInput*, FjNativeFrameDescriptors*, FjErrorBuffer*) noexcept;
         static FjRenderOutcome render(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*) noexcept;
         static FjCallCompletionResult complete(void*, const FjCallCompletionInput*) noexcept;
+        static void trace_submission(void*, const FjSubmission*, uint32_t reused) noexcept;
 
         FjStatus inspect(const FjFrame*, FjCudaContext*, FjErrorBuffer*) noexcept;
         FjStatus preview(const FjRect*, const FjRect*, uint32_t, FjAutoExposure*, FjErrorBuffer*) noexcept;

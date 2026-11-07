@@ -10,6 +10,7 @@
 
 #include "FilmEffectsFrameDescriptors.h"
 #include "RenderValues.h"
+#include "Logging.h"
 #include "RustEffectsFrameBridge.h"
 #include "Cuda/JuicerCudaFailure.h"
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -225,7 +226,34 @@ namespace JuicerCuda {
     }
 
     FjCudaCallAccess CallScope::access() noexcept {
-        return {this, &CallScope::precheck, &CallScope::admit, &CallScope::release, &CallScope::inspect, &CallScope::preview, &CallScope::frame_descriptors, &CallScope::render, &CallScope::complete};
+        return {this, &CallScope::precheck, &CallScope::admit, &CallScope::release, &CallScope::inspect, &CallScope::preview, &CallScope::frame_descriptors, &CallScope::render, &CallScope::complete, &CallScope::trace_submission};
+    }
+
+    void CallScope::trace_submission(void* user, const FjSubmission* submission, std::uint32_t reused) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
+        const auto* scope = static_cast<const CallScope*>(user);
+        if (!scope || !submission || !scope->_frame ||
+            (scope->_frame->flags & FJ_FRAME_TRACE_VERBOSE) == 0) {
+            return;
+        }
+        try {
+            std::string message = "path=cuda action=";
+            message += reused != 0 ? "reuse" : "new";
+            message += " frame_token=";
+            message += std::to_string(submission->frame_token);
+            message += " snapshot_id=";
+            message += std::to_string(submission->submission_id);
+            message += " instance_token=";
+            message += std::to_string(submission->instance_token);
+            JTRACE_VERBOSE("MSSNP", message);
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+#else
+        (void)user;
+        (void)submission;
+        (void)reused;
+#endif
     }
 
     PendingContextLossRecovery& CallScope::recovery() noexcept {

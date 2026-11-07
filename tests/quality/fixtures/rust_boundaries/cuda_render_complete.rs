@@ -6,8 +6,8 @@ fn consume(
     state: &RenderState,
     frame: &crate::cuda::Frame<'_>,
     policy: &crate::cuda::FramePolicy,
-    latch: &mut crate::cuda::SubmissionLatch<'_>,
+    instance: &crate::instance::Instance,
     abort: &crate::cuda::Abort<'_>,
 ) -> Result<crate::cuda::RenderOutcome, crate::cuda::RenderError> {
-    crate::cuda::render(owner, assets, state, frame, policy, latch, abort)
+    crate::cuda::render(owner, assets, state, frame, policy, instance, abort)
 }

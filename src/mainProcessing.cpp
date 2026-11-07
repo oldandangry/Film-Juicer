@@ -2,7 +2,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -10,7 +9,6 @@
 
 #include <cuda_runtime.h>
 
-#include "JuicerState.h"
 #include "Logging.h"
 #include "PreparedState.h"
 #include "ProcessRoot.h"
@@ -58,11 +56,11 @@ namespace {
 
     void recover_context_loss_state(
         JuicerProcess::Root& root,
-        NativeSubmissionState* submissionState,
+        const FjInstance* instance,
         const JuicerCuda::ResourceManager::DeviceContextKey& key,
         const char* stage,
         const JuicerCuda::Failure& failure) {
-        if (!submissionState) {
+        if (!instance) {
             return;
         }
         if (!JuicerCuda::context_loss(failure)) {
@@ -73,32 +71,25 @@ namespace {
 #if JUICER_DIAGNOSTICS_COMPILED
         const char* stageName = nonempty_cstr_or(stage, "unknown_stage");
         const bool traceInfo = JTRACE_ENABLED(1);
-        const bool retireAccepted = root.retire_reset_context(
-            key.deviceId,
-            key.contextOpaque,
-            retireError);
 #else
         (void)stage;
-        root.retire_reset_context(
-            key.deviceId,
-            key.contextOpaque,
-            retireError);
 #endif
+#if JUICER_DIAGNOSTICS_COMPILED || defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        const bool retireAccepted =
+#endif
+            root.retire_reset_context(key.deviceId, key.contextOpaque, retireError);
 
-#if JUICER_DIAGNOSTICS_COMPILED
-        bool latchCleared = false;
-#endif
-        {
-            std::lock_guard<std::mutex> lock(submissionState->submissionSnapshotLatchMutex);
-            if (submissionState->submissionSnapshotLatchValid &&
-                submissionState->submissionSnapshotLatch.deviceContextKey == key) {
-                submissionState->submissionSnapshotLatch = JuicerCuda::ResourceManager::SubmissionSnapshot{};
-                submissionState->submissionSnapshotLatchValid = false;
-#if JUICER_DIAGNOSTICS_COMPILED
-                latchCleared = true;
-#endif
-            }
+        std::uint32_t cleared = 0;
+        std::array<char, 512> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        const auto invalidated = fj_legacy_instance_invalidate_submission(
+            instance, key.deviceId, reinterpret_cast<std::uintptr_t>(key.contextOpaque), &cleared, &error);
+        if (invalidated.category != FJ_STATUS_SUCCESS) {
+            JTRACE("MSLCY", text.data());
         }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_context_retirement(retireAccepted, invalidated, cleared != 0);
+#endif
 
 #if JUICER_DIAGNOSTICS_COMPILED
         if (traceInfo) {
@@ -116,7 +107,7 @@ namespace {
             msg += " retire_accepted=";
             msg += std::to_string(bool_to_i32(retireAccepted));
             msg += " latch_cleared=";
-            msg += std::to_string(bool_to_i32(latchCleared));
+            msg += std::to_string(bool_to_i32(cleared != 0));
             if (!retireError.empty()) {
                 msg += " retire_error=";
                 msg += retireError;
@@ -126,124 +117,15 @@ namespace {
 #endif
     }
 
+    // SF_TEMP_BRIDGE_FRAME_IDENTITY_INPUTS: preserve native time/index conversion until S6.
     std::int64_t frame_index_from_time(double time) {
         return static_cast<std::int64_t>(std::floor(finite_or(time, 0.0)));
     }
 
-#if JUICER_DIAGNOSTICS_COMPILED
-    const char* submission_snapshot_action_label(bool reusingSnapshotLatch) {
-        return reusingSnapshotLatch ? "reuse" : "new";
-    }
-#endif
 
 } // namespace
 
 namespace {
-    struct SubmissionSelection final {
-        NativeSubmissionState* submissionState = nullptr;
-        bool traceVerbose = false;
-    };
-
-    FjStatus select_submission(
-        void* user,
-        const FjCudaContext* context,
-        const FjSubmission* requested,
-        FjSubmission* selected,
-        FjErrorBuffer* error) noexcept {
-        auto* access = static_cast<SubmissionSelection*>(user);
-        if (!access || !access->submissionState || !context || !requested || !selected) {
-            return JuicerCuda::write_status(
-                {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0},
-                "invalid submission selection callback arguments",
-                error);
-        }
-        *selected = {};
-
-        auto& submissionState = *access->submissionState;
-        JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
-        snapshot.instanceToken.value = requested->instance_token;
-        snapshot.frameToken.value = requested->frame_token;
-        snapshot.deviceContextKey = {
-            context->device_id,
-            reinterpret_cast<void*>(context->context)};
-        snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-            requested->upload_core_hash,
-            requested->dir_hash,
-            requested->scanner_hash,
-            requested->auto_exposure_hash);
-
-        bool reusingSnapshotLatch = false;
-        try {
-            {
-                std::lock_guard<std::mutex> latchLock(submissionState.submissionSnapshotLatchMutex);
-                const auto& latched = submissionState.submissionSnapshotLatch;
-                const bool digestsMatch =
-                    latched.keyDigests.uploadCoreHash == snapshot.keyDigests.uploadCoreHash &&
-                    latched.keyDigests.dirHash == snapshot.keyDigests.dirHash &&
-                    latched.keyDigests.scannerHash == snapshot.keyDigests.scannerHash &&
-                    latched.keyDigests.autoExposureHash == snapshot.keyDigests.autoExposureHash;
-                if (submissionState.submissionSnapshotLatchValid &&
-                    latched.instanceToken.value == snapshot.instanceToken.value &&
-                    latched.frameToken.value == snapshot.frameToken.value &&
-                    latched.deviceContextKey == snapshot.deviceContextKey &&
-                    digestsMatch && latched.snapshotId != 0) {
-                    snapshot = latched;
-                    reusingSnapshotLatch = true;
-                } else {
-                    std::uint64_t nextSnapshotId =
-                        submissionState.submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
-                    if (nextSnapshotId == 0) {
-                        nextSnapshotId =
-                            submissionState.submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
-                    }
-                    snapshot.snapshotId = nextSnapshotId;
-                    submissionState.submissionSnapshotLatch = snapshot;
-                    submissionState.submissionSnapshotLatchValid = true;
-                }
-            }
-        } catch (const std::bad_alloc&) {
-            return JuicerCuda::write_status(
-                {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0},
-                "submission snapshot selection allocation failed",
-                error);
-        } catch (...) {
-            return JuicerCuda::write_status(
-                {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0},
-                "submission snapshot selection failed",
-                error);
-        }
-
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (access->traceVerbose) {
-            try {
-                std::string message = "path=cuda action=";
-                message += submission_snapshot_action_label(reusingSnapshotLatch);
-                message += " frame_token=";
-                message += std::to_string(snapshot.frameToken.value);
-                message += " snapshot_id=";
-                message += std::to_string(snapshot.snapshotId);
-                message += " instance_token=";
-                message += std::to_string(snapshot.instanceToken.value);
-                JTRACE_VERBOSE("MSSNP", message);
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
-        }
-#else
-        (void)reusingSnapshotLatch;
-#endif
-
-        *selected = {
-            snapshot.instanceToken.value,
-            snapshot.frameToken.value,
-            snapshot.snapshotId,
-            snapshot.keyDigests.uploadCoreHash,
-            snapshot.keyDigests.dirHash,
-            snapshot.keyDigests.scannerHash,
-            snapshot.keyDigests.autoExposureHash};
-        return JuicerCuda::write_status({FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, {}, error);
-    }
-
     struct AbortAccess final {
         bool (*query)(void*) = nullptr;
         void* user = nullptr;
@@ -253,7 +135,7 @@ namespace {
     struct RenderCompletion final {
         OFX::ImageEffect* effect = nullptr;
         FjCuda* runtime = nullptr;
-        NativeSubmissionState* submissionState = nullptr;
+        const FjInstance* instance = nullptr;
         JuicerCuda::CallScope* callScope = nullptr;
         const AbortAccess* abortAccess = nullptr;
         bool completed = false;
@@ -331,7 +213,7 @@ namespace {
                     JuicerCuda::NativeCall recoveryCall(completion->runtime);
                     recover_context_loss_state(
                         recoveryCall.root(),
-                        completion->submissionState,
+                        completion->instance,
                         {input->inspected_context.device_id,
                          reinterpret_cast<void*>(input->inspected_context.context)},
                         recovery.stage,
@@ -345,6 +227,9 @@ namespace {
                 JuicerLogging::discard_current_exception();
             }
         }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_adapter_completion(outcome, fatal, diagnostic);
+#endif
         return {outcome, fatal ? 1u : 0u};
     }
 
@@ -401,8 +286,7 @@ void JuicerProcessor::setDirectFrameRequest(const DirectFrameRequest& request) {
     _fullFrameExtent = request.fullFrameExtent;
     _framePolicy = request.framePolicy;
     _renderState = request.renderState;
-    _sessionSeed = request.sessionSeed;
-    _instanceToken = request.instanceToken;
+    _instance = request.instance;
     _clipToken = request.clipToken;
     _timeFrames = finite_or(request.frameTime, 0.0);
     _frameIndex = frame_index_from_time(_timeFrames);
@@ -415,16 +299,11 @@ void JuicerProcessor::setPrintFrameRequest(const PrintFrameRequest& request) {
     _fullFrameExtent = request.fullFrameExtent;
     _framePolicy = request.framePolicy;
     _renderState = request.renderState;
-    _sessionSeed = request.sessionSeed;
-    _instanceToken = request.instanceToken;
+    _instance = request.instance;
     _clipToken = request.clipToken;
     _timeFrames = finite_or(request.frameTime, 0.0);
     _frameIndex = frame_index_from_time(_timeFrames);
     _frameRate = positive_finite_or(request.frameRate, 0.0);
-}
-
-void JuicerProcessor::setSubmissionState(NativeSubmissionState* s) {
-    _submissionState = s;
 }
 
 void JuicerProcessor::process() {
@@ -468,6 +347,12 @@ void JuicerProcessor::processImagesCUDA() {
                 ? FJ_DEPTH_FLOAT32
                 : FJ_DEPTH_UNKNOWN};
     };
+    std::uint32_t identityInitialized = 0;
+    std::uint64_t sessionSeed = 0;
+    std::uint64_t instanceToken = 0;
+    if (_instance) {
+        (void)fj_legacy_instance_identity(_instance, &identityInitialized, &sessionSeed, &instanceToken, nullptr);
+    }
     const auto& geometry = _effectsGeometry;
     const FjFrame rawFrame{
         image_record(*_srcImg),
@@ -481,7 +366,7 @@ void JuicerProcessor::processImagesCUDA() {
         _framePolicy.geometry.pixel_size_um,
         _timeFrames,
         _frameRate,
-        _sessionSeed,
+        sessionSeed,
         _clipToken,
         {{geometry.pixelDefinition.x,
           geometry.pixelDefinition.y,
@@ -508,7 +393,7 @@ void JuicerProcessor::processImagesCUDA() {
         route = stateView.route;
     }
 
-    RenderCompletion completion{&_effect, _runtime.cuda, _submissionState, nullptr, nullptr};
+    RenderCompletion completion{&_effect, _runtime.cuda, _instance, nullptr, nullptr};
     JuicerCuda::CallScope callScope(
         _runtime.cuda, route, &complete_render_call, &completion);
     completion.callScope = &callScope;
@@ -531,24 +416,17 @@ void JuicerProcessor::processImagesCUDA() {
     if (!prepared) {
         result = reject_missing_render_state(
             _runtime.assets, callScope.access(), rawFrame, abortCallback, error);
-    } else if (!_submissionState) {
+    } else if (!_instance || identityInitialized == 0) {
         result = prepared->reject_missing_instance(
             _runtime.assets, callScope.access(), rawFrame, abortCallback, error);
     } else {
-        const FjSubmissionAccess submission{
-            _instanceToken,
-            static_cast<std::uint64_t>(_frameIndex),
-            nullptr,
-            &select_submission};
-        SubmissionSelection selection{_submissionState, traceVerbose};
-        FjSubmissionAccess selectedSubmission = submission;
-        selectedSubmission.user = &selection;
         result = prepared->render(
             _runtime.assets,
             callScope.access(),
             rawFrame,
             _framePolicy,
-            selectedSubmission,
+            _instance,
+            static_cast<std::uint64_t>(_frameIndex),
             abortCallback,
             error);
     }

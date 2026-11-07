@@ -622,6 +622,10 @@ int fj_test_effects_frame_c_raw(uint32_t, const FjEffectsFrameInput*, uint32_t, 
  * does not prepare/admit/recover state. Acquire/release consume one owner. */
 const size_t* fj_test_instance_abi_facts(size_t* count);
 size_t fj_test_prepared_state_identity(const FjPreparedState*);
+typedef struct FjInstanceLifetime FjInstanceLifetime;
+FjStatus fj_test_instance_lifetime_acquire(const FjInstance*, FjInstanceLifetime**, FjErrorBuffer*);
+FjStatus fj_test_instance_lifetime_live(const FjInstanceLifetime*, uint32_t* out_live, FjErrorBuffer*);
+FjStatus fj_test_instance_lifetime_release(FjInstanceLifetime*, FjErrorBuffer*);
 typedef struct FjInstanceObservation FjInstanceObservation;
 typedef struct FjInstanceObservationView {
     uint32_t pending_kind; /* 0 uninitialized, 1 capturing, 2 awaiting writes,
@@ -638,6 +642,7 @@ typedef struct FjInstanceObservationView {
     FjPreparationParams captured;
     FjPreparedStateView published;
 } FjInstanceObservationView;
+FjStatus fj_test_instance_submission(const FjInstance*, uint32_t* out_valid, FjSubmission* out, FjCudaContext* out_context, FjErrorBuffer*);
 FjStatus fj_test_instance_observation_acquire(const FjInstance*, FjInstanceObservation**, FjErrorBuffer*);
 FjStatus fj_test_instance_observation_view(const FjInstanceObservation*, FjInstanceObservationView*, FjErrorBuffer*);
 FjStatus fj_test_instance_observation_release(FjInstanceObservation*, FjErrorBuffer*);

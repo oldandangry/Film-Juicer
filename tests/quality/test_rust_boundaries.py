@@ -1424,6 +1424,7 @@ class RustBoundaryTests(unittest.TestCase):
             ("film-juicer-plugin", "asset_noise.rs"),
             ("film-juicer-plugin", "asset_calibration.rs"),
             ("film-juicer-plugin", "instance.rs"),
+            ("film-juicer-plugin", "submission.rs"),
         )
         self.subtest_cases = tuple(
             f"{package}/{source}|{'release' if release else 'debug'}"
@@ -1562,6 +1563,7 @@ class RustBoundaryTests(unittest.TestCase):
          ('cuda_render_capability_construction', {'E0451': ('FramePolicy { ..policy }',)}),
          ('cuda_render_projection_private', {'E0603': ('crate::cuda::projection::host_data',)}),
          ('cuda_render_state_borrow', {'E0505': ('drop(state)',)}),
+         ('cuda_render_instance_borrow', {'E0505': ('drop(instance)',)}),
          ('cuda_render_owner_thread', {'E0277': ('std::thread::spawn(move || owner)',)}))
         feature_forms = (False, True)
         self.subtest_cases = tuple(

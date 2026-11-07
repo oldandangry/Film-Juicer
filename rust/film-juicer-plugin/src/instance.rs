@@ -11,15 +11,48 @@ use std::sync::Arc;
 use film_juicer_core::assets::Assets;
 use film_juicer_core::{recipe, state};
 
+use crate::submission::{self, Submission};
+
 pub(crate) struct Instance {
     publication: Arc<state::Publication>,
+    submission: Submission,
 }
 
 impl Instance {
     pub(crate) fn new() -> Self {
         Self {
             publication: Arc::new(state::Publication::new()),
+            submission: Submission::new(),
         }
+    }
+    pub(crate) fn bind_identity(&self, seed: u64, token: u64) -> Result<(), submission::Error> {
+        self.submission.bind_identity(seed, token)
+    }
+    pub(crate) fn identity(&self) -> Option<submission::Identity> {
+        self.submission.identity()
+    }
+    pub(crate) fn select_submission(
+        &self,
+        key: submission::Key,
+    ) -> Result<submission::Selection, submission::Error> {
+        self.submission.select(key)
+    }
+    pub(crate) fn invalidate_submission(
+        &self,
+        device_id: i32,
+        context: usize,
+    ) -> Result<bool, submission::Error> {
+        self.submission.invalidate(device_id, context)
+    }
+    #[cfg(feature = "test-support")]
+    pub(crate) fn observe_submission(
+        &self,
+    ) -> Result<Option<submission::Selection>, submission::Error> {
+        self.submission.observe()
+    }
+    #[cfg(test)]
+    pub(crate) fn poison_submission_for_test(&self) {
+        self.submission.poison_for_test();
     }
     pub(crate) fn begin_capture(
         &self,

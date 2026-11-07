@@ -15,6 +15,22 @@
 
 namespace JuicerTestSupport {
 
+    struct SubmissionObservation {
+        bool valid = false;
+        FjSubmission submission{};
+        FjCudaContext context{};
+    };
+
+    inline SubmissionObservation submission_observation(const RenderInstance& instance) {
+        SubmissionObservation result{};
+        std::uint32_t valid = 0;
+        if (fj_test_instance_submission(instance.borrow(), &valid, &result.submission, &result.context, nullptr).category != FJ_STATUS_SUCCESS) {
+            throw std::runtime_error("cannot observe Rust submission");
+        }
+        result.valid = valid != 0;
+        return result;
+    }
+
     class PublicationObservation {
     public:
         PublicationObservation(const PublicationObservation&) = delete;

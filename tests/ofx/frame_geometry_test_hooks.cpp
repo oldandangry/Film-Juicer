@@ -4,6 +4,7 @@
 
 namespace JuicerFrame::FrameGeometryTest {
     namespace {
+        thread_local InstanceRetirementObservation retirement;
         thread_local Observation observed;
         thread_local HalationObservation halation;
         thread_local DiffusionObservation diffusion;
@@ -14,6 +15,19 @@ namespace JuicerFrame::FrameGeometryTest {
             observed.phases[observed.count++] = value;
         }
     } // namespace
+    void instance_retired(const FjInstance* instance, std::uint64_t token, FjStatus status) noexcept {
+        std::uint32_t initialized = 0;
+        std::uint64_t seed = 0;
+        std::uint64_t actualToken = 0;
+        const auto read = fj_legacy_instance_identity(instance, &initialized, &seed, &actualToken, nullptr);
+        retirement = {retirement.count + 1, read.category == FJ_STATUS_SUCCESS && initialized != 0 && actualToken == token, token, status};
+    }
+    InstanceRetirementObservation instance_retirement_snapshot() {
+        return retirement;
+    }
+    void reset_instance_retirement() {
+        retirement = {};
+    }
     void reset() {
         observed = {};
         halation = {};

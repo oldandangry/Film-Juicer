@@ -29,6 +29,12 @@
 #include "Hash.h"
 #include "mainProcessing.h"
 
+#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
+namespace JuicerFrame::FrameGeometryTest {
+    void instance_retired(const FjInstance*, std::uint64_t, FjStatus) noexcept;
+}
+#endif
+
 namespace {
     Spektrafilm::DiffusionFrameDomain frame_domain(const OfxRectI& bounds) {
         JuicerFrame::Domain domain{};
@@ -1280,7 +1286,7 @@ Spektrafilm::VisualGrainControls JuicerEffect::gatherGrainUi() const {
 
 void JuicerEffect::applyGrainPresetDefaults(int presetIndex) {
     const GrainPresetDefaults preset = grain_preset_defaults(presetIndex);
-    const HostEditScope suppressEvents(_publication);
+    const HostEditScope suppressEvents(_instance);
 
     const GrainAdvancedDefaults advancedDefaults = compute_grain_advanced_defaults(
         preset,
@@ -1347,7 +1353,7 @@ void JuicerEffect::resetGrainAdvancedControls() {
     const double clumpMorphPeriodSec = 8.0;
 
     const GrainRatioSet ratios = normalized_default_grain_ratios();
-    const HostEditScope suppressEvents(_publication);
+    const HostEditScope suppressEvents(_instance);
 
     set_double_param(_pGrainParticleAreaUm2, particleArea);
     set_double_param(_pGrainParticleScaleMaster, particleScaleMaster);
@@ -1374,7 +1380,7 @@ void JuicerEffect::resetGrainAdvancedControls() {
 }
 
 void JuicerEffect::cacheGrainMaster(double& target, double value) {
-    if (CaptureAction::current && &CaptureAction::current->instance == &_publication && !CaptureAction::current->is_current()) {
+    if (CaptureAction::current && &CaptureAction::current->instance == &_instance && !CaptureAction::current->is_current()) {
         return;
     }
     std::lock_guard<std::mutex> lock(_uiMutex);
@@ -1382,7 +1388,7 @@ void JuicerEffect::cacheGrainMaster(double& target, double value) {
 }
 
 void JuicerEffect::updateGrainPresetLabel(bool custom) {
-    if (CaptureAction::current && &CaptureAction::current->instance == &_publication && !CaptureAction::current->is_current()) {
+    if (CaptureAction::current && &CaptureAction::current->instance == &_instance && !CaptureAction::current->is_current()) {
         return;
     }
     {
@@ -1543,7 +1549,7 @@ void JuicerEffect::applyDirGammaProfileDefaults() {
         throw JuicerCuda::ExecutionFailure{std::move(failure)};
     }
 
-    const HostEditScope suppressEvents(_publication);
+    const HostEditScope suppressEvents(_instance);
     set_double3_param(
         _pCouplersGammaSameLayerRgb,
         digest.gamma_samelayer_rgb[0],
@@ -1756,22 +1762,22 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle, JuicerProcess::ProcessRu
         initMasterCache(_pGrainDensityMinMaster, _grainDensityMinMasterLast);
         initMasterCache(_pGrainUniformityMaster, _grainUniformityMasterLast);
 
-        // Own per-instance state
-        _submissionState = std::make_unique<NativeSubmissionState>();
+        // SF_TEMP_BRIDGE_FRAME_IDENTITY_INPUTS: clock/address conversion moves at S6.
         {
             const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-            const std::uint64_t seedFields[2] = {
-                static_cast<std::uint64_t>(now),
-                static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))};
+            std::uint64_t seedFields[2]{};
+            seedFields[0] = static_cast<std::uint64_t>(now);
+            seedFields[1] = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this));
             std::uint64_t seed = Hash::hash_bytes(seedFields, sizeof(seedFields));
             if (seed == 0) {
                 seed = 1;
             }
-            _submissionState->sessionSeed = seed;
-            _submissionState->instanceToken = seed;
+            std::array<char, 512> text{};
+            FjErrorBuffer error{text.data(), text.size(), 0};
+            require_instance_success(_instance.bind_identity(seed, seed, error));
         }
 
-        const HostEditScope uiContext(_publication);
+        const HostEditScope uiContext(_instance);
         std::string routeDiagnostic;
         std::string gammaFilmProfileKey;
         Spektrafilm::ScanRoute diffusionRoute{};
@@ -1802,11 +1808,24 @@ JuicerEffect::~JuicerEffect() {
         std::array<char, 512> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
         const FjRuntimeView runtimeView = _runtime.borrow();
-        const auto result = fj_cuda_retire_instance(runtimeView.cuda, _submissionState->instanceToken, &error);
+        std::uint32_t initialized = 0;
+        std::uint64_t seed = 0;
+        std::uint64_t token = 0;
+        const auto identity = fj_legacy_instance_identity(_instance.borrow(), &initialized, &seed, &token, &error);
+        if (identity.category != FJ_STATUS_SUCCESS) {
+            JTRACE("MSLCY", diagnostic.data());
+            return;
+        }
+        if (initialized == 0) {
+            return;
+        }
+        const auto result = fj_cuda_retire_instance(runtimeView.cuda, token, &error);
+#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
+        JuicerFrame::FrameGeometryTest::instance_retired(_instance.borrow(), token, result);
+#endif
         if (result.category != FJ_STATUS_SUCCESS) {
             JTRACE("MSLCY", diagnostic.data());
         }
-        _submissionState.reset();
     } catch (...) {
         JuicerLogging::discard_current_exception();
     }
@@ -1893,10 +1912,10 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     std::uint32_t admissionKind = FJ_ADMISSION_NONE;
     std::optional<PreparedState> admitted;
     const FjAssets* assets = runtimeView.assets;
-    FjStatus admissionStatus = _publication.admit(assets, admissionKind, admitted, admissionError);
+    FjStatus admissionStatus = _instance.admit(assets, admissionKind, admitted, admissionError);
     if (admissionKind == FJ_ADMISSION_NEEDS_CAPTURE || admissionKind == FJ_ADMISSION_NEEDS_REFRESH) {
         acquire_render_capture(admissionKind == FJ_ADMISSION_NEEDS_CAPTURE ? FJ_CAPTURE_INITIAL : FJ_CAPTURE_REFRESH);
-        admissionStatus = _publication.admit(assets, admissionKind, admitted, admissionError);
+        admissionStatus = _instance.admit(assets, admissionKind, admitted, admissionError);
     }
     if (admissionKind == FJ_ADMISSION_NEEDS_CAPTURE || admissionKind == FJ_ADMISSION_NEEDS_REFRESH ||
         admissionKind == FJ_ADMISSION_CAPTURING) {
@@ -1983,7 +2002,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     images.src = srcImg.get();
     images.dst = dstImg.get();
     proc.setSrcDst(images);
-    proc.setSubmissionState(_submissionState.get());
+    // SF_TEMP_BRIDGE_FRAME_IDENTITY_INPUTS: actual OFXS clip conversion moves at S6.
     const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
 
     if (printRoute) {
@@ -1993,8 +2012,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.renderWindow = roi;
         frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;
-        frameRequest.sessionSeed = _submissionState->sessionSeed;
-        frameRequest.instanceToken = _submissionState->instanceToken;
+        frameRequest.instance = _instance.borrow();
         frameRequest.clipToken = renderClipToken;
         frameRequest.frameTime = args.time;
         frameRequest.frameRate = getFrameRate();
@@ -2006,8 +2024,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.renderWindow = roi;
         frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;
-        frameRequest.sessionSeed = _submissionState->sessionSeed;
-        frameRequest.instanceToken = _submissionState->instanceToken;
+        frameRequest.instance = _instance.borrow();
         frameRequest.clipToken = renderClipToken;
         frameRequest.frameTime = args.time;
         frameRequest.frameRate = getFrameRate();
@@ -2020,7 +2037,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 }
 
 bool JuicerEffect::plugin_edit_suppressed() const noexcept {
-    return HostCallScope::current && &HostCallScope::current->instance == &_publication;
+    return HostCallScope::current && &HostCallScope::current->instance == &_instance;
 }
 
 void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std::string& paramName) {
@@ -2034,7 +2051,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     bool refresh = false;
     {
-        CaptureAction action(_publication, FJ_CAPTURE_CHANGE, true);
+        CaptureAction action(_instance, FJ_CAPTURE_CHANGE, true);
         try {
             [&]() {
                 auto apply_action_then_rebuild = [&](const auto& applyFn) {
@@ -2050,21 +2067,21 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
                         0,
                         static_cast<int>(JuicerParams::kCameraFilmFormatPresets.size()));
                     if (presetIndex > 0) {
-                        const HostEditScope suppressEvents(_publication);
+                        const HostEditScope suppressEvents(_instance);
                         set_double_param(
                             _pCameraFilmFormat,
                             JuicerParams::kCameraFilmFormatPresets[static_cast<std::size_t>(presetIndex - 1)]
                                 .longEdgeMm);
                     }
                 } else if (userEdit && param_name_is(paramName, JuicerParams::kCameraFilmFormatMm)) {
-                    const HostEditScope suppressEvents(_publication);
+                    const HostEditScope suppressEvents(_instance);
                     registered_host_write([&]() {
                         _pCameraFilmFormatPreset->setValue(0);
                     });
                 }
 
                 if (userEdit && is_coupler_gamma_numeric_param_name(paramName)) {
-                    const HostEditScope suppressEvents(_publication);
+                    const HostEditScope suppressEvents(_instance);
                     set_bool_param(_pCouplersGammaUseStock, false);
                 }
 
@@ -2073,7 +2090,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
                         read_str_choice_param_or_empty(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
                     const Spektrafilm::ProfilePolarity polarity = capture_profile_polarity_for_key(_runtime.spektrafilm_profile_catalog(), filmKey);
                     const Spektrafilm::ScanRoute defaultRoute = Spektrafilm::default_scan_route_for_polarity(polarity);
-                    const HostEditScope suppressEvents(_publication);
+                    const HostEditScope suppressEvents(_instance);
                     set_str_choice_param(_pScanRoute, Spektrafilm::scan_route_key(defaultRoute));
                 }
 
@@ -2134,7 +2151,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
                 };
 
                 auto set_triplet_suppressed = [&](OFX::Double3DParam* advParam, const std::array<double, 3>& values) {
-                    const HostEditScope suppressEvents(_publication);
+                    const HostEditScope suppressEvents(_instance);
                     set_double3_param(advParam, values[0], values[1], values[2]);
                 };
 
@@ -2215,7 +2232,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
                 };
 
                 auto with_param_event_suppression = [&](const auto& applyFn) {
-                    const HostEditScope suppressEvents(_publication);
+                    const HostEditScope suppressEvents(_instance);
                     applyFn();
                 };
 
@@ -2481,7 +2498,7 @@ bool JuicerEffect::snapshotParams(
 void JuicerEffect::acquire_render_capture(std::uint32_t mode) {
     bool refresh = false;
     {
-        CaptureAction action(_publication, mode);
+        CaptureAction action(_instance, mode);
         if (!action.ticket) {
             return;
         }
@@ -2510,7 +2527,7 @@ void JuicerEffect::finish_capture() {
     CaptureAction& action = *CaptureAction::current;
     FjErrorBuffer error{nullptr, 0, 0};
     FjSnapshotStart start{};
-    require_instance_success(_publication.begin_snapshot(action.ticket, start, error));
+    require_instance_success(_instance.begin_snapshot(action.ticket, start, error));
     if (start.kind == FJ_SNAPSHOT_DEFERRED || start.kind == FJ_SNAPSHOT_IGNORED) {
         action.armed = false;
         action.completion = start.kind == FJ_SNAPSHOT_DEFERRED ? FJ_UPDATE_DEFERRED : FJ_UPDATE_IGNORED;
@@ -2528,7 +2545,7 @@ void JuicerEffect::finish_capture() {
     // SF_TEMP_BRIDGE_CAPTURED_INPUT_IDENTITY: S6 moves this definition with capture.
     const std::uint64_t identity = hash_params(params);
     std::uint32_t update = FJ_UPDATE_NONE;
-    const FjStatus status = _publication.install(action.ticket, start.write_revision, params, identity, update, error);
+    const FjStatus status = _instance.install(action.ticket, start.write_revision, params, identity, update, error);
     if (update == FJ_UPDATE_APPLIED || update == FJ_UPDATE_IGNORED || update == FJ_UPDATE_DEFERRED) {
         action.armed = false;
         action.completion = update;

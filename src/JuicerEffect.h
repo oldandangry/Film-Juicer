@@ -1,6 +1,5 @@
 #pragma once
 
-#include <memory>
 #include <string>
 #include <cstdint>
 #include <mutex>
@@ -10,7 +9,6 @@
 
 #include "ofxsImageEffect.h"
 
-struct NativeSubmissionState;
 struct ParamSnapshot;
 struct VisualGrainControls;
 
@@ -221,9 +219,8 @@ private:
     OFX::DoubleParam* _pGlareCompRemovalTransition = nullptr;
 
     JuicerProcess::ProcessRuntime& _runtime;
-    RenderInstance _publication;
+    RenderInstance _instance;
     std::mutex _uiMutex;
-    std::unique_ptr<NativeSubmissionState> _submissionState;
 
     double _grainParticleScaleMasterLast = 0.0;
     double _grainParticleScaleLayersMasterLast = 0.0;
