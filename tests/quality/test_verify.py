@@ -207,6 +207,123 @@ class PublicCliTests(unittest.TestCase):
             verify.main()
 
 
+class CtestDispatchTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="CTest dispatch ü ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        self.build = self.root / "out/build" / self.preset
+        (self.build / "tests").mkdir(parents=True)
+        (self.root / "tests/tooling").mkdir(parents=True)
+        self.tests = {}
+        for runtime in ("host", "gpu"):
+            name = runtime.title() + ".Fixture"
+            target = runtime.title() + "Target"
+            executable = str(self.build / target)
+            contract = {"schema": f"native-{runtime}-contracts-v1", "required": [name],
+                        "targets": {target: {"protocol": "custom", "registrations": 1}}}
+            (self.root / "tests" / (runtime + "-contracts.json")).write_text(json.dumps(contract))
+            (self.build / "tests" / (runtime + "-targets.json")).write_text(json.dumps({target: executable}))
+            properties = [{"name": "LABELS", "value": [runtime]}, {"name": "TIMEOUT", "value": 0}]
+            if runtime == "gpu":
+                properties.append({"name": "RESOURCE_LOCK", "value": ["juicer_gpu"]})
+            self.tests[name] = {"name": name, "properties": properties, "command": [
+                "python", "verify.py", "native-case", "--runtime", runtime, "--protocol", "custom", "--", executable]}
+        for name in ("Rust.Core", "Rust.Bridge"):
+            self.tests[name] = {"name": name, "properties": [
+                {"name": "LABELS", "value": ["host"]}, {"name": "TIMEOUT", "value": 0}]}
+        (self.root / "tests/python-contracts.json").write_text(json.dumps({
+            "schema": "python-contracts-v1", "registrations": {}}))
+        (self.build / "tests/python-targets.json").write_text("{}")
+        (self.build / "tests/rust-artifacts.json").write_text("{}")
+        cargo, nextest = str(self.root / "cargo"), str(self.root / "cargo-nextest")
+        cache = {"CMAKE_HOME_DIRECTORY": str(self.root), "BUILD_TESTING": "ON", "CMAKE_BUILD_TYPE": "Debug",
+                 "JUICER_CARGO_EXECUTABLE": cargo, "JUICER_NEXTEST_EXECUTABLE": nextest,
+                 "Python3_EXECUTABLE": sys.executable, "CMAKE_CXX_COMPILER": "compiler", "CMAKE_CUDA_COMPILER": "nvcc"}
+        self.args = SimpleNamespace(preset=self.preset, run_id="dispatch", cuda_free=False, build_dir=None,
+                                    mode="development", selection=None, runtime="all", reason=None, files=None,
+                                    tests=["Host.Fixture", "Gpu.Fixture"], targets=None, label=None, cargo=None, nextest=None)
+        self.native = Mock(commands=[])
+        self.native.command.side_effect = self.command
+        self.enterContext(patch.object(verify, "ROOT", self.root))
+        self.enterContext(patch.object(verify, "cache_values", return_value=cache))
+        self.enterContext(patch.object(verify, "capture_native_source", return_value=({"head": "fixture"}, b"", {})))
+        self.enterContext(patch.object(verify, "expire_diagnostics", return_value={"read_bytes": 0}))
+        self.enterContext(patch.object(verify.shutil, "which", return_value=str(self.root / "cmake")))
+        self.enterContext(patch.object(verify, "windows_vctip", return_value=None))
+        self.enterContext(patch.object(execution, "NativeRun", return_value=self.native))
+        self.finish = self.enterContext(patch.object(verify, "finish_native_run", return_value=0))
+
+    def command(self, name, command, **kwargs):
+        path = self.root / (name + ".log")
+        if name == "registration":
+            path.write_text(json.dumps({"tests": list(self.tests.values())}))
+        elif name == "versions":
+            path.write_text(json.dumps([{"name": name, "output": version} for name, version in (
+                ("cargo", "cargo 1.98.1 fixture"), ("rustc", "rustc 1.98.1 fixture"),
+                ("nextest", "cargo-nextest 0.9.143 fixture"))]))
+        elif name == "gpu-exclusion":
+            self.assertTrue((self.root / "out/verification-locks/gpu/owner.json").is_file())
+            self.assertNotIn("JUICER_OUTPUT_LEASES", kwargs["env"])
+            path.write_text('{"physical_gpu":"excluded"}')
+        elif name.startswith("ctest-"):
+            self.assertIn("timeout", kwargs)
+            self.assertIsNone(kwargs["timeout"])
+            self.assertIn("JUICER_OUTPUT_LEASES", kwargs["env"])
+            self.assertEqual((self.root / "out/verification-locks/gpu/owner.json").exists(), name == "ctest-gpu")
+            runtime = name.removeprefix("ctest-")
+            self.assertEqual(command[command.index("-R") + 1], "^(" + runtime.title() + r"\.Fixture)$")
+            Path(command[command.index("--output-junit") + 1]).write_text('<testsuite><testcase status="run"/></testsuite>')
+        return path
+
+    def test_zero_inventory_dispatches_host_and_gpu_without_deadlines(self):
+        verify.native_tests(self.args)
+        result = self.finish.call_args.args[1]
+        self.assertEqual(result["status"], "passed", result.get("error"))
+        self.assertEqual([call.args[0] for call in self.native.command.call_args_list if call.args[0].startswith("ctest-")],
+                         ["ctest-host", "ctest-gpu"])
+        self.assertEqual(result["physical_gpu"], {"contender_excluded": True, "drained_while_locked": True})
+        self.assertFalse(list((self.root / "out/verification-locks").glob("*/owner.json")))
+
+    def test_host_selection_accepts_zero_gpu_inventory_without_device_ownership(self):
+        self.args.runtime, self.args.tests = "host", ["Host.Fixture"]
+        verify.native_tests(self.args)
+        result = self.finish.call_args.args[1]
+        self.assertEqual(result["status"], "passed", result.get("error"))
+        names = [call.args[0] for call in self.native.command.call_args_list]
+        self.assertIn("ctest-host", names)
+        self.assertNotIn("ctest-gpu", names)
+        self.assertNotIn("gpu-exclusion", names)
+        self.assertNotIn("physical_gpu", result)
+
+    def test_live_inventory_rejects_finite_missing_and_malformed_timeouts(self):
+        timeouts = {"finite": 600, "missing": None, "null": None, "false": False, "true": True,
+                    "negative": -1, "string": "0", "nan": float("nan"),
+                    "infinity": float("inf"), "negative-infinity": -float("inf")}
+        self.subtest_cases = tuple(runtime + "/" + case for runtime in ("host", "gpu") for case in timeouts)
+        for runtime in ("host", "gpu"):
+            test = self.tests[runtime.title() + ".Fixture"]
+            properties = list(test["properties"])
+            for case, timeout in timeouts.items():
+                with self.subTest(case=runtime + "/" + case):
+                    self.args.run_id = runtime + "-" + case
+                    self.args.runtime, self.args.tests = "host", ["Host.Fixture"]
+                    test["properties"] = [p for p in properties if p["name"] != "TIMEOUT"]
+                    if case != "missing":
+                        test["properties"].append({"name": "TIMEOUT", "value": timeout})
+                    self.native.command.reset_mock()
+                    verify.native_tests(self.args)
+                    result = self.finish.call_args.args[1]
+                    self.assertEqual(result["status"], "failed")
+                    self.assertIn("ordinary CTest registration " + test["name"] + " requires explicit numeric TIMEOUT 0", result["error"])
+                    self.assertFalse(any(call.args[0] in {"build", "ctest-host", "ctest-gpu", "gpu-exclusion"}
+                                         for call in self.native.command.call_args_list))
+            test["properties"] = properties
+
+    test_live_inventory_rejects_finite_missing_and_malformed_timeouts.required_subtests = True
+
+
 class PublicationScratchTests(unittest.TestCase):
     def test_success_disposes_scratch_and_failed_completion_preserves_it(self):
         from qualification import validate_build_result

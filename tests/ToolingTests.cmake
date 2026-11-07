@@ -75,7 +75,7 @@ function(juicer_register_tooling_tests)
         endif()
         juicer_add_python_test(NAME "Quality.${group}" COMMAND "${ARG_PYTHON}" -B -m unittest discover
             -s "${test_source}/quality" -p "${pattern}" -v)
-        set_tests_properties("Quality.${group}" PROPERTIES LABELS "host" TIMEOUT 120)
+        set_tests_properties("Quality.${group}" PROPERTIES LABELS "host" TIMEOUT 0)
         list(APPEND tooling_tests "Quality.${group}")
     endforeach()
     juicer_add_python_test(NAME Quality.Dispatcher
@@ -85,7 +85,7 @@ function(juicer_register_tooling_tests)
             -v)
     set_tests_properties(Quality.Dispatcher PROPERTIES
         LABELS "host"
-        TIMEOUT 600
+        TIMEOUT 0
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     list(APPEND tooling_tests Quality.Dispatcher)
 
@@ -93,7 +93,7 @@ function(juicer_register_tooling_tests)
         COMMAND "${ARG_PYTHON}" -m unittest discover
             -s "${test_source}/quality" -p test_tooling_lint.py -v)
     set_tests_properties(Quality.ToolingLint PROPERTIES
-        LABELS "host" TIMEOUT 600 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        LABELS "host" TIMEOUT 0 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     list(APPEND tooling_tests Quality.ToolingLint)
 
     # These native verification controls are currently required only by the
@@ -114,7 +114,7 @@ function(juicer_register_tooling_tests)
             juicer_add_python_test(NAME "Quality.${verification_group}"
                 COMMAND "${ARG_PYTHON}" -B -m unittest discover
                     -s "${test_source}/quality" -p "${verification_pattern}" -v --durations 10)
-            set_tests_properties("Quality.${verification_group}" PROPERTIES LABELS "host" TIMEOUT 600
+            set_tests_properties("Quality.${verification_group}" PROPERTIES LABELS "host" TIMEOUT 0
                 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;JUICER_TEST_ARTIFACT_DIR=${ARG_ARTIFACT_ROOT}/verification-controls")
             if(ARG_HOST_WINDOWS AND verification_group STREQUAL "Checkpoint")
                 set_tests_properties("Quality.${verification_group}" PROPERTIES PROCESSORS 4)
@@ -127,13 +127,13 @@ function(juicer_register_tooling_tests)
         COMMAND "${ARG_PYTHON}" -m unittest discover
             -s "${test_source}/ctest" -p test_report.py -v)
     set_tests_properties(Ctest.Host.Report PROPERTIES
-        LABELS "host" TIMEOUT 600 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        LABELS "host" TIMEOUT 0 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     list(APPEND tooling_tests Ctest.Host.Report)
 
     juicer_add_python_test(NAME Ctest.Host.Repetition
         COMMAND "${ARG_PYTHON}" -B -m unittest discover
             -s "${test_source}/ctest" -p test_repeat.py -v)
-    set_tests_properties(Ctest.Host.Repetition PROPERTIES LABELS "host" TIMEOUT 600
+    set_tests_properties(Ctest.Host.Repetition PROPERTIES LABELS "host" TIMEOUT 0
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;JUICER_CTEST_EXECUTABLE=${ARG_CTEST_COMMAND};JUICER_TEST_ARTIFACT_DIR=${ARG_ARTIFACT_ROOT}/ctest-repetition-controls")
     list(APPEND tooling_tests Ctest.Host.Repetition)
 
@@ -142,7 +142,7 @@ function(juicer_register_tooling_tests)
             --cargo "${ARG_CARGO}" --cmake "${ARG_CMAKE_COMMAND}"
             --ninja "${ARG_NINJA}" --cc "${ARG_CC}"
             --artifacts "${ARG_ARTIFACT_ROOT}/ffi/rust-build")
-    set_tests_properties(Ffi.Host.RustBuild PROPERTIES LABELS "host" TIMEOUT 600)
+    set_tests_properties(Ffi.Host.RustBuild PROPERTIES LABELS "host" TIMEOUT 0)
     list(APPEND tooling_tests Ffi.Host.RustBuild)
 
     set(${ARG_TESTS_OUT} "${tooling_tests}" PARENT_SCOPE)

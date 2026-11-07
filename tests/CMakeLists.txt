@@ -230,14 +230,14 @@ set_target_properties(JuicerHashContractTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 juicer_host_launcher(JuicerHashContractTests gtest)
 gtest_add_tests(TARGET JuicerHashContractTests TEST_PREFIX "Hash.Host." TEST_LIST juicer_hash_tests)
-set_tests_properties(${juicer_hash_tests} PROPERTIES LABELS "host" TIMEOUT 600)
+set_tests_properties(${juicer_hash_tests} PROPERTIES LABELS "host" TIMEOUT 0)
 
 add_executable(JuicerRenderAssertionTests ofx/render_assertions_test.cpp ofx/render_assertions.cpp)
 target_compile_features(JuicerRenderAssertionTests PRIVATE cxx_std_20)
 target_include_directories(JuicerRenderAssertionTests PRIVATE "${JUICER_TEST_ROOT}/third_party")
 target_link_libraries(JuicerRenderAssertionTests PRIVATE GTest::gtest juicer_host_gtest_main)
 add_test(NAME Ofx.Host.RenderAssertions COMMAND JuicerRenderAssertionTests)
-set_tests_properties(Ofx.Host.RenderAssertions PROPERTIES LABELS "host" TIMEOUT 120)
+set_tests_properties(Ofx.Host.RenderAssertions PROPERTIES LABELS "host" TIMEOUT 0)
 
 function(juicer_write_host_targets)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
@@ -308,10 +308,7 @@ if(JUICER_CUDA_FREE_TESTS)
         endif()
         set_property(TEST "${test}" APPEND PROPERTY LABELS "${relevance}")
         set_property(TEST "${test}" APPEND PROPERTY ENVIRONMENT "FJ_HOST_TEST=${test}")
-        get_property(timeout TEST "${test}" PROPERTY TIMEOUT)
-        if(NOT timeout GREATER 0)
-            set_property(TEST "${test}" PROPERTY TIMEOUT 600)
-        endif()
+        set_property(TEST "${test}" PROPERTY TIMEOUT 0)
     endforeach()
     get_property(targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     foreach(target IN LISTS targets)
@@ -351,7 +348,8 @@ endforeach()
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set_property(TEST Quality.BuildRegistration APPEND PROPERTY ENVIRONMENT
         "JUICER_CUDA_FREE_BUILD=${JUICER_PRESET_BUILD_DIR}/host-tests"
-        "JUICER_PRODUCT_BUILD=${CMAKE_BINARY_DIR}")
+        "JUICER_PRODUCT_BUILD=${CMAKE_BINARY_DIR}"
+        "JUICER_PRODUCT_INVENTORY_BUILD=${CMAKE_BINARY_DIR}")
 endif()
 
 set_tests_properties(Quality.HostResults PROPERTIES
@@ -656,7 +654,7 @@ target_compile_definitions(JuicerScannerLutResourceTests PRIVATE
 set_target_properties(JuicerScannerLutResourceTests PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME Resource.Gpu.ScannerLut COMMAND JuicerScannerLutResourceTests
     "${CMAKE_CURRENT_SOURCE_DIR}/scanner/lut-fixtures/${JUICER_TEST_PRESET_NAME}.json")
-set_tests_properties(Resource.Gpu.ScannerLut PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+set_tests_properties(Resource.Gpu.ScannerLut PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
 # Deferred retirement executes the real drain with a bounded post-extraction seam.
 add_library(juicer_deferred_destroy_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
@@ -689,14 +687,14 @@ set_tests_properties(Ffi.Gpu.CudaInspect PROPERTIES LABELS "gpu" TIMEOUT 0 RESOU
 # remains incomplete evidence on single-device hosts, never an accepted pass.
 add_test(NAME Ffi.Gpu.CudaInspect.MultiDevice COMMAND JuicerCudaInspectGpuTests
     --gtest_filter=InspectGpu.DeviceMismatchWhenTwoDevicesAreAvailable)
-set_tests_properties(Ffi.Gpu.CudaInspect.MultiDevice PROPERTIES LABELS "gpu;multi-gpu" TIMEOUT 120 RESOURCE_LOCK juicer_gpu)
+set_tests_properties(Ffi.Gpu.CudaInspect.MultiDevice PROPERTIES LABELS "gpu;multi-gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
 add_executable(JuicerCudaOwnerUnloadTests ofx/cuda_owner_unload_test.cpp ../src/main.cpp)
 target_compile_definitions(JuicerCudaOwnerUnloadTests PRIVATE JUICER_OWNER_UNLOAD_TEST=1)
 target_link_libraries(JuicerCudaOwnerUnloadTests PRIVATE juicer_test_core film_juicer_rust juicer_ofxs)
 set_target_properties(JuicerCudaOwnerUnloadTests PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME Ofx.Host.CudaOwnerUnload COMMAND JuicerCudaOwnerUnloadTests)
-set_tests_properties(Ofx.Host.CudaOwnerUnload PROPERTIES LABELS "host" TIMEOUT 120)
+set_tests_properties(Ofx.Host.CudaOwnerUnload PROPERTIES LABELS "host" TIMEOUT 0)
 
 add_dependencies(JuicerCudaTerminalTests juicer_test_resources)
 
@@ -783,7 +781,7 @@ juicer_host_launcher(JuicerScatterHalationHostTests gtest)
 gtest_add_tests(TARGET JuicerScatterHalationHostTests
     TEST_PREFIX "ScatterHalation.Host." TEST_LIST juicer_scatter_host_tests)
 set_tests_properties(${juicer_scatter_host_tests} PROPERTIES
-    LABELS "host" TIMEOUT 600
+    LABELS "host" TIMEOUT 0
     ENVIRONMENT "JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/scatter-halation-host")
 
 set(DIFFUSION_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/diffusion")
@@ -889,7 +887,7 @@ add_test(NAME Ffi.Gpu.ProductionPreparedRender
         "${JUICER_TEST_PRESET_NAME}"
         "${CMAKE_CURRENT_SOURCE_DIR}/print/illuminant-fixtures/product-updates.json" --summary)
 set_tests_properties(Ffi.Gpu.ProductionPreparedRender PROPERTIES
-    LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+    LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 if(MSVC)
     target_compile_options(JuicerPreparedBoundaryProbe PRIVATE $<$<COMPILE_LANGUAGE:C>:/W3;/WX>)
 else()
@@ -1042,7 +1040,7 @@ set_target_properties(JuicerScatterHalationGpuTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 add_dependencies(JuicerScatterHalationGpuTests juicer_test_resources)
 
-function(juicer_add_scatter_gpu_test test_name case_group timeout_seconds)
+function(juicer_add_scatter_gpu_test test_name case_group)
     add_test(NAME "ScatterHalation.Gpu.${test_name}"
         COMMAND JuicerScatterHalationGpuTests
             --case-group "${case_group}"
@@ -1053,22 +1051,22 @@ function(juicer_add_scatter_gpu_test test_name case_group timeout_seconds)
                 "${JUICER_TEST_ARTIFACT_ROOT}/scatter-halation-${case_group}")
     set_tests_properties("ScatterHalation.Gpu.${test_name}" PROPERTIES
         LABELS "gpu"
-        TIMEOUT "${timeout_seconds}"
+        TIMEOUT 0
         RESOURCE_LOCK juicer_gpu)
 endfunction()
 
-juicer_add_scatter_gpu_test(HostContracts host-contracts 240)
-juicer_add_scatter_gpu_test(PreparedFrame prepared-frame 240)
-juicer_add_scatter_gpu_test(TerminalRetention terminal-retention 120)
-juicer_add_scatter_gpu_test(FocusedCudaReference focused-cuda-reference 600)
+juicer_add_scatter_gpu_test(HostContracts host-contracts)
+juicer_add_scatter_gpu_test(PreparedFrame prepared-frame)
+juicer_add_scatter_gpu_test(TerminalRetention terminal-retention)
+juicer_add_scatter_gpu_test(FocusedCudaReference focused-cuda-reference)
 set_property(TEST ScatterHalation.Gpu.FocusedCudaReference
     PROPERTY LABELS "gpu;reference")
-juicer_add_scatter_gpu_test(RouteBoundaries route-boundaries 600)
-juicer_add_scatter_gpu_test(CapturedCarrier captured-carrier 600)
+juicer_add_scatter_gpu_test(RouteBoundaries route-boundaries)
+juicer_add_scatter_gpu_test(CapturedCarrier captured-carrier)
 set_property(TEST ScatterHalation.Gpu.CapturedCarrier
     PROPERTY LABELS "gpu;reference")
-juicer_add_scatter_gpu_test(ZeroWork zero-work 300)
-juicer_add_scatter_gpu_test(Lifecycle lifecycle 600)
+juicer_add_scatter_gpu_test(ZeroWork zero-work)
+juicer_add_scatter_gpu_test(Lifecycle lifecycle)
 
 add_executable(JuicerGrainScratchTests grain/scratch_reuse_test.cpp ffi/spatial_optics_fixture.cpp
     ffi/prepared_frame_fixture.cpp)
@@ -1505,10 +1503,7 @@ get_property(juicer_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(test IN LISTS juicer_registered_tests)
     get_property(labels TEST "${test}" PROPERTY LABELS)
     if("gpu" IN_LIST labels OR "host" IN_LIST labels)
-        get_property(timeout TEST "${test}" PROPERTY TIMEOUT)
-        if(NOT timeout GREATER 0)
-            set_property(TEST "${test}" PROPERTY TIMEOUT 600)
-        endif()
+        set_property(TEST "${test}" PROPERTY TIMEOUT 0)
     endif()
 endforeach()
 

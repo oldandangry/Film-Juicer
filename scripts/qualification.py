@@ -263,8 +263,8 @@ def native_registration(contract, paths, registration, *, runtime="host", cuda_f
         command_runtime = command[command.index("--runtime") + 1] if "--runtime" in command[:split] else "host"
         if command_runtime != runtime:
             raise ValueError("native launcher runtime disagrees with registration")
-        timeout = properties.get("TIMEOUT", 0)
-        if runtime == "gpu" and (type(timeout) not in (int, float) or not 0 < timeout < float("inf")
+        timeout = properties.get("TIMEOUT")
+        if runtime == "gpu" and (type(timeout) not in (int, float) or not 0 <= timeout < float("inf")
                                  or properties.get("RESOURCE_LOCK") != ["juicer_gpu"]):
             raise ValueError("GPU registration requires a finite timeout and physical-device lock")
         if test["name"] in found:

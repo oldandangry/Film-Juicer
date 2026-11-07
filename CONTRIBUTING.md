@@ -236,8 +236,12 @@ workspace.
 The shared tooling CMake entry registers 13 Debug tests: the three native result
 groups; Dispatcher, ToolingLint, Execution, BuildEvidence, BuildRegistration,
 Verify and Checkpoint; CTest Report and Repetition; and the Rust build contract.
-The native result groups have 120-second deadlines; the other tooling tests use
-600 seconds. Windows CI runs core, BuildEvidence and Checkpoint as separate
+Ordinary host/GPU CTest registrations use explicit `TIMEOUT 0`, and the native
+verifier dispatches CTest with `timeout=None`. Live execution rejects finite,
+missing or malformed ordinary timeouts. Historical result readers still accept
+valid finite positive GPU timeouts as well as zero, with the physical-device lock
+and other evidence checks intact. Explicit bounded child fault controls and hosted
+job limits remain. Windows CI runs core, BuildEvidence and Checkpoint as separate
 label-selected shards. Each shard must succeed; a focused label result does not
 establish full tooling membership.
 

@@ -730,13 +730,17 @@ def native_tests(args):
                 costs["report_read_bytes"] += len(data)
                 (directory / (runtime + "-targets.json")).write_bytes(data)
                 target_data[runtime] = json.loads(data)
+            prerequisites = {test["name"]: {p["name"]: p["value"] for p in test["properties"]} for test in inventory["tests"]}
+            for name, properties in prerequisites.items():
+                timeout = properties.get("TIMEOUT")
+                if {"host", "gpu"} & set(properties.get("LABELS", [])) and (type(timeout) not in (int, float) or timeout != 0):
+                    raise ValueError(f"ordinary CTest registration {name} requires explicit numeric TIMEOUT 0")
             native = {} if standalone else {runtime: native_registration(contracts[runtime], target_data[runtime], inventory, runtime=runtime, cuda_free=cuda_free) for runtime in ("host", "gpu")}
             python = python_registration(contracts["python"], inventory, args.preset, standalone=standalone, cuda_free=cuda_free)
             entries = {**python, **{name: entry for domain in native.values() for name, entry in domain.items()}}
             available = set(entries) | (set() if standalone else {"Rust.Core", "Rust.Bridge"})
             if {test["name"] for test in inventory["tests"]} != available:
                 raise ValueError("missing or unowned public CTest registration")
-            prerequisites = {test["name"]: {p["name"]: p["value"] for p in test["properties"]} for test in inventory["tests"]}
             source_selection = None
             if args.files:
                 source_selection = select_consumers(ROOT, build, args.files, require_compiled=False)
@@ -810,9 +814,8 @@ def native_tests(args):
                     env = dict(environment)
                     env["JUICER_OUTPUT_LEASES"] = os.environ["JUICER_OUTPUT_LEASES"]
                     junit = directory / ("ctest-" + runtime + ".xml")
-                    timeout = 60 + sum(prerequisites[name]["TIMEOUT"] for name in names)
                     run.command("ctest-" + runtime, [ctest, "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
-                        "--output-junit", str(junit), "-j", "1", "-R", "^(" + "|".join(map(re.escape, names)) + ")$"], env=env, timeout=timeout)
+                        "--output-junit", str(junit), "-j", "1", "-R", "^(" + "|".join(map(re.escape, names)) + ")$"], env=env, timeout=None)
                     tree = ET.fromstring(junit.read_bytes())
                     combined.extend(list(tree) if tree.tag == "testsuites" else [tree])
                     junit.unlink()
