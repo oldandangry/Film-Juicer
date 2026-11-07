@@ -1,7 +1,11 @@
 #ifndef _ofxParamExt_h_
 #define _ofxParamExt_h_
 
+#ifdef __cplusplus
 #include <cstdarg>
+#else
+#include <stdarg.h>
+#endif
 
 #include "ofxCore.h"
 #include "ofxProperty.h"

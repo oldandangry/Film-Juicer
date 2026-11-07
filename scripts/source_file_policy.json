@@ -55,6 +55,7 @@
   ],
   "generatedPaths": [
     "rust/film-juicer-plugin/src/cuda/sys.rs",
+    "rust/film-juicer-plugin/src/ofx/sys.rs",
     "src/GeneratedColorSpaces.cpp",
     "src/GeneratedColorSpaces.h"
   ],

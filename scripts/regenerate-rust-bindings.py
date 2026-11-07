@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the committed CUDA declarations; never invoked by product builds."""
+"""Regenerate the committed CUDA or OFX declarations; never invoked by product builds."""
 
 from __future__ import annotations
 
@@ -15,6 +15,178 @@ import sys
 BINDGEN_VERSION = "0.72.1"
 CLANG_VERSIONS = {"linux": "22.1.8", "win32": "22.1.3"}
 TARGETS = {"linux": "x86_64-unknown-linux-gnu", "win32": "x86_64-pc-windows-msvc"}
+
+
+# Exact declarations used by the current native OFX descriptor, dispatch,
+# image, parameter and message paths. Complete suites bring their handle types.
+OFX_TYPES = (
+    "OfxHost", "OfxPlugin", "OfxPluginEntryPoint", "OfxStatus", "OfxTime",
+    "OfxPropertySuiteV1", "OfxParameterSuiteV1", "OfxImageEffectSuiteV1",
+    "OfxMessageSuiteV1", "OfxRectI", "OfxRectD", "OfxPointI", "OfxPointD", "OfxRangeD",
+)
+OFX_CONSTANTS = (
+    "kOfxImageComponentRGB",
+    "kOfxImageOpaque",
+    "kOfxImagePreMultiplied",
+    "kOfxImageUnPreMultiplied",
+    "kOfxImageFieldNone",
+    "kOfxImageEffectPluginApiVersion",
+
+    "kOfxStatOK",
+    "kOfxStatFailed",
+    "kOfxStatErrFatal",
+    "kOfxStatErrUnknown",
+    "kOfxStatErrMissingHostFeature",
+    "kOfxStatErrUnsupported",
+    "kOfxStatErrExists",
+    "kOfxStatErrFormat",
+    "kOfxStatErrMemory",
+    "kOfxStatErrBadHandle",
+    "kOfxStatErrBadIndex",
+    "kOfxStatErrValue",
+    "kOfxStatReplyYes",
+    "kOfxStatReplyNo",
+    "kOfxStatReplyDefault",
+    "kOfxStatErrImageFormat",
+    "kOfxImageEffectPluginApi",
+    "kOfxPropertySuite",
+    "kOfxParameterSuite",
+    "kOfxImageEffectSuite",
+    "kOfxMessageSuite",
+    "kOfxActionLoad",
+    "kOfxActionUnload",
+    "kOfxActionDescribe",
+    "kOfxActionCreateInstance",
+    "kOfxActionDestroyInstance",
+    "kOfxActionPurgeCaches",
+    "kOfxActionSyncPrivateData",
+    "kOfxActionBeginInstanceChanged",
+    "kOfxActionInstanceChanged",
+    "kOfxActionEndInstanceChanged",
+    "kOfxActionBeginInstanceEdit",
+    "kOfxActionEndInstanceEdit",
+    "kOfxImageEffectActionDescribeInContext",
+    "kOfxImageEffectActionRender",
+    "kOfxImageEffectActionBeginSequenceRender",
+    "kOfxImageEffectActionEndSequenceRender",
+    "kOfxImageEffectActionIsIdentity",
+    "kOfxImageEffectActionGetRegionOfDefinition",
+    "kOfxImageEffectActionGetRegionsOfInterest",
+    "kOfxImageEffectActionGetFramesNeeded",
+    "kOfxImageEffectActionGetClipPreferences",
+    "kOfxImageEffectActionGetTimeDomain",
+    "kOfxPropType",
+    "kOfxPropName",
+    "kOfxPropLabel",
+    "kOfxPropShortLabel",
+    "kOfxPropLongLabel",
+    "kOfxPropVersion",
+    "kOfxPropVersionLabel",
+    "kOfxPropPluginDescription",
+    "kOfxPropInstanceData",
+    "kOfxPropTime",
+    "kOfxPropChangeReason",
+    "kOfxPropIsInteractive",
+    "kOfxPropAPIVersion",
+    "kOfxTypeParameter",
+    "kOfxTypeClip",
+    "kOfxTypeImageEffect",
+    "kOfxChangePluginEdited",
+    "kOfxChangeUserEdited",
+    "kOfxChangeTime",
+    "kOfxImageEffectContextFilter",
+    "kOfxImageEffectSimpleSourceClipName",
+    "kOfxImageEffectOutputClipName",
+    "kOfxBitDepthFloat",
+    "kOfxImageComponentRGBA",
+    "kOfxImageEffectRenderUnsafe",
+    "kOfxImageEffectPluginPropGrouping",
+    "kOfxImageEffectPluginPropHostFrameThreading",
+    "kOfxImageEffectPluginPropSingleInstance",
+    "kOfxImageEffectPluginRenderThreadSafety",
+    "kOfxImageEffectPropSupportedContexts",
+    "kOfxImageEffectPropSupportedPixelDepths",
+    "kOfxImageEffectPropSupportsMultiResolution",
+    "kOfxImageEffectPropSupportsTiles",
+    "kOfxImageEffectPropSupportedComponents",
+    "kOfxImageEffectPropTemporalClipAccess",
+    "kOfxImageClipPropOptional",
+    "kOfxImageEffectPropCudaRenderSupported",
+    "kOfxImageEffectPropCudaStreamSupported",
+    "kOfxImageEffectPropCudaEnabled",
+    "kOfxImageEffectPropCudaStream",
+    "kOfxImageEffectPropContext",
+    "kOfxImageEffectPropRenderScale",
+    "kOfxImageEffectPropRenderWindow",
+    "kOfxImageEffectPropFrameRange",
+    "kOfxImageEffectPropFrameRate",
+    "kOfxImageEffectPropFrameStep",
+    "kOfxImageEffectPropRegionOfDefinition",
+    "kOfxImageEffectPropRegionOfInterest",
+    "kOfxImageEffectPropPixelDepth",
+    "kOfxImageEffectPropComponents",
+    "kOfxImageEffectPropPreMultiplication",
+    "kOfxImageEffectPropFieldToRender",
+    "kOfxImageEffectPropSequentialRenderStatus",
+    "kOfxImageEffectPropInteractiveRenderStatus",
+    "kOfxImageEffectPropRenderQualityDraft",
+    "kOfxImageEffectPropProjectSize",
+    "kOfxImageEffectPropProjectOffset",
+    "kOfxImageEffectPropProjectExtent",
+    "kOfxImageEffectPropProjectPixelAspectRatio",
+    "kOfxImageClipPropConnected",
+    "kOfxImagePropData",
+    "kOfxImagePropBounds",
+    "kOfxImagePropRowBytes",
+    "kOfxImagePropRegionOfDefinition",
+    "kOfxImagePropPixelAspectRatio",
+    "kOfxImagePropField",
+    "kOfxImagePropUniqueIdentifier",
+    "kOfxParamTypeBoolean",
+    "kOfxParamTypeChoice",
+    "kOfxParamTypeStrChoice",
+    "kOfxParamTypeDouble",
+    "kOfxParamTypeDouble2D",
+    "kOfxParamTypeDouble3D",
+    "kOfxParamTypeInteger",
+    "kOfxParamTypeGroup",
+    "kOfxParamTypePage",
+    "kOfxParamTypePushButton",
+    "kOfxParamPropType",
+    "kOfxParamPropDefault",
+    "kOfxParamPropMin",
+    "kOfxParamPropMax",
+    "kOfxParamPropDisplayMin",
+    "kOfxParamPropDisplayMax",
+    "kOfxParamPropIncrement",
+    "kOfxParamPropDigits",
+    "kOfxParamPropDoubleType",
+    "kOfxParamPropDimensionLabel",
+    "kOfxParamPropChoiceOption",
+    "kOfxParamPropChoiceEnum",
+    "kOfxParamHostPropSupportsStrChoiceAnimation",
+    "kOfxParamPropParent",
+    "kOfxParamPropPageChild",
+    "kOfxParamPropGroupOpen",
+    "kOfxParamPropHint",
+    "kOfxParamPropScriptName",
+    "kOfxParamPropAnimates",
+    "kOfxParamPropEnabled",
+    "kOfxParamPropSecret",
+    "kOfxParamPropEvaluateOnChange",
+    "kOfxParamPropPersistant",
+    "kOfxParamPropCanUndo",
+    "kOfxParamPropCacheInvalidation",
+    "kOfxParamDoubleTypePlain",
+    "kOfxParamDoubleTypeScale",
+    "kOfxParamInvalidateValueChange",
+    "kOfxMessageFatal",
+    "kOfxMessageError",
+    "kOfxMessageWarning",
+    "kOfxMessageMessage",
+    "kOfxMessageLog",
+    "kOfxMessageQuestion",
+)
 
 
 class ClangString(ctypes.Structure):
@@ -46,6 +218,7 @@ def main() -> int:
     parser.add_argument("--clang", required=True, type=Path)
     parser.add_argument("--libclang", required=True, type=Path)
     parser.add_argument("--rustfmt", required=True, type=Path)
+    parser.add_argument("--api", choices=("cuda", "ofx"), default="cuda")
     parser.add_argument("--check", action="store_true", help="compare without changing the committed output")
     arguments = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
@@ -79,24 +252,42 @@ def main() -> int:
     for name in list(environment):
         if name.startswith("BINDGEN_EXTRA_CLANG_ARGS") or name in {"CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH"}:
             environment.pop(name)
+    if arguments.api == "cuda":
+        selection = [
+            "native/juicer_cuda_api.h", "--allowlist-type", "Fj.*",
+            "--allowlist-function", "fj_cuda_.*", "--allowlist-var", "FJ_.*",
+        ]
+        destination = root / "rust/film-juicer-plugin/src/cuda/sys.rs"
+        includes = []
+    else:
+        selection = ["native/ofx_bindings.h", "--clang-macro-fallback", "--default-macro-constant-type", "signed"]
+        for name in OFX_TYPES:
+            selection.extend(["--allowlist-type", f"^{name}$"])
+        for name in OFX_CONSTANTS:
+            selection.extend(["--allowlist-var", f"^{name}$"])
+        destination = root / "rust/film-juicer-plugin/src/ofx/sys.rs"
+        includes = ["-I", "third_party/ofxs/OpenFX-1.4/include"]
     command = [
-        bindgen, "native/juicer_cuda_api.h",
-        "--allowlist-type", "Fj.*", "--allowlist-function", "fj_cuda_.*",
-        "--allowlist-var", "FJ_.*", "--no-doc-comments", "--no-derive-debug",
+        bindgen, *selection, "--no-doc-comments", "--no-derive-debug",
         "--use-core", "--rust-target", "1.85", "--rust-edition", "2024",
         "--no-include-path-detection", "--formatter", "none", "--",
         "-x", "c", "-std=c11", f"--target={TARGETS[sys.platform]}",
         "-ffreestanding", "-nostdinc", "-isystem", str(Path(resource_dir) / "include"),
+        *includes,
     ]
+    if arguments.api == "ofx":
+        inputs = [root / "native/ofx_bindings.h"]
+        inputs.extend(sorted((root / "third_party/ofxs/OpenFX-1.4/include").glob("*.h")))
+        for path in inputs:
+            print(f"INPUT SHA256: {hashlib.sha256(path.read_bytes()).hexdigest()} {path.relative_to(root)}")
     generated = run(command, cwd=root, env=environment)
     formatted = run(
         [rustfmt, "--edition", "2024", "--config-path", str(root / "rustfmt.toml")],
         cwd=root, input=generated,
     ).replace("\r\n", "\n").encode("utf-8")
-    destination = root / "rust/film-juicer-plugin/src/cuda/sys.rs"
     if arguments.check:
         if destination.read_bytes() != formatted:
-            raise RuntimeError("CUDA bindings differ; regenerate and review the change")
+            raise RuntimeError(f"{arguments.api.upper()} bindings differ; regenerate and review the change")
         print("Bindings reproduce the committed file byte-for-byte.")
     else:
         destination.write_bytes(formatted)

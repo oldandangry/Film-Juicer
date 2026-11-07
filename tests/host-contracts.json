@@ -7,6 +7,10 @@
     "Prepare.Host.StateProducts"
   ],
   "targets": {
+    "JuicerOfxAbiTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
     "JuicerCudaAbiTests": {
       "protocol": "custom",
       "registrations": 1
