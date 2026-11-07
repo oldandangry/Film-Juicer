@@ -19,6 +19,7 @@ use crate::cuda::sys::{
     FJ_STATUS_INTERNAL_FAILURE,
 };
 use crate::instance::Instance;
+use crate::submission;
 use crate::preparation::{self, FjPreparationParams, FjPreparedState};
 
 pub(crate) struct FjInstance {
@@ -55,10 +56,16 @@ enum Failure {
     Input(&'static str),
     State(state::Error),
     Preparation(PreparationFailure),
+    Submission(submission::Error),
 }
 impl From<state::Error> for Failure {
     fn from(error: state::Error) -> Self {
         Self::State(error)
+    }
+}
+impl From<submission::Error> for Failure {
+    fn from(error: submission::Error) -> Self {
+        Self::Submission(error)
     }
 }
 impl fmt::Display for Failure {
@@ -67,6 +74,7 @@ impl fmt::Display for Failure {
             Self::Input(message) => f.write_str(message),
             Self::State(error) => error.fmt(f),
             Self::Preparation(error) => error.fmt(f),
+            Self::Submission(error) => error.fmt(f),
         }
     }
 }
@@ -91,6 +99,7 @@ impl Failure {
             Self::Input(_) => FJ_STATUS_UNSUPPORTED_INPUT,
             Self::State(error) => state_category(error),
             Self::Preparation(error) => error.category(),
+            Self::Submission(_) => FJ_STATUS_INTERNAL_FAILURE,
         }
     }
 }
@@ -225,7 +234,7 @@ unsafe fn run(
 }
 /// # Safety
 /// A matching live instance handle remains borrowed for this synchronous call.
-unsafe fn instance<'a>(owner: *const FjInstance) -> Option<&'a Instance> {
+pub(crate) unsafe fn borrow_instance<'a>(owner: *const FjInstance) -> Option<&'a Instance> {
     if !aligned(owner) {
         return None;
     }
@@ -294,9 +303,43 @@ export!(fj_legacy_instance_create(out: *mut *mut FjInstance, error: *mut FjError
         Ok(())
     })
 });
+export!(fj_legacy_instance_bind_identity(owner: *const FjInstance, session_seed: u64, instance_token: u64, error: *mut FjErrorBuffer) {
+    let instance = borrow_instance(owner);
+    run(instance, error, || {
+        let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+        instance.bind_identity(session_seed, instance_token)?;
+        Ok(())
+    })
+});
+export!(fj_legacy_instance_identity(owner: *const FjInstance, out_initialized: *mut u32, out_seed: *mut u64, out_token: *mut u64, error: *mut FjErrorBuffer) {
+    let valid = clear(out_initialized);
+    let seed_valid = clear(out_seed);
+    let token_valid = clear(out_token);
+    let instance = borrow_instance(owner);
+    run(instance, error, || {
+        let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+        if !valid || !seed_valid || !token_valid { return Err(Failure::Input("invalid identity output")); }
+        if let Some(identity) = instance.identity() {
+            out_initialized.write(1);
+            out_seed.write(identity.session_seed);
+            out_token.write(identity.instance_token);
+        }
+        Ok(())
+    })
+});
+export!(fj_legacy_instance_invalidate_submission(owner: *const FjInstance, device_id: i32, context: usize, out_cleared: *mut u32, error: *mut FjErrorBuffer) {
+    let valid = clear(out_cleared);
+    let instance = borrow_instance(owner);
+    run(instance, error, || {
+        let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+        if !valid { return Err(Failure::Input("invalid invalidation output")); }
+        out_cleared.write(u32::from(instance.invalidate_submission(device_id, context)?));
+        Ok(())
+    })
+});
 export!(fj_legacy_instance_begin_capture(owner: *mut FjInstance, mode: u32, out: *mut FjCaptureStart, error: *mut FjErrorBuffer) {
     let valid = clear(out);
-    let instance = instance(owner);
+    let instance = borrow_instance(owner);
     run(instance, error, || {
         let instance = instance.ok_or(Failure::Input("invalid instance"))?;
         if !valid { return Err(Failure::Input("invalid capture output")); }
@@ -311,7 +354,7 @@ export!(fj_legacy_instance_begin_capture(owner: *mut FjInstance, mode: u32, out:
 });
 export!(fj_legacy_instance_capture_is_current(owner: *const FjInstance, capture: u64, out_current: *mut u32, error: *mut FjErrorBuffer) {
     let valid = clear(out_current);
-    let instance = instance(owner);
+    let instance = borrow_instance(owner);
     run(instance, error, || {
         let instance = instance.ok_or(Failure::Input("invalid instance"))?;
         if !valid { return Err(Failure::Input("invalid current output")); }
@@ -321,7 +364,7 @@ export!(fj_legacy_instance_capture_is_current(owner: *const FjInstance, capture:
 export!(fj_legacy_instance_begin_host_write(owner: *mut FjInstance, capture: u64, out: *mut *mut FjHostWrite, out_start: *mut u32, error: *mut FjErrorBuffer) {
     let valid = clear(out);
     let start_valid = clear(out_start);
-    let instance = instance(owner);
+    let instance = borrow_instance(owner);
     run(instance, error, || {
         let instance = instance.ok_or(Failure::Input("invalid instance"))?;
         if !valid || !start_valid { return Err(Failure::Input("invalid host write output")); }
@@ -357,7 +400,7 @@ export!(fj_legacy_host_write_finish(owner: *mut FjHostWrite, failure: u32, diagn
 });
 export!(fj_legacy_instance_begin_snapshot(owner: *mut FjInstance, capture: u64, out: *mut FjSnapshotStart, error: *mut FjErrorBuffer) {
     let valid = clear(out);
-    let instance = instance(owner);
+    let instance = borrow_instance(owner);
     run(instance, error, || {
         let instance = instance.ok_or(Failure::Input("invalid instance"))?;
         if !valid { return Err(Failure::Input("invalid snapshot output")); }
@@ -371,7 +414,7 @@ export!(fj_legacy_instance_begin_snapshot(owner: *mut FjInstance, capture: u64, 
 });
 export!(fj_legacy_instance_install(owner: *mut FjInstance, capture: u64, write_revision: u64, params: *const FjPreparationParams, input_identity: u64, out_update: *mut u32, error: *mut FjErrorBuffer) {
     let valid = clear(out_update);
-    let instance = instance(owner);
+    let instance = borrow_instance(owner);
     run(instance, error, || {
         let instance = instance.ok_or(Failure::Input("invalid instance"))?;
         if !valid || !aligned(params) { return Err(Failure::Input("invalid capture input/output")); }
@@ -398,7 +441,7 @@ export!(fj_legacy_instance_install(owner: *mut FjInstance, capture: u64, write_r
 });
 export!(fj_legacy_instance_invalidate(owner: *mut FjInstance, capture: u64, failure: u32, diagnostic: FjStringView, out_update: *mut u32, error: *mut FjErrorBuffer) {
     let valid = clear(out_update);
-    let instance = instance(owner);
+    let instance = borrow_instance(owner);
     run(instance, error, || {
         let instance = instance.ok_or(Failure::Input("invalid instance"))?;
         if !valid { return Err(Failure::Input("invalid update output")); }
@@ -408,7 +451,7 @@ export!(fj_legacy_instance_invalidate(owner: *mut FjInstance, capture: u64, fail
 });
 export!(fj_legacy_instance_admit(owner: *mut FjInstance, assets: *const FjAssets, out: *mut FjAdmission, error: *mut FjErrorBuffer) {
     let valid = clear(out);
-    let instance = instance(owner);
+    let instance = borrow_instance(owner);
     run_with(instance, error, || {
         let instance = instance.ok_or(Failure::Input("invalid instance"))?;
         if !valid { return Err(Failure::Input("invalid admission output")); }
@@ -489,6 +532,65 @@ unsafe extern "C" fn fj_test_instance_abi_facts(count: *mut usize) -> *const usi
     unsafe { count.write(FACTS.len()) };
     FACTS.as_ptr()
 }
+
+#[cfg(feature = "test-support")]
+export!(fj_test_instance_submission(owner: *const FjInstance, out_valid: *mut u32, out: *mut crate::cuda::sys::FjSubmission, out_context: *mut crate::cuda::sys::FjCudaContext, error: *mut FjErrorBuffer) {
+    let valid = clear(out_valid);
+    let submission_valid = clear(out);
+    let context_valid = clear(out_context);
+    let instance = borrow_instance(owner);
+    run(instance, error, || {
+        let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+        if !valid || !submission_valid || !context_valid { return Err(Failure::Input("invalid submission observation output")); }
+        if let Some(selected) = instance.observe_submission()? {
+            let identity = instance.identity().ok_or(submission::Error::MissingIdentity)?;
+            out.write(crate::cuda::sys::FjSubmission {
+                instance_token: identity.instance_token,
+                frame_token: selected.key.frame_token,
+                submission_id: selected.id,
+                upload_core_hash: selected.key.upload_core,
+                dir_hash: selected.key.dir,
+                scanner_hash: selected.key.scanner,
+                auto_exposure_hash: selected.key.auto_exposure,
+            });
+            out_context.write(crate::cuda::sys::FjCudaContext { device_id: selected.key.device_id, context: selected.key.context });
+            out_valid.write(1);
+        }
+        Ok(())
+    })
+});
+
+#[cfg(feature = "test-support")]
+pub(crate) struct FjInstanceLifetime {
+    instance: std::sync::Weak<Instance>,
+}
+
+#[cfg(feature = "test-support")]
+export!(fj_test_instance_lifetime_acquire(owner: *const FjInstance, out: *mut *mut FjInstanceLifetime, error: *mut FjErrorBuffer) {
+    let valid = clear(out);
+    let instance = borrow_instance(owner);
+    run(instance, error, || {
+        instance.ok_or(Failure::Input("invalid instance"))?;
+        if !valid { return Err(Failure::Input("invalid lifetime output")); }
+        out.write(Box::into_raw(Box::new(FjInstanceLifetime { instance: Arc::downgrade(&(*owner).instance) })));
+        Ok(())
+    })
+});
+#[cfg(feature = "test-support")]
+export!(fj_test_instance_lifetime_live(owner: *const FjInstanceLifetime, out_live: *mut u32, error: *mut FjErrorBuffer) {
+    let valid = clear(out_live);
+    run(None, error, || {
+        if !valid || !aligned(owner) { return Err(Failure::Input("invalid lifetime observation")); }
+        out_live.write(u32::from((*owner).instance.upgrade().is_some()));
+        Ok(())
+    })
+});
+#[cfg(feature = "test-support")]
+export!(fj_test_instance_lifetime_release(owner: *mut FjInstanceLifetime, error: *mut FjErrorBuffer) {
+    if !aligned(owner) { return run(None, error, || Err(Failure::Input("invalid lifetime owner"))); }
+    let owner = Box::from_raw(owner);
+    run(None, error, move || { drop(owner); Ok(()) })
+});
 
 #[cfg(feature = "test-support")]
 pub(crate) struct FjInstanceObservation {
@@ -643,7 +745,7 @@ fn captured_projection(params: &film_juicer_core::recipe::Params) -> FjPreparati
 #[cfg(feature = "test-support")]
 export!(fj_test_instance_observation_acquire(owner: *const FjInstance, out: *mut *mut FjInstanceObservation, error: *mut FjErrorBuffer) {
     let valid = clear(out);
-    let instance = instance(owner);
+    let instance = borrow_instance(owner);
     run(instance, error, || {
         let instance = instance.ok_or(Failure::Input("invalid observed instance"))?;
         if !valid { return Err(Failure::Input("invalid observation output")); }
@@ -741,6 +843,242 @@ mod tests {
     use super::*;
     use std::mem::offset_of;
     use crate::test_cases::RowCases;
+
+    #[test]
+    fn identity_edge_clears_outputs_and_rejects_rebinding() {
+        // SAFETY: Local records are disjoint and the instance remains live through each call.
+        unsafe {
+            let mut owner = std::ptr::null_mut();
+            assert_eq!(
+                fj_legacy_instance_create(&mut owner, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+            let (mut initialized, mut seed, mut token) = (9, 9, 9);
+            assert_eq!(
+                fj_legacy_instance_identity(
+                    owner,
+                    &mut initialized,
+                    &mut seed,
+                    &mut token,
+                    std::ptr::null_mut()
+                )
+                .category,
+                FJ_STATUS_SUCCESS
+            );
+            assert_eq!((initialized, seed, token), (0, 0, 0));
+            assert_eq!(
+                fj_legacy_instance_bind_identity(owner, 42, 73, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+            assert_eq!(
+                fj_legacy_instance_bind_identity(owner, 1, 2, std::ptr::null_mut()).category,
+                FJ_STATUS_INTERNAL_FAILURE
+            );
+            assert_eq!(
+                fj_legacy_instance_identity(
+                    owner,
+                    &mut initialized,
+                    &mut seed,
+                    &mut token,
+                    std::ptr::null_mut()
+                )
+                .category,
+                FJ_STATUS_SUCCESS
+            );
+            assert_eq!((initialized, seed, token), (1, 42, 73));
+            let mut cleared = 9;
+            assert_eq!(
+                fj_legacy_instance_invalidate_submission(
+                    owner,
+                    1,
+                    2,
+                    &mut cleared,
+                    std::ptr::null_mut()
+                )
+                .category,
+                FJ_STATUS_SUCCESS
+            );
+            assert_eq!(cleared, 0);
+            assert_eq!(
+                fj_legacy_instance_identity(
+                    std::ptr::null(),
+                    &mut initialized,
+                    &mut seed,
+                    &mut token,
+                    std::ptr::null_mut()
+                )
+                .category,
+                FJ_STATUS_UNSUPPORTED_INPUT
+            );
+            assert_eq!((initialized, seed, token), (0, 0, 0));
+            assert_eq!(
+                fj_legacy_instance_destroy(owner, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+        }
+    }
+
+    #[test]
+    fn identity_and_invalidation_reject_invalid_edges() {
+        // SAFETY: The aligned outputs are exclusive and live. Deliberately null or
+        // misaligned pointers are rejected before any access to their storage.
+        unsafe {
+            let mut owner = std::ptr::null_mut();
+            assert_eq!(
+                fj_legacy_instance_create(&mut owner, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+            let bad_owner = (owner.cast::<u8>()).add(1).cast::<FjInstance>();
+            for invalid in [std::ptr::null(), bad_owner.cast_const()] {
+                assert_eq!(
+                    fj_legacy_instance_bind_identity(invalid, 1, 2, std::ptr::null_mut()).category,
+                    FJ_STATUS_UNSUPPORTED_INPUT
+                );
+                let (mut initialized, mut seed, mut token) = (9u32, 9u64, 9u64);
+                assert_eq!(
+                    fj_legacy_instance_identity(
+                        invalid,
+                        &mut initialized,
+                        &mut seed,
+                        &mut token,
+                        std::ptr::null_mut()
+                    )
+                    .category,
+                    FJ_STATUS_UNSUPPORTED_INPUT
+                );
+                assert_eq!((initialized, seed, token), (0, 0, 0));
+                let mut cleared = 9;
+                assert_eq!(
+                    fj_legacy_instance_invalidate_submission(
+                        invalid,
+                        1,
+                        2,
+                        &mut cleared,
+                        std::ptr::null_mut()
+                    )
+                    .category,
+                    FJ_STATUS_UNSUPPORTED_INPUT
+                );
+                assert_eq!(cleared, 0);
+            }
+            assert_eq!(
+                fj_legacy_instance_bind_identity(owner, 4, 5, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+            for lane in 0..3 {
+                for misaligned in [false, true] {
+                    let (mut initialized, mut seed, mut token) = (9u32, 9u64, 9u64);
+                    let init_ptr = if lane == 0 {
+                        if misaligned {
+                            (&mut initialized as *mut u32).cast::<u8>().add(1).cast()
+                        } else {
+                            std::ptr::null_mut()
+                        }
+                    } else {
+                        &mut initialized
+                    };
+                    let seed_ptr = if lane == 1 {
+                        if misaligned {
+                            (&mut seed as *mut u64).cast::<u8>().add(1).cast()
+                        } else {
+                            std::ptr::null_mut()
+                        }
+                    } else {
+                        &mut seed
+                    };
+                    let token_ptr = if lane == 2 {
+                        if misaligned {
+                            (&mut token as *mut u64).cast::<u8>().add(1).cast()
+                        } else {
+                            std::ptr::null_mut()
+                        }
+                    } else {
+                        &mut token
+                    };
+                    assert_eq!(
+                        fj_legacy_instance_identity(
+                            owner,
+                            init_ptr,
+                            seed_ptr,
+                            token_ptr,
+                            std::ptr::null_mut()
+                        )
+                        .category,
+                        FJ_STATUS_UNSUPPORTED_INPUT
+                    );
+                    assert_eq!(initialized, if lane == 0 { 9 } else { 0 });
+                    assert_eq!(seed, if lane == 1 { 9 } else { 0 });
+                    assert_eq!(token, if lane == 2 { 9 } else { 0 });
+                }
+            }
+            let mut cleared = 9u32;
+            let bad_output = (&mut cleared as *mut u32).cast::<u8>().add(1).cast();
+            for output in [std::ptr::null_mut(), bad_output] {
+                assert_eq!(
+                    fj_legacy_instance_invalidate_submission(
+                        owner,
+                        1,
+                        2,
+                        output,
+                        std::ptr::null_mut()
+                    )
+                    .category,
+                    FJ_STATUS_UNSUPPORTED_INPUT
+                );
+                assert_eq!(cleared, 9);
+            }
+            let mut diagnostic = FjErrorBuffer {
+                data: std::ptr::null_mut(),
+                capacity: 1,
+                length: 99,
+            };
+            let (mut initialized, mut seed, mut token) = (9u32, 9u64, 9u64);
+            assert_eq!(
+                fj_legacy_instance_identity(
+                    owner,
+                    &mut initialized,
+                    &mut seed,
+                    &mut token,
+                    &mut diagnostic
+                )
+                .category,
+                FJ_STATUS_UNSUPPORTED_INPUT
+            );
+            assert_eq!((initialized, seed, token, diagnostic.length), (0, 0, 0, 0));
+            cleared = 9;
+            diagnostic.length = 99;
+            assert_eq!(
+                fj_legacy_instance_invalidate_submission(
+                    owner,
+                    1,
+                    2,
+                    &mut cleared,
+                    &mut diagnostic
+                )
+                .category,
+                FJ_STATUS_UNSUPPORTED_INPUT
+            );
+            assert_eq!((cleared, diagnostic.length), (0, 0));
+            (*owner).instance.poison_submission_for_test();
+            cleared = 9;
+            assert_eq!(
+                fj_legacy_instance_invalidate_submission(
+                    owner,
+                    1,
+                    2,
+                    &mut cleared,
+                    std::ptr::null_mut()
+                )
+                .category,
+                FJ_STATUS_INTERNAL_FAILURE
+            );
+            assert_eq!(cleared, 0);
+            assert_eq!(
+                fj_legacy_instance_destroy(owner, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+        }
+    }
 
     #[test]
     fn instance_layout_and_consuming_write_protocol() {

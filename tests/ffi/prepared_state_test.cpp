@@ -73,6 +73,9 @@ using FjInstallFn = FjStatus (*)(FjInstance*, std::uint64_t, std::uint64_t, cons
 using FjInvalidateFn = FjStatus (*)(FjInstance*, std::uint64_t, std::uint32_t, FjStringView, std::uint32_t*, FjErrorBuffer*);
 using FjInstanceAdmitFn = FjStatus (*)(FjInstance*, const FjAssets*, FjAdmission*, FjErrorBuffer*);
 using FjInstanceDestroyFn = FjStatus (*)(FjInstance*, FjErrorBuffer*);
+using FjInstanceBindIdentityFn = FjStatus (*)(const FjInstance*, std::uint64_t, std::uint64_t, FjErrorBuffer*);
+using FjInstanceIdentityFn = FjStatus (*)(const FjInstance*, std::uint32_t*, std::uint64_t*, std::uint64_t*, FjErrorBuffer*);
+using FjInstanceInvalidateSubmissionFn = FjStatus (*)(const FjInstance*, std::int32_t, std::uintptr_t, std::uint32_t*, FjErrorBuffer*);
 static_assert(std::is_same_v<decltype(&fj_legacy_instance_create), FjInstanceCreateFn>);
 static_assert(std::is_same_v<decltype(&fj_legacy_instance_begin_capture), FjBeginCaptureFn>);
 static_assert(std::is_same_v<decltype(&fj_legacy_instance_capture_is_current), FjCaptureCurrentFn>);
@@ -83,6 +86,9 @@ static_assert(std::is_same_v<decltype(&fj_legacy_instance_install), FjInstallFn>
 static_assert(std::is_same_v<decltype(&fj_legacy_instance_invalidate), FjInvalidateFn>);
 static_assert(std::is_same_v<decltype(&fj_legacy_instance_admit), FjInstanceAdmitFn>);
 static_assert(std::is_same_v<decltype(&fj_legacy_instance_destroy), FjInstanceDestroyFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_bind_identity), FjInstanceBindIdentityFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_identity), FjInstanceIdentityFn>);
+static_assert(std::is_same_v<decltype(&fj_legacy_instance_invalidate_submission), FjInstanceInvalidateSubmissionFn>);
 
 using FjCallPrecheckFn = FjStatus (*)(void*, FjErrorBuffer*);
 using FjCallAdmitFn = FjStatus (*)(void*, FjErrorBuffer*);
@@ -94,9 +100,9 @@ using FjCallRenderFn = FjRenderOutcome (*)(void*, const FjCudaContext*, const Fj
 using FjCallCompleteFn = FjCallCompletionResult (*)(void*, const FjCallCompletionInput*);
 using FjHostScannerLutFn = FjStatus (*)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
 using FjHostGaussianFn = FjStatus (*)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
-using FjSubmissionSelectFn = FjStatus (*)(void*, const FjCudaContext*, const FjSubmission*, FjSubmission*, FjErrorBuffer*);
 using FjPolicyEntryFn = FjStatus (*)(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
-using FjRenderEntryFn = FjCallCompletionResult (*)(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer*);
+using FjTraceSubmissionFn = void (*)(void*, const FjSubmission*, std::uint32_t);
+using FjRenderEntryFn = FjCallCompletionResult (*)(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, const FjInstance*, std::uint64_t, FjAbortCallback, FjErrorBuffer*);
 using FjUnavailableEntryFn = FjCallCompletionResult (*)(const FjAssets*, const FjPreparedState*, std::uint32_t, FjCudaCallAccess, const FjFrame*, FjAbortCallback, FjErrorBuffer*);
 
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::precheck), FjCallPrecheckFn>);
@@ -109,7 +115,7 @@ static_assert(std::is_same_v<decltype(FjCudaCallAccess::render), FjCallRenderFn>
 static_assert(std::is_same_v<decltype(FjCudaCallAccess::complete), FjCallCompleteFn>);
 static_assert(std::is_same_v<decltype(FjHostPreparation::scanner_lut), FjHostScannerLutFn>);
 static_assert(std::is_same_v<decltype(FjHostPreparation::gaussian), FjHostGaussianFn>);
-static_assert(std::is_same_v<decltype(FjSubmissionAccess::select), FjSubmissionSelectFn>);
+static_assert(std::is_same_v<decltype(FjCudaCallAccess::trace_submission), FjTraceSubmissionFn>);
 static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_frame_policy), FjPolicyEntryFn>);
 static_assert(std::is_same_v<decltype(&fj_legacy_prepared_state_render), FjRenderEntryFn>);
 static_assert(std::is_same_v<decltype(&fj_legacy_prepared_unavailable), FjUnavailableEntryFn>);

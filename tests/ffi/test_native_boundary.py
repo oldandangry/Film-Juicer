@@ -586,10 +586,12 @@ class NativeBoundary(unittest.TestCase):
         self.assertNotRegex(cmake, retired_hooks)
         for name in ("JUICER_ADMISSION_TEST_HOOK", "juicer_admission_test_state"):
             self.assertRegex(name, retired_hooks)
-        self.assertIn("struct NativeSubmissionState", state)
+        rust_instance = (ROOT / "rust/film-juicer-plugin/src/instance.rs").read_text(encoding="utf-8")
+        self.assertIn("submission: Submission", rust_instance)
+        self.assertIn("crate::submission::{self, Submission}", rust_instance)
         effect = (ROOT / "src/JuicerEffect.cpp").read_text()
         effect_header = (ROOT / "src/JuicerEffect.h").read_text()
-        self.assertIn("RenderInstance _publication;", effect_header)
+        self.assertIn("RenderInstance _instance;", effect_header)
         self.assertIn("std::optional<PreparedState> admitted;", effect)
         self.assertIn("const PreparedState& prepared = *admitted;", effect)
         self.assertIn("frameRequest.renderState = &prepared;", effect)
@@ -966,6 +968,22 @@ class NativeBoundary(unittest.TestCase):
         paths = native_sources(ROOT)
         paths.append(ROOT / "src/ProcessRoot.cpp")
         self.assertEqual(forbidden_uses(paths, CONTEXT_RESET), [])
+
+    def test_submission_policy_has_one_safe_owner_and_no_native_selector(self):
+        retired = r"\b(?:NativeSubmissionState|FjSubmissionAccess|SubmissionLatch|SubmissionSelection)\b|\bselect_submission\s*\("
+        self.assertEqual(forbidden_uses(native_sources(ROOT), retired), [])
+        for name in ("NativeSubmissionState", "FjSubmissionAccess", "SubmissionLatch", "SubmissionSelection"):
+            self.assertRegex("struct " + name + " {};", retired)
+        self.assertRegex("select_submission()", retired)
+        edge = (ROOT / "rust/film-juicer-plugin/src/cuda/edge.rs").read_text()
+        self.assertNotRegex(edge, r"\b(?:FjSubmissionAccess|SubmissionLatch)\b")
+        owner = (ROOT / "rust/film-juicer-plugin/src/submission.rs").read_text()
+        self.assertIn("#![forbid(unsafe_code)]", owner)
+        render = (ROOT / "rust/film-juicer-plugin/src/cuda/render.rs").read_text()
+        self.assertIn(".select_submission(submission::Key", render)
+        native = (ROOT / "src/mainProcessing.cpp").read_text()
+        self.assertIn("SF_TEMP_BRIDGE_FRAME_IDENTITY_INPUTS", native)
+        self.assertNotIn("SF_TEMP_BRIDGE_NATIVE_SUBMISSION_STATE", native)
 
     def test_s5c2_process_ownership_is_explicit_and_test_helpers_stay_test_only(self):
         paths = product_sources(ROOT)

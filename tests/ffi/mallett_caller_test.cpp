@@ -18,6 +18,7 @@
 
 #include "ColorTransforms.h"
 #include "JuicerState.h"
+#include "RenderValues.h"
 #include "PreparedState.h"
 #include "prepared_product_fixture.h"
 #include "ProcessRuntime.h"

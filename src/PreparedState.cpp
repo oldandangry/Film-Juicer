@@ -133,9 +133,9 @@ FjStatus PreparedState::frame_policy(
 }
 
 FjCallCompletionResult PreparedState::render(
-    const FjAssets* assets, FjCudaCallAccess access, const FjFrame& frame, const FjPreparedFramePolicy& policy, FjSubmissionAccess submission, FjAbortCallback abort, FjErrorBuffer& error) const {
+    const FjAssets* assets, FjCudaCallAccess access, const FjFrame& frame, const FjPreparedFramePolicy& policy, const FjInstance* instance, std::uint64_t frameToken, FjAbortCallback abort, FjErrorBuffer& error) const {
     return fj_legacy_prepared_state_render(
-        assets, owner_, access, &frame, &policy, submission, abort, &error);
+        assets, owner_, access, &frame, &policy, instance, frameToken, abort, &error);
 }
 
 FjCallCompletionResult PreparedState::reject_missing_instance(
@@ -258,6 +258,14 @@ RenderInstance::~RenderInstance() {
         FjErrorBuffer ignored{nullptr, 0, 0};
         (void)fj_legacy_instance_destroy(owner, &ignored);
     }
+}
+
+const FjInstance* RenderInstance::borrow() const noexcept {
+    return owner_;
+}
+
+FjStatus RenderInstance::bind_identity(std::uint64_t sessionSeed, std::uint64_t instanceToken, FjErrorBuffer& error) {
+    return fj_legacy_instance_bind_identity(owner_, sessionSeed, instanceToken, &error);
 }
 
 FjStatus RenderInstance::begin_capture(

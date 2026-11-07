@@ -232,6 +232,7 @@ def execute(arguments):
     consumed_paths = [root / "native/juicer_legacy_api.h", root / "native/juicer_cuda_call_scope.h",
                       root / "native/juicer_cuda_frame_values.h",
                       root / "CMakeLists.txt", fixtures / "production-prepared-render.cpp",
+                      fixtures / "prepared_state_abi_c.c", fixtures / "prepared_state_test.cpp",
                       fixtures / "prepared_call_abi_facts.inc",
                       root / "tests/ofx/fixtures/exposure/manifest.json", processor_fixture,
                       root / "tests/print/illuminant-fixtures/manifest.json", print_updates,

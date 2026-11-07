@@ -101,8 +101,7 @@ namespace JuicerTestSupport {
 
         static Snapshot snapshot(JuicerEffect& effect) {
             Snapshot result{};
-            NativeSubmissionState& submissionState = *effect._submissionState;
-            const auto observation = PublicationObserver::observe(effect._publication);
+            const auto observation = PublicationObserver::observe(effect._instance);
             const auto& view = observation.view;
             result.pendingValid = view.pending_kind == 4;
             result.pendingInvalid = view.pending_kind == 5;
@@ -129,25 +128,23 @@ namespace JuicerTestSupport {
             result.recipeHash = view.published.recipe_hash;
             result.lastParamHash = view.published_identity;
             result.paramEventsSuppressed = effect.plugin_edit_suppressed();
-            {
-                std::lock_guard<std::mutex> lock(
-                    submissionState.submissionSnapshotLatchMutex);
-                result.latchValid = submissionState.submissionSnapshotLatchValid;
-                if (result.latchValid) {
-                    result.latchSnapshotId =
-                        submissionState.submissionSnapshotLatch.snapshotId;
-                    result.latchFrameToken =
-                        submissionState.submissionSnapshotLatch.frameToken.value;
-                }
+            const auto submission = submission_observation(effect._instance);
+            result.latchValid = submission.valid;
+            if (submission.valid) {
+                result.latchSnapshotId = submission.submission.submission_id;
+                result.latchFrameToken = submission.submission.frame_token;
             }
             return result;
         }
 
+        static const FjInstance* instance(JuicerEffect& effect) {
+            return effect._instance.borrow();
+        }
         static PublicationAdmission admit(JuicerEffect& effect) {
-            return JuicerTestSupport::admit(effect._runtime.borrow().assets, effect._publication);
+            return JuicerTestSupport::admit(effect._runtime.borrow().assets, effect._instance);
         }
         static ParamSnapshot captured(JuicerEffect& effect) {
-            return captured_snapshot(effect._publication);
+            return captured_snapshot(effect._instance);
         }
         static ParamSnapshot read_host_snapshot(JuicerEffect& effect) {
             ParamSnapshot snapshot;
@@ -160,13 +157,13 @@ namespace JuicerTestSupport {
         static bool capture_is_current(JuicerEffect& effect, std::uint64_t ticket) {
             std::uint32_t current = 0;
             FjErrorBuffer error{nullptr, 0, 0};
-            if (effect._publication.capture_is_current(ticket, current, error).category != FJ_STATUS_SUCCESS) {
+            if (effect._instance.capture_is_current(ticket, current, error).category != FJ_STATUS_SUCCESS) {
                 throw std::runtime_error("cannot query current capture");
             }
             return current != 0;
         }
         static PublicationMetrics metrics(JuicerEffect& effect) {
-            return PublicationObserver::metrics(effect._publication);
+            return PublicationObserver::metrics(effect._instance);
         }
     };
 
@@ -2503,7 +2500,105 @@ namespace {
         }
     }
 
-    void run_publication_contract_rows(JuicerProcess::ProcessRuntime& runtime) {
+    void run_submission_retirement_rows(JuicerProcess::ProcessRuntime& runtime) {
+        using namespace JuicerFrame::FrameGeometryTest;
+        using Observer = JuicerTestSupport::EffectTraceObserver;
+        JuicerTests::Cohort rows("submission_retirement", {"never-rendered", "live-peer", "retirement-failure", "partial-construction"});
+        struct Lifetime {
+            FjInstanceLifetime* owner = nullptr;
+            explicit Lifetime(const FjInstance* instance) {
+                require(fj_test_instance_lifetime_acquire(instance, &owner, nullptr).category == FJ_STATUS_SUCCESS && owner,
+                        "retain weak instance lifetime observation");
+            }
+            ~Lifetime() {
+                if (owner)
+                    (void)fj_test_instance_lifetime_release(owner, nullptr);
+            }
+            bool live() const {
+                std::uint32_t value = 0;
+                require(fj_test_instance_lifetime_live(owner, &value, nullptr).category == FJ_STATUS_SUCCESS,
+                        "read weak instance lifetime observation");
+                return value != 0;
+            }
+        };
+        NativeHost host;
+        DeviceFrame frame;
+        {
+            auto row = rows.case_event("never-rendered");
+            auto effect = std::make_unique<JuicerEffect>(host.effect_handle(), runtime);
+            Lifetime lifetime(Observer::instance(*effect));
+            require(lifetime.live() && !Observer::snapshot(*effect).latchValid, "never-rendered effect owns initialized identity without a submission");
+            reset_instance_retirement();
+            effect.reset();
+            const auto retired = instance_retirement_snapshot();
+            require(retired.count == 1 && retired.identityLive && retired.token != 0 &&
+                        retired.status.category == FJ_STATUS_SUCCESS && !lifetime.live(),
+                    "native retirement returns before Rust instance lifetime release");
+            row.passed();
+        }
+        {
+            auto row = rows.case_event("live-peer");
+            auto first = std::make_unique<JuicerEffect>(host.effect_handle(), runtime);
+            Lifetime lifetime(Observer::instance(*first));
+            host.bind_effect(*first);
+            require(host.render(*first, frame, "submission-first").succeeded, "first effect render");
+            auto peer = std::make_unique<JuicerEffect>(host.effect_handle(), runtime);
+            host.bind_effect(*peer);
+            require(host.render(*peer, frame, "submission-peer").succeeded, "peer effect render");
+            reset_instance_retirement();
+            first.reset();
+            const auto retired = instance_retirement_snapshot();
+            require(retired.count == 1 && retired.identityLive && retired.status.category == FJ_STATUS_SUCCESS && !lifetime.live(),
+                    "rendered effect retires membership before Rust release");
+            require(host.render(*peer, frame, "submission-peer-after-close").succeeded, "another live effect survives retirement");
+            host.unbind_effect();
+            row.passed();
+        }
+        {
+            auto row = rows.case_event("retirement-failure");
+            auto effect = std::make_unique<JuicerEffect>(host.effect_handle(), runtime);
+            Lifetime lifetime(Observer::instance(*effect));
+            require(!Observer::snapshot(*effect).latchValid, "retirement failure control has no native membership");
+            reset_instance_retirement();
+            {
+                JuicerCuda::NativeCall heldGate(runtime.borrow().cuda);
+                effect.reset();
+                const auto retired = instance_retirement_snapshot();
+                require(retired.count == 1 && retired.identityLive && retired.token != 0 &&
+                            retired.status.category == FJ_STATUS_UNSUPPORTED_INPUT &&
+                            retired.status.api == FJ_API_NONE && retired.status.native_code == 0 && !lifetime.live(),
+                        "failed native retirement preserves status and releases Rust instance once");
+            }
+            require(instance_retirement_snapshot().count == 1, "gate release does not retry failed instance retirement");
+            JuicerEffect next(host.effect_handle(), runtime);
+            host.bind_effect(next);
+            require(host.render(next, frame, "submission-after-retirement-failure").succeeded,
+                    "new effect remains usable after retirement failure");
+            host.unbind_effect();
+            row.passed();
+        }
+        {
+            auto row = rows.case_event("partial-construction");
+            reset_instance_retirement();
+            bool getterFailed = false;
+            host.set_getter_hook([&](const std::string&) {
+                getterFailed = true;
+                return kOfxStatErrBadHandle;
+            });
+            bool failed = false;
+            try {
+                JuicerEffect partial(host.effect_handle(), runtime);
+            } catch (const OFX::Exception::Suite&) {
+                failed = true;
+            }
+            host.set_getter_hook({});
+            require(failed && getterFailed && instance_retirement_snapshot().count == 0,
+                    "partial constructor before identity binding creates no membership retirement");
+            row.passed();
+        }
+    }
+
+    void run_instance_contract_rows(JuicerProcess::ProcessRuntime& runtime) {
         using Observer = JuicerTestSupport::EffectTraceObserver;
         const std::vector<std::string> ids{
             "older-capture-success", "older-capture-getter-failure", "capturing-admission", "superseded-before-write-grant", "late-initial-gamma-write-success", "late-initial-gamma-write-partial-failure", "late-gamma-write-retained-hold", "partial-preset-failure", "property-failure-after-edits", "current-getter-failure", "initial-getter-failure", "current-capture-allocation", "current-preparation-allocation", "current-development-allocation", "current-preparation-rejection", "obsolete-preparation-allocation", "unrelated-thread-overlap", "another-effect-chain", "overlapping-writes-old-first", "overlapping-writes-new-first", "overlapping-write-first-failure"};
@@ -4076,6 +4171,8 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         }
         if ((argc == 4 || argc == 7) && std::string_view(argv[1]) == "--trace-output") {
             JuicerTests::list_case("adapter_operation", "adapter_trace");
+            for (const char* id : {"never-rendered", "live-peer", "retirement-failure", "partial-construction"})
+                JuicerTests::list_case("submission_retirement", id);
             for (int failed_call : {1, 2})
                 JuicerTests::list_case("route_constructor_failure", std::to_string(failed_call));
             for (unsigned failure = 0; failure < 3; ++failure)
@@ -4175,7 +4272,8 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): top-
         }
         if (argc == 6)
             check_optics_capture(runtime, argv[4], argv[5]);
-        run_publication_contract_rows(runtime);
+        run_submission_retirement_rows(runtime);
+        run_instance_contract_rows(runtime);
         NativeHost host;
         if (argc == 6)
             check_physical_capture(runtime, host, argv[4], argv[5]);

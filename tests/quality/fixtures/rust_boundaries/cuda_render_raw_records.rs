@@ -7,10 +7,10 @@ fn pass_raw_records(
     raw_frame: &crate::cuda::sys::FjFrame,
     frame: &crate::cuda::Frame<'_>,
     policy: &crate::cuda::FramePolicy,
-    latch: &mut crate::cuda::SubmissionLatch<'_>,
+    instance: &crate::instance::Instance,
     raw_abort: &crate::cuda::sys::FjAbortCallback,
     abort: &crate::cuda::Abort<'_>,
 ) {
-    let _ = crate::cuda::render(owner, assets, state, raw_frame, policy, latch, abort);
-    let _ = crate::cuda::render(owner, assets, state, frame, policy, latch, raw_abort);
+    let _ = crate::cuda::render(owner, assets, state, raw_frame, policy, instance, abort);
+    let _ = crate::cuda::render(owner, assets, state, frame, policy, instance, raw_abort);
 }

@@ -12,7 +12,6 @@ namespace JuicerTestSupport {
 struct ParamSnapshot;
 struct FjCudaCallAccess;
 struct FjPreparedFramePolicy;
-struct FjSubmissionAccess;
 struct FjCallCompletionResult;
 
 // Profile-key strings borrow the snapshot through the synchronous create call.
@@ -32,7 +31,7 @@ public:
 
     FjStatus frame_policy(const FjExtent&, FjPreparedFramePolicy&, FjErrorBuffer&) const;
     FjCallCompletionResult render(
-        const FjAssets*, FjCudaCallAccess, const FjFrame&, const FjPreparedFramePolicy&, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer&) const;
+        const FjAssets*, FjCudaCallAccess, const FjFrame&, const FjPreparedFramePolicy&, const FjInstance*, std::uint64_t, FjAbortCallback, FjErrorBuffer&) const;
     FjCallCompletionResult reject_missing_instance(
         const FjAssets*, FjCudaCallAccess, const FjFrame&, FjAbortCallback, FjErrorBuffer&) const;
     std::uint64_t input_identity() const noexcept;
@@ -78,7 +77,7 @@ private:
     friend class RenderInstance;
 };
 
-// Sole native owner of one Rust publication/admission instance. Callback
+// Sole native handle for one Rust publication and submission instance. Callback
 // exclusion is required before destruction; admitted PreparedState holds may
 // outlive this owner.
 class RenderInstance {
@@ -91,6 +90,9 @@ public:
     RenderInstance(RenderInstance&&) = delete;
     RenderInstance& operator=(RenderInstance&&) = delete;
     ~RenderInstance();
+
+    const FjInstance* borrow() const noexcept;
+    FjStatus bind_identity(std::uint64_t sessionSeed, std::uint64_t instanceToken, FjErrorBuffer& error);
 
     FjStatus begin_capture(std::uint32_t mode, FjCaptureStart& out, FjErrorBuffer& error);
     FjStatus capture_is_current(std::uint64_t ticket, std::uint32_t& outCurrent, FjErrorBuffer& error) const;

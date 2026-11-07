@@ -70,10 +70,49 @@ namespace {
 namespace JuicerCudaTest {
 
     namespace {
+        struct SubmissionObservation {
+            unsigned calls = 0;
+            FjSubmission submission{};
+            std::uint32_t reused = 0;
+        };
+
+        thread_local SubmissionObservation* submissionObservation = nullptr;
+
+        void trace_submission(void*, const FjSubmission* submission, std::uint32_t reused) noexcept {
+            if (submissionObservation && submission) {
+                ++submissionObservation->calls;
+                submissionObservation->submission = *submission;
+                submissionObservation->reused = reused;
+            }
+        }
+
+        struct SubmissionOwner {
+            FjInstance* instance = nullptr;
+            FjCuda* cuda = nullptr;
+            std::uint64_t token = 0;
+
+            bool close() noexcept {
+                FjErrorBuffer ignored{nullptr, 0, 0};
+                FjCuda* retiredCuda = cuda;
+                cuda = nullptr;
+                const bool retired = !retiredCuda || fj_cuda_retire_instance(retiredCuda, token, &ignored).category == FJ_STATUS_SUCCESS;
+                FjInstance* released = instance;
+                instance = nullptr;
+                const bool destroyed = !released || fj_legacy_instance_destroy(released, &ignored).category == FJ_STATUS_SUCCESS;
+                return retired && destroyed;
+            }
+
+            ~SubmissionOwner() {
+                (void)close();
+            }
+        };
+
         bool render_held_state(const FjAssets* assets, FjCuda* cuda, const PreparedState& owner, const FjPreparedStateView& state, const FjFrame& frame, const FjSubmission& expected, std::uint64_t expectedRecipeHash, FjErrorBuffer& error, std::string& diagnostic) {
             const auto frameFloor = std::floor(frame.time_frames);
-            if (state.recipe_hash != expectedRecipeHash || state.upload_core_hash != expected.upload_core_hash ||
-                state.dir_recipe.hash != expected.dir_hash || state.scanner_hash != expected.scanner_hash || expected.instance_token == 0 ||
+            const auto stateDigests = JuicerCuda::ResourceManager::make_key_digests(
+                state.upload_core_hash, state.dir_recipe.hash, state.scanner_hash, expected.auto_exposure_hash);
+            if (state.recipe_hash != expectedRecipeHash || stateDigests.uploadCoreHash != expected.upload_core_hash ||
+                stateDigests.dirHash != expected.dir_hash || stateDigests.scannerHash != expected.scanner_hash || expected.instance_token == 0 ||
                 !std::isfinite(frameFloor) || frameFloor < -0x1p63 || frameFloor >= 0x1p63 ||
                 expected.frame_token != static_cast<std::uint64_t>(static_cast<std::int64_t>(frameFloor))) {
                 diagnostic = "held-state render identity does not match its frame submission";
@@ -86,6 +125,11 @@ namespace JuicerCudaTest {
             FjPreparedFramePolicy policy{};
             const auto policyStatus = owner.frame_policy(full, policy, error);
             if (policyStatus.category != FJ_STATUS_SUCCESS) {
+                diagnostic.assign(error.data, error.length);
+                return false;
+            }
+            // End raw-fixture membership before the new Rust owner's sequence starts.
+            if (fj_cuda_retire_instance(cuda, expected.instance_token, &error).category != FJ_STATUS_SUCCESS) {
                 diagnostic.assign(error.data, error.length);
                 return false;
             }
@@ -110,37 +154,34 @@ namespace JuicerCudaTest {
                 return {input->outcome, observed.ordered && input->outcome.status.category == FJ_STATUS_SUCCESS ? 0u : 1u};
             },
                                         &completion);
-            struct Selection {
-                unsigned calls = 0;
-                FjSubmission expected{};
-                bool matched = true;
-            } selection;
-            selection.expected = expected;
-            const FjSubmissionAccess latch{expected.instance_token,
-                                           expected.frame_token,
-                                           &selection,
-                                           [](void* user, const FjCudaContext*, const FjSubmission* requested, FjSubmission* out, FjErrorBuffer*) -> FjStatus {
-                                               auto& selected = *static_cast<Selection*>(user);
-                                               ++selected.calls;
-                                               selected.matched = requested &&
-                                                                  requested->instance_token == selected.expected.instance_token &&
-                                                                  requested->frame_token == selected.expected.frame_token &&
-                                                                  requested->upload_core_hash == selected.expected.upload_core_hash &&
-                                                                  requested->dir_hash == selected.expected.dir_hash &&
-                                                                  requested->scanner_hash == selected.expected.scanner_hash &&
-                                                                  requested->auto_exposure_hash == selected.expected.auto_exposure_hash;
-                                               if (!selected.matched)
-                                                   return {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
-                                               *out = *requested;
-                                               out->submission_id = selected.expected.submission_id;
-                                               return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-                                           }};
-            const auto result = owner.render(assets, scope.access(), frame, policy, latch, {}, error);
+            SubmissionOwner submissionOwner;
+            if (fj_legacy_instance_create(&submissionOwner.instance, &error).category != FJ_STATUS_SUCCESS || !submissionOwner.instance ||
+                fj_legacy_instance_bind_identity(submissionOwner.instance, frame.session_seed, expected.instance_token, &error).category != FJ_STATUS_SUCCESS) {
+                diagnostic = "held-state submission owner initialization failed";
+                return false;
+            }
+            submissionOwner.cuda = cuda;
+            submissionOwner.token = expected.instance_token;
+            SubmissionObservation observation;
+            submissionObservation = &observation;
+            FjCudaCallAccess access = scope.access();
+            access.trace_submission = trace_submission;
+            const auto result = owner.render(assets, access, frame, policy, submissionOwner.instance, expected.frame_token, {}, error);
+            submissionObservation = nullptr;
+            const auto& selected = observation.submission;
+            const bool matched = observation.calls == 1 && observation.reused == 0 && selected.submission_id == 1 &&
+                                 selected.instance_token == expected.instance_token && selected.frame_token == expected.frame_token &&
+                                 selected.upload_core_hash == expected.upload_core_hash && selected.dir_hash == expected.dir_hash &&
+                                 selected.scanner_hash == expected.scanner_hash && selected.auto_exposure_hash == expected.auto_exposure_hash;
             if (result.outcome.status.category != FJ_STATUS_SUCCESS || result.fatal != 0 ||
-                completion.calls != 1 || !completion.ordered || selection.calls != 1 || !selection.matched || scope.recovery().pending) {
+                completion.calls != 1 || !completion.ordered || !matched || scope.recovery().pending) {
                 diagnostic = scope.diagnostic().empty() ? std::string(error.data, error.length) : scope.diagnostic();
                 if (diagnostic.empty())
-                    diagnostic = "held rendering completion/selection order failed";
+                    diagnostic = "held rendering completion/submission observation failed";
+                return false;
+            }
+            if (!submissionOwner.close()) {
+                diagnostic = "held-state submission owner retirement failed";
                 return false;
             }
             return true;
@@ -188,7 +229,8 @@ namespace JuicerCudaTest {
             diagnostic.assign(message.data(), error.length);
             return false;
         }
-        const FjSubmission submission{instanceToken, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(frame.time_frames))), 1, state.upload_core_hash, dir.hash, state.scanner_hash, meter.hash};
+        const auto submissionDigests = JuicerCuda::ResourceManager::make_key_digests(state.upload_core_hash, dir.hash, state.scanner_hash, meter.hash);
+        const FjSubmission submission{instanceToken, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(frame.time_frames))), 1, submissionDigests.uploadCoreHash, submissionDigests.dirHash, submissionDigests.scannerHash, submissionDigests.autoExposureHash};
         const auto invocationContext = std::string("held-route-") + std::to_string(state.route) + "-instance-" + std::to_string(instanceToken) +
                                        "-frame-" + std::to_string(submission.frame_token) + "-contract-" + (contract ? "yes" : "no") +
                                        "-lifetime-" + (lifetime ? "yes" : "no") + "-case-" + std::to_string(static_cast<unsigned>(lifetimeCase));
@@ -264,11 +306,13 @@ namespace JuicerCudaTest {
                 const JuicerCuda::FrameRect bounds{frame.source.bounds.x1, frame.source.bounds.y1, frame.source.bounds.x2, frame.source.bounds.y2};
                 const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(
                     bounds, bounds, static_cast<Spektrafilm::AutoExposureMethod>(state.input_policy.meter));
+                const auto stateDigests = JuicerCuda::ResourceManager::make_key_digests(
+                    state.upload_core_hash, state.dir_recipe.hash, state.scanner_hash, meter.hash);
                 if (snapshot.instanceToken.value == 0 || snapshot.snapshotId == 0 ||
-                    snapshot.keyDigests.uploadCoreHash != state.upload_core_hash ||
-                    snapshot.keyDigests.dirHash != state.dir_recipe.hash ||
-                    snapshot.keyDigests.scannerHash != state.scanner_hash ||
-                    snapshot.keyDigests.autoExposureHash != meter.hash ||
+                    snapshot.keyDigests.uploadCoreHash != stateDigests.uploadCoreHash ||
+                    snapshot.keyDigests.dirHash != stateDigests.dirHash ||
+                    snapshot.keyDigests.scannerHash != stateDigests.scannerHash ||
+                    snapshot.keyDigests.autoExposureHash != stateDigests.autoExposureHash ||
                     inputs.descriptors.route != static_cast<Spektrafilm::ScanRoute>(state.route)) {
                     diagnostic = "held-state boundary identity differs from its submission";
                     return false;

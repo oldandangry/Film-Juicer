@@ -10,6 +10,7 @@ use film_juicer_core::{
 };
 
 use crate::asset_noise::NoiseOwner;
+use crate::{instance::Instance, submission};
 
 #[cfg(feature = "test-support")]
 thread_local! {
@@ -42,7 +43,7 @@ fn shorten_noise_view(
 }
 
 use super::{
-    Abort, Frame, FramePolicy, OwnerBorrow, RenderError, RenderOutcome, SubmissionLatch,
+    Abort, Frame, FramePolicy, OwnerBorrow, RenderError, RenderOutcome,
     edge::{self, Failure},
     sys,
 };
@@ -477,7 +478,7 @@ pub(crate) fn render(
     state: &RenderState,
     frame: &Frame<'_>,
     policy: &FramePolicy,
-    latch: &mut SubmissionLatch<'_>,
+    instance: &Instance,
     abort: &Abort<'_>,
 ) -> Result<RenderOutcome, RenderError> {
     let mut guard = CallGuard::new(owner);
@@ -494,22 +495,33 @@ pub(crate) fn render(
             return Ok(cancelled());
         }
         let context = guard.inspected.expect("successful inspection");
-        let submission = latch
-            .select(
-                &context,
-                sys::FjSubmission {
-                    instance_token: 0,
-                    frame_token: 0,
-                    submission_id: 0,
-                    upload_core_hash: state.upload_core_hash(),
-                    dir_hash: state.dir().hash(),
-                    scanner_hash: state.scanner_hash(),
-                    auto_exposure_hash: preview.hash,
-                },
-            )
-            .inspect_err(|_| {
+        let selection = instance
+            .select_submission(submission::Key {
+                frame_token: frame.frame_token(),
+                device_id: context.device_id,
+                context: context.context,
+                upload_core: state.upload_core_hash(),
+                dir: state.dir().hash(),
+                scanner: state.scanner_hash(),
+                auto_exposure: preview.hash,
+            })
+            .map_err(|error| {
                 guard.force_fatal = true;
+                Failure::new(sys::FJ_STATUS_INTERNAL_FAILURE, error.to_string())
             })?;
+        let selected = sys::FjSubmission {
+            instance_token: instance
+                .identity()
+                .expect("selected initialized identity")
+                .instance_token,
+            frame_token: selection.key.frame_token,
+            submission_id: selection.id,
+            upload_core_hash: selection.key.upload_core,
+            dir_hash: selection.key.dir,
+            scanner_hash: selection.key.scanner,
+            auto_exposure_hash: selection.key.auto_exposure,
+        };
+        guard.owner.trace_submission(&selected, selection.reused);
         guard.render_outcome_valid = true;
         let math = super::frame::prepare(state, frame.raw(), policy.raw())?;
         let descriptors = guard.owner.descriptors(&math)?;
@@ -534,7 +546,7 @@ pub(crate) fn render(
         Ok(guard.owner.execute(
             &context,
             frame,
-            &submission,
+            &selected,
             &prepared,
             abort,
             &host_preparation,

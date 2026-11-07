@@ -43,11 +43,11 @@ typedef FjStatus (*FjCallPreviewFn)(void*, const FjRect*, const FjRect*, uint32_
 typedef FjStatus (*FjCallDescriptorsFn)(void*, const FjFrameMathInput*, FjNativeFrameDescriptors*, FjErrorBuffer*);
 typedef FjRenderOutcome (*FjCallRenderFn)(void*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, const FjHostPreparation*, FjAbortCallback, FjErrorBuffer*);
 typedef FjCallCompletionResult (*FjCallCompleteFn)(void*, const FjCallCompletionInput*);
+typedef void (*FjTraceSubmissionFn)(void*, const FjSubmission*, uint32_t);
 typedef FjStatus (*FjHostScannerFn)(void*, const FjScannerLutInput*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
 typedef FjStatus (*FjHostGaussianFn)(void*, const FjGaussianKernelInput*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
-typedef FjStatus (*FjSelectFn)(void*, const FjCudaContext*, const FjSubmission*, FjSubmission*, FjErrorBuffer*);
 typedef FjStatus (*FjPolicyFn)(const FjPreparedState*, const FjExtent*, FjPreparedFramePolicy*, FjErrorBuffer*);
-typedef FjCallCompletionResult (*FjHeldRenderFn)(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, FjSubmissionAccess, FjAbortCallback, FjErrorBuffer*);
+typedef FjCallCompletionResult (*FjHeldRenderFn)(const FjAssets*, const FjPreparedState*, FjCudaCallAccess, const FjFrame*, const FjPreparedFramePolicy*, const FjInstance*, uint64_t, FjAbortCallback, FjErrorBuffer*);
 typedef FjCallCompletionResult (*FjUnavailableFn)(const FjAssets*, const FjPreparedState*, uint32_t, FjCudaCallAccess, const FjFrame*, FjAbortCallback, FjErrorBuffer*);
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->precheck, FjCallPrecheckFn: 1, default: 0), "precheck signature");
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->admit, FjCallPrecheckFn: 1, default: 0), "admit signature");
@@ -57,9 +57,9 @@ _Static_assert(_Generic(((FjCudaCallAccess*)0)->preview, FjCallPreviewFn: 1, def
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->frame_descriptors, FjCallDescriptorsFn: 1, default: 0), "descriptors signature");
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->render, FjCallRenderFn: 1, default: 0), "render signature");
 _Static_assert(_Generic(((FjCudaCallAccess*)0)->complete, FjCallCompleteFn: 1, default: 0), "complete signature");
+_Static_assert(_Generic(((FjCudaCallAccess*)0)->trace_submission, FjTraceSubmissionFn: 1, default: 0), "submission trace signature");
 _Static_assert(_Generic(((FjHostPreparation*)0)->scanner_lut, FjHostScannerFn: 1, default: 0), "scanner callback signature");
 _Static_assert(_Generic(((FjHostPreparation*)0)->gaussian, FjHostGaussianFn: 1, default: 0), "Gaussian callback signature");
-_Static_assert(_Generic(((FjSubmissionAccess*)0)->select, FjSelectFn: 1, default: 0), "submission callback signature");
 _Static_assert(_Generic(&fj_legacy_prepared_state_frame_policy, FjPolicyFn: 1, default: 0), "frame policy signature");
 _Static_assert(_Generic(&fj_legacy_prepared_state_render, FjHeldRenderFn: 1, default: 0), "held render signature");
 _Static_assert(_Generic(&fj_legacy_prepared_unavailable, FjUnavailableFn: 1, default: 0), "unavailable signature");

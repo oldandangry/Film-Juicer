@@ -6,11 +6,11 @@ fn expire_while_borrowed(
     state: RenderState,
     frame: &crate::cuda::Frame<'_>,
     policy: &crate::cuda::FramePolicy,
-    latch: &mut crate::cuda::SubmissionLatch<'_>,
+    instance: &crate::instance::Instance,
     abort: &crate::cuda::Abort<'_>,
 ) {
     let retained = state.s_inverse();
-    let _ = crate::cuda::render(owner, assets, &state, frame, policy, latch, abort);
+    let _ = crate::cuda::render(owner, assets, &state, frame, policy, instance, abort);
     drop(state);
     let _ = retained[0];
 }

@@ -154,23 +154,7 @@ pub(super) struct FjCudaCallAccess {
     complete: Option<
         unsafe extern "C" fn(*mut c_void, *const FjCallCompletionInput) -> FjCallCompletionResult,
     >,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(super) struct FjSubmissionAccess {
-    instance_token: u64,
-    frame_token: u64,
-    user: *mut c_void,
-    select: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const sys::FjCudaContext,
-            *const sys::FjSubmission,
-            *mut sys::FjSubmission,
-            *mut sys::FjErrorBuffer,
-        ) -> sys::FjStatus,
-    >,
+    trace_submission: Option<unsafe extern "C" fn(*mut c_void, *const sys::FjSubmission, u32)>,
 }
 
 pub(crate) struct OwnerBorrow<'call> {
@@ -181,17 +165,12 @@ pub(crate) struct OwnerBorrow<'call> {
 
 pub(crate) struct Frame<'call> {
     raw: &'call sys::FjFrame,
+    frame_token: u64,
     thread: PhantomData<Rc<()>>,
 }
 
 pub(crate) struct FramePolicy {
     raw: FjPreparedFramePolicy,
-}
-
-pub(crate) struct SubmissionLatch<'call> {
-    access: FjSubmissionAccess,
-    scope: PhantomData<&'call mut ()>,
-    thread: PhantomData<Rc<()>>,
 }
 
 pub(crate) struct Abort<'call> {
@@ -478,7 +457,21 @@ impl<'call> OwnerBorrow<'call> {
     }
 }
 
+impl OwnerBorrow<'_> {
+    pub(super) fn trace_submission(&self, submission: &sys::FjSubmission, reused: bool) {
+        if let Some(trace) = self.access.trace_submission {
+            // SAFETY: This admitted synchronous observer borrows the decided value
+            // only through return and contains foreign exceptions. It owns no policy.
+            unsafe { trace(self.access.user, submission, u32::from(reused)) };
+        }
+    }
+}
+
 impl Frame<'_> {
+    pub(super) fn frame_token(&self) -> u64 {
+        self.frame_token
+    }
+
     pub(super) fn raw(&self) -> &sys::FjFrame {
         self.raw
     }
@@ -487,32 +480,6 @@ impl Frame<'_> {
 impl FramePolicy {
     pub(super) fn raw(&self) -> &FjPreparedFramePolicy {
         &self.raw
-    }
-}
-
-impl SubmissionLatch<'_> {
-    pub(super) fn select(
-        &mut self,
-        context: &sys::FjCudaContext,
-        mut requested: sys::FjSubmission,
-    ) -> Result<sys::FjSubmission, Failure> {
-        requested.instance_token = self.access.instance_token;
-        requested.frame_token = self.access.frame_token;
-        callback(|error| {
-            // SAFETY: A submission consists only of zero-valid fixed integer lanes.
-            let mut out = unsafe { std::mem::zeroed::<sys::FjSubmission>() };
-            // SAFETY: The validated callback only borrows these live disjoint records.
-            let result = unsafe {
-                self.access.select.expect("admitted submission access")(
-                    self.access.user,
-                    context,
-                    &requested,
-                    &mut out,
-                    error,
-                )
-            };
-            (result, out)
-        })
     }
 }
 
@@ -562,7 +529,7 @@ unsafe fn assets<'a>(
 /// # Safety
 /// The complete initialized input is live and immutable for the call. Image
 /// addresses are opaque device integers and are never dereferenced by Rust.
-unsafe fn frame<'a>(pointer: *const sys::FjFrame) -> Result<Frame<'a>, Failure> {
+unsafe fn frame<'a>(pointer: *const sys::FjFrame, frame_token: u64) -> Result<Frame<'a>, Failure> {
     if !valid(pointer) {
         return Err(raw_failure("invalid held render frame"));
     }
@@ -589,6 +556,7 @@ unsafe fn frame<'a>(pointer: *const sys::FjFrame) -> Result<Frame<'a>, Failure> 
     }
     Ok(Frame {
         raw,
+        frame_token,
         thread: PhantomData,
     })
 }
@@ -599,17 +567,6 @@ fn abort<'a>(raw: sys::FjAbortCallback) -> Abort<'a> {
         scope: PhantomData,
         thread: PhantomData,
     }
-}
-
-fn latch<'a>(access: FjSubmissionAccess) -> Result<SubmissionLatch<'a>, Failure> {
-    if access.user.is_null() || access.select.is_none() {
-        return Err(raw_failure("invalid submission access"));
-    }
-    Ok(SubmissionLatch {
-        access,
-        scope: PhantomData,
-        thread: PhantomData,
-    })
 }
 
 /// # Safety
@@ -735,7 +692,8 @@ pub(super) unsafe extern "C" fn fj_legacy_prepared_state_render(
     access: FjCudaCallAccess,
     raw_frame: *const sys::FjFrame,
     raw_policy: *const FjPreparedFramePolicy,
-    submission: FjSubmissionAccess,
+    instance_owner: *const crate::instance_bridge::FjInstance,
+    frame_token: u64,
     raw_abort: sys::FjAbortCallback,
     error: *mut sys::FjErrorBuffer,
 ) -> FjCallCompletionResult {
@@ -755,14 +713,17 @@ pub(super) unsafe extern "C" fn fj_legacy_prepared_state_render(
         // SAFETY: The owner is live and excluded from release for this call.
         let state = unsafe { state(state_owner) }?;
         // SAFETY: The initialized record is live immutable input.
-        let frame = unsafe { frame(raw_frame) }?;
+        let frame = unsafe { frame(raw_frame, frame_token) }?;
         // SAFETY: The pointer-free policy belongs to this same held state and frame.
         let policy = unsafe { policy(raw_policy, state, &frame) }?;
         let mut owner = OwnerBorrow::admit_access(access)?;
-        let mut latch = latch(submission)?;
+        // SAFETY: The caller retains this live Instance and excludes destroy
+        // throughout the synchronous render, including completion and reentry.
+        let instance = unsafe { crate::instance_bridge::borrow_instance(instance_owner) }
+            .ok_or_else(|| raw_failure("invalid submission instance"))?;
         let abort = abort(raw_abort);
         Ok(super::render(
-            &mut owner, assets, state, &frame, &policy, &mut latch, &abort,
+            &mut owner, assets, state, &frame, &policy, instance, &abort,
         ))
     }))
     .unwrap_or_else(|_| {
@@ -816,7 +777,7 @@ pub(super) unsafe extern "C" fn fj_legacy_prepared_unavailable(
             Some(unsafe { state(state_owner) }?)
         };
         // SAFETY: The initialized frame record remains live and immutable.
-        let frame = unsafe { frame(raw_frame) }?;
+        let frame = unsafe { frame(raw_frame, 0) }?;
         let mut owner = OwnerBorrow::admit_access(access)?;
         let abort = abort(raw_abort);
         Ok(super::render::reject_unavailable(

@@ -17,6 +17,7 @@ mod cuda;
 mod asset_catalog;
 
 mod instance;
+mod submission;
 
 mod runtime;
 

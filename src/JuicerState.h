@@ -1,13 +1,10 @@
 #pragma once
 
 #include <array>
-#include <atomic>
 #include <cstdint>
-#include <mutex>
 #include <string>
 
 #include "ColorTransforms.h"
-#include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "OutputColor.h"
 #include "ProfileCatalog.h"
 #include "RenderControls.h"
@@ -84,18 +81,6 @@ bool set_gamma_snapshot_values(
     double authoredPrintGammaFactor,
     ParamSnapshot& snapshot,
     std::string& outDiagnostic);
-
-// SF_TEMP_BRIDGE_NATIVE_SUBMISSION_STATE: temporal/submission ownership moves at S5.D.
-struct NativeSubmissionState {
-    std::uint64_t sessionSeed = 0;
-    std::uint64_t instanceToken = 0;
-    std::atomic<std::uint64_t> submissionSnapshotIdNext{1};
-
-    // Snapshot latch: all submissions for the same frame token reuse one immutable snapshot payload.
-    std::mutex submissionSnapshotLatchMutex;
-    bool submissionSnapshotLatchValid = false;
-    JuicerCuda::ResourceManager::SubmissionSnapshot submissionSnapshotLatch{};
-};
 
 bool spektrafilm_profile_catalog_ready(const Spektrafilm::ProfileCatalog& catalog);
 const char* spektrafilm_profile_catalog_failure(const Spektrafilm::ProfileCatalog& catalog);

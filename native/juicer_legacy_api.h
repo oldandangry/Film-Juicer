@@ -2139,6 +2139,12 @@ typedef struct FjAdmission {
 #define FJ_ADMISSION_NEEDS_REFRESH UINT32_C(7)
 
 FjStatus fj_legacy_instance_create(FjInstance** out, FjErrorBuffer* error);
+/* Bind immutable stochastic identity once on the already-created Instance.
+ * Zero words are valid; identity reads report initialization separately. These
+ * operations borrow a live handle; the caller excludes destroy through return. */
+FjStatus fj_legacy_instance_bind_identity(const FjInstance*, uint64_t session_seed, uint64_t instance_token, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_identity(const FjInstance*, uint32_t* out_initialized, uint64_t* out_seed, uint64_t* out_token, FjErrorBuffer* error);
+FjStatus fj_legacy_instance_invalidate_submission(const FjInstance*, int32_t device_id, uintptr_t context, uint32_t* out_cleared, FjErrorBuffer* error);
 FjStatus fj_legacy_instance_begin_capture(FjInstance*, uint32_t mode, FjCaptureStart* out, FjErrorBuffer* error);
 FjStatus fj_legacy_instance_capture_is_current(const FjInstance*, uint64_t capture, uint32_t* out_current, FjErrorBuffer* error);
 FjStatus fj_legacy_instance_begin_host_write(FjInstance*, uint64_t capture, FjHostWrite** out, uint32_t* out_start, FjErrorBuffer* error);

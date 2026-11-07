@@ -33,6 +33,15 @@ namespace JuicerFrame::FrameGeometryTest {
         std::uint32_t route = 0;
         FjPreparedFramePolicy policy{};
     };
+    struct InstanceRetirementObservation {
+        unsigned count = 0;
+        bool identityLive = false;
+        std::uint64_t token = 0;
+        FjStatus status{};
+    };
+    void instance_retired(const FjInstance*, std::uint64_t, FjStatus) noexcept;
+    InstanceRetirementObservation instance_retirement_snapshot();
+    void reset_instance_retirement();
     void reset();
     Observation snapshot();
     HalationObservation halation_snapshot();
