@@ -6,6 +6,11 @@ use std::sync::{Arc, Mutex};
 use crate::runtime::Runtime;
 
 mod actions;
+mod default_actions;
+mod render;
+mod params;
+mod controls;
+mod instance;
 #[allow(
     unsafe_code,
     reason = "the OFX edge admits binary-lived host tables and creates callback-scoped capabilities"
@@ -134,9 +139,16 @@ fn fail_admission(admission: &Admission) {
 }
 
 fn admit() -> Result<Admission, Status> {
+    admit_action(false)
+}
+
+fn admit_action(terminal: bool) -> Result<Admission, Status> {
     let state = state();
     match &*state {
         Module::Loaded(loaded) => Ok(Admission::new(loaded.suites, Arc::clone(&loaded.runtime))),
+        Module::InvalidLoaded(loaded) if terminal => {
+            Ok(Admission::new(loaded.suites, Arc::clone(&loaded.runtime)))
+        }
         Module::Unbound | Module::Invalid(None) => Err(Status::BAD_HANDLE),
         _ => Err(Status::FAILED),
     }

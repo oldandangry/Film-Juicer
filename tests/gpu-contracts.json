@@ -16,6 +16,14 @@
     "Ffi.Gpu.ProductionPreparedRender"
   ],
   "targets": {
+    "JuicerOfxRenderGpuTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxRenderTraceTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
     "JuicerFilmRecipeTests": {
       "protocol": "custom",
       "registrations": 2
@@ -103,6 +111,8 @@
     "ScatterHalation.Gpu.CapturedCarrier": 3,
     "ScatterHalation.Gpu.ZeroWork": 3,
     "ScatterHalation.Gpu.Lifecycle": 4,
+    "Ofx.Gpu.Render": 1,
+    "Ofx.Gpu.RenderTrace": 1,
     "Ofx.Gpu.ProcessorReference": 1,
     "Ofx.Gpu.SequentialOwners": 1,
     "Ofx.Gpu.CutoverContract": 8,

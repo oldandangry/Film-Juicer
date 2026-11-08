@@ -25,6 +25,21 @@ pub enum Role {
     Print,
 }
 
+/// Resolve an empty captured key without decoding nonempty host bytes.
+pub fn capture_key(role: Role, key: Vec<u8>) -> Result<Vec<u8>, std::collections::TryReserveError> {
+    if !key.is_empty() {
+        return Ok(key);
+    }
+    let default = match role {
+        Role::Film => DEFAULT_FILM_KEY,
+        Role::Print => DEFAULT_PRINT_KEY,
+    };
+    let mut key = Vec::new();
+    key.try_reserve_exact(default.len())?;
+    key.extend_from_slice(default.as_bytes());
+    Ok(key)
+}
+
 /// Authored photographic substrate (`info.support`). Printing can use film or paper.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Support {

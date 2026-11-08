@@ -5,7 +5,8 @@
 discovery/binding, transactional Load, Describe, dispatch, reentry, reload and
 Unload. Describe compares thirteen authored properties plus host-seeded
 `OfxPropType` with the unchanged Describe-only `descriptor_manifest.json` and
-declares 303 status/ordering/target rows. Load and lifecycle add 11 and 7 rows.
+declares 303 status/ordering/target rows. Load and lifecycle add the current required-suite slot census and 7 rows,
+including the required context and instance suite slots.
 
 The three `Ofx.Host.ModuleControls.{Construction,Panic,Terminal}` registrations
 link only the separate Rust test-support archive and run in distinct processes.
@@ -17,12 +18,48 @@ late panic cleanup, admitted panic exclusion and invalidated-load rollback. The
 feature-only pause controls report bounded-wait expiry as failed evidence. Native
 path cases compare two literal parent extractions before normalization against
 the C++ filesystem expression, including an immediate dot component.
-All four groups are host/boundary checks; compiling them still requires CUDA.
-They do not switch shipping discovery, install a candidate, exercise parameters
-or rendering, or establish installed-host acceptance.
+`Ofx.Host.Context` compares the candidate DescribeInContext action with the live
+C++ descriptor and an independent 128-name/type census. `Ofx.Host.ContextControls`
+uses the real Runtime with test-support fault controls for catalog readiness,
+recoverable allocation and panic containment. These checks exercise descriptor
+declarations, not instance parameter values or rendering.
 
-`RustBoundaryTests.test_ofx_callback_borrows` compiles four real scoped/private/
-Send/escape consumers in default and test-support, using the existing native
+`Ofx.Host.Instance` compares actual default-feature create/change/destroy
+callbacks with the unchanged C++ adapter, using an independent ordered census of
+113 typed parameters and Source/Output. Its eight named cases cover acquisition,
+actions, typed current getters/setters, UI edits, reentry and terminal cleanup.
+`Ofx.Host.Capture` has eleven named cases and observes the existing safe
+publication/preparation owner after actual callbacks. It reuses all 198 grain
+capture and 36 edit witnesses with their original four-preset manifest and
+approved overlay reader. `Ofx.Host.InstanceControls` has five named cases for
+recoverable allocation, panic, failed-create retention, terminal cleanup and
+capture interleavings. The latter two executables use only test-support Rust;
+the default-feature instance executable retains the independent live C++ oracle.
+
+The additional `Ofx.Host.Actions`, `.Render` and `.RenderControls` groups exercise
+real default-feature callbacks, remaining default-action argument/status traces,
+ordered non-CUDA profile reads, callback-local image release and early-return
+precedence. Controls link only test-support Rust. Images acquired before metadata
+failure are released once, including the explicit correction of the C++ image
+constructor's failure-path leak. Finite frame positions outside `[-2^63,2^63)`
+are rejected with Fatal after the frame-rate getter, before native entry; earlier
+no-op and failure results retain precedence. Nonfinite frame positions normalize
+to zero only at frame assembly.
+
+`Ofx.Gpu.Render` uses actual device images, the default-feature descriptor and the
+retained C++ comparator. `Ofx.Gpu.RenderTrace` uses test-support controls for fixed
+identities, temporal/publication/submission and completion/recovery observations.
+It shares the existing instrumented processor failure hooks; original numerical
+expectations and readers stay independent. Both own the real callback image/native
+scope. No host-only fixture presents CPU storage as valid CUDA memory.
+
+The twelve host adapter groups compile with CUDA but run without a device. They
+and the two focused GPU groups preserve C++ shipping discovery; they do not
+install the candidate or establish installed-host or saved-project acceptance.
+
+`RustBoundaryTests.test_ofx_callback_borrows` compiles seven real scoped/private/
+image/thread/escape consumers, including actual instance access, typed parameter borrows
+and terminal privacy, in default and test-support using the existing native
 target/profile compiler-probe owner.
 
 ## Linux OFX host compatibility probe

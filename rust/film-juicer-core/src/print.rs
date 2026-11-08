@@ -662,6 +662,30 @@ impl Illuminant {
     }
 }
 
+pub struct CaptureControls {
+    pub exposure: f64,
+    pub preflash: f64,
+    pub exposure_compensation: bool,
+    pub ymc: [f64; 3],
+}
+impl CaptureControls {
+    pub fn complete(self, p: &mut crate::recipe::Params) {
+        p.print_exposure = crate::exposure::finite_or(self.exposure, 1.0);
+        p.print_preflash_exposure = crate::exposure::finite_or(self.preflash, 0.0);
+        p.print_exposure_compensation = i32::from(self.exposure_compensation);
+        p.normalize_print_exposure = 1;
+        p.print_ui_ymc_cc = self.ymc.map(|v| crate::exposure::finite_or(v, 0.0));
+    }
+}
+
+pub fn capture_gamma(raw: f64, print_route: bool) -> Result<f64, &'static str> {
+    if print_route && (!raw.is_finite() || !(0.5..=2.0).contains(&raw)) {
+        Err("InvalidAuthoredControl component=print_development field=print_gamma_factor")
+    } else {
+        Ok(raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Error, FilterParams, Illuminant};

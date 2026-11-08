@@ -369,6 +369,306 @@ pub mod test_support {
     }
 }
 
+/// Authored grain controls captured from the host before conversion.
+pub struct CaptureControls {
+    pub active: bool,
+    pub preset: i32,
+    pub sublayers_active: bool,
+    pub amount_ev: f64,
+    pub size_px: f64,
+    pub sharpness: f64,
+    pub chroma: f64,
+    pub texture: f64,
+    pub particle_area_um2: f64,
+    pub size_mix_scale: f64,
+    pub coarse_weight: f64,
+    pub mid_weight: f64,
+    pub dye_cloud_blur_um: f64,
+    pub particle_scale_cmy: [f64; 3],
+    pub particle_scale_layers: [f64; 3],
+    pub particle_density_min_cmy: [f64; 3],
+    pub uniformity_cmy: [f64; 3],
+    pub clump_temporal_mix: f64,
+    pub clump_morph_period_sec: f64,
+    pub micro_structure: [f64; 2],
+    pub debug_view: i32,
+}
+
+#[derive(Clone, Copy)]
+pub struct PresetDefaults {
+    pub amount_ev: f64,
+    pub size_px: f64,
+    pub sharpness: f64,
+    pub chroma: f64,
+    pub texture: f64,
+    pub particle_area_um2: f64,
+    pub size_mix_scale: f64,
+    pub density_min_master: f64,
+    pub uniformity_master: f64,
+    pub size_mix_weight: f64,
+    pub micro_cell: f64,
+    pub micro_sigma: f64,
+    pub particle_scale_master: f64,
+    pub particle_scale_layers_master: f64,
+    pub sublayers_active: bool,
+}
+pub fn preset_defaults(index: i32) -> PresetDefaults {
+    let mut p = PresetDefaults {
+        amount_ev: -1.20,
+        size_px: 0.50,
+        sharpness: 0.5,
+        chroma: 0.3,
+        texture: 0.55,
+        particle_area_um2: 0.25,
+        size_mix_scale: 19.0,
+        density_min_master: 0.08,
+        uniformity_master: 0.97,
+        size_mix_weight: f64::NAN,
+        micro_cell: f64::NAN,
+        micro_sigma: f64::NAN,
+        particle_scale_master: 1.48,
+        particle_scale_layers_master: 1.922,
+        sublayers_active: true,
+    };
+    match index.clamp(0, 2) {
+        0 => {
+            p.amount_ev = -1.396;
+            p.size_px = 0.615;
+            p.chroma = 0.0;
+            p.texture = 0.63;
+            p.size_mix_scale = 31.3;
+            p.size_mix_weight = 0.119;
+            p.micro_cell = 60.0;
+            p.micro_sigma = 181.2;
+            p.particle_scale_layers_master = 1.99;
+        }
+        2 => {
+            p.amount_ev = -0.57;
+            p.size_px = 0.56;
+            p.chroma = 0.5;
+            p.texture = 0.35;
+            p.particle_area_um2 = 0.33;
+            p.size_mix_scale = 16.0;
+            p.density_min_master = 0.09;
+            p.uniformity_master = 0.96;
+        }
+        _ => {}
+    }
+    p
+}
+#[derive(Clone, Copy)]
+pub struct AdvancedDefaults {
+    pub blur_dye_clouds: f64,
+    pub size_mix_weight: f64,
+    pub micro_cell: f64,
+    pub micro_sigma: f64,
+}
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t
+}
+fn finite_or(v: f64, fallback: f64) -> f64 {
+    if v.is_finite() { v } else { fallback }
+}
+fn sanitize(v: f64, fallback: f64, lo: f64, hi: f64) -> f64 {
+    if v.is_finite() {
+        v.clamp(lo, hi)
+    } else {
+        fallback
+    }
+}
+pub fn advanced_defaults(p: PresetDefaults, sharpness: f64, texture: f64) -> AdvancedDefaults {
+    AdvancedDefaults {
+        blur_dye_clouds: lerp(1.40, 0.60, sharpness),
+        size_mix_weight: finite_or(p.size_mix_weight, lerp(0.072, 0.38, texture)),
+        micro_cell: finite_or(p.micro_cell, lerp(50.0, 70.0, texture)),
+        micro_sigma: finite_or(p.micro_sigma, lerp(140.0, 200.0, texture)),
+    }
+}
+pub fn normalized_default_ratios() -> [[f64; 3]; 4] {
+    let mut ratios = [
+        [0.8, 1.0, 2.0],
+        [2.5, 1.0, 0.5],
+        [0.07, 0.08, 0.12],
+        [0.97, 0.97, 0.99],
+    ];
+    for ratio in &mut ratios {
+        let mean = (ratio[0] + ratio[1] + ratio[2]) / 3.0;
+        for value in ratio {
+            *value /= mean;
+        }
+    }
+    ratios
+}
+/// User preset and reset writes have different clamping behavior.
+#[derive(Clone, Copy)]
+pub enum GrainDefaultsEdit {
+    Preset,
+    Reset,
+}
+
+pub struct AdvancedWrites {
+    pub triplets: [[f64; 3]; 4],
+    pub blur_dye_clouds: f64,
+    pub size_mix_weight: f64,
+    pub mid_weight: f64,
+    pub size_mix_scale: f64,
+    pub micro_structure: [f64; 2],
+    pub clump_temporal_mix: f64,
+    pub clump_morph_period_sec: f64,
+}
+
+pub fn reset_advanced_defaults(
+    preset: PresetDefaults,
+    sharpness: f64,
+    texture: f64,
+) -> AdvancedDefaults {
+    advanced_defaults(
+        preset,
+        sanitize(sharpness, preset.sharpness, 0.0, 1.0),
+        sanitize(texture, preset.texture, 0.0, 1.0),
+    )
+}
+
+pub fn advanced_writes(
+    preset: PresetDefaults,
+    advanced: AdvancedDefaults,
+    edit: GrainDefaultsEdit,
+) -> AdvancedWrites {
+    let masters = [
+        preset.particle_scale_master,
+        preset.particle_scale_layers_master,
+        preset.density_min_master,
+        preset.uniformity_master,
+    ];
+    let ratios = normalized_default_ratios();
+    let bounds = [10.0, 10.0, 1.0, 1.0];
+    let limit = |value: f64, lo: f64, hi: f64| match edit {
+        GrainDefaultsEdit::Preset => value.clamp(lo, hi),
+        GrainDefaultsEdit::Reset => value,
+    };
+    let mut triplets = [[0.0; 3]; 4];
+    for index in 0..4 {
+        triplets[index] =
+            ratios[index].map(|value| limit(masters[index] * value, 0.0, bounds[index]));
+    }
+    AdvancedWrites {
+        triplets,
+        blur_dye_clouds: limit(advanced.blur_dye_clouds, 0.0, 10.0),
+        size_mix_weight: limit(advanced.size_mix_weight, 0.0, 1.0),
+        mid_weight: 0.0,
+        size_mix_scale: limit(preset.size_mix_scale, 1.0, 50.0),
+        micro_structure: [
+            limit(advanced.micro_cell, 0.0, 1000.0),
+            limit(advanced.micro_sigma, 0.0, 1000.0),
+        ],
+        clump_temporal_mix: 0.30,
+        clump_morph_period_sec: 8.0,
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum GrainRatioControl {
+    ParticleScale,
+    ParticleScaleLayers,
+    DensityMin,
+    Uniformity,
+}
+impl GrainRatioControl {
+    pub fn values(self, master: f64, values: [f64; 3]) -> Option<[f64; 3]> {
+        if !master.is_finite() {
+            return None;
+        }
+        let (index, hi) = match self {
+            Self::ParticleScale => (0, 10.0),
+            Self::ParticleScaleLayers => (1, 10.0),
+            Self::DensityMin => (2, 1.0),
+            Self::Uniformity => (3, 1.0),
+        };
+        let master = master.clamp(0.0, hi);
+        let values = values.map(|v| sanitize(v, master, 0.0, hi));
+        let mean = (values[0] + values[1] + values[2]) / 3.0;
+        let ratio = if mean.is_finite() && mean > 0.0 {
+            values.map(|v| v / mean)
+        } else {
+            normalized_default_ratios()[index]
+        };
+        Some(ratio.map(|v| (master * v).clamp(0.0, hi)))
+    }
+}
+
+impl CaptureControls {
+    pub fn complete(self) -> Params {
+        let p = preset_defaults(self.preset);
+        let sharpness = sanitize(self.sharpness, p.sharpness, 0.0, 1.0);
+        let chroma = sanitize(self.chroma, p.chroma, 0.0, 1.0) as f32;
+        let texture = sanitize(self.texture, p.texture, 0.0, 1.0);
+        let a = advanced_defaults(p, sharpness, texture);
+        let triplet =
+            |values: [f64; 3], fallback, hi| values.map(|v| sanitize(v, fallback, 0.0, hi) as f32);
+        let narrow = |v, fallback: f32, lo, hi| sanitize(v, f64::from(fallback), lo, hi) as f32;
+        Params {
+            active: self.active,
+            sublayers_active: self.sublayers_active,
+            amplitude: sanitize(self.amount_ev, p.amount_ev, -3.0, 3.0).exp2() as f32,
+            correlation_sigma_px: narrow(self.size_px, p.size_px as f32, 0.2, 2.0),
+            particle_area_um2: narrow(
+                self.particle_area_um2,
+                p.particle_area_um2 as f32,
+                0.0,
+                10.0,
+            ),
+            size_mix_scale: narrow(self.size_mix_scale, p.size_mix_scale as f32, 1.0, 50.0),
+            coarse_weight: narrow(self.coarse_weight, a.size_mix_weight as f32, 0.0, 1.0),
+            mid_weight: narrow(self.mid_weight, 0.0, 0.0, 1.0),
+            dye_cloud_blur_um: narrow(self.dye_cloud_blur_um, a.blur_dye_clouds as f32, 0.0, 10.0),
+            chroma_mix: chroma,
+            chroma_shared_weight: (1.0_f32 - chroma).max(0.0).sqrt(),
+            chroma_independent_weight: chroma.max(0.0).sqrt(),
+            particle_scale_cmy: triplet(self.particle_scale_cmy, p.particle_scale_master, 10.0),
+            particle_scale_layers: triplet(
+                self.particle_scale_layers,
+                p.particle_scale_layers_master,
+                10.0,
+            ),
+            particle_density_min_cmy: triplet(
+                self.particle_density_min_cmy,
+                p.density_min_master,
+                1.0,
+            ),
+            uniformity_cmy: triplet(self.uniformity_cmy, p.uniformity_master, 1.0),
+            clump_temporal_mix: narrow(self.clump_temporal_mix, 0.30, 0.0, 0.30),
+            clump_morph_period_sec: narrow(self.clump_morph_period_sec, 8.0, 5.0, 60.0),
+            micro_structure: [
+                sanitize(self.micro_structure[0], a.micro_cell, 0.0, 1000.0) as f32,
+                sanitize(self.micro_structure[1], a.micro_sigma, 0.0, 1000.0) as f32,
+            ],
+            debug_view: self.debug_view.clamp(0, 6),
+            sublayer_count: 1,
+        }
+    }
+}
+
+/// Values written by the user-facing sharpness link; nonfinite edits are ignored.
+pub fn sharpness_link(value: f64) -> Option<f64> {
+    value
+        .is_finite()
+        .then(|| lerp(1.40, 0.60, value.clamp(0.0, 1.0)))
+}
+/// Values written by the user-facing texture link.
+pub fn texture_link(value: f64) -> Option<(f64, [f64; 2])> {
+    if !value.is_finite() {
+        return None;
+    }
+    let value = value.clamp(0.0, 1.0);
+    Some((
+        lerp(0.072, 0.38, value).clamp(0.0, 1.0),
+        [
+            lerp(50.0, 70.0, value).clamp(0.0, 1000.0),
+            lerp(140.0, 200.0, value).clamp(0.0, 1000.0),
+        ],
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Params, Recipe, Error, axis_search_metadata, recipe_hash};

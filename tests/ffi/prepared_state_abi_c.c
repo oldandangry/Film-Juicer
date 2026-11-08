@@ -522,3 +522,18 @@ FjStatus fj_test_prepared_boundary_release_c(FjOutputBoundaryOwner* owner, FjErr
     FjStatus (*call)(FjOutputBoundaryOwner*, FjErrorBuffer*) = fj_legacy_output_boundary_release;
     return call(owner, error);
 }
+
+/* The scoped entry borrows stack callbacks and exposes no independently owned access. */
+typedef FjCallCompletionResult (*FjScopedCallFn)(FjCuda*, uint32_t, FjCudaCallContinuation, FjCudaCompletionContinuation, void*);
+typedef uint32_t (*FjScopedRetireFn)(void*, const FjCallCompletionInput*);
+_Static_assert(_Generic(&fj_cuda_call, FjScopedCallFn: 1, default: 0), "scoped call signature");
+_Static_assert(_Generic(&fj_cuda_call_retire_context, FjScopedRetireFn: 1, default: 0), "scoped retirement signature");
+
+_Static_assert(sizeof(FjCudaCompletion) == 40 && _Alignof(FjCudaCompletion) == 4, "scoped completion layout");
+_Static_assert(offsetof(FjCudaCompletion, result) == 0 && offsetof(FjCudaCompletion, retirement) == 20 && offsetof(FjCudaCompletion, invalidation) == 24 && offsetof(FjCudaCompletion, latch_cleared) == 36, "scoped completion fields");
+
+typedef uint32_t (*FjCallTraceFlagsFn)(void);
+typedef void (*FjCallTraceTextFn)(FjStringView);
+_Static_assert(_Generic(&fj_cuda_call_trace_flags, FjCallTraceFlagsFn: 1, default: 0), "call diagnostic flags signature");
+_Static_assert(_Generic(&fj_cuda_call_trace_cutoff, FjCallTraceTextFn: 1, default: 0), "cutoff diagnostic signature");
+_Static_assert(_Generic(&fj_cuda_call_trace_failure, FjCallTraceTextFn: 1, default: 0), "call failure diagnostic signature");

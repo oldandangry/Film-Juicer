@@ -156,6 +156,20 @@
       "registrations": 1,
       "cuda_free": true
     },
+    "JuicerOfxContextTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxInstanceTests": { "protocol": "custom", "registrations": 1 },
+    "JuicerOfxActionTests": { "protocol": "custom", "registrations": 1 },
+    "JuicerOfxRenderTests": { "protocol": "custom", "registrations": 1 },
+    "JuicerOfxRenderControlTests": { "protocol": "custom", "registrations": 1 },
+    "JuicerOfxCaptureTests": { "protocol": "custom", "registrations": 1 },
+    "JuicerOfxInstanceControlTests": { "protocol": "custom", "registrations": 1 },
+    "JuicerOfxContextControlTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
     "JuicerOfxModuleTests": {
       "protocol": "custom",
       "registrations": 1
@@ -229,6 +243,14 @@
     "Print.Host.PreflashProducts": 1,
     "Reconstruction.Host.TcLut.boundary": 2,
     "Scanner.Host.CorrectionProducts": 1,
+    "Ofx.Host.Context": 8,
+    "Ofx.Host.Actions": 1,
+    "Ofx.Host.Render": 4,
+    "Ofx.Host.RenderControls": 3,
+    "Ofx.Host.Instance": 9,
+    "Ofx.Host.Capture": 13,
+    "Ofx.Host.InstanceControls": 5,
+    "Ofx.Host.ContextControls": 3,
     "Ofx.Host.Module": 3,
     "Ofx.Host.ModuleControls.Construction": 4,
     "Ofx.Host.ModuleControls.Panic": 2,
@@ -253,7 +275,7 @@
     "film-juicer-core::profile": 41,
     "film-juicer-core::sampled_profile": 7,
     "film-juicer-core::tc_lut": 1,
-    "film-juicer-plugin": 11
+    "film-juicer-plugin": 12
   },
   "gtest_cohorts": {
     "AllocationRetry.CapacityRetriesOnceRegardlessOfDiagnostic": 1,

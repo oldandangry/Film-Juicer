@@ -160,6 +160,49 @@ pub(crate) fn resource_directory() -> PathBuf {
 }
 
 #[cfg(unix)]
+pub(crate) fn clock_nanoseconds() -> Option<u64> {
+    // libstdc++ high_resolution_clock aliases system_clock on the qualified
+    // Linux target. Preserve its nanosecond epoch count and unsigned cast.
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => Some(duration.as_nanos() as u64),
+        Err(error) => Some(0u64.wrapping_sub(error.duration().as_nanos() as u64)),
+    }
+}
+
+#[cfg(any(windows, feature = "test-support"))]
+pub(crate) fn qpc_nanoseconds(counter: i64, frequency: i64) -> Option<u64> {
+    if frequency <= 0 {
+        return None;
+    }
+    // Preserve the three qualified MSVC steady_clock integer paths, including
+    // truncation before the final unsigned representation of signed nanoseconds.
+    let ns = match frequency {
+        10_000_000 => counter.wrapping_mul(100),
+        24_000_000 => counter
+            .wrapping_mul(41)
+            .wrapping_add(counter.wrapping_mul(2) / 3),
+        _ => (counter / frequency)
+            .wrapping_mul(1_000_000_000)
+            .wrapping_add((counter % frequency).wrapping_mul(1_000_000_000) / frequency),
+    };
+    Some(ns as u64)
+}
+
+#[cfg(windows)]
+pub(crate) fn clock_nanoseconds() -> Option<u64> {
+    let (mut counter, mut frequency) = (0i64, 0i64);
+    // SAFETY: Both Win32 QPC functions fill their exact LARGE_INTEGER-sized
+    // independent local outputs; calling convention is the vendored system ABI.
+    let available = unsafe {
+        QueryPerformanceFrequency(&mut frequency) != 0 && QueryPerformanceCounter(&mut counter) != 0
+    };
+    if !available {
+        return None;
+    }
+    qpc_nanoseconds(counter, frequency)
+}
+
+#[cfg(unix)]
 #[repr(C)]
 struct DlInfo {
     filename: *const std::ffi::c_char,
@@ -199,6 +242,8 @@ fn module_path() -> Option<PathBuf> {
 #[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
+    fn QueryPerformanceCounter(counter: *mut i64) -> i32;
+    fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
     fn GetModuleHandleExW(
         flags: u32,
         address: *const u16,
@@ -270,7 +315,7 @@ pub(crate) fn abi() -> [usize; 6] {
 }
 
 #[cfg(all(feature = "test-support", windows))]
-pub(crate) fn abi() -> [usize; 6] {
+pub(crate) fn abi() -> [usize; 8] {
     [
         std::mem::size_of::<u16>(),
         std::mem::size_of::<u32>(),
@@ -278,5 +323,7 @@ pub(crate) fn abi() -> [usize; 6] {
         std::mem::size_of::<*mut std::ffi::c_void>(),
         std::mem::align_of::<*mut std::ffi::c_void>(),
         0x4 | 0x2,
+        std::mem::size_of::<i64>(),
+        std::mem::align_of::<i64>(),
     ]
 }

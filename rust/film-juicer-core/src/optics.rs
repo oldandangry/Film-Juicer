@@ -620,6 +620,107 @@ impl Recipe {
     }
 }
 
+/// Identity of host-authored diffusion controls, distinct from the resolved recipe.
+pub fn hash_diffusion_authored_controls(p: &DiffusionParams) -> u64 {
+    let mut h = hash::FNV_OFFSET;
+    hash::update_bytes(&mut h, b"diffusion-authored\0");
+    hash::update_bytes(&mut h, &1_u32.to_le_bytes());
+    hash::update_bytes(&mut h, &[u8::from(p.active), p.family as u8]);
+    for value in [
+        p.strength,
+        p.spatial_scale,
+        p.halo_warmth,
+        p.core_intensity,
+        p.core_size,
+        p.halo_intensity,
+        p.halo_size,
+        p.bloom_intensity,
+        p.bloom_size,
+    ] {
+        let bits = if value == 0.0 { 0 } else { value.to_bits() };
+        hash::update_bytes(&mut h, &bits.to_le_bytes());
+    }
+    h
+}
+
+pub fn halation(
+    active: bool,
+    values: [f64; 4],
+) -> Result<crate::recipe::HalationControls, &'static str> {
+    let mut result = crate::recipe::HalationControls {
+        active,
+        scatter_amount: 0.0,
+        scatter_spatial_scale: 0.0,
+        halation_amount: 0.0,
+        halation_spatial_scale: 0.0,
+    };
+    if !active {
+        return Ok(result);
+    }
+    const DIAGNOSTICS: [[&str; 3]; 4] = [
+        [
+            "InvalidAuthoredControl component=scatter_halation field=scatter_amount reason=non_finite",
+            "InvalidAuthoredControl component=scatter_halation field=scatter_amount reason=below_minimum",
+            "InvalidAuthoredControl component=scatter_halation field=scatter_amount reason=above_maximum",
+        ],
+        [
+            "InvalidAuthoredControl component=scatter_halation field=scatter_spatial_scale reason=non_finite",
+            "InvalidAuthoredControl component=scatter_halation field=scatter_spatial_scale reason=below_minimum",
+            "InvalidAuthoredControl component=scatter_halation field=scatter_spatial_scale reason=above_maximum",
+        ],
+        [
+            "InvalidAuthoredControl component=scatter_halation field=halation_amount reason=non_finite",
+            "InvalidAuthoredControl component=scatter_halation field=halation_amount reason=below_minimum",
+            "InvalidAuthoredControl component=scatter_halation field=halation_amount reason=above_maximum",
+        ],
+        [
+            "InvalidAuthoredControl component=scatter_halation field=halation_spatial_scale reason=non_finite",
+            "InvalidAuthoredControl component=scatter_halation field=halation_spatial_scale reason=below_minimum",
+            "InvalidAuthoredControl component=scatter_halation field=halation_spatial_scale reason=above_maximum",
+        ],
+    ];
+    let mut out = [0.0; 4];
+    for (i, raw) in values.into_iter().enumerate() {
+        let reason = if !raw.is_finite() {
+            Some(0)
+        } else if raw < 0.0 {
+            Some(1)
+        } else if raw > 2.0 {
+            Some(2)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(DIAGNOSTICS[i][reason]);
+        }
+        let v = raw as f32;
+        out[i] = if v == 0.0 { 0.0 } else { v };
+    }
+    [
+        result.scatter_amount,
+        result.scatter_spatial_scale,
+        result.halation_amount,
+        result.halation_spatial_scale,
+    ] = out;
+    Ok(result)
+}
+
+pub fn diffusion(active: bool, family: i32, values: [f64; 9]) -> DiffusionParams {
+    DiffusionParams {
+        active,
+        family: family.clamp(0, 3) as u32,
+        strength: values[0],
+        spatial_scale: values[1],
+        halo_warmth: values[2],
+        core_intensity: values[3],
+        core_size: values[4],
+        halo_intensity: values[5],
+        halo_size: values[6],
+        bloom_intensity: values[7],
+        bloom_size: values[8],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

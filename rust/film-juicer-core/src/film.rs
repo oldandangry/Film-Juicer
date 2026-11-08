@@ -278,6 +278,14 @@ pub mod test_support {
     }
 }
 
+pub fn capture_gamma(raw: f64) -> Result<f32, &'static str> {
+    if !raw.is_finite() || !(0.05..=4.0).contains(&raw) {
+        Err("InvalidAuthoredControl component=film_development field=film_gamma_factor")
+    } else {
+        Ok(raw as f32)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{curve_hash, normalize_curves};

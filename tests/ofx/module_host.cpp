@@ -9,6 +9,51 @@
 
 #include "module_host.h"
 
+namespace {
+    OfxStatus unused_set_pointer(OfxPropertySetHandle, const char*, int, void*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_get_int(OfxPropertySetHandle, const char*, int, int*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_clip_image(OfxImageClipHandle, OfxTime, const OfxRectD*, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_release_image(OfxPropertySetHandle) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_clip_region(OfxImageClipHandle, OfxTime, OfxRectD*) noexcept {
+        return kOfxStatFailed;
+    }
+    int unused_abort(OfxImageEffectHandle) noexcept {
+        return 0;
+    }
+    OfxStatus unused_get_double(OfxPropertySetHandle, const char*, int, double*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_clip_handle(OfxImageEffectHandle, const char*, OfxImageClipHandle*, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_handle(OfxParamSetHandle, const char*, OfxParamHandle*, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_property(OfxParamHandle, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_get(OfxParamHandle, ...) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_set(OfxParamHandle, ...) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_message(void*, const char*, const char*, const char*, ...) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_get_pointer(OfxPropertySetHandle, const char*, int, void**) noexcept {
+        return kOfxStatFailed;
+    }
+} // namespace
+
 namespace ofx_test {
     Host::Host() {
         host.host = reinterpret_cast<OfxPropertySetHandle>(&effect_token_);
@@ -19,6 +64,24 @@ namespace ofx_test {
         property.propSetString = set_string;
         property.propSetInt = set_int;
         property.propGetDimension = get_dimension;
+        property.propGetString = get_string;
+        property.propSetDouble = set_double;
+        effect.clipDefine = define_clip;
+        parameter.paramDefine = define_param;
+        property.propSetPointer = unused_set_pointer;
+        property.propGetDouble = unused_get_double;
+        property.propGetInt = unused_get_int;
+        effect.clipGetImage = unused_clip_image;
+        effect.clipReleaseImage = unused_release_image;
+        effect.clipGetRegionOfDefinition = unused_clip_region;
+        effect.abort = unused_abort;
+        effect.clipGetHandle = unused_clip_handle;
+        parameter.paramGetHandle = unused_param_handle;
+        parameter.paramGetPropertySet = unused_param_property;
+        parameter.paramGetValue = unused_param_get;
+        parameter.paramSetValue = unused_param_set;
+        message.message = unused_message;
+        property.propGetPointer = unused_get_pointer;
     }
 
     OfxImageEffectHandle Host::effect_handle() {
@@ -124,6 +187,22 @@ namespace ofx_test {
             token.owner->callback_error = true;
             return kOfxStatFailed;
         }
+    }
+    OfxStatus Host::get_string(OfxPropertySetHandle raw, const char*, int, char**) noexcept {
+        reinterpret_cast<Token*>(raw)->owner->callback_error = true;
+        return kOfxStatFailed;
+    }
+    OfxStatus Host::set_double(OfxPropertySetHandle raw, const char*, int, double) noexcept {
+        reinterpret_cast<Token*>(raw)->owner->callback_error = true;
+        return kOfxStatFailed;
+    }
+    OfxStatus Host::define_clip(OfxImageEffectHandle raw, const char*, OfxPropertySetHandle*) noexcept {
+        reinterpret_cast<Token*>(raw)->owner->callback_error = true;
+        return kOfxStatFailed;
+    }
+    OfxStatus Host::define_param(OfxParamSetHandle raw, const char*, const char*, OfxPropertySetHandle*) noexcept {
+        reinterpret_cast<Token*>(raw)->owner->callback_error = true;
+        return kOfxStatFailed;
     }
     OfxStatus Host::get_dimension(OfxPropertySetHandle raw, const char* property_name, int* out) noexcept {
         auto& token = *reinterpret_cast<Token*>(raw);
