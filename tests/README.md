@@ -178,10 +178,10 @@ boundary in six cases. It is a product-linked host registration; see the
 
 ## Validation cadence
 
-The bounded Rust module candidate has four host/boundary registrations:
-`Ofx.Host.Module` and `Ofx.Host.ModuleControls.Construction`, `.Panic`, `.Terminal`.
-They contain eighteen named cases. The default-feature target declares 303
-Describe, 11 Load and 7 lifecycle rows; the control target uses the existing real
+The bounded Rust module candidate has six host/boundary registrations:
+`Ofx.Host.Module`, `Ofx.Host.ModuleControls.Construction`, `.Panic`, `.Terminal`,
+`Ofx.Host.Context` and `Ofx.Host.ContextControls`. The module target declares 303
+Describe, 15 Load and 7 lifecycle rows; the control target uses the existing real
 Runtime/native owner and a separate test-support archive. See the
 [OFX fixture guide](ofx/README.md) for scope and the Describe-only oracle.
 The focused compiler method is

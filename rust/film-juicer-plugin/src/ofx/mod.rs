@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::runtime::Runtime;
 
 mod actions;
+mod params;
 #[allow(
     unsafe_code,
     reason = "the OFX edge admits binary-lived host tables and creates callback-scoped capabilities"

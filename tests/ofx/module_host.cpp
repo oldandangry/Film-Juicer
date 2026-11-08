@@ -19,6 +19,10 @@ namespace ofx_test {
         property.propSetString = set_string;
         property.propSetInt = set_int;
         property.propGetDimension = get_dimension;
+        property.propGetString = get_string;
+        property.propSetDouble = set_double;
+        effect.clipDefine = define_clip;
+        parameter.paramDefine = define_param;
     }
 
     OfxImageEffectHandle Host::effect_handle() {
@@ -124,6 +128,22 @@ namespace ofx_test {
             token.owner->callback_error = true;
             return kOfxStatFailed;
         }
+    }
+    OfxStatus Host::get_string(OfxPropertySetHandle raw, const char*, int, char**) noexcept {
+        reinterpret_cast<Token*>(raw)->owner->callback_error = true;
+        return kOfxStatFailed;
+    }
+    OfxStatus Host::set_double(OfxPropertySetHandle raw, const char*, int, double) noexcept {
+        reinterpret_cast<Token*>(raw)->owner->callback_error = true;
+        return kOfxStatFailed;
+    }
+    OfxStatus Host::define_clip(OfxImageEffectHandle raw, const char*, OfxPropertySetHandle*) noexcept {
+        reinterpret_cast<Token*>(raw)->owner->callback_error = true;
+        return kOfxStatFailed;
+    }
+    OfxStatus Host::define_param(OfxParamSetHandle raw, const char*, const char*, OfxPropertySetHandle*) noexcept {
+        reinterpret_cast<Token*>(raw)->owner->callback_error = true;
+        return kOfxStatFailed;
     }
     OfxStatus Host::get_dimension(OfxPropertySetHandle raw, const char* property_name, int* out) noexcept {
         auto& token = *reinterpret_cast<Token*>(raw);

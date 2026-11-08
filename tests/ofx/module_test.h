@@ -12,8 +12,12 @@ extern "C" {
  * 1 lexical input, 2 lookup failure, 3 Windows native-buffer growth. Output
  * capacity/return length count native path units, without a terminator. */
 void fj_test_ofx_panic(uint32_t stage);
+/* One-shot worker TLS descriptor faults: 1 catalog readiness result, 2 early
+ * recoverable allocation, 3 owned catalog string allocation, 4 declaration panic. */
+void fj_test_ofx_context_fault(uint32_t mode);
 /* Worker TLS pause bits: 1 boundary return, 2 admitted Describe panic,
- * 4 complete unpublished construction, 8 invalidated Runtime rollback.
+ * 4 complete unpublished construction, 8 invalidated Runtime rollback,
+ * 16 invalidated DescribeInContext with its Admission still held.
  * One worker at a time; waits are bounded. Release before joining the worker;
  * its return is zero if a bounded pause expired and the overlap is unproved. */
 void fj_test_ofx_arm_pause(uint32_t stages);

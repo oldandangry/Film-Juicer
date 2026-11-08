@@ -24,6 +24,8 @@ EXPECTED_RUST_CONSUMER_VARIANTS = {
     "juicer": "production",
     "JuicerProductionPreparedRenderProbe": "production",
     "JuicerFilmRecipeTests": "test-support",
+    "JuicerOfxContextTests": "production",
+    "JuicerOfxContextControlTests": "test-support",
     "JuicerOfxModuleTests": "production",
     "JuicerOfxModuleControlTests": "test-support",
 }

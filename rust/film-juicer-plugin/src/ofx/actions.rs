@@ -1,8 +1,15 @@
-//! Describe-only authored properties; host operations retain their own status rules.
+//! Authored descriptor actions; host operations retain their own status rules.
 
 #![forbid(unsafe_code)]
 
 use super::host::{Callback, Status};
+
+pub(super) fn describe_in_context(callback: &Callback<'_>) -> Result<(), Status> {
+    if let Some(parameters) = callback.context_parameters()? {
+        super::params::describe(callback, &parameters)?;
+    }
+    Ok(())
+}
 
 pub(super) fn describe(callback: &Callback<'_>) -> Result<(), Status> {
     let properties = callback.descriptor_properties()?;

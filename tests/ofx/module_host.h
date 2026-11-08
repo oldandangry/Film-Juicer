@@ -65,6 +65,10 @@ namespace ofx_test {
         static OfxStatus get_param_properties(OfxParamSetHandle, OfxPropertySetHandle*) noexcept;
         static OfxStatus set_string(OfxPropertySetHandle, const char*, int, const char*) noexcept;
         static OfxStatus set_int(OfxPropertySetHandle, const char*, int, int) noexcept;
+        static OfxStatus get_string(OfxPropertySetHandle, const char*, int, char**) noexcept;
+        static OfxStatus set_double(OfxPropertySetHandle, const char*, int, double) noexcept;
+        static OfxStatus define_clip(OfxImageEffectHandle, const char*, OfxPropertySetHandle*) noexcept;
+        static OfxStatus define_param(OfxParamSetHandle, const char*, const char*, OfxPropertySetHandle*) noexcept;
         static OfxStatus get_dimension(OfxPropertySetHandle, const char*, int*) noexcept;
     };
 } // namespace ofx_test

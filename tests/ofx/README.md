@@ -5,7 +5,7 @@
 discovery/binding, transactional Load, Describe, dispatch, reentry, reload and
 Unload. Describe compares thirteen authored properties plus host-seeded
 `OfxPropType` with the unchanged Describe-only `descriptor_manifest.json` and
-declares 303 status/ordering/target rows. Load and lifecycle add 11 and 7 rows.
+declares 303 status/ordering/target rows. Load and lifecycle add 15 and 7 rows, including the four context suite slots.
 
 The three `Ofx.Host.ModuleControls.{Construction,Panic,Terminal}` registrations
 link only the separate Rust test-support archive and run in distinct processes.
@@ -17,9 +17,15 @@ late panic cleanup, admitted panic exclusion and invalidated-load rollback. The
 feature-only pause controls report bounded-wait expiry as failed evidence. Native
 path cases compare two literal parent extractions before normalization against
 the C++ filesystem expression, including an immediate dot component.
-All four groups are host/boundary checks; compiling them still requires CUDA.
-They do not switch shipping discovery, install a candidate, exercise parameters
-or rendering, or establish installed-host acceptance.
+`Ofx.Host.Context` compares the candidate DescribeInContext action with the live
+C++ descriptor and an independent 128-name/type census. `Ofx.Host.ContextControls`
+uses the real Runtime with test-support fault controls for catalog readiness,
+recoverable allocation and panic containment. These checks exercise descriptor
+declarations, not instance parameter values or rendering.
+
+All six groups are host/boundary checks; compiling them still requires CUDA.
+They do not switch shipping discovery, install a candidate, or establish
+installed-host acceptance.
 
 `RustBoundaryTests.test_ofx_callback_borrows` compiles four real scoped/private/
 Send/escape consumers in default and test-support, using the existing native

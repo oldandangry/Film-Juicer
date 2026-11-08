@@ -1578,10 +1578,18 @@ class RustBoundaryTests(unittest.TestCase):
         )
 
     def test_ofx_callback_borrows(self) -> None:
-        cases = (("ofx_callback_scoped", None),
-                 ("ofx_callback_private", {"E0624": ("Callback::new(admission",)}),
-                 ("ofx_callback_send", {"E0277": ("scope.spawn(move || callback)",)}),
-                 ("ofx_callback_escape", {"E0515": ("callback.descriptor_properties()",)}))
+        cases = (
+            ("ofx_callback_scoped", None),
+            ("ofx_callback_private", {
+                "E0624": ("Callback::new(admission", "Parameters::new(callback"),
+            }),
+            ("ofx_callback_send", {
+                "E0277": ("scope.spawn(move || callback)", "scope.spawn(move || parameters)"),
+            }),
+            ("ofx_callback_escape", {
+                "E0515": ("callback.descriptor_properties()", "callback.context_parameters()"),
+            }),
+        )
         feature_forms = (False, True)
         self.subtest_cases = tuple(
             f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"

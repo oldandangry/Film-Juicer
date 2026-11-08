@@ -156,6 +156,14 @@
       "registrations": 1,
       "cuda_free": true
     },
+    "JuicerOfxContextTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxContextControlTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
     "JuicerOfxModuleTests": {
       "protocol": "custom",
       "registrations": 1
@@ -229,6 +237,8 @@
     "Print.Host.PreflashProducts": 1,
     "Reconstruction.Host.TcLut.boundary": 2,
     "Scanner.Host.CorrectionProducts": 1,
+    "Ofx.Host.Context": 8,
+    "Ofx.Host.ContextControls": 3,
     "Ofx.Host.Module": 3,
     "Ofx.Host.ModuleControls.Construction": 4,
     "Ofx.Host.ModuleControls.Panic": 2,

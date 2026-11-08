@@ -9,6 +9,21 @@ use super::*;
 thread_local! {
     static PANIC: Cell<u32> = const { Cell::new(0) };
     static PAUSES: Cell<u32> = const { Cell::new(0) };
+    static CONTEXT_FAULT: Cell<u32> = const { Cell::new(0) };
+}
+
+pub(super) fn context_fault(mode: u32) -> bool {
+    if CONTEXT_FAULT.get() == mode {
+        CONTEXT_FAULT.set(0);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg_attr(not(test), unsafe(no_mangle))]
+extern "C" fn fj_test_ofx_context_fault(mode: u32) {
+    CONTEXT_FAULT.set(mode);
 }
 
 struct Pause {
@@ -193,6 +208,7 @@ unsafe extern "C" fn fj_test_ofx_path(
 }
 
 const _: extern "C" fn(u32) = fj_test_ofx_panic;
+const _: extern "C" fn(u32) = fj_test_ofx_context_fault;
 const _: extern "C" fn(u32) = fj_test_ofx_arm_pause;
 const _: extern "C" fn(u32) -> i32 = fj_test_ofx_wait_pause;
 const _: extern "C" fn() -> i32 = fj_test_ofx_release_pause;

@@ -697,6 +697,24 @@ set_target_properties(JuicerOfxModuleTests PROPERTIES LINKER_LANGUAGE CXX RUNTIM
 juicer_add_host_test(Ofx.Host.Module JuicerOfxModuleTests custom "${CMAKE_CURRENT_SOURCE_DIR}/ofx/descriptor_manifest.json")
 set_tests_properties(Ofx.Host.Module PROPERTIES LABELS "host;boundary" TIMEOUT 0)
 
+add_executable(JuicerOfxContextTests ofx/context_test.cpp ofx/context_host.cpp ../src/main.cpp)
+target_compile_features(JuicerOfxContextTests PRIVATE cxx_std_20)
+target_include_directories(JuicerOfxContextTests PRIVATE "${JUICER_TEST_ROOT}/native" "${JUICER_TEST_ROOT}/third_party")
+target_link_libraries(JuicerOfxContextTests PRIVATE juicer_test_core film_juicer_rust juicer_ofx_headers juicer_ofxs)
+set_target_properties(JuicerOfxContextTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerOfxContextTests juicer_test_resources)
+juicer_add_host_test(Ofx.Host.Context JuicerOfxContextTests custom)
+set_tests_properties(Ofx.Host.Context PROPERTIES LABELS "host;boundary" TIMEOUT 0)
+
+add_executable(JuicerOfxContextControlTests ofx/context_control_test.cpp ofx/context_host.cpp)
+target_compile_features(JuicerOfxContextControlTests PRIVATE cxx_std_20)
+target_include_directories(JuicerOfxContextControlTests PRIVATE "${JUICER_TEST_ROOT}/native" "${JUICER_TEST_ROOT}/third_party")
+target_link_libraries(JuicerOfxContextControlTests PRIVATE juicer_test_core film_juicer_rust_test_support juicer_ofx_headers)
+set_target_properties(JuicerOfxContextControlTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerOfxContextControlTests juicer_test_resources)
+juicer_add_host_test(Ofx.Host.ContextControls JuicerOfxContextControlTests custom)
+set_tests_properties(Ofx.Host.ContextControls PROPERTIES LABELS "host;boundary" TIMEOUT 0)
+
 add_executable(JuicerOfxModuleControlTests ofx/module_control_test.cpp ofx/module_host.cpp ofx/platform_abi_c.c)
 target_compile_features(JuicerOfxModuleControlTests PRIVATE cxx_std_20)
 target_include_directories(JuicerOfxModuleControlTests PRIVATE "${JUICER_TEST_ROOT}/native" "${JUICER_TEST_ROOT}/third_party")
@@ -1472,7 +1490,7 @@ juicer_add_python_test(NAME Ffi.Host.BuildArtifacts
 set_tests_properties(Ffi.Host.BuildArtifacts PROPERTIES LABELS "host" TIMEOUT 0)
 
 # Relevance and runtime prerequisites are independent. Every group has one owner.
-set(juicer_boundary_tests Ofx.Host.Module Ofx.Host.ModuleControls.Construction Ofx.Host.ModuleControls.Panic Ofx.Host.ModuleControls.Terminal Ffi.Host.OfxAbi Ffi.Gpu.ProductionPreparedRender Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
+set(juicer_boundary_tests Ofx.Host.Context Ofx.Host.ContextControls Ofx.Host.Module Ofx.Host.ModuleControls.Construction Ofx.Host.ModuleControls.Panic Ofx.Host.ModuleControls.Terminal Ffi.Host.OfxAbi Ffi.Gpu.ProductionPreparedRender Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
