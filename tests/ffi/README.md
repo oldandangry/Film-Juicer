@@ -1,4 +1,4 @@
-# CUDA C ABI evidence
+# Foreign ABI evidence
 
 `Ffi.Host.CudaAbi` links the CMake-built Rust static library to real C11 and
 C++20 consumers. It compares 575 size, alignment, offset, tag and flag facts,
@@ -14,6 +14,53 @@ Test exports are gated by the nondefault `test-support` feature selected by
 CMake only for `BUILD_TESTING=ON`. Product builds consume the committed bindings;
 they do not require bindgen or libclang. Toggling `BUILD_TESTING` rebuilds the
 archive with the corresponding feature selection.
+
+## OFX C ABI evidence
+
+`Ffi.Host.OfxAbi` links the real test-support Rust archive and native core with
+independent strict C11 and C++20 consumers of `native/ofx_bindings.h`. Its six
+custom cases are `layout`, `constants`, `signatures`, `callbacks`, `parameters`
+and `messages`. The frozen inventory in `ofx_abi_facts.inc` and exact field types
+in `ofx_abi_test.h` come from the vendored headers, independently of bindgen:
+
+- 111 layout observations: size/alignment of 11 complete records, status/time
+  and six distinct opaque handles, plus all 73 field offsets.
+- Exact declared types of all 73 fields, including signed rectangle/point
+  coordinates, unsigned plugin versions, pointer constness and all 50 suite slots.
+- 17 numeric constants and 143 exact string values including terminating NUL.
+- 53 callback/slot signatures, preserving nullable C function pointers and
+  variadic tails. Both native languages and handwritten Rust type-check them.
+
+The callbacks case exercises generated Host/Plugin fields in both directions
+with exact tokens, arguments, writes and status. The parameters case calls actual
+C variadic stubs through generated slots for int, bool, choice, string-choice,
+double, double2D and double3D: current/at-time get/set, 28 calls. The message
+case calls the generated V1 slot with literal `%s` and text containing `%`.
+Fact counts are checked before indexed comparisons and mismatch reports identify
+the field/constant. Rust exports and native spans are test-support-only and
+immutable/library-lived; fixture tokens are never dereferenced. Rust unit tests
+compile declarations and type evidence without linking the C fixture stubs.
+
+The selected records are Host, Plugin, PropertySuiteV1 (18 slots),
+ParameterSuiteV1 (18), ImageEffectSuiteV1 (13), MessageSuiteV1 (1), RangeD,
+PointI/D and RectI/D. Complete suite layouts retain unused slots. There is no
+production Rust host adapter or new standard OFX export. Action/lifecycle,
+reentry, image ownership, borrowed host strings and installed Resolve behavior
+remain later host-adapter obligations.
+
+Run through the maintained owner in any native preset:
+
+```sh
+python -B scripts/verify.py development --preset linux-debug \
+  --tests Ffi.Host.OfxAbi --runtime host --run-id ofx-abi-change
+```
+
+This product-linked host test requires CUDA compilation and executes no GPU
+work. `Ffi.Host.BuildArtifacts` includes it in its actual native link/feature
+closure; selecting that registration builds the broader artifact consumers
+without running their unrelated runtime tests. New ABI acceptance also requires
+the two native stable Release OFF production-contract closures before either
+Release ON restoration, followed by the affected ON checks.
 
 ## Profile and resource terminology
 
@@ -226,9 +273,10 @@ When invoking PowerShell from WSL, first set
 `$env:PATHEXT = '.COM;.EXE;.BAT;.CMD'`. The pinned Rust installation must be
 selected in that environment; Windows tools do not qualify Linux generation.
 
+The default `--api cuda` preserves the existing CUDA generation command.
 Remove `--check` to update `rust/film-juicer-plugin/src/cuda/sys.rs`. Review the
 header, generated diff and explicit C/Rust fact lists together. Never regenerate
-layout expectations during ordinary tests. Generation uses each host's native
+layout expectations during ordinary tests. CUDA generation uses each host's native
 target, C11 freestanding mode and only that Clang's resource headers; there is
 no dependency on CUDA, OFX or a system SDK's definitions. The bindgen Rust syntax
 target is 1.85 (its supported stable syntax baseline); actual compilation and
@@ -240,6 +288,40 @@ They remain visible in generation logs. The emitted allowlist contains complete
 named C fields and no opaque storage replacement except the intentional
 incomplete `FjCuda` handle. C/C++/Rust field evidence and byte-for-byte native
 regeneration qualify this output; these checks do not prove render lifetime.
+
+For OFX, add `--api ofx` to the same native command. The wrapper includes
+`ofxCore.h`, `ofxProperty.h`, `ofxParam.h`, `ofxImageEffect.h`, `ofxMessage.h`,
+`ofxImageEffectExt.h` and `ofxParamExt.h` from
+`third_party/ofxs/OpenFX-1.4/include/`; image-effect transitive headers are
+read without importing their unrelated suites. The only vendored compatibility
+patch selects `<cstdarg>` in C++ and `<stdarg.h>` in C in `ofxParamExt.h`.
+All foreign declarations, macros and identifiers remain unchanged.
+
+The exact, explicit allowlists are `OFX_TYPES` and `OFX_CONSTANTS` in
+[`regenerate-rust-bindings.py`](../../scripts/regenerate-rust-bindings.py).
+The 14 named types and their referenced opaque handles implement the record
+inventory above. The 160 constants cover current descriptor, dispatch,
+property/parameter, image/render and message readers, including string-choice
+and the four CUDA properties. `tests/ofx/descriptor_manifest.json` is an
+expectation reader; it does not replace the vendored declarations. Generic
+OFXS suite fetches alone do not justify additional capabilities.
+
+OFX uses the same pinned bindgen/Clang/rustfmt versions and native targets
+`x86_64-unknown-linux-gnu` / `x86_64-pc-windows-msvc`. Its flags add exact anchored
+allowlists, `--clang-macro-fallback --default-macro-constant-type signed`
+(for cast status macros), and the explicit vendored `-I` root to the common
+`-x c -std=c11 -ffreestanding -nostdinc` and Clang resource include arguments.
+Generation disables incidental include discovery and clears inherited bindgen
+and C include overrides. Output logs contain wrapper/vendor hashes, full command,
+allowlists, target and versions. It never regenerates CUDA as a side effect.
+
+Native Linux Clang/libclang 22.1.8 and Windows 22.1.3 reproduce one common
+`rust/film-juicer-plugin/src/ofx/sys.rs`, SHA-256
+`a8c8446a08804cf2a992731970038ffaeb87fb625a9b36fea53dbd7ba0880bae`.
+Reproduce on both native hosts before updating that identity or selecting target
+files; a Linux cross-target run does not qualify Windows output. Product builds
+consume committed declarations without a build script, bindgen or libclang.
+Ordinary tests never regenerate bindings or independently frozen expectations.
 
 References: [bindgen release](https://github.com/rust-lang/rust-bindgen/releases/tag/v0.72.1),
 [libclang requirements](https://rust-lang.github.io/rust-bindgen/requirements.html).

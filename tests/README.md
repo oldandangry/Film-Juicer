@@ -172,7 +172,22 @@ publication. NativeSubmissionState/temporal/latch work remains S5.D; capture/UI 
 adapter replacement remain S6. Full S5 and installed-host/Resolve acceptance are
 not established. MultiDevice remains optional and unexecuted.
 
+`Ffi.Host.OfxAbi` supplies the independent C11/C++20/Rust OFX declaration
+boundary in six cases. It is a product-linked host registration; see the
+[FFI inventory and maintenance guide](ffi/README.md#ofx-c-abi-evidence).
+
 ## Validation cadence
+
+The bounded Rust module candidate has four host/boundary registrations:
+`Ofx.Host.Module` and `Ofx.Host.ModuleControls.Construction`, `.Panic`, `.Terminal`.
+They contain eighteen named cases. The default-feature target declares 303
+Describe, 11 Load and 7 lifecycle rows; the control target uses the existing real
+Runtime/native owner and a separate test-support archive. See the
+[OFX fixture guide](ofx/README.md) for scope and the Describe-only oracle.
+The focused compiler method is
+`test_rust_boundaries.RustBoundaryTests.test_ofx_callback_borrows`: four fixtures,
+both feature forms, eight logical cases in four batched Cargo checks per native
+profile. Shipping exports and dispatch remain on the existing adapter.
 
 Choose checks from the changed contract and the checkpoint being completed.
 Before execution, name the supported target, test and quality commands, their
@@ -180,6 +195,13 @@ expected membership, and the affected native/CUDA/Rust compilation contexts and
 platform/profile/feature combinations in the existing change description or
 handoff. A focused handoff does not require complete aggregate qualification and
 must not be described as full product acceptance.
+
+Ordinary host/GPU CTest registrations use explicit `TIMEOUT 0`; the native
+verifier dispatches CTest with `timeout=None` and rejects finite, missing or
+malformed ordinary timeout properties before execution. Historical result readers
+accept explicit numeric zero and valid finite positive GPU timeouts while retaining
+physical-device locks and all other evidence checks. Explicit bounded child fault
+controls, specified post-exit handling and hosted job limits remain unchanged.
 
 | Change or checkpoint | Required checks |
 | --- | --- |
@@ -248,7 +270,7 @@ the product and standalone CMake entries accept this cache PATH option; it
 defaults to the native preset's ordinary validation root. Product builds keep
 other test artifacts at their usual locations. For the standalone entry, configure
 a separate build directory on that filesystem and record both paths; do not
-relocate an existing cache. This preserves the same tests and deadlines
+relocate an existing cache. This preserves the same tests and execution policy
 while separating Windows-mounted filesystem costs from test execution. Retain
 failed fixtures at their configured paths and keep the resulting qualification
 explicit about the filesystem used.
@@ -537,14 +559,14 @@ worker accounting, named locks, exact membership and complete-result checks.
 
 `Rust.Core` and `Rust.Bridge` each use one nextest worker and reserve one CTest slot. Tests that
 spawn threads still exercise their internal concurrent publication and lifetime
-witnesses. The three native result groups use 120-second deadlines; other
-tooling registrations use 600 seconds. A larger explicit worker count can allow
+witnesses. Ordinary tooling registrations have no elapsed kill deadline.
+A larger explicit worker count can allow
 overlap again. Verification control logs include the ten slowest unittest cases.
-These scheduling choices preserve complete test membership and deadlines.
+These scheduling choices preserve complete test membership and worker reservations.
 
 Debug's `Optics.Host.DiffusionFrameProducts` also reserves four slots to
 keep its full numerical fixture separate from other host tests at the standard
-worker limit. Its 180-second deadline and complete case set remain unchanged.
+worker limit. It has no elapsed kill deadline and retains its complete case set.
 
 `Ffi.Host.InputColorPreparation` uses two worker slots. Its admission hooks and
 asset caches belong to its process, and its resources and parity fixtures are
@@ -717,8 +739,8 @@ The shared standalone and product tooling registration has 13 Debug tests:
 `Quality.Dispatcher`, `Quality.ToolingLint`, `Quality.Execution`,
 `Quality.BuildEvidence`, `Quality.BuildRegistration`, `Quality.Verify`,
 `Quality.Checkpoint`, `Ctest.Host.Report`, `Ctest.Host.Repetition` and
-`Ffi.Host.RustBuild`. The three result groups have 120-second limits; the other
-tooling registrations have 600-second limits. Windows CI runs three independent
+`Ffi.Host.RustBuild`. All ordinary tooling registrations have explicit zero
+timeouts. Windows CI runs three independent
 shards: `tooling-core`, `tooling-BuildEvidence` and `tooling-Checkpoint`. A shard
 uses its exact label regex and does not claim complete tooling qualification.
 
@@ -1663,7 +1685,7 @@ actual route/reconstruction/control products against immutable
 omission, main/preflash samples and consumed descriptor/balance/final identities.
 Both are host groups without an elapsed deadline and with an exact preset argument.
 The six `print_illuminant_*` compiler fixtures enforce construction, privacy,
-read-only access and source-independent ownership under existing deadlines.
+read-only access and source-independent ownership under the ordinary execution policy.
 The superseded native wrapper/export and twelve standalone OFF rows are removed.
 Positive complete-state direct/print execution in both native Release testing-OFF
 configurations remains a separate I8 gate. Test registration does not establish a

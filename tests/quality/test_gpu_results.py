@@ -233,26 +233,38 @@ class GpuResultTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "launcher runtime"):
             self.check()
 
-    def test_zero_missing_and_unbounded_timeout_are_rejected(self):
-        document, test = self.registration(self.routes[0])
-        next(p for p in test["properties"] if p["name"] == "TIMEOUT")["value"] = 0
-        self.write_registration(document)
-        with self.assertRaisesRegex(ValueError, "finite timeout"):
-            self.check()
+    def test_zero_and_historical_positive_timeout_are_accepted(self):
+        cases = (("zero-int", 0), ("zero-float", 0.0), ("positive-int", 600), ("positive-float", 0.5))
+        self.subtest_cases = tuple(case for case, _ in cases)
+        for case, timeout in cases:
+            with self.subTest(case=case):
+                self.reset_fixture()
+                document, test = self.registration(self.routes[0])
+                next(p for p in test["properties"] if p["name"] == "TIMEOUT")["value"] = timeout
+                self.write_registration(document)
+                self.assertEqual(self.check()["status"], "passed")
 
-        self.reset_fixture()
-        document, test = self.registration(self.routes[0])
-        test["properties"] = [p for p in test["properties"] if p["name"] != "TIMEOUT"]
-        self.write_registration(document)
-        with self.assertRaisesRegex(ValueError, "finite timeout"):
-            self.check()
+    test_zero_and_historical_positive_timeout_are_accepted.required_subtests = True
 
-        self.reset_fixture()
-        document, test = self.registration(self.routes[0])
-        next(p for p in test["properties"] if p["name"] == "TIMEOUT")["value"] = float("inf")
-        self.write_registration(document)
-        with self.assertRaisesRegex(ValueError, "finite timeout"):
-            self.check()
+    def test_missing_and_invalid_timeout_are_rejected(self):
+        cases = (("missing", None), ("null", None), ("true", True), ("false", False),
+                 ("negative", -1), ("numeric-string-zero", "0"), ("numeric-string-positive", "600"),
+                 ("nan", float("nan")), ("positive-infinity", float("inf")),
+                 ("negative-infinity", -float("inf")))
+        self.subtest_cases = tuple(case for case, _ in cases)
+        for case, timeout in cases:
+            with self.subTest(case=case):
+                self.reset_fixture()
+                document, test = self.registration(self.routes[0])
+                if case == "missing":
+                    test["properties"] = [p for p in test["properties"] if p["name"] != "TIMEOUT"]
+                else:
+                    next(p for p in test["properties"] if p["name"] == "TIMEOUT")["value"] = timeout
+                self.write_registration(document)
+                with self.assertRaisesRegex(ValueError, "finite timeout"):
+                    self.check()
+
+    test_missing_and_invalid_timeout_are_rejected.required_subtests = True
 
     def test_missing_or_wrong_physical_gpu_lock_is_rejected(self):
         document, test = self.registration(self.routes[0])

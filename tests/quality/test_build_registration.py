@@ -6,7 +6,6 @@ import contextlib
 import io
 import json
 import hashlib
-import math
 import os
 from pathlib import Path
 import re
@@ -141,13 +140,8 @@ class RegistrationTests(unittest.TestCase):
             labels_by_name[test["name"]] = set(labels)
             self.assertIn("host", labels, test["name"])
             self.assertIn("tooling", labels, test["name"])
-            timeout = properties.get("TIMEOUT")
-            self.assertIsInstance(timeout, (int, float), test["name"])
-            self.assertTrue(math.isfinite(timeout) and timeout > 0, test["name"])
-            expected_timeout = 120 if test["name"] in {
-                "Quality.NativeResults", "Quality.HostResults", "Quality.GpuResults"
-            } else 600
-            self.assertEqual(timeout, expected_timeout, test["name"])
+            self.assertIn(type(properties.get("TIMEOUT")), (int, float), test["name"])
+            self.assertEqual(properties["TIMEOUT"], 0, test["name"])
             tooling_labels = {label for label in labels if label.startswith("tooling-")}
             self.assertEqual(len(tooling_labels), 1, test["name"])
             if test["name"].startswith("Quality."):
@@ -496,6 +490,48 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
                 raise
         else:
             print("Retained CUDA-free build evidence:", self.scratch, file=sys.stderr)
+
+    def assert_inventory_timeouts(self, build, expected_names, expected_labels):
+        ctest = shutil.which("ctest")
+        self.assertTrue(ctest, "CTest is required for registration discovery")
+        self.native_run.command("inventory-discovery", [
+            ctest, "--test-dir", str(build), "--show-only=json-v1"
+        ], stdout_only=True)
+        inventory = json.loads((self.logs / "inventory-discovery.log").read_text(encoding="utf-8"))
+        tests = inventory["tests"]
+        self.assertTrue(tests, "configured inventory must not be empty")
+        by_name = {test["name"]: test for test in tests}
+        self.assertEqual(len(by_name), len(tests))
+        self.assertTrue(set(expected_names).issubset(by_name), expected_names)
+        observed_labels = set()
+        for test in tests:
+            properties = {row["name"]: row["value"] for row in test.get("properties", [])}
+            labels = set(properties.get("LABELS", []))
+            observed_labels.update(labels)
+            self.assertIn(type(properties.get("TIMEOUT")), (int, float), test["name"])
+            self.assertEqual(properties["TIMEOUT"], 0, test["name"])
+            if "gpu" in labels:
+                self.assertIn("juicer_gpu", properties.get("RESOURCE_LOCK", []), test["name"])
+        self.assertTrue(set(expected_labels).issubset(observed_labels), observed_labels)
+
+    @unittest.skipIf(os.environ.get("JUICER_PRODUCT_INVENTORY_BUILD"),
+                     "CUDA-free inventory is checked in its own configured consumer")
+    def test_cuda_free_inventory_has_zero_timeouts(self):
+        self.assert_inventory_timeouts(
+            self.host_build, ("Quality.BuildRegistration", "Ofx.Host.RenderAssertions"), ("host",)
+        )
+
+    @unittest.skipUnless(os.environ.get("JUICER_PRODUCT_INVENTORY_BUILD"),
+                         "requires the configured product consumer")
+    def test_product_inventory_has_zero_timeouts(self):
+        self.assertEqual(Path(os.environ["JUICER_PRODUCT_INVENTORY_BUILD"]).resolve(), self.preset_build)
+        self.assert_inventory_timeouts(
+            self.preset_build,
+            ("Quality.BuildRegistration", "Ofx.Host.RenderAssertions", "Resource.Gpu.ScannerLut",
+             "Ffi.Gpu.CudaInspect.MultiDevice", "Ffi.Gpu.ProductionPreparedRender",
+             "ScatterHalation.Gpu.HostContracts"),
+            ("host", "gpu"),
+        )
 
     def cargo_snapshot(self):
         cargo = self.preset_build / "cargo"

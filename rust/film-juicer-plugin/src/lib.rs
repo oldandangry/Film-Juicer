@@ -13,6 +13,7 @@ mod test_cases;
 mod legacy_bridge;
 
 mod cuda;
+mod ofx;
 
 mod asset_catalog;
 
@@ -20,6 +21,12 @@ mod instance;
 mod submission;
 
 mod runtime;
+
+#[allow(
+    unsafe_code,
+    reason = "current-module lookup uses native OS declarations and preserves native path units"
+)]
+mod platform;
 
 #[allow(
     unsafe_code,

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from qualification import (
     OPTICS_FUNCTION, case_events, framework_terminals, domain_result_members, native_registration,
     python_registration, rust_case_events, rust_membership, tests_result_members,
-    validate_domain_result,
+    validate_domain_result, validate_tests_result,
 )
 
 
@@ -70,6 +70,35 @@ class HostResultTests(unittest.TestCase):
 
     def test_complete_host_results(self):
         self.assertEqual(self.check()["status"], "passed")
+
+    def test_current_result_reads_zero_and_historical_gpu_timeouts(self):
+        from test_gpu_results import synthetic_bundle
+
+        cases = (("zero-int", 0), ("zero-float", 0.0), ("positive-int", 600), ("positive-float", 0.5))
+        self.subtest_cases = tuple(case for case, _ in cases)
+        for case, timeout in cases:
+            with self.subTest(case=case):
+                result, payloads = synthetic_bundle()
+                registration = json.loads(payloads["registration.json"])
+                for test in registration["tests"]:
+                    next(p for p in test["properties"] if p["name"] == "TIMEOUT")["value"] = timeout
+                registration["tests"].extend({"name": name, "properties": []} for name in ("Rust.Core", "Rust.Bridge"))
+                payloads["registration.json"] = encoded(registration)
+                payloads["host-contracts.json"] = encoded({
+                    "schema": "native-host-contracts-v1", "targets": {}, "required": [],
+                    "native_cohorts": {}, "gtest_cohorts": {}, "rust_cohorts": {},
+                })
+                payloads["host-targets.json"] = encoded({})
+                payloads["python-contracts.json"] = encoded({"schema": "python-contracts-v1", "registrations": {}})
+                payloads["python-targets.json"] = encoded({})
+                result.update(schema="native-tests-v1", scope="focused", runtime="gpu", groups=[], build_kind="product")
+                result["members"] = {name: {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+                                     for name, data in payloads.items()}
+                summary = validate_tests_result(result, payloads)
+                self.assertEqual(summary["status"], "passed")
+                self.assertEqual(summary["custom_cases"], 2)
+
+    test_current_result_reads_zero_and_historical_gpu_timeouts.required_subtests = True
 
     def test_missing_registration(self):
         document = json.loads(self.payloads["registration.json"])
