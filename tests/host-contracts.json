@@ -160,6 +160,9 @@
       "protocol": "custom",
       "registrations": 1
     },
+    "JuicerOfxInstanceTests": { "protocol": "custom", "registrations": 1 },
+    "JuicerOfxCaptureTests": { "protocol": "custom", "registrations": 1 },
+    "JuicerOfxInstanceControlTests": { "protocol": "custom", "registrations": 1 },
     "JuicerOfxContextControlTests": {
       "protocol": "custom",
       "registrations": 1
@@ -238,6 +241,9 @@
     "Reconstruction.Host.TcLut.boundary": 2,
     "Scanner.Host.CorrectionProducts": 1,
     "Ofx.Host.Context": 8,
+    "Ofx.Host.Instance": 9,
+    "Ofx.Host.Capture": 13,
+    "Ofx.Host.InstanceControls": 5,
     "Ofx.Host.ContextControls": 3,
     "Ofx.Host.Module": 3,
     "Ofx.Host.ModuleControls.Construction": 4,

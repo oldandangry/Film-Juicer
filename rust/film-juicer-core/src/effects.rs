@@ -823,6 +823,34 @@ pub mod test_support {
     }
 }
 
+fn bounded(value: f64, fallback: f64, lo: f64, hi: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(lo, hi)
+    } else {
+        fallback
+    }
+}
+fn bounded_float(value: f64, fallback: f32, lo: f64, hi: f64) -> f32 {
+    bounded(value, f64::from(fallback), lo, hi) as f32
+}
+
+pub struct CaptureControls {
+    pub film_dust: f64,
+    pub gate_dust: f64,
+    pub film_scratch: f64,
+    pub gate_scratch: f64,
+    pub gate_weave: f64,
+}
+impl CaptureControls {
+    pub fn complete(self, p: &mut crate::recipe::Params) {
+        p.film_dust_amount = bounded_float(self.film_dust, 0.0, 0.0, 10.0);
+        p.gate_dust_amount = bounded_float(self.gate_dust, 0.0, 0.0, 10.0);
+        p.film_scratch_amount = bounded_float(self.film_scratch, 0.0, 0.0, 10.0);
+        p.gate_scratch_amount = bounded_float(self.gate_scratch, 0.0, 0.0, 10.0);
+        p.gate_weave_amount = bounded(self.gate_weave, 0.0, 0.0, 10.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

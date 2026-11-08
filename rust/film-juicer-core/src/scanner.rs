@@ -678,6 +678,45 @@ pub mod test_support {
     }
 }
 
+fn bounded(value: f64, fallback: f64, lo: f64, hi: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(lo, hi)
+    } else {
+        fallback
+    }
+}
+fn bounded_float(value: f64, fallback: f32, lo: f64, hi: f64) -> f32 {
+    bounded(value, f64::from(fallback), lo, hi) as f32
+}
+
+pub struct GlareControls {
+    pub factor: f64,
+    pub density: f64,
+    pub transition: f64,
+    pub active: bool,
+    pub percent: f64,
+    pub roughness: f64,
+    pub blur: f64,
+}
+impl GlareControls {
+    pub fn complete(self, p: &mut crate::recipe::Params) {
+        p.print_shadow_compensation_factor = bounded(self.factor, 0.0, 0.0, 1.0);
+        p.print_shadow_compensation_density = bounded(self.density, 1.2, 0.0, 3.0);
+        p.print_shadow_compensation_transition = bounded(self.transition, 0.3, 0.0, 2.0);
+        p.glare_active = self.active;
+        p.glare_percent = f64::from(bounded_float(self.percent, 0.03, 0.0, 1.0));
+        p.glare_roughness = f64::from(bounded_float(self.roughness, 0.7, 0.0, 1.0));
+        p.glare_blur_sigma_px = f64::from(bounded_float(self.blur, 0.5, 0.0, 10.0));
+    }
+}
+
+pub fn capture_levels(black: f64, white: f64) -> (f64, f64) {
+    (
+        bounded(black, 0.01, 0.0, 1.0),
+        bounded(white, 0.98, 0.0, 1.0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use crate::test_cases::RowCases;

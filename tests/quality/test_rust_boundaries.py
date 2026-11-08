@@ -1581,13 +1581,13 @@ class RustBoundaryTests(unittest.TestCase):
         cases = (
             ("ofx_callback_scoped", None),
             ("ofx_callback_private", {
-                "E0624": ("Callback::new(admission", "Parameters::new(callback"),
+                "E0624": ("Callback::new(admission", "Parameters::new(callback", "callback.destroy()"),
             }),
             ("ofx_callback_send", {
-                "E0277": ("scope.spawn(move || callback)", "scope.spawn(move || parameters)"),
+                "E0277": ("scope.spawn(move || callback)", "scope.spawn(move || parameters)", "scope.spawn(move || instance_parameters)", "scope.spawn(move || owner)"),
             }),
             ("ofx_callback_escape", {
-                "E0515": ("callback.descriptor_properties()", "callback.context_parameters()"),
+                "E0515": ("callback.descriptor_properties()", "callback.context_parameters()", "callback.parameter_access(&handles)", "callback.instance()?"),
             }),
         )
         feature_forms = (False, True)

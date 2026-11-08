@@ -264,9 +264,9 @@ int main(int argc, char** argv) try {
     }
     {
         JuicerTests::CaseEvent test(kCaller, "load");
-        const std::vector<std::string> load_ids{"property_suite", "effect_suite", "parameter_suite", "message_suite", "effect_properties", "effect_params", "parameter_properties", "property_dimension", "property_string", "property_int", "property_get_string", "property_double", "clip_define", "param_define", "empty_message"};
+        const std::vector<std::string> load_ids{"property_suite", "effect_suite", "parameter_suite", "message_suite", "effect_properties", "effect_params", "parameter_properties", "property_dimension", "property_string", "property_int", "property_get_string", "property_double", "clip_define", "param_define", "property_get_pointer", "property_set_pointer", "property_get_double", "clip_handle", "param_handle", "param_property", "param_get", "param_set", "empty_message", "valid_message"};
         const JuicerTests::Cohort load_rows("ofx.module.load", load_ids);
-        for (int row = 0; row < 14; ++row) {
+        for (int row = 0; row < 23; ++row) {
             auto event = load_rows.case_event(load_ids[static_cast<std::size_t>(row)]);
             Host missing;
             switch (row) {
@@ -312,6 +312,33 @@ int main(int argc, char** argv) try {
                 case 13:
                     missing.parameter.paramDefine = nullptr;
                     break;
+                case 14:
+                    missing.property.propGetPointer = nullptr;
+                    break;
+                case 15:
+                    missing.property.propSetPointer = nullptr;
+                    break;
+                case 16:
+                    missing.property.propGetDouble = nullptr;
+                    break;
+                case 17:
+                    missing.effect.clipGetHandle = nullptr;
+                    break;
+                case 18:
+                    missing.parameter.paramGetHandle = nullptr;
+                    break;
+                case 19:
+                    missing.parameter.paramGetPropertySet = nullptr;
+                    break;
+                case 20:
+                    missing.parameter.paramGetValue = nullptr;
+                    break;
+                case 21:
+                    missing.parameter.paramSetValue = nullptr;
+                    break;
+                case 22:
+                    missing.message.message = nullptr;
+                    break;
             }
             plugin->setHost(missing.binding());
             require(action(plugin, kOfxActionLoad) == kOfxStatErrMissingHostFeature, "missing suite/slot row " + std::to_string(row));
@@ -320,14 +347,14 @@ int main(int argc, char** argv) try {
             require(action(plugin, kOfxActionUnload) == kOfxStatOK, "failed load cleanup");
             event.passed();
         }
-        auto positive = load_rows.case_event("empty_message");
+        auto positive = load_rows.case_event("valid_message");
         auto fetch_reentry = lifecycle_rows.case_event("load/fetch_reentry");
         int nested_load = -1;
         host.reentry = [&] {
             nested_load = action(plugin, kOfxActionLoad);
         };
         plugin->setHost(host.binding());
-        require(action(plugin, kOfxActionLoad) == kOfxStatOK, "load with empty message table");
+        require(action(plugin, kOfxActionLoad) == kOfxStatOK, "load with message suite");
         require(nested_load == kOfxStatFailed, "reentrant load status");
         fetch_reentry.passed();
         check_calls(host, {{"fetch", kOfxPropertySuite, 1, {}, 0, 0}, {"fetch", kOfxImageEffectSuite, 1, {}, 0, 0}, {"fetch", kOfxParameterSuite, 1, {}, 0, 0}, {"fetch", kOfxMessageSuite, 1, {}, 0, 0}}, "suite fetches");
@@ -344,7 +371,7 @@ int main(int argc, char** argv) try {
         JuicerTests::CaseEvent test(kCaller, "defaults");
         host.reset_trace();
         require(action(plugin, "UnknownAction") == kOfxStatReplyDefault, "unknown action");
-        for (const auto* name : {kOfxActionCreateInstance, kOfxActionDestroyInstance, kOfxActionBeginInstanceChanged, kOfxActionInstanceChanged, kOfxActionEndInstanceChanged, kOfxImageEffectActionRender})
+        for (const auto* name : {kOfxImageEffectActionRender})
             require(action(plugin, name) == kOfxStatErrUnsupported, std::string("deferred action ") + name);
         require(action(plugin, nullptr) == kOfxStatErrBadHandle, "null action");
         require(host.calls.empty(), "default action called host");

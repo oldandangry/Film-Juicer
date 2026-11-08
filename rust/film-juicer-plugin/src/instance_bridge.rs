@@ -596,6 +596,61 @@ export!(fj_test_instance_lifetime_release(owner: *mut FjInstanceLifetime, error:
 pub(crate) struct FjInstanceObservation {
     observation: state::Observation,
 }
+
+#[cfg(feature = "test-support")]
+/// # Safety
+/// Output and error obey the existing observation ABI and remain writable for
+/// this call. Instance is the callback-scoped live safe publication owner.
+pub(crate) unsafe fn observe_safe(
+    instance: &Instance,
+    out: *mut *mut FjInstanceObservation,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The fixture authorizes the output extent under the existing ABI.
+    let valid = unsafe { clear(out) };
+    // SAFETY: Error/output storage is call-local and all writes remain within
+    // their admitted extents; the returned box holds the actual observation.
+    unsafe {
+        run(Some(instance), error, || {
+            if !valid {
+                return Err(Failure::Input("invalid observation output"));
+            }
+            let observation = instance.observe()?;
+            out.write(Box::into_raw(Box::new(FjInstanceObservation {
+                observation,
+            })));
+            Ok(())
+        })
+    }
+}
+
+#[cfg(feature = "test-support")]
+/// # Safety
+/// Output and error obey the existing prepared-state ABI. Instance and Assets
+/// are retained by the original Runtime through synchronous admission.
+pub(crate) unsafe fn admit_safe(
+    instance: &Instance,
+    assets: &film_juicer_core::assets::Assets,
+    out: *mut *mut FjPreparedState,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The fixture authorizes the prepared owner output slot.
+    let valid = unsafe { clear(out) };
+    // SAFETY: Same existing ABI output/error contract; safe admission owns the
+    // complete result before its sole box crosses the test boundary.
+    unsafe {
+        run(Some(instance), error, || {
+            if !valid {
+                return Err(Failure::Input("invalid prepared output"));
+            }
+            let admitted = instance.admit(assets)?;
+            out.write(Box::into_raw(Box::new(FjPreparedState::from_state(
+                admitted.into_state(),
+            ))));
+            Ok(())
+        })
+    }
+}
 #[cfg(feature = "test-support")]
 #[repr(C)]
 pub(crate) struct FjInstanceObservationView {

@@ -9,6 +9,36 @@
 
 #include "module_host.h"
 
+namespace {
+    OfxStatus unused_set_pointer(OfxPropertySetHandle, const char*, int, void*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_get_double(OfxPropertySetHandle, const char*, int, double*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_clip_handle(OfxImageEffectHandle, const char*, OfxImageClipHandle*, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_handle(OfxParamSetHandle, const char*, OfxParamHandle*, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_property(OfxParamHandle, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_get(OfxParamHandle, ...) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_set(OfxParamHandle, ...) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_message(void*, const char*, const char*, const char*, ...) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_get_pointer(OfxPropertySetHandle, const char*, int, void**) noexcept {
+        return kOfxStatFailed;
+    }
+} // namespace
+
 namespace ofx_test {
     Host::Host() {
         host.host = reinterpret_cast<OfxPropertySetHandle>(&effect_token_);
@@ -23,6 +53,15 @@ namespace ofx_test {
         property.propSetDouble = set_double;
         effect.clipDefine = define_clip;
         parameter.paramDefine = define_param;
+        property.propSetPointer = unused_set_pointer;
+        property.propGetDouble = unused_get_double;
+        effect.clipGetHandle = unused_clip_handle;
+        parameter.paramGetHandle = unused_param_handle;
+        parameter.paramGetPropertySet = unused_param_property;
+        parameter.paramGetValue = unused_param_get;
+        parameter.paramSetValue = unused_param_set;
+        message.message = unused_message;
+        property.propGetPointer = unused_get_pointer;
     }
 
     OfxImageEffectHandle Host::effect_handle() {

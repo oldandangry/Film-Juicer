@@ -472,3 +472,12 @@ pub fn mallett_reference_raw(input: ReferenceInput<'_>) -> Result<ReferenceRaw, 
     }
     Ok(ReferenceRaw { rgb })
 }
+
+/// Retain finite authored exposure EV; nonfinite host values use zero.
+pub fn authored_ev(value: f64) -> f64 {
+    finite_or(value, 0.0)
+}
+
+pub fn finite_or(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() { value } else { fallback }
+}

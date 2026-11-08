@@ -439,3 +439,124 @@ pub mod test_support {
         }
     }
 }
+
+pub fn capture_defaults(active: bool, gamma_use_stock: bool) -> Params {
+    Params {
+        active,
+        gamma_use_stock,
+        amount: 1.0,
+        inhibition_same_layer: 1.0,
+        inhibition_interlayer: 1.0,
+        diffusion_size_um: 20.0,
+        diffusion_tail_um: 200.0,
+        diffusion_tail_weight: 0.03,
+        gamma_same_layer_rgb: [0.341, 0.324, 0.273],
+        gamma_interlayer_r_to_gb: [0.355, 0.305],
+        gamma_interlayer_g_to_rb: [0.154, 0.358],
+        gamma_interlayer_b_to_rg: [0.171, 0.225],
+        langmuir_donor_k_rgb: [1.0; 3],
+        langmuir_receiver_k_rgb: [1.0; 3],
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum DirField {
+    Amount,
+    InhibitionSame,
+    InhibitionInter,
+    DiffusionCoreUm,
+    GammaSame,
+    GammaRToGb,
+    GammaGToRb,
+    GammaBToRg,
+    ReceiverK,
+    DonorK,
+    DiffusionTailWeight,
+    DiffusionTailUm,
+}
+impl DirField {
+    pub fn narrow(self, raw: f64) -> Result<f32, &'static str> {
+        let (min, max, range_error, representation_error) = match self {
+            Self::Amount => (
+                0.0,
+                2.0,
+                "InvalidSnapshotControls component=dir field=amount requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=amount requirement=float_representable",
+            ),
+            Self::InhibitionSame => (
+                0.0,
+                2.0,
+                "InvalidSnapshotControls component=dir field=inhibition_same requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=inhibition_same requirement=float_representable",
+            ),
+            Self::InhibitionInter => (
+                0.0,
+                2.0,
+                "InvalidSnapshotControls component=dir field=inhibition_inter requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=inhibition_inter requirement=float_representable",
+            ),
+            Self::DiffusionCoreUm => (
+                0.0,
+                200.0,
+                "InvalidSnapshotControls component=dir field=diffusion_core_um requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=diffusion_core_um requirement=float_representable",
+            ),
+            Self::GammaSame => (
+                0.0,
+                4.0,
+                "InvalidSnapshotControls component=dir field=gamma_same requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=gamma_same requirement=float_representable",
+            ),
+            Self::GammaRToGb => (
+                0.0,
+                4.0,
+                "InvalidSnapshotControls component=dir field=gamma_r_to_gb requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=gamma_r_to_gb requirement=float_representable",
+            ),
+            Self::GammaGToRb => (
+                0.0,
+                4.0,
+                "InvalidSnapshotControls component=dir field=gamma_g_to_rb requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=gamma_g_to_rb requirement=float_representable",
+            ),
+            Self::GammaBToRg => (
+                0.0,
+                4.0,
+                "InvalidSnapshotControls component=dir field=gamma_b_to_rg requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=gamma_b_to_rg requirement=float_representable",
+            ),
+            Self::ReceiverK => (
+                0.1,
+                f64::from(f32::MAX),
+                "InvalidSnapshotControls component=dir field=receiver_k requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=receiver_k requirement=float_representable",
+            ),
+            Self::DonorK => (
+                0.1,
+                f64::from(f32::MAX),
+                "InvalidSnapshotControls component=dir field=donor_k requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=donor_k requirement=float_representable",
+            ),
+            Self::DiffusionTailWeight => (
+                0.0,
+                1.0,
+                "InvalidSnapshotControls component=dir field=diffusion_tail_weight requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=diffusion_tail_weight requirement=float_representable",
+            ),
+            Self::DiffusionTailUm => (
+                0.0,
+                f64::from(f32::MAX),
+                "InvalidSnapshotControls component=dir field=diffusion_tail_um requirement=finite_supported_range",
+                "InvalidSnapshotControls component=dir field=diffusion_tail_um requirement=float_representable",
+            ),
+        };
+        if !raw.is_finite() || raw < min || raw > max {
+            return Err(range_error);
+        }
+        let value = raw as f32;
+        if !value.is_finite() {
+            return Err(representation_error);
+        }
+        Ok(value)
+    }
+}

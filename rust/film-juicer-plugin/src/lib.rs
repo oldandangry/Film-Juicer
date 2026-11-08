@@ -24,7 +24,7 @@ mod runtime;
 
 #[allow(
     unsafe_code,
-    reason = "current-module lookup uses native OS declarations and preserves native path units"
+    reason = "module lookup and the characterized clock use native OS declarations with exact path units and output widths"
 )]
 mod platform;
 

@@ -5,7 +5,8 @@
 discovery/binding, transactional Load, Describe, dispatch, reentry, reload and
 Unload. Describe compares thirteen authored properties plus host-seeded
 `OfxPropType` with the unchanged Describe-only `descriptor_manifest.json` and
-declares 303 status/ordering/target rows. Load and lifecycle add 15 and 7 rows, including the four context suite slots.
+declares 303 status/ordering/target rows. Load and lifecycle add 24 and 7 rows,
+including the required context and instance suite slots.
 
 The three `Ofx.Host.ModuleControls.{Construction,Panic,Terminal}` registrations
 link only the separate Rust test-support archive and run in distinct processes.
@@ -23,12 +24,26 @@ uses the real Runtime with test-support fault controls for catalog readiness,
 recoverable allocation and panic containment. These checks exercise descriptor
 declarations, not instance parameter values or rendering.
 
-All six groups are host/boundary checks; compiling them still requires CUDA.
+`Ofx.Host.Instance` compares actual default-feature create/change/destroy
+callbacks with the unchanged C++ adapter, using an independent ordered census of
+113 typed parameters and Source/Output. Its eight named cases cover acquisition,
+actions, typed current getters/setters, UI edits, reentry and terminal cleanup.
+`Ofx.Host.Capture` has eleven named cases and observes the existing safe
+publication/preparation owner after actual callbacks. It reuses all 198 grain
+capture and 36 edit witnesses with their original four-preset manifest and
+approved overlay reader. `Ofx.Host.InstanceControls` has five named cases for
+recoverable allocation, panic, failed-create retention, terminal cleanup and
+capture interleavings. The latter two executables use only test-support Rust;
+the default-feature instance executable retains the independent live C++ oracle.
+
+All nine groups are host/boundary checks; compiling them still requires CUDA.
 They do not switch shipping discovery, install a candidate, or establish
-installed-host acceptance.
+installed-host acceptance. Image leases, rendering and full temporal render
+traces remain with their actual render consumers.
 
 `RustBoundaryTests.test_ofx_callback_borrows` compiles four real scoped/private/
-Send/escape consumers in default and test-support, using the existing native
+Send/escape consumers, including actual instance access, typed parameter borrows
+and terminal privacy, in default and test-support using the existing native
 target/profile compiler-probe owner.
 
 ## Linux OFX host compatibility probe

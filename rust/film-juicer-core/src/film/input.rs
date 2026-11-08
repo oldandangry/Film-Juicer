@@ -515,6 +515,30 @@ pub mod testing {
     }
 }
 
+pub fn film_format_mm(raw: f64) -> Result<f32, &'static str> {
+    if !raw.is_finite() {
+        Err("InvalidAuthoredControl component=camera field=film_format_mm reason=non_finite")
+    } else if raw < 8.0 {
+        Err("InvalidAuthoredControl component=camera field=film_format_mm reason=below_minimum")
+    } else if raw > 120.0 {
+        Err("InvalidAuthoredControl component=camera field=film_format_mm reason=above_maximum")
+    } else {
+        Ok(raw as f32)
+    }
+}
+
+pub fn film_format_preset(index: i32) -> Option<f64> {
+    const VALUES: [f64; 10] = [
+        25.0, 36.0, 56.0, 70.0, 120.0, 11.66, 21.95, 24.89, 37.72, 70.4,
+    ];
+    let index = index.clamp(0, 10);
+    if index == 0 {
+        None
+    } else {
+        Some(VALUES[(index - 1) as usize])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

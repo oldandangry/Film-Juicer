@@ -10,6 +10,9 @@ use crate::runtime::Runtime;
 
 use super::sys;
 
+mod instance_access;
+pub(crate) use instance_access::{InstanceHandles, ParameterAccess, copy_bytes};
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Status(i32);
 
@@ -25,7 +28,7 @@ impl Status {
         self.0
     }
 
-    fn acquisition(code: i32) -> Result<(), Self> {
+    pub(super) fn acquisition(code: i32) -> Result<(), Self> {
         match code {
             sys::kOfxStatOK
             | sys::kOfxStatReplyYes
@@ -35,7 +38,7 @@ impl Status {
         }
     }
 
-    fn property(code: i32) -> Result<(), Self> {
+    pub(super) fn property(code: i32) -> Result<(), Self> {
         Self::acquisition(code).map_err(|error| match error.0 {
             sys::kOfxStatErrUnknown | sys::kOfxStatErrUnsupported => Self::MISSING_FEATURE,
             sys::kOfxStatErrValue => Self::FAILED,
@@ -93,6 +96,32 @@ pub(super) struct Suites {
         *const c_char,
         *mut sys::OfxPropertySetHandle,
     ) -> i32,
+    get_pointer: unsafe extern "C" fn(
+        sys::OfxPropertySetHandle,
+        *const c_char,
+        i32,
+        *mut *mut c_void,
+    ) -> i32,
+    set_pointer:
+        unsafe extern "C" fn(sys::OfxPropertySetHandle, *const c_char, i32, *mut c_void) -> i32,
+    get_double:
+        unsafe extern "C" fn(sys::OfxPropertySetHandle, *const c_char, i32, *mut f64) -> i32,
+    clip_handle: unsafe extern "C" fn(
+        sys::OfxImageEffectHandle,
+        *const c_char,
+        *mut sys::OfxImageClipHandle,
+        *mut sys::OfxPropertySetHandle,
+    ) -> i32,
+    parameter_handle: unsafe extern "C" fn(
+        sys::OfxParamSetHandle,
+        *const c_char,
+        *mut sys::OfxParamHandle,
+        *mut sys::OfxPropertySetHandle,
+    ) -> i32,
+    parameter_property:
+        unsafe extern "C" fn(sys::OfxParamHandle, *mut sys::OfxPropertySetHandle) -> i32,
+    parameter_get: unsafe extern "C" fn(sys::OfxParamHandle, ...) -> i32,
+    parameter_set: unsafe extern "C" fn(sys::OfxParamHandle, ...) -> i32,
 }
 
 impl Binding {
@@ -112,13 +141,17 @@ impl Binding {
         }
         // SAFETY: Each successful V1 fetch names the corresponding initialized
         // vendored suite. Copy tables locally; no host-storage reference escapes.
-        let (property, effect, parameter) = unsafe {
+        let (property, effect, parameter, message) = unsafe {
             (
                 property.cast::<sys::OfxPropertySuiteV1>().read(),
                 effect.cast::<sys::OfxImageEffectSuiteV1>().read(),
                 parameter.cast::<sys::OfxParameterSuiteV1>().read(),
+                message.cast::<sys::OfxMessageSuiteV1>().read(),
             )
         };
+        // Message V1 remains a required Load slot. Core route resolution is
+        // total; no unreachable message branch or unused function is retained.
+        message.message.ok_or(Status::MISSING_FEATURE)?;
         Ok(Suites {
             effect_properties: effect.getPropertySet.ok_or(Status::MISSING_FEATURE)?,
             parameters: effect.getParamSet.ok_or(Status::MISSING_FEATURE)?,
@@ -132,6 +165,16 @@ impl Binding {
             set_double: property.propSetDouble.ok_or(Status::MISSING_FEATURE)?,
             define_clip: effect.clipDefine.ok_or(Status::MISSING_FEATURE)?,
             define_parameter: parameter.paramDefine.ok_or(Status::MISSING_FEATURE)?,
+            get_pointer: property.propGetPointer.ok_or(Status::MISSING_FEATURE)?,
+            set_pointer: property.propSetPointer.ok_or(Status::MISSING_FEATURE)?,
+            get_double: property.propGetDouble.ok_or(Status::MISSING_FEATURE)?,
+            clip_handle: effect.clipGetHandle.ok_or(Status::MISSING_FEATURE)?,
+            parameter_handle: parameter.paramGetHandle.ok_or(Status::MISSING_FEATURE)?,
+            parameter_property: parameter
+                .paramGetPropertySet
+                .ok_or(Status::MISSING_FEATURE)?,
+            parameter_get: parameter.paramGetValue.ok_or(Status::MISSING_FEATURE)?,
+            parameter_set: parameter.paramSetValue.ok_or(Status::MISSING_FEATURE)?,
         })
     }
 }
@@ -150,6 +193,13 @@ impl Admission {
     pub(super) fn owns(&self, runtime: &Arc<Runtime>) -> bool {
         Arc::ptr_eq(&self.runtime, runtime)
     }
+
+    pub(crate) fn runtime(&self) -> &Arc<Runtime> {
+        &self.runtime
+    }
+    fn retained(&self) -> Self {
+        Self::new(self.suites, Arc::clone(&self.runtime))
+    }
 }
 
 pub(crate) struct Callback<'a> {
@@ -160,6 +210,9 @@ pub(crate) struct Callback<'a> {
 }
 
 impl<'a> Callback<'a> {
+    pub(crate) fn retain(&self) -> Admission {
+        self.loaded.retained()
+    }
     fn new(
         loaded: &'a Admission,
         effect: sys::OfxImageEffectHandle,
@@ -489,8 +542,34 @@ unsafe extern "C" fn main_entry(
             | b"OfxActionDestroyInstance"
             | b"OfxActionBeginInstanceChanged"
             | b"OfxActionInstanceChanged"
-            | b"OfxActionEndInstanceChanged"
-            | b"OfxImageEffectActionRender" => Err(Status(sys::kOfxStatErrUnsupported)),
+            | b"OfxActionEndInstanceChanged" => {
+                let create = action.to_bytes() == b"OfxActionCreateInstance";
+                let destroy = action.to_bytes() == b"OfxActionDestroyInstance";
+                if handle.is_null() || (!create && !destroy && input.is_null()) {
+                    return Err(Status::BAD_HANDLE);
+                }
+                let admission = super::admit_action(destroy)?;
+                let callback = Callback::new(&admission, handle.cast_mut().cast(), input);
+                match catch_unwind(AssertUnwindSafe(|| {
+                    if create {
+                        callback.create()
+                    } else if destroy {
+                        callback.destroy()
+                    } else {
+                        callback.change_action(action.to_bytes() == b"OfxActionInstanceChanged")?;
+                        Err(Status(sys::kOfxStatReplyDefault))
+                    }
+                })) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        // Invalidate the matching original admission while its
+                        // Runtime hold still excludes terminal module close.
+                        super::fail_admission(&admission);
+                        Err(Status::FATAL)
+                    }
+                }
+            }
+            b"OfxImageEffectActionRender" => Err(Status(sys::kOfxStatErrUnsupported)),
             _ => Err(Status(sys::kOfxStatReplyDefault)),
         }
     })

@@ -12,6 +12,33 @@
 
 #include "context_host.h"
 
+namespace {
+    OfxStatus unused_set_pointer(OfxPropertySetHandle, const char*, int, void*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_get_double(OfxPropertySetHandle, const char*, int, double*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_clip_handle(OfxImageEffectHandle, const char*, OfxImageClipHandle*, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_handle(OfxParamSetHandle, const char*, OfxParamHandle*, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_property(OfxParamHandle, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_get(OfxParamHandle, ...) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_param_set(OfxParamHandle, ...) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_message(void*, const char*, const char*, const char*, ...) noexcept {
+        return kOfxStatFailed;
+    }
+} // namespace
+
 namespace ofx_test {
     ContextHost::ContextHost() {
         host_.host = reinterpret_cast<OfxPropertySetHandle>(&host_token_);
@@ -28,6 +55,14 @@ namespace ofx_test {
         property_.propGetInt = get_int;
         property_.propGetPointer = get_pointer;
         property_.propGetDimension = dimension;
+        property_.propSetPointer = unused_set_pointer;
+        property_.propGetDouble = unused_get_double;
+        effect_.clipGetHandle = unused_clip_handle;
+        parameter_.paramGetHandle = unused_param_handle;
+        parameter_.paramGetPropertySet = unused_param_property;
+        parameter_.paramGetValue = unused_param_get;
+        parameter_.paramSetValue = unused_param_set;
+        message_.message = unused_message;
     }
     OfxImageEffectHandle ContextHost::effect_handle() {
         return reinterpret_cast<OfxImageEffectHandle>(&effect_token_);
