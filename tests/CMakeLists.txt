@@ -689,6 +689,25 @@ add_test(NAME Ffi.Gpu.CudaInspect.MultiDevice COMMAND JuicerCudaInspectGpuTests
     --gtest_filter=InspectGpu.DeviceMismatchWhenTwoDevicesAreAvailable)
 set_tests_properties(Ffi.Gpu.CudaInspect.MultiDevice PROPERTIES LABELS "gpu;multi-gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu)
 
+add_executable(JuicerOfxModuleTests ofx/module_test.cpp ofx/module_host.cpp)
+target_compile_features(JuicerOfxModuleTests PRIVATE cxx_std_20)
+target_include_directories(JuicerOfxModuleTests PRIVATE "${JUICER_TEST_ROOT}/native" "${JUICER_TEST_ROOT}/third_party")
+target_link_libraries(JuicerOfxModuleTests PRIVATE juicer_test_core film_juicer_rust juicer_ofx_headers)
+set_target_properties(JuicerOfxModuleTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+juicer_add_host_test(Ofx.Host.Module JuicerOfxModuleTests custom "${CMAKE_CURRENT_SOURCE_DIR}/ofx/descriptor_manifest.json")
+set_tests_properties(Ofx.Host.Module PROPERTIES LABELS "host;boundary" TIMEOUT 0)
+
+add_executable(JuicerOfxModuleControlTests ofx/module_control_test.cpp ofx/module_host.cpp ofx/platform_abi_c.c)
+target_compile_features(JuicerOfxModuleControlTests PRIVATE cxx_std_20)
+target_include_directories(JuicerOfxModuleControlTests PRIVATE "${JUICER_TEST_ROOT}/native" "${JUICER_TEST_ROOT}/third_party")
+target_link_libraries(JuicerOfxModuleControlTests PRIVATE juicer_test_core film_juicer_rust_test_support juicer_ofx_headers)
+set_target_properties(JuicerOfxModuleControlTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}" C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+foreach(mode IN ITEMS Construction Panic Terminal)
+    string(TOLOWER "${mode}" mode_argument)
+    juicer_add_host_test(Ofx.Host.ModuleControls.${mode} JuicerOfxModuleControlTests custom "${mode_argument}")
+    set_tests_properties(Ofx.Host.ModuleControls.${mode} PROPERTIES LABELS "host;boundary" TIMEOUT 0)
+endforeach()
+
 add_executable(JuicerCudaOwnerUnloadTests ofx/cuda_owner_unload_test.cpp ../src/main.cpp)
 target_compile_definitions(JuicerCudaOwnerUnloadTests PRIVATE JUICER_OWNER_UNLOAD_TEST=1)
 target_link_libraries(JuicerCudaOwnerUnloadTests PRIVATE juicer_test_core film_juicer_rust juicer_ofxs)
@@ -1453,7 +1472,7 @@ juicer_add_python_test(NAME Ffi.Host.BuildArtifacts
 set_tests_properties(Ffi.Host.BuildArtifacts PROPERTIES LABELS "host" TIMEOUT 0)
 
 # Relevance and runtime prerequisites are independent. Every group has one owner.
-set(juicer_boundary_tests Ffi.Host.OfxAbi Ffi.Gpu.ProductionPreparedRender Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
+set(juicer_boundary_tests Ofx.Host.Module Ofx.Host.ModuleControls.Construction Ofx.Host.ModuleControls.Panic Ofx.Host.ModuleControls.Terminal Ffi.Host.OfxAbi Ffi.Gpu.ProductionPreparedRender Ffi.Host.BuildArtifacts Ffi.Host.PreparedState Ffi.Gpu.PreparedStateLifetime Ffi.Host.EffectsFrame Ffi.Host.GrainFrame Ffi.Host.DirBoundary Ffi.Host.DirFrame Ffi.Host.DiffusionFrame Ffi.Host.HalationFrame Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat

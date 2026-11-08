@@ -1577,6 +1577,23 @@ class RustBoundaryTests(unittest.TestCase):
             feature_forms=(False, True),
         )
 
+    def test_ofx_callback_borrows(self) -> None:
+        cases = (("ofx_callback_scoped", None),
+                 ("ofx_callback_private", {"E0624": ("Callback::new(admission",)}),
+                 ("ofx_callback_send", {"E0277": ("scope.spawn(move || callback)",)}),
+                 ("ofx_callback_escape", {"E0515": ("callback.descriptor_properties()",)}))
+        feature_forms = (False, True)
+        self.subtest_cases = tuple(
+            f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
+            for fixture, _ in cases for release in self.profiles for support in feature_forms
+        )
+        self.check_fixture_cases(
+            "film-juicer-plugin/src/lib.rs",
+            "film-juicer-plugin",
+            cases=cases,
+            feature_forms=feature_forms,
+        )
+
     def test_runtime_owner_borrows_and_terminal_consumption(self) -> None:
         cases = (('runtime_complete', None),
          ('runtime_private', {'E0616': ('runtime.assets', 'runtime.native', 'owner.handle')}),
@@ -1637,6 +1654,7 @@ RustBoundaryTests.test_complete_tc_lut_privacy_and_borrowing.required_subtests =
 RustBoundaryTests.test_complete_input_hull_privacy_and_borrows.required_subtests = True
 RustBoundaryTests.test_prepared_state_is_complete_private_and_borrowed.required_subtests = True
 RustBoundaryTests.test_cuda_render_borrows_complete_owners_and_hides_projection.required_subtests = True
+RustBoundaryTests.test_ofx_callback_borrows.required_subtests = True
 RustBoundaryTests.test_runtime_owner_borrows_and_terminal_consumption.required_subtests = True
 
 

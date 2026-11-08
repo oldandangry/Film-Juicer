@@ -1,4 +1,31 @@
-# Linux OFX host compatibility probe
+# OFX host fixtures
+
+`Ofx.Host.Module` calls the real default-feature Rust candidate descriptor through
+`native/juicer_ofx_api.h`, linked with the existing native Runtime owner. It checks
+discovery/binding, transactional Load, Describe, dispatch, reentry, reload and
+Unload. Describe compares thirteen authored properties plus host-seeded
+`OfxPropType` with the unchanged Describe-only `descriptor_manifest.json` and
+declares 303 status/ordering/target rows. Load and lifecycle add 11 and 7 rows.
+
+The three `Ofx.Host.ModuleControls.{Construction,Panic,Terminal}` registrations
+link only the separate Rust test-support archive and run in distinct processes.
+Their ten named cases cover C11 platform ABI/native paths, actual construction
+rollback, panic containment, rejected-close backing preservation and consuming
+native retention. The terminal process never resets retained native ownership.
+Construction and panic cases include four deterministic worker interleavings for
+late panic cleanup, admitted panic exclusion and invalidated-load rollback. The
+feature-only pause controls report bounded-wait expiry as failed evidence. Native
+path cases compare two literal parent extractions before normalization against
+the C++ filesystem expression, including an immediate dot component.
+All four groups are host/boundary checks; compiling them still requires CUDA.
+They do not switch shipping discovery, install a candidate, exercise parameters
+or rendering, or establish installed-host acceptance.
+
+`RustBoundaryTests.test_ofx_callback_borrows` compiles four real scoped/private/
+Send/escape consumers in default and test-support, using the existing native
+target/profile compiler-probe owner.
+
+## Linux OFX host compatibility probe
 
 `probe.py` exercises Juicer's OFX Load, Describe, and Unload actions with a
 narrow synthetic host. Pass one or more `--preload` paths to reproduce symbol

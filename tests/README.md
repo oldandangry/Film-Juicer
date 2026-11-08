@@ -178,6 +178,17 @@ boundary in six cases. It is a product-linked host registration; see the
 
 ## Validation cadence
 
+The bounded Rust module candidate has four host/boundary registrations:
+`Ofx.Host.Module` and `Ofx.Host.ModuleControls.Construction`, `.Panic`, `.Terminal`.
+They contain eighteen named cases. The default-feature target declares 303
+Describe, 11 Load and 7 lifecycle rows; the control target uses the existing real
+Runtime/native owner and a separate test-support archive. See the
+[OFX fixture guide](ofx/README.md) for scope and the Describe-only oracle.
+The focused compiler method is
+`test_rust_boundaries.RustBoundaryTests.test_ofx_callback_borrows`: four fixtures,
+both feature forms, eight logical cases in four batched Cargo checks per native
+profile. Shipping exports and dispatch remain on the existing adapter.
+
 Choose checks from the changed contract and the checkpoint being completed.
 Before execution, name the supported target, test and quality commands, their
 expected membership, and the affected native/CUDA/Rust compilation contexts and

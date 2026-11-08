@@ -24,6 +24,12 @@ mod runtime;
 
 #[allow(
     unsafe_code,
+    reason = "current-module lookup uses native OS declarations and preserves native path units"
+)]
+mod platform;
+
+#[allow(
+    unsafe_code,
     reason = "the private process edge admits native paths and projects synchronous borrows and consume-once Runtime ownership"
 )]
 mod runtime_bridge;

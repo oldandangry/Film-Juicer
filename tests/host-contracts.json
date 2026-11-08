@@ -155,6 +155,14 @@
       "protocol": "gtest",
       "registrations": 1,
       "cuda_free": true
+    },
+    "JuicerOfxModuleTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxModuleControlTests": {
+      "protocol": "custom",
+      "registrations": 3
     }
   },
   "native_cohorts": {
@@ -220,7 +228,11 @@
     "Print.Host.IlluminantProducts": 1,
     "Print.Host.PreflashProducts": 1,
     "Reconstruction.Host.TcLut.boundary": 2,
-    "Scanner.Host.CorrectionProducts": 1
+    "Scanner.Host.CorrectionProducts": 1,
+    "Ofx.Host.Module": 3,
+    "Ofx.Host.ModuleControls.Construction": 4,
+    "Ofx.Host.ModuleControls.Panic": 2,
+    "Ofx.Host.ModuleControls.Terminal": 1
   },
   "rust_cohorts": {
     "film-juicer-core": 89,
