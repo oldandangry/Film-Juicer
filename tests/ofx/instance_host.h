@@ -175,11 +175,24 @@ namespace ofx_test {
         OfxHost* binding() noexcept;
         OfxImageEffectHandle descriptor_handle() noexcept;
         OfxPropertySetHandle context_args() noexcept;
+        OfxPropertySetHandle action_args() noexcept;
+        OfxPropertySetHandle output_args() noexcept;
         OfxImageEffectHandle create_effect();
         OfxPropertySetHandle change_args(const InstanceChange& change, double time = 0.0);
+        void set_property(OfxPropertySetHandle handle, std::string_view key, std::vector<InstanceValue> values);
+        std::vector<InstanceValue> property(OfxPropertySetHandle handle, std::string_view key) const;
         void set_value(OfxImageEffectHandle effect, std::string_view name, std::vector<InstanceValue> values);
         std::vector<InstanceValue> value(OfxImageEffectHandle effect,
                                          std::string_view name) const;
+        void set_effect_property(OfxImageEffectHandle effect, std::string_view key, std::vector<InstanceValue> values);
+        void set_clip_property(OfxImageEffectHandle effect, std::string_view clip, const char* key, std::vector<InstanceValue> values);
+        void set_image_property(OfxImageEffectHandle effect, std::string_view clip, const char* key, std::vector<InstanceValue> values);
+        void set_clip_region(OfxImageEffectHandle effect, std::string_view clip, OfxRectD bounds);
+        void set_image_available(OfxImageEffectHandle effect, std::string_view clip, bool available);
+        void set_image_get_status(OfxImageEffectHandle effect, std::string_view clip, OfxStatus status);
+        void set_image_release_status(OfxImageEffectHandle effect, std::string_view clip, OfxStatus status);
+        std::size_t image_release_count(OfxImageEffectHandle effect, std::string_view clip) const;
+        void set_abort(bool abort) noexcept;
         void clear_calls();
         std::vector<InstanceCall>& calls() noexcept;
         bool callback_error() const noexcept;

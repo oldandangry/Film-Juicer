@@ -5,7 +5,7 @@
 discovery/binding, transactional Load, Describe, dispatch, reentry, reload and
 Unload. Describe compares thirteen authored properties plus host-seeded
 `OfxPropType` with the unchanged Describe-only `descriptor_manifest.json` and
-declares 303 status/ordering/target rows. Load and lifecycle add 24 and 7 rows,
+declares 303 status/ordering/target rows. Load and lifecycle add the current required-suite slot census and 7 rows,
 including the required context and instance suite slots.
 
 The three `Ofx.Host.ModuleControls.{Construction,Panic,Terminal}` registrations
@@ -36,13 +36,29 @@ recoverable allocation, panic, failed-create retention, terminal cleanup and
 capture interleavings. The latter two executables use only test-support Rust;
 the default-feature instance executable retains the independent live C++ oracle.
 
-All nine groups are host/boundary checks; compiling them still requires CUDA.
-They do not switch shipping discovery, install a candidate, or establish
-installed-host acceptance. Image leases, rendering and full temporal render
-traces remain with their actual render consumers.
+The additional `Ofx.Host.Actions`, `.Render` and `.RenderControls` groups exercise
+real default-feature callbacks, remaining default-action argument/status traces,
+ordered non-CUDA profile reads, callback-local image release and early-return
+precedence. Controls link only test-support Rust. Images acquired before metadata
+failure are released once, including the explicit correction of the C++ image
+constructor's failure-path leak. Finite frame positions outside `[-2^63,2^63)`
+are rejected with Fatal after the frame-rate getter, before native entry; earlier
+no-op and failure results retain precedence. Nonfinite frame positions normalize
+to zero only at frame assembly.
 
-`RustBoundaryTests.test_ofx_callback_borrows` compiles four real scoped/private/
-Send/escape consumers, including actual instance access, typed parameter borrows
+`Ofx.Gpu.Render` uses actual device images, the default-feature descriptor and the
+retained C++ comparator. `Ofx.Gpu.RenderTrace` uses test-support controls for fixed
+identities, temporal/publication/submission and completion/recovery observations.
+It shares the existing instrumented processor failure hooks; original numerical
+expectations and readers stay independent. Both own the real callback image/native
+scope. No host-only fixture presents CPU storage as valid CUDA memory.
+
+The twelve host adapter groups compile with CUDA but run without a device. They
+and the two focused GPU groups preserve C++ shipping discovery; they do not
+install the candidate or establish installed-host or saved-project acceptance.
+
+`RustBoundaryTests.test_ofx_callback_borrows` compiles seven real scoped/private/
+image/thread/escape consumers, including actual instance access, typed parameter borrows
 and terminal privacy, in default and test-support using the existing native
 target/profile compiler-probe owner.
 

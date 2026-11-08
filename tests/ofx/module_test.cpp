@@ -264,9 +264,9 @@ int main(int argc, char** argv) try {
     }
     {
         JuicerTests::CaseEvent test(kCaller, "load");
-        const std::vector<std::string> load_ids{"property_suite", "effect_suite", "parameter_suite", "message_suite", "effect_properties", "effect_params", "parameter_properties", "property_dimension", "property_string", "property_int", "property_get_string", "property_double", "clip_define", "param_define", "property_get_pointer", "property_set_pointer", "property_get_double", "clip_handle", "param_handle", "param_property", "param_get", "param_set", "empty_message", "valid_message"};
+        const std::vector<std::string> load_ids{"property_suite", "effect_suite", "parameter_suite", "message_suite", "effect_properties", "effect_params", "parameter_properties", "property_dimension", "property_string", "property_int", "property_get_string", "property_double", "clip_define", "param_define", "property_get_pointer", "property_set_pointer", "property_get_double", "clip_handle", "param_handle", "param_property", "param_get", "param_set", "empty_message", "property_get_int", "clip_image", "release_image", "clip_region", "abort", "valid_message"};
         const JuicerTests::Cohort load_rows("ofx.module.load", load_ids);
-        for (int row = 0; row < 23; ++row) {
+        for (int row = 0; row < 28; ++row) {
             auto event = load_rows.case_event(load_ids[static_cast<std::size_t>(row)]);
             Host missing;
             switch (row) {
@@ -339,6 +339,21 @@ int main(int argc, char** argv) try {
                 case 22:
                     missing.message.message = nullptr;
                     break;
+                case 23:
+                    missing.property.propGetInt = nullptr;
+                    break;
+                case 24:
+                    missing.effect.clipGetImage = nullptr;
+                    break;
+                case 25:
+                    missing.effect.clipReleaseImage = nullptr;
+                    break;
+                case 26:
+                    missing.effect.clipGetRegionOfDefinition = nullptr;
+                    break;
+                case 27:
+                    missing.effect.abort = nullptr;
+                    break;
             }
             plugin->setHost(missing.binding());
             require(action(plugin, kOfxActionLoad) == kOfxStatErrMissingHostFeature, "missing suite/slot row " + std::to_string(row));
@@ -371,8 +386,8 @@ int main(int argc, char** argv) try {
         JuicerTests::CaseEvent test(kCaller, "defaults");
         host.reset_trace();
         require(action(plugin, "UnknownAction") == kOfxStatReplyDefault, "unknown action");
-        for (const auto* name : {kOfxImageEffectActionRender})
-            require(action(plugin, name) == kOfxStatErrUnsupported, std::string("deferred action ") + name);
+        require(action(plugin, kOfxImageEffectActionRender) == kOfxStatErrBadHandle, "render requires effect and input");
+        require(action(plugin, kOfxImageEffectActionRender, host.effect_handle()) == kOfxStatErrBadHandle, "render requires input");
         require(action(plugin, nullptr) == kOfxStatErrBadHandle, "null action");
         require(host.calls.empty(), "default action called host");
         test.passed();

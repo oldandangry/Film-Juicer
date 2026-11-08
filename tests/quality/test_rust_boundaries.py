@@ -1564,7 +1564,12 @@ class RustBoundaryTests(unittest.TestCase):
          ('cuda_render_projection_private', {'E0603': ('crate::cuda::projection::host_data',)}),
          ('cuda_render_state_borrow', {'E0505': ('drop(state)',)}),
          ('cuda_render_instance_borrow', {'E0505': ('drop(instance)',)}),
-         ('cuda_render_owner_thread', {'E0277': ('std::thread::spawn(move || owner)',)}))
+         ('cuda_render_owner_thread', {'E0277': ('std::thread::spawn(move || owner)',)}),
+         ('cuda_render_callback_scoped', None),
+         ('cuda_render_callback_unsafe', {'E0133': ('cuda::edge::render_callback',)}),
+         ('cuda_render_completion_escape', {'E0521': ('escaped = Some(completion)',)}),
+         ('cuda_render_completion_thread', {'E0277': ('scope.spawn(move || completion)',)}),
+         ('cuda_render_runtime_close', {'E0505': ('runtime.close()',)}))
         feature_forms = (False, True)
         self.subtest_cases = tuple(
             f"{fixture}|{'release' if release else 'debug'}|{'test-support' if support else 'default'}"
@@ -1580,6 +1585,9 @@ class RustBoundaryTests(unittest.TestCase):
     def test_ofx_callback_borrows(self) -> None:
         cases = (
             ("ofx_callback_scoped", None),
+            ("ofx_image_scoped", None),
+            ("ofx_image_escape", {"E0515": ("callback.fetch_image(handles, 0, 1.25)",)}),
+            ("ofx_image_thread", {"E0277": ("scope.spawn(move || image)",)}),
             ("ofx_callback_private", {
                 "E0624": ("Callback::new(admission", "Parameters::new(callback", "callback.destroy()"),
             }),

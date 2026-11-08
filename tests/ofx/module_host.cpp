@@ -13,6 +13,21 @@ namespace {
     OfxStatus unused_set_pointer(OfxPropertySetHandle, const char*, int, void*) noexcept {
         return kOfxStatFailed;
     }
+    OfxStatus unused_get_int(OfxPropertySetHandle, const char*, int, int*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_clip_image(OfxImageClipHandle, OfxTime, const OfxRectD*, OfxPropertySetHandle*) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_release_image(OfxPropertySetHandle) noexcept {
+        return kOfxStatFailed;
+    }
+    OfxStatus unused_clip_region(OfxImageClipHandle, OfxTime, OfxRectD*) noexcept {
+        return kOfxStatFailed;
+    }
+    int unused_abort(OfxImageEffectHandle) noexcept {
+        return 0;
+    }
     OfxStatus unused_get_double(OfxPropertySetHandle, const char*, int, double*) noexcept {
         return kOfxStatFailed;
     }
@@ -55,6 +70,11 @@ namespace ofx_test {
         parameter.paramDefine = define_param;
         property.propSetPointer = unused_set_pointer;
         property.propGetDouble = unused_get_double;
+        property.propGetInt = unused_get_int;
+        effect.clipGetImage = unused_clip_image;
+        effect.clipReleaseImage = unused_release_image;
+        effect.clipGetRegionOfDefinition = unused_clip_region;
+        effect.abort = unused_abort;
         effect.clipGetHandle = unused_clip_handle;
         parameter.paramGetHandle = unused_param_handle;
         parameter.paramGetPropertySet = unused_param_property;

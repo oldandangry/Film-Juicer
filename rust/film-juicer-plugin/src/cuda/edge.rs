@@ -14,6 +14,8 @@ use crate::asset_bridge::FjAssets;
 use crate::preparation::FjPreparedState;
 
 use super::sys;
+mod ofx;
+pub(crate) use ofx::{render_callback, trace_cutoff, trace_flags};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -478,6 +480,25 @@ impl Frame<'_> {
 }
 
 impl FramePolicy {
+    pub(crate) fn prepare(
+        state: &film_juicer_core::recipe::RenderState,
+        full: film_juicer_core::frame::Domain,
+    ) -> Result<Self, String> {
+        super::frame_policy::prepare(
+            state,
+            sys::FjExtent {
+                x: full.x,
+                y: full.y,
+                width: full.width,
+                height: full.height,
+            },
+        )
+        .map(|raw| Self { raw })
+        .map_err(|error| error.diagnostic)
+    }
+    pub(crate) fn pixel_size_um(&self) -> f32 {
+        self.raw.geometry.pixel_size_um
+    }
     pub(super) fn raw(&self) -> &FjPreparedFramePolicy {
         &self.raw
     }

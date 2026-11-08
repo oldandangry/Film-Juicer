@@ -45,6 +45,29 @@ typedef struct FjCudaCallAccess {
     void (*trace_submission)(void*, const FjSubmission*, uint32_t reused);
 } FjCudaCallAccess;
 
+/* Existing diagnostic sink for the moved adapter. Borrowed text expires on
+ * return; these calls perform no CUDA admission, resource or policy work. */
+uint32_t fj_cuda_call_trace_flags(void);
+void fj_cuda_call_trace_cutoff(FjStringView);
+void fj_cuda_call_trace_failure(FjStringView);
+
+/* Synchronous Rust OFX call: stack CallScope and access/user expire when this
+ * entry returns. The continuation contains panics and retains every Rust/OFX
+ * owner. Completion runs serially after release on this same callback thread. */
+typedef FjCallCompletionResult (*FjCudaCallContinuation)(void*, FjCudaCallAccess);
+typedef struct FjCudaCompletion {
+    FjCallCompletionResult result;
+    uint32_t retirement; /* bit 0 attempted, bit 1 accepted */
+    FjStatus invalidation;
+    uint32_t latch_cleared;
+} FjCudaCompletion;
+typedef FjCudaCompletion (*FjCudaCompletionContinuation)(void*, void*, const FjCallCompletionInput*);
+FjCallCompletionResult fj_cuda_call(FjCuda*, uint32_t route, FjCudaCallContinuation, FjCudaCompletionContinuation, void*);
+/* Only during the above completion, after gate release. Returns attempted/accepted bits when native
+ * context-loss retirement was attempted; the caller then invalidates its Rust
+ * Instance latch. No Rust/host owner is retained and no host context is reset. */
+uint32_t fj_cuda_call_retire_context(void*, const FjCallCompletionInput*);
+
 #define FJ_UNAVAILABLE_STATE 0U
 #define FJ_UNAVAILABLE_INSTANCE 1U
 
@@ -75,6 +98,8 @@ namespace JuicerCuda {
 
         FjCudaCallAccess access() noexcept;
         PendingContextLossRecovery& recovery() noexcept;
+        uint32_t retire_context(const FjCallCompletionInput*) noexcept;
+        void finish_recovery() noexcept;
         const std::string& diagnostic() const noexcept;
         void set_diagnostic(std::string_view value) noexcept;
 

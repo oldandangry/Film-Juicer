@@ -11,6 +11,9 @@ use crate::runtime::Runtime;
 use super::sys;
 
 mod instance_access;
+mod image;
+mod default_actions;
+
 pub(crate) use instance_access::{InstanceHandles, ParameterAccess, copy_bytes};
 
 #[derive(Clone, Copy, Debug)]
@@ -104,6 +107,18 @@ pub(super) struct Suites {
     ) -> i32,
     set_pointer:
         unsafe extern "C" fn(sys::OfxPropertySetHandle, *const c_char, i32, *mut c_void) -> i32,
+    get_int: unsafe extern "C" fn(sys::OfxPropertySetHandle, *const c_char, i32, *mut i32) -> i32,
+    clip_image: unsafe extern "C" fn(
+        sys::OfxImageClipHandle,
+        f64,
+        *const sys::OfxRectD,
+        *mut sys::OfxPropertySetHandle,
+    ) -> i32,
+    release_image: unsafe extern "C" fn(sys::OfxPropertySetHandle) -> i32,
+    clip_region: unsafe extern "C" fn(sys::OfxImageClipHandle, f64, *mut sys::OfxRectD) -> i32,
+    abort: unsafe extern "C" fn(sys::OfxImageEffectHandle) -> i32,
+    message:
+        unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *const c_char, ...) -> i32,
     get_double:
         unsafe extern "C" fn(sys::OfxPropertySetHandle, *const c_char, i32, *mut f64) -> i32,
     clip_handle: unsafe extern "C" fn(
@@ -167,6 +182,14 @@ impl Binding {
             define_parameter: parameter.paramDefine.ok_or(Status::MISSING_FEATURE)?,
             get_pointer: property.propGetPointer.ok_or(Status::MISSING_FEATURE)?,
             set_pointer: property.propSetPointer.ok_or(Status::MISSING_FEATURE)?,
+            get_int: property.propGetInt.ok_or(Status::MISSING_FEATURE)?,
+            clip_image: effect.clipGetImage.ok_or(Status::MISSING_FEATURE)?,
+            release_image: effect.clipReleaseImage.ok_or(Status::MISSING_FEATURE)?,
+            clip_region: effect
+                .clipGetRegionOfDefinition
+                .ok_or(Status::MISSING_FEATURE)?,
+            abort: effect.abort.ok_or(Status::MISSING_FEATURE)?,
+            message: message.message.ok_or(Status::MISSING_FEATURE)?,
             get_double: property.propGetDouble.ok_or(Status::MISSING_FEATURE)?,
             clip_handle: effect.clipGetHandle.ok_or(Status::MISSING_FEATURE)?,
             parameter_handle: parameter.paramGetHandle.ok_or(Status::MISSING_FEATURE)?,
@@ -495,7 +518,7 @@ unsafe extern "C" fn main_entry(
     action: *const c_char,
     handle: *const c_void,
     input: sys::OfxPropertySetHandle,
-    _output: sys::OfxPropertySetHandle,
+    output: sys::OfxPropertySetHandle,
 ) -> i32 {
     contained(|| {
         if action.is_null() {
@@ -569,7 +592,42 @@ unsafe extern "C" fn main_entry(
                     }
                 }
             }
-            b"OfxImageEffectActionRender" => Err(Status(sys::kOfxStatErrUnsupported)),
+            b"OfxImageEffectActionRender" => {
+                if handle.is_null() || input.is_null() {
+                    return Err(Status::BAD_HANDLE);
+                }
+                let admission = super::admit()?;
+                let callback = Callback::new(&admission, handle.cast_mut().cast(), input);
+                match catch_unwind(AssertUnwindSafe(|| super::render::run(&callback))) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        super::fail_admission(&admission);
+                        Err(Status::FATAL)
+                    }
+                }
+            }
+            bytes if super::default_actions::DefaultAction::from_bytes(bytes).is_some() => {
+                let action = super::default_actions::DefaultAction::from_bytes(bytes)
+                    .expect("matched action");
+                if handle.is_null()
+                    || (action.requires_input() && input.is_null())
+                    || (action.requires_output() && output.is_null())
+                {
+                    return Err(Status::BAD_HANDLE);
+                }
+                let admission = super::admit()?;
+                let callback = Callback::new(&admission, handle.cast_mut().cast(), input);
+                match catch_unwind(AssertUnwindSafe(|| {
+                    super::default_actions::run(&callback, action)?;
+                    Err(Status(sys::kOfxStatReplyDefault))
+                })) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        super::fail_admission(&admission);
+                        Err(Status::FATAL)
+                    }
+                }
+            }
             _ => Err(Status(sys::kOfxStatReplyDefault)),
         }
     })

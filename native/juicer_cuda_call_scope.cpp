@@ -10,6 +10,7 @@
 
 #include "FilmEffectsFrameDescriptors.h"
 #include "RenderValues.h"
+#include "ProcessRoot.h"
 #include "Logging.h"
 #include "RustEffectsFrameBridge.h"
 #include "Cuda/JuicerCudaFailure.h"
@@ -611,3 +612,121 @@ namespace JuicerCuda {
     }
 
 } // namespace JuicerCuda
+
+namespace {
+    struct RustCallCompletion {
+        FjCudaCompletionContinuation completion = nullptr;
+        void* user = nullptr;
+        JuicerCuda::CallScope* scope = nullptr;
+    };
+    FjCallCompletionResult complete_rust_call(void* user, const FjCallCompletionInput* input) noexcept {
+        auto* completion = static_cast<RustCallCompletion*>(user);
+        if (!completion || !completion->completion || !completion->scope || !input) {
+            return {{{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, 0}, 1};
+        }
+        try {
+            const auto report = completion->completion(completion->user, completion->scope, input);
+            completion->scope->finish_recovery();
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            if (input->recovery_scope_entered != 0) {
+                if ((report.retirement & 1u) != 0) {
+                    JuicerCuda::ExecutorTest::observe_context_retirement((report.retirement & 2u) != 0, report.invalidation, report.latch_cleared != 0);
+                }
+                JuicerCuda::ExecutorTest::observe_recovery_end();
+            }
+            const std::string_view diagnostic(input->diagnostic.data ? input->diagnostic.data : "", input->diagnostic.data ? input->diagnostic.count : 0);
+            JuicerCuda::ExecutorTest::observe_adapter_completion(report.result.outcome, report.result.fatal != 0, diagnostic);
+#endif
+            return report.result;
+        } catch (...) {
+            return {input->outcome, 1};
+        }
+    }
+} // namespace
+
+extern "C" FjCallCompletionResult fj_cuda_call(FjCuda* owner, uint32_t route, FjCudaCallContinuation continuation, FjCudaCompletionContinuation completion, void* user) {
+    if (!owner || route > FJ_ROUTE_POSITIVE_PRINT || !continuation || !completion || !user) {
+        return {{{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, 0}, 1};
+    }
+    try {
+        RustCallCompletion host{completion, user};
+        JuicerCuda::CallScope scope(owner, route, &complete_rust_call, &host);
+        host.scope = &scope;
+        return continuation(user, scope.access());
+    } catch (...) {
+        return {{{FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, 0}, 1};
+    }
+}
+
+uint32_t JuicerCuda::CallScope::retire_context(const FjCallCompletionInput* input) noexcept {
+    if (!input || !_completed || _call || !_owner || input->recovery_scope_entered == 0 || input->has_inspected_context == 0) {
+        return 0;
+    }
+    try {
+        if (!_recovery.pending && input->outcome.status.category == FJ_STATUS_CONTEXT_LOSS) {
+            _recovery = {true, {input->outcome.status, std::string{}}, "native_render"};
+        }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_recovery_start(_recovery.pending);
+#endif
+        if (!_recovery.pending) {
+            return 0;
+        }
+        // Keep the existing native gate through the caller's immediate Rust
+        // latch invalidation, as in the retained C++ completion. No host call
+        // occurs in this interval. The stack completion releases it below.
+        _call.emplace(_owner);
+        std::string diagnostic;
+        const bool accepted = _call->root().retire_reset_context(input->inspected_context.device_id, reinterpret_cast<void*>(input->inspected_context.context), diagnostic);
+        _recovery = {};
+        return 1u | (accepted ? 2u : 0u);
+    } catch (...) {
+        return 0;
+    }
+}
+
+void JuicerCuda::CallScope::finish_recovery() noexcept {
+    _call.reset();
+}
+
+extern "C" uint32_t fj_cuda_call_retire_context(void* scope, const FjCallCompletionInput* input) {
+    if (!scope) {
+        return 0;
+    }
+    return static_cast<JuicerCuda::CallScope*>(scope)->retire_context(input);
+}
+
+extern "C" uint32_t fj_cuda_call_trace_flags(void) {
+    try {
+        return (JTRACE_ENABLED(1) ? FJ_FRAME_TRACE_INFO : 0u) |
+               (JTRACE_ENABLED(3) ? FJ_FRAME_TRACE_VERBOSE : 0u);
+    } catch (...) {
+        return 0;
+    }
+}
+
+extern "C" void fj_cuda_call_trace_cutoff(FjStringView text) {
+    try {
+#if JUICER_DIAGNOSTICS_COMPILED
+        const std::string_view message = text.data ? std::string_view(text.data, text.count) : std::string_view{};
+        JTRACE("SPEKTRAFILM", std::string(message));
+#else
+        (void)text;
+#endif
+    } catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
+}
+
+extern "C" void fj_cuda_call_trace_failure(FjStringView text) {
+    try {
+#if JUICER_DIAGNOSTICS_COMPILED
+        const std::string_view message = text.data ? std::string_view(text.data, text.count) : std::string_view{};
+        JTRACE("CUDA", std::string(message));
+#else
+        (void)text;
+#endif
+    } catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
+}

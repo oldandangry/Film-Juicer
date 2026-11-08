@@ -386,3 +386,156 @@ const _: extern "C" fn() -> *const c_void = fj_test_ofx_assets;
 const _: unsafe extern "C" fn(*const usize, usize) -> i32 = fj_test_ofx_platform_abi;
 const _: unsafe extern "C" fn(u32, crate::cuda::sys::FjPathView, *mut c_void, usize) -> usize =
     fj_test_ofx_path;
+
+// Render controls are thread-local and one-shot at the named actual consumer.
+thread_local! {
+    static RENDER_FAULT: Cell<u32> = const { Cell::new(0) };
+    static RENDER_TOKENS: Cell<Option<(u64, u64, u64)>> = const { Cell::new(None) };
+    static RENDER_OBSERVATION: Cell<RenderObservation> = const { Cell::new(RenderObservation::EMPTY) };
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct RenderObservation {
+    frame_time: f64,
+    frame_rate: f64,
+    frame_token: u64,
+    session_seed: u64,
+    instance_token: u64,
+    clip_token: u64,
+    native_entry_count: u64,
+    submission_id: u64,
+    input_identity: u64,
+    build_number: u64,
+    backing_identity: usize,
+    full_bounds: [i32; 4],
+    render_bounds: [i32; 4],
+    pixel_size_um: f32,
+    status: u32,
+    fatal: u32,
+}
+impl RenderObservation {
+    const EMPTY: Self = Self {
+        frame_time: 0.0,
+        frame_rate: 0.0,
+        frame_token: 0,
+        session_seed: 0,
+        instance_token: 0,
+        clip_token: 0,
+        native_entry_count: 0,
+        submission_id: 0,
+        input_identity: 0,
+        build_number: 0,
+        backing_identity: 0,
+        full_bounds: [0; 4],
+        render_bounds: [0; 4],
+        pixel_size_um: 0.0,
+        status: 0,
+        fatal: 0,
+    };
+}
+pub(in crate::ofx) fn render_fault(kind: u32) -> bool {
+    if RENDER_FAULT.get() == kind {
+        RENDER_FAULT.set(0);
+        true
+    } else {
+        false
+    }
+}
+pub(in crate::ofx) fn render_tokens() -> Option<(u64, u64, u64)> {
+    RENDER_TOKENS.get()
+}
+pub(in crate::ofx) fn begin_render() {
+    RENDER_OBSERVATION.set(RenderObservation::EMPTY);
+}
+pub(in crate::ofx) fn render_state(state: &film_juicer_core::state::Admission) {
+    RENDER_OBSERVATION.with(|cell| {
+        let mut value = cell.get();
+        value.input_identity = state.input_identity();
+        value.build_number = state.build();
+        value.backing_identity = std::sync::Arc::as_ptr(state.shared_state()) as usize;
+        cell.set(value);
+    });
+}
+pub(in crate::ofx) fn render_frame(
+    frame: &crate::cuda::sys::FjFrame,
+    token: u64,
+    instance: &crate::instance::Instance,
+) {
+    RENDER_OBSERVATION.with(|cell| {
+        let mut value = cell.get();
+        value.frame_time = frame.time_frames;
+        value.frame_rate = frame.frame_rate;
+        value.frame_token = token;
+        value.session_seed = frame.session_seed;
+        value.instance_token = instance
+            .identity()
+            .map_or(0, |identity| identity.instance_token);
+        value.clip_token = frame.clip_token;
+        value.native_entry_count += 1;
+        value.full_bounds = [
+            frame.full_frame_extent.x1,
+            frame.full_frame_extent.y1,
+            frame.full_frame_extent.x2,
+            frame.full_frame_extent.y2,
+        ];
+        value.render_bounds = [
+            frame.render_window.x1,
+            frame.render_window.y1,
+            frame.render_window.x2,
+            frame.render_window.y2,
+        ];
+        value.pixel_size_um = frame.pixel_size_um;
+        cell.set(value);
+    });
+}
+pub(in crate::ofx) fn render_complete(
+    status: u32,
+    fatal: bool,
+    instance: &crate::instance::Instance,
+) {
+    RENDER_OBSERVATION.with(|cell| {
+        let mut value = cell.get();
+        value.status = status;
+        value.fatal = u32::from(fatal);
+        value.submission_id = instance
+            .observe_submission()
+            .ok()
+            .flatten()
+            .map_or(0, |selection| selection.id);
+        cell.set(value);
+    });
+}
+#[cfg_attr(not(test), unsafe(no_mangle))]
+extern "C" fn fj_test_ofx_render_control(kind: u32) {
+    RENDER_FAULT.set(kind);
+}
+#[cfg_attr(not(test), unsafe(no_mangle))]
+extern "C" fn fj_test_ofx_render_tokens(session: u64, instance: u64, clip: u64) {
+    RENDER_TOKENS.set(if session == 0 && instance == 0 && clip == 0 {
+        None
+    } else {
+        Some((session, instance, clip))
+    });
+}
+/// # Safety
+/// Effect is live; output is a nonnull aligned writable observation. This read
+/// is synchronous on the same callback thread and retains no output pointer.
+#[cfg_attr(not(test), unsafe(no_mangle))]
+unsafe extern "C" fn fj_test_ofx_render_observe(
+    _effect: sys::OfxImageEffectHandle,
+    output: *mut RenderObservation,
+) -> i32 {
+    if output.is_null() {
+        return 0;
+    }
+    // SAFETY: The fixture supplies the stated live output slot.
+    unsafe {
+        output.write(RENDER_OBSERVATION.get());
+    }
+    1
+}
+
+const _: extern "C" fn(u32) = fj_test_ofx_render_control;
+const _: extern "C" fn(u64, u64, u64) = fj_test_ofx_render_tokens;
+const _: unsafe extern "C" fn(sys::OfxImageEffectHandle, *mut RenderObservation) -> i32 =
+    fj_test_ofx_render_observe;

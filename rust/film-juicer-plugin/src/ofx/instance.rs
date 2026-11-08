@@ -298,6 +298,13 @@ impl Owner {
     }
     pub(super) fn bind_address(&self, address: usize) -> Result<(), Status> {
         #[cfg(feature = "test-support")]
+        if let Some((seed, token, _)) = super::host::test_support::render_tokens() {
+            return self
+                .state
+                .bind_identity(seed, token)
+                .map_err(|_| Status::FATAL);
+        }
+        #[cfg(feature = "test-support")]
         let now = super::host::test_support::clock_token()
             .map(Some)
             .unwrap_or_else(crate::platform::clock_nanoseconds);
@@ -392,6 +399,47 @@ impl Owner {
             }
             refresh = capture.refresh.get();
         }
+        drop(capture);
+        if refresh {
+            self.refresh(callback)?;
+        }
+        Ok(())
+    }
+    pub(super) fn render_capture(
+        &self,
+        callback: &Callback<'_>,
+        initial: bool,
+    ) -> Result<(), Status> {
+        if !initial {
+            return self.refresh(callback);
+        }
+        let capture = Capture::new(self, CaptureMode::Initial, false)?;
+        if capture.ticket == 0 {
+            return Ok(());
+        }
+        let controls = Controls {
+            callback,
+            owner: self,
+            capture: Some(&capture),
+        };
+        let result = (|| {
+            controls::apply_dir_defaults(&controls)?;
+            self.finish(&controls, &capture)
+        })();
+        if let Err(status) = result {
+            let update = capture.fail(
+                if status.code() == super::sys::kOfxStatErrMemory {
+                    CaptureFailureKind::Allocation
+                } else {
+                    CaptureFailureKind::Host
+                },
+                "host parameter capture failed",
+            )?;
+            if update != Update::Ignored || capture.physical_write_failed.get() {
+                return Err(status);
+            }
+        }
+        let refresh = capture.refresh.get();
         drop(capture);
         if refresh {
             self.refresh(callback)?;

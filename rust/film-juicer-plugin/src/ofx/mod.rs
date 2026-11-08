@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use crate::runtime::Runtime;
 
 mod actions;
+mod default_actions;
+mod render;
 mod params;
 mod controls;
 mod instance;

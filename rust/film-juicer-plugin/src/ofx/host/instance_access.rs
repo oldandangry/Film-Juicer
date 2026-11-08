@@ -160,10 +160,10 @@ struct Parameter {
 }
 
 pub(crate) struct InstanceHandles {
-    properties: sys::OfxPropertySetHandle,
+    pub(in crate::ofx::host) properties: sys::OfxPropertySetHandle,
     parameters: Vec<Parameter>,
     // Retained source/output handles remain host-owned until terminal Destroy.
-    _clips: [sys::OfxImageClipHandle; 2],
+    pub(in crate::ofx::host) clips: [sys::OfxImageClipHandle; 2],
     _local: PhantomData<Rc<()>>,
 }
 
@@ -181,7 +181,7 @@ pub(crate) fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, Status> {
     Ok(owned)
 }
 
-fn terminated(bytes: &[u8]) -> Result<Vec<u8>, Status> {
+pub(super) fn terminated(bytes: &[u8]) -> Result<Vec<u8>, Status> {
     #[cfg(feature = "test-support")]
     if super::test_support::instance_fault(8) {
         return Err(Status::MEMORY);
@@ -402,7 +402,7 @@ impl Callback<'_> {
         Ok(properties)
     }
 
-    fn property_bytes(
+    pub(super) fn property_bytes(
         &self,
         properties: sys::OfxPropertySetHandle,
         name: &CStr,
@@ -524,7 +524,7 @@ impl Callback<'_> {
         Ok(InstanceHandles {
             properties,
             parameters: acquired,
-            _clips: clips,
+            clips,
             _local: PhantomData,
         })
     }
@@ -658,9 +658,17 @@ impl ParameterAccess<'_> {
         Ok([x, y, z])
     }
     pub(crate) fn string_bytes(&self, name: &CStr) -> Result<Vec<u8>, Status> {
+        self.read_string(name, None)
+    }
+    pub(crate) fn profile_key(&self, name: &CStr, default: &[u8]) -> Result<Vec<u8>, Status> {
+        self.read_string(name, Some(default))
+    }
+    fn read_string(&self, name: &CStr, default: Option<&[u8]>) -> Result<Vec<u8>, Status> {
         let parameter = self.typed(name, Kind::StringChoice)?;
         let mut value = std::ptr::null_mut::<std::ffi::c_char>();
-        // SAFETY: StrChoice current getter receives char**; no at-time call is used.
+        // SAFETY: StrChoice current getter receives char**; the callback retains
+        // the immutable typed handle. No lock/exclusive owner borrow spans this
+        // reentrant call. Parameter statuses use acquisition, not property mapping.
         Status::acquisition(unsafe {
             (self.callback.loaded.suites.parameter_get)(
                 parameter.handle,
@@ -674,8 +682,23 @@ impl ParameterAccess<'_> {
         if super::test_support::instance_fault(2) {
             return Err(Status::MEMORY);
         }
-        // SAFETY: The host promises terminated bytes until the next host call; copy immediately.
-        copy_bytes(unsafe { CStr::from_ptr(value) }.to_bytes())
+        // SAFETY: Host bytes are terminated and valid until the next host call.
+        // Select the established empty-key default and copy it at this same
+        // fallible allocation boundary, before the following parameter getter.
+        let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
+        let bytes = if bytes.is_empty() {
+            default.unwrap_or(bytes)
+        } else {
+            bytes
+        };
+        #[cfg(feature = "test-support")]
+        if default.is_some()
+            && ((name == c"FilmProfileKey" && super::test_support::render_fault(1))
+                || (name == c"PrintProfileKey" && super::test_support::render_fault(2)))
+        {
+            return Err(Status::MEMORY);
+        }
+        copy_bytes(bytes)
     }
     pub(crate) fn set_integer(&self, name: &CStr, value: i32) -> Result<(), Status> {
         let parameter = self.parameter(name)?;

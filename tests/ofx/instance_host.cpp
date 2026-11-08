@@ -38,9 +38,36 @@ namespace ofx_test {
             std::vector<InstanceValue> values;
         };
         struct Clip {
-            Clip(Impl* owner, std::string name) : bag(owner, std::move(name)) {}
+            Clip(Impl* owner, std::string name) : bag(owner, std::move(name)) {
+                bag.properties[kOfxImageEffectPropPixelDepth] = {std::string(kOfxBitDepthFloat)};
+                bag.properties[kOfxImageEffectPropSupportedComponents] = {std::string(kOfxImageComponentRGBA)};
+                bag.properties[kOfxImageEffectPropFrameRate] = {24.0};
+                image_properties[kOfxImagePropData] = {static_cast<void*>(nullptr)};
+                image_properties[kOfxImagePropBounds] = {0, 0, 0, 0};
+                image_properties[kOfxImagePropRowBytes] = {0};
+                image_properties[kOfxImageEffectPropPixelDepth] = {std::string(kOfxBitDepthFloat)};
+                image_properties[kOfxImageEffectPropComponents] = {std::string(kOfxImageComponentRGBA)};
+                image_properties[kOfxImageEffectPropPreMultiplication] = {std::string("OfxImageAlphaUnPremultiplied")};
+                image_properties[kOfxImagePropField] = {std::string(kOfxImageFieldNone)};
+                image_properties[kOfxImagePropUniqueIdentifier] = {std::string("instance-host-image")};
+                image_properties[kOfxImagePropRegionOfDefinition] = {0, 0, 0, 0};
+                image_properties[kOfxImageEffectPropRenderScale] = {1.0, 1.0};
+                image_properties[kOfxImagePropPixelAspectRatio] = {1.0};
+            }
             Clip(Clip&&) = delete;
             Bag bag;
+            OfxRectD region{0.0, 0.0, 0.0, 0.0};
+            OfxStatus image_status = kOfxStatOK;
+            OfxStatus release_status = kOfxStatOK;
+            bool image_available = true;
+            std::size_t releases = 0;
+            std::map<std::string, std::vector<InstanceValue>> image_properties;
+            struct Image {
+                Image(Impl* owner, std::string name) : bag(owner, std::move(name)) {}
+                Bag bag;
+                std::string clip_name;
+            };
+            std::vector<std::unique_ptr<Image>> images;
         };
         struct Effect {
             Effect(Impl* owner, const std::string& name) : bag(owner, name), param_set(owner, name + ".params") {}
@@ -57,7 +84,7 @@ namespace ofx_test {
         OfxMessageSuiteV1 message{};
         OfxMemorySuiteV1 memory{};
         OfxMultiThreadSuiteV1 threads{};
-        Bag host_bag{this, "host"}, context{this, "context"};
+        Bag host_bag{this, "host"}, context{this, "context"}, action{this, "action"}, output{this, "output"};
         std::vector<std::unique_ptr<Bag>> changes;
         Effect descriptor{this, "descriptor"};
         std::vector<std::unique_ptr<Effect>> effects;
@@ -73,6 +100,7 @@ namespace ofx_test {
         bool return_failed_string = false;
         bool reuse_string_storage = false;
         bool string_storage_used = false;
+        bool abort_requested = false;
         std::size_t string_reuses = 0;
         std::array<char, 4096> string_storage{};
 
@@ -472,6 +500,88 @@ namespace ofx_test {
             *out = reinterpret_cast<OfxPropertySetHandle>(&clip(h).bag);
             return kOfxStatOK;
         }
+        static OfxStatus clip_get_image(OfxImageClipHandle raw, OfxTime time, const OfxRectD* region, OfxPropertySetHandle* out) noexcept {
+            if (!raw || !out)
+                return kOfxStatErrBadHandle;
+            auto& c = clip(raw);
+            return guarded(*c.bag.owner, [&] {
+                std::vector<InstanceValue> values{time};
+                if (region)
+                    values.insert(values.end(), {region->x1, region->y1, region->x2, region->y2});
+                const auto injected = c.bag.owner->record({"clip_get_image", c.bag.name, {}, 0, values, c.bag.scope});
+                if (!accepted(injected)) {
+                    *out = nullptr;
+                    return injected;
+                }
+                if (!accepted(c.image_status) || !c.image_available) {
+                    *out = nullptr;
+                    c.bag.owner->trace.back().status = !c.image_available && accepted(c.image_status)
+                                                           ? kOfxStatFailed
+                                                           : c.image_status;
+                    return c.bag.owner->trace.back().status;
+                }
+                auto image = std::make_unique<Clip::Image>(c.bag.owner, c.bag.name + ".image." + std::to_string(c.images.size()));
+                image->clip_name = c.bag.name;
+                image->bag.scope = c.bag.scope;
+                image->bag.properties = c.image_properties;
+                auto* ptr = image.get();
+                c.images.push_back(std::move(image));
+                *out = reinterpret_cast<OfxPropertySetHandle>(&ptr->bag);
+                c.bag.owner->trace.back().status = c.image_status;
+                return c.image_status;
+            });
+        }
+        static OfxStatus clip_release_image(OfxPropertySetHandle raw) noexcept {
+            if (!raw)
+                return kOfxStatErrBadHandle;
+            auto& b = bag(raw);
+            return guarded(*b.owner, [&] {
+                const auto injected = b.owner->record({"clip_release_image", b.name, {}, 0, {}, b.scope});
+                auto separator = b.name.find(".image.");
+                if (separator != std::string::npos) {
+                    const auto clip_name = b.name.substr(0, separator);
+                    for (auto& e : b.owner->effects) {
+                        if (e->bag.name != b.scope)
+                            continue;
+                        auto found = e->clips.find(clip_name);
+                        if (found != e->clips.end()) {
+                            ++found->second->releases;
+                            if (injected == kOfxStatOK && found->second->release_status != kOfxStatOK) {
+                                b.owner->trace.back().status = found->second->release_status;
+                                return found->second->release_status;
+                            }
+                            break;
+                        }
+                    }
+                }
+                return injected;
+            });
+        }
+        static OfxStatus clip_region(OfxImageClipHandle raw, OfxTime time, OfxRectD* out) noexcept {
+            if (!raw || !out)
+                return kOfxStatErrBadHandle;
+            auto& c = clip(raw);
+            return guarded(*c.bag.owner, [&] {
+                auto status = c.bag.owner->record({"clip_get_region", c.bag.name, {}, 0, {time}, c.bag.scope});
+                if (!accepted(status))
+                    return status;
+                *out = c.region;
+                c.bag.owner->trace.back().values.insert(c.bag.owner->trace.back().values.end(), {out->x1, out->y1, out->x2, out->y2});
+                return status;
+            });
+        }
+        static int abort(OfxImageEffectHandle raw) noexcept {
+            if (!raw)
+                return 1;
+            auto& e = effect(raw);
+            try {
+                const auto status = e.bag.owner->record({"abort", e.bag.name, {}, 0, {e.bag.owner->abort_requested ? 1 : 0}, {}});
+                return accepted(status) ? static_cast<int>(e.bag.owner->abort_requested) : 1;
+            } catch (...) {
+                e.bag.owner->error = true;
+                return 1;
+            }
+        }
         static OfxStatus read_value(Param& p, va_list args, const char* operation) {
             auto status = p.bag.owner->record({operation, p.bag.name, {}, 0, p.values, {}}, p.bag.scope);
             if (!accepted(status))
@@ -635,6 +745,10 @@ namespace ofx_test {
             effect_suite.clipDefine = clip_define;
             effect_suite.clipGetHandle = clip_handle;
             effect_suite.clipGetPropertySet = clip_props;
+            effect_suite.clipGetImage = clip_get_image;
+            effect_suite.clipReleaseImage = clip_release_image;
+            effect_suite.clipGetRegionOfDefinition = clip_region;
+            effect_suite.abort = abort;
             param_suite.paramDefine = param_define;
             param_suite.paramSetGetPropertySet = param_set_props;
             param_suite.paramGetHandle = param_handle;
@@ -728,6 +842,12 @@ namespace ofx_test {
                     c->bag.properties = found->second->bag.properties;
                 c->bag.properties[kOfxPropType] = {std::string(kOfxTypeClip)};
                 c->bag.properties[kOfxPropName] = {std::string(name)};
+                if (!c->bag.properties.contains(kOfxImageEffectPropPixelDepth))
+                    c->bag.properties[kOfxImageEffectPropPixelDepth] = {std::string(kOfxBitDepthFloat)};
+                if (!c->bag.properties.contains(kOfxImageEffectPropSupportedComponents))
+                    c->bag.properties[kOfxImageEffectPropSupportedComponents] = {std::string(kOfxImageComponentRGBA)};
+                if (!c->bag.properties.contains(kOfxImageEffectPropFrameRate))
+                    c->bag.properties[kOfxImageEffectPropFrameRate] = {24.0};
                 e->clips.emplace(std::string(name), std::move(c));
             }
             auto* ptr = e.get();
@@ -747,6 +867,12 @@ namespace ofx_test {
     OfxPropertySetHandle InstanceHost::context_args() noexcept {
         return reinterpret_cast<OfxPropertySetHandle>(&impl_->context);
     }
+    OfxPropertySetHandle InstanceHost::action_args() noexcept {
+        return reinterpret_cast<OfxPropertySetHandle>(&impl_->action);
+    }
+    OfxPropertySetHandle InstanceHost::output_args() noexcept {
+        return reinterpret_cast<OfxPropertySetHandle>(&impl_->output);
+    }
     OfxImageEffectHandle InstanceHost::create_effect() {
         return reinterpret_cast<OfxImageEffectHandle>(&impl_->add_effect());
     }
@@ -762,11 +888,57 @@ namespace ofx_test {
         impl_->changes.push_back(std::move(args));
         return reinterpret_cast<OfxPropertySetHandle>(result);
     }
+    void InstanceHost::set_property(OfxPropertySetHandle handle, std::string_view key, std::vector<InstanceValue> values) {
+        if (!handle)
+            throw std::invalid_argument("property handle is null");
+        auto& properties = Impl::bag(handle).properties;
+        if (values.empty()) {
+            properties.erase(std::string(key));
+        } else {
+            properties[std::string(key)] = std::move(values);
+        }
+    }
+    std::vector<InstanceValue> InstanceHost::property(OfxPropertySetHandle handle, std::string_view key) const {
+        if (!handle)
+            throw std::invalid_argument("property handle is null");
+        const auto& properties = Impl::bag(handle).properties;
+        auto found = properties.find(std::string(key));
+        return found == properties.end() ? std::vector<InstanceValue>{} : found->second;
+    }
     void InstanceHost::set_value(OfxImageEffectHandle effect, std::string_view name, std::vector<InstanceValue> values) {
         Impl::effect(effect).params.at(std::string(name))->values = std::move(values);
     }
     std::vector<InstanceValue> InstanceHost::value(OfxImageEffectHandle effect, std::string_view name) const {
         return Impl::effect(effect).params.at(std::string(name))->values;
+    }
+    void InstanceHost::set_effect_property(OfxImageEffectHandle effect, std::string_view key, std::vector<InstanceValue> values) {
+        Impl::effect(effect).bag.properties[std::string(key)] = std::move(values);
+    }
+    void InstanceHost::set_clip_property(OfxImageEffectHandle effect, std::string_view clip_name, const char* key, std::vector<InstanceValue> values) {
+        auto& clip = *Impl::effect(effect).clips.at(std::string(clip_name));
+        clip.bag.properties[std::string(key)] = std::move(values);
+    }
+    void InstanceHost::set_image_property(OfxImageEffectHandle effect, std::string_view clip_name, const char* key, std::vector<InstanceValue> values) {
+        auto& clip = *Impl::effect(effect).clips.at(std::string(clip_name));
+        clip.image_properties[std::string(key)] = std::move(values);
+    }
+    void InstanceHost::set_clip_region(OfxImageEffectHandle effect, std::string_view clip_name, OfxRectD bounds) {
+        Impl::effect(effect).clips.at(std::string(clip_name))->region = bounds;
+    }
+    void InstanceHost::set_image_available(OfxImageEffectHandle effect, std::string_view clip_name, bool available) {
+        Impl::effect(effect).clips.at(std::string(clip_name))->image_available = available;
+    }
+    void InstanceHost::set_image_get_status(OfxImageEffectHandle effect, std::string_view clip_name, OfxStatus status) {
+        Impl::effect(effect).clips.at(std::string(clip_name))->image_status = status;
+    }
+    void InstanceHost::set_image_release_status(OfxImageEffectHandle effect, std::string_view clip_name, OfxStatus status) {
+        Impl::effect(effect).clips.at(std::string(clip_name))->release_status = status;
+    }
+    std::size_t InstanceHost::image_release_count(OfxImageEffectHandle effect, std::string_view clip_name) const {
+        return Impl::effect(effect).clips.at(std::string(clip_name))->releases;
+    }
+    void InstanceHost::set_abort(bool abort) noexcept {
+        impl_->abort_requested = abort;
     }
     void InstanceHost::clear_calls() {
         impl_->trace.clear();
