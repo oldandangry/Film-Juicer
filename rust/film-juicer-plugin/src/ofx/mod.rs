@@ -1,4 +1,4 @@
-//! Candidate module lifecycle; shipping discovery still selects the C++ adapter.
+//! Rust-owned OFX lifecycle and callbacks behind the native discovery facade.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};

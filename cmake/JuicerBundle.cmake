@@ -30,6 +30,32 @@ install(DIRECTORY third_party/ofxs/Legal/ DESTINATION "${JUICER_CONTENTS}/Legal/
 install(FILES third_party/ofxs/PROVENANCE.json DESTINATION "${JUICER_CONTENTS}/Legal/ofxs")
 install(FILES third_party/nlohmann/LICENSE.MIT third_party/nlohmann/PROVENANCE.md
     DESTINATION "${JUICER_CONTENTS}/Legal/nlohmann")
+install(FILES third_party/rust/PROVENANCE.md DESTINATION "${JUICER_CONTENTS}/Legal/rust")
+install(FILES third_party/rust/itoa-1.0.18/LICENSE-MIT third_party/rust/itoa-1.0.18/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/itoa-1.0.18")
+install(FILES third_party/rust/libm-0.2.15/LICENSE.txt
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/libm-0.2.15")
+install(FILES third_party/rust/memchr-2.8.3/COPYING third_party/rust/memchr-2.8.3/LICENSE-MIT
+    third_party/rust/memchr-2.8.3/UNLICENSE DESTINATION "${JUICER_CONTENTS}/Legal/rust/memchr-2.8.3")
+install(FILES third_party/rust/proc-macro2-1.0.107/LICENSE-MIT third_party/rust/proc-macro2-1.0.107/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/proc-macro2-1.0.107")
+install(FILES third_party/rust/quote-1.0.47/LICENSE-MIT third_party/rust/quote-1.0.47/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/quote-1.0.47")
+install(FILES third_party/rust/serde-1.0.229/LICENSE-MIT third_party/rust/serde-1.0.229/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/serde-1.0.229")
+install(FILES third_party/rust/serde_core-1.0.229/LICENSE-MIT third_party/rust/serde_core-1.0.229/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/serde_core-1.0.229")
+install(FILES third_party/rust/serde_derive-1.0.229/LICENSE-MIT third_party/rust/serde_derive-1.0.229/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/serde_derive-1.0.229")
+install(FILES third_party/rust/serde_json-1.0.151/LICENSE-MIT third_party/rust/serde_json-1.0.151/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/serde_json-1.0.151")
+install(FILES third_party/rust/syn-3.0.6/LICENSE-MIT third_party/rust/syn-3.0.6/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/syn-3.0.6")
+install(FILES third_party/rust/unicode-ident-1.0.26/LICENSE-MIT third_party/rust/unicode-ident-1.0.26/LICENSE-APACHE
+    third_party/rust/unicode-ident-1.0.26/LICENSE-UNICODE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/unicode-ident-1.0.26")
+install(FILES third_party/rust/zmij-1.0.23/LICENSE-MIT
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/zmij-1.0.23")
 # Toolkit package layouts differ. Require the redistributable's license rather
 # than silently producing a bundle without CUDA's redistribution terms.
 find_file(JUICER_CUDA_LICENSE NAMES LICENSE EULA.txt copyright

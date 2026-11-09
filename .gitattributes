@@ -72,6 +72,8 @@ tests/ffi/fixtures/color/*.json -text whitespace=cr-at-eol
 
 # Preserve whitespace in byte-identifiable vendored dependency snapshots.
 third_party/nlohmann/LICENSE.MIT -whitespace
+# Retain complete upstream Rust notice bytes across native Git transports.
+third_party/rust/*/* -text -whitespace
 third_party/ofxs/Legal/OFXS-LICENSE.txt -whitespace
 third_party/ofxs/OpenFX-1.4/include/ofxImageEffect.h -whitespace
 third_party/ofxs/Support/LICENSE -whitespace
