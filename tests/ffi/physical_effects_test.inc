@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace {
     FjPhysicalEffectsParams effects_params(const Json& controls) {
         const auto& amounts = controls.at("amounts");
@@ -260,7 +261,7 @@ namespace {
     void effects_values(const Json& captured) {
         require(captured.at("cases").size() == 220, "exact effects literal membership");
         for (bool facade : {false, true}) {
-            const auto call = facade ? fj_test_physical_effects_prepare : fj_legacy_physical_effects_prepare;
+            const auto call = fj_test_physical_effects_prepare;
             for (const auto& row : captured.at("cases")) {
                 JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "effects/" + row.at("id").get<std::string>());
                 const auto params = effects_params(row.at("controls"));
@@ -288,9 +289,8 @@ namespace {
         }
         JuicerTests::Cohort diagnostic_capacities("physical_effects.diagnostic_capacity", capacity_ids);
         JuicerTests::Cohort recipe_faults("physical_effects.fault_tuple", fault_ids);
-        unsigned caller_index = 0;
-        for (bool facade : {false, true}) {
-            const auto call = facade ? fj_test_physical_effects_prepare : fj_legacy_physical_effects_prepare;
+        for (unsigned caller_index = 0; caller_index < 2; ++caller_index) {
+            const auto call = fj_test_physical_effects_prepare;
             auto out = effects_sentinel();
             FjFilmRecipeFailure failure{};
             const auto rejected = [&](const FjPhysicalEffectsParams* params, FjStatus expected, std::uint32_t reason, FjErrorBuffer* error = nullptr) {
@@ -367,7 +367,6 @@ namespace {
             status(fj_test_film_recipe_fault(8, 4));
             status(fj_test_film_recipe_fault(8, 0));
             status(call(&base, &out, &failure, nullptr));
-            ++caller_index;
         }
         std::atomic<bool> complete{true};
         std::array<std::thread, 4> threads;
@@ -391,51 +390,51 @@ namespace {
         event.passed();
     }
     void effects_products(const std::filesystem::path& resources, const Json& captured) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         require(captured.at("products").size() == 92, "exact physical effects product membership");
         for (const auto& row : captured.at("products")) {
             JuicerTests::CaseEvent event("cpp", "effects/product/" + row.at("key").get<std::string>() + "/" + std::to_string(row.at("route").get<unsigned>()) + "/" + row.at("id").get<std::string>());
             const auto controls = effects_params(row.at("controls"));
-            ParamSnapshot params;
-            params.filmProfileKey = row.at("key");
-            params.printProfileKey = "kodak_portra_endura";
-            params.scanRoute = static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>());
-            params.spectralUpsamplingMode = 0;
-            params.cameraAutoExposureEnabled = 0;
-            params.inputCompressionEnabled = 0;
-            params.outputGamutCompressionEnabled = 0;
-            params.filmDustAmount = controls.film_dust_amount;
-            params.filmScratchAmount = controls.film_scratch_amount;
-            params.gateDustAmount = controls.gate_dust_amount;
-            params.gateScratchAmount = controls.gate_scratch_amount;
-            params.gateWeaveAmount = controls.gate_weave_amount;
-            params.grainControls.active = controls.grain_active != 0;
-            params.grainControls.debugView = controls.grain_debug_view;
+            JuicerTestSupport::PreparationInput params;
+            params.film_key = row.at("key");
+            params.print_key = "kodak_portra_endura";
+            params.values.scan_route = static_cast<std::uint32_t>(row.at("route").get<unsigned>());
+            params.values.spectral_upsampling_mode = 0;
+            params.values.camera_auto_exposure_enabled = 0;
+            params.values.input_compression_enabled = 0;
+            params.values.output_gamut_compression_enabled = 0;
+            params.values.film_dust_amount = controls.film_dust_amount;
+            params.values.film_scratch_amount = controls.film_scratch_amount;
+            params.values.gate_dust_amount = controls.gate_dust_amount;
+            params.values.gate_scratch_amount = controls.gate_scratch_amount;
+            params.values.gate_weave_amount = controls.gate_weave_amount;
+            params.values.grain.active = controls.grain_active != 0;
+            params.values.grain.debug_view = controls.grain_debug_view;
             auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
-            require(effects_projection(view.effects) == row.at("recipe") && view.recipe_hash == row.at("final_hash") && hash_params(params) == row.at("snapshot_hash") && view.grain.hash == row.at("grain_hash") && view.film_development.hash == row.at("development_hash"), "all four routes preserve complete effects, final identity and preceding products");
+            require(effects_projection(view.effects) == row.at("recipe") && view.recipe_hash == row.at("final_hash") && JuicerTestSupport::hash_input_identity(params) == row.at("snapshot_hash") && view.grain.hash == row.at("grain_hash") && view.film_development.hash == row.at("development_hash"), "all four routes preserve complete effects, final identity and preceding products");
             event.passed();
         }
         for (unsigned route = 0; route < 4; ++route) {
             JuicerTests::CaseEvent event("cpp", "effects/publication/" + std::to_string(route));
-            ParamSnapshot params;
-            params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-            params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            params.printProfileKey = "kodak_portra_endura";
-            params.spectralUpsamplingMode = 0;
-            params.cameraAutoExposureEnabled = 0;
-            params.inputCompressionEnabled = 0;
-            params.outputGamutCompressionEnabled = 0;
-            params.grainControls.active = false;
-            params.filmDustAmount = 1;
-            params.filmScratchAmount = 2;
-            params.gateDustAmount = 3;
-            params.gateScratchAmount = 4;
-            params.gateWeaveAmount = 0.1;
-            RenderInstance state;
+            JuicerTestSupport::PreparationInput params;
+            params.values.scan_route = static_cast<std::uint32_t>(route);
+            params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            params.print_key = "kodak_portra_endura";
+            params.values.spectral_upsampling_mode = 0;
+            params.values.camera_auto_exposure_enabled = 0;
+            params.values.input_compression_enabled = 0;
+            params.values.output_gamut_compression_enabled = 0;
+            params.values.grain.active = false;
+            params.values.film_dust_amount = 1;
+            params.values.film_scratch_amount = 2;
+            params.values.gate_dust_amount = 3;
+            params.values.gate_scratch_amount = 4;
+            params.values.gate_weave_amount = 0.1;
+            JuicerTestSupport::InstanceFixture state;
             JuicerTestSupport::capture(state, params);
             const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(admitted.kind == FJ_ADMISSION_READY && admitted.state, "effects publication baseline");
@@ -443,7 +442,7 @@ namespace {
             const auto hash = held.recipe_hash;
             const auto baselineMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
             auto changed = params;
-            changed.gateWeaveAmount = 0.2;
+            changed.values.gate_weave_amount = 0.2;
             JuicerTestSupport::capture(state, changed);
             status(fj_test_prepared_effects_probability_fault());
             const auto rejected = JuicerTestSupport::admit(owner.borrow().assets, state);
@@ -466,9 +465,9 @@ namespace {
                         JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
                     "unchanged recovered effects reuses publication");
             auto invalidGrain = params;
-            invalidGrain.grainControls.active = true;
-            invalidGrain.grainControls.debugView = 3;
-            invalidGrain.grainControls.particleAreaUm2 = 0;
+            invalidGrain.values.grain.active = true;
+            invalidGrain.values.grain.debug_view = 3;
+            invalidGrain.values.grain.particle_area_um2 = 0;
             JuicerTestSupport::capture(state, invalidGrain);
             status(fj_test_prepared_effects_probability_fault());
             const auto preceding = JuicerTestSupport::admit(owner.borrow().assets, state);
@@ -476,8 +475,8 @@ namespace {
                         preceding.diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain",
                     "required grain failure precedes effects suppression or injected guard");
             auto badDir = params;
-            badDir.dirCouplers.active = true;
-            badDir.dirCouplers.amount = -1;
+            badDir.values.dir_couplers.active = true;
+            badDir.values.dir_couplers.amount = -1;
             JuicerTestSupport::capture(state, badDir);
             const auto blockedDir = JuicerTestSupport::admit(owner.borrow().assets, state);
             const auto finalMetrics = JuicerTestSupport::PublicationObserver::metrics(state);

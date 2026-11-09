@@ -98,7 +98,7 @@ namespace JuicerCudaTest {
                 const bool retired = !retiredCuda || fj_cuda_retire_instance(retiredCuda, token, &ignored).category == FJ_STATUS_SUCCESS;
                 FjInstance* released = instance;
                 instance = nullptr;
-                const bool destroyed = !released || fj_legacy_instance_destroy(released, &ignored).category == FJ_STATUS_SUCCESS;
+                const bool destroyed = !released || fj_test_instance_destroy(released, &ignored).category == FJ_STATUS_SUCCESS;
                 return retired && destroyed;
             }
 
@@ -107,7 +107,7 @@ namespace JuicerCudaTest {
             }
         };
 
-        bool render_held_state(const FjAssets* assets, FjCuda* cuda, const PreparedState& owner, const FjPreparedStateView& state, const FjFrame& frame, const FjSubmission& expected, std::uint64_t expectedRecipeHash, FjErrorBuffer& error, std::string& diagnostic) {
+        bool render_held_state(const FjAssets* assets, FjCuda* cuda, const JuicerTestSupport::PreparedStateHold& owner, const FjPreparedStateView& state, const FjFrame& frame, const FjSubmission& expected, std::uint64_t expectedRecipeHash, FjErrorBuffer& error, std::string& diagnostic) {
             const auto frameFloor = std::floor(frame.time_frames);
             const auto stateDigests = JuicerCuda::ResourceManager::make_key_digests(
                 state.upload_core_hash, state.dir_recipe.hash, state.scanner_hash, expected.auto_exposure_hash);
@@ -155,8 +155,8 @@ namespace JuicerCudaTest {
             },
                                         &completion);
             SubmissionOwner submissionOwner;
-            if (fj_legacy_instance_create(&submissionOwner.instance, &error).category != FJ_STATUS_SUCCESS || !submissionOwner.instance ||
-                fj_legacy_instance_bind_identity(submissionOwner.instance, frame.session_seed, expected.instance_token, &error).category != FJ_STATUS_SUCCESS) {
+            if (fj_test_instance_create(&submissionOwner.instance, &error).category != FJ_STATUS_SUCCESS || !submissionOwner.instance ||
+                fj_test_instance_bind_identity(submissionOwner.instance, frame.session_seed, expected.instance_token, &error).category != FJ_STATUS_SUCCESS) {
                 diagnostic = "held-state submission owner initialization failed";
                 return false;
             }
@@ -188,7 +188,7 @@ namespace JuicerCudaTest {
         }
     } // namespace
 
-    bool execute_prepared_state(FjRuntimeView runtime, const ParamSnapshot& params, const FjFrame& frame, std::uint64_t instanceToken, bool contract, bool lifetime, std::string& diagnostic, StateLifetimeCase lifetimeCase) {
+    bool execute_prepared_state(FjRuntimeView runtime, const JuicerTestSupport::PreparationInput& params, const FjFrame& frame, std::uint64_t instanceToken, bool contract, bool lifetime, std::string& diagnostic, StateLifetimeCase lifetimeCase) {
         if (!runtime.assets || !runtime.cuda) {
             diagnostic = "prepared-state fixture requires a live Runtime view";
             return false;
@@ -251,7 +251,7 @@ namespace JuicerCudaTest {
 
     bool execute_boundary(
         FjRuntimeView runtime,
-        const PreparedState& owner,
+        const JuicerTestSupport::PreparedStateHold& owner,
         const FjFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         std::string& diagnostic,
@@ -289,7 +289,7 @@ namespace JuicerCudaTest {
         facts.sessionSeed = frame.session_seed;
         facts.clipToken = frame.clip_token;
         struct Invocation {
-            const PreparedState& owner;
+            const JuicerTestSupport::PreparedStateHold& owner;
             FjRuntimeView runtime;
             const FjFrame& frame;
             JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;

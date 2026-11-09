@@ -16,10 +16,8 @@
 
 #include <gtest/gtest.h>
 
-#include "ProcessRuntime.h"
 #include "gtest_cases.h"
 #include "Cuda/JuicerCudaExecutor.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
@@ -51,25 +49,25 @@ namespace {
         JuicerTestSupport::copy_direct_preparation_assets(resources, root);
         return root;
     }
-    void expect_no_cuda(const JuicerProcess::ProcessRuntime& runtime) {
+    void expect_no_cuda(const JuicerTestSupport::RuntimeFixture& runtime) {
         EXPECT_TRUE(JuicerProcess::TestSupport::RootLifetimeObserver::has_no_cuda(
             JuicerCuda::borrow_root(runtime.borrow().cuda)));
     }
-    ParamSnapshot controls(unsigned method) {
-        ParamSnapshot snapshot;
-        snapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        snapshot.spectralUpsamplingMode = static_cast<int>(method);
-        snapshot.dirCouplers.active = false;
-        snapshot.outputGamutCompressionEnabled = 0;
-        snapshot.inputCompressionEnabled = 0;
-        snapshot.hanatos2025AdaptationWindow = 0;
-        snapshot.hanatos2025AdaptationSurface = 0;
+    JuicerTestSupport::PreparationInput controls(unsigned method) {
+        JuicerTestSupport::PreparationInput snapshot;
+        snapshot.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativeDirectScan);
+        snapshot.values.spectral_upsampling_mode = static_cast<int>(method);
+        snapshot.values.dir_couplers.active = false;
+        snapshot.values.output_gamut_compression_enabled = 0;
+        snapshot.values.input_compression_enabled = 0;
+        snapshot.values.hanatos2025_adaptation_window = 0;
+        snapshot.values.hanatos2025_adaptation_surface = 0;
         return snapshot;
     }
 
     TEST(SpectralBootstrap, ColdOrderWarmReuseAndNativeLifetime) {
         const auto root = source_root("warm-reuse");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
         const auto* assets = owner.borrow().assets;
@@ -115,7 +113,7 @@ namespace {
             EXPECT_EQ(arctic.view().asset_hash, UINT64_C(0x9262ffb765e3289e));
             // Removing these source inputs is the existing cache-lifetime stimulus.
             fs::remove_all(root);
-            EXPECT_EQ(fj_legacy_assets_release_cached_payloads(owner.borrow().assets, nullptr).category, FJ_STATUS_SUCCESS);
+            EXPECT_EQ(fj_test_assets_release_cached_payloads(owner.borrow().assets, nullptr).category, FJ_STATUS_SUCCESS);
             for (unsigned i = 0; i < 8; ++i) {
                 const JuicerTestSupport::CmfSource warmCmf(assets);
                 const JuicerTestSupport::HanatosSource warmHanatos(assets);
@@ -145,7 +143,7 @@ namespace {
             auto cmf_failures_case = cmf_failures_cases.case_event(std::to_string(cmf_failures_index++));
             SCOPED_TRACE(failure);
             {
-                JuicerProcess::ProcessRuntime first;
+                JuicerTestSupport::RuntimeFixture first;
                 first.create(resources);
                 const JuicerTestSupport::CmfSource previousCmf(first.borrow().assets);
                 ASSERT_EQ(previousCmf.x().count, 81u);
@@ -164,15 +162,15 @@ namespace {
                 std::ofstream file(root / "cie1931_2deg.csv", std::ios::trunc);
                 file << "380,nan,1,2\n";
             }
-            JuicerProcess::ProcessRuntime second;
+            JuicerTestSupport::RuntimeFixture second;
             second.create(root);
             EXPECT_EQ(fj_test_spectral_live_owners(), 0u);
 
-            std::optional<PreparedState> product;
+            std::optional<JuicerTestSupport::PreparedStateHold> product;
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
             const auto* assets = second.borrow().assets;
-            const auto result = prepare_state(assets, controls(1), product, error);
+            const auto result = JuicerTestSupport::prepare_state(assets, controls(1), product, error);
             const bool rustSourceSucceeds = std::strcmp(failure, "axis") == 0;
             if (rustSourceSucceeds) {
                 ASSERT_EQ(result.category, FJ_STATUS_SUCCESS);
@@ -213,7 +211,7 @@ namespace {
             SCOPED_TRACE(missing);
             const auto root = consumer_root(std::string("missing-") + missing);
             fs::remove(SpectralFixture::source_path(root, missing));
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create(root);
             const unsigned absent = missing == SpectralFixture::kHanatos ? 0u : (missing == SpectralFixture::kArctic ? 2u : 1u);
             for (unsigned method : {0u, 1u, 2u}) {
@@ -229,10 +227,10 @@ namespace {
                     EXPECT_EQ(viewed.category, FJ_STATUS_SUCCESS);
                     success = viewed.category == FJ_STATUS_SUCCESS;
                 } else {
-                    std::optional<PreparedState> state;
+                    std::optional<JuicerTestSupport::PreparedStateHold> state;
                     std::array<char, 2048> errorText{};
                     FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-                    const auto result = prepare_state(owner.borrow().assets, controls(method), state, error);
+                    const auto result = JuicerTestSupport::prepare_state(owner.borrow().assets, controls(method), state, error);
                     success = result.category == FJ_STATUS_SUCCESS;
                     diagnostic.assign(errorText.data(), error.length);
                 }
@@ -250,7 +248,7 @@ namespace {
     TEST(SpectralBootstrap, NonfiniteHanatosReachesSelectedComputation) {
         const auto root = consumer_root("nonfinite-hanatos");
         SpectralFixture::write_npy(root, SpectralFixture::kHanatos, {.elementBytes = 4, .sampleCount = SpectralFixture::kLutCount}, {0x7fc12345u});
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const FjAssets* assets = owner.borrow().assets;
         const JuicerTestSupport::HanatosSource source(assets);
@@ -286,10 +284,10 @@ namespace {
         EXPECT_EQ(result.samples.count, 0u);
         EXPECT_EQ(result.capacity, 0u);
         EXPECT_EQ(fj_test_reconstruction_release_tc_lut(&result).category, FJ_STATUS_SUCCESS);
-        std::optional<PreparedState> product;
+        std::optional<JuicerTestSupport::PreparedStateHold> product;
         std::array<char, 2048> errorText{};
         FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-        const auto preparedStatus = prepare_state(assets, controls(0), product, error);
+        const auto preparedStatus = JuicerTestSupport::prepare_state(assets, controls(0), product, error);
         diagnostic.assign(errorText.data(), error.length);
         EXPECT_NE(preparedStatus.category, FJ_STATUS_SUCCESS);
         EXPECT_FALSE(product);
@@ -315,7 +313,7 @@ namespace {
             SpectralFixture::write_npy(root, SpectralFixture::kHanatos, {.elementBytes = width, .sampleCount = SpectralFixture::kLutCount}, bits);
             SpectralFixture::write_npy(root, SpectralFixture::kArctic, {.elementBytes = width, .sampleCount = SpectralFixture::kLutCount}, bits);
             SpectralFixture::write_npy(root, SpectralFixture::kMallett, {.elementBytes = width, .sampleCount = 243, .shape = "81,3"}, bits);
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create(root);
             const FjAssets* assets = owner.borrow().assets;
             const JuicerTestSupport::HanatosSource hanatos(assets);
@@ -387,17 +385,17 @@ namespace {
             } else {
                 SpectralFixture::write_npy(root, SpectralFixture::kArctic, {.elementBytes = 4, .sampleCount = SpectralFixture::kLutCount}, {0x42c80000u, 0xc2480000u});
             }
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create(root);
             const FjAssets* assets = owner.borrow().assets;
             const JuicerTestSupport::HanatosSource hanatos(assets);
             const JuicerTestSupport::ArcticSource arctic(assets);
             if (overflow) {
                 EXPECT_TRUE(std::isinf(hanatos.view().samples.data[0]));
-                std::optional<PreparedState> product;
+                std::optional<JuicerTestSupport::PreparedStateHold> product;
                 std::array<char, 2048> errorText{};
                 FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-                const auto result = prepare_state(owner.borrow().assets, controls(0), product, error);
+                const auto result = JuicerTestSupport::prepare_state(owner.borrow().assets, controls(0), product, error);
                 const std::string diagnostic(errorText.data(), error.length);
                 EXPECT_NE(result.category, FJ_STATUS_SUCCESS);
                 EXPECT_FALSE(product);
@@ -448,41 +446,41 @@ namespace {
                 file.seekp(static_cast<std::streamoff>(offset));
                 file.write(failure == 4 ? ">f4" : "True ", failure == 4 ? 3 : 5);
             }
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create(root);
             const FjAssets* assets = owner.borrow().assets;
             if (failure == 0) {
                 FjMallettBasis* rejected = nullptr;
-                const auto result = fj_legacy_mallett_acquire(assets, &rejected, nullptr);
+                const auto result = fj_test_mallett_acquire(assets, &rejected, nullptr);
                 EXPECT_EQ(result.category, FJ_STATUS_PREPARATION_FAILURE);
                 EXPECT_EQ(result.api, FJ_API_NONE);
                 EXPECT_EQ(result.native_code, 0);
                 EXPECT_EQ(rejected, nullptr);
-                EXPECT_EQ(fj_legacy_mallett_release(rejected, nullptr).category, FJ_STATUS_SUCCESS);
+                EXPECT_EQ(fj_test_mallett_release(rejected, nullptr).category, FJ_STATUS_SUCCESS);
                 const JuicerTestSupport::HanatosSource hanatos(assets);
                 const JuicerTestSupport::ArcticSource arctic(assets);
                 EXPECT_NE(hanatos.view().asset_hash, 0u);
                 EXPECT_NE(arctic.view().asset_hash, 0u);
             } else if (failure == 1) {
                 FjSpectraLut* rejected = nullptr;
-                const auto result = fj_legacy_hanatos_acquire(assets, &rejected, nullptr);
+                const auto result = fj_test_hanatos_acquire(assets, &rejected, nullptr);
                 EXPECT_EQ(result.category, FJ_STATUS_PREPARATION_FAILURE);
                 EXPECT_EQ(result.api, FJ_API_NONE);
                 EXPECT_EQ(result.native_code, 0);
                 EXPECT_EQ(rejected, nullptr);
-                EXPECT_EQ(fj_legacy_spectra_lut_release(rejected, nullptr).category, FJ_STATUS_SUCCESS);
+                EXPECT_EQ(fj_test_spectra_lut_release(rejected, nullptr).category, FJ_STATUS_SUCCESS);
                 const JuicerTestSupport::ArcticSource arctic(assets);
                 const JuicerTestSupport::MallettSource basis(assets);
                 EXPECT_NE(arctic.view().asset_hash, 0u);
                 EXPECT_EQ(basis.samples().count, 243u);
             } else {
                 FjSpectraLut* rejected = nullptr;
-                const auto result = fj_legacy_arctic_acquire(assets, &rejected, nullptr);
+                const auto result = fj_test_arctic_acquire(assets, &rejected, nullptr);
                 EXPECT_EQ(result.category, FJ_STATUS_PREPARATION_FAILURE);
                 EXPECT_EQ(result.api, FJ_API_NONE);
                 EXPECT_EQ(result.native_code, 0);
                 EXPECT_EQ(rejected, nullptr);
-                EXPECT_EQ(fj_legacy_spectra_lut_release(rejected, nullptr).category, FJ_STATUS_SUCCESS);
+                EXPECT_EQ(fj_test_spectra_lut_release(rejected, nullptr).category, FJ_STATUS_SUCCESS);
                 const JuicerTestSupport::HanatosSource hanatos(assets);
                 const JuicerTestSupport::MallettSource basis(assets);
                 EXPECT_NE(hanatos.view().asset_hash, 0u);
@@ -501,7 +499,7 @@ namespace {
 #else
         const auto root = source_root(fs::temp_directory_path() / fs::path(std::string("juicer-spectral-byte-") + static_cast<char>(0xff)));
 #endif
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         {
             const FjAssets* assets = owner.borrow().assets;

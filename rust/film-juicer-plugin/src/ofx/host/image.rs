@@ -307,7 +307,16 @@ unsafe extern "C" fn query_abort(user: *mut c_void) -> u32 {
             panic!("OFX abort panic");
         }
         // SAFETY: The effect and original suite are retained by the callback.
-        if unsafe { (access.callback.loaded.suites.abort)(access.callback.effect) } != 0 {
+        let requested = unsafe { (access.callback.loaded.suites.abort)(access.callback.effect) };
+        #[cfg(feature = "test-support")]
+        if super::test_support::render_fault(7) {
+            // The fixture's C callback contained a foreign delivery exception.
+            // Relay failure after that real invocation without unwinding across
+            // C or applying the separate Rust-panic terminal-module policy.
+            access.failed.set(true);
+            return 2;
+        }
+        if requested != 0 {
             cuda::sys::FJ_ABORT_REQUESTED
         } else {
             cuda::sys::FJ_ABORT_CONTINUE

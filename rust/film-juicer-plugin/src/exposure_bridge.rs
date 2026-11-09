@@ -7,7 +7,7 @@ use film_juicer_core::{exposure, reconstruction};
 
 use crate::asset_bridge::Failure;
 use crate::asset_illuminant;
-use crate::legacy_bridge::FjInputColorConversion;
+use crate::color_values::FjInputColorConversion;
 use crate::cuda::sys::{FjErrorBuffer, FjFloatSpan, FjStatus};
 #[cfg(feature = "test-support")]
 use crate::cuda::sys::{FJ_API_NONE, FJ_STATUS_SUCCESS, FJ_STATUS_UNSUPPORTED_INPUT};
@@ -384,11 +384,14 @@ pub(crate) unsafe fn sensitivity_call(
     }
 }
 
-// FJ_TEMP_BRIDGE: synchronous native reference preparation; remove S4.E.
 /// # Safety
-/// Required input/tensor/output/error storage obeys the legacy header contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_reconstruction_reference_white(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_reconstruction_reference_white(
     input: *const FjReferenceWhiteInput,
     out: *mut FjReferenceWhite,
     error: *mut FjErrorBuffer,
@@ -396,11 +399,15 @@ pub(crate) unsafe extern "C" fn fj_legacy_reconstruction_reference_white(
     // SAFETY: Caller retains immutable input and exclusive disjoint writable outputs.
     unsafe { reference_call(input, out, error, || inject(1)) }
 }
-// FJ_TEMP_BRIDGE: synchronous native sensitivity binding; remove S4.E.
+
 /// # Safety
-/// Required initialized spans/result/failure/error obey the synchronous contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_exposure_sensitivity(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_exposure_sensitivity(
     input: *const FjSensitivityInput,
     out: *mut FjSensitivity,
     failure: *mut FjSensitivityFailure,
@@ -558,11 +565,14 @@ pub(crate) unsafe fn mallett_reference_call(
     }
 }
 
-// FJ_TEMP_BRIDGE: focused Mallett mid-gray binding; remove S4.E.
 /// # Safety
-/// Required initialized input/spans and exclusive disjoint output/error obey the header.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_exposure_mallett_midgray(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_exposure_mallett_midgray(
     input: *const FjMallettMidgrayInput,
     out: *mut FjMallettMidgray,
     error: *mut FjErrorBuffer,
@@ -570,11 +580,15 @@ pub(crate) unsafe extern "C" fn fj_legacy_exposure_mallett_midgray(
     // SAFETY: Caller retains scoped inputs and disjoint writable outputs.
     unsafe { mallett_midgray_call(input, out, error, || Ok(())) }
 }
-// FJ_TEMP_BRIDGE: TC green normalization binding; remove S4.E.
+
 /// # Safety
-/// Required initialized output/error records obey the synchronous header contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_exposure_tc_midgray(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_exposure_tc_midgray(
     green: f32,
     out: *mut FjMidgrayNormalization,
     error: *mut FjErrorBuffer,
@@ -582,11 +596,15 @@ pub(crate) unsafe extern "C" fn fj_legacy_exposure_tc_midgray(
     // SAFETY: Caller authorizes the complete exclusive output/error storage.
     unsafe { tc_midgray_call(green, out, error, || Ok(())) }
 }
-// FJ_TEMP_BRIDGE: shared synthetic reference source binding; remove S4.E.
+
 /// # Safety
-/// Required scalar/error storage obeys the synchronous header contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_exposure_reference_source(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_exposure_reference_source(
     exposure_ev: f32,
     out: *mut f32,
     error: *mut FjErrorBuffer,
@@ -594,11 +612,15 @@ pub(crate) unsafe extern "C" fn fj_legacy_exposure_reference_source(
     // SAFETY: Caller authorizes the complete exclusive output/error storage.
     unsafe { reference_source_call(exposure_ev, out, error, || inject(5)) }
 }
-// FJ_TEMP_BRIDGE: synthetic Mallett reference reduction binding; remove S4.E.
+
 /// # Safety
-/// Required initialized input/spans and exclusive disjoint output/error obey the header.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_exposure_mallett_reference_raw(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_exposure_mallett_reference_raw(
     input: *const FjMallettReferenceInput,
     out: *mut FjReferenceRaw,
     error: *mut FjErrorBuffer,

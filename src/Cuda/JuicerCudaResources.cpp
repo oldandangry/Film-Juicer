@@ -12,7 +12,7 @@
 #include "SpectralData.h"
 #include "GamutCompression.h"
 #include "Scanner.h"
-#include "RustDirBoundaryBridge.h"
+#include "JuicerDirBoundary.h"
 #include "juicer_cuda_call_scope.h"
 #include "juicer_host_preparation.h"
 

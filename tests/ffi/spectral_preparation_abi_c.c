@@ -1,5 +1,5 @@
+#include "juicer_test_api.h"
 #include <stddef.h>
-#include "juicer_legacy_api.h"
 
 _Static_assert(sizeof(FjSpectralObserver) == 48 && _Alignof(FjSpectralObserver) == 8, "observer layout");
 _Static_assert(offsetof(FjSpectralObserver, x) == 0 && offsetof(FjSpectralObserver, y) == 16 && offsetof(FjSpectralObserver, z) == 32, "observer offsets");
@@ -15,8 +15,8 @@ _Static_assert(sizeof(FjSpectralSInput) == 48 && _Alignof(FjSpectralSInput) == 8
 _Static_assert(sizeof(FjSpectralInverse) == 36 && _Alignof(FjSpectralInverse) == 4 && offsetof(FjSpectralInverse, matrix) == 0, "inverse layout");
 
 int fj_test_spectral_preparation_abi_c(void) {
-    FjStatus (*tables)(const FjSpectralInput*, FjSpectralTables*, FjErrorBuffer*) = fj_legacy_spectral_tables;
-    FjStatus (*white)(const FjSpectralWhiteInput*, FjSpectralWhite*, FjSpectralWhiteFailure*, FjErrorBuffer*) = fj_legacy_spectral_white;
-    FjStatus (*inverse)(const FjSpectralSInput*, FjSpectralInverse*, FjErrorBuffer*) = fj_legacy_spectral_s_inverse;
+    FjStatus (*tables)(const FjSpectralInput*, FjSpectralTables*, FjErrorBuffer*) = fj_test_boundary_spectral_tables;
+    FjStatus (*white)(const FjSpectralWhiteInput*, FjSpectralWhite*, FjSpectralWhiteFailure*, FjErrorBuffer*) = fj_test_boundary_spectral_white;
+    FjStatus (*inverse)(const FjSpectralSInput*, FjSpectralInverse*, FjErrorBuffer*) = fj_test_boundary_spectral_s_inverse;
     return tables != NULL && white != NULL && inverse != NULL;
 }

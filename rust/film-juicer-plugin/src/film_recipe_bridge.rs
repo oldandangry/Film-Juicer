@@ -1,69 +1,103 @@
-//! SF_TEMP_BRIDGE_FILM_DIR_DENSITY: synchronous family owners and fixed projections; remove S4.E.
+//! Completed recipe projections and checked fixture family operations.
 
 #[cfg(feature = "test-support")]
 use crate::frame_bridge::{FjFrameGeometryInput, FjFrameGeometry, FjFrameGeometryFailure};
 #[cfg(feature = "test-support")]
 use crate::cuda::sys::{FjRect, FjExtent};
+#[cfg(any(test, feature = "test-support"))]
 use std::fmt::{self, Write};
+#[cfg(any(test, feature = "test-support"))]
 use std::mem::{align_of, size_of};
+#[cfg(any(test, feature = "test-support"))]
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use film_juicer_core::effects;
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::film::{Development, density, dir, grain};
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::film::reference;
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::profile::Polarity;
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::route::ScanRoute;
+#[cfg(any(test, feature = "test-support"))]
 use crate::film_bridge::FjFilmDevelopmentOwner;
+use crate::cuda::sys::{FjDust, FjScratch};
+#[cfg(any(test, feature = "test-support"))]
 use crate::cuda::sys::{
-    FjDust, FjScratch, FjErrorBuffer, FjFloatSpan, FjStatus, FJ_API_NONE, FJ_STATUS_SUCCESS,
+    FjErrorBuffer, FjFloatSpan, FjStatus, FJ_API_NONE, FJ_STATUS_SUCCESS,
     FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_ALLOCATION_FAILURE,
     FJ_STATUS_INTERNAL_FAILURE,
 };
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_DIR_INACTIVE: u32 = 0;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_DIR_NEGATIVE_DONOR_LANGMUIR: u32 = 1;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_DIR_POSITIVE_RECEIVER_LANGMUIR: u32 = 2;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_REASON_NONE: u32 = 0;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_RAW: u32 = 1;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_MINIMUM: u32 = 2;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_MATRIX: u32 = 3;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_DENSITY_MAX: u32 = 4;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_RECEIVER_K: u32 = 5;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_DONOR_K: u32 = 6;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_DONOR_LANGMUIR: u32 = 7;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_RECEIVER_LANGMUIR: u32 = 8;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_COMPENSATED_AXIS: u32 = 9;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_IDENTITY: u32 = 10;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_BOUNDS_SPAN: u32 = 11;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_SIZE: u32 = 12;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_ALLOCATION: u32 = 13;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_PANIC: u32 = 14;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_INTEGRITY: u32 = 15;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_LOG_EXPOSURE: u32 = 16;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_GRAIN_CONTROLS: u32 = 17;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_GRAIN_LAYERS: u32 = 18;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_FILM_RECIPE_EFFECTS_PROBABILITY: u32 = 19;
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjFilmRecipeFailure {
     pub(crate) reason: u32,
     pub(crate) channel: u32,
@@ -71,11 +105,13 @@ pub(crate) struct FjFilmRecipeFailure {
 }
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjFilmDensityMinimum {
     pub(crate) cmy: [f32; 3],
 }
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjFilmDirParams {
     pub(crate) active: u32,
     pub(crate) amount: f32,
@@ -94,6 +130,7 @@ pub(crate) struct FjFilmDirParams {
 }
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjFilmDirView {
     pub(crate) polarity: u32,
     pub(crate) mode: u32,
@@ -112,6 +149,7 @@ pub(crate) struct FjFilmDirView {
 }
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjFilmDensityBounds {
     pub(crate) route: u32,
     pub(crate) medium: u32,
@@ -126,12 +164,13 @@ pub(crate) struct FjFilmDensityBounds {
 }
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjFilmDirOwner {
     _opaque: [u8; 0],
 }
 
-// SF_TEMP_BRIDGE_VISUAL_GRAIN: fixed completed grain transport; remove S4.E.
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjVisualGrainParams {
     pub(crate) active: u32,
     pub(crate) sublayers_active: u32,
@@ -157,6 +196,7 @@ pub(crate) struct FjVisualGrainParams {
 }
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjVisualGrainRecipe {
     pub(crate) active: u32,
     pub(crate) sublayers_active: u32,
@@ -186,8 +226,8 @@ pub(crate) struct FjVisualGrainRecipe {
     pub(crate) hash: u64,
 }
 
-// SF_TEMP_BRIDGE_PHYSICAL_EFFECTS: fixed owned result projection; remove S4.E.
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjPhysicalEffectsParams {
     pub(crate) film_dust_amount: f32,
     pub(crate) film_scratch_amount: f32,
@@ -199,6 +239,7 @@ pub(crate) struct FjPhysicalEffectsParams {
 }
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjPhysicalEffectsRecipe {
     pub(crate) film_dust: FjDust,
     pub(crate) film_scratch: FjScratch,
@@ -300,6 +341,7 @@ pub(crate) fn project_scratch(policy: &effects::Scratch) -> FjScratch {
 /// # Safety
 /// Initialized live aligned params and exclusive output/failure/diagnostic
 /// extents are mutually disjoint through synchronous return. No borrow escapes.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare_effects(
     params: *const FjPhysicalEffectsParams,
     out: *mut FjPhysicalEffectsRecipe,
@@ -352,31 +394,16 @@ pub(crate) unsafe fn prepare_effects(
     }
 }
 
-/// # Safety
-/// The checked operation's live, initialized, aligned, disjoint record contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_physical_effects_prepare(
-    params: *const FjPhysicalEffectsParams,
-    out_recipe: *mut FjPhysicalEffectsRecipe,
-    out_failure: *mut FjFilmRecipeFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical synchronous raw contract.
-    unsafe { prepare_effects(params, out_recipe, out_failure, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjPhysicalEffectsParams,
-    *mut FjPhysicalEffectsRecipe,
-    *mut FjFilmRecipeFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_physical_effects_prepare;
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(
     size_of::<FjPhysicalEffectsParams>() == 32 && align_of::<FjPhysicalEffectsParams>() == 8
 );
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(
     size_of::<FjPhysicalEffectsRecipe>() == 648 && align_of::<FjPhysicalEffectsRecipe>() == 8
 );
 
+#[cfg(any(test, feature = "test-support"))]
 fn status(category: u32) -> FjStatus {
     FjStatus {
         category,
@@ -407,8 +434,8 @@ extern "C" fn fj_test_film_reference_lookup_fault_consumed() -> u32 {
     u32::from(reference::testing::take_density_lookup_fault_consumed())
 }
 
-// SF_TEMP_BRIDGE_FILM_REFERENCE: fixed borrowed preparation; remove S4.E.
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjFilmReferenceInput {
     pub(crate) method: u32,
     pub(crate) auto_exposure_enabled: u32,
@@ -421,6 +448,7 @@ pub(crate) struct FjFilmReferenceInput {
     pub(crate) tc_lut: FjFloatSpan,
 }
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjFilmReference {
     pub(crate) baseline_raw_rgb: [f32; 3],
     pub(crate) compensated_raw_rgb: [f32; 3],
@@ -430,6 +458,7 @@ pub(crate) struct FjFilmReference {
     pub(crate) hash: u64,
 }
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjFilmReferenceFailure {
     pub(crate) reason: u32,
     pub(crate) exposure: u32,
@@ -437,6 +466,7 @@ pub(crate) struct FjFilmReferenceFailure {
     pub(crate) channel: u32,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn reference_error(error: reference::Error) -> (u32, FjFilmReferenceFailure, &'static str) {
     use reference::Error;
     #[cfg(feature = "test-support")]
@@ -512,16 +542,19 @@ fn reference_error(error: reference::Error) -> (u32, FjFilmReferenceFailure, &'s
     (category, failure, message)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn reference_span(span: FjFloatSpan, count: usize) -> bool {
     (span.data.is_null() && span.count == 0)
         || (span.count == count && valid_extent(span.data, count))
 }
+#[cfg(any(test, feature = "test-support"))]
 fn empty_reference_span(span: FjFloatSpan) -> bool {
     span.data.is_null() && span.count == 0
 }
 
 /// # Safety
 /// Admitted spans are initialized immutable float storage held through return.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn reference_reconstruction(
     input: &FjFilmReferenceInput,
 ) -> Result<Option<reference::Reconstruction<'_>>, ()> {
@@ -582,6 +615,7 @@ unsafe fn reference_reconstruction(
 /// Development is a live matching immutable owner. Records and consumed spans
 /// are initialized, aligned and addressable. Writable records/error backing are
 /// exclusive, mutually disjoint and disjoint from all inputs until return.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare_reference(
     development: *const FjFilmDevelopmentOwner,
     input: *const FjFilmReferenceInput,
@@ -694,21 +728,7 @@ pub(crate) unsafe fn prepare_reference(
     }
 }
 
-/// # Safety
-/// Same live-owner, initialized storage and exclusive call-bounded borrow
-/// contract as prepare_reference and the temporary legacy header.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_reference_prepare(
-    development: *const FjFilmDevelopmentOwner,
-    input: *const FjFilmReferenceInput,
-    out: *mut FjFilmReference,
-    failure: *mut FjFilmReferenceFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical immediate caller contract.
-    unsafe { prepare_reference(development, input, out, failure, error) }
-}
-
+#[cfg(any(test, feature = "test-support"))]
 fn valid_extent<T>(pointer: *const T, count: usize) -> bool {
     !pointer.is_null()
         && (pointer as usize).is_multiple_of(align_of::<T>())
@@ -784,12 +804,14 @@ pub(crate) unsafe fn reference_density_lookup(
         native_code: 0,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 struct Diagnostic {
     record: *mut FjErrorBuffer,
     data: *mut u8,
     capacity: usize,
     length: usize,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Write for Diagnostic {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         if self.capacity != 0 {
@@ -810,6 +832,7 @@ impl Write for Diagnostic {
         Ok(())
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Diagnostic {
     /// # Safety
     /// The optional record/backing are initialized, live, exclusive and disjoint.
@@ -842,10 +865,12 @@ impl Diagnostic {
         Ok(writer)
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 struct Failure {
     category: u32,
     record: FjFilmRecipeFailure,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Failure {
     fn new(category: u32, reason: u32) -> Self {
         Self {
@@ -968,6 +993,7 @@ impl Failure {
 /// T is one of this module's plain numerical/nullable-pointer wire results, valid
 /// when zeroed. Caller authorizes live initialized output/failure/diagnostic
 /// extents, mutually disjoint and disjoint from all reachable input/owner storage.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn execute<T>(
     out: *mut T,
     failure: *mut FjFilmRecipeFailure,
@@ -1049,6 +1075,7 @@ unsafe fn execute<T>(
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl FjVisualGrainParams {
     fn params(&self) -> Result<grain::Params, Failure> {
         if self.active > 1 || self.sublayers_active > 1 {
@@ -1079,6 +1106,7 @@ impl FjVisualGrainParams {
         })
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl FjVisualGrainRecipe {
     fn new(recipe: &grain::Recipe) -> Self {
         Self {
@@ -1116,6 +1144,7 @@ impl FjVisualGrainRecipe {
 /// One matching immutable live Development hold, borrowed only through return.
 /// Initialized aligned readable params and exclusive writable outputs/diagnostics
 /// have checked extents, are disjoint, and exclude concurrent owner release.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare_grain(
     development: *const FjFilmDevelopmentOwner,
     params: *const FjVisualGrainParams,
@@ -1149,28 +1178,10 @@ pub(crate) unsafe fn prepare_grain(
     }
 }
 
-/// # Safety
-/// Matching live Development and initialized aligned disjoint call-local records.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_visual_grain_prepare(
-    development: *const FjFilmDevelopmentOwner,
-    params: *const FjVisualGrainParams,
-    out_recipe: *mut FjVisualGrainRecipe,
-    out_failure: *mut FjFilmRecipeFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical synchronous raw contract without retaining a borrow.
-    unsafe { prepare_grain(development, params, out_recipe, out_failure, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjFilmDevelopmentOwner,
-    *const FjVisualGrainParams,
-    *mut FjVisualGrainRecipe,
-    *mut FjFilmRecipeFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_visual_grain_prepare;
+#[cfg(any(test, feature = "test-support"))]
 const _: () =
     assert!(size_of::<FjVisualGrainParams>() == 120 && align_of::<FjVisualGrainParams>() == 4);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(
     size_of::<FjVisualGrainRecipe>() == 344
         && align_of::<FjVisualGrainRecipe>() == 8
@@ -1178,6 +1189,7 @@ const _: () = assert!(
         && std::mem::offset_of!(FjVisualGrainRecipe, hash) == 336
 );
 
+#[cfg(any(test, feature = "test-support"))]
 impl FjFilmDirParams {
     fn params(&self) -> Result<dir::Params, Failure> {
         if self.active > 1 || self.gamma_use_stock > 1 {
@@ -1201,6 +1213,7 @@ impl FjFilmDirParams {
         })
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl FjFilmDirView {
     fn new(recipe: &dir::Recipe) -> Self {
         Self {
@@ -1239,6 +1252,7 @@ impl FjFilmDirView {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl FjFilmDensityBounds {
     fn new(bounds: &density::Bounds) -> Self {
         Self {
@@ -1269,6 +1283,7 @@ impl FjFilmDensityBounds {
 
 /// # Safety
 /// Initialized/disjoint live records/backing with caller-authorized extents.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn minimum(
     requested: *const FjFilmDensityMinimum,
     out: *mut FjFilmDensityMinimum,
@@ -1290,6 +1305,7 @@ pub(crate) unsafe fn minimum(
 }
 /// # Safety
 /// Live development hold and initialized/disjoint records/backing until return.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn acquire(
     development: *const FjFilmDevelopmentOwner,
     params: *const FjFilmDirParams,
@@ -1320,6 +1336,7 @@ pub(crate) unsafe fn acquire(
 }
 /// # Safety
 /// A matching live immutable DIR owner; exclusive disjoint output/diagnostics.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn view(
     owner: *const FjFilmDirOwner,
     out: *mut FjFilmDirView,
@@ -1344,6 +1361,7 @@ pub(crate) unsafe fn view(
 /// # Safety
 /// Matching NULL/live DIR owner, consumed once, excluding every read/view.
 /// Diagnostics obey the existing asset-owner family's optional-buffer contract.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn release(owner: *mut FjFilmDirOwner, error: *mut FjErrorBuffer) -> FjStatus {
     if !owner.is_null() && !valid_extent(owner.cast::<dir::Recipe>(), 1) {
         // SAFETY: A numerically malformed non-handle owns nothing. Diagnostics
@@ -1381,6 +1399,7 @@ pub(crate) unsafe fn release(owner: *mut FjFilmDirOwner, error: *mut FjErrorBuff
 /// # Safety
 /// Live development and unchanged original minimum request; initialized/disjoint
 /// exclusive outputs/diagnostics. No owner or input span is retained.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn bounds(
     development: *const FjFilmDevelopmentOwner,
     requested: *const FjFilmDensityMinimum,
@@ -1462,72 +1481,8 @@ extern "C" fn fj_test_film_dir_live_owners() -> usize {
     faults::LIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// # Safety
-/// Matching live owners; caller-authorized initialized/aligned/disjoint input, output and diagnostic extents.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_density_minimum_prepare(
-    requested: *const FjFilmDensityMinimum,
-    out_minimum: *mut FjFilmDensityMinimum,
-    out_failure: *mut FjFilmRecipeFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical immediate raw call contract.
-    unsafe { minimum(requested, out_minimum, out_failure, error) }
-}
-
-/// # Safety
-/// Matching live owners; caller-authorized initialized/aligned/disjoint input, output and diagnostic extents.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_dir_acquire(
-    development: *const FjFilmDevelopmentOwner,
-    params: *const FjFilmDirParams,
-    out_dir: *mut *mut FjFilmDirOwner,
-    out_failure: *mut FjFilmRecipeFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical immediate raw call contract.
-    unsafe { acquire(development, params, out_dir, out_failure, error) }
-}
-
-/// # Safety
-/// Matching live owners; caller-authorized initialized/aligned/disjoint input, output and diagnostic extents.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_dir_view(
-    dir: *const FjFilmDirOwner,
-    out_view: *mut FjFilmDirView,
-    out_failure: *mut FjFilmRecipeFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical immediate raw call contract.
-    unsafe { view(dir, out_view, out_failure, error) }
-}
-
-/// # Safety
-/// Matching live owners; caller-authorized initialized/aligned/disjoint input, output and diagnostic extents.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_dir_release(
-    dir: *mut FjFilmDirOwner,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical immediate raw call contract.
-    unsafe { release(dir, error) }
-}
-
-/// # Safety
-/// Matching live owners; caller-authorized initialized/aligned/disjoint input, output and diagnostic extents.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_density_bounds_prepare(
-    development: *const FjFilmDevelopmentOwner,
-    requested: *const FjFilmDensityMinimum,
-    out_bounds: *mut FjFilmDensityBounds,
-    out_failure: *mut FjFilmRecipeFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Forward the identical immediate raw call contract.
-    unsafe { bounds(development, requested, out_bounds, out_failure, error) }
-}
-
 // The closed wire contract reserves integrity for detecting impossible envelopes.
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(FJ_FILM_RECIPE_INTEGRITY == 15);
 
 #[cfg(feature = "test-support")]

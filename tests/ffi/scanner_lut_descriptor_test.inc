@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace ScannerDescriptorTest {
     Json bytes(const std::string& text) {
         Json out = Json::array();
@@ -16,15 +17,15 @@ namespace ScannerDescriptorTest {
         FjFilmProfile* filmOwner = nullptr;
         FjPrintProfile* printOwner = nullptr;
         const bool printing = prepared.route % 2 != 0;
-        status(fj_legacy_film_profile_acquire(assets, prepared.film_profile_key, &filmOwner, nullptr));
+        status(fj_test_assets_film_acquire(assets, prepared.film_profile_key, &filmOwner, nullptr));
         if (printing)
-            status(fj_legacy_print_profile_acquire(assets, prepared.print_profile_key, &printOwner, nullptr));
+            status(fj_test_print_profile_acquire(assets, prepared.print_profile_key, &printOwner, nullptr));
         FjFilmProfileView film{};
         FjPrintProfileView print{};
-        const auto filmStatus = fj_legacy_film_profile_view(filmOwner, &film, nullptr);
+        const auto filmStatus = fj_test_assets_film_view(filmOwner, &film, nullptr);
         status(filmStatus);
         if (printing)
-            status(fj_legacy_print_profile_view(printOwner, &print, nullptr));
+            status(fj_test_print_profile_view(printOwner, &print, nullptr));
         require(film.asset_token == prepared.film_profile_asset_version &&
                     (printing ? print.asset_token == prepared.print_profile_asset_version : prepared.print_profile_asset_version == 0),
                 "scanner descriptor source profiles match selected held-state asset versions");
@@ -47,9 +48,9 @@ namespace ScannerDescriptorTest {
                    {"profile_viewing_illuminant", bytes(std::string(viewing.data, viewing.count))},
                    {"observer_identity", bytes(std::string(observer))},
                    {"resolution", prepared.scanner_lut.resolution}};
-        status(fj_legacy_film_profile_release(filmOwner, nullptr));
+        status(fj_test_assets_film_release(filmOwner, nullptr));
         if (printOwner)
-            status(fj_legacy_print_profile_release(printOwner, nullptr));
+            status(fj_test_print_profile_release(printOwner, nullptr));
         return value;
     }
     struct Borrowed {
@@ -87,7 +88,7 @@ namespace ScannerDescriptorTest {
         return result;
     }
     Json products(const std::filesystem::path& resources, const Json& expected) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources);
         Json rows = Json::array();
         for (unsigned r = 0; r < 4; ++r) {
@@ -95,14 +96,14 @@ namespace ScannerDescriptorTest {
             auto params = FilmReferenceTest::controls(1, static_cast<Spektrafilm::ScanRoute>(r), 0);
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-            std::optional<PreparedState> product;
-            const auto result = prepare_state(owner.borrow().assets, params, product, error);
+            std::optional<JuicerTestSupport::PreparedStateHold> product;
+            const auto result = JuicerTestSupport::prepare_state(owner.borrow().assets, params, product, error);
             require(result.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
             FjPreparedStateView view{};
             status(product->view(view, error));
             const auto value = prepared_input(view, "CIE1931_2deg", owner.borrow().assets);
             const Json described{{"success", true}, {"exception", false}, {"diagnostic", ""}, {"descriptor", project(describe(value))}};
-            rows.push_back({{"route", r}, {"input", value}, {"native", described}, {"snapshot_hash", hash_params(params)}, {"final_hash", view.recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"upload_hash", view.upload_core_hash}});
+            rows.push_back({{"route", r}, {"input", value}, {"native", described}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(params)}, {"final_hash", view.recipe_hash}, {"scanner_hash", view.scanner_recipe_hash}, {"upload_hash", view.upload_core_hash}});
             require(rows.back() == expected.at(r), "actual route descriptor product matches its frozen row");
             product_event.passed();
         }
@@ -165,7 +166,7 @@ namespace ScannerDescriptorTest {
             }
             ++representableRows;
             std::size_t call_index = 0;
-            for (auto call : {fj_legacy_scanner_lut_describe, fj_test_scanner_lut_describe}) {
+            for (auto call : {fj_test_scanner_lut_describe, fj_test_scanner_lut_describe}) {
                 const Borrowed borrowed(in);
                 FjScannerLutDescriptor out;
                 std::memset(&out, 0xa5, sizeof out);
@@ -221,7 +222,7 @@ namespace ScannerDescriptorTest {
                 FjScannerLutDescriptorFailure failure{99, 99};
                 char message[8]{};
                 FjErrorBuffer error{message, sizeof message, 99};
-                status(fj_legacy_scanner_lut_describe(in, &out, &failure, &error), expected.category);
+                status(fj_test_scanner_lut_describe(in, &out, &failure, &error), expected.category);
                 require(cleared(out) && failure.reason == expected.reason && failure.lane == expected.lane, "closed descriptor failure and zero result");
                 require(error.length < sizeof message && message[error.length] == 0, "bounded descriptor diagnostic");
             };
@@ -287,35 +288,35 @@ namespace ScannerDescriptorTest {
             }
             FjScannerLutDescriptor out;
             FjScannerLutDescriptorFailure failure{99, 99};
-            status(fj_legacy_scanner_lut_describe(&good, nullptr, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_scanner_lut_describe(&good, nullptr, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             require(failure.reason == 1 && failure.lane == 0, "failure independently cleared/admitted without result");
             std::memset(&out, 0xa5, sizeof out);
-            status(fj_legacy_scanner_lut_describe(&good, &out, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_scanner_lut_describe(&good, &out, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             require(cleared(out), "result independently cleared without failure");
             alignas(8) std::array<std::uint8_t, 80> unaligned{};
             unaligned.fill(0xa5);
-            status(fj_legacy_scanner_lut_describe(&good, reinterpret_cast<FjScannerLutDescriptor*>(unaligned.data() + 1), &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_scanner_lut_describe(&good, reinterpret_cast<FjScannerLutDescriptor*>(unaligned.data() + 1), &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             require(failure.reason == 1 && failure.lane == 0, "unaligned result leaves independent failure");
             std::memset(&out, 0xa5, sizeof out);
-            status(fj_legacy_scanner_lut_describe(&good, &out, reinterpret_cast<FjScannerLutDescriptorFailure*>(unaligned.data() + 1), nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_scanner_lut_describe(&good, &out, reinterpret_cast<FjScannerLutDescriptorFailure*>(unaligned.data() + 1), nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             require(cleared(out), "unaligned failure leaves independently cleared result");
-            status(fj_legacy_scanner_lut_describe(&good, &out, &failure, reinterpret_cast<FjErrorBuffer*>(unaligned.data() + 1)), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_scanner_lut_describe(&good, &out, &failure, reinterpret_cast<FjErrorBuffer*>(unaligned.data() + 1)), FJ_STATUS_UNSUPPORTED_INPUT);
             require(cleared(out) && failure.reason == 1 && std::all_of(unaligned.begin(), unaligned.end(), [](auto byte) {
                         return byte == 0xa5;
                     }),
                     "unaligned diagnostic leaves no backing writes");
             FjErrorBuffer invalid{nullptr, 1, 99};
             std::memset(&out, 0xa5, sizeof out);
-            status(fj_legacy_scanner_lut_describe(&good, &out, &failure, &invalid), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_scanner_lut_describe(&good, &out, &failure, &invalid), FJ_STATUS_UNSUPPORTED_INPUT);
             require(cleared(out) && failure.reason == 1 && failure.lane == 0, "invalid diagnostic clears both outputs");
             FjErrorBuffer zero{reinterpret_cast<char*>(std::uintptr_t{1}), 0, 99};
-            status(fj_legacy_scanner_lut_describe(&good, &out, &failure, &zero));
+            status(fj_test_scanner_lut_describe(&good, &out, &failure, &zero));
             require(zero.length == 0, "zero capacity diagnostic never reads backing");
             auto ignored = good;
             if (!mode) {
                 ignored.bounds_source = ignored.output_medium = UINT32_MAX;
                 ignored.profile_viewing_illuminant = ignored.print_profile_key = {nullptr, SIZE_MAX};
-                status(fj_legacy_scanner_lut_describe(&ignored, &out, &failure, nullptr));
+                status(fj_test_scanner_lut_describe(&ignored, &out, &failure, nullptr));
             } else {
                 ignored.bounds_source = 256;
                 reject(&ignored);
@@ -335,7 +336,7 @@ namespace ScannerDescriptorTest {
                 reject(&good, {fault == 6 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_PREPARATION_FAILURE, fault == 6 ? 9u : mode ? 8u
                                                                                                                                : 6u,
                                fault == 6 ? 0u : fault});
-                status(fj_legacy_scanner_lut_describe(&good, &out, &failure, nullptr));
+                status(fj_test_scanner_lut_describe(&good, &out, &failure, nullptr));
                 require(failure.reason == 0 && failure.lane == 0, "one-shot descriptor fault recovers");
                 row_event.passed();
             }
@@ -351,24 +352,24 @@ namespace ScannerDescriptorTest {
         {
             Borrowed expiring(rows[0].at("input"));
             FjScannerLutDescriptorFailure failure{};
-            status(fj_legacy_scanner_lut_describe(&expiring.wire, &retained, &failure, nullptr));
+            status(fj_test_scanner_lut_describe(&expiring.wire, &retained, &failure, nullptr));
         }
         status(fj_test_scanner_lut_descriptor_fault(1));
         std::thread independent([&] {
             FjScannerLutDescriptor result{};
             FjScannerLutDescriptorFailure failure{};
-            status(fj_legacy_scanner_lut_describe(&borrowed.wire, &result, &failure, nullptr));
+            status(fj_test_scanner_lut_describe(&borrowed.wire, &result, &failure, nullptr));
             require(project(result) == project(retained), "owned result survives source expiry and later cross-thread preparation");
         });
         independent.join();
         FjScannerLutDescriptor result{};
         FjScannerLutDescriptorFailure failure{};
-        status(fj_legacy_scanner_lut_describe(&borrowed.wire, &result, &failure, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+        status(fj_test_scanner_lut_describe(&borrowed.wire, &result, &failure, nullptr), FJ_STATUS_PREPARATION_FAILURE);
         require(failure.reason == 6 && failure.lane == 1, "other thread did not consume local descriptor fault");
         lifetime_event.passed();
     }
     void callers(const std::filesystem::path& resources) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources);
         struct ClearReferenceFault {
             ~ClearReferenceFault() {
@@ -387,9 +388,9 @@ namespace ScannerDescriptorTest {
             status(fj_test_scanner_lut_descriptor_fault(1));
             std::array<char, 2048> message{};
             FjErrorBuffer error{message.data(), message.size(), 0};
-            std::optional<PreparedState> prepared;
+            std::optional<JuicerTestSupport::PreparedStateHold> prepared;
             const auto* const assets = owner.borrow().assets;
-            auto preparedStatus = prepare_state(assets, controls, prepared, error);
+            auto preparedStatus = JuicerTestSupport::prepare_state(assets, controls, prepared, error);
             require(preparedStatus.category == FJ_STATUS_PREPARATION_FAILURE && !prepared,
                     "actual Rust owner rejects the early scanner descriptor fault");
             require(std::string(message.data(), error.length) ==
@@ -402,7 +403,7 @@ namespace ScannerDescriptorTest {
 
             error.length = 0;
             message[0] = 0;
-            preparedStatus = prepare_state(assets, controls, prepared, error);
+            preparedStatus = JuicerTestSupport::prepare_state(assets, controls, prepared, error);
             require(preparedStatus.category == FJ_STATUS_UNSUPPORTED_INPUT && !prepared,
                     "one-shot descriptor recovery reaches the later reference source fault");
             require(std::string(message.data(), error.length) ==
@@ -414,7 +415,7 @@ namespace ScannerDescriptorTest {
 
             error.length = 0;
             message[0] = 0;
-            preparedStatus = prepare_state(assets, controls, prepared, error);
+            preparedStatus = JuicerTestSupport::prepare_state(assets, controls, prepared, error);
             require(preparedStatus.category == FJ_STATUS_SUCCESS && prepared,
                     "actual Rust state construction recovers after both one-shot faults");
             FjPreparedStateView actual{};
@@ -426,11 +427,11 @@ namespace ScannerDescriptorTest {
             const auto retainedDescriptor = project(actual.scanner_lut);
             const auto originalBoundsHash = actual.scanner_bounds.hash;
             auto changedControls = controls;
-            changedControls.filmProfileKey = r == 0 ? "kodak_portra_800" : "fujifilm_velvia_100";
-            std::optional<PreparedState> changed;
+            changedControls.film_key = r == 0 ? "kodak_portra_800" : "fujifilm_velvia_100";
+            std::optional<JuicerTestSupport::PreparedStateHold> changed;
             error.length = 0;
             message[0] = 0;
-            preparedStatus = prepare_state(assets, changedControls, changed, error);
+            preparedStatus = JuicerTestSupport::prepare_state(assets, changedControls, changed, error);
             require(preparedStatus.category == FJ_STATUS_SUCCESS && changed,
                     "actual Rust owner accepts the selected replacement profile");
             FjPreparedStateView changedView{};

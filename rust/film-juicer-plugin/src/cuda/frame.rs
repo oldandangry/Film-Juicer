@@ -1,5 +1,5 @@
-//! SF_TEMP_BRIDGE_FRAME_MATH: callback-local late frame descriptors; remove with
-//! the final native preparation consumer, no later than S6.D.
+//! Callback-local frame descriptors from the admitted complete Rust state.
+
 #![forbid(unsafe_code)]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};

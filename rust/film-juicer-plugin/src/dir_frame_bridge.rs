@@ -1,13 +1,15 @@
-//! SF_TEMP_BRIDGE_DIR_FRAME: fixed, synchronous mathematical transport. Retire
-//! with its last native model caller by S6.D; S4.E narrows execution inputs.
+//! Shared completed frame math and checked fixture transport.
 
 use std::mem::{align_of, size_of};
+#[cfg(any(test, feature = "test-support"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use film_juicer_core::film::dir::frame::{self, Component, Operator, Plan};
 use film_juicer_core::frame::Domain;
 
-use crate::cuda::sys::{FjDirGaussian, FjErrorBuffer, FjExtent, FjStatus};
+#[cfg(any(test, feature = "test-support"))]
+use crate::cuda::sys::{FjErrorBuffer, FjStatus};
+use crate::cuda::sys::{FjDirGaussian, FjExtent};
 
 /// One checked DIR plan operation shared by the raw ABI and held render path.
 /// `fault` is captured at the caller's historical admission point; only fault 1
@@ -88,6 +90,7 @@ const EMPTY_MATH: FjDirFrameMath = FjDirFrameMath {
     filter_domain_extent: EMPTY_EXTENT,
     components: [EMPTY_COMPONENT; 4],
 };
+#[cfg(any(test, feature = "test-support"))]
 const EMPTY_FAILURE: FjDirFrameFailure = FjDirFrameFailure {
     reason: 0,
     field: 0,
@@ -95,6 +98,7 @@ const EMPTY_FAILURE: FjDirFrameFailure = FjDirFrameFailure {
     trace: EMPTY_MATH,
 };
 
+#[cfg(any(test, feature = "test-support"))]
 fn valid<T>(pointer: *const T) -> bool {
     !pointer.is_null()
         && (pointer as usize).is_multiple_of(align_of::<T>())
@@ -102,12 +106,14 @@ fn valid<T>(pointer: *const T) -> bool {
         && (pointer as usize).checked_add(size_of::<T>()).is_some()
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct Diagnostic {
     record: *mut FjErrorBuffer,
     data: *mut u8,
     capacity: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Diagnostic {
     /// # Safety
     /// Optional initialized record and nonempty backing are live/exclusive/disjoint.
@@ -158,6 +164,7 @@ impl Diagnostic {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn domain(v: FjExtent) -> Domain {
     Domain {
         x: v.x,
@@ -240,6 +247,7 @@ const MESSAGES: [&str; 13] = [
     "SpatialDirFrameFailure field=empty_plan",
 ];
 
+#[cfg(any(test, feature = "test-support"))]
 fn status(category: u32) -> FjStatus {
     FjStatus {
         category,
@@ -250,6 +258,7 @@ fn status(category: u32) -> FjStatus {
 
 /// # Safety
 /// Independently authorized initialized/aligned/live writable peers remain exclusive/disjoint.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn clear(out: *mut FjDirFrameMath, failure: *mut FjDirFrameFailure) {
     // SAFETY: Each admitted peer may be written independently of all other arguments.
     unsafe {
@@ -265,6 +274,7 @@ unsafe fn clear(out: *mut FjDirFrameMath, failure: *mut FjDirFrameFailure) {
 /// # Safety
 /// Required records are initialized/aligned/live, writable peers and optional
 /// diagnostics exclusive/mutually disjoint/disjoint from input. No pointer escapes.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare(
     input: *const FjDirFrameInput,
     out: *mut FjDirFrameMath,
@@ -399,19 +409,6 @@ pub(crate) unsafe fn prepare(
     }
 }
 
-#[unsafe(no_mangle)]
-/// # Safety
-/// Same initialized/live/aligned and exclusive/disjoint obligations as prepare.
-unsafe extern "C" fn fj_legacy_dir_frame_prepare(
-    input: *const FjDirFrameInput,
-    out: *mut FjDirFrameMath,
-    failure: *mut FjDirFrameFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The sole checked body contains admission, construction and projection panics.
-    unsafe { prepare(input, out, failure, error) }
-}
-
 #[cfg(feature = "test-support")]
 pub(crate) mod dir_frame_faults {
     use std::cell::Cell;
@@ -446,12 +443,6 @@ pub(crate) mod dir_frame_faults {
     }
 }
 
-const _: unsafe extern "C" fn(
-    *const FjDirFrameInput,
-    *mut FjDirFrameMath,
-    *mut FjDirFrameFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_dir_frame_prepare;
 const _: () = {
     assert!(size_of::<FjDirFrameInput>() == 64 && align_of::<FjDirFrameInput>() == 8);
     assert!(std::mem::offset_of!(FjDirFrameInput, active) == 0);

@@ -1,4 +1,4 @@
-//! SF_TEMP_BRIDGE_FILM_INPUT: synchronous fixed values; remove S4.E.
+//! Checked fixture transport for spectral film input values.
 
 use std::fmt::{self, Write};
 use std::mem::{align_of, size_of};
@@ -6,12 +6,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use film_juicer_core::{color, exposure, film::input};
 use crate::asset_profile::FilmOwner;
-use crate::film_bridge::FjFilmProfile;
 use crate::cuda::sys::{
     FjErrorBuffer, FjFloatSpan, FjStatus, FJ_API_NONE, FJ_STATUS_SUCCESS,
     FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_INTERNAL_FAILURE,
 };
-use crate::legacy_bridge::{self, FjInputColorConversion};
+use crate::color_values::{self, FjInputColorConversion};
 use crate::exposure_bridge::FjSensitivityFailure;
 
 pub(crate) const FJ_FILM_INPUT_ILLUMINANT_PROFILE_REFERENCE: u32 = 0;
@@ -442,7 +441,7 @@ pub(crate) unsafe fn prepare(
         }
         // SAFETY: All complete initialized input record extents passed numeric admission and remain immutable.
         let (params, resources) = unsafe { (&*params, &*resources) };
-        let Some(space) = legacy_bridge::input_space(params.input_space) else {
+        let Some(space) = color_values::input_space(params.input_space) else {
             return reject(FJ_FILM_INPUT_RAW_INPUT_SPACE, &mut diagnostic);
         };
         let method = match params.method {
@@ -584,20 +583,6 @@ pub(crate) unsafe fn prepare(
             status(FJ_STATUS_INTERNAL_FAILURE)
         }
     }
-}
-/// # Safety
-/// Same synchronous storage, profile lifetime and disjointness contract as prepare.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_film_input_prepare(
-    profile: *const FjFilmProfile,
-    params: *const FjFilmInputParams,
-    resources: *const FjFilmInputResources,
-    out: *mut FjFilmInput,
-    failure: *mut FjFilmInputFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The C caller supplies the checked prepare contract.
-    unsafe { prepare(profile.cast(), params, resources, out, failure, error) }
 }
 
 const _: () = {
@@ -745,15 +730,6 @@ pub(crate) const ABI_FACTS: &[usize] = {
         FJ_FILM_INPUT_INTERNAL_SENSITIVITY_PANIC as usize,
     ]
 };
-
-const _: unsafe extern "C" fn(
-    *const FjFilmProfile,
-    *const FjFilmInputParams,
-    *const FjFilmInputResources,
-    *mut FjFilmInput,
-    *mut FjFilmInputFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_film_input_prepare;
 
 #[cfg(feature = "test-support")]
 thread_local! { static BOUNDARY_FAULT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }

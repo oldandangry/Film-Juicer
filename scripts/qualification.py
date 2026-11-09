@@ -308,6 +308,22 @@ def native_cohort_count(contract, name, preset):
     return count
 
 
+def native_membership(contract, name, listed, terminals):
+    specification = contract.get("native_membership", {}).get(name)
+    if specification is None:
+        return
+    required = specification["required"]
+    if (type(specification["listed"]) is not int or type(specification["terminal"]) is not int
+            or not isinstance(required, list)
+            or any(not isinstance(pair, list) or len(pair) != 2
+                   or any(not isinstance(value, str) or not value for value in pair) for pair in required)):
+        raise ValueError("invalid native membership contract")
+    required_keys = {tuple(pair) for pair in required}
+    if (len(required_keys) != len(required) or len(listed) != specification["listed"]
+            or terminals != specification["terminal"] or not required_keys <= listed):
+        raise ValueError("missing or unexpected native membership")
+
+
 def framework_terminals(payload, expected, *, nextest=False, filtered=frozenset()):
     seen = set()
     for suite in ET.fromstring(payload).iter("testsuite"):
@@ -497,7 +513,10 @@ def validate_domain_result(result, payloads):
                 expected_rows = optics_keys([json.loads(line) for line in payloads[key + ".list.jsonl"].splitlines()])
                 if not expected_rows:
                     raise ValueError("empty custom host case selection")
-            counts["custom_cases"] += case_events(payloads[key + ".jsonl"], expected_rows, cohorts=cohorts)
+            terminals = case_events(payloads[key + ".jsonl"], expected_rows, cohorts=cohorts)
+            if entry["protocol"] == "custom":
+                native_membership(contract, name, expected_rows, terminals)
+            counts["custom_cases"] += terminals
         for target, discovery in target_discovery.items():
             expected = gtest_discovery(json.dumps(discovery), excluded=excluded_benchmarks) - excluded_benchmarks
             if not target_seen[target] <= expected or (result["scope"] == runtime + "-domains" and target_seen[target] != expected):
@@ -799,7 +818,10 @@ def _native_cases(result, payloads, entries, contract, selected):
             intended = optics_keys([json.loads(line) for line in payloads[key + ".list.jsonl"].splitlines()])
             if not intended:
                 raise ValueError("empty custom case discovery")
-        counts["custom_cases"] += case_events(payloads[key + ".jsonl"], intended, cohorts=cohorts)
+        terminals = case_events(payloads[key + ".jsonl"], intended, cohorts=cohorts)
+        if entry["protocol"] == "custom":
+            native_membership(contract, name, intended, terminals)
+        counts["custom_cases"] += terminals
     for target, actual in seen.items():
         if target not in full_discovery:
             raise ValueError("missing native target discovery")
@@ -944,6 +966,12 @@ def validate_quality_result(result, payloads):
 def validate_production_contract(preset, payloads):
     """Read the completed OFF gate's assertions, never its original file paths."""
     report = json.loads(payloads["production-contract.json"])
+    if report.get("schema") == "production-contract-v2":
+        return _validate_production_contract_v2(preset, payloads, report)
+    return _validate_production_contract_v1(preset, payloads, report)
+
+
+def _validate_production_contract_v1(preset, payloads, report):
     commands_data = payloads["production-commands.json"]
     commands = json.loads(commands_data)
     if (preset not in {"linux-release", "windows-clang-release"}
@@ -974,6 +1002,128 @@ def validate_production_contract(preset, payloads):
                    for row in prepared["rows"])):
         raise ValueError("incomplete or failed production prepared rendering")
     return {"production_off": True, "prepared_render_cases": len(prepared["rows"])}
+
+
+def _validate_production_contract_v2(preset, payloads, report):
+    def digest(value):
+        return (isinstance(value, str) and len(value) == 64
+                and all(char in "0123456789abcdef" for char in value))
+
+    def unchanged(row):
+        return (digest(row["sha256_before"]) and row["sha256_before"] == row["sha256_after"])
+
+    if (preset not in {"linux-release", "windows-clang-release"}
+            or report.get("preset") != preset or report.get("build_testing") != "OFF"
+            or report.get("test_support") != "OFF"
+            or report.get("exports") != ["OfxGetNumberOfPlugins", "OfxGetPlugin"]
+            or report.get("hidden_device_load") is not True):
+        raise ValueError("incomplete production OFF assertions")
+    commands_data = payloads["production-commands.json"]
+    commands = json.loads(commands_data)
+    expected = {"native-symbols", "rust-symbols", "module-exports", "module-symbols",
+                "ofx-probe-build", "ofx-probe", "cuda-abi-probe-build", "cuda-abi-probe",
+                "module-probe", "prepared-render"}
+    if (len(commands) != len(expected) or {row["name"] for row in commands} != expected
+            or any(type(row["returncode"]) is not int or row["returncode"] != 0
+                   or row["process_status"] != "completed" or row["drained"] is not True
+                   or not isinstance(row["command"], list) or not row["command"]
+                   or any(not isinstance(arg, str) or not arg for arg in row["command"])
+                   or not digest(row["stdout_sha256"]) or not digest(row["stderr_sha256"])
+                   for row in commands)
+            or hashlib.sha256(commands_data).hexdigest() != report["commands"]["sha256"]):
+        raise ValueError("missing, failed or undrained production command")
+    scans = report["scanned"]
+    scan_names = {"native-symbols", "rust-symbols", "module-exports", "module-symbols"}
+    if (len(scans) != 4 or {row["name"] for row in scans} != scan_names
+            or any(not digest(row["sha256"]) or row["symbols_and_fault_strings_absent"] is not True
+                   or row["legacy_symbols_absent"] is not True for row in scans)):
+        raise ValueError("incomplete production isolation scan")
+    build_inputs = report["build_inputs"]
+    consumed = report["consumed_inputs"]
+    if (not isinstance(build_inputs, dict) or not build_inputs
+            or not isinstance(consumed, dict) or not consumed
+            or any(not isinstance(path, str) or not path or not unchanged(row)
+                   for path, row in build_inputs.items())
+            or any(not isinstance(path, str) or not path or not unchanged(row)
+                   for path, row in consumed.items())):
+        raise ValueError("changed or missing production input")
+    if any(row["sha256"] != build_inputs[row["file"]]["sha256_before"] for row in scans):
+        raise ValueError("changed production scan input")
+    loaded = report["loaded_module"]
+    module_hash = build_inputs[loaded["file"]]["sha256_before"]
+    if (loaded["sha256"] != module_hash
+            or build_inputs[loaded["build_file"]]["sha256_before"] != module_hash
+            or any(row["sha256"] != module_hash for row in scans
+                   if row["name"] == "module-exports"
+                   or (preset == "linux-release" and row["name"] == "module-symbols"))):
+        raise ValueError("changed production module")
+    probes = report["probes"]
+    if (len(probes) != 2 or {row["name"] for row in probes} != {"ofx", "cuda-abi"}
+            or any(not digest(row["linked_sha256"])
+                   or row["linked_sha256"] != row["before_run_sha256"]
+                   or row["linked_sha256"] != row["after_run_sha256"]
+                   or row["linked_sha256"] != build_inputs[row["executable"]]["sha256_before"]
+                   for row in probes)):
+        raise ValueError("changed or missing production C11 probe")
+    commands_by_name = {row["name"]: row for row in commands}
+    probes_by_name = {row["name"]: row for row in probes}
+    if (commands_by_name["ofx-probe"]["command"] != [probes_by_name["ofx"]["executable"], loaded["file"]]
+            or commands_by_name["cuda-abi-probe"]["command"] != [probes_by_name["cuda-abi"]["executable"]]
+            or loaded["file"] not in commands_by_name["module-probe"]["command"]
+            or any(commands_by_name[row["name"]]["command"][-1] != row["file"] for row in scans)):
+        raise ValueError("production command does not bind inspected inputs")
+    prepared = report["prepared_render"]
+    command = next(row for row in commands if row["name"] == "prepared-render")
+    if (prepared["module"] != loaded["file"] or prepared["module_sha256"] != module_hash
+            or not digest(prepared["executable_sha256_before"])
+            or prepared["executable_sha256_before"] != prepared["executable_sha256_after"]
+            or prepared["executable_sha256_before"] != build_inputs[prepared["executable"]]["sha256_before"]
+            or prepared["fixture_sha256"] != consumed[prepared["fixture"]]["sha256_before"]
+            or prepared["command"] != command["command"]
+            or len(prepared["command"]) != 6
+            or prepared["command"][0] != prepared["executable"]
+            or prepared["command"][1] != loaded["file"]
+            or prepared["command"][3] != prepared["fixture"]
+            or prepared["command"][4] != preset
+            or prepared["stdout_sha256"] != command["stdout_sha256"]
+            or prepared["stderr_sha256"] != command["stderr_sha256"]):
+        raise ValueError("changed production render identity")
+    rows = prepared["rows"]
+    ids = ["negative-direct/cold", "negative-direct/warm", "negative-print/cold", "negative-print/warm"]
+    forbidden = {"recipe_hash", "submitted", "state_released_after_submit", "views_released_after_submit",
+                 "status", "api", "native_code"}
+    observations = ("accepted_fixture_match", "finite_output", "alpha_preserved", "padding_preserved",
+                    "stream_completed", "readback_complete", "context_preserved", "context_restored")
+    if not isinstance(rows, list) or [row["case_id"] for row in rows] != ids:
+        raise ValueError("incomplete production render rows")
+    for row, case_id in zip(rows, ids, strict=True):
+        route, render_pass = case_id.split("/")
+        channels = 3 if route == "negative-direct" else 4
+        shape = [5, 7, channels]
+        if (forbidden.intersection(row) or row["route"] != route or row["pass"] != render_pass
+                or any(not isinstance(row[key], list) or len(row[key]) != 3
+                       or any(type(value) is not int for value in row[key]) or row[key] != shape
+                       for key in ("input_shape", "output_shape"))
+                or type(row["ofx_status"]) is not int or row["ofx_status"] != 0 or row["messages"] != []
+                or type(row["samples_compared"]) is not int or row["samples_compared"] != 5 * 7 * channels
+                or not digest(row["input_sha256"]) or not digest(row["output_f32_words_sha256"])
+                or any(row[key] is not True for key in observations)
+                or any(type(row[key]) is not int or row[key] != 1
+                       for key in ("source_image_releases", "output_image_releases"))):
+            raise ValueError("incomplete or failed production rendering observation")
+    if any(rows[index]["output_f32_words_sha256"] != rows[index + 1]["output_f32_words_sha256"]
+           for index in (0, 2)):
+        raise ValueError("production warm output differs")
+    lifecycle = prepared["lifecycle"]
+    if (any(type(lifecycle[key]) is not int or lifecycle[key] != value for key, value in
+            (("module_load_status", 0), ("effects_created", 2), ("effects_destroyed", 2),
+             ("module_unload_status", 0)))
+            or not isinstance(lifecycle["destroy_statuses"], list)
+            or len(lifecycle["destroy_statuses"]) != 2
+            or any(type(value) is not int or value != 0 for value in lifecycle["destroy_statuses"])
+            or lifecycle["context_restored"] is not True):
+        raise ValueError("incomplete production lifecycle")
+    return {"production_off": True, "prepared_render_cases": len(rows)}
 
 
 def build_result_members(result):

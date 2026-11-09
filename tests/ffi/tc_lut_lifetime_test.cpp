@@ -8,8 +8,6 @@
 #include <string>
 #include <thread>
 
-#include "JuicerState.h"
-#include "ProcessRuntime.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
@@ -21,7 +19,7 @@ namespace {
             throw std::runtime_error(why);
     }
     struct Witness {
-        RenderInstance* publication = nullptr;
+        JuicerTestSupport::InstanceFixture* publication = nullptr;
         const float* wanted = nullptr;
         std::atomic<bool> requested{false}, done{false}, stateLockFree{false};
         std::atomic<unsigned> count{0};
@@ -36,7 +34,7 @@ namespace {
                 witness->done.wait(false);
         }
     }
-    const float* current_pointer(const PreparedState& state) {
+    const float* current_pointer(const JuicerTestSupport::PreparedStateHold& state) {
         FjPreparedStateView view{};
         std::array<char, 2048> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
@@ -44,18 +42,18 @@ namespace {
         require(view.film_exposure.tc_lut_rgba.count == std::size_t{192} * 192u * 4u, "published TC LUT span extent");
         return view.film_exposure.tc_lut_rgba.data;
     }
-    ParamSnapshot snapshot(bool positive, bool print) {
-        ParamSnapshot p;
-        p.filmProfileKey = positive ? "fujifilm_provia_100f" : "kodak_portra_400";
-        p.printProfileKey = "kodak_portra_endura";
-        p.scanRoute = static_cast<Spektrafilm::ScanRoute>((positive ? 2 : 0) + (print ? 1 : 0));
-        p.spectralUpsamplingMode = 0;
-        p.cameraAutoExposureEnabled = 0;
-        p.inputCompressionEnabled = 0;
+    JuicerTestSupport::PreparationInput snapshot(bool positive, bool print) {
+        JuicerTestSupport::PreparationInput p;
+        p.film_key = positive ? "fujifilm_provia_100f" : "kodak_portra_400";
+        p.print_key = "kodak_portra_endura";
+        p.values.scan_route = static_cast<std::uint32_t>((positive ? 2 : 0) + (print ? 1 : 0));
+        p.values.spectral_upsampling_mode = 0;
+        p.values.camera_auto_exposure_enabled = 0;
+        p.values.input_compression_enabled = 0;
         return p;
     }
-    void publication(JuicerProcess::ProcessRuntime& runtime, bool positive, bool fromPrint, int action) {
-        RenderInstance instance;
+    void publication(JuicerTestSupport::RuntimeFixture& runtime, bool positive, bool fromPrint, int action) {
+        JuicerTestSupport::InstanceFixture instance;
         auto p = snapshot(positive, fromPrint);
         JuicerTestSupport::capture(instance, p);
         auto publication = JuicerTestSupport::admit(runtime.borrow().assets, instance);
@@ -68,7 +66,7 @@ namespace {
         if (action == 1)
             p = snapshot(positive, !fromPrint);
         else
-            p.cameraExposureCompensationEv += .25;
+            p.values.camera_exposure_compensation_ev += .25;
         if (action == 2) {
             require(fj_test_tc_lut_arm_fault(1, 1, 4).category == FJ_STATUS_SUCCESS, "ordinary failure injection");
             JuicerTestSupport::capture(instance, p);
@@ -78,7 +76,7 @@ namespace {
                     "TC production failure is returned without admitting the retained previous state");
             require(fj_test_tc_lut_fault_consumed(1, 4) == 1, "ordinary failure consumed before cleanup");
             const auto metrics = JuicerTestSupport::PublicationObserver::metrics(instance);
-            require(metrics.inputIdentity == hash_params(p) && metrics.publishedIdentity == initialMetrics.publishedIdentity &&
+            require(metrics.inputIdentity == JuicerTestSupport::hash_input_identity(p) && metrics.publishedIdentity == initialMetrics.publishedIdentity &&
                         metrics.build == initialMetrics.build && metrics.backingIdentity == initialMetrics.backingIdentity,
                     "TC preparation failure keeps the prior complete publication privately reusable");
             require(current_pointer(*publication.state) == observation.wanted,
@@ -98,7 +96,7 @@ namespace {
         require(replacement.kind == FJ_ADMISSION_READY && replacement.state, "successful replacement admission");
         const auto replacementMetrics = JuicerTestSupport::PublicationObserver::metrics(instance);
         require(replacementMetrics.build == initialMetrics.build + 1 &&
-                    replacementMetrics.publishedIdentity == hash_params(p) &&
+                    replacementMetrics.publishedIdentity == JuicerTestSupport::hash_input_identity(p) &&
                     replacementMetrics.backingIdentity != initialMetrics.backingIdentity,
                 "successful replacement commits matching identity, backing, and build metadata");
         require(fj_test_prepared_live_states() == preparedLiveBefore + 1,
@@ -114,7 +112,7 @@ namespace {
             do {
                 try {
                     const auto metrics = JuicerTestSupport::PublicationObserver::metrics(*observation.publication);
-                    stateFree = metrics.publishedIdentity == hash_params(p) && metrics.build == replacementMetrics.build;
+                    stateFree = metrics.publishedIdentity == JuicerTestSupport::hash_input_identity(p) && metrics.build == replacementMetrics.build;
                 } catch (...) {
                     stateFree = false;
                 }
@@ -140,8 +138,8 @@ namespace {
                 "retired TC handle is released after replacement while the new handle remains live");
         std::printf("F1 positive=%d from_print=%d action=%d release_count=1 state_lock_free=1\n", positive, fromPrint, action);
     }
-    void retained_reader(JuicerProcess::ProcessRuntime& runtime) {
-        RenderInstance instance;
+    void retained_reader(JuicerTestSupport::RuntimeFixture& runtime) {
+        JuicerTestSupport::InstanceFixture instance;
         auto p = snapshot(false, false);
         JuicerTestSupport::capture(instance, p);
         auto held = JuicerTestSupport::admit(runtime.borrow().assets, instance);
@@ -153,16 +151,16 @@ namespace {
         const FjFloatSpan samples = view.film_exposure.tc_lut_rgba;
         const float* address = samples.data;
         require(samples.count == std::size_t{192} * 192u * 4u, "retained complete TC LUT span");
-        p.cameraExposureCompensationEv += .5;
+        p.values.camera_exposure_compensation_ev += .5;
         JuicerTestSupport::capture(instance, p);
         auto replacement = JuicerTestSupport::admit(runtime.borrow().assets, instance);
         require(replacement.kind == FJ_ADMISSION_READY && replacement.state, "retained replacement");
         FjPreparedStateView retained{};
         require(held.state->view(retained, error).category == FJ_STATUS_SUCCESS && retained.film_exposure.tc_lut_rgba.data == address, "retained original allocation");
-        require(fj_legacy_assets_release_cached_payloads(runtime.borrow().assets, &error).category == FJ_STATUS_SUCCESS, "cache release");
+        require(fj_test_assets_release_cached_payloads(runtime.borrow().assets, &error).category == FJ_STATUS_SUCCESS, "cache release");
         std::array<float, 3> rgb{};
         const std::array<float, 3> xyz{1, 0, 0};
-        require(fj_legacy_reconstruction_sample_tc_lut(retained.film_exposure.tc_lut_rgba, xyz.data(), rgb.data(), &error).category == FJ_STATUS_SUCCESS, "retained sampling after replacement/cache release");
+        require(fj_test_boundary_reconstruction_sample_tc_lut(retained.film_exposure.tc_lut_rgba, xyz.data(), rgb.data(), &error).category == FJ_STATUS_SUCCESS, "retained sampling after replacement/cache release");
         std::thread finalRelease([hold = std::move(held.state)]() mutable {
             hold.reset();
         });
@@ -181,7 +179,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         require(argc == 2, "resource root required");
-        JuicerProcess::ProcessRuntime runtime;
+        JuicerTestSupport::RuntimeFixture runtime;
         runtime.create(argv[1]);
         for (bool positive : {false, true})
             for (bool print : {false, true})

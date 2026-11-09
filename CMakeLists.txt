@@ -65,28 +65,25 @@ include(cmake/JuicerSettings.cmake)
 add_library(juicer_native OBJECT ${JUICER_NATIVE_SOURCES})
 target_link_libraries(juicer_native PRIVATE juicer_settings)
 add_library(juicer_host OBJECT ${JUICER_HOST_SOURCES})
-target_link_libraries(juicer_host PRIVATE juicer_settings juicer_ofx_headers)
-add_library(juicer_adapter OBJECT ${JUICER_ADAPTER_SOURCES})
-target_link_libraries(juicer_adapter PRIVATE juicer_settings juicer_ofx_headers)
+target_link_libraries(juicer_host PRIVATE juicer_settings)
 
 # Compiler analysis consumes the ordinary objects for isolation checks and the
 # Rust archive. Testing adds generated headers consumed by compiler analysis;
 # the configured database retains every test-hook variant.
 add_custom_target(juicer_analysis_inputs)
 add_dependencies(juicer_analysis_inputs
-    juicer_native juicer_host juicer_adapter juicer_rust_production_build)
+    juicer_native juicer_host juicer_rust_production_build)
 
 # Preserve one aggregate archive for current product/test links and isolated
 # test-hook object replacement, without compiling a second CUDA implementation.
 add_library(juicer_core STATIC
     $<TARGET_OBJECTS:juicer_native>
-    $<TARGET_OBJECTS:juicer_host>
-    $<TARGET_OBJECTS:juicer_adapter>)
+    $<TARGET_OBJECTS:juicer_host>)
 target_link_libraries(juicer_core PUBLIC juicer_settings juicer_ofx_headers)
 set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 
-add_library(juicer MODULE src/main.cpp)
-target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_ofxs juicer_dependencies)
+add_library(juicer MODULE native/ofx_exports.cpp)
+target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
@@ -100,25 +97,28 @@ if(UNIX)
 endif()
 
 add_executable(JuicerProductionPreparedRenderProbe EXCLUDE_FROM_ALL
-    tests/ffi/production-prepared-render.cpp src/main.cpp)
+    tests/ffi/production-ofx-render.cpp tests/ofx/instance_host.cpp)
+target_include_directories(JuicerProductionPreparedRenderProbe PRIVATE
+    "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi")
 target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE
-    juicer_core film_juicer_rust juicer_ofxs juicer_dependencies CUDA::cuda_driver)
+    juicer_settings juicer_ofx_headers Threads::Threads ${CMAKE_DL_LIBS}
+    CUDA::cudart CUDA::cuda_driver)
 set_target_properties(JuicerProductionPreparedRenderProbe PROPERTIES
-    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
-if(UNIX)
-    set_property(TARGET JuicerProductionPreparedRenderProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
-endif()
+    LINKER_LANGUAGE CXX JUICER_RUST_VARIANT none
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
 
-# These existing C11 value/ABI probes need the real native dependency of the
-# production Rust archive. CMake owns their final link; normal builds exclude them.
+# Frozen expectations belong to the two test-support C11 value consumers.
+# Production probes below use only discovery and the retained native ABI.
 set(JUICER_PRODUCTION_C_PROBES)
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
+if(BUILD_TESTING)
     enable_language(C)
     find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Interpreter)
     if(WIN32)
-        set(probe_preset windows-clang-release)
+        string(TOLOWER "${CMAKE_BUILD_TYPE}" probe_configuration)
+        set(probe_preset "windows-clang-${probe_configuration}")
     else()
-        set(probe_preset linux-release)
+        string(TOLOWER "${CMAKE_BUILD_TYPE}" probe_configuration)
+        set(probe_preset "linux-${probe_configuration}")
     endif()
     set(probe_fixture_directories
         tests/film/fixtures tests/film/input-fixtures tests/film/reference-fixtures
@@ -146,37 +146,36 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
             tests/ffi/effects_frame_probe_contract.py
         COMMENT "Generating C11 production fixture expectations"
         VERBATIM)
-    foreach(probe IN ITEMS Film OutputColor)
-        if(probe STREQUAL "Film")
-            set(probe_source tests/ffi/production-film.c.in)
-        else()
-            set(probe_source tests/ffi/production-output-color.c.in)
-        endif()
-        set(probe_target JuicerProduction${probe}Probe)
-        set_source_files_properties(${probe_source} PROPERTIES LANGUAGE C)
-        add_executable(${probe_target} EXCLUDE_FROM_ALL ${probe_source})
-        if(probe STREQUAL "Film")
-            target_sources(${probe_target} PRIVATE "${probe_expected_header}")
-        endif()
-        set_target_properties(${probe_target} PROPERTIES
-            C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
-            LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
-        target_include_directories(${probe_target} PRIVATE
-            "${PROJECT_SOURCE_DIR}/tests/ffi" "${CMAKE_BINARY_DIR}/production-probes")
-        target_link_libraries(${probe_target} PRIVATE
-            juicer_core film_juicer_rust juicer_dependencies)
-        # Preserve the probes' original C compilation and active assertions.
-        if(WIN32)
-            target_compile_options(${probe_target} PRIVATE /W4 /WX /Od /Ob0 /UNDEBUG)
-        else()
-            target_compile_options(${probe_target} PRIVATE -Wall -Wextra -Werror -O0 -UNDEBUG)
-            set_property(TARGET ${probe_target} PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
-        endif()
-        list(APPEND JUICER_PRODUCTION_C_PROBES ${probe_target})
-    endforeach()
+    add_custom_target(juicer_prepared_value_expectations DEPENDS "${probe_expected_header}")
+
 endif()
 
+enable_language(C)
+add_executable(JuicerProductionOfxProbe EXCLUDE_FROM_ALL tests/ffi/production-ofx.c)
+set_property(TARGET JuicerProductionOfxProbe PROPERTY JUICER_RUST_VARIANT none)
+target_link_libraries(JuicerProductionOfxProbe PRIVATE juicer_ofx_headers ${CMAKE_DL_LIBS})
+add_executable(JuicerProductionCudaAbiProbe EXCLUDE_FROM_ALL tests/ffi/production-cuda-abi.c)
+target_link_libraries(JuicerProductionCudaAbiProbe PRIVATE
+    juicer_core film_juicer_rust juicer_dependencies)
+foreach(probe_target IN ITEMS JuicerProductionOfxProbe JuicerProductionCudaAbiProbe)
+    set_target_properties(${probe_target} PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+        LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
+    target_include_directories(${probe_target} PRIVATE
+        "${PROJECT_SOURCE_DIR}/native" "${PROJECT_SOURCE_DIR}/tests/ffi")
+    if(WIN32)
+        target_compile_options(${probe_target} PRIVATE /TC /W4 /WX /Od /Ob0 /UNDEBUG)
+    else()
+        target_compile_options(${probe_target} PRIVATE -Wall -Wextra -Werror -pedantic-errors -O0 -UNDEBUG)
+    endif()
+endforeach()
+if(UNIX)
+    set_property(TARGET JuicerProductionCudaAbiProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+list(APPEND JUICER_PRODUCTION_C_PROBES JuicerProductionCudaAbiProbe)
+
 include(cmake/JuicerBundle.cmake)
+add_dependencies(JuicerProductionPreparedRenderProbe bundle-archive)
 
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
 include(CTest)
@@ -184,5 +183,5 @@ if(BUILD_TESTING)
     add_subdirectory(tests EXCLUDE_FROM_ALL)
 endif()
 
-juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe
+juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe JuicerProductionOfxProbe
     ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS})

@@ -21,7 +21,6 @@ pub(crate) fn allocation_counts() -> [usize; 2] {
     ]
 }
 
-// FJ_TEMP_BRIDGE: native TC preparation/ownership; remove S4.E.
 #[repr(C)]
 pub(crate) struct FjFilmTcLutInput {
     pub spectra: FjFloatSpan,

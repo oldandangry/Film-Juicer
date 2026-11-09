@@ -1,16 +1,25 @@
+
 #include "render_gpu_fixture.h"
 #include "render_assertions.h"
 #include "../ffi/case_results.h"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <stdexcept>
 #include <cuda.h>
+#include <nlohmann/json.hpp>
 #include <cstdio>
 #include <exception>
 #include <map>
-#include "ofxsImageEffect.h"
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -30,34 +39,114 @@ namespace {
         Route{"route/positive-direct", "NegativeDirectScan", "fujifilm_provia_100f", 2, 3, 11, -3},
         Route{"route/positive-print", "NegativePrintScan", "fujifilm_provia_100f", 0, 4, 0, 0}};
 
-    std::map<std::string, std::vector<float>> reference_prints() {
-        ofx_test::RenderHost reference(OfxGetPlugin(0));
-        std::map<std::string, std::vector<float>> result;
-        for (std::size_t index : {std::size_t{1}, std::size_t{3}}) {
-            const auto& route = kRoutes[index];
-            ofx_test::DeviceImages images({7, 5, route.components});
-            auto* effect = index == 1 ? reference.effect() : reference.host().create_effect();
-            if (index != 1)
-                ofx_test::require_render(reference.call(kOfxActionCreateInstance, effect) == kOfxStatOK, "reference second instance");
-            reference.configure_effect(effect, images, {route.x, route.y});
-            reference.host().set_value(effect, "ScanRoute", {std::string(route.route)});
-            reference.host().set_value(effect, "FilmProfileKey", {std::string(route.profile)});
-            reference.host().set_value(effect, "SpectralUpsampling", {route.reconstruction});
-            ofx_test::require_render(reference.call(kOfxImageEffectActionRender, effect, reference.host().action_args()) == kOfxStatOK,
-                                     "independent reference print render");
-            result.emplace(route.id, images.pixels(images.read()));
-            ofx_test::require_render(reference.host().image_release_count(effect, "Source") == 1 &&
-                                         reference.host().image_release_count(effect, "Output") == 1,
-                                     "reference image release count");
-            if (index != 1)
-                ofx_test::require_render(reference.call(kOfxActionDestroyInstance, effect) == kOfxStatOK, "reference second teardown");
-        }
-        reference.close();
+    OfxPlugin* candidate() {
+        return OfxGetPlugin(0);
+    }
+    using Json = nlohmann::json;
+    using PrintPixels = std::map<std::string, std::vector<float>>;
+    constexpr std::array<std::size_t, 2> kPrintIndices{1, 3};
+
+    std::string preset_name() {
+        const auto name = std::filesystem::path(JUICER_PROCESSOR_RUST_PATH).filename().string();
+        constexpr std::string_view prefix = "processor-", suffix = ".dat";
+        ofx_test::require_render(name.starts_with(prefix) && name.ends_with(suffix), "processor fixture preset name");
+        const auto preset = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+        ofx_test::require_render(preset == "windows-clang-debug" || preset == "windows-clang-release" ||
+                                     preset == "linux-debug" || preset == "linux-release",
+                                 "unsupported native preset");
+        return preset;
+    }
+    std::vector<float> expected_input(const Route& route) {
+        std::vector<float> result;
+        result.reserve(std::size_t{7} * std::size_t{5} * static_cast<std::size_t>(route.components));
+        for (int y = 0; y < 5; ++y)
+            for (int x = 0; x < 7; ++x)
+                for (int c = 0; c < route.components; ++c)
+                    result.push_back(c == 3 ? 0.125f + static_cast<float>((x + y) % 4) * 0.25f
+                                            : static_cast<float>((x + 3 * y + 7 * c) % 19) / 19.0f);
         return result;
+    }
+    Json words(const std::vector<float>& values) {
+        auto result = Json::array();
+        for (const auto value : values)
+            result.push_back(std::bit_cast<std::uint32_t>(value));
+        return result;
+    }
+    std::vector<float> decode_words(const Json& input, std::size_t expected) {
+        ofx_test::require_render(input.is_array() && input.size() == expected, "print reference word count");
+        std::vector<float> result;
+        result.reserve(expected);
+        for (const auto& word : input) {
+            ofx_test::require_render(word.is_number_unsigned() && word.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max(), "print reference word type");
+            result.push_back(std::bit_cast<float>(word.get<std::uint32_t>()));
+        }
+        return result;
+    }
+    Json metadata(const Route& route) {
+        return Json::array({route.id, route.route, route.profile, route.reconstruction, 7, 5, route.components, route.x, route.y, 5, 5, std::bit_cast<std::uint64_t>(37.0), std::bit_cast<std::uint64_t>(24.0), Json::array({0, 0, 0, 0, 0, 0}), words(expected_input(route))});
+    }
+    PrintPixels decode_prints(const Json& document) {
+        ofx_test::require_render(document.is_array() && document.size() == 4 &&
+                                     document[0] == "film-juicer-ofx-print-reference-v1" &&
+                                     document[1] == "d4bc2135d02ed88c91403040c4429a4fdb802a2b" &&
+                                     document[2] == preset_name() && document[3].is_array() && document[3].size() == 2,
+                                 "print reference provenance or membership");
+        PrintPixels result;
+        for (std::size_t row = 0; row < kPrintIndices.size(); ++row) {
+            const auto& route = kRoutes[kPrintIndices[row]];
+            const auto& entry = document[3][row];
+            ofx_test::require_render(entry.is_array() && entry.size() == 2 && entry[0] == metadata(route),
+                                     "print reference row order or inputs");
+            const auto input = expected_input(route);
+            auto pixels = decode_words(entry[1], input.size());
+            RenderAssertions::compare_pixels(route.id, pixels, pixels);
+            for (std::size_t i = 3; i < pixels.size(); i += 4)
+                RenderAssertions::require_same_bits("reference alpha", pixels[i], input[i]);
+            ofx_test::require_render(result.emplace(route.id, std::move(pixels)).second, "duplicate print reference row");
+        }
+        return result;
+    }
+    void check_reference_controls(const Json& document, const PrintPixels& pixels) {
+        auto altered = document;
+        altered[3][0][0][0] = "altered-row";
+        bool rejected = false;
+        try {
+            (void)decode_prints(altered);
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        ofx_test::require_render(rejected, "altered print reference row accepted");
+        altered = document;
+        std::swap(altered[3][0], altered[3][1]);
+        rejected = false;
+        try {
+            (void)decode_prints(altered);
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        ofx_test::require_render(rejected, "reordered print reference rows accepted");
+        auto damaged = pixels.at(kRoutes[kPrintIndices[0]].id);
+        damaged.front() += 1.0f;
+        rejected = false;
+        try {
+            RenderAssertions::compare_pixels("altered reference pixel", damaged, pixels.at(kRoutes[kPrintIndices[0]].id));
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        ofx_test::require_render(rejected, "altered print reference pixel accepted");
+    }
+    Json read_prints(const char* path) {
+        std::ifstream input(path, std::ios::binary);
+        ofx_test::require_render(static_cast<bool>(input), "print reference unavailable");
+        Json record;
+        input >> record;
+        input >> std::ws;
+        ofx_test::require_render(input.eof(), "extra print reference data");
+        return record;
     }
     void route_case(const Route& route, const std::map<std::string, std::vector<float>>& prints) {
         ofx_test::DeviceImages images({7, 5, route.components});
-        ofx_test::RenderHost fixture;
+        ofx_test::RenderHost fixture(candidate());
         fixture.configure(images, {route.x, route.y});
         fixture.host().set_value(fixture.effect(), "ScanRoute", {std::string(route.route)});
         fixture.host().set_value(fixture.effect(), "FilmProfileKey", {std::string(route.profile)});
@@ -84,8 +173,20 @@ namespace {
             ofx_test::require_render(std::isfinite(value) && value >= 0.0f && value <= 1.0f, "route pixel outside finite output range");
         if (std::string_view(route.route) == "NegativeDirectScan")
             RenderAssertions::compare_pixels(route.id, actual, ofx_test::reference_pixels(JUICER_PROCESSOR_RUST_PATH, std::string_view(route.id).substr(6)));
-        else
+        else {
             RenderAssertions::compare_pixels(route.id, actual, prints.at(route.id));
+            if (std::string_view(route.id) == "route/negative-print") {
+                auto altered = prints.at(route.id);
+                altered.front() += 1.0f;
+                bool rejected = false;
+                try {
+                    RenderAssertions::compare_pixels("candidate altered reference", actual, altered);
+                } catch (const std::exception&) {
+                    rejected = true;
+                }
+                ofx_test::require_render(rejected, "candidate accepted altered print reference");
+            }
+        }
         const std::size_t releases = print ? 2 : 1;
         ofx_test::require_render(fixture.host().image_release_count(fixture.effect(), "Source") == releases &&
                                      fixture.host().image_release_count(fixture.effect(), "Output") == releases,
@@ -99,7 +200,7 @@ namespace {
         const int destination_extra = name == "geometry/pitch" ? 13 : 5;
         const int border = name == "geometry/bounds" ? 1 : 0;
         ofx_test::DeviceImages images({7, 5, components, 5, destination_extra, border});
-        ofx_test::RenderHost fixture;
+        ofx_test::RenderHost fixture(candidate());
         fixture.configure(images, {x, y});
         fixture.host().set_value(fixture.effect(), "ScanRoute", {std::string("NegativeDirectScan")});
         fixture.host().set_value(fixture.effect(), "GlareActive", {0});
@@ -210,7 +311,7 @@ namespace {
     constexpr std::array kStreamRows{"stream/missing", "stream/null", "stream/explicit"};
     void stream_case(std::string_view name) {
         ofx_test::DeviceImages images({7, 5, 3});
-        ofx_test::RenderHost fixture;
+        ofx_test::RenderHost fixture(candidate());
         fixture.configure(images);
         fixture.host().set_value(fixture.effect(), "ScanRoute", {std::string("NegativeDirectScan")});
         if (name == "stream/missing")
@@ -225,7 +326,7 @@ namespace {
     }
     void wrong_context_case() {
         ofx_test::DeviceImages images({7, 5, 3});
-        ofx_test::RenderHost fixture;
+        ofx_test::RenderHost fixture(candidate());
         fixture.configure(images);
         CUcontext current = nullptr;
         CUcontext other = nullptr;
@@ -262,7 +363,7 @@ namespace {
     void owners_case(bool teardown) {
         ofx_test::DeviceImages first({7, 5, 3});
         ofx_test::DeviceImages second({7, 5, 3});
-        ofx_test::RenderHost fixture;
+        ofx_test::RenderHost fixture(candidate());
         fixture.configure(first);
         auto* other = fixture.host().create_effect();
         ofx_test::require_render(fixture.call(kOfxActionCreateInstance, other) == kOfxStatOK, "create second instance");
@@ -285,7 +386,7 @@ namespace {
     }
     void cancellation_case() {
         ofx_test::DeviceImages images({7, 5, 3});
-        ofx_test::RenderHost fixture;
+        ofx_test::RenderHost fixture(candidate());
         fixture.configure(images);
         fixture.host().set_value(fixture.effect(), "ScanRoute", {std::string("NegativeDirectScan")});
         fixture.host().set_abort(true);
@@ -318,8 +419,11 @@ int main(int argc, char** argv) try {
         JuicerTests::list_case(kCaller, "owners/teardown");
         return 0;
     }
+    ofx_test::require_render(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: GPU render fixture --reference file");
     JuicerTests::CaseLog log;
-    const auto prints = reference_prints();
+    const auto record = read_prints(argv[2]);
+    const auto prints = decode_prints(record);
+    check_reference_controls(record, prints);
     std::vector<std::string> ids;
     ids.reserve(20);
     for (const auto& route : kRoutes)

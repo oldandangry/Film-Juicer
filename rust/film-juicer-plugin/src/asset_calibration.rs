@@ -1,11 +1,15 @@
 //! Selected calibration outcomes, separate from private raw projection and recipe policy.
 #![forbid(unsafe_code)]
 
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::assets::{AssetError, Assets};
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::data_io::calibration::{ErrorKind, Field};
+#[cfg(any(test, feature = "test-support"))]
 use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) enum CalibrationField {
     ResourceRead,
     Root,
@@ -14,12 +18,14 @@ pub(crate) enum CalibrationField {
     CmyCc,
 }
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) enum CalibrationLookup {
     Found([f32; 3]),
     MissingFile,
     MissingEntry,
     Malformed(CalibrationField),
 }
+#[cfg(any(test, feature = "test-support"))]
 fn classify(error: AssetError) -> Result<CalibrationLookup, AssetError> {
     let AssetError::Calibration(detail) = &error else {
         return Err(error);
@@ -36,6 +42,7 @@ fn classify(error: AssetError) -> Result<CalibrationLookup, AssetError> {
         })),
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn lookup(
     assets: &Assets,
     print_stock: &str,

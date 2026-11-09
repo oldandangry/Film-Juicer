@@ -93,9 +93,13 @@ namespace OpticsTest {
                     metadata(failure);
                     representations(out);
                     if (out.camera_lens_blur.hash != 0) {
-                        const CameraLensBlurOpticsRecipe lens{out.camera_lens_blur.sigma_um, out.camera_lens_blur.hash};
-                        std::string diagnostic;
-                        require(!Spektrafilm::preflight_camera_lens_blur(lens, diagnostic) && diagnostic == "ExactOpticsNotImplementedForPhase6 component=camera_lens_blur", "positive lens remains rejected by render preflight");
+                        std::array<char, 256> text{};
+                        FjErrorBuffer error{text.data(), text.size(), 0};
+                        const auto rejected = fj_test_camera_lens_blur_preflight(out.camera_lens_blur.sigma_um, &error);
+                        require(rejected.category == FJ_STATUS_PREPARATION_FAILURE && rejected.api == FJ_API_NONE && rejected.native_code == 0 &&
+                                    error.length < text.size() && text[error.length] == '\0' &&
+                                    std::string_view(text.data(), error.length) == "ExactOpticsNotImplementedForPhase6 component=camera_lens_blur",
+                                "positive lens remains rejected by render preflight");
                     }
                     require(project(out) == row.at("recipe"), "all frozen f32/f64 fields, flags/tags and seven identities");
                 } else {
@@ -408,12 +412,6 @@ namespace OpticsTest {
                 run_operation(operation, caller, captured);
         }
     }
-    Spektrafilm::DiffusionFilterAuthoredControls native_diffusion(const FjDiffusionParams& v) {
-        return {v.active != 0, static_cast<Spektrafilm::DiffusionFilterFamily>(v.family), v.strength, v.spatial_scale, v.halo_warmth, v.core_intensity, v.core_size, v.halo_intensity, v.halo_size, v.bloom_intensity, v.bloom_size};
-    }
-    Spektrafilm::SpatialOpticsControls native_controls(const FjSpatialOpticsParams& v) {
-        return {native_diffusion(v.camera_diffusion), v.camera_lens_blur_um, {v.scatter_halation.active != 0, v.scatter_halation.scatter_amount, v.scatter_halation.scatter_spatial_scale, v.scatter_halation.halation_amount, v.scatter_halation.halation_spatial_scale}, native_diffusion(v.enlarger_diffusion)};
-    }
     struct ProductFixtures {
         Json products;
         Json literals;
@@ -423,7 +421,7 @@ namespace OpticsTest {
         const auto& captured = fixtures.products;
         const auto& literals = fixtures.literals;
         const auto& ofx = fixtures.ofx;
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         const auto find = [&](const char* id) -> const Json& {
             for (const auto& row : literals.at("cases"))
@@ -452,29 +450,32 @@ namespace OpticsTest {
                 input.camera_diffusion.active = 0;
                 input.camera_diffusion.strength = invalidStrength;
             }
-            const auto controls = native_controls(input);
-            ParamSnapshot params;
-            params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            params.printProfileKey = "kodak_portra_endura";
-            params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-            params.cameraAutoExposureEnabled = 0;
-            params.inputCompressionEnabled = 0;
-            params.outputGamutCompressionEnabled = 0;
-            params.cameraDiffusion = controls.cameraDiffusion;
-            params.enlargerDiffusion = controls.enlargerDiffusion;
-            params.scatterHalationControls = controls.scatterHalation;
+            JuicerTestSupport::PreparationInput params;
+            params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            params.print_key = "kodak_portra_endura";
+            params.values.scan_route = static_cast<std::uint32_t>(route);
+            params.values.camera_auto_exposure_enabled = 0;
+            params.values.input_compression_enabled = 0;
+            params.values.output_gamut_compression_enabled = 0;
+            params.values.camera_diffusion = input.camera_diffusion;
+            params.values.enlarger_diffusion = input.enlarger_diffusion;
+            params.values.scatter_halation = {input.scatter_halation.active,
+                                              input.scatter_halation.scatter_amount,
+                                              input.scatter_halation.scatter_spatial_scale,
+                                              input.scatter_halation.halation_amount,
+                                              input.scatter_halation.halation_spatial_scale};
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-            std::optional<PreparedState> product;
+            std::optional<JuicerTestSupport::PreparedStateHold> product;
             const auto* assets = owner.borrow().assets;
-            const FjStatus result = prepare_state(assets, params, product, error);
+            const FjStatus result = JuicerTestSupport::prepare_state(assets, params, product, error);
             const bool built = result.category == FJ_STATUS_SUCCESS && product.has_value();
             const std::string observedDiagnostic(diagnostic.data(), error.length);
             FjPreparedStateView view{};
             if (built)
                 status(product->view(view, error));
             require(built == row.at("success").get<bool>() && observedDiagnostic == row.at("diagnostic").get<std::string>(), "genuine held-state route product outcome and first failure");
-            Json actual{{"snapshot_hash", hash_params(params)}, {"final_hash", built ? view.recipe_hash : 0}};
+            Json actual{{"snapshot_hash", JuicerTestSupport::hash_input_identity(params)}, {"final_hash", built ? view.recipe_hash : 0}};
             Json expected{{"snapshot_hash", row.at("snapshot_hash")}, {"final_hash", row.at("final_hash")}};
             if (built) {
                 actual["recipe"] = project(view.optics);
@@ -489,16 +490,16 @@ namespace OpticsTest {
         }
         for (unsigned route = 0; route < 4; ++route) {
             JuicerTests::CaseEvent event("cpp", "optics/publication/" + std::to_string(route));
-            ParamSnapshot baseline;
-            baseline.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            baseline.printProfileKey = "kodak_portra_endura";
-            baseline.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-            baseline.cameraAutoExposureEnabled = 0;
-            baseline.inputCompressionEnabled = 0;
-            baseline.outputGamutCompressionEnabled = 0;
-            baseline.grainControls.active = false;
-            baseline.cameraDiffusion.active = true;
-            RenderInstance state;
+            JuicerTestSupport::PreparationInput baseline;
+            baseline.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            baseline.print_key = "kodak_portra_endura";
+            baseline.values.scan_route = static_cast<std::uint32_t>(route);
+            baseline.values.camera_auto_exposure_enabled = 0;
+            baseline.values.input_compression_enabled = 0;
+            baseline.values.output_gamut_compression_enabled = 0;
+            baseline.values.grain.active = false;
+            baseline.values.camera_diffusion.active = true;
+            JuicerTestSupport::InstanceFixture state;
             JuicerTestSupport::capture(state, baseline);
             const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(admitted.kind == FJ_ADMISSION_READY && admitted.state,
@@ -507,8 +508,8 @@ namespace OpticsTest {
             const auto hash = held.recipe_hash;
             const auto baselineMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
             auto invalid = baseline;
-            invalid.cameraDiffusion.active = false;
-            invalid.cameraDiffusion.strength = invalidStrength;
+            invalid.values.camera_diffusion.active = false;
+            invalid.values.camera_diffusion.strength = invalidStrength;
             JuicerTestSupport::capture(state, invalid);
             const auto rejected = JuicerTestSupport::admit(owner.borrow().assets, state);
             const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
@@ -530,11 +531,11 @@ namespace OpticsTest {
                         JuicerTestSupport::PublicationObserver::metrics(state).build == baselineMetrics.build,
                     "unchanged recovered publication reuses state");
             auto unused = baseline;
-            unused.enlargerDiffusion.family = static_cast<Spektrafilm::DiffusionFilterFamily>(255);
-            unused.enlargerDiffusion.strength = invalidStrength;
+            unused.values.enlarger_diffusion.family = static_cast<std::uint32_t>(255);
+            unused.values.enlarger_diffusion.strength = invalidStrength;
             std::string diagnostic;
             FjStatus delivery{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-            const auto build = [&](const ParamSnapshot& input) {
+            const auto build = [&](const JuicerTestSupport::PreparationInput& input) {
                 JuicerTestSupport::capture(state, input);
                 const auto result = JuicerTestSupport::admit(owner.borrow().assets, state);
                 delivery = result.delivery;
@@ -547,10 +548,10 @@ namespace OpticsTest {
             else {
                 const auto direct = JuicerTestSupport::admit(owner.borrow().assets, state);
                 const auto directView = JuicerTestSupport::published_view(direct);
-                require(success && directView.optics.hash == held.optics.hash && hash_params(unused) != hash_params(baseline), "direct ignores enlarger policy while native authored snapshot still changes");
+                require(success && directView.optics.hash == held.optics.hash && JuicerTestSupport::hash_input_identity(unused) != JuicerTestSupport::hash_input_identity(baseline), "direct ignores enlarger policy while native authored snapshot still changes");
             }
             auto badInput = baseline;
-            badInput.inputColorSpace = -1;
+            badInput.values.input_color_space = -1;
             status(fj_test_prepared_optics_resolved_hash_fault());
             const std::string bareInputDiagnostic = "UnsupportedMode phase=3B field=input_color_space";
             require(!build(badInput) &&
@@ -559,15 +560,15 @@ namespace OpticsTest {
                     "actual admission preserves the bare unsupported-input diagnostic and leaves optics fault pending");
             std::array<char, 2048> rawDiagnosticText{};
             FjErrorBuffer rawError{rawDiagnosticText.data(), rawDiagnosticText.size(), 0};
-            std::optional<PreparedState> rawProduct;
-            const auto rawStatus = prepare_state(owner.borrow().assets, badInput, rawProduct, rawError);
+            std::optional<JuicerTestSupport::PreparedStateHold> rawProduct;
+            const auto rawStatus = JuicerTestSupport::prepare_state(owner.borrow().assets, badInput, rawProduct, rawError);
             const std::string observedRawDiagnostic(rawDiagnosticText.data(), rawError.length);
             require(rawStatus.category == FJ_STATUS_UNSUPPORTED_INPUT && rawStatus.api == FJ_API_NONE &&
                         rawStatus.native_code == 0 && !rawProduct && observedRawDiagnostic == bareInputDiagnostic,
                     "direct constructor retains the bare unsupported-input status and diagnostic without an owner");
             auto badGrain = baseline;
-            badGrain.grainControls.active = true;
-            badGrain.grainControls.particleAreaUm2 = 0;
+            badGrain.values.grain.active = true;
+            badGrain.values.grain.particle_area_um2 = 0;
             require(!build(badGrain) && diagnostic == "ResourceDescriptorMismatch phase=6A component=camera_diffusion field=resolved_hash", "actual optics guard precedes later grain construction");
             require(!build(badGrain) && diagnostic == "MalformedRequiredProfileData phase=9A field=visual_grain", "consumed optics fault permits the later grain failure");
             require(held.recipe_hash == hash && fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "failures preserve publications and drain temporary construction holds");

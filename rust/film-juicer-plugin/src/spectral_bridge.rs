@@ -353,11 +353,15 @@ pub(crate) unsafe fn inverse_call(
         })
     }
 }
-// FJ_TEMP_BRIDGE: spectral value preparation; remove S4.E.
+
 /// # Safety
-/// Required storage obeys the legacy header's synchronous disjoint-storage contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_spectral_tables(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_spectral_tables(
     input: *const FjSpectralInput,
     out: *mut FjSpectralTables,
     error: *mut FjErrorBuffer,
@@ -365,10 +369,15 @@ pub(crate) unsafe extern "C" fn fj_legacy_spectral_tables(
     // SAFETY: Caller supplies the complete initialized input and exclusive outputs.
     unsafe { tables_call(input, out, error, false) }
 }
+
 /// # Safety
-/// Required inputs/outputs/error obey the synchronous C spectral contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_spectral_white(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_spectral_white(
     input: *const FjSpectralWhiteInput,
     out: *mut FjSpectralWhite,
     failure: *mut FjSpectralWhiteFailure,
@@ -377,10 +386,15 @@ pub(crate) unsafe extern "C" fn fj_legacy_spectral_white(
     // SAFETY: Caller retains all live source arrays and exclusive output storage.
     unsafe { white_call(input, out, failure, error, false) }
 }
+
 /// # Safety
-/// Weighted arrays and output/error obey the synchronous C spectral contract.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn fj_legacy_spectral_s_inverse(
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_spectral_s_inverse(
     input: *const FjSpectralSInput,
     out: *mut FjSpectralInverse,
     error: *mut FjErrorBuffer,

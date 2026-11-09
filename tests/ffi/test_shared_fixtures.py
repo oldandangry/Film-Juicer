@@ -1,6 +1,5 @@
 """Frozen logical captures share storage without sharing mutable patch state."""
 
-import ast
 from copy import deepcopy
 import hashlib
 import json
@@ -341,41 +340,40 @@ class SharedFixtureTests(unittest.TestCase):
     test_effects_frame_exact_native_contexts_and_complete_production_cases.required_subtests = True
 
     def test_production_grain_fixture_records_keep_both_authorities(self):
+        import production_contract
+
         root = Path(__file__).parents[2]
-        tree = ast.parse((root / "tests/ffi/production_contract.py").read_text())
-        record = next(node for node in ast.walk(tree) if isinstance(node, ast.Dict)
-                      and {"grain_fixture", "grain_frame_fixture"} <= {
-                          key.value for key in node.keys if isinstance(key, ast.Constant)})
-        fields = {key.value: value for key, value in zip(record.keys, record.values)
-                  if isinstance(key, ast.Constant)}
-        projection = ast.Dict(keys=[ast.Constant("grain_fixture"), ast.Constant("grain_frame_fixture")],
-                              values=[deepcopy(fields["grain_fixture"]), deepcopy(fields["grain_frame_fixture"])])
+        consumer = (root / "tests/ffi/prepared-values.c").read_text()
+        self.assertIn('#include "production-film-expected.h"', consumer)
+        self.assertIn("grain_recipe_hash", consumer.lower())
+        self.assertIn("grain_frame_rows", consumer)
         self.subtest_cases = tuple(f"preset/{preset}" for preset in PRESETS)
         for preset in PRESETS:
-            grain_manifest = root / "tests/film/grain-fixtures/manifest.json"
-            grain_payload = grain_manifest.parent / json.loads(grain_manifest.read_bytes())["presets"][preset]["values"]
-            frame_manifest = root / "tests/grain/frame-fixtures/manifest.json"
-            frame_spec = json.loads(frame_manifest.read_bytes())
-            frame_payload = frame_manifest.parent / frame_spec["presets"][preset]["native"]
-            bindings = {"str": str, "arguments": SimpleNamespace(preset=preset),
-                        "grain_manifest": grain_manifest, "grain_payload": grain_payload,
-                        "grain_frame_manifest": frame_manifest, "grain_frame_payload": frame_payload,
-                        "grain_frame_checked": frame_manifest.parent / frame_spec["checked"]}
-
-            def render(expression):
-                code = compile(ast.fix_missing_locations(ast.Expression(expression)), "production fixture records", "eval")
-                return eval(code, {"__builtins__": {}}, bindings)
-
-            with self.subTest(case=f"preset/{preset}"):
-                actual = render(deepcopy(projection))
-                self.assertEqual(actual["grain_fixture"], {"manifest": str(grain_manifest), "payload": str(grain_payload), "logical_preset": preset})
-                self.assertEqual(actual["grain_frame_fixture"], {"manifest": str(frame_manifest), "payload": str(frame_payload),
-                    "normative": str(bindings["grain_frame_checked"]), "input_spec": str(frame_manifest.parent / "inputs.json"), "logical_preset": preset})
-                damaged = deepcopy(projection)
-                for node in ast.walk(damaged):
-                    if isinstance(node, ast.Name) and node.id in ("grain_frame_manifest", "grain_frame_payload"):
-                        node.id = node.id.replace("grain_frame_", "grain_")
-                self.assertNotEqual(render(damaged)["grain_frame_fixture"], actual["grain_frame_fixture"])
+            with self.subTest(case=f"preset/{preset}"), TemporaryDirectory(prefix="grain authorities ") as temporary:
+                grain_manifest = root / "tests/film/grain-fixtures/manifest.json"
+                grain_spec = json.loads(grain_manifest.read_bytes())
+                grain_payload = grain_manifest.parent / grain_spec["presets"][preset]["values"]
+                frame_manifest = root / "tests/grain/frame-fixtures/manifest.json"
+                frame_spec = json.loads(frame_manifest.read_bytes())
+                frame_payload = frame_manifest.parent / frame_spec["presets"][preset]["native"]
+                frame_checked = frame_manifest.parent / frame_spec["checked"]
+                self.assertNotEqual(grain_manifest, frame_manifest)
+                self.assertNotEqual(grain_payload, frame_payload)
+                self.assertEqual(hashlib.sha256(grain_payload.read_bytes()).hexdigest(), grain_spec["payload_sha256"][grain_payload.name])
+                for path in (frame_payload, frame_checked, frame_manifest.parent / "inputs.json"):
+                    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), frame_spec["sha256"][path.name])
+                grain = next(row for row in json.loads(grain_payload.read_bytes())["products"]
+                             if row["key"] == "kodak_portra_400" and row["route"] == 0
+                             and row["gamma"] == [1065353216] and row["controls"]["active"]
+                             and row["controls"]["sublayers_active"])
+                directory = Path(temporary)
+                with patch.object(production_contract, "arguments", SimpleNamespace(preset=preset)):
+                    production_contract.expected_film_header(directory)
+                    production_contract.expected_grain_frame_header(directory)
+                header = (directory / "production-film-expected.h").read_text()
+                self.assertIn("#define GRAIN_RECIPE_HASH UINT64_C(" + str(grain["grain"]["hash"]) + ")", header)
+                for case in frame_spec["production_cases"]:
+                    self.assertIn(json.dumps(case["case"]), header)
 
     test_production_grain_fixture_records_keep_both_authorities.required_subtests = True
 

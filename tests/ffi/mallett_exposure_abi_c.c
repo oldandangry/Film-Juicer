@@ -18,10 +18,10 @@ int fj_test_mallett_exposure_abi_c(const FjMallettMidgrayInput* focused,
                                    const FjMallettReferenceInput* reference,
                                    FjReferenceRaw* raw,
                                    FjErrorBuffer* error) {
-    FjStatus (*midgray_fn)(const FjMallettMidgrayInput*, FjMallettMidgray*, FjErrorBuffer*) = fj_legacy_exposure_mallett_midgray;
-    FjStatus (*tc_fn)(float, FjMidgrayNormalization*, FjErrorBuffer*) = fj_legacy_exposure_tc_midgray;
-    FjStatus (*source_fn)(float, float*, FjErrorBuffer*) = fj_legacy_exposure_reference_source;
-    FjStatus (*reference_fn)(const FjMallettReferenceInput*, FjReferenceRaw*, FjErrorBuffer*) = fj_legacy_exposure_mallett_reference_raw;
+    FjStatus (*midgray_fn)(const FjMallettMidgrayInput*, FjMallettMidgray*, FjErrorBuffer*) = fj_test_boundary_exposure_mallett_midgray;
+    FjStatus (*tc_fn)(float, FjMidgrayNormalization*, FjErrorBuffer*) = fj_test_boundary_exposure_tc_midgray;
+    FjStatus (*source_fn)(float, float*, FjErrorBuffer*) = fj_test_boundary_exposure_reference_source;
+    FjStatus (*reference_fn)(const FjMallettReferenceInput*, FjReferenceRaw*, FjErrorBuffer*) = fj_test_boundary_exposure_mallett_reference_raw;
     FjStatus a = midgray_fn(focused, focused_out, error);
     FjStatus b = tc_fn(green, normalization, error);
     FjStatus c = source_fn(ev, source, error);

@@ -3,7 +3,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <string>
 
 #include "OutputColor.h"
 
@@ -18,7 +17,7 @@ namespace Gamut {
         static_cast<std::size_t>(kOutputBoundaryLightnessCount) *
         static_cast<std::size_t>(kOutputBoundaryHueCount);
 
-    // FJ_TEMP_BRIDGE: completed Rust transform carrier; remove S4.E.
+    // Completed Rust transform coefficients consumed by native execution.
     struct OutputGamutTransform {
         std::array<float, 9> nativeRgbToD65Xyz{};
         std::array<float, 9> d65XyzToNativeRgb{};
@@ -29,15 +28,6 @@ namespace Gamut {
         bool valid = false;
     };
 
-    // FJ_TEMP_BRIDGE: standalone mathematical fixture value; remove at its last S4.E caller.
-    struct OutputBoundaryTable {
-        std::array<float, kOutputBoundaryValueCount> cmax{};
-        std::uint64_t transformHash = 0;
-        std::uint64_t contractHash = 0;
-        std::uint64_t hash = 0;
-        bool valid = false;
-        std::string diagnostic;
-    };
 
     // Pinned colour-science 0.4.6 OkLab matrices, shared by host construction
     // and the CUDA scalar path added at the execution boundary.
@@ -223,15 +213,6 @@ namespace Gamut {
     }
 
 #undef JUICER_GAMUT_HOST_DEVICE
-
-    // FJ_TEMP_BRIDGE: standalone mathematical fixture value; remove at its last S4.E caller.
-    struct InputCompressionHull {
-        std::array<std::array<float, 2>, kInputHullDirectionCount + 1> xy{};
-        std::array<float, 2> center{};
-        std::uint64_t hash = 0;
-        bool valid = false;
-        std::string diagnostic;
-    };
 
 
 } // namespace Gamut

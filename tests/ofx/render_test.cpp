@@ -9,8 +9,9 @@
 #include <vector>
 
 #include "instance_host.h"
+#include "host_reference.h"
+
 #include "juicer_ofx_api.h"
-#include "ofxsImageEffect.h"
 #include "../ffi/case_results.h"
 
 namespace {
@@ -27,6 +28,21 @@ namespace {
         std::size_t source_releases = 0;
         std::size_t output_releases = 0;
     };
+    using ofx_test::reference::Json;
+    Json reference_rows = Json::array();
+    std::size_t reference_cursor = 0;
+    std::string reference_group;
+    Json encode(const Result& result) {
+        return Json::array({result.status, ofx_test::reference::calls(result.calls), result.source_releases, result.output_releases});
+    }
+    Result decode(const Json& item) {
+        if (!item.is_array() || item.size() != 4)
+            throw std::runtime_error("render reference shape");
+        Result result{item[0].get<int>(), ofx_test::reference::instance_calls(item[1]), item[2].get<std::size_t>(), item[3].get<std::size_t>()};
+        if (encode(result) != item)
+            throw std::runtime_error("render reference encoding");
+        return result;
+    }
     struct Fault {
         std::string_view operation;
         OfxStatus status = kOfxStatOK;
@@ -106,9 +122,16 @@ namespace {
         host.set_image_property(effect, clip, kOfxImagePropPixelAspectRatio, {1.0});
         host.set_clip_region(effect, clip, {static_cast<double>(image.bounds.x1), static_cast<double>(image.bounds.y1), static_cast<double>(image.bounds.x2), static_cast<double>(image.bounds.y2)});
     }
-    Result run(OfxPlugin* plugin, InstanceHost& host, const RenderInput& input) {
-        if (plugin != fj_ofx_plugin(0))
-            plugin = OfxGetPlugin(0);
+    Result run(OfxPlugin* plugin, InstanceHost& host, const RenderInput& input, std::string_view reference_id = {}) {
+        if (!reference_id.empty()) {
+            if (reference_cursor >= reference_rows.size())
+                throw std::runtime_error("missing render reference row");
+            const auto& row = reference_rows[reference_cursor++];
+            if (!row.is_array() || row.size() != 2 || row[0] != reference_group + "/" + std::string(reference_id))
+                throw std::runtime_error("render reference row order");
+            const auto expected = decode(row[1]);
+            return expected;
+        }
         require(plugin != nullptr, "reference descriptor reacquired before Load");
         plugin->setHost(host.binding());
         require(action(plugin, kOfxActionLoad) == kOfxStatOK, "plugin load");
@@ -147,9 +170,19 @@ namespace {
     }
     void same(const Result& reference, const Result& candidate, std::string_view id) {
         require(reference.status == candidate.status, std::string(id) + ": status differs from C++ mainEntry");
-        require(reference.calls == candidate.calls, std::string(id) + ": callback trace differs from C++ mainEntry");
+        require(ofx_test::reference::calls(reference.calls) == ofx_test::reference::calls(candidate.calls), std::string(id) + ": callback trace differs from C++ mainEntry");
         require(reference.source_releases == candidate.source_releases, std::string(id) + ": Source release count differs");
         require(reference.output_releases == candidate.output_releases, std::string(id) + ": Output release count differs");
+        if (id == "keys") {
+            auto altered = reference;
+            altered.status = -100;
+            require(altered.status != candidate.status, "candidate accepted altered render status");
+            altered = reference;
+            require(altered.calls.size() > 1, "render reference order boundary");
+            std::swap(altered.calls[0], altered.calls[1]);
+            require(ofx_test::reference::calls(altered.calls) != ofx_test::reference::calls(candidate.calls),
+                    "candidate accepted reordered render calls");
+        }
     }
     void require_getters(const Result& result, ExpectedProfileReads expected, std::string_view id) {
         std::vector<const InstanceCall*> reads;
@@ -217,7 +250,7 @@ namespace {
         for (const auto& test : all_cases) {
             auto row = rows.case_event(test.id);
             InstanceHost reference_host, candidate_host;
-            const auto expected = run(reference_plugin, reference_host, RenderInput{.film = test.film, .print = test.print, .time = 2.25, .fault = {.operation = test.fault, .status = test.injected}});
+            const auto expected = run(reference_plugin, reference_host, RenderInput{.film = test.film, .print = test.print, .time = 2.25, .fault = {.operation = test.fault, .status = test.injected}}, test.id);
             const auto actual = run(candidate_plugin, candidate_host, RenderInput{.film = test.film, .print = test.print, .time = 2.25, .fault = {.operation = test.fault, .status = test.injected}});
             same(expected, actual, test.id);
             require_getters(actual, ExpectedProfileReads{.film = test.film, .print = test.print, .count = test.expected_reads, .status = test.expected}, test.id);
@@ -232,7 +265,7 @@ namespace {
         for (const auto& test : arg_cases) {
             auto row = rows.case_event(test.id);
             InstanceHost reference_host, candidate_host;
-            const auto expected = run(reference_plugin, reference_host, RenderInput{.film = "film-key", .print = "print-key", .time = 2.25, .missing_action_property = test.missing, .fault = {.operation = test.fault, .status = test.status}});
+            const auto expected = run(reference_plugin, reference_host, RenderInput{.film = "film-key", .print = "print-key", .time = 2.25, .missing_action_property = test.missing, .fault = {.operation = test.fault, .status = test.status}}, test.id);
             const auto actual = run(candidate_plugin, candidate_host, RenderInput{.film = "film-key", .print = "print-key", .time = 2.25, .missing_action_property = test.missing, .fault = {.operation = test.fault, .status = test.status}});
             same(expected, actual, test.id);
             require(actual.status == test.expected, std::string(test.id) + ": required/optional property status");
@@ -341,7 +374,7 @@ namespace {
                 .output_release_status = test.release_status,
                 .fault = {.operation = test.metadata_fault, .status = metadata_status, .occurrence = metadata_occurrence},
                 .null_getter = {.property = test.null_property, .occurrence = test.null_occurrence}};
-            const auto expected = run(reference_plugin, reference_host, input);
+            const auto expected = run(reference_plugin, reference_host, input, test.id);
             const auto actual = run(candidate_plugin, candidate_host, input);
             const bool premultiplication_null = test.null_property == kOfxImageEffectPropPreMultiplication;
             if (metadata_failure || (premultiplication_null && test.null_occurrence == 1)) {
@@ -418,7 +451,7 @@ namespace {
                 .cuda = true,
                 .window = std::string_view(test.id) == "unknown_components" ? OfxRectI{0, 0, 0, 3} : OfxRectI{0, 0, 4, 3},
                 .source = {.components = test.components, .depth = test.depth}};
-            const auto expected = run(reference_plugin, reference_host, input);
+            const auto expected = run(reference_plugin, reference_host, input, test.id);
             const auto actual = run(candidate_plugin, candidate_host, input);
             same(expected, actual, test.id);
             require(actual.source_releases == 1 && actual.output_releases == 1, std::string(test.id) + ": rejected image formats released both leases");
@@ -454,7 +487,7 @@ namespace {
             InstanceHost candidate_host;
             if (test.safe_reference) {
                 InstanceHost reference_host;
-                const auto expected = run(reference_plugin, reference_host, test.input);
+                const auto expected = run(reference_plugin, reference_host, test.input, test.id);
                 const auto actual = run(candidate_plugin, candidate_host, test.input);
                 same(expected, actual, test.id);
                 if (!test.input.fault.operation.empty()) {
@@ -484,31 +517,44 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case(kCaller, id);
         return 0;
     }
-    require(argc == 1, "render fixture takes no arguments");
+    require(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: render fixture --reference file");
     JuicerTests::CaseLog log;
-    auto* reference_plugin = OfxGetPlugin(0);
-    auto* candidate_plugin = fj_ofx_plugin(0);
-    require(reference_plugin && candidate_plugin && reference_plugin->mainEntry != candidate_plugin->mainEntry, "independent C++ and Rust callbacks");
+    auto* candidate_plugin = OfxGetPlugin(0);
+    OfxPlugin* reference_plugin = nullptr;
+    require(candidate_plugin, "candidate descriptor");
+    {
+        reference_rows = ofx_test::reference::read(argv[2], "render");
+        require(reference_rows.is_array() && reference_rows.size() == 85, "render reference membership");
+        auto altered = reference_rows[0][1];
+        altered[0] = -100;
+        require(encode(decode(altered)) != reference_rows[0][1], "render recorded value negative control");
+        require(reference_rows[0][0] != reference_rows[1][0], "render recorded order negative control");
+    }
     {
         JuicerTests::CaseEvent event(kCaller, "non_cuda");
+        reference_group = "non_cuda";
         non_cuda(reference_plugin, candidate_plugin);
         event.passed();
     }
     {
         JuicerTests::CaseEvent event(kCaller, "images");
+        reference_group = "images";
         images(reference_plugin, candidate_plugin);
         event.passed();
     }
     {
         JuicerTests::CaseEvent event(kCaller, "formats");
+        reference_group = "formats";
         formats(reference_plugin, candidate_plugin);
         event.passed();
     }
     {
         JuicerTests::CaseEvent event(kCaller, "time");
+        reference_group = "time";
         time(reference_plugin, candidate_plugin);
         event.passed();
     }
+    require(reference_rows.size() == 85 && reference_cursor == reference_rows.size(), "render reference complete consumption");
     log.finish();
     return 0;
 } catch (const std::exception& error) {

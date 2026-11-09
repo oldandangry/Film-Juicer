@@ -14,11 +14,8 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
-#include "ProcessRuntime.h"
 #include "gtest_cases.h"
 #include "ColorTransforms.h"
-#include "RustColorBridge.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "test_asset_workspace.h"
 #include "test_asset_bridge.h"
@@ -36,7 +33,7 @@ namespace IlluminantConstruction {
         if (!condition)
             throw std::runtime_error(diagnostic);
     }
-    void require_poisoned(const FjAssets* assets, RenderInstance& state, const std::string& context) {
+    void require_poisoned(const FjAssets* assets, JuicerTestSupport::InstanceFixture& state, const std::string& context) {
         FjCaptureStart capture{};
         FjErrorBuffer error{nullptr, 0, 0};
         const auto captureStatus = state.begin_capture(FJ_CAPTURE_CHANGE, capture, error);
@@ -60,15 +57,15 @@ namespace IlluminantConstruction {
             out.push_back(std::bit_cast<std::uint64_t>(value));
         return out;
     }
-    ParamSnapshot snapshot(Spektrafilm::ScanRoute route) {
-        ParamSnapshot out;
-        out.filmProfileKey = Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Negative ? "kodak_portra_400" : "fujifilm_provia_100f";
-        out.printProfileKey = "kodak_portra_endura";
-        out.scanRoute = route;
-        out.spectralUpsamplingMode = 1;
-        out.cameraExposureCompensationEv = 0.75;
-        out.cameraAutoExposureEnabled = 0;
-        out.inputCompressionEnabled = 0;
+    JuicerTestSupport::PreparationInput snapshot(Spektrafilm::ScanRoute route) {
+        JuicerTestSupport::PreparationInput out;
+        out.film_key = Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Negative ? "kodak_portra_400" : "fujifilm_provia_100f";
+        out.print_key = "kodak_portra_endura";
+        out.values.scan_route = static_cast<std::uint32_t>(route);
+        out.values.spectral_upsampling_mode = 1;
+        out.values.camera_exposure_compensation_ev = 0.75;
+        out.values.camera_auto_exposure_enabled = 0;
+        out.values.input_compression_enabled = 0;
         return out;
     }
     Json color_result(const FjScannerColor& color) {
@@ -89,7 +86,7 @@ namespace IlluminantConstruction {
     Json scanner_descriptor(const FjScannerLutDescriptor& out) {
         return {{"route", static_cast<int>(out.route)}, {"medium", static_cast<int>(out.medium)}, {"polarity", static_cast<int>(out.capture_polarity)}, {"density_bounds_hash", out.density_bounds_hash}, {"channel_density_hash", out.channel_density_hash}, {"base_density_hash", out.base_density_hash}, {"illuminant_hash", out.viewing_illuminant_hash}, {"observer_hash", out.observer_hash}, {"resolution", out.resolution}, {"hash", out.hash}};
     }
-    Json complete_result(const FjPreparedStateView& state, const ParamSnapshot& controls) {
+    Json complete_result(const FjPreparedStateView& state, const JuicerTestSupport::PreparationInput& controls) {
         const auto& raw = state.film_exposure;
         const auto& policy = state.input_policy;
         const auto& reference = state.film_reference;
@@ -101,134 +98,134 @@ namespace IlluminantConstruction {
         require(raw.sensitivity_rgb.count == std::size_t{81} * 3, "prepared sensitivity shape");
         for (std::size_t row = 0; row < 81; ++row)
             sensitivity.push_back(span_bits({raw.sensitivity_rgb.data + row * 3, 3}));
-        return {{"input_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"input_adapt", bits(raw.input_xyz_adapt)}, {"xyz_to_linear_srgb", bits(raw.xyz_to_linear_srgb)}, {"source_white", bits(policy.nominal_white_xyz)}, {"projection_white", bits(policy.projection_white_xyz)}, {"config_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"config_adapt", bits(raw.input_xyz_adapt)}, {"raw_midgray", bits(state.raw_midgray)}, {"midgray_dwg", bits(state.midgray_dwg_rgb)}, {"midgray_scale_green", bits(std::array{state.midgray_scale, state.raw_green})}, {"config_whites", {bits(policy.nominal_white_xyz), bits(policy.projection_white_xyz), bits(policy.projection_white_xyz)}}, {"config_flags", {static_cast<int>(raw.input_color_space), decode, static_cast<int>(controls.spectralUpsamplingMode == 1), adapt, true, true}}, {"spd_s_inv", bits(state.s_inverse)}, {"baseline_raw", bits(reference.baseline_raw_rgb)}, {"compensated_raw", bits(reference.compensated_raw_rgb)}, {"baseline_density", bits(reference.baseline_density_cmy)}, {"compensated_density", bits(reference.compensated_density_cmy)}, {"print_baseline_raw", bits(balance.baseline_raw_rgb)}, {"print_compensated_raw", bits(balance.compensated_raw_rgb)}, {"print_factors", bits(JuicerTestSupport::captured_print_factors(state))}, {"hashes", {raw.hash, raw.tc_lut_hash, reference.hash, balance.hash, state.print_recipe_hash, state.scanner_recipe_hash, output.gamut_recipe_hash, state.recipe_hash, state.upload_core_hash, state.scanner_hash}}, {"scanner_color", color_result(state.scanner_color)}, {"scanner_tables", tables_result(state.scanner_tables)}, {"scanner_descriptor", scanner_descriptor(state.scanner_lut)}, {"gamut_entry", bits(output.native_rgb_to_d65_xyz)}, {"gamut_exit", bits(output.d65_xyz_to_native_rgb)}, {"final_sensitivity_hash", raw.sensitivity_hash}, {"final_sensitivity", sensitivity}};
+        return {{"input_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"input_adapt", bits(raw.input_xyz_adapt)}, {"xyz_to_linear_srgb", bits(raw.xyz_to_linear_srgb)}, {"source_white", bits(policy.nominal_white_xyz)}, {"projection_white", bits(policy.projection_white_xyz)}, {"config_rgb_to_xyz", bits(raw.input_rgb_to_xyz)}, {"config_adapt", bits(raw.input_xyz_adapt)}, {"raw_midgray", bits(state.raw_midgray)}, {"midgray_dwg", bits(state.midgray_dwg_rgb)}, {"midgray_scale_green", bits(std::array{state.midgray_scale, state.raw_green})}, {"config_whites", {bits(policy.nominal_white_xyz), bits(policy.projection_white_xyz), bits(policy.projection_white_xyz)}}, {"config_flags", {static_cast<int>(raw.input_color_space), decode, static_cast<int>(controls.values.spectral_upsampling_mode == 1), adapt, true, true}}, {"spd_s_inv", bits(state.s_inverse)}, {"baseline_raw", bits(reference.baseline_raw_rgb)}, {"compensated_raw", bits(reference.compensated_raw_rgb)}, {"baseline_density", bits(reference.baseline_density_cmy)}, {"compensated_density", bits(reference.compensated_density_cmy)}, {"print_baseline_raw", bits(balance.baseline_raw_rgb)}, {"print_compensated_raw", bits(balance.compensated_raw_rgb)}, {"print_factors", bits(JuicerTestSupport::captured_print_factors(state))}, {"hashes", {raw.hash, raw.tc_lut_hash, reference.hash, balance.hash, state.print_recipe_hash, state.scanner_recipe_hash, output.gamut_recipe_hash, state.recipe_hash, state.upload_core_hash, state.scanner_hash}}, {"scanner_color", color_result(state.scanner_color)}, {"scanner_tables", tables_result(state.scanner_tables)}, {"scanner_descriptor", scanner_descriptor(state.scanner_lut)}, {"gamut_entry", bits(output.native_rgb_to_d65_xyz)}, {"gamut_exit", bits(output.d65_xyz_to_native_rgb)}, {"final_sensitivity_hash", raw.sensitivity_hash}, {"final_sensitivity", sensitivity}};
     }
 } // namespace IlluminantConstruction
 
 namespace IlluminantConstruction {
-    Json controls_json(const Spektrafilm::DiffusionFilterAuthoredControls& p) {
+    Json controls_json(const FjDiffusionParams& p) {
         Json out;
-        out["active"] = p.active;
+        out["active"] = bool(p.active);
         out["family"] = static_cast<int>(p.family);
         out["strength"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.strength)}};
-        out["spatialScale"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.spatialScale)}};
-        out["haloWarmth"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.haloWarmth)}};
-        out["coreIntensity"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.coreIntensity)}};
-        out["coreSize"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.coreSize)}};
-        out["haloIntensity"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.haloIntensity)}};
-        out["haloSize"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.haloSize)}};
-        out["bloomIntensity"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.bloomIntensity)}};
-        out["bloomSize"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.bloomSize)}};
+        out["spatialScale"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.spatial_scale)}};
+        out["haloWarmth"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.halo_warmth)}};
+        out["coreIntensity"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.core_intensity)}};
+        out["coreSize"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.core_size)}};
+        out["haloIntensity"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.halo_intensity)}};
+        out["haloSize"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.halo_size)}};
+        out["bloomIntensity"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.bloom_intensity)}};
+        out["bloomSize"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.bloom_size)}};
         return out;
     }
-    Json controls_json(const Spektrafilm::DirCouplersControls& p) {
+    Json controls_json(const FjFilmDirParams& p) {
         Json out;
-        out["active"] = p.active;
+        out["active"] = bool(p.active);
         out["amount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.amount)}};
-        out["inhibitionSameLayer"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.inhibitionSameLayer)}};
-        out["inhibitionInterlayer"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.inhibitionInterlayer)}};
-        out["diffusionSizeUm"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.diffusionSizeUm)}};
-        out["diffusionTailUm"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.diffusionTailUm)}};
-        out["diffusionTailWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.diffusionTailWeight)}};
-        out["gammaUseStock"] = p.gammaUseStock;
-        out["gammaSameLayerRgb"] = Json{{"f32_bits", bits(p.gammaSameLayerRgb)}};
-        out["gammaInterlayerRToGb"] = Json{{"f32_bits", bits(p.gammaInterlayerRToGb)}};
-        out["gammaInterlayerGToRb"] = Json{{"f32_bits", bits(p.gammaInterlayerGToRb)}};
-        out["gammaInterlayerBToRg"] = Json{{"f32_bits", bits(p.gammaInterlayerBToRg)}};
-        out["langmuirDonorKRgb"] = Json{{"f32_bits", bits(p.langmuirDonorKRgb)}};
-        out["langmuirReceiverKRgb"] = Json{{"f32_bits", bits(p.langmuirReceiverKRgb)}};
+        out["inhibitionSameLayer"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.inhibition_same_layer)}};
+        out["inhibitionInterlayer"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.inhibition_interlayer)}};
+        out["diffusionSizeUm"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.diffusion_size_um)}};
+        out["diffusionTailUm"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.diffusion_tail_um)}};
+        out["diffusionTailWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.diffusion_tail_weight)}};
+        out["gammaUseStock"] = bool(p.gamma_use_stock);
+        out["gammaSameLayerRgb"] = Json{{"f32_bits", bits(p.gamma_same_layer_rgb)}};
+        out["gammaInterlayerRToGb"] = Json{{"f32_bits", bits(p.gamma_interlayer_r_to_gb)}};
+        out["gammaInterlayerGToRb"] = Json{{"f32_bits", bits(p.gamma_interlayer_g_to_rb)}};
+        out["gammaInterlayerBToRg"] = Json{{"f32_bits", bits(p.gamma_interlayer_b_to_rg)}};
+        out["langmuirDonorKRgb"] = Json{{"f32_bits", bits(p.langmuir_donor_k_rgb)}};
+        out["langmuirReceiverKRgb"] = Json{{"f32_bits", bits(p.langmuir_receiver_k_rgb)}};
         return out;
     }
-    Json controls_json(const Spektrafilm::VisualGrainControls& p) {
+    Json controls_json(const FjVisualGrainParams& p) {
         Json out;
-        out["active"] = p.active;
-        out["sublayersActive"] = p.sublayersActive;
-        out["particleAreaUm2"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.particleAreaUm2)}};
-        out["particleScaleCmy"] = Json{{"f32_bits", bits(p.particleScaleCmy)}};
-        out["particleScaleLayers"] = Json{{"f32_bits", bits(p.particleScaleLayers)}};
-        out["visualParticleDensityMinCmy"] = Json{{"f32_bits", bits(p.visualParticleDensityMinCmy)}};
-        out["uniformityCmy"] = Json{{"f32_bits", bits(p.uniformityCmy)}};
-        out["correlationSigmaPx"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.correlationSigmaPx)}};
-        out["dyeCloudBlurUm"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.dyeCloudBlurUm)}};
-        out["microStructure"] = Json{{"f32_bits", bits(p.microStructure)}};
-        out["nSubLayers"] = p.nSubLayers;
+        out["active"] = bool(p.active);
+        out["sublayersActive"] = bool(p.sublayers_active);
+        out["particleAreaUm2"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.particle_area_um2)}};
+        out["particleScaleCmy"] = Json{{"f32_bits", bits(p.particle_scale_cmy)}};
+        out["particleScaleLayers"] = Json{{"f32_bits", bits(p.particle_scale_layers)}};
+        out["visualParticleDensityMinCmy"] = Json{{"f32_bits", bits(p.particle_density_min_cmy)}};
+        out["uniformityCmy"] = Json{{"f32_bits", bits(p.uniformity_cmy)}};
+        out["correlationSigmaPx"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.correlation_sigma_px)}};
+        out["dyeCloudBlurUm"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.dye_cloud_blur_um)}};
+        out["microStructure"] = Json{{"f32_bits", bits(p.micro_structure)}};
+        out["nSubLayers"] = p.sublayer_count;
         out["amplitude"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.amplitude)}};
-        out["chromaMix"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.chromaMix)}};
-        out["chromaSharedWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.chromaSharedWeight)}};
-        out["chromaIndependentWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.chromaIndependentWeight)}};
-        out["coarseWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.coarseWeight)}};
-        out["midWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.midWeight)}};
-        out["sizeMixScale"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.sizeMixScale)}};
-        out["clumpTemporalMix"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.clumpTemporalMix)}};
-        out["clumpMorphPeriodSec"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.clumpMorphPeriodSec)}};
-        out["debugView"] = p.debugView;
+        out["chromaMix"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.chroma_mix)}};
+        out["chromaSharedWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.chroma_shared_weight)}};
+        out["chromaIndependentWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.chroma_independent_weight)}};
+        out["coarseWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.coarse_weight)}};
+        out["midWeight"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.mid_weight)}};
+        out["sizeMixScale"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.size_mix_scale)}};
+        out["clumpTemporalMix"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.clump_temporal_mix)}};
+        out["clumpMorphPeriodSec"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.clump_morph_period_sec)}};
+        out["debugView"] = p.debug_view;
         return out;
     }
-    Json controls_json(const ScatterHalationControls& p) {
+    Json controls_json(const FjPreparationHalation& p) {
         Json out;
-        out["active"] = p.active;
-        out["scatterAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.scatterAmount)}};
-        out["scatterSpatialScale"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.scatterSpatialScale)}};
-        out["halationAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.halationAmount)}};
-        out["halationSpatialScale"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.halationSpatialScale)}};
+        out["active"] = bool(p.active);
+        out["scatterAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.scatter_amount)}};
+        out["scatterSpatialScale"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.scatter_spatial_scale)}};
+        out["halationAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.halation_amount)}};
+        out["halationSpatialScale"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.halation_spatial_scale)}};
         return out;
     }
-    Json controls_json(const ParamSnapshot& p) {
+    Json controls_json(const JuicerTestSupport::PreparationInput& p) {
         Json out;
-        out["printExposure"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.printExposure)}};
-        out["printPreflashExposure"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.printPreflashExposure)}};
-        out["printGammaFactor"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.printGammaFactor)}};
-        out["preflashMFilterCc"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.preflashMFilterCc)}};
-        out["preflashYFilterCc"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.preflashYFilterCc)}};
-        out["printShadowCompensationFactor"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.printShadowCompensationFactor)}};
-        out["printShadowCompensationDensity"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.printShadowCompensationDensity)}};
-        out["printShadowCompensationTransition"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.printShadowCompensationTransition)}};
-        out["glarePercent"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.glarePercent)}};
-        out["glareRoughness"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.glareRoughness)}};
-        out["glareBlurSigmaPx"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.glareBlurSigmaPx)}};
-        out["cameraExposureCompensationEv"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.cameraExposureCompensationEv)}};
-        out["cameraFilmFormatLongEdgeMm"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.cameraFilmFormatLongEdgeMm)}};
-        out["filmGammaFactor"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.filmGammaFactor)}};
-        out["scannerLensBlurSigmaPx"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.scannerLensBlurSigmaPx)}};
-        out["scannerBlackLevel"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.scannerBlackLevel)}};
-        out["scannerWhiteLevel"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.scannerWhiteLevel)}};
-        out["gateWeaveAmount"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.gateWeaveAmount)}};
-        out["scannerUnsharpMask"] = Json{{"f64_bits", double_bits(p.scannerUnsharpMask)}};
-        out["printUiYmcCc"] = Json{{"f64_bits", double_bits(p.printUiYmcCc)}};
-        out["cameraFilterUV"] = Json{{"f64_bits", double_bits(p.cameraFilterUV)}};
-        out["cameraFilterIR"] = Json{{"f64_bits", double_bits(p.cameraFilterIR)}};
-        out["cameraDiffusion"] = controls_json(p.cameraDiffusion);
-        out["enlargerDiffusion"] = controls_json(p.enlargerDiffusion);
-        out["dirCouplers"] = controls_json(p.dirCouplers);
-        out["filmProfileKey"] = p.filmProfileKey;
-        out["printProfileKey"] = p.printProfileKey;
-        out["spectralUpsamplingMode"] = p.spectralUpsamplingMode;
-        out["refIll"] = p.refIll;
-        out["enlIll"] = p.enlIll;
-        out["normalizePrintExposure"] = p.normalizePrintExposure;
-        out["printExposureCompensation"] = p.printExposureCompensation;
-        out["inputColorSpace"] = p.inputColorSpace;
-        out["inputCctfDecoding"] = p.inputCctfDecoding;
-        out["inputCompressionEnabled"] = p.inputCompressionEnabled;
-        out["hanatos2025AdaptationWindow"] = p.hanatos2025AdaptationWindow;
-        out["hanatos2025AdaptationSurface"] = p.hanatos2025AdaptationSurface;
-        out["cameraAutoExposureEnabled"] = p.cameraAutoExposureEnabled;
-        out["cameraMeteringMethod"] = p.cameraMeteringMethod;
-        out["scatterHalationControls"] = controls_json(p.scatterHalationControls);
-        out["scannerBlackCorrection"] = p.scannerBlackCorrection;
-        out["scannerWhiteCorrection"] = p.scannerWhiteCorrection;
-        out["scannerLutResolution"] = p.scannerLutResolution;
-        out["outputColorSpace"] = p.outputColorSpace;
-        out["outputCctfEncoding"] = p.outputCctfEncoding;
-        out["outputGamutCompressionEnabled"] = p.outputGamutCompressionEnabled;
-        out["grainControls"] = controls_json(p.grainControls);
-        out["filmDustAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.filmDustAmount)}};
-        out["filmScratchAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.filmScratchAmount)}};
-        out["gateDustAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.gateDustAmount)}};
-        out["gateScratchAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.gateScratchAmount)}};
-        out["scanRoute"] = static_cast<int>(p.scanRoute);
-        out["glareActive"] = p.glareActive;
-        out["cameraFilterOverride"] = p.cameraFilterOverride;
+        out["printExposure"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.print_exposure)}};
+        out["printPreflashExposure"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.print_preflash_exposure)}};
+        out["printGammaFactor"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.print_gamma_factor)}};
+        out["preflashMFilterCc"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.preflash_m_filter_cc)}};
+        out["preflashYFilterCc"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.preflash_y_filter_cc)}};
+        out["printShadowCompensationFactor"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.print_shadow_compensation_factor)}};
+        out["printShadowCompensationDensity"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.print_shadow_compensation_density)}};
+        out["printShadowCompensationTransition"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.print_shadow_compensation_transition)}};
+        out["glarePercent"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.glare_percent)}};
+        out["glareRoughness"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.glare_roughness)}};
+        out["glareBlurSigmaPx"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.glare_blur_sigma_px)}};
+        out["cameraExposureCompensationEv"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.camera_exposure_compensation_ev)}};
+        out["cameraFilmFormatLongEdgeMm"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.values.camera_film_format_long_edge_mm)}};
+        out["filmGammaFactor"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.values.film_gamma_factor)}};
+        out["scannerLensBlurSigmaPx"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.scanner_lens_blur_sigma_px)}};
+        out["scannerBlackLevel"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.scanner_black_level)}};
+        out["scannerWhiteLevel"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.scanner_white_level)}};
+        out["gateWeaveAmount"] = Json{{"f64_bits", std::bit_cast<std::uint64_t>(p.values.gate_weave_amount)}};
+        out["scannerUnsharpMask"] = Json{{"f64_bits", double_bits(p.values.scanner_unsharp_mask)}};
+        out["printUiYmcCc"] = Json{{"f64_bits", double_bits(p.values.print_ui_ymc_cc)}};
+        out["cameraFilterUV"] = Json{{"f64_bits", double_bits(p.values.camera_filter_uv)}};
+        out["cameraFilterIR"] = Json{{"f64_bits", double_bits(p.values.camera_filter_ir)}};
+        out["cameraDiffusion"] = controls_json(p.values.camera_diffusion);
+        out["enlargerDiffusion"] = controls_json(p.values.enlarger_diffusion);
+        out["dirCouplers"] = controls_json(p.values.dir_couplers);
+        out["filmProfileKey"] = p.film_key;
+        out["printProfileKey"] = p.print_key;
+        out["spectralUpsamplingMode"] = p.values.spectral_upsampling_mode;
+        out["refIll"] = p.values.ref_ill;
+        out["enlIll"] = p.values.enl_ill;
+        out["normalizePrintExposure"] = p.values.normalize_print_exposure;
+        out["printExposureCompensation"] = p.values.print_exposure_compensation;
+        out["inputColorSpace"] = p.values.input_color_space;
+        out["inputCctfDecoding"] = p.values.input_cctf_decoding;
+        out["inputCompressionEnabled"] = p.values.input_compression_enabled;
+        out["hanatos2025AdaptationWindow"] = p.values.hanatos2025_adaptation_window;
+        out["hanatos2025AdaptationSurface"] = p.values.hanatos2025_adaptation_surface;
+        out["cameraAutoExposureEnabled"] = p.values.camera_auto_exposure_enabled;
+        out["cameraMeteringMethod"] = p.values.camera_metering_method;
+        out["scatterHalationControls"] = controls_json(p.values.scatter_halation);
+        out["scannerBlackCorrection"] = p.values.scanner_black_correction;
+        out["scannerWhiteCorrection"] = p.values.scanner_white_correction;
+        out["scannerLutResolution"] = p.values.scanner_lut_resolution;
+        out["outputColorSpace"] = p.values.output_color_space;
+        out["outputCctfEncoding"] = p.values.output_cctf_encoding;
+        out["outputGamutCompressionEnabled"] = p.values.output_gamut_compression_enabled;
+        out["grainControls"] = controls_json(p.values.grain);
+        out["filmDustAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.values.film_dust_amount)}};
+        out["filmScratchAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.values.film_scratch_amount)}};
+        out["gateDustAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.values.gate_dust_amount)}};
+        out["gateScratchAmount"] = Json{{"f32_bits", std::bit_cast<std::uint32_t>(p.values.gate_scratch_amount)}};
+        out["scanRoute"] = static_cast<int>(p.values.scan_route);
+        out["glareActive"] = bool(p.values.glare_active);
+        out["cameraFilterOverride"] = bool(p.values.camera_filter_override);
         return out;
     }
     namespace fs = std::filesystem;
@@ -291,7 +288,7 @@ namespace IlluminantConstruction {
         Diagnostic d;
         FjIlluminantLens* owner = nullptr;
         FjIlluminantCoverage c{};
-        status(fj_legacy_illuminant_lens_prepare(span(rows), &owner, &c, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_illuminant_lens_prepare(span(rows), &owner, &c, &d.error), FJ_STATUS_SUCCESS);
         return owner;
     }
 
@@ -308,14 +305,14 @@ namespace IlluminantConstruction {
             auto blackbody_case = blackbody_cases.case_event(std::to_string(row.at("temperature").get<std::uint32_t>()));
             SCOPED_TRACE(row["temperature"].dump());
             const auto temperature = std::bit_cast<float>(row["temperature"].get<std::uint32_t>());
-            status(fj_legacy_illuminant_blackbody(temperature, &curve, &d.error), FJ_STATUS_SUCCESS);
+            status(fj_test_illuminant_blackbody(temperature, &curve, &d.error), FJ_STATUS_SUCCESS);
             samples(curve, row["normalized"]);
             status(fj_test_illuminant_curve(2, {}, {}, temperature, &core, &c, &d.error), FJ_STATUS_SUCCESS);
             samples(core, row["normalized"]);
 
             blackbody_case.passed();
         }
-        status(fj_legacy_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
         samples(curve, f["leaf"]["equal"]["samples"]);
         std::vector<std::string> direct_ids;
         for (const auto& expected : f["leaf"]["direct"])
@@ -326,7 +323,7 @@ namespace IlluminantConstruction {
             SCOPED_TRACE(row["id"].dump());
             const auto input = scalars(row["rows"]);
             const auto expected = row["curve"]["samples"].empty() ? FJ_STATUS_PREPARATION_FAILURE : FJ_STATUS_SUCCESS;
-            status(fj_legacy_illuminant_from_samples(span(input), &curve, &d.error), expected);
+            status(fj_test_illuminant_from_samples(span(input), &curve, &d.error), expected);
             status(fj_test_illuminant_curve(1, span(input), {}, 0, &core, &c, &d.error), expected);
             if (expected == FJ_STATUS_SUCCESS) {
                 samples(curve, row["curve"]["samples"]);
@@ -347,15 +344,15 @@ namespace IlluminantConstruction {
             SCOPED_TRACE(row["id"].dump());
             const auto input = scalars(row["rows"]);
             const auto expected = row["kg3"]["samples"].empty() ? FJ_STATUS_PREPARATION_FAILURE : FJ_STATUS_SUCCESS;
-            status(fj_legacy_illuminant_tungsten_kg3(span(input), &curve, &c, &d.error), expected);
+            status(fj_test_illuminant_tungsten_kg3(span(input), &curve, &c, &d.error), expected);
             if (expected == FJ_STATUS_SUCCESS)
                 samples(curve, row["kg3"]["samples"]);
             else
                 EXPECT_TRUE(cleared(curve));
             FjIlluminantLens* owner = nullptr;
-            status(fj_legacy_illuminant_lens_prepare(span(input), &owner, &c, &d.error), row["lens_prepared"].get<bool>() ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
+            status(fj_test_illuminant_lens_prepare(span(input), &owner, &c, &d.error), row["lens_prepared"].get<bool>() ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
             if (owner) {
-                status(fj_legacy_illuminant_lens_finish(&owner, span(input), &curve, &c, &d.error), FJ_STATUS_SUCCESS);
+                status(fj_test_illuminant_lens_finish(&owner, span(input), &curve, &c, &d.error), FJ_STATUS_SUCCESS);
                 EXPECT_EQ(owner, nullptr);
                 samples(curve, row["lens"]["samples"]);
                 status(fj_test_illuminant_curve(5, span(input), span(input), 0, &core, &c, &d.error), FJ_STATUS_SUCCESS);
@@ -371,18 +368,18 @@ namespace IlluminantConstruction {
         Diagnostic d;
         {
             FjCsvPairs* acquired = nullptr;
-            status(fj_legacy_csv_acquire(bridge->borrow_assets(), FJ_CSV_D65, &acquired, &d.error), FJ_STATUS_SUCCESS);
+            status(fj_test_csv_acquire(bridge->borrow_assets(), FJ_CSV_D65, &acquired, &d.error), FJ_STATUS_SUCCESS);
             const auto releaseCsv = [](FjCsvPairs* held) {
-                (void)fj_legacy_csv_release(held, nullptr);
+                (void)fj_test_csv_release(held, nullptr);
             };
             std::unique_ptr<FjCsvPairs, decltype(releaseCsv)> borrowed(acquired, releaseCsv);
             FjFloatSpan rows{};
-            status(fj_legacy_csv_view(borrowed.get(), &rows, &d.error), FJ_STATUS_SUCCESS);
+            status(fj_test_csv_view(borrowed.get(), &rows, &d.error), FJ_STATUS_SUCCESS);
             status(bridge->release_cached_payloads(), FJ_STATUS_SUCCESS);
             bridge.reset();
             EXPECT_EQ(fj_test_csv_live_owners(), 1u);
             FjIlluminant retainedCurve{};
-            status(fj_legacy_illuminant_from_samples(rows, &retainedCurve, &d.error), FJ_STATUS_SUCCESS);
+            status(fj_test_illuminant_from_samples(rows, &retainedCurve, &d.error), FJ_STATUS_SUCCESS);
             EXPECT_EQ(rows.count, 162u);
         }
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
@@ -420,11 +417,11 @@ namespace IlluminantConstruction {
         for (const auto& view : invalid) {
             auto malformed_span_case = malformed_span_cases.case_event(std::to_string(malformed_span_index++));
             std::fill(std::begin(curve.samples), std::end(curve.samples), 9);
-            status(fj_legacy_illuminant_from_samples(view, &curve, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_illuminant_from_samples(view, &curve, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_TRUE(cleared(curve));
             EXPECT_GT(d.error.length, 0u);
             auto* owner = lens(input);
-            status(fj_legacy_illuminant_lens_finish(&owner, view, &curve, &c, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_illuminant_lens_finish(&owner, view, &curve, &c, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(owner, nullptr);
             EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
 
@@ -440,19 +437,19 @@ namespace IlluminantConstruction {
                                                                      : &d.error;
             FjIlluminant* out = fault == 2 ? nullptr : &curve;
             FjIlluminantCoverage* coverage = fault == 3 ? nullptr : &c;
-            status(fj_legacy_illuminant_lens_finish(&owner, span(input), out, coverage, error), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_illuminant_lens_finish(&owner, span(input), out, coverage, error), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(owner, nullptr);
             EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
 
             construction_fault_case.passed();
         }
         auto* owner = lens(input);
-        status(fj_legacy_illuminant_lens_release(&owner, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_illuminant_lens_release(&owner, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(owner, nullptr);
-        status(fj_legacy_illuminant_lens_release(&owner, &d.error), FJ_STATUS_SUCCESS);
-        status(fj_legacy_illuminant_equal_energy(&curve, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_illuminant_lens_release(&owner, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_illuminant_equal_energy(&curve, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_TRUE(cleared(curve));
-        status(fj_legacy_illuminant_lens_release(nullptr, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_illuminant_lens_release(nullptr, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
     }
     TEST(IlluminantConstruction, WarningsFailuresAndRawFaultConsumption) {
         Diagnostic d;
@@ -460,13 +457,13 @@ namespace IlluminantConstruction {
         FjIlluminantCoverage c{};
         const std::vector<float> input{370, 1, 790, 1}, narrow{380, 1, 780, 1}, single{500, 1};
         FjIlluminantLens* owner = nullptr;
-        status(fj_legacy_illuminant_lens_prepare(span(single), &owner, &c, &d.error), FJ_STATUS_PREPARATION_FAILURE);
+        status(fj_test_illuminant_lens_prepare(span(single), &owner, &c, &d.error), FJ_STATUS_PREPARATION_FAILURE);
         EXPECT_EQ(c.warnings, 3u);
         EXPECT_EQ(c.min_nm, 500);
         EXPECT_EQ(owner, nullptr);
-        status(fj_legacy_illuminant_lens_prepare(span(narrow), &owner, &c, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_illuminant_lens_prepare(span(narrow), &owner, &c, &d.error), FJ_STATUS_SUCCESS);
         EXPECT_EQ(c.warnings, 3u);
-        status(fj_legacy_illuminant_lens_finish(&owner, span(narrow), &curve, &c, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_illuminant_lens_finish(&owner, span(narrow), &curve, &c, &d.error), FJ_STATUS_SUCCESS);
         EXPECT_EQ(c.warnings, 3u);
         JuicerTests::GtestCohort operation_fault_cases("operation-faults", 28u);
         std::size_t operation_fault_index = 0;
@@ -479,25 +476,25 @@ namespace IlluminantConstruction {
                 FjStatus actual{};
                 switch (operation) {
                     case 1:
-                        actual = fj_legacy_illuminant_from_samples(span(input), &curve, &d.error);
+                        actual = fj_test_illuminant_from_samples(span(input), &curve, &d.error);
                         break;
                     case 2:
-                        actual = fj_legacy_illuminant_blackbody(3200, &curve, &d.error);
+                        actual = fj_test_illuminant_blackbody(3200, &curve, &d.error);
                         break;
                     case 3:
-                        actual = fj_legacy_illuminant_equal_energy(&curve, &d.error);
+                        actual = fj_test_illuminant_equal_energy(&curve, &d.error);
                         break;
                     case 4:
-                        actual = fj_legacy_illuminant_tungsten_kg3(span(input), &curve, &c, &d.error);
+                        actual = fj_test_illuminant_tungsten_kg3(span(input), &curve, &c, &d.error);
                         break;
                     case 5:
-                        actual = fj_legacy_illuminant_lens_prepare(span(input), &owner, &c, &d.error);
+                        actual = fj_test_illuminant_lens_prepare(span(input), &owner, &c, &d.error);
                         break;
                     case 6:
-                        actual = fj_legacy_illuminant_lens_finish(&owner, span(input), &curve, &c, &d.error);
+                        actual = fj_test_illuminant_lens_finish(&owner, span(input), &curve, &c, &d.error);
                         break;
                     case 7:
-                        actual = fj_legacy_illuminant_lens_release(&owner, &d.error);
+                        actual = fj_test_illuminant_lens_release(&owner, &d.error);
                         break;
                     default:
                         FAIL();
@@ -512,27 +509,27 @@ namespace IlluminantConstruction {
                 // Repeat the intended raw operation before cleanup: no armed fault remains.
                 switch (operation) {
                     case 1:
-                        status(fj_legacy_illuminant_from_samples(span(input), &curve, &d.error), FJ_STATUS_PREPARATION_FAILURE);
+                        status(fj_test_illuminant_from_samples(span(input), &curve, &d.error), FJ_STATUS_PREPARATION_FAILURE);
                         break;
                     case 2:
-                        status(fj_legacy_illuminant_blackbody(3200, &curve, &d.error), FJ_STATUS_SUCCESS);
+                        status(fj_test_illuminant_blackbody(3200, &curve, &d.error), FJ_STATUS_SUCCESS);
                         break;
                     case 3:
-                        status(fj_legacy_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
+                        status(fj_test_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
                         break;
                     case 4:
-                        status(fj_legacy_illuminant_tungsten_kg3(span(input), &curve, &c, &d.error), FJ_STATUS_SUCCESS);
+                        status(fj_test_illuminant_tungsten_kg3(span(input), &curve, &c, &d.error), FJ_STATUS_SUCCESS);
                         break;
                     case 5:
-                        status(fj_legacy_illuminant_lens_prepare(span(input), &owner, &c, &d.error), FJ_STATUS_SUCCESS);
-                        status(fj_legacy_illuminant_lens_release(&owner, &d.error), FJ_STATUS_SUCCESS);
+                        status(fj_test_illuminant_lens_prepare(span(input), &owner, &c, &d.error), FJ_STATUS_SUCCESS);
+                        status(fj_test_illuminant_lens_release(&owner, &d.error), FJ_STATUS_SUCCESS);
                         break;
                     case 6:
                         owner = lens(input);
-                        status(fj_legacy_illuminant_lens_finish(&owner, span(input), &curve, &c, &d.error), FJ_STATUS_SUCCESS);
+                        status(fj_test_illuminant_lens_finish(&owner, span(input), &curve, &c, &d.error), FJ_STATUS_SUCCESS);
                         break;
                     case 7:
-                        status(fj_legacy_illuminant_lens_release(&owner, &d.error), FJ_STATUS_SUCCESS);
+                        status(fj_test_illuminant_lens_release(&owner, &d.error), FJ_STATUS_SUCCESS);
                         break;
                     default:
                         FAIL();
@@ -543,23 +540,23 @@ namespace IlluminantConstruction {
             }
         status(fj_test_illuminant_arm_fault(3, 1, 1), FJ_STATUS_SUCCESS);
         status(fj_test_illuminant_curve(3, {}, {}, 0, &curve, &c, &d.error), FJ_STATUS_SUCCESS);
-        status(fj_legacy_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
         fj_test_illuminant_arm_facade_fault();
-        status(fj_legacy_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
         status(fj_test_illuminant_curve(3, {}, {}, 0, &curve, &c, &d.error), FJ_STATUS_INTERNAL_FAILURE);
         status(fj_test_illuminant_curve(3, {}, {}, 0, &curve, &c, &d.error), FJ_STATUS_SUCCESS);
         const std::array<float, 3> white{.95047f, 1.0f, 1.08883f};
         std::array<float, 9> matrix{};
         status(fj_test_color_arm_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
-        status(fj_legacy_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
-        status(fj_legacy_cat16_matrix(white.data(), white.data(), matrix.data()), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_cat16_matrix(white.data(), white.data(), matrix.data()), FJ_STATUS_SUCCESS);
+        status(fj_test_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_boundary_cat16_matrix(white.data(), white.data(), matrix.data()), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_cat16_matrix(white.data(), white.data(), matrix.data()), FJ_STATUS_SUCCESS);
         auto csvAssets = std::make_unique<JuicerAssets::AssetBridge>(resources);
         fj_test_csv_fault(1);
-        status(fj_legacy_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
+        status(fj_test_illuminant_equal_energy(&curve, &d.error), FJ_STATUS_SUCCESS);
         FjCsvPairs* rejected = reinterpret_cast<FjCsvPairs*>(std::uintptr_t{1});
-        status(fj_legacy_csv_acquire(csvAssets->borrow_assets(), FJ_CSV_D65, &rejected, &d.error), FJ_STATUS_INTERNAL_FAILURE);
+        status(fj_test_csv_acquire(csvAssets->borrow_assets(), FJ_CSV_D65, &rejected, &d.error), FJ_STATUS_INTERNAL_FAILURE);
         EXPECT_EQ(rejected, nullptr);
         csvAssets.reset();
         fj_test_illuminant_clear_fault();
@@ -568,7 +565,7 @@ namespace IlluminantConstruction {
         const auto& f = fixture();
         const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "construction-products");
         JuicerTestSupport::copy_positive_print_preparation_assets(resources, root);
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const FjAssets* assets = owner.borrow().assets;
         const auto read = [](const fs::path& path) {
@@ -587,28 +584,28 @@ namespace IlluminantConstruction {
             SCOPED_TRACE(row["label"].dump() + "/" + row["controls"]["enlIll"].dump());
             const int polarity = row["polarity"], route = row["route"];
             auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(polarity * 2 + route));
-            controls.enlIll = row["controls"]["enlIll"];
-            controls.printPreflashExposure = route ? .1 : 0;
-            controls.preflashMFilterCc = 12.5;
-            controls.preflashYFilterCc = 7.25;
+            controls.values.enl_ill = row["controls"]["enlIll"];
+            controls.values.print_preflash_exposure = route ? .1 : 0;
+            controls.values.preflash_m_filter_cc = 12.5;
+            controls.values.preflash_y_filter_cc = 7.25;
             ASSERT_EQ(controls_json(controls), row["controls"]);
             auto film = polarity ? positive : negative, print = paper;
             film["info"]["reference_illuminant"] = row["profile_reference"];
             film["info"]["viewing_illuminant"] = row["profile_viewing"];
             print["info"]["viewing_illuminant"] = row["print_viewing"];
             {
-                std::ofstream file(root / "profiles" / (controls.filmProfileKey + ".json"));
+                std::ofstream file(root / "profiles" / (controls.film_key + ".json"));
                 file << film;
             }
             {
                 std::ofstream file(root / "profiles/kodak_portra_endura.json");
                 file << print;
             }
-            status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
-            std::optional<PreparedState> product;
+            status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+            std::optional<JuicerTestSupport::PreparedStateHold> product;
             std::array<char, 2048> productText{};
             FjErrorBuffer productError{productText.data(), productText.size(), 0};
-            const auto productStatus = prepare_state(assets, controls, product, productError);
+            const auto productStatus = JuicerTestSupport::prepare_state(assets, controls, product, productError);
             const bool built = productStatus.category == FJ_STATUS_SUCCESS;
             ASSERT_EQ(built, row["built"].get<bool>()) << std::string(productText.data(), productError.length);
             FjStatus preparedStatus{};
@@ -668,7 +665,7 @@ namespace IlluminantConstruction {
     TEST(IlluminantConstruction, ConstructionAdmissionAndEqualPreflashPublication) {
         const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "construction-failures");
         JuicerTestSupport::copy_positive_print_preparation_assets(resources, root);
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const FjAssets* assets = owner.borrow().assets;
         {
@@ -685,10 +682,10 @@ namespace IlluminantConstruction {
             for (std::uint32_t fault : {1u, 2u, 3u}) {
                 auto admission_fault_case = admission_fault_cases.case_event(std::to_string(admission_fault_index++));
                 auto controls = snapshot(operation == 3 ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan);
-                controls.enlIll = 7;
-                RenderInstance cold;
+                controls.values.enl_ill = 7;
+                JuicerTestSupport::InstanceFixture cold;
                 JuicerTestSupport::capture(cold, controls);
-                status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+                status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
                 if (operation == 2 || operation == 3)
                     status(fj_test_illuminant_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
                 else
@@ -717,12 +714,12 @@ namespace IlluminantConstruction {
                     EXPECT_EQ(consumed, 1u);
                 }
                 EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(cold).build, 0u);
-                RenderInstance coldRetry;
+                JuicerTestSupport::InstanceFixture coldRetry;
                 if (fault == 2)
                     JuicerTestSupport::capture(coldRetry, controls);
                 const auto coldRecovery = fault == 2 ? JuicerTestSupport::admit(assets, coldRetry) : JuicerTestSupport::admit(assets, cold);
                 ASSERT_EQ(coldRecovery.kind, FJ_ADMISSION_READY);
-                RenderInstance state;
+                JuicerTestSupport::InstanceFixture state;
                 JuicerTestSupport::capture(state, controls);
                 const auto old = JuicerTestSupport::admit(assets, state);
                 ASSERT_EQ(old.kind, FJ_ADMISSION_READY);
@@ -733,9 +730,9 @@ namespace IlluminantConstruction {
                 const auto oldRecipeHash = oldView.recipe_hash;
                 const auto previous = JuicerTestSupport::PublicationObserver::metrics(state);
                 auto changed = controls;
-                changed.cameraExposureCompensationEv = 1.25;
+                changed.values.camera_exposure_compensation_ev = 1.25;
                 JuicerTestSupport::capture(state, changed);
-                status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+                status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
                 if (operation == 2 || operation == 3)
                     status(fj_test_illuminant_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
                 else
@@ -774,7 +771,7 @@ namespace IlluminantConstruction {
                 }
                 if (fault == 2) {
                     require_poisoned(assets, state, "current illuminant panic");
-                    RenderInstance retry;
+                    JuicerTestSupport::InstanceFixture retry;
                     JuicerTestSupport::capture(retry, changed);
                     const auto recovered = JuicerTestSupport::admit(assets, retry);
                     ASSERT_EQ(recovered.kind, FJ_ADMISSION_READY);
@@ -795,10 +792,10 @@ namespace IlluminantConstruction {
                 admission_fault_case.passed();
             }
         auto controls = snapshot(Spektrafilm::ScanRoute::NegativePrintScan);
-        controls.enlIll = 7;
-        controls.printPreflashExposure = .1;
-        controls.grainControls.active = false;
-        controls.dirCouplers.active = false;
+        controls.values.enl_ill = 7;
+        controls.values.print_preflash_exposure = .1;
+        controls.values.grain.active = false;
+        controls.values.dir_couplers.active = false;
         auto heldRustState = JuicerTestSupport::prepare_product(assets, controls);
         FjPreparedStateView heldRustView{};
         std::array<char, 2048> heldRustText{};
@@ -820,10 +817,10 @@ namespace IlluminantConstruction {
         for (std::uint32_t fault : {1u, 2u, 3u, 4u}) {
             auto publication_fault_case = publication_fault_cases.case_event(std::to_string(publication_fault_index++));
             status(fj_test_illuminant_arm_fault(3, 1, fault), FJ_STATUS_SUCCESS);
-            std::optional<PreparedState> failed;
+            std::optional<JuicerTestSupport::PreparedStateHold> failed;
             std::array<char, 2048> failureText{};
             FjErrorBuffer failureError{failureText.data(), failureText.size(), 0};
-            const auto failure = prepare_state(assets, controls, failed, failureError);
+            const auto failure = JuicerTestSupport::prepare_state(assets, controls, failed, failureError);
             const auto faultIndex = static_cast<std::size_t>(fault - 1);
             status(failure, faultCategories[faultIndex]);
             EXPECT_FALSE(failed);
@@ -836,10 +833,10 @@ namespace IlluminantConstruction {
 
             Diagnostic retryLeaf;
             FjIlluminant equalEnergy{};
-            status(fj_legacy_illuminant_equal_energy(&equalEnergy, &retryLeaf.error), FJ_STATUS_SUCCESS);
-            std::optional<PreparedState> retried;
+            status(fj_test_illuminant_equal_energy(&equalEnergy, &retryLeaf.error), FJ_STATUS_SUCCESS);
+            std::optional<JuicerTestSupport::PreparedStateHold> retried;
             FjErrorBuffer retryError{nullptr, 0, 0};
-            status(prepare_state(assets, controls, retried, retryError), FJ_STATUS_SUCCESS);
+            status(JuicerTestSupport::prepare_state(assets, controls, retried, retryError), FJ_STATUS_SUCCESS);
             ASSERT_TRUE(retried);
             FjPreparedStateView retriedView{};
             status(retried->view(retriedView, retryError), FJ_STATUS_SUCCESS);
@@ -850,7 +847,7 @@ namespace IlluminantConstruction {
 
         // Actual complete-state publication for EQUAL faults is independent
         // from the raw factory diagnostics above.
-        auto equalPublisher = std::make_unique<RenderInstance>();
+        auto equalPublisher = std::make_unique<JuicerTestSupport::InstanceFixture>();
         auto retainedControls = controls;
         JuicerTestSupport::capture(*equalPublisher, retainedControls);
         auto retainedPublication = JuicerTestSupport::admit(assets, *equalPublisher);
@@ -862,7 +859,7 @@ namespace IlluminantConstruction {
         for (std::uint32_t fault : {1u, 2u, 3u, 4u}) {
             auto preflash_fault_case = preflash_fault_cases.case_event(std::to_string(preflash_fault_index++));
             auto changed = retainedControls;
-            changed.cameraExposureCompensationEv += static_cast<double>(fault) * 0.01;
+            changed.values.camera_exposure_compensation_ev += static_cast<double>(fault) * 0.01;
             JuicerTestSupport::capture(*equalPublisher, changed);
             const auto previousMetrics = JuicerTestSupport::PublicationObserver::metrics(*equalPublisher);
             const auto previousCounter = previousMetrics.build;
@@ -898,7 +895,7 @@ namespace IlluminantConstruction {
             std::uint64_t recoveredBuild = 0;
             if (fault == 2) {
                 require_poisoned(assets, *equalPublisher, "equal-energy panic");
-                equalPublisher = std::make_unique<RenderInstance>();
+                equalPublisher = std::make_unique<JuicerTestSupport::InstanceFixture>();
                 JuicerTestSupport::capture(*equalPublisher, retainedControls);
                 retainedPublication = JuicerTestSupport::admit(assets, *equalPublisher);
                 ASSERT_EQ(retainedPublication.kind, FJ_ADMISSION_READY) << "fresh publisher rebuilds retained A after terminal panic";
@@ -919,7 +916,7 @@ namespace IlluminantConstruction {
                 ASSERT_EQ(retainedPublication.kind, FJ_ADMISSION_READY) << "equal-energy retry fault=" << fault;
                 recoveredBuild = previousCounter + 1;
             }
-            EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).inputIdentity, hash_params(changed));
+            EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).inputIdentity, JuicerTestSupport::hash_input_identity(changed));
             EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(*equalPublisher).build, recoveredBuild);
             const auto retryValues = complete_result(JuicerTestSupport::published_view(retainedPublication), changed);
             EXPECT_NE(retryValues, previousValues);

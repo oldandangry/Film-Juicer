@@ -1,5 +1,5 @@
 namespace PrintPreflashTest {
-    JuicerCudaTest::PreparedFrameFixture::FrameFacts frame_facts(const ParamSnapshot& p);
+    JuicerCudaTest::PreparedFrameFixture::FrameFacts frame_facts(const JuicerTestSupport::PreparationInput& p);
 }
 
 namespace PrintIlluminantTest {
@@ -256,7 +256,7 @@ namespace PrintIlluminantTest {
         transport_event.passed();
     }
     void products(const Json& captured, const std::filesystem::path& resources, const Json& literalCases) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         const FjAssets* assets = owner.borrow().assets;
         FjIlluminantsOwner* rawIlluminants = nullptr;
@@ -283,33 +283,36 @@ namespace PrintIlluminantTest {
             const int mode = expected.at("mode");
             const unsigned variant = expected.at("variant");
             auto case_event = product_rows.case_event("print-illuminant/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
-            ParamSnapshot p;
-            p.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            p.printProfileKey = "kodak_portra_endura";
-            p.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-            p.spectralUpsamplingMode = mode;
-            p.cameraAutoExposureEnabled = 0;
-            p.inputCompressionEnabled = 0;
-            p.outputGamutCompressionEnabled = 0;
-            p.printPreflashExposure = variant ? 0.125 : 0.;
+            JuicerTestSupport::PreparationInput p;
+            p.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            p.print_key = "kodak_portra_endura";
+            p.values.scan_route = static_cast<std::uint32_t>(route);
+            p.values.spectral_upsampling_mode = mode;
+            p.values.camera_auto_exposure_enabled = 0;
+            p.values.input_compression_enabled = 0;
+            p.values.output_gamut_compression_enabled = 0;
+            p.values.print_preflash_exposure = variant ? 0.125 : 0.;
             if (variant == 2) {
-                p.preflashMFilterCc = 5;
-                p.preflashYFilterCc = -3;
+                p.values.preflash_m_filter_cc = 5;
+                p.values.preflash_y_filter_cc = -3;
             }
-            if (variant == 3)
-                p.printUiYmcCc = {2.1234567890123, 3.2345678901234, 4.3456789012345};
+            if (variant == 3) {
+                p.values.print_ui_ymc_cc[0] = 2.1234567890123;
+                p.values.print_ui_ymc_cc[1] = 3.2345678901234;
+                p.values.print_ui_ymc_cc[2] = 4.3456789012345;
+            }
             if (variant == 4)
-                p.outputCctfEncoding = 0;
+                p.values.output_cctf_encoding = 0;
             std::array<char, 2048> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-            std::optional<PreparedState> product;
-            const auto result = prepare_state(assets, p, product, error);
+            std::optional<JuicerTestSupport::PreparedStateHold> product;
+            const auto result = JuicerTestSupport::prepare_state(assets, p, product, error);
             const bool success = result.category == FJ_STATUS_SUCCESS && product.has_value();
             require(success, diagnostic.data());
             FjPreparedStateView view{};
             status(product->view(view, error));
             const auto& print = view.print;
-            Json actual = {{"route", route}, {"mode", mode}, {"variant", variant}, {"success", success}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"snapshot_hash", hash_params(p)}, {"final_hash", view.recipe_hash}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}, {"main_present", print.main_illuminant.count == 81}};
+            Json actual = {{"route", route}, {"mode", mode}, {"variant", variant}, {"success", success}, {"diagnostic", std::string(diagnostic.data(), error.length)}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"final_hash", view.recipe_hash}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}, {"main_present", print.main_illuminant.count == 81}};
             if (route % 2) {
                 actual["main"] = words(print.main_illuminant.data, print.main_illuminant.count);
                 const auto& mainCmy = print.main_cc_cmy;
@@ -317,8 +320,8 @@ namespace PrintIlluminantTest {
                 if ((print.flags & FJ_PRINT_PREFLASH) != 0) {
                     actual["preflash_cmy"] = words(print.preflash_cc_cmy, 3);
                 } else {
-                    require(p.printPreflashExposure == 0 && p.preflashMFilterCc == 0 && p.preflashYFilterCc == 0 &&
-                                std::all_of(p.printUiYmcCc.begin(), p.printUiYmcCc.end(), [](double value) {
+                    require(p.values.print_preflash_exposure == 0 && p.values.preflash_m_filter_cc == 0 && p.values.preflash_y_filter_cc == 0 &&
+                                std::all_of(std::begin(p.values.print_ui_ymc_cc), std::end(p.values.print_ui_ymc_cc), [](double value) {
                                     return value == 0;
                                 }),
                             "inactive preflash metadata retains the original zero-offset controls");
@@ -334,7 +337,7 @@ namespace PrintIlluminantTest {
                     actual["preflash_cmy"] = words(mainCmy, 3);
                 }
                 const auto source = view.print_source_illuminant;
-                require(p.enlIll == 3 && source.count == rawIlluminantsView.tungsten_kg3.count &&
+                require(p.values.enl_ill == 3 && source.count == rawIlluminantsView.tungsten_kg3.count &&
                             std::equal(source.data, source.data + source.count, rawIlluminantsView.tungsten_kg3.data),
                         "completed source illuminant matches the selected TH-KG3 asset identity");
                 actual["source_key"] = "TH-KG3";
@@ -357,14 +360,14 @@ namespace PrintIlluminantTest {
         }
 
         JuicerTests::CaseEvent publication_event("cpp", "print-illuminant/publication");
-        ParamSnapshot controls;
-        controls.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
-        controls.filmProfileKey = "kodak_portra_400";
-        controls.printProfileKey = "kodak_portra_endura";
-        controls.cameraAutoExposureEnabled = 0;
-        controls.inputCompressionEnabled = 0;
-        controls.outputGamutCompressionEnabled = 0;
-        RenderInstance state;
+        JuicerTestSupport::PreparationInput controls;
+        controls.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan);
+        controls.film_key = "kodak_portra_400";
+        controls.print_key = "kodak_portra_endura";
+        controls.values.camera_auto_exposure_enabled = 0;
+        controls.values.input_compression_enabled = 0;
+        controls.values.output_gamut_compression_enabled = 0;
+        JuicerTestSupport::InstanceFixture state;
         JuicerTestSupport::capture(state, controls);
         const auto original = JuicerTestSupport::admit(owner.borrow().assets, state);
         require(original.kind == FJ_ADMISSION_READY && original.state, "print illuminant publication baseline");
@@ -374,7 +377,7 @@ namespace PrintIlluminantTest {
         const auto originalMain = words(originalView.print.main_illuminant.data, originalView.print.main_illuminant.count);
         const auto originalMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
         const auto counter = originalMetrics.build;
-        controls.printUiYmcCc[0] = 2.5;
+        controls.values.print_ui_ymc_cc[0] = 2.5;
         JuicerTestSupport::capture(state, controls);
         status(fj_test_film_recipe_fault(10, 1));
         const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
@@ -382,7 +385,7 @@ namespace PrintIlluminantTest {
         require(admitted.kind == FJ_ADMISSION_READY && admitted.state &&
                     JuicerTestSupport::PublicationObserver::backing(*admitted.state) != originalMetrics.backingIdentity,
                 "actual main illuminant publication skips the legacy facade-only panic");
-        require(admittedMetrics.build == counter + 1 && admittedMetrics.publishedIdentity == hash_params(controls) &&
+        require(admittedMetrics.build == counter + 1 && admittedMetrics.publishedIdentity == JuicerTestSupport::hash_input_identity(controls) &&
                     admitted.state->build() == counter + 1 &&
                     originalView.recipe_hash == originalHash &&
                     words(originalView.print.main_illuminant.data, originalView.print.main_illuminant.count) == originalMain,
@@ -397,7 +400,7 @@ namespace PrintIlluminantTest {
                 "unchanged main illuminant publication reuses after raw facade panic/retry");
 
         std::string diagnostic;
-        controls.printPreflashExposure = 0;
+        controls.values.print_preflash_exposure = 0;
         auto disabled = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
         PreparedPrintFacts disabledFacts;
         status(fj_test_film_recipe_fault(10, 1));
@@ -408,7 +411,7 @@ namespace PrintIlluminantTest {
         // The complete disabled input must leave the raw-constructor fault armed.
         consume_stage10(literalCases);
         publication_event.passed();
-        controls.printPreflashExposure = 0.125;
+        controls.values.print_preflash_exposure = 0.125;
         auto active = JuicerTestSupport::prepare_product(owner.borrow().assets, controls);
         PreparedPrintFacts activeFacts;
         status(fj_test_film_recipe_fault(10, 1));

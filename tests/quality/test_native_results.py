@@ -153,6 +153,69 @@ class NativeResultTests(unittest.TestCase):
         }
         return result, payloads
 
+    def production_v2_fixture(self, preset="linux-release"):
+        result, payloads = self.production_fixture(preset)
+        names = ("native-symbols", "rust-symbols", "module-exports", "module-symbols",
+                 "ofx-probe-build", "ofx-probe", "cuda-abi-probe-build", "cuda-abi-probe",
+                 "module-probe", "prepared-render")
+        empty = hashlib.sha256(b"").hexdigest()
+        module, ofx, cuda, render, fixture = (str(index) * 64 for index in range(1, 6))
+        commands = [{"name": name, "returncode": 0, "process_status": "completed", "drained": True,
+                     "command": [name], "stdout_sha256": empty, "stderr_sha256": empty}
+                    for name in names]
+        by_name = {command["name"]: command for command in commands}
+        by_name["module-exports"]["command"] = ["scan", "module"]
+        symbol_file = "pdb" if preset.startswith("windows") else "module"
+        by_name["module-symbols"]["command"] = ["scan", symbol_file]
+        by_name["ofx-probe"]["command"] = ["ofx", "module"]
+        by_name["cuda-abi-probe"]["command"] = ["cuda"]
+        by_name["module-probe"]["command"] = ["probe", "module"]
+        by_name["prepared-render"]["command"] = ["render", "module", "resources", "fixture", preset, "updates"]
+        commands_data = json.dumps(commands).encode()
+        rows = []
+        for route in ("negative-direct", "negative-print"):
+            channels = 3 if route == "negative-direct" else 4
+            for render_pass in ("cold", "warm"):
+                rows.append({"case_id": f"{route}/{render_pass}", "route": route, "pass": render_pass,
+                             "input_shape": [5, 7, channels], "output_shape": [5, 7, channels],
+                             "ofx_status": 0, "messages": [], "input_sha256": empty,
+                             "output_f32_words_sha256": empty, "samples_compared": 35 * channels,
+                             "accepted_fixture_match": True, "finite_output": True,
+                             "alpha_preserved": True, "padding_preserved": True,
+                             "stream_completed": True, "readback_complete": True,
+                             "context_preserved": True, "context_restored": True,
+                             "source_image_releases": 1, "output_image_releases": 1})
+        def identity(value):
+            return {"sha256_before": value, "sha256_after": value}
+        report = {"schema": "production-contract-v2", "preset": preset,
+                  "build_testing": "OFF", "test_support": "OFF", "hidden_device_load": True,
+                  "exports": ["OfxGetNumberOfPlugins", "OfxGetPlugin"],
+                  "commands": {"sha256": hashlib.sha256(commands_data).hexdigest()},
+                  "scanned": [{"name": name,
+                               "file": symbol_file if name == "module-symbols" else "module" if name == "module-exports" else name,
+                               "sha256": empty if name == "module-symbols" and symbol_file == "pdb" else module if name.startswith("module-") else empty,
+                               "symbols_and_fault_strings_absent": True, "legacy_symbols_absent": True}
+                              for name in names[:4]],
+                  "build_inputs": {"module": identity(module), "build-module": identity(module), "pdb": identity(empty), "native-symbols": identity(empty),
+                                   "rust-symbols": identity(empty), "ofx": identity(ofx),
+                                   "cuda": identity(cuda), "render": identity(render)},
+                  "consumed_inputs": {"fixture": identity(fixture)},
+                  "loaded_module": {"file": "module", "build_file": "build-module", "sha256": module},
+                  "probes": [{"name": name, "executable": path, "linked_sha256": value,
+                              "before_run_sha256": value, "after_run_sha256": value}
+                             for name, path, value in (("ofx", "ofx", ofx), ("cuda-abi", "cuda", cuda))],
+                  "prepared_render": {"module": "module", "module_sha256": module,
+                                      "executable": "render", "executable_sha256_before": render,
+                                      "executable_sha256_after": render, "fixture": "fixture",
+                                      "fixture_sha256": fixture, "command": by_name["prepared-render"]["command"],
+                                      "stdout_sha256": empty, "stderr_sha256": empty, "rows": rows,
+                                      "lifecycle": {"module_load_status": 0, "effects_created": 2,
+                                                    "effects_destroyed": 2, "destroy_statuses": [0, 0],
+                                                    "module_unload_status": 0, "context_restored": True}}}
+        payloads["production-contract.json"] = json.dumps(report).encode()
+        payloads["production-commands.json"] = commands_data
+        return result, payloads
+
     def write_bundle(self, result, payloads, *, omitted=frozenset()):
         members = {}
         for name, data in payloads.items():
@@ -324,6 +387,154 @@ class NativeResultTests(unittest.TestCase):
         summary = read_native_result(self.bundle, result_bytes=raw)
         self.assertEqual(summary["production_off"], True)
         self.assertEqual(summary["prepared_render_cases"], 4)
+
+    def test_completed_v2_production_report_is_read_from_bundle_only(self):
+        self.subtest_cases = ("linux-release", "windows-clang-release")
+        for preset in self.subtest_cases:
+            with self.subTest(case=preset):
+                result, payloads = self.production_v2_fixture(preset)
+                summary = read_native_result(self.bundle, result_bytes=self.write_bundle(result, payloads))
+                self.assertEqual(summary["prepared_render_cases"], 4)
+
+    def test_production_v2_rejects_invalid_observations(self):
+        cases = (
+            "missing-row", "duplicate-row", "reordered-rows", "route", "pass", "input-shape",
+            "output-shape", "shape-boolean", "count", "count-boolean", "status", "status-boolean",
+            "messages", "input-digest", "output-digest", "warm-output", "fixture-match", "finite",
+            "alpha", "padding", "stream", "readback", "context", "restored", "source-release-zero",
+            "source-release-two", "output-release-zero", "output-release-two", "release-boolean",
+            "lifecycle-load", "lifecycle-created", "lifecycle-destroyed", "destroy-status",
+            "destroy-boolean", "lifecycle-unload", "lifecycle-restored", "module-hash", "probe-hash",
+            "render-hash", "input-hash", "fixture-hash", "scan-hash", "missing-field", "legacy-field",
+            "legacy-submitted", "legacy-state-release", "legacy-view-release",
+            "legacy-status", "legacy-api", "legacy-native-code", "forbidden-symbol", "legacy-symbol",
+            "hidden-export", "missing-command", "duplicate-command", "failed-command", "boolean-command",
+            "undrained-command", "unfinished-command", "changed-command", "changed-stdout",
+        )
+        self.subtest_cases = cases
+        for case in cases:
+            with self.subTest(case=case):
+                result, payloads = self.production_v2_fixture()
+                report = self.production_report(payloads)
+                prepared = report["prepared_render"]
+                row = prepared["rows"][0]
+                life = prepared["lifecycle"]
+                commands = json.loads(payloads["production-commands.json"])
+                if case == "missing-row":
+                    prepared["rows"].pop()
+                elif case == "duplicate-row":
+                    prepared["rows"][1] = copy.deepcopy(row)
+                elif case == "reordered-rows":
+                    prepared["rows"].reverse()
+                elif case == "route":
+                    row["route"] = "negative-print"
+                elif case == "pass":
+                    row["pass"] = "warm"
+                elif case == "input-shape":
+                    row["input_shape"] = [5, 7, 4]
+                elif case == "output-shape":
+                    row["output_shape"] = [5, 7, 4]
+                elif case == "shape-boolean":
+                    row["input_shape"] = [5, 7, True]
+                elif case == "count":
+                    row["samples_compared"] = 104
+                elif case == "count-boolean":
+                    row["samples_compared"] = True
+                elif case == "status":
+                    row["ofx_status"] = 1
+                elif case == "status-boolean":
+                    row["ofx_status"] = False
+                elif case == "messages":
+                    row["messages"] = ["unexpected"]
+                elif case == "input-digest":
+                    row["input_sha256"] = "invalid"
+                elif case == "output-digest":
+                    row["output_f32_words_sha256"] = "invalid"
+                elif case == "warm-output":
+                    prepared["rows"][1]["output_f32_words_sha256"] = "a" * 64
+                elif case in {"fixture-match", "finite", "alpha", "padding", "stream", "readback", "context", "restored"}:
+                    key = {"fixture-match": "accepted_fixture_match", "finite": "finite_output",
+                           "alpha": "alpha_preserved", "padding": "padding_preserved",
+                           "stream": "stream_completed", "readback": "readback_complete",
+                           "context": "context_preserved", "restored": "context_restored"}[case]
+                    row[key] = False
+                elif case.startswith("source-release-"):
+                    row["source_image_releases"] = int(case.rsplit("-", 1)[1] == "two") * 2
+                elif case.startswith("output-release-"):
+                    row["output_image_releases"] = int(case.rsplit("-", 1)[1] == "two") * 2
+                elif case == "release-boolean":
+                    row["source_image_releases"] = True
+                elif case == "lifecycle-load":
+                    life["module_load_status"] = 1
+                elif case == "lifecycle-created":
+                    life["effects_created"] = 1
+                elif case == "lifecycle-destroyed":
+                    life["effects_destroyed"] = 1
+                elif case == "destroy-status":
+                    life["destroy_statuses"] = [0, 1]
+                elif case == "destroy-boolean":
+                    life["destroy_statuses"] = [0, False]
+                elif case == "lifecycle-unload":
+                    life["module_unload_status"] = 1
+                elif case == "lifecycle-restored":
+                    life["context_restored"] = False
+                elif case == "module-hash":
+                    report["loaded_module"]["sha256"] = "a" * 64
+                elif case == "probe-hash":
+                    report["probes"][0]["after_run_sha256"] = "a" * 64
+                elif case == "render-hash":
+                    prepared["executable_sha256_after"] = "a" * 64
+                elif case == "input-hash":
+                    report["consumed_inputs"]["fixture"]["sha256_after"] = "a" * 64
+                elif case == "fixture-hash":
+                    prepared["fixture_sha256"] = "a" * 64
+                elif case == "scan-hash":
+                    report["scanned"][0]["sha256"] = "a" * 64
+                elif case == "missing-field":
+                    del row["finite_output"]
+                elif case == "legacy-field":
+                    row["recipe_hash"] = 0
+                elif case == "legacy-submitted":
+                    row["submitted"] = True
+                elif case == "legacy-state-release":
+                    row["state_released_after_submit"] = True
+                elif case == "legacy-view-release":
+                    row["views_released_after_submit"] = True
+                elif case == "legacy-status":
+                    row["status"] = 0
+                elif case == "legacy-api":
+                    row["api"] = 0
+                elif case == "legacy-native-code":
+                    row["native_code"] = 0
+                elif case == "forbidden-symbol":
+                    report["scanned"][0]["symbols_and_fault_strings_absent"] = False
+                elif case == "legacy-symbol":
+                    report["scanned"][0]["legacy_symbols_absent"] = False
+                elif case == "hidden-export":
+                    report["exports"] = ["OfxGetPlugin"]
+                elif case == "missing-command":
+                    commands.pop()
+                elif case == "duplicate-command":
+                    commands[1]["name"] = commands[0]["name"]
+                elif case == "failed-command":
+                    commands[0]["returncode"] = 1
+                elif case == "boolean-command":
+                    commands[0]["returncode"] = False
+                elif case == "undrained-command":
+                    commands[0]["drained"] = False
+                elif case == "unfinished-command":
+                    commands[0]["process_status"] = "running"
+                elif case == "changed-command":
+                    commands[-1]["command"] = ["changed"]
+                elif case == "changed-stdout":
+                    commands[-1]["stdout_sha256"] = "a" * 64
+                payloads["production-commands.json"] = json.dumps(commands).encode()
+                report["commands"]["sha256"] = hashlib.sha256(payloads["production-commands.json"]).hexdigest()
+                self.update_production_report(payloads, report)
+                result["members"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                     for name, data in payloads.items()}
+                with self.assertRaises((ValueError, KeyError)):
+                    validate_build_result(result, payloads)
 
     def test_production_report_rejects_missing_or_failed_command(self):
         self.subtest_cases = ("missing", "failed")
@@ -899,6 +1110,10 @@ with OutputLease(root,root/'build'):
 
 
 NativeResultTests.test_production_report_rejects_missing_or_failed_command.required_subtests = True
+
+NativeResultTests.test_production_v2_rejects_invalid_observations.required_subtests = True
+
+NativeResultTests.test_completed_v2_production_report_is_read_from_bundle_only.required_subtests = True
 
 NativeResultTests.test_production_report_rejects_missing_or_failed_prepared_row.required_subtests = True
 

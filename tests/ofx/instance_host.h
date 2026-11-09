@@ -193,6 +193,11 @@ namespace ofx_test {
         void set_image_release_status(OfxImageEffectHandle effect, std::string_view clip, OfxStatus status);
         std::size_t image_release_count(OfxImageEffectHandle effect, std::string_view clip) const;
         void set_abort(bool abort) noexcept;
+        // Fixture callbacks execute synchronously and exceptions are contained
+        // by the host before returning through the foreign suite boundary.
+        std::function<int()> set_abort_callback(std::function<int()> callback);
+        std::function<OfxStatus(std::string_view, std::string_view, std::string_view)> set_message_callback(
+            std::function<OfxStatus(std::string_view, std::string_view, std::string_view)> callback);
         void clear_calls();
         std::vector<InstanceCall>& calls() noexcept;
         bool callback_error() const noexcept;

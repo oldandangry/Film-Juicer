@@ -3,19 +3,15 @@
 #include <exception>
 #include <stdexcept>
 
-#include "ofxsImageEffect.h"
+#include "instance_host.h"
+#include "module_test.h"
 
 #include "ProcessRoot.h"
-#include "ProcessRuntime.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "juicer_cuda_api.h"
 #include "juicer_cuda_owner.h"
-#include "juicer_legacy_api.h"
+#include "../ffi/juicer_test_api.h"
 #include "../ffi/case_results.h"
-
-namespace JuicerProcess::TestSupport {
-    FjStatus borrow_plugin_factory_runtime_for_test(OFX::PluginFactory& factory, FjRuntimeView& out) noexcept;
-}
 
 namespace {
 
@@ -25,19 +21,20 @@ namespace {
         }
     }
 
-    FjRuntimeView borrow_factory(OFX::PluginFactory& factory) {
+    FjRuntimeView loaded_runtime() {
         FjRuntimeView view{};
-        require(JuicerProcess::TestSupport::borrow_plugin_factory_runtime_for_test(factory, view).category == FJ_STATUS_SUCCESS,
-                "factory Runtime borrow failed");
+        view.cuda = fj_test_ofx_native();
+        view.assets = static_cast<const FjAssets*>(fj_test_ofx_assets());
+        require(view.cuda && view.assets, "loaded OFX Runtime borrow failed");
         return view;
     }
 
     void require_no_owner() {
         FjCuda* probe = nullptr;
         require(fj_cuda_create(&probe, nullptr).category == FJ_STATUS_SUCCESS && probe,
-                "factory unload retained an unexpected native registration");
+                "module unload retained an unexpected native registration");
         require(fj_cuda_destroy(probe, nullptr).category == FJ_STATUS_SUCCESS,
-                "empty factory unload probe could not close");
+                "empty module unload probe could not close");
     }
 
 } // namespace
@@ -56,45 +53,42 @@ int main(int argc, char** argv) try {
         require(OfxGetNumberOfPlugins() == 1, "expected one plugin");
         OfxPlugin* plugin = OfxGetPlugin(0);
         require(plugin && plugin->mainEntry, "plugin entry point is missing");
-        OFX::PluginFactoryArray factories;
-        OFX::Plugin::getPluginIDs(factories);
-        require(factories.size() == 1, "expected one factory");
-        OFX::PluginFactory& factory = *factories.front();
+        ofx_test::InstanceHost host;
         entry.passed();
 
-        // Load directly to exercise the real owner without installing host suites.
-        // The failed unload uses the real entry point and its exception mapping.
+        // Exercise the actual standard module lifecycle and its terminal precheck.
         JuicerTests::CaseEvent empty_unload("ofx.owner_unload", operations[1]);
-        factory.unload();
+        require(plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr) == kOfxStatOK, "unbound unload failed");
         require_no_owner();
         empty_unload.passed();
         JuicerTests::CaseEvent reload("ofx.owner_unload", operations[2]);
-        factory.load();
-        factory.unload();
+        plugin->setHost(host.binding());
+        require(plugin->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr) == kOfxStatOK, "module load failed");
+        require(plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr) == kOfxStatOK, "module unload failed");
         require_no_owner();
-        factory.load();
+        require(plugin->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr) == kOfxStatOK, "module reload failed");
         reload.passed();
 
-        // Exercise the real factory unload while a native callback is active.
+        // Exercise the real module unload while a native callback is active.
         // Its terminal precheck must retain the Runtime and its Assets.
         JuicerTests::CaseEvent failed_unload("ofx.owner_unload", operations[3]);
         {
-            const FjRuntimeView activeView = borrow_factory(factory);
+            const FjRuntimeView activeView = loaded_runtime();
             JuicerCuda::NativeCall active(activeView.cuda);
             JuicerProcess::Root& activeRoot = JuicerCuda::borrow_root(activeView.cuda);
             require(plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr) == kOfxStatErrFatal,
-                    "reentrant factory unload did not reject terminal close");
-            const FjRuntimeView stillLive = borrow_factory(factory);
+                    "reentrant module unload did not reject terminal close");
+            const FjRuntimeView stillLive = loaded_runtime();
             require(stillLive.assets == activeView.assets && stillLive.cuda == activeView.cuda,
-                    "reentrant factory unload invalidated the borrowed Runtime view");
+                    "reentrant module unload invalidated the borrowed Runtime view");
             require(&JuicerCuda::borrow_root(stillLive.cuda) == &activeRoot,
-                    "reentrant factory unload replaced the bound native Root");
+                    "reentrant module unload replaced the bound native Root");
         }
         FjCuda* retainedCuda = nullptr;
         {
-            const FjRuntimeView afterCallback = borrow_factory(factory);
+            const FjRuntimeView afterCallback = loaded_runtime();
             require(afterCallback.assets && afterCallback.cuda,
-                    "rejected factory unload did not retain its Runtime after callback return");
+                    "rejected module unload did not retain its Runtime after callback return");
             retainedCuda = afterCallback.cuda;
         }
 
@@ -107,34 +101,32 @@ int main(int argc, char** argv) try {
         require(plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr) == kOfxStatErrFatal,
                 "failed native shutdown did not return fatal OFX unload status");
         require(!JuicerCuda::borrow_root(retainedCuda).begin_frame_preparation().active(),
-                "failed factory unload reopened native admission");
-        FjRuntimeView consumedView{};
-        require(JuicerProcess::TestSupport::borrow_plugin_factory_runtime_for_test(factory, consumedView).category == FJ_STATUS_PREPARATION_FAILURE &&
-                    !consumedView.assets && !consumedView.cuda,
-                "failed legal factory close did not consume its Runtime");
+                "failed module unload reopened native admission");
+        require(!fj_test_ofx_assets() && !fj_test_ofx_native(),
+                "failed legal module close did not consume its Runtime");
         failed_unload.passed();
 
         JuicerTests::CaseEvent consumed_unload("ofx.owner_unload", operations[4]);
         require(JuicerCuda::ResourceManager::registry_note_submission_end(key),
                 "could not end registry submission");
-        factory.unload();
+        require(plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr) == kOfxStatOK, "consumed module unload failed");
         require(JuicerCuda::ResourceManager::registry_begin_owner_retire(key, snapshot),
-                "repeated factory unload retried context retirement");
+                "repeated module unload retried context retirement");
         consumed_unload.passed();
         JuicerTests::CaseEvent replacement_blocked("ofx.owner_unload", operations[5]);
         FjCuda* replacement = nullptr;
         const FjStatus result = fj_cuda_create(&replacement, nullptr);
         require(result.category == FJ_STATUS_PREPARATION_FAILURE && !replacement,
-                "failed factory unload allowed a replacement owner");
+                "failed module unload allowed a replacement owner");
         replacement_blocked.passed();
         case_log.finish();
-        std::puts("PASS factory unload: noncreating teardown, close/reload, fatal OFX status and consume-once retention");
+        std::puts("PASS module unload: noncreating teardown, close/reload, fatal OFX status and consume-once retention");
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "FAIL factory unload: %s\n", error.what());
+        std::fprintf(stderr, "FAIL module unload: %s\n", error.what());
         return 1;
     } catch (...) {
-        std::fputs("FAIL factory unload: unknown exception\n", stderr);
+        std::fputs("FAIL module unload: unknown exception\n", stderr);
         return 1;
     }
 } catch (const std::exception& error) {

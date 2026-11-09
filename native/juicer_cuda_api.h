@@ -349,8 +349,7 @@ typedef struct FjScannerPostEffects {
 #define FJ_COLOR_ENCODE_CCTF 1U
 #define FJ_COLOR_INPUT_IS_OUTPUT_SPACE 2U
 #define FJ_COLOR_GAMUT_COMPRESSION 4U
-/* FJ_TEMP_BRIDGE: native C++ preparation/carriers retire at S4.E.
- * This value record remains the CUDA executor transport contract.
+/* Completed encoding values are the CUDA executor transport contract.
  * Rebuild preparation supplies schema 1 and a closed CCTF kind, including when
  * encoding is disabled. Cold callers retain initialized aligned value records
  * and corresponding selected tag/identity through call return. No pointers. */
@@ -383,7 +382,7 @@ typedef struct FjOutputColor {
     float lightness_knee[3]; /* threshold, limit, power */
     float chroma_knee[3];    /* threshold, limit, power */
     /* float[64*720] or empty, [lightness][hue], maximum OkLab chroma.
-     * Gamut::OutputBoundaryTable::cmax -> output gamut upload;
+     * Rust-held completed cmax -> output gamut upload;
      * expires at native-call return. */
     FjFloatSpan gamut_cmax;
     uint64_t gamut_table_hash;

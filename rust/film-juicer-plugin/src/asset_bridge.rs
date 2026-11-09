@@ -1,32 +1,47 @@
 //! Private raw edge for the native process asset/catalog conversion.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::TryReserveError;
-use std::fmt::{self, Write};
+use std::fmt;
+#[cfg(any(test, feature = "test-support"))]
+use std::fmt::Write;
+#[cfg(any(test, feature = "test-support"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use film_juicer_core::assets::{AssetError, Assets, CsvSource};
+use film_juicer_core::assets::{AssetError, Assets};
+#[cfg(any(test, feature = "test-support"))]
+use film_juicer_core::assets::CsvSource;
+use film_juicer_core::profile::ProfileCompletionErrorKind;
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::profile::{
-    IlluminantKind, Polarity, Role, Stage, Support, ProfileCompletionErrorKind, PrintDensityCurves,
-    PrintDensityError,
+    IlluminantKind, Polarity, Role, Stage, Support, PrintDensityCurves, PrintDensityError,
 };
 use film_juicer_core::data_io::ReadErrorKind;
+#[cfg(any(test, feature = "test-support"))]
 use crate::asset_spectral::{CmfOwner, CsvPairsOwner, MallettOwner, SpectraOwner};
+#[cfg(any(test, feature = "test-support"))]
 use crate::asset_calibration::{self, CalibrationField, CalibrationLookup};
 
+#[cfg(any(test, feature = "test-support"))]
 use crate::asset_profile::{
     FilmOwner, FilmView, IlluminantView, PrintOwner, PrintView, ProfileTablesView,
 };
 
+#[cfg(any(test, feature = "test-support"))]
 use crate::asset_catalog::{CatalogEntryView, CatalogOwner, PathError, PathView};
 use crate::cuda::sys::{
-    FJ_API_NONE, FJ_POLARITY_NEGATIVE, FJ_POLARITY_POSITIVE, FJ_STATUS_ALLOCATION_FAILURE,
-    FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_SUCCESS,
-    FJ_STATUS_UNSUPPORTED_INPUT, FjErrorBuffer, FjPathView, FjStatus, FjStringView, FjFloatSpan,
+    FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_PREPARATION_FAILURE,
+    FJ_STATUS_UNSUPPORTED_INPUT,
+};
+#[cfg(any(test, feature = "test-support"))]
+use crate::cuda::sys::{
+    FJ_API_NONE, FJ_POLARITY_NEGATIVE, FJ_POLARITY_POSITIVE, FJ_STATUS_SUCCESS, FjErrorBuffer,
+    FjPathView, FjStatus, FjStringView, FjFloatSpan,
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
 use crate::cuda::sys::FJ_PATH_UNIX_BYTES;
-#[cfg(target_os = "windows")]
+#[cfg(all(any(test, feature = "test-support"), target_os = "windows"))]
 use crate::cuda::sys::FJ_PATH_WINDOWS_WIDE;
 
 #[cfg(all(feature = "test-support", target_os = "linux"))]
@@ -34,30 +49,37 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(all(feature = "test-support", target_os = "windows"))]
 use std::os::windows::ffi::OsStrExt;
 
+#[cfg(any(test, feature = "test-support"))]
 const FJ_PROFILE_ROLE_FILM: u32 = 0;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_PROFILE_ROLE_PRINT: u32 = 1;
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjAssets {
     _opaque: [u8; 0],
 }
 #[repr(C)]
-struct FjCatalog {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjCatalog {
     _opaque: [u8; 0],
 }
 #[repr(C)]
 #[derive(Default)]
-struct FjCatalogCounts {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjCatalogCounts {
     film_count: usize,
     print_count: usize,
 }
 #[repr(C)]
-struct FjCatalogEntryView {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjCatalogEntryView {
     key: FjStringView,
     label: FjStringView,
     polarity: u32,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl FjCatalogEntryView {
     fn empty() -> Self {
         Self {
@@ -80,30 +102,41 @@ impl FjCatalogEntryView {
 }
 
 #[repr(C)]
-struct FjFilmProfile {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjFilmProfile {
     _opaque: [u8; 0],
 }
 #[repr(C)]
-struct FjPrintProfile {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjPrintProfile {
     _opaque: [u8; 0],
 }
 #[repr(C)]
-struct FjPrintDensityCurves {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjPrintDensityCurves {
     _opaque: [u8; 0],
 }
+#[cfg(any(test, feature = "test-support"))]
 const FJ_ILLUMINANT_NAMED: u32 = 0;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_ILLUMINANT_BLACKBODY: u32 = 1;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_PROFILE_SUPPORT_FILM: u32 = 0;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_PROFILE_SUPPORT_PAPER: u32 = 1;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_PROFILE_STAGE_FILMING: u32 = 0;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_PROFILE_STAGE_PRINTING: u32 = 1;
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 struct FjIlluminantView {
     label: FjStringView,
     temperature_kelvin: f64,
     kind: u32,
 }
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 struct FjProfileTablesView {
     linear_sensitivity_rgb: FjFloatSpan,
     channel_density_cmy: FjFloatSpan,
@@ -112,7 +145,8 @@ struct FjProfileTablesView {
     density_curves_cmy: FjFloatSpan,
 }
 #[repr(C)]
-struct FjFilmDigest {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjFilmDigest {
     gamma_samelayer_rgb: [f32; 3],
     gamma_interlayer_r_to_gb: [f32; 2],
     gamma_interlayer_g_to_rb: [f32; 2],
@@ -121,8 +155,23 @@ struct FjFilmDigest {
     halation_primary_amount: [f32; 3],
     hanatos_spectral_gaussian_blur_default: f32,
 }
+#[cfg(any(test, feature = "test-support"))]
+impl FjFilmDigest {
+    fn from_defaults(defaults: &film_juicer_core::profile::FilmProcessingDefaults) -> Self {
+        Self {
+            gamma_samelayer_rgb: defaults.gamma_samelayer_rgb,
+            gamma_interlayer_r_to_gb: defaults.gamma_interlayer_r_to_gb,
+            gamma_interlayer_g_to_rb: defaults.gamma_interlayer_g_to_rb,
+            gamma_interlayer_b_to_rg: defaults.gamma_interlayer_b_to_rg,
+            halation_first_sigma_um: defaults.halation_first_sigma_um,
+            halation_primary_amount: defaults.halation_primary_amount,
+            hanatos_spectral_gaussian_blur_default: defaults.hanatos_spectral_gaussian_blur_default,
+        }
+    }
+}
 #[repr(C)]
-struct FjFilmProfileView {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjFilmProfileView {
     stock: FjStringView,
     reference_illuminant: FjIlluminantView,
     viewing_illuminant: FjIlluminantView,
@@ -138,7 +187,8 @@ struct FjFilmProfileView {
     polarity: u32,
 }
 #[repr(C)]
-struct FjPrintProfileView {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjPrintProfileView {
     stock: FjStringView,
     viewing_illuminant: FjIlluminantView,
     tables: FjProfileTablesView,
@@ -146,11 +196,13 @@ struct FjPrintProfileView {
     stage: u32,
 }
 #[repr(C)]
-struct FjPrintDensityView {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjPrintDensityView {
     totals_cmy: FjFloatSpan,
     hash: u64,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn floats(values: &[f32]) -> FjFloatSpan {
     FjFloatSpan {
         data: if values.is_empty() {
@@ -161,6 +213,7 @@ fn floats(values: &[f32]) -> FjFloatSpan {
         count: values.len(),
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn illuminant(view: IlluminantView<'_>) -> FjIlluminantView {
     let (kind, temperature_kelvin) = match view.kind {
         IlluminantKind::Named => (FJ_ILLUMINANT_NAMED, 0.0),
@@ -174,6 +227,7 @@ fn illuminant(view: IlluminantView<'_>) -> FjIlluminantView {
         temperature_kelvin,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn tables(view: ProfileTablesView<'_>) -> FjProfileTablesView {
     // Fixed ABI `log_exposure` carries the admitted interpolation axis.
     FjProfileTablesView {
@@ -184,12 +238,14 @@ fn tables(view: ProfileTablesView<'_>) -> FjProfileTablesView {
         density_curves_cmy: floats(view.density_curves_cmy),
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn stage(stage: Stage) -> u32 {
     match stage {
         Stage::Filming => FJ_PROFILE_STAGE_FILMING,
         Stage::Printing => FJ_PROFILE_STAGE_PRINTING,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl FjFilmProfileView {
     fn from_view(view: FilmView<'_>) -> Self {
         let defaults = view.processing_defaults;
@@ -201,16 +257,7 @@ impl FjFilmProfileView {
             wavelengths: floats(view.wavelengths),
             density_curves_layers: view.density_curves_layers.map(|layer| layer.map(floats)),
             // Fixed ABI `digest`/`FjFilmDigest` carries processing defaults.
-            digest: FjFilmDigest {
-                gamma_samelayer_rgb: defaults.gamma_samelayer_rgb,
-                gamma_interlayer_r_to_gb: defaults.gamma_interlayer_r_to_gb,
-                gamma_interlayer_g_to_rb: defaults.gamma_interlayer_g_to_rb,
-                gamma_interlayer_b_to_rg: defaults.gamma_interlayer_b_to_rg,
-                halation_first_sigma_um: defaults.halation_first_sigma_um,
-                halation_primary_amount: defaults.halation_primary_amount,
-                hanatos_spectral_gaussian_blur_default: defaults
-                    .hanatos_spectral_gaussian_blur_default,
-            },
+            digest: FjFilmDigest::from_defaults(defaults),
             hanatos_window: floats(view.hanatos_window),
             hanatos_surface_rgb: floats(view.hanatos_surface_rgb),
             asset_token: view.asset_token,
@@ -226,6 +273,7 @@ impl FjFilmProfileView {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl FjPrintProfileView {
     fn from_view(view: PrintView<'_>) -> Self {
         Self {
@@ -240,6 +288,7 @@ impl FjPrintProfileView {
 
 /// # Safety
 /// The caller authorizes a live initialized byte extent, disjoint from outputs.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn key<'a>(view: FjStringView) -> Result<&'a str, Failure> {
     if view.count > isize::MAX as usize || (view.count != 0 && view.data.is_null()) {
         return Err(Failure::Input("invalid profile key extent"));
@@ -253,6 +302,7 @@ unsafe fn key<'a>(view: FjStringView) -> Result<&'a str, Failure> {
     std::str::from_utf8(bytes).map_err(|_| Failure::Input("invalid profile key UTF-8"))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn text(value: &str) -> FjStringView {
     FjStringView {
         data: if value.is_empty() {
@@ -265,19 +315,34 @@ fn text(value: &str) -> FjStringView {
 }
 
 pub(crate) enum Failure {
+    #[cfg(any(test, feature = "test-support"))]
     Input(&'static str),
+    #[cfg(feature = "test-support")]
+    CapturedControls(String),
+    #[cfg(any(test, feature = "test-support"))]
     Film(film_juicer_core::film::Error),
     Asset(AssetError),
+    #[cfg(any(test, feature = "test-support"))]
     Capacity(TryReserveError),
+    #[cfg(any(test, feature = "test-support"))]
     Preparation(film_juicer_core::recipe::PrepareError),
+    #[cfg(any(test, feature = "test-support"))]
     Gamma(PrintDensityError),
+    #[cfg(any(test, feature = "test-support"))]
     Illuminant(film_juicer_core::illuminant::Error),
+    #[cfg(any(test, feature = "test-support"))]
     Spectral(film_juicer_core::spectral::WhiteError),
+    #[cfg(any(test, feature = "test-support"))]
     Reconstruction(film_juicer_core::reconstruction::Error),
+    #[cfg(any(test, feature = "test-support"))]
     Exposure(film_juicer_core::exposure::Error),
+    #[cfg(any(test, feature = "test-support"))]
     FilmTc(film_juicer_core::reconstruction::TcError),
+    #[cfg(any(test, feature = "test-support"))]
     Hull(film_juicer_core::gamut::HullError),
+    #[cfg(any(test, feature = "test-support"))]
     OutputTransform(film_juicer_core::gamut::TransformError),
+    #[cfg(any(test, feature = "test-support"))]
     OutputBoundary(film_juicer_core::gamut::BoundaryError),
     #[cfg(feature = "test-support")]
     InjectedAllocation,
@@ -289,6 +354,7 @@ pub(crate) enum Failure {
 impl Failure {
     pub(crate) fn category(&self) -> u32 {
         match self {
+            #[cfg(any(test, feature = "test-support"))]
             Self::Film(error) => match error {
                 film_juicer_core::film::Error::InvalidGamma
                 | film_juicer_core::film::Error::RouteMismatch => FJ_STATUS_UNSUPPORTED_INPUT,
@@ -298,7 +364,10 @@ impl Failure {
             },
             #[cfg(feature = "test-support")]
             Self::InjectedPreparation(_) => FJ_STATUS_PREPARATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
             Self::Input(_) => FJ_STATUS_UNSUPPORTED_INPUT,
+            #[cfg(feature = "test-support")]
+            Self::CapturedControls(_) => FJ_STATUS_UNSUPPORTED_INPUT,
             Self::Asset(
                 AssetError::Catalog(_)
                 | AssetError::MissingProfile { .. }
@@ -326,8 +395,11 @@ impl Failure {
                 ReadErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
                 _ => FJ_STATUS_PREPARATION_FAILURE,
             },
+            #[cfg(any(test, feature = "test-support"))]
             Self::Spectral(_) => FJ_STATUS_PREPARATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
             Self::Exposure(_) => FJ_STATUS_PREPARATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
             Self::Hull(_) | Self::OutputTransform(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::Asset(AssetError::Derived(error)) => {
                 use film_juicer_core::assets::DerivedError;
@@ -346,14 +418,19 @@ impl Failure {
                     _ => FJ_STATUS_PREPARATION_FAILURE,
                 }
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::OutputBoundary(film_juicer_core::gamut::BoundaryError::AllocationFailure) => {
                 FJ_STATUS_ALLOCATION_FAILURE
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::OutputBoundary(_) => FJ_STATUS_PREPARATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
             Self::FilmTc(film_juicer_core::reconstruction::TcError::AllocationFailure) => {
                 FJ_STATUS_ALLOCATION_FAILURE
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::FilmTc(_) => FJ_STATUS_PREPARATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
             Self::Reconstruction(error) => match error {
                 film_juicer_core::reconstruction::Error::AllocationFailure => {
                     FJ_STATUS_ALLOCATION_FAILURE
@@ -362,16 +439,22 @@ impl Failure {
             },
             #[cfg(feature = "test-support")]
             Self::InjectedAllocation => FJ_STATUS_ALLOCATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
             Self::Gamma(PrintDensityError::InvalidGamma) => FJ_STATUS_UNSUPPORTED_INPUT,
+            #[cfg(any(test, feature = "test-support"))]
             Self::Gamma(PrintDensityError::Capacity) => FJ_STATUS_ALLOCATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
             Self::Gamma(_) => FJ_STATUS_PREPARATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
             Self::Illuminant(error) => match error.kind {
                 film_juicer_core::illuminant::ErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
                 film_juicer_core::illuminant::ErrorKind::Preparation => {
                     FJ_STATUS_PREPARATION_FAILURE
                 }
             },
+            #[cfg(any(test, feature = "test-support"))]
             Self::Capacity(_) => FJ_STATUS_ALLOCATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
             Self::Preparation(error) => crate::preparation::failure_category(error),
             Self::Asset(AssetError::Noise(error)) => noise_category(error.kind()),
             Self::Asset(AssetError::NoiseCachePoisoned) => FJ_STATUS_INTERNAL_FAILURE,
@@ -384,21 +467,36 @@ impl Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(any(test, feature = "test-support"))]
             Self::Film(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Input(message) => formatter.write_str(message),
+            #[cfg(feature = "test-support")]
+            Self::CapturedControls(message) => formatter.write_str(message),
             #[cfg(any(test, feature = "test-support"))]
             Self::Internal(message) => formatter.write_str(message),
             Self::Asset(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Capacity(error) => write!(formatter, "asset boundary capacity: {error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Preparation(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Gamma(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Illuminant(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Spectral(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Reconstruction(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Exposure(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::FilmTc(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Hull(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::OutputTransform(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::OutputBoundary(error) => write!(formatter, "{error}"),
             #[cfg(feature = "test-support")]
             Self::InjectedAllocation => {
@@ -409,6 +507,7 @@ impl fmt::Display for Failure {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn status(category: u32) -> FjStatus {
     FjStatus {
         category,
@@ -417,11 +516,13 @@ fn status(category: u32) -> FjStatus {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct Diagnostic<'a> {
     data: *mut u8,
     capacity: usize,
     length: &'a mut usize,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Write for Diagnostic<'_> {
     fn write_str(&mut self, message: &str) -> fmt::Result {
         let count = message.len().min(self.capacity - 1 - *self.length);
@@ -439,6 +540,7 @@ impl Write for Diagnostic<'_> {
 /// # Safety
 /// A nonnull diagnostic is initialized, aligned and exclusively writable; its
 /// nonempty backing extent is disjoint from all other call storage.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn run<T>(
     error: *mut FjErrorBuffer,
     operation: impl FnOnce() -> Result<T, Failure>,
@@ -496,6 +598,7 @@ pub(crate) unsafe fn run<T>(
 
 /// # Safety
 /// The caller authorizes the initialized, platform-native input extent.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn path(view: FjPathView) -> Result<std::path::PathBuf, Failure> {
     if view.data.is_null() || view.count == 0 {
         return Err(Failure::Input("empty resource root"));
@@ -544,6 +647,7 @@ pub(crate) fn runtime_assets(resource_dir: std::path::PathBuf) -> Assets {
     clippy::result_large_err,
     reason = "Runtime retains a nonallocating terminal failure"
 )]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn release_runtime_caches(assets: &Assets) -> Result<(), crate::cuda::Failure> {
     #[cfg(any(test, feature = "test-support"))]
     {
@@ -564,6 +668,7 @@ pub(crate) fn release_runtime_caches(assets: &Assets) -> Result<(), crate::cuda:
     clippy::result_large_err,
     reason = "Runtime retains a nonallocating terminal failure"
 )]
+#[cfg(any(test, feature = "test-support"))]
 fn release_runtime_cache_payloads(assets: &Assets) -> Result<(), crate::cuda::Failure> {
     let derived = assets.release_derived_payloads();
     let sources = assets.release_source_payloads();
@@ -696,12 +801,13 @@ extern "C" fn fj_test_mallett_source_consumed() -> u32 {
     u32::from(film_juicer_core::assets::mallett_source_override_consumed())
 }
 
-// FJ_TEMP_BRIDGE: asset conversion; remove S4.E.
 /// # Safety
 /// Inputs have the documented initialized extent. Nonnull outputs/diagnostics
 /// are aligned, exclusive and mutually disjoint. Root borrows expire at return.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_assets_create(
+/// Calls are synchronous on this thread, retain no raw inputs, and perform no
+/// foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn create(
     resource_root: FjPathView,
     out_assets: *mut *mut FjAssets,
     error: *mut FjErrorBuffer,
@@ -730,12 +836,11 @@ unsafe extern "C" fn fj_legacy_assets_create(
 
 /// # Safety
 /// assets is NULL or a live matching owner taken once; caller excludes all reads.
-/// Diagnostics follow the exclusive disjoint storage contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_assets_destroy(
-    assets: *mut FjAssets,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
+/// Diagnostics follow the exclusive disjoint storage contract. Calls are
+/// synchronous on this thread and perform no foreign reentry; release consumes
+/// the nullable owner exactly once with all readers excluded.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn destroy(assets: *mut FjAssets, error: *mut FjErrorBuffer) -> FjStatus {
     // SAFETY: Matching live allocation is consumed, including rejected diagnostics.
     #[cfg(feature = "test-support")]
     if !assets.is_null() {
@@ -760,8 +865,8 @@ unsafe extern "C" fn fj_legacy_assets_destroy(
 /// # Safety
 /// assets is live through return; outputs and diagnostics are exclusive and
 /// disjoint. Catalog release is excluded from every returned-view use.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_catalog_acquire(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn catalog_acquire(
     assets: *const FjAssets,
     out_catalog: *mut *mut FjCatalog,
     out_counts: *mut FjCatalogCounts,
@@ -782,9 +887,20 @@ unsafe extern "C" fn fj_legacy_catalog_acquire(
             if assets.is_null() || out_catalog.is_null() || out_counts.is_null() {
                 return Err(Failure::Input("NULL catalog acquisition input/output"));
             }
-            let catalog = (&*assets.cast::<Assets>())
-                .catalog()
-                .map_err(Failure::Asset)?;
+            let catalog = match (&*assets.cast::<Assets>()).catalog() {
+                Ok(catalog) => catalog,
+                Err(source) => {
+                    #[cfg(any(test, feature = "test-support"))]
+                    if FAULT.get() == 3 {
+                        FAULT.set(0);
+                        let mut diagnostic = Vec::<u8>::new();
+                        diagnostic
+                            .try_reserve(usize::MAX)
+                            .map_err(Failure::Capacity)?;
+                    }
+                    return Err(Failure::Asset(source));
+                }
+            };
             #[cfg(any(test, feature = "test-support"))]
             inject()?;
             let owner = Box::new(CatalogOwner::new(catalog));
@@ -792,6 +908,13 @@ unsafe extern "C" fn fj_legacy_catalog_acquire(
                 film_count: owner.count(Role::Film),
                 print_count: owner.count(Role::Print),
             };
+            #[cfg(feature = "test-support")]
+            if let Some((callback, user)) = CATALOG_PUBLICATION_HOOK.take() {
+                // SAFETY: The fixture keeps this one-shot callback/user live
+                // until the next acquisition or explicit disarm. It contains
+                // exceptions and retains no borrow; the catalog has no lock held.
+                callback(user);
+            }
             #[cfg(feature = "test-support")]
             LIVE_CATALOGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             out_counts.write(counts);
@@ -805,8 +928,8 @@ unsafe extern "C" fn fj_legacy_catalog_acquire(
 /// # Safety
 /// catalog is live through all returned-view use. Outputs and diagnostics are
 /// aligned, exclusive and disjoint from owner storage and other call storage.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_catalog_entry(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn catalog_entry(
     catalog: *const FjCatalog,
     role: u32,
     index: usize,
@@ -841,8 +964,8 @@ unsafe extern "C" fn fj_legacy_catalog_entry(
 /// # Safety
 /// catalog is NULL or a matching live owner taken once; release excludes reads
 /// and outstanding views. Diagnostics follow the exclusive storage contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_catalog_release(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn catalog_release(
     catalog: *mut FjCatalog,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
@@ -871,6 +994,86 @@ unsafe extern "C" fn fj_legacy_catalog_release(
 static LIVE_ASSETS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(feature = "test-support")]
 static LIVE_CATALOGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "test-support")]
+pub(crate) type CatalogPublicationCallback = unsafe extern "C" fn(*mut std::ffi::c_void);
+#[cfg(feature = "test-support")]
+thread_local! {
+    static CATALOG_PUBLICATION_HOOK: std::cell::Cell<Option<(CatalogPublicationCallback, *mut std::ffi::c_void)>> = const { std::cell::Cell::new(None) };
+}
+
+/// # Safety
+/// An armed callback/user stays live on this thread until the next successful
+/// catalog acquisition reaches publication, or this thread explicitly disarms
+/// it. The callback contains exceptions and retains no borrowed Rust storage.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn catalog_publication_hook(
+    callback: Option<CatalogPublicationCallback>,
+    user: *mut std::ffi::c_void,
+) {
+    CATALOG_PUBLICATION_HOOK.set(callback.map(|callback| (callback, user)));
+}
+
+/// # Safety
+/// Catalog is a live matching owner excluded from release. Output/error storage
+/// is initialized, aligned, exclusive and disjoint. Identity is observation only
+/// and never authorizes dereference or use after owner release.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn catalog_backing_identity(
+    catalog: *const FjCatalog,
+    out: *mut usize,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Caller authorizes the nonnull exclusive numeric output slot.
+    unsafe {
+        if !out.is_null() {
+            out.write(0);
+        }
+    }
+    // SAFETY: The matching owner and disjoint diagnostics remain live here.
+    unsafe {
+        run(error, || {
+            if catalog.is_null() || out.is_null() {
+                return Err(Failure::Input("NULL catalog identity input/output"));
+            }
+            out.write((&*catalog.cast::<CatalogOwner>()).backing_identity());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Assets and key backing remain live through return; initialized output/error
+/// storage is aligned, exclusive and disjoint. The copied defaults own no span.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn assets_film_defaults(
+    assets: *const FjAssets,
+    input_key: FjStringView,
+    out: *mut FjFilmDigest,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: All-zero is a valid empty numeric digest in the admitted slot.
+    unsafe {
+        if !out.is_null() {
+            std::ptr::write_bytes(out, 0, 1);
+        }
+    }
+    // SAFETY: The caller admits the owner, key and exclusive diagnostics; the
+    // local shared profile hold retains its defaults through the bounded copy.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out.is_null() {
+                return Err(Failure::Input("NULL defaults input/output"));
+            }
+            let film = (&*assets.cast::<Assets>())
+                .film(key(input_key)?)
+                .map_err(Failure::Asset)?;
+            out.write(FjFilmDigest::from_defaults(film.processing_defaults()));
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
 #[cfg(any(test, feature = "test-support"))]
 thread_local! { static FAULT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
 #[cfg(any(test, feature = "test-support"))]
@@ -1001,7 +1204,7 @@ mod tests {
             };
             // SAFETY: Live stack owner and exclusive disjoint outputs, null diagnostics.
             let result = unsafe {
-                fj_legacy_catalog_acquire(
+                catalog_acquire(
                     borrowed,
                     &raw mut owner,
                     &raw mut counts,
@@ -1025,8 +1228,10 @@ mod tests {
 /// # Safety
 /// Assets is live through return; key has its documented initialized extent.
 /// Outputs/diagnostics are aligned, exclusive and disjoint from all borrows.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_profile_acquire(
+/// Calls are synchronous on this thread, retain no raw inputs, and perform no
+/// foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn acquire_film(
     assets: *const FjAssets,
     input_key: FjStringView,
     out_profile: *mut *mut FjFilmProfile,
@@ -1060,8 +1265,8 @@ unsafe extern "C" fn fj_legacy_film_profile_acquire(
 /// # Safety
 /// Profile is live through every returned-view use; release excludes borrows.
 /// Outputs and diagnostics are aligned, exclusive and mutually disjoint.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_profile_view(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn view_film(
     profile: *const FjFilmProfile,
     out_view: *mut FjFilmProfileView,
     error: *mut FjErrorBuffer,
@@ -1089,8 +1294,10 @@ unsafe extern "C" fn fj_legacy_film_profile_view(
 /// # Safety
 /// Profile is NULL or a matching live allocation consumed once. The caller
 /// excludes every use/outstanding view. Diagnostics obey the disjoint contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_film_profile_release(
+/// Release consumes the owner once; calls are synchronous and perform no foreign
+/// reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn release_film(
     profile: *mut FjFilmProfile,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
@@ -1121,8 +1328,10 @@ unsafe extern "C" fn fj_legacy_film_profile_release(
 /// # Safety
 /// Assets is live through return; key has its documented initialized extent.
 /// Outputs/diagnostics are aligned, exclusive and disjoint from all borrows.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_print_profile_acquire(
+/// Calls are synchronous on this thread, retain no raw inputs, and perform no
+/// foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn print_profile_acquire(
     assets: *const FjAssets,
     input_key: FjStringView,
     out_profile: *mut *mut FjPrintProfile,
@@ -1156,8 +1365,8 @@ unsafe extern "C" fn fj_legacy_print_profile_acquire(
 /// # Safety
 /// Profile is live through every returned-view use; release excludes borrows.
 /// Outputs and diagnostics are aligned, exclusive and mutually disjoint.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_print_profile_view(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn print_profile_view(
     profile: *const FjPrintProfile,
     out_view: *mut FjPrintProfileView,
     error: *mut FjErrorBuffer,
@@ -1185,8 +1394,10 @@ unsafe extern "C" fn fj_legacy_print_profile_view(
 /// # Safety
 /// Profile is NULL or a matching live allocation consumed once. The caller
 /// excludes every use/outstanding view. Diagnostics obey the disjoint contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_print_profile_release(
+/// Release consumes the owner once; calls are synchronous and perform no foreign
+/// reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn print_profile_release(
     profile: *mut FjPrintProfile,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
@@ -1217,8 +1428,8 @@ unsafe extern "C" fn fj_legacy_print_profile_release(
 /// # Safety
 /// Print profile is a live matching owner; disjoint output and diagnostics are
 /// exclusive. Immutable samples may overlap only with disjoint output storage.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_print_profile_sample_density(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn print_profile_sample_density(
     profile: *const FjPrintProfile,
     gamma: f64,
     out_curves: *mut *mut FjPrintDensityCurves,
@@ -1251,8 +1462,8 @@ unsafe extern "C" fn fj_legacy_print_profile_sample_density(
 /// # Safety
 /// Curves is live through returned-view use; output/diagnostics are disjoint,
 /// aligned and exclusive. Release excludes every use and outstanding view.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_print_density_view(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn print_density_view(
     curves: *const FjPrintDensityCurves,
     out_view: *mut FjPrintDensityView,
     error: *mut FjErrorBuffer,
@@ -1286,8 +1497,8 @@ unsafe extern "C" fn fj_legacy_print_density_view(
 /// # Safety
 /// Curves is NULL or a matching live owner consumed once; caller excludes use
 /// and outstanding views. Diagnostics are authorized disjoint writable storage.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_print_density_release(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn print_density_release(
     curves: *mut FjPrintDensityCurves,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
@@ -1318,8 +1529,10 @@ unsafe extern "C" fn fj_legacy_print_density_release(
 /// # Safety
 /// Assets is live throughout this borrow; diagnostics obey the disjoint contract.
 /// Release detaches cache holds and does not revoke separately acquired owners.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_assets_release_cached_payloads(
+/// Calls are synchronous on this thread, retain no raw inputs, and perform no
+/// foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn release_caches(
     assets: *const FjAssets,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
@@ -1345,8 +1558,10 @@ unsafe extern "C" fn fj_legacy_assets_release_cached_payloads(
 /// # Safety
 /// Assets and diagnostics obey the same borrowing/disjoint contract as full release.
 /// Native conversion holds are detached after this phase and before source release.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_assets_release_derived_payloads(
+/// Calls are synchronous on this thread, retain no raw inputs, and perform no
+/// foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn release_derived(
     assets: *const FjAssets,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
@@ -1366,9 +1581,11 @@ unsafe extern "C" fn fj_legacy_assets_release_derived_payloads(
 
 /// # Safety
 /// Assets and diagnostics obey the same borrowing/disjoint contract as full release.
-/// The native caller has already attempted derived and conversion cleanup.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_assets_release_source_payloads(
+/// The native caller has already attempted derived and conversion cleanup. Calls
+/// are synchronous on this thread, retain no raw inputs, and perform no foreign
+/// reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn release_sources(
     assets: *const FjAssets,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
@@ -1649,68 +1866,63 @@ fn production_profile_layouts() {
 #[cfg(test)]
 #[test]
 fn production_profile_signatures() {
-    let _: unsafe extern "C" fn(
+    let _: unsafe fn(
         *const FjAssets,
         FjStringView,
         *mut *mut FjFilmProfile,
         *mut FjErrorBuffer,
-    ) -> FjStatus = fj_legacy_film_profile_acquire;
-    let _: unsafe extern "C" fn(
+    ) -> FjStatus = acquire_film;
+    let _: unsafe fn(
         *const FjAssets,
         FjStringView,
         *mut *mut FjPrintProfile,
         *mut FjErrorBuffer,
-    ) -> FjStatus = fj_legacy_print_profile_acquire;
-    let _: unsafe extern "C" fn(
-        *const FjFilmProfile,
-        *mut FjFilmProfileView,
-        *mut FjErrorBuffer,
-    ) -> FjStatus = fj_legacy_film_profile_view;
-    let _: unsafe extern "C" fn(
+    ) -> FjStatus = print_profile_acquire;
+    let _: unsafe fn(*const FjFilmProfile, *mut FjFilmProfileView, *mut FjErrorBuffer) -> FjStatus =
+        view_film;
+    let _: unsafe fn(
         *const FjPrintProfile,
         *mut FjPrintProfileView,
         *mut FjErrorBuffer,
-    ) -> FjStatus = fj_legacy_print_profile_view;
-    let _: unsafe extern "C" fn(
+    ) -> FjStatus = print_profile_view;
+    let _: unsafe fn(
         *const FjPrintProfile,
         f64,
         *mut *mut FjPrintDensityCurves,
         *mut FjErrorBuffer,
-    ) -> FjStatus = fj_legacy_print_profile_sample_density;
-    let _: unsafe extern "C" fn(
+    ) -> FjStatus = print_profile_sample_density;
+    let _: unsafe fn(
         *const FjPrintDensityCurves,
         *mut FjPrintDensityView,
         *mut FjErrorBuffer,
-    ) -> FjStatus = fj_legacy_print_density_view;
-    let _: unsafe extern "C" fn(*mut FjFilmProfile, *mut FjErrorBuffer) -> FjStatus =
-        fj_legacy_film_profile_release;
-    let _: unsafe extern "C" fn(*mut FjPrintProfile, *mut FjErrorBuffer) -> FjStatus =
-        fj_legacy_print_profile_release;
-    let _: unsafe extern "C" fn(*mut FjPrintDensityCurves, *mut FjErrorBuffer) -> FjStatus =
-        fj_legacy_print_density_release;
-    let _: unsafe extern "C" fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus =
-        fj_legacy_assets_release_cached_payloads;
-    let _: unsafe extern "C" fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus =
-        fj_legacy_assets_release_derived_payloads;
-    let _: unsafe extern "C" fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus =
-        fj_legacy_assets_release_source_payloads;
+    ) -> FjStatus = print_density_view;
+    let _: unsafe fn(*mut FjFilmProfile, *mut FjErrorBuffer) -> FjStatus = release_film;
+    let _: unsafe fn(*mut FjPrintProfile, *mut FjErrorBuffer) -> FjStatus = print_profile_release;
+    let _: unsafe fn(*mut FjPrintDensityCurves, *mut FjErrorBuffer) -> FjStatus =
+        print_density_release;
+    let _: unsafe fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus = release_caches;
+    let _: unsafe fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus = release_derived;
+    let _: unsafe fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus = release_sources;
 }
 
-// FJ_TEMP_BRIDGE: spectral source conversion; remove S4.E.
 #[repr(C)]
-struct FjSpectraLut {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjSpectraLut {
     _opaque: [u8; 0],
 }
 #[repr(C)]
-struct FjMallettBasis {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjMallettBasis {
     _opaque: [u8; 0],
 }
 #[repr(C)]
-struct FjCmf {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjCmf {
     _opaque: [u8; 0],
 }
 #[repr(C)]
-struct FjSpectraLutView {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjSpectraLutView {
     samples: FjFloatSpan,
     asset_hash: u64,
 }
@@ -1743,8 +1955,8 @@ extern "C" fn fj_test_spectral_live_owners() -> usize {
 /// # Safety
 /// Assets is live through return. Outputs/diagnostics are aligned, exclusive
 /// and disjoint from all input/owner storage. Only success transfers ownership.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_hanatos_acquire(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn hanatos_acquire(
     assets: *const FjAssets,
     out_owner: *mut *mut FjSpectraLut,
     error: *mut FjErrorBuffer,
@@ -1777,8 +1989,8 @@ unsafe extern "C" fn fj_legacy_hanatos_acquire(
 /// # Safety
 /// Assets is live through return. Outputs/diagnostics are aligned, exclusive
 /// and disjoint from all input/owner storage. Only success transfers ownership.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_arctic_acquire(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn arctic_acquire(
     assets: *const FjAssets,
     out_owner: *mut *mut FjSpectraLut,
     error: *mut FjErrorBuffer,
@@ -1811,8 +2023,8 @@ unsafe extern "C" fn fj_legacy_arctic_acquire(
 /// # Safety
 /// Assets is live through return. Outputs/diagnostics are aligned, exclusive
 /// and disjoint from all input/owner storage. Only success transfers ownership.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_mallett_acquire(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn mallett_acquire(
     assets: *const FjAssets,
     out_owner: *mut *mut FjMallettBasis,
     error: *mut FjErrorBuffer,
@@ -1845,8 +2057,8 @@ unsafe extern "C" fn fj_legacy_mallett_acquire(
 /// # Safety
 /// Assets is live through return. Outputs/diagnostics are aligned, exclusive
 /// and disjoint from all input/owner storage. Only success transfers ownership.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_cmf_acquire(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn cmf_acquire(
     assets: *const FjAssets,
     out_owner: *mut *mut FjCmf,
     error: *mut FjErrorBuffer,
@@ -1877,8 +2089,8 @@ unsafe extern "C" fn fj_legacy_cmf_acquire(
 /// # Safety
 /// The live matching owner remains held through every returned-view use.
 /// Output/diagnostics are aligned, exclusive and disjoint. Release excludes reads.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_spectra_lut_view(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn spectra_lut_view(
     owner: *const FjSpectraLut,
     out_view: *mut FjSpectraLutView,
     error: *mut FjErrorBuffer,
@@ -1909,8 +2121,8 @@ unsafe extern "C" fn fj_legacy_spectra_lut_view(
 /// # Safety
 /// owner is NULL or a live matching allocation consumed once. Caller excludes
 /// all operations and outstanding borrows; diagnostics obey the disjoint contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_spectra_lut_release(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn spectra_lut_release(
     owner: *mut FjSpectraLut,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
@@ -1935,8 +2147,8 @@ unsafe extern "C" fn fj_legacy_spectra_lut_release(
 /// # Safety
 /// The live matching owner remains held through every returned-view use.
 /// Output/diagnostics are aligned, exclusive and disjoint. Release excludes reads.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_mallett_view(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn mallett_view(
     owner: *const FjMallettBasis,
     out_view: *mut FjFloatSpan,
     error: *mut FjErrorBuffer,
@@ -1965,8 +2177,8 @@ unsafe extern "C" fn fj_legacy_mallett_view(
 /// # Safety
 /// owner is NULL or a live matching allocation consumed once. Caller excludes
 /// all operations and outstanding borrows; diagnostics obey the disjoint contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_mallett_release(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn mallett_release(
     owner: *mut FjMallettBasis,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
@@ -1991,8 +2203,8 @@ unsafe extern "C" fn fj_legacy_mallett_release(
 /// # Safety
 /// The live matching owner remains held through every returned-view use.
 /// Output/diagnostics are aligned, exclusive and disjoint. Release excludes reads.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_cmf_view(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn cmf_view(
     owner: *const FjCmf,
     out_view: *mut FjFloatSpan,
     error: *mut FjErrorBuffer,
@@ -2019,11 +2231,8 @@ unsafe extern "C" fn fj_legacy_cmf_view(
 /// # Safety
 /// owner is NULL or a live matching allocation consumed once. Caller excludes
 /// all operations and outstanding borrows; diagnostics obey the disjoint contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_cmf_release(
-    owner: *mut FjCmf,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn cmf_release(owner: *mut FjCmf, error: *mut FjErrorBuffer) -> FjStatus {
     let taken = if owner.is_null() {
         None
     } else {
@@ -2049,47 +2258,28 @@ mod spectral_tests {
     use crate::test_cases::RowCases;
     #[test]
     fn production_spectral_signatures() {
-        let _: unsafe extern "C" fn(
-            *const FjAssets,
-            *mut *mut FjSpectraLut,
-            *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_hanatos_acquire;
-        let _: unsafe extern "C" fn(
-            *const FjAssets,
-            *mut *mut FjSpectraLut,
-            *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_arctic_acquire;
-        let _: unsafe extern "C" fn(
+        let _: unsafe fn(*const FjAssets, *mut *mut FjSpectraLut, *mut FjErrorBuffer) -> FjStatus =
+            hanatos_acquire;
+        let _: unsafe fn(*const FjAssets, *mut *mut FjSpectraLut, *mut FjErrorBuffer) -> FjStatus =
+            arctic_acquire;
+        let _: unsafe fn(
             *const FjSpectraLut,
             *mut FjSpectraLutView,
             *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_spectra_lut_view;
-        let _: unsafe extern "C" fn(*mut FjSpectraLut, *mut FjErrorBuffer) -> FjStatus =
-            fj_legacy_spectra_lut_release;
-        let _: unsafe extern "C" fn(
+        ) -> FjStatus = spectra_lut_view;
+        let _: unsafe fn(*mut FjSpectraLut, *mut FjErrorBuffer) -> FjStatus = spectra_lut_release;
+        let _: unsafe fn(
             *const FjAssets,
             *mut *mut FjMallettBasis,
             *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_mallett_acquire;
-        let _: unsafe extern "C" fn(
-            *const FjMallettBasis,
-            *mut FjFloatSpan,
-            *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_mallett_view;
-        let _: unsafe extern "C" fn(*mut FjMallettBasis, *mut FjErrorBuffer) -> FjStatus =
-            fj_legacy_mallett_release;
-        let _: unsafe extern "C" fn(
-            *const FjAssets,
-            *mut *mut FjCmf,
-            *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_cmf_acquire;
-        let _: unsafe extern "C" fn(
-            *const FjCmf,
-            *mut FjFloatSpan,
-            *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_cmf_view;
-        let _: unsafe extern "C" fn(*mut FjCmf, *mut FjErrorBuffer) -> FjStatus =
-            fj_legacy_cmf_release;
+        ) -> FjStatus = mallett_acquire;
+        let _: unsafe fn(*const FjMallettBasis, *mut FjFloatSpan, *mut FjErrorBuffer) -> FjStatus =
+            mallett_view;
+        let _: unsafe fn(*mut FjMallettBasis, *mut FjErrorBuffer) -> FjStatus = mallett_release;
+        let _: unsafe fn(*const FjAssets, *mut *mut FjCmf, *mut FjErrorBuffer) -> FjStatus =
+            cmf_acquire;
+        let _: unsafe fn(*const FjCmf, *mut FjFloatSpan, *mut FjErrorBuffer) -> FjStatus = cmf_view;
+        let _: unsafe fn(*mut FjCmf, *mut FjErrorBuffer) -> FjStatus = cmf_release;
     }
     #[test]
     fn layout_and_source_error_categories() {
@@ -2169,32 +2359,49 @@ mod spectral_tests {
     }
 }
 
-// FJ_TEMP_BRIDGE: CSV source conversion and selected calibration; remove S4.E.
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CSV_D65: u32 = 1;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CSV_D55: u32 = 2;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CSV_D50: u32 = 3;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CSV_T: u32 = 4;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CSV_K75P: u32 = 5;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CSV_KG3: u32 = 6;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CSV_CANON_24_F28_IS: u32 = 7;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_FOUND: u32 = 1;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_MISSING_FILE: u32 = 2;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_MISSING_ENTRY: u32 = 3;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_MALFORMED: u32 = 4;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_FIELD_NONE: u32 = 0;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_FIELD_RESOURCE_READ: u32 = 1;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_FIELD_ROOT: u32 = 2;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_FIELD_PRINT_PROFILE: u32 = 3;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_FIELD_PRINT_ILLUMINANT: u32 = 4;
+#[cfg(any(test, feature = "test-support"))]
 const FJ_CALIBRATION_FIELD_CMY_CC: u32 = 5;
 
 #[repr(C)]
-struct FjCsvPairs {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct FjCsvPairs {
     _opaque: [u8; 0],
 }
 #[repr(C)]
 #[derive(Default)]
-struct FjNeutralCalibrationResult {
+pub(crate) struct FjNeutralCalibrationResult {
     outcome: u32,
     field: u32,
     cmy_cc: [f32; 3],
@@ -2219,6 +2426,7 @@ pub(crate) fn csv_source_tag(source: CsvSource) -> u32 {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn csv_source(tag: u32) -> Result<CsvSource, Failure> {
     match tag {
         FJ_CSV_D65 => Ok(CsvSource::D65),
@@ -2231,6 +2439,7 @@ pub(crate) fn csv_source(tag: u32) -> Result<CsvSource, Failure> {
         _ => Err(Failure::Input("unsupported CSV source tag")),
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl FjNeutralCalibrationResult {
     fn from_lookup(result: CalibrationLookup) -> Self {
         let mut raw = Self {
@@ -2292,8 +2501,10 @@ fn csv_inject(source: CsvSource) -> Result<(), Failure> {
 /// # Safety
 /// Assets stays live through return; outputs/diagnostics are aligned, exclusive
 /// and disjoint. Only success transfers one owner requiring matching release.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_csv_acquire(
+/// Calls are synchronous on this thread, retain no raw inputs, and perform no
+/// foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn acquire_csv(
     assets: *const FjAssets,
     source: u32,
     out_pairs: *mut *mut FjCsvPairs,
@@ -2324,11 +2535,14 @@ unsafe extern "C" fn fj_legacy_csv_acquire(
     }
     .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
 }
+
 /// # Safety
 /// The matching owner remains held through view use; release excludes reads.
 /// Output/diagnostics are aligned, exclusive and disjoint from all owner storage.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_csv_view(
+/// The view borrows the held owner only through return; calls are synchronous and
+/// perform no foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn view_csv(
     pairs: *const FjCsvPairs,
     out_rows: *mut FjFloatSpan,
     error: *mut FjErrorBuffer,
@@ -2353,14 +2567,14 @@ unsafe extern "C" fn fj_legacy_csv_view(
     }
     .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
 }
+
 /// # Safety
 /// Pairs is NULL or one live matching owner, consumed once with all reads excluded.
-/// Diagnostics obey the shared exclusive/disjoint storage contract.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_csv_release(
-    pairs: *mut FjCsvPairs,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
+/// Diagnostics obey the shared exclusive/disjoint storage contract. Release
+/// consumes the owner once with all readers excluded; calls are synchronous and
+/// perform no foreign reentry.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn release_csv(pairs: *mut FjCsvPairs, error: *mut FjErrorBuffer) -> FjStatus {
     let taken = if pairs.is_null() {
         None
     } else {
@@ -2378,11 +2592,12 @@ unsafe extern "C" fn fj_legacy_csv_release(
     }
     .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
 }
+
 /// # Safety
 /// Assets and initialized key extents remain live through return. Output and
 /// diagnostics are aligned, exclusive and disjoint from inputs and each other.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_neutral_calibration_lookup(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn neutral_calibration_lookup(
     assets: *const FjAssets,
     print_stock: FjStringView,
     illuminant: FjStringView,
@@ -2447,6 +2662,23 @@ mod illuminant_calibration_tests {
     use crate::test_cases::RowCases;
     #[test]
     fn source_categories_and_signatures() {
+        let _: unsafe fn(
+            *const FjAssets,
+            u32,
+            *mut *mut FjCsvPairs,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = acquire_csv;
+        let _: unsafe fn(*const FjCsvPairs, *mut FjFloatSpan, *mut FjErrorBuffer) -> FjStatus =
+            view_csv;
+        let _: unsafe fn(*mut FjCsvPairs, *mut FjErrorBuffer) -> FjStatus = release_csv;
+        let _: unsafe fn(
+            *const FjAssets,
+            FjStringView,
+            FjStringView,
+            FjStringView,
+            *mut FjNeutralCalibrationResult,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = neutral_calibration_lookup;
         use film_juicer_core::data_io::ReadError;
         let cases = [
             (
@@ -2487,38 +2719,22 @@ mod illuminant_calibration_tests {
             .category(),
             FJ_STATUS_INTERNAL_FAILURE
         );
-        let _: unsafe extern "C" fn(
-            *const FjAssets,
-            u32,
-            *mut *mut FjCsvPairs,
-            *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_csv_acquire;
-        let _: unsafe extern "C" fn(
-            *const FjCsvPairs,
-            *mut FjFloatSpan,
-            *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_csv_view;
-        let _: unsafe extern "C" fn(*mut FjCsvPairs, *mut FjErrorBuffer) -> FjStatus =
-            fj_legacy_csv_release;
-        let _: unsafe extern "C" fn(
-            *const FjAssets,
-            FjStringView,
-            FjStringView,
-            FjStringView,
-            *mut FjNeutralCalibrationResult,
-            *mut FjErrorBuffer,
-        ) -> FjStatus = fj_legacy_neutral_calibration_lookup;
     }
 }
 
 // Raw noise projection is shared only by the production and fixture edges.
+#[cfg(any(test, feature = "test-support"))]
 use crate::asset_noise::{NoiseOwner, NoiseView};
+#[cfg(any(test, feature = "test-support"))]
 use crate::cuda::sys::{FjByteSpan, FjStaticNoise};
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::assets::NoiseBundle;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 use film_juicer_core::data_io::noise;
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjNoise {
     _opaque: [u8; 0],
 }
@@ -2540,6 +2756,7 @@ pub(crate) fn noise_category(kind: noise::ErrorKind) -> u32 {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn noise_projection(view: NoiseView<'_>) -> FjStaticNoise {
     let bytes = |samples: &[u8]| FjByteSpan {
         data: samples.as_ptr(),
@@ -2571,6 +2788,7 @@ static LIVE_NOISE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsi
 /// # Safety
 /// Output/diagnostics are exclusive aligned disjoint authorized storage.
 /// The operation borrows its inputs only until return and publishes complete data.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn acquire_noise(
     out_owner: *mut *mut FjNoise,
     error: *mut FjErrorBuffer,
@@ -2605,6 +2823,7 @@ pub(crate) unsafe fn acquire_noise(
 /// # Safety
 /// Matching live owner remains held through all view use; output/diagnostics
 /// are exclusive aligned disjoint storage. Release excludes all readers.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn view_noise(
     owner: *const FjNoise,
     out_view: *mut FjStaticNoise,
@@ -2634,6 +2853,7 @@ pub(crate) unsafe fn view_noise(
 /// # Safety
 /// Owner is NULL or one matching live handle consumed once, with all reads and
 /// borrows excluded. Diagnostic storage obeys the common disjoint contract.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn release_noise(owner: *mut FjNoise, error: *mut FjErrorBuffer) -> FjStatus {
     let taken = if owner.is_null() {
         None
@@ -2660,8 +2880,8 @@ pub(crate) unsafe fn release_noise(owner: *mut FjNoise, error: *mut FjErrorBuffe
 /// # Safety
 /// Assets is live through return; output/diagnostics are aligned, exclusive and
 /// disjoint. Only success transfers a complete source owner requiring release.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_noise_acquire(
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn acquire_assets_noise(
     assets: *const FjAssets,
     out_owner: *mut *mut FjNoise,
     error: *mut FjErrorBuffer,
@@ -2676,29 +2896,6 @@ unsafe extern "C" fn fj_legacy_noise_acquire(
         })
     }
 }
-/// # Safety
-/// Matching owner is live through view use; aligned exclusive outputs and
-/// diagnostics are disjoint from each other and all owner storage.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_noise_view(
-    owner: *const FjNoise,
-    out_view: *mut FjStaticNoise,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Identical owner/borrow/storage obligations to the shared operation.
-    unsafe { view_noise(owner, out_view, error) }
-}
-/// # Safety
-/// Matching live owner is consumed once, with every read/borrow excluded.
-/// Diagnostics follow the common exclusive/disjoint contract; NULL is allowed.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_noise_release(
-    owner: *mut FjNoise,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Shared cleanup consumes even on diagnostic failure or panic.
-    unsafe { release_noise(owner, error) }
-}
 
 #[cfg(feature = "test-support")]
 #[unsafe(no_mangle)]
@@ -2710,13 +2907,6 @@ extern "C" fn fj_test_noise_fault(fault: u32) {
 extern "C" fn fj_test_live_noise_owners() -> usize {
     LIVE_NOISE.load(std::sync::atomic::Ordering::Relaxed)
 }
-
-const _: unsafe extern "C" fn(*const FjAssets, *mut *mut FjNoise, *mut FjErrorBuffer) -> FjStatus =
-    fj_legacy_noise_acquire;
-const _: unsafe extern "C" fn(*const FjNoise, *mut FjStaticNoise, *mut FjErrorBuffer) -> FjStatus =
-    fj_legacy_noise_view;
-const _: unsafe extern "C" fn(*mut FjNoise, *mut FjErrorBuffer) -> FjStatus =
-    fj_legacy_noise_release;
 
 #[cfg(feature = "test-support")]
 #[unsafe(no_mangle)]

@@ -26,15 +26,13 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-#include "ProcessRuntime.h"
 #include "gtest_cases.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaResources.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "test_asset_library.h"
 #include "test_asset_workspace.h"
-#include "NativePath.h"
+#include "native_path.h"
 #include "test_asset_bridge.h"
 #include "ColorTransforms.h"
 #include "Cuda/JuicerCudaHostViews.h"
@@ -46,10 +44,10 @@
 static_assert(sizeof(FjNeutralCalibrationResult) == 20 && alignof(FjNeutralCalibrationResult) == 4);
 static_assert(offsetof(FjNeutralCalibrationResult, outcome) == 0 && offsetof(FjNeutralCalibrationResult, field) == 4 && offsetof(FjNeutralCalibrationResult, cmy_cc) == 8);
 static_assert(sizeof(FjFloatSpan) == 16 && alignof(FjFloatSpan) == 8);
-static_assert(std::is_same_v<decltype(&fj_legacy_csv_acquire), FjStatus (*)(const FjAssets*, uint32_t, FjCsvPairs**, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_csv_view), FjStatus (*)(const FjCsvPairs*, FjFloatSpan*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_csv_release), FjStatus (*)(FjCsvPairs*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_neutral_calibration_lookup), FjStatus (*)(const FjAssets*, FjStringView, FjStringView, FjStringView, FjNeutralCalibrationResult*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_csv_acquire), FjStatus (*)(const FjAssets*, uint32_t, FjCsvPairs**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_csv_view), FjStatus (*)(const FjCsvPairs*, FjFloatSpan*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_csv_release), FjStatus (*)(FjCsvPairs*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_neutral_calibration_lookup), FjStatus (*)(const FjAssets*, FjStringView, FjStringView, FjStringView, FjNeutralCalibrationResult*, FjErrorBuffer*)>);
 
 
 namespace IlluminantConstruction {
@@ -201,7 +199,7 @@ namespace {
             return IlluminantsHold(std::move(snapshot));
         }
         FjStatus release_cached_payloads(FjErrorBuffer* error = nullptr) const {
-            return fj_legacy_assets_release_cached_payloads(owner(), error);
+            return fj_test_assets_release_cached_payloads(owner(), error);
         }
     };
     template <typename Operation>
@@ -220,10 +218,10 @@ namespace {
         FjAssets* owner = nullptr;
         explicit Assets(const fs::path& root) {
             const JuicerAssets::NativePathArgument path(root);
-            expect_status(fj_legacy_assets_create(path.view(), &owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_create(path.view(), &owner, nullptr), FJ_STATUS_SUCCESS);
         }
         ~Assets() {
-            const auto status = fj_legacy_assets_destroy(owner, nullptr);
+            const auto status = fj_test_assets_destroy(owner, nullptr);
             if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0)
                 std::abort();
         }
@@ -258,15 +256,15 @@ namespace {
     }
     FjNeutralCalibrationResult lookup(const Assets& assets, const std::string& print = "paper", const std::string& illuminant = "light", const std::string& film = "film") {
         FjNeutralCalibrationResult result{};
-        expect_status(fj_legacy_neutral_calibration_lookup(assets.owner, text(print), text(illuminant), text(film), &result, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_neutral_calibration_lookup(assets.owner, text(print), text(illuminant), text(film), &result, nullptr), FJ_STATUS_SUCCESS);
         return result;
     }
-    ParamSnapshot controls(bool print = false) {
-        ParamSnapshot result;
-        result.scanRoute = print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan;
-        result.spectralUpsamplingMode = 1;
-        result.dirCouplers.active = false;
-        result.outputGamutCompressionEnabled = 0;
+    JuicerTestSupport::PreparationInput controls(bool print = false) {
+        JuicerTestSupport::PreparationInput result;
+        result.values.scan_route = print ? FJ_ROUTE_NEGATIVE_PRINT : FJ_ROUTE_NEGATIVE_DIRECT;
+        result.values.spectral_upsampling_mode = 1;
+        result.values.dir_couplers.active = false;
+        result.values.output_gamut_compression_enabled = 0;
         return result;
     }
 
@@ -291,23 +289,23 @@ namespace {
         {
             Assets assets(resources);
             for (std::size_t i = 0; i < expected.size(); ++i) {
-                expect_status(fj_legacy_csv_acquire(assets.owner, expected[i].tag, &held[i], nullptr), FJ_STATUS_SUCCESS);
-                expect_status(fj_legacy_csv_view(held[i], &views[i], nullptr), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_csv_acquire(assets.owner, expected[i].tag, &held[i], nullptr), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_csv_view(held[i], &views[i], nullptr), FJ_STATUS_SUCCESS);
                 EXPECT_EQ(views[i].count, expected[i].rows * 2);
                 EXPECT_EQ(hash_floats(views[i].data, views[i].count), expected[i].hash);
                 FjCsvPairs* warm = nullptr;
                 FjFloatSpan warmView{};
-                expect_status(fj_legacy_csv_acquire(assets.owner, expected[i].tag, &warm, nullptr), FJ_STATUS_SUCCESS);
-                expect_status(fj_legacy_csv_view(warm, &warmView, nullptr), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_csv_acquire(assets.owner, expected[i].tag, &warm, nullptr), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_csv_view(warm, &warmView, nullptr), FJ_STATUS_SUCCESS);
                 EXPECT_EQ(warmView.data, views[i].data);
-                expect_status(fj_legacy_csv_release(warm, nullptr), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_csv_release(warm, nullptr), FJ_STATUS_SUCCESS);
             }
-            expect_status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
         }
         EXPECT_EQ(fj_test_csv_live_owners(), 7u);
         for (std::size_t i = 0; i < expected.size(); ++i) {
             EXPECT_EQ(hash_floats(views[i].data, views[i].count), expected[i].hash);
-            expect_status(fj_legacy_csv_release(held[i], nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_csv_release(held[i], nullptr), FJ_STATUS_SUCCESS);
             source_rows[i]->passed();
         }
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
@@ -321,26 +319,26 @@ namespace {
         for (auto tag : {0u, 8u, 0xffffffffu}) {
             auto invalid_source_tag_case = invalid_source_tag_cases.case_event(std::to_string(invalid_source_tag_index++));
             owner = reinterpret_cast<FjCsvPairs*>(1);
-            expect_status(fj_legacy_csv_acquire(assets.owner, tag, &owner, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            expect_status(fj_test_csv_acquire(assets.owner, tag, &owner, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
             EXPECT_EQ(owner, nullptr);
 
             invalid_source_tag_case.passed();
         }
         FjFloatSpan view{reinterpret_cast<const float*>(1), 99};
         FjErrorBuffer invalid{nullptr, 1, 99};
-        expect_status(fj_legacy_csv_view(nullptr, &view, &invalid), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_csv_view(nullptr, &view, &invalid), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(view.data, nullptr);
         EXPECT_EQ(view.count, 0u);
         EXPECT_EQ(invalid.length, 0u);
-        expect_status(fj_legacy_csv_acquire(nullptr, FJ_CSV_D65, &owner, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D65, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        expect_status(fj_legacy_csv_view(nullptr, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        expect_status(fj_legacy_csv_release(nullptr, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_acquire(nullptr, FJ_CSV_D65, &owner, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_csv_acquire(assets.owner, FJ_CSV_D65, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_csv_view(nullptr, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_csv_release(nullptr, nullptr), FJ_STATUS_SUCCESS);
         FjErrorBuffer zero{reinterpret_cast<char*>(1), 0, 99};
-        expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D65, &owner, &zero), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_acquire(assets.owner, FJ_CSV_D65, &owner, &zero), FJ_STATUS_SUCCESS);
         EXPECT_EQ(zero.length, 0u);
-        expect_status(fj_legacy_csv_view(owner, &view, &zero), FJ_STATUS_SUCCESS);
-        expect_status(fj_legacy_csv_release(owner, &invalid), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_csv_view(owner, &view, &zero), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_release(owner, &invalid), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
     }
 
@@ -349,13 +347,13 @@ namespace {
         write(root / "illuminants/D65.csv", "# comment\n380,1 trailing\n385 1e-999\n0x1p2 4\nbad\n390 2;note\n395;3\n");
         Assets assets(root);
         FjCsvPairs* owner = nullptr;
-        expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D65, &owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_acquire(assets.owner, FJ_CSV_D65, &owner, nullptr), FJ_STATUS_SUCCESS);
         const auto releaseCsv = [](FjCsvPairs* held) {
-            expect_status(fj_legacy_csv_release(held, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_csv_release(held, nullptr), FJ_STATUS_SUCCESS);
         };
         std::unique_ptr<FjCsvPairs, decltype(releaseCsv)> rowsHold(owner, releaseCsv);
         FjFloatSpan rows{};
-        expect_status(fj_legacy_csv_view(rowsHold.get(), &rows, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_view(rowsHold.get(), &rows, nullptr), FJ_STATUS_SUCCESS);
         ASSERT_EQ(rows.count, 6u);
         EXPECT_EQ((std::array{rows.data[0], rows.data[1]}), (std::array<float, 2>{380, 1}));
         EXPECT_EQ((std::array{rows.data[2], rows.data[3]}), (std::array<float, 2>{385, 0}));
@@ -364,18 +362,18 @@ namespace {
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
         write(root / "illuminants/D55.csv", "# no rows\n");
         owner = nullptr;
-        expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D55, &owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_acquire(assets.owner, FJ_CSV_D55, &owner, nullptr), FJ_STATUS_SUCCESS);
         FjFloatSpan view{};
-        expect_status(fj_legacy_csv_view(owner, &view, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_view(owner, &view, nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(view.data, nullptr);
         EXPECT_EQ(view.count, 0u);
-        expect_status(fj_legacy_csv_release(owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_release(owner, nullptr), FJ_STATUS_SUCCESS);
         write(root / "illuminants/D50.csv", std::string(65536, '1'));
-        expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D50, &owner, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+        expect_status(fj_test_csv_acquire(assets.owner, FJ_CSV_D50, &owner, nullptr), FJ_STATUS_PREPARATION_FAILURE);
         EXPECT_EQ(owner, nullptr);
         write(root / "illuminants/D50.csv", "380,1\n");
-        expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D50, &owner, nullptr), FJ_STATUS_SUCCESS);
-        expect_status(fj_legacy_csv_release(owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_acquire(assets.owner, FJ_CSV_D50, &owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_release(owner, nullptr), FJ_STATUS_SUCCESS);
     }
 
     TEST(IlluminantAbi, CapacityPoisonAndPanicTransportClearsOutput) {
@@ -388,7 +386,7 @@ namespace {
             FjCsvPairs* owner = reinterpret_cast<FjCsvPairs*>(1);
             std::array<char, 8> bytes{};
             FjErrorBuffer error{bytes.data(), bytes.size(), 99};
-            expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D65, &owner, &error), test.second);
+            expect_status(fj_test_csv_acquire(assets.owner, FJ_CSV_D65, &owner, &error), test.second);
             EXPECT_EQ(owner, nullptr);
             EXPECT_GT(error.length, 0u);
             EXPECT_EQ(bytes[error.length], '\0');
@@ -409,7 +407,7 @@ namespace {
         for (const auto& item : malformed) {
             auto malformed_key_case = malformed_key_cases.case_event(std::to_string(malformed_key_index++));
             write(path, item.first);
-            expect_status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             const auto result = lookup(assets);
             EXPECT_EQ(result.outcome, FJ_CALIBRATION_MALFORMED);
             EXPECT_EQ(result.field, item.second);
@@ -421,7 +419,7 @@ namespace {
         write(path, "\xef\xbb\xbf{\"paper\":{\"light\":{\"film\":[1,2,3],\"unused\":false}},\"bad-unused\":[]}");
         // Cached malformed source/root persists across repair until release.
         EXPECT_EQ(lookup(assets).outcome, FJ_CALIBRATION_MALFORMED);
-        expect_status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(lookup(assets).outcome, FJ_CALIBRATION_FOUND);
         EXPECT_EQ(lookup(assets).cmy_cc[2], 3.0f);
         EXPECT_EQ(lookup(assets, "Paper").outcome, FJ_CALIBRATION_MISSING_ENTRY);
@@ -429,15 +427,15 @@ namespace {
         EXPECT_EQ(lookup(assets, std::string("paper\0", 6)).outcome, FJ_CALIBRATION_MISSING_ENTRY);
         const std::string badUtf8(1, static_cast<char>(0xff));
         FjNeutralCalibrationResult output{99, 99, {1, 2, 3}};
-        expect_status(fj_legacy_neutral_calibration_lookup(assets.owner, text(badUtf8), text("light"), text("film"), &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_neutral_calibration_lookup(assets.owner, text(badUtf8), text("light"), text("film"), &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(output.outcome, 0u);
         EXPECT_EQ(output.field, 0u);
         for (float cc : output.cmy_cc)
             EXPECT_EQ(cc, 0.0f);
-        expect_status(fj_legacy_neutral_calibration_lookup(nullptr, {}, {}, {}, &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        expect_status(fj_legacy_neutral_calibration_lookup(assets.owner, {}, {}, {}, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_neutral_calibration_lookup(nullptr, {}, {}, {}, &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_neutral_calibration_lookup(assets.owner, {}, {}, {}, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         const FjStringView badExtent{nullptr, 1};
-        expect_status(fj_legacy_neutral_calibration_lookup(assets.owner, badExtent, {}, {}, &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_neutral_calibration_lookup(assets.owner, badExtent, {}, {}, &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
     }
 
     TEST(CalibrationAbi, ReadAllocationClassifierSurvivesAssetsAndTransportUntilRelease) {
@@ -458,7 +456,7 @@ namespace {
             capacity_cases.reserve(capacities.size());
             for (const auto capacity : capacities)
                 capacity_cases.push_back(read_fault_capacity_cases.deferred_case("mode/" + std::to_string(mode) + "/capacity/" + std::to_string(capacity)));
-            expect_status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             std::array<bool, capacities.size()> visited{};
             fj_test_calibration_read_fault(mode);
             for (std::size_t index = 0; index < capacities.size(); ++index) {
@@ -466,7 +464,7 @@ namespace {
                 std::array<char, 512> bytes{};
                 FjErrorBuffer error{bytes.data(), capacity, 99};
                 FjNeutralCalibrationResult output{99, 99, {1, 2, 3}};
-                const auto status = fj_legacy_neutral_calibration_lookup(assets.owner, text("paper"), text("light"), text("film"), &output, &error);
+                const auto status = fj_test_neutral_calibration_lookup(assets.owner, text("paper"), text("light"), text("film"), &output, &error);
                 expect_status(status, mode <= 4 ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_SUCCESS);
                 if (mode <= 4) {
                     EXPECT_EQ(output.outcome, 0u);
@@ -489,9 +487,9 @@ namespace {
             EXPECT_EQ(fj_test_calibration_probes(), mode <= 3 ? 0u : 1u);
             fj_test_calibration_read_fault(0);
             FjNeutralCalibrationResult output{};
-            expect_status(fj_legacy_neutral_calibration_lookup(assets.owner, {}, {}, {}, &output, nullptr), mode <= 4 ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_SUCCESS);
+            expect_status(fj_test_neutral_calibration_lookup(assets.owner, {}, {}, {}, &output, nullptr), mode <= 4 ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_SUCCESS);
             EXPECT_EQ(fj_test_calibration_reads(), 1u);
-            expect_status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
             EXPECT_EQ(lookup(assets).outcome, FJ_CALIBRATION_MISSING_ENTRY);
             for (std::size_t index = 0; index < capacity_cases.size(); ++index)
                 if (visited[index])
@@ -705,20 +703,20 @@ namespace {
     TEST(IlluminantMath, DirectConstraintsAndAsymmetricCoverage) {
         Assets assets(resources);
         FjCsvPairs* acquired = nullptr;
-        expect_status(fj_legacy_csv_acquire(assets.owner, FJ_CSV_D65, &acquired, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_acquire(assets.owner, FJ_CSV_D65, &acquired, nullptr), FJ_STATUS_SUCCESS);
         const auto releaseCsv = [](FjCsvPairs* held) {
-            (void)fj_legacy_csv_release(held, nullptr);
+            (void)fj_test_csv_release(held, nullptr);
         };
         std::unique_ptr<FjCsvPairs, decltype(releaseCsv)> source(acquired, releaseCsv);
         FjFloatSpan original{};
-        expect_status(fj_legacy_csv_view(source.get(), &original, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_csv_view(source.get(), &original, nullptr), FJ_STATUS_SUCCESS);
         ASSERT_EQ(original.count, 162u);
         auto direct = std::vector<float>(original.data, original.data + original.count);
         const auto check = [](const std::vector<float>& rows) {
             std::array<char, 256> bytes{};
             FjErrorBuffer error{bytes.data(), bytes.size(), 0};
             FjIlluminant curve{};
-            expect_status(fj_legacy_illuminant_from_samples({rows.data(), rows.size()}, &curve, &error), FJ_STATUS_PREPARATION_FAILURE);
+            expect_status(fj_test_illuminant_from_samples({rows.data(), rows.size()}, &curve, &error), FJ_STATUS_PREPARATION_FAILURE);
         };
         direct[0] += 0.01f;
         check(direct);
@@ -734,21 +732,44 @@ namespace {
         FjIlluminant curve{};
         FjIlluminantCoverage coverage{};
         FjIlluminantLens* owner = nullptr;
-        expect_status(fj_legacy_illuminant_tungsten_kg3({narrow.data(), narrow.size()}, &curve, &coverage, &error), FJ_STATUS_PREPARATION_FAILURE);
+        expect_status(fj_test_illuminant_tungsten_kg3({narrow.data(), narrow.size()}, &curve, &coverage, &error), FJ_STATUS_PREPARATION_FAILURE);
         EXPECT_EQ(coverage.warnings, 3u);
-        expect_status(fj_legacy_illuminant_lens_prepare({narrow.data(), narrow.size()}, &owner, &coverage, &error), FJ_STATUS_SUCCESS);
-        expect_status(fj_legacy_illuminant_lens_finish(&owner, {narrow.data(), narrow.size()}, &curve, &coverage, &error), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_illuminant_lens_prepare({narrow.data(), narrow.size()}, &owner, &coverage, &error), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_illuminant_lens_finish(&owner, {narrow.data(), narrow.size()}, &curve, &coverage, &error), FJ_STATUS_SUCCESS);
         EXPECT_EQ(owner, nullptr);
-        expect_status(fj_legacy_illuminant_lens_prepare({}, &owner, &coverage, &error), FJ_STATUS_PREPARATION_FAILURE);
+        expect_status(fj_test_illuminant_lens_prepare({}, &owner, &coverage, &error), FJ_STATUS_PREPARATION_FAILURE);
     }
 
     TEST(CalibrationNative, LookupCompletesAcrossCacheReleaseAndStockKeysOwnRecipeSelection) {
         const auto root = full_root("stock-recipe");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const FjAssets* assets = owner.borrow().assets;
         // Retain catalog keys before changing stock metadata for cold profile decoding.
-        ASSERT_TRUE(owner.spektrafilm_profile_catalog().valid);
+        FjCatalog* rawCatalog = nullptr;
+        FjCatalogCounts catalogCounts{};
+        ASSERT_EQ(fj_test_catalog_acquire(assets, &rawCatalog, &catalogCounts, nullptr).category, FJ_STATUS_SUCCESS);
+        const auto releaseCatalog = [](FjCatalog* catalog) {
+            if (catalog)
+                (void)fj_test_catalog_release(catalog, nullptr);
+        };
+        std::unique_ptr<FjCatalog, decltype(releaseCatalog)> catalog(rawCatalog, releaseCatalog);
+        ASSERT_GT(catalogCounts.film_count, 0u);
+        ASSERT_GT(catalogCounts.print_count, 0u);
+        bool retainedFilmKey = false;
+        bool retainedPrintKey = false;
+        for (const auto& [role, count] : {std::pair{FJ_PROFILE_ROLE_FILM, catalogCounts.film_count},
+                                          std::pair{FJ_PROFILE_ROLE_PRINT, catalogCounts.print_count}}) {
+            for (std::size_t i = 0; i < count; ++i) {
+                FjCatalogEntryView entry{};
+                ASSERT_EQ(fj_test_catalog_entry(catalog.get(), role, i, &entry, nullptr).category, FJ_STATUS_SUCCESS);
+                const std::string key(entry.key.data, entry.key.count);
+                retainedFilmKey = retainedFilmKey || (role == FJ_PROFILE_ROLE_FILM && key == "kodak_portra_400");
+                retainedPrintKey = retainedPrintKey || (role == FJ_PROFILE_ROLE_PRINT && key == "kodak_portra_endura");
+            }
+        }
+        ASSERT_TRUE(retainedFilmKey);
+        ASSERT_TRUE(retainedPrintKey);
         const auto load = [](const fs::path& path) {
             std::ifstream file(path);
             return Json::parse(file);
@@ -793,7 +814,7 @@ namespace {
             FjNeutralCalibrationResult raw{};
             std::array<char, 512> diagnostic{};
             FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-            const auto result = fj_legacy_neutral_calibration_lookup(
+            const auto result = fj_test_neutral_calibration_lookup(
                 assets, text("print-stock"), text("TH-KG3"), text("film-stock"), &raw, &error);
             expect_status(result, FJ_STATUS_SUCCESS);
             JuicerAssets::IlluminantTest::calibration_result(raw);
@@ -809,21 +830,21 @@ namespace {
             selected = lookup();
         });
         barrier.arrive_and_wait();
-        expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
         barrier.arrive_and_wait();
         reader.join();
         calibrationBarrier = nullptr;
         EXPECT_EQ(selected.status, JuicerAssets::NeutralPrintCalibrationStatus::Found);
         EXPECT_EQ(selected.cmyCc, (std::array<float, 3>{11, 22, 33}));
-        std::optional<PreparedState> candidate;
+        std::optional<JuicerTestSupport::PreparedStateHold> candidate;
         JuicerTests::GtestCohort calibration_shape_cases("calibration-shapes", 6u);
         std::size_t calibration_shape_index = 0;
         for (const std::string& bytes : {std::string("{}"), std::string(R"({"print-stock":{"TH-KG3":{"film-stock":[1e100,2,3]}}})"), std::string(R"({"print-stock":[]})"), std::string("[]"), std::string(R"({"print-stock":{"TH-KG3":[]}})"), std::string(R"({"print-stock":{"TH-KG3":{"film-stock":[1,2]}}})")}) {
             auto calibration_shape_case = calibration_shape_cases.case_event(std::to_string(calibration_shape_index++));
             write(path, bytes);
-            expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
             productError = {productText.data(), productText.size(), 0};
-            const auto result = prepare_state(assets, params, candidate, productError);
+            const auto result = JuicerTestSupport::prepare_state(assets, params, candidate, productError);
             const bool built = result.category == FJ_STATUS_SUCCESS;
             if (bytes == "{}") {
                 ASSERT_TRUE(built) << std::string(productText.data(), productError.length);
@@ -851,13 +872,13 @@ namespace {
         }
         fs::remove(path);
         fs::create_directory(path);
-        expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
         productError = {productText.data(), productText.size(), 0};
-        auto malformed = prepare_state(assets, params, candidate, productError);
+        auto malformed = JuicerTestSupport::prepare_state(assets, params, candidate, productError);
         EXPECT_NE(malformed.category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(std::string(productText.data(), productError.length), "MalformedNeutralPrintCalibration phase=4A field=resource_read");
         fs::remove(path);
-        expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
         auto recovered = JuicerTestSupport::prepare_product(assets, params);
         productError = {productText.data(), productText.size(), 0};
         ASSERT_EQ(recovered.view(productView, productError).category, FJ_STATUS_SUCCESS);
@@ -876,11 +897,11 @@ namespace {
         auto film = Json::parse(file);
         film["info"]["reference_illuminant"] = "TH-KG3";
         write(root / "profiles/kodak_portra_400.json", film.dump());
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const FjAssets* assets = owner.borrow().assets;
         auto authored = controls(true);
-        authored.printPreflashExposure = 0.1;
+        authored.values.print_preflash_exposure = 0.1;
         auto product = JuicerTestSupport::prepare_product(assets, authored);
         std::array<char, 2048> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
@@ -914,13 +935,13 @@ namespace {
         EXPECT_EQ(prepared.film_reference.hash, productView.film_reference.hash);
 
         FjFilmProfile* profileOwner = nullptr;
-        expect_status(fj_legacy_film_profile_acquire(assets, text("kodak_portra_400"), &profileOwner, &error), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_film_acquire(assets, text("kodak_portra_400"), &profileOwner, &error), FJ_STATUS_SUCCESS);
         const auto releaseProfile = [](FjFilmProfile* held) {
-            (void)fj_legacy_film_profile_release(held, nullptr);
+            (void)fj_test_assets_film_release(held, nullptr);
         };
         std::unique_ptr<FjFilmProfile, decltype(releaseProfile)> profileHold(profileOwner, releaseProfile);
         FjFilmProfileView profileView{};
-        expect_status(fj_legacy_film_profile_view(profileOwner, &profileView, &error), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_film_view(profileOwner, &profileView, &error), FJ_STATUS_SUCCESS);
         EXPECT_EQ(profileView.reference_illuminant.kind, FJ_ILLUMINANT_NAMED);
         EXPECT_EQ(std::string(profileView.reference_illuminant.label.data, profileView.reference_illuminant.label.count), "TH-KG3");
         EXPECT_EQ(profileView.tables.linear_sensitivity_rgb.count, 243u);
@@ -948,25 +969,25 @@ namespace {
                   std::bit_cast<std::uint32_t>(productView.film_exposure.mallett_green_midgray_scale));
 
         FjFilmDevelopmentOwner* developmentOwner = nullptr;
-        expect_status(fj_legacy_film_development_acquire(
+        expect_status(fj_test_film_development_acquire(
                           profileOwner,
                           static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan),
-                          authored.filmGammaFactor,
+                          authored.values.film_gamma_factor,
                           0,
                           &developmentOwner,
                           &error),
                       FJ_STATUS_SUCCESS);
         const auto releaseDevelopment = [](FjFilmDevelopmentOwner* held) {
-            (void)fj_legacy_film_development_release(held, nullptr);
+            (void)fj_test_film_development_release(held, nullptr);
         };
         std::unique_ptr<FjFilmDevelopmentOwner, decltype(releaseDevelopment)> developmentHold(developmentOwner, releaseDevelopment);
 
         ASSERT_EQ(prepared.film_exposure.mallett_basis.count, 243u);
         ASSERT_EQ(prepared.film_exposure.sensitivity_rgb.count, 243u);
         FjFilmReferenceInput referenceInput{};
-        referenceInput.method = static_cast<std::uint32_t>(authored.spectralUpsamplingMode);
-        referenceInput.auto_exposure_enabled = authored.cameraAutoExposureEnabled != 0 ? 1u : 0u;
-        referenceInput.manual_exposure_ev = static_cast<float>(authored.cameraExposureCompensationEv);
+        referenceInput.method = static_cast<std::uint32_t>(authored.values.spectral_upsampling_mode);
+        referenceInput.auto_exposure_enabled = authored.values.camera_auto_exposure_enabled != 0 ? 1u : 0u;
+        referenceInput.manual_exposure_ev = static_cast<float>(authored.values.camera_exposure_compensation_ev);
         referenceInput.mallett_green_scale = prepared.film_exposure.mallett_green_midgray_scale;
         std::copy_n(productView.input_policy.projection_white_xyz, 3, referenceInput.projection_white_xyz);
         referenceInput.basis_rgb = prepared.film_exposure.mallett_basis;
@@ -1012,13 +1033,13 @@ namespace {
             productView.print.sensitivity_cmy};
         FjPrintPreflashRaw preflashRaw{};
         FjPrintPreflashFailure preflashFailure{};
-        expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
         expect_status(fj_test_print_preflash_prepare(&input, &preflashRaw, &preflashFailure, &error), FJ_STATUS_SUCCESS);
         EXPECT_EQ(preflashFailure.reason, FJ_PRINT_PREFLASH_REASON_NONE);
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
         const auto savedPreflashRawCmy = std::array<float, 3>{preflashRaw.cmy[0], preflashRaw.cmy[1], preflashRaw.cmy[2]};
         EXPECT_EQ(std::memcmp(prepared.print.preflash_raw_cmy, preflashRaw.cmy, sizeof(preflashRaw.cmy)), 0);
-        expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(std::memcmp(savedPreflashIlluminant.data(), prepared.print.preflash_illuminant.data, sizeof(savedPreflashIlluminant)), 0);
         EXPECT_EQ(savedPreflashRawCmy, (std::array<float, 3>{prepared.print.preflash_raw_cmy[0], prepared.print.preflash_raw_cmy[1], prepared.print.preflash_raw_cmy[2]}));
         expect_status(fj_test_assets_curve_fault(assets, FJ_CSV_D55, 1, nullptr), FJ_STATUS_SUCCESS);
@@ -1048,7 +1069,7 @@ namespace {
             impossible_tag_case.passed();
         }
         const auto root = full_root("native-allocation");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const FjAssets* assets = owner.borrow().assets;
         std::string diagnostic;
@@ -1056,12 +1077,12 @@ namespace {
         std::size_t allocation_fallback_index = 0;
         for (unsigned mode = 1; mode <= 4; ++mode) {
             auto allocation_fallback_case = allocation_fallback_cases.case_event(std::to_string(allocation_fallback_index++));
-            expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
             fj_test_calibration_read_fault(mode);
-            std::optional<PreparedState> product;
+            std::optional<JuicerTestSupport::PreparedStateHold> product;
             std::array<char, 2048> errorText{};
             FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-            const auto failedProduct = prepare_state(assets, controls(true), product, error);
+            const auto failedProduct = JuicerTestSupport::prepare_state(assets, controls(true), product, error);
             EXPECT_EQ(failedProduct.category, FJ_STATUS_ALLOCATION_FAILURE);
             EXPECT_FALSE(product);
             EXPECT_EQ(fj_test_calibration_reads(), 1u);
@@ -1071,20 +1092,20 @@ namespace {
             EXPECT_FALSE(failed);
             EXPECT_EQ(fj_test_calibration_reads(), 1u);
             fj_test_calibration_read_fault(0);
-            expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
             error = {errorText.data(), errorText.size(), 0};
-            const auto recovered = prepare_state(assets, controls(true), product, error);
+            const auto recovered = JuicerTestSupport::prepare_state(assets, controls(true), product, error);
             expect_status(recovered, FJ_STATUS_SUCCESS);
             ASSERT_TRUE(product);
 
             allocation_fallback_case.passed();
         }
-        expect_status(fj_legacy_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
         fj_test_calibration_read_fault(1);
-        std::optional<PreparedState> product;
+        std::optional<JuicerTestSupport::PreparedStateHold> product;
         std::array<char, 2048> errorText{};
         FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-        const auto directResult = prepare_state(assets, controls(), product, error);
+        const auto directResult = JuicerTestSupport::prepare_state(assets, controls(), product, error);
         expect_status(directResult, FJ_STATUS_SUCCESS);
         ASSERT_TRUE(product);
         EXPECT_EQ(fj_test_calibration_reads(), 0u);
@@ -1104,7 +1125,7 @@ namespace {
         file.close();
         film["info"]["reference_illuminant"] = "D65";
         write(root / "profiles/kodak_portra_400.json", film.dump());
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(root);
         const FjAssets* assets = owner.borrow().assets;
         IlluminantCacheProbe probe(assets);
@@ -1128,10 +1149,10 @@ namespace {
         for (const unsigned fault : {1u, 3u}) {
             auto cold_fault_case = cold_fault_cases.case_event(std::to_string(cold_fault_index++));
             expect_status(fj_test_assets_curve_fault(probe.owner(), FJ_CSV_D55, fault, nullptr), FJ_STATUS_SUCCESS);
-            std::optional<PreparedState> rejected;
+            std::optional<JuicerTestSupport::PreparedStateHold> rejected;
             std::array<char, 2048> errorText{};
             FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-            const auto failure = prepare_state(probe.owner(), params, rejected, error);
+            const auto failure = JuicerTestSupport::prepare_state(probe.owner(), params, rejected, error);
             EXPECT_EQ(failure.category, fault == 1 ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_INTERNAL_FAILURE);
             EXPECT_FALSE(rejected);
             EXPECT_EQ(probe.metrics().live_bytes, 0u);
@@ -1146,10 +1167,10 @@ namespace {
         std::array<char, 2048> beforeText{};
         FjErrorBuffer beforeError{beforeText.data(), beforeText.size(), 0};
         expect_status(state->view(before, beforeError), FJ_STATUS_SUCCESS);
-        std::optional<PreparedState> native;
+        std::optional<JuicerTestSupport::PreparedStateHold> native;
         std::array<char, 2048> nativeText{};
         FjErrorBuffer nativeError{nativeText.data(), nativeText.size(), 0};
-        expect_status(prepare_state(probe.owner(), params, native, nativeError), FJ_STATUS_SUCCESS);
+        expect_status(JuicerTestSupport::prepare_state(probe.owner(), params, native, nativeError), FJ_STATUS_SUCCESS);
         ASSERT_TRUE(native);
         FjPreparedStateView nativeView{};
         expect_status(native->view(nativeView, nativeError), FJ_STATUS_SUCCESS);

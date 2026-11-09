@@ -2,8 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::profile::{
     FilmProcessingDefaults, FilmProfile, IlluminantKind, Polarity, PrintDensityCurves,
     PrintDensityError, PrintProfile, ProfileTables, Stage, Support,
@@ -11,6 +13,7 @@ use film_juicer_core::profile::{
 #[cfg(feature = "test-support")]
 use film_juicer_core::profile::{Antihalation, ProfileUse};
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FilmOwner {
     profile: Arc<FilmProfile>,
 }
@@ -30,6 +33,7 @@ pub(crate) struct FilmFixtureView<'a> {
     pub base_density: &'a [f32],
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl FilmOwner {
     pub(crate) fn new(profile: Arc<FilmProfile>) -> Self {
         Self { profile }
@@ -70,11 +74,13 @@ impl FilmOwner {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct IlluminantView<'a> {
     pub label: &'a str,
     pub kind: IlluminantKind,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct ProfileTablesView<'a> {
     pub linear_sensitivity_rgb: &'a [f32],
     pub channel_density_cmy: &'a [f32],
@@ -83,6 +89,7 @@ pub(crate) struct ProfileTablesView<'a> {
     pub density_curves_cmy: &'a [f32],
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl<'a> ProfileTablesView<'a> {
     fn new(tables: &'a ProfileTables) -> Self {
         Self {
@@ -95,6 +102,7 @@ impl<'a> ProfileTablesView<'a> {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FilmView<'a> {
     pub stock: &'a str,
     pub reference_illuminant: IlluminantView<'a>,
@@ -111,6 +119,7 @@ pub(crate) struct FilmView<'a> {
     pub polarity: Polarity,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl FilmOwner {
     pub(crate) fn view(&self) -> FilmView<'_> {
         let info = self.profile.info();
@@ -147,10 +156,12 @@ impl FilmOwner {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct PrintOwner {
     profile: Arc<PrintProfile>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct PrintView<'a> {
     pub stock: &'a str,
     pub viewing_illuminant: IlluminantView<'a>,
@@ -159,6 +170,7 @@ pub(crate) struct PrintView<'a> {
     pub stage: Stage,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl PrintOwner {
     pub(crate) fn new(profile: Arc<PrintProfile>) -> Self {
         Self { profile }

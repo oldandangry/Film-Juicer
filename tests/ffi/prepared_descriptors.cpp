@@ -5,7 +5,7 @@
 #include <iterator>
 #include <stdexcept>
 
-#include "JuicerState.h"
+#include "preparation_fixture.h"
 #include "juicer_test_api.h"
 #include "prepared_boundary.h"
 #include "prepared_descriptors.h"
@@ -399,9 +399,9 @@ void JuicerCudaTest::RawPreparedStateDeleter::operator()(FjPreparedState* owner)
     (void)fj_test_prepared_state_release(owner, nullptr);
 }
 
-JuicerCudaTest::RawPreparedStateHold JuicerCudaTest::prepare_raw_state(const FjAssets* assets, const ParamSnapshot& snapshot, FjStatus& status, std::string& diagnostic) {
+JuicerCudaTest::RawPreparedStateHold JuicerCudaTest::prepare_raw_state(const FjAssets* assets, const JuicerTestSupport::PreparationInput& snapshot, FjStatus& status, std::string& diagnostic) {
     diagnostic.clear();
-    const auto params = preparation_params(snapshot);
+    const auto params = snapshot.record();
     std::array<char, 1024> text{};
     FjErrorBuffer error{text.data(), text.size(), 0};
     FjPreparedState* owner = nullptr;
@@ -410,12 +410,12 @@ JuicerCudaTest::RawPreparedStateHold JuicerCudaTest::prepare_raw_state(const FjA
     return RawPreparedStateHold(owner);
 }
 
-std::optional<PreparedState> JuicerCudaTest::prepare_state(const FjAssets* assets, const ParamSnapshot& snapshot, FjStatus& status, std::string& diagnostic) {
+std::optional<JuicerTestSupport::PreparedStateHold> JuicerCudaTest::prepare_state(const FjAssets* assets, const JuicerTestSupport::PreparationInput& snapshot, FjStatus& status, std::string& diagnostic) {
     diagnostic.clear();
     std::array<char, 1024> text{};
     FjErrorBuffer error{text.data(), text.size(), 0};
-    std::optional<PreparedState> owner;
-    status = ::prepare_state(assets, snapshot, owner, error);
+    std::optional<JuicerTestSupport::PreparedStateHold> owner;
+    status = JuicerTestSupport::prepare_state(assets, snapshot, owner, error);
     diagnostic.assign(text.data(), error.length);
     return owner;
 }

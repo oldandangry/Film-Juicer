@@ -21,15 +21,13 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "GamutCompression.h"
 #include "ProcessRoot.h"
-#include "ProcessRuntime.h"
 #include "test_asset_library.h"
 #include "RenderValues.h"
-#include "JuicerState.h"
-#include "RustGamutBridge.h"
+#include "gamut_fixture.h"
 #include "SpectralData.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
-#include "PreparedState.h"
+#include "owner_fixture.h"
 #include "print_illuminant_fixture.h"
 #include "prepared_boundary.h"
 #include "spectral_allocation_probe.h"
@@ -126,7 +124,7 @@ namespace {
             return ObservationHold(acquired);
         }
         void clear() const {
-            status(fj_legacy_assets_release_cached_payloads(owner(), nullptr), FJ_STATUS_SUCCESS);
+            status(fj_test_assets_release_cached_payloads(owner(), nullptr), FJ_STATUS_SUCCESS);
         }
         void fault(unsigned value) const {
             status(fj_test_cache_fault(owner(), FJ_TEST_CACHE_INPUT_HULL, value, nullptr), FJ_STATUS_SUCCESS);
@@ -342,7 +340,7 @@ namespace {
                 source[i].linear = values(row["sources"][i]["values"]);
                 source[i].lambda_nm = values(row["sources"][i]["axis"]);
             }
-            const bool built = JuicerGamut::input_hull(source[0], source[1], source[2], source[3], retained);
+            const bool built = JuicerTestFixture::Gamut::input_hull(source[0], source[1], source[2], source[3], retained);
             require(built == row["built"].get<bool>() && retained.valid == built && retained.hash == row["expected"]["hash"] && retained.diagnostic == row["expected"]["diagnostic"].get<std::string>(), "native binding disposition");
             require(bits(retained.center) == row["expected"]["center"], "native binding center");
             for (std::size_t i = 0; i < 1025; ++i)
@@ -362,7 +360,7 @@ namespace {
             bool exceptional = false;
             bool built = false;
             try {
-                built = JuicerGamut::input_hull(curves[0], curves[1], curves[2], curves[3], retained);
+                built = JuicerTestFixture::Gamut::input_hull(curves[0], curves[1], curves[2], curves[3], retained);
             } catch (const JuicerCuda::ExecutionFailure& error) {
                 exceptional = true;
                 status(error.failure.status, fault == 1 ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
@@ -455,7 +453,7 @@ namespace {
             require(recovered && recovered.view.hash == fixture["math"][0]["expected"]["hash"], "cold retry constructs complete hull");
         }
         HullHold retained;
-        std::optional<PreparedState> recipeHold;
+        std::optional<JuicerTestSupport::PreparedStateHold> recipeHold;
         ObservationHold observation;
         std::uintptr_t identity = 0;
         {
@@ -483,10 +481,10 @@ namespace {
             require(metrics.allocations == 4 && metrics.derivations == 4 && metrics.destructions == 3 && metrics.live_bytes != 0, "all losing Rust candidates reclaimed, one live backing");
             retained = results[0];
             identity = retained.view.entry_identity;
-            const ParamSnapshot captured;
+            const JuicerTestSupport::PreparationInput captured;
             std::array<char, 2048> errorText{};
             FjErrorBuffer error{errorText.data(), errorText.size(), 0};
-            status(prepare_state(library.owner(), captured, recipeHold, error), FJ_STATUS_SUCCESS);
+            status(JuicerTestSupport::prepare_state(library.owner(), captured, recipeHold, error), FJ_STATUS_SUCCESS);
             FjPreparedStateView state{};
             status(recipeHold->view(state, error), FJ_STATUS_SUCCESS);
             require(state.input_hull.entry_identity == identity && state.input_hull.xy.data == retained.view.xy.data, "complete recipe and foreign cache holds share actual backing");
@@ -621,7 +619,7 @@ int main(int argc, char** argv) {
         else if (mode == "binding")
             binding(fixture);
         else {
-            JuicerProcess::ProcessRuntime runtime;
+            JuicerTestSupport::RuntimeFixture runtime;
             runtime.create(argv[2]);
             if (mode == "products") {
                 JuicerTests::CaseEvent event("input_hull", mode);

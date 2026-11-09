@@ -426,17 +426,19 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
     CUDA_FREE_TARGETS = ("JuicerHashContractTests", "JuicerRenderAssertionTests")
     PRODUCT_RUST_TARGETS = (
         "JuicerCudaAbiTests", "JuicerProfileOwnerTests", "JuicerSpectralOwnerTests",
-        "JuicerRouteBridgeTests",
+        "JuicerRouteBridgeTests", "JuicerCudaInspectTests",
     )
     PRODUCT_RUST_SOURCES = (
         "cuda_abi_c.c", "cuda_abi_test.cpp", "profile_abi_c.c", "profile_owner_test.cpp",
         "spectral_abi_c.c", "spectral_owner_test.cpp", "route_bridge_test.cpp", "ScanRoute.cpp",
+        "cuda_inspect_test.cpp",
     )
     PRODUCT_RUST_VARIANTS = {
         "JuicerCudaAbiTests": ("cuda_abi_c.c", "test-support"),
         "JuicerProfileOwnerTests": ("profile_abi_c.c", "test-support"),
         "JuicerSpectralOwnerTests": ("spectral_abi_c.c", "test-support"),
-        "JuicerRouteBridgeTests": ("route_bridge_test.cpp", "production"),
+        "JuicerRouteBridgeTests": ("route_bridge_test.cpp", "test-support"),
+        "JuicerCudaInspectTests": ("cuda_inspect_test.cpp", "test-support"),
     }
     GPU_ONLY_TARGETS = (
         "JuicerPinnedUploadTests", "JuicerGaussianKernelTests", "JuicerScannerLutResourceTests",
@@ -722,8 +724,12 @@ class CudaFreeBuildRegistrationTests(unittest.TestCase):
                          "requires an explicitly configured testing-ON product graph")
     def test_product_analysis_inputs_have_their_ordinary_producers(self):
         commands = self.query_commands("product-analysis-commands", self.preset_build, "juicer_analysis_inputs")
-        for source in ("JuicerCudaResources.cpp", "JuicerState.cpp", "JuicerEffect.cpp", "JuicerCudaFilmPipeline.cu"):
+        for source in ("JuicerCudaResources.cpp", "JuicerCudaFilmPipeline.cu"):
             self.assertIn(source, commands)
+        entry_commands = self.query_commands("product-standard-ofx-commands", self.preset_build, "juicer")
+        self.assertIn("ofx_exports.cpp", entry_commands)
+        self.assertNotIn("/cargo/test-support", entry_commands)
+        self.assert_no_test_metadata(entry_commands)
         self.assertIn("/cargo/production", commands)
         self.assertNotIn("/cargo/test-support", commands)
         self.assertIn("generate_host_cases.py", commands)

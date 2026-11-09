@@ -12,10 +12,9 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaExecutor.h"
-#include "NativePath.h"
-#include "ProcessRuntime.h"
+#include "native_path.h"
+#include "owner_fixture.h"
 #include "juicer_cuda_owner.h"
-#include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 #include "test_asset_workspace.h"
@@ -34,28 +33,28 @@ namespace {
         FjAssets* owner = nullptr;
         explicit Assets(const fs::path& root) {
             const JuicerAssets::NativePathArgument path(root);
-            expect_status(fj_legacy_assets_create(path.view(), &owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_create(path.view(), &owner, nullptr), FJ_STATUS_SUCCESS);
         }
         ~Assets() {
-            (void)fj_legacy_assets_destroy(owner, nullptr);
+            (void)fj_test_assets_destroy(owner, nullptr);
         }
         Assets(const Assets&) = delete;
         Assets& operator=(const Assets&) = delete;
     };
     struct NoiseRelease {
         void operator()(FjNoise* owner) const noexcept {
-            (void)fj_legacy_noise_release(owner, nullptr);
+            (void)fj_test_noise_release(owner, nullptr);
         }
     };
     using Noise = std::unique_ptr<FjNoise, NoiseRelease>;
     Noise acquire(const Assets& assets) {
         FjNoise* owner = nullptr;
-        expect_status(fj_legacy_noise_acquire(assets.owner, &owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_noise_acquire(assets.owner, &owner, nullptr), FJ_STATUS_SUCCESS);
         return Noise(owner);
     }
     FjStaticNoise view(const Noise& owner) {
         FjStaticNoise result{};
-        expect_status(fj_legacy_noise_view(owner.get(), &result, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_noise_view(owner.get(), &result, nullptr), FJ_STATUS_SUCCESS);
         return result;
     }
     void expect_empty(const FjStaticNoise& view) {
@@ -111,7 +110,7 @@ namespace {
             EXPECT_EQ(fingerprint(original.wang_tiles), UINT64_C(10252691589253770981));
             constexpr std::array<std::uint8_t, 16> lut{0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15};
             EXPECT_TRUE(std::equal(lut.begin(), lut.end(), original.wang_lut.data));
-            expect_status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
         }
         EXPECT_EQ(view(first).stbn.data, original.stbn.data);
         std::array<FjStaticNoise, 2> reads{};
@@ -134,32 +133,32 @@ namespace {
         FjNoise* owner = reinterpret_cast<FjNoise*>(1);
         std::array<char, 8> message{};
         FjErrorBuffer error{message.data(), message.size(), 999};
-        expect_status(fj_legacy_noise_acquire(nullptr, &owner, &error), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_assets_noise_acquire(nullptr, &owner, &error), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(owner, nullptr);
         EXPECT_EQ(error.length, message.size() - 1);
         EXPECT_EQ(message.back(), '\0');
-        expect_status(fj_legacy_noise_acquire(nullptr, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_assets_noise_acquire(nullptr, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         FjStaticNoise output{};
         output.stbn.count = 999;
         output.wang_width = 8;
-        expect_status(fj_legacy_noise_view(nullptr, &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_noise_view(nullptr, &output, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         expect_empty(output);
-        expect_status(fj_legacy_noise_view(nullptr, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_noise_view(nullptr, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         const Assets assets(resources);
         FjErrorBuffer malformed{nullptr, 1, 999};
-        expect_status(fj_legacy_noise_acquire(assets.owner, &owner, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_assets_noise_acquire(assets.owner, &owner, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(owner, nullptr);
         auto acquired = acquire(assets);
         output = view(acquired);
-        expect_status(fj_legacy_noise_view(acquired.get(), &output, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_noise_view(acquired.get(), &output, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         expect_empty(output);
         const auto before = fj_test_live_noise_owners();
-        expect_status(fj_legacy_noise_release(acquired.release(), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_noise_release(acquired.release(), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(fj_test_live_noise_owners(), before - 1);
-        expect_status(fj_legacy_noise_release(nullptr, nullptr), FJ_STATUS_SUCCESS);
-        expect_status(fj_legacy_noise_release(nullptr, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        expect_status(fj_test_noise_release(nullptr, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_noise_release(nullptr, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         FjErrorBuffer zero{nullptr, 0, 999};
-        expect_status(fj_legacy_noise_release(nullptr, &zero), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_noise_release(nullptr, &zero), FJ_STATUS_SUCCESS);
         EXPECT_EQ(zero.length, 0u);
     }
 
@@ -167,18 +166,18 @@ namespace {
         const Assets assets(resources);
         FjNoise* output = reinterpret_cast<FjNoise*>(1);
         fj_test_noise_fault(1);
-        expect_status(fj_legacy_noise_acquire(assets.owner, &output, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+        expect_status(fj_test_assets_noise_acquire(assets.owner, &output, nullptr), FJ_STATUS_INTERNAL_FAILURE);
         EXPECT_EQ(output, nullptr);
         fj_test_noise_fault(0);
         auto owner = acquire(assets);
         FjStaticNoise result{};
         result.stbn.count = 99;
         fj_test_noise_fault(2);
-        expect_status(fj_legacy_noise_view(owner.get(), &result, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+        expect_status(fj_test_noise_view(owner.get(), &result, nullptr), FJ_STATUS_INTERNAL_FAILURE);
         expect_empty(result);
         fj_test_noise_fault(3);
         const auto before = fj_test_live_noise_owners();
-        expect_status(fj_legacy_noise_release(owner.release(), nullptr), FJ_STATUS_INTERNAL_FAILURE);
+        expect_status(fj_test_noise_release(owner.release(), nullptr), FJ_STATUS_INTERNAL_FAILURE);
         EXPECT_EQ(fj_test_live_noise_owners(), before - 1);
         fj_test_noise_fault(0);
         EXPECT_EQ(fj_test_live_noise_owners(), before - 1);
@@ -188,12 +187,12 @@ namespace {
         const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "failure-cache");
         const Assets assets(root);
         FjNoise* owner = nullptr;
-        expect_status(fj_legacy_noise_acquire(assets.owner, &owner, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+        expect_status(fj_test_assets_noise_acquire(assets.owner, &owner, nullptr), FJ_STATUS_PREPARATION_FAILURE);
         EXPECT_EQ(owner, nullptr);
         copy_noise(root);
-        expect_status(fj_legacy_noise_acquire(assets.owner, &owner, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+        expect_status(fj_test_assets_noise_acquire(assets.owner, &owner, nullptr), FJ_STATUS_PREPARATION_FAILURE);
         EXPECT_EQ(owner, nullptr);
-        expect_status(fj_legacy_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
         auto success = acquire(assets);
         EXPECT_NE(success, nullptr);
     }
@@ -223,7 +222,7 @@ namespace {
     }
 
     TEST(NoiseOwner, NativeCallReentryPrecheck) {
-        JuicerProcess::ProcessRuntime runtime;
+        JuicerTestSupport::RuntimeFixture runtime;
         runtime.create(resources);
         {
             const FjRuntimeView view = runtime.borrow();

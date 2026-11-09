@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 static_assert(sizeof(FjHalationFrameInput) == 64 && alignof(FjHalationFrameInput) == 8);
 static_assert(sizeof(FjGrainFrameInput) == 344 && alignof(FjGrainFrameInput) == 8);
 static_assert(offsetof(FjGrainFrameInput, active) == 0);
@@ -138,7 +139,7 @@ static_assert(offsetof(FjGrainFrameFailure, layer) == 8);
 static_assert(std::is_same_v<decltype(FjGrainFrameFailure::layer), uint32_t>);
 static_assert(offsetof(FjGrainFrameFailure, channel) == 12);
 static_assert(std::is_same_v<decltype(FjGrainFrameFailure::channel), uint32_t>);
-static_assert(std::is_same_v<decltype(&fj_legacy_grain_frame_prepare), FjStatus (*)(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_grain_frame_prepare), FjStatus (*)(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_grain_frame_prepare), FjStatus (*)(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(FjHalationFrameInput::recipe), FjHalationRecipe>);
 static_assert(offsetof(FjHalationFrameInput, recipe) == 0);
@@ -155,7 +156,7 @@ static_assert(std::is_same_v<decltype(FjHalationFrameFailure::index), uint32_t>)
 static_assert(offsetof(FjHalationFrameFailure, index) == 12);
 static_assert(std::is_same_v<decltype(FjHalationFrameFailure::sigma_px), double>);
 static_assert(offsetof(FjHalationFrameFailure, sigma_px) == 16);
-static_assert(std::is_same_v<decltype(&fj_legacy_scatter_halation_frame_prepare), FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_scatter_halation_frame_prepare), FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scatter_halation_frame_prepare), FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scatter_halation_frame_c_prepare), FjStatus (*)(const FjHalationFrameInput*, FjScatterHalation*, FjHalationFrameFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(FjRect::x1), int32_t>);
@@ -177,10 +178,10 @@ static_assert(sizeof(FjFrameGeometry) == 20 && alignof(FjFrameGeometry) == 4);
 static_assert(std::is_same_v<decltype(FjFrameGeometryFailure::reason), uint32_t>);
 static_assert(sizeof(FjFrameGeometryFailure) == 4 && alignof(FjFrameGeometryFailure) == 4);
 using FrameDomainPrepare = FjStatus (*)(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
-static_assert(std::is_same_v<decltype(&fj_legacy_frame_domain_prepare), FrameDomainPrepare>);
+static_assert(std::is_same_v<decltype(&fj_test_frame_domain_prepare), FrameDomainPrepare>);
 static_assert(std::is_same_v<decltype(&fj_test_frame_domain_prepare), FrameDomainPrepare>);
 using FrameGeometryPrepare = FjStatus (*)(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
-static_assert(std::is_same_v<decltype(&fj_legacy_frame_geometry_prepare), FrameGeometryPrepare>);
+static_assert(std::is_same_v<decltype(&fj_test_frame_geometry_prepare), FrameGeometryPrepare>);
 static_assert(std::is_same_v<decltype(&fj_test_frame_geometry_prepare), FrameGeometryPrepare>);
 static_assert(std::is_same_v<decltype(FjFilmRecipeFailure::reason), uint32_t>);
 static_assert(std::is_same_v<decltype(FjFilmRecipeFailure::channel), uint32_t>);
@@ -224,12 +225,12 @@ static_assert(std::is_same_v<decltype(FjFilmDensityBounds::inv_span_cmy), float[
 static_assert(std::is_same_v<decltype(FjFilmDensityBounds::authored_minimum_cmy), float[3]>);
 static_assert(std::is_same_v<decltype(FjFilmDensityBounds::authored_maximum_cmy), float[3]>);
 static_assert(std::is_same_v<decltype(FjFilmDensityBounds::hash), uint64_t>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_development_retain), FjStatus (*)(const FjFilmDevelopmentOwner*, FjFilmDevelopmentOwner**, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_density_minimum_prepare), FjStatus (*)(const FjFilmDensityMinimum*, FjFilmDensityMinimum*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_dir_acquire), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmDirParams*, FjFilmDirOwner**, FjFilmRecipeFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_dir_view), FjStatus (*)(const FjFilmDirOwner*, FjFilmDirView*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_dir_release), FjStatus (*)(FjFilmDirOwner*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_density_bounds_prepare), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmDensityMinimum*, FjFilmDensityBounds*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_development_retain), FjStatus (*)(const FjFilmDevelopmentOwner*, FjFilmDevelopmentOwner**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_density_minimum_prepare), FjStatus (*)(const FjFilmDensityMinimum*, FjFilmDensityMinimum*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_dir_acquire), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmDirParams*, FjFilmDirOwner**, FjFilmRecipeFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_dir_view), FjStatus (*)(const FjFilmDirOwner*, FjFilmDirView*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_dir_release), FjStatus (*)(FjFilmDirOwner*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_density_bounds_prepare), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmDensityMinimum*, FjFilmDensityBounds*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
 
 static_assert(std::is_same_v<decltype(FjVisualGrainParams::active), uint32_t>);
 static_assert(std::is_same_v<decltype(FjVisualGrainParams::sublayers_active), uint32_t>);
@@ -278,7 +279,7 @@ static_assert(std::is_same_v<decltype(FjVisualGrainRecipe::clump_morph_period_se
 static_assert(std::is_same_v<decltype(FjVisualGrainRecipe::debug_view), int32_t>);
 static_assert(std::is_same_v<decltype(FjVisualGrainRecipe::layers_hash), uint64_t>);
 static_assert(std::is_same_v<decltype(FjVisualGrainRecipe::hash), uint64_t>);
-static_assert(std::is_same_v<decltype(&fj_legacy_visual_grain_prepare), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjVisualGrainParams*, FjVisualGrainRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_visual_grain_prepare), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjVisualGrainParams*, FjVisualGrainRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_visual_grain_prepare), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjVisualGrainParams*, FjVisualGrainRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
 
 static_assert(std::is_same_v<decltype(FjPhysicalEffectsParams::film_dust_amount), float>);
@@ -473,7 +474,7 @@ static_assert(std::is_same_v<decltype(FjScratch::strength_max), float>);
 static_assert(offsetof(FjScratch, strength_max) == 140);
 static_assert(sizeof(FjScratch) == 144);
 static_assert(alignof(FjScratch) == 4);
-static_assert(std::is_same_v<decltype(&fj_legacy_physical_effects_prepare), FjStatus (*)(const FjPhysicalEffectsParams*, FjPhysicalEffectsRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_physical_effects_prepare), FjStatus (*)(const FjPhysicalEffectsParams*, FjPhysicalEffectsRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_physical_effects_prepare), FjStatus (*)(const FjPhysicalEffectsParams*, FjPhysicalEffectsRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*)>);
 static_assert(sizeof(float) == 4 && sizeof(double) == 8 && sizeof(bool) == 1 && std::endian::native == std::endian::little);
 
@@ -688,7 +689,7 @@ static_assert(FJ_PRINT_BALANCE_REASON_BASELINE_RAW == 2);
 static_assert(FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW == 3);
 static_assert(FJ_PRINT_BALANCE_REASON_BALANCE == 4);
 static_assert(FJ_PRINT_BALANCE_REASON_PANIC == 5);
-static_assert(std::is_same_v<decltype(&fj_legacy_print_balance_prepare), FjStatus (*)(const FjPrintBalanceInput*, FjPrintBalance*, FjPrintBalanceFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_balance_prepare), FjStatus (*)(const FjPrintBalanceInput*, FjPrintBalance*, FjPrintBalanceFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_print_balance_prepare), FjStatus (*)(const FjPrintBalanceInput*, FjPrintBalance*, FjPrintBalanceFailure*, FjErrorBuffer*)>);
 
 static_assert(sizeof(FjScannerCorrectionParams) == 16 && alignof(FjScannerCorrectionParams) == 4);
@@ -842,11 +843,11 @@ static_assert(FJ_SCANNER_CORRECTION_TRACE_ACCEPTED == 1);
 static_assert(FJ_SCANNER_CORRECTION_TRACE_MIDGRAY == 2);
 static_assert(FJ_SCANNER_CORRECTION_TRACE_MALFORMED == 3);
 static_assert(FJ_SCANNER_CORRECTION_TRACE_ZERO_HASH == 4);
-static_assert(std::is_same_v<decltype(&fj_legacy_scanner_direct_correction_prepare), FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_scanner_print_correction_prepare), FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerPrintCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_direct_correction_prepare), FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_print_correction_prepare), FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerPrintCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_scanner_correction_input_demand), FjStatus (*)(const FjScannerCorrectionParams*, uint32_t, uint32_t*, FjScannerCorrectionFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_scanner_direct_correction_prepare), FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_scanner_print_correction_prepare), FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerPrintCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_scanner_correction_input_demand), FjStatus (*)(const FjScannerCorrectionParams*, uint32_t, uint32_t*, FjScannerCorrectionFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_correction_fault), FjStatus (*)(uint32_t, uint32_t)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_lookup), FjStatus (*)(float, FjFloatSpan, FjFloatSpan, float*, uint32_t*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_density_curve), FjStatus (*)(float, FjFloatSpan, FjFloatSpan, uint32_t, float*, uint32_t*)>);
@@ -898,7 +899,7 @@ static_assert(std::is_same_v<decltype(FjFilmReferenceFailure::reason), uint32_t>
 static_assert(std::is_same_v<decltype(FjFilmReferenceFailure::exposure), uint32_t>);
 static_assert(std::is_same_v<decltype(FjFilmReferenceFailure::operation), uint32_t>);
 static_assert(std::is_same_v<decltype(FjFilmReferenceFailure::channel), uint32_t>);
-static_assert(std::is_same_v<decltype(&fj_legacy_film_reference_prepare), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_reference_prepare), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_film_reference_prepare), FjStatus (*)(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*)>);
 
 static_assert(std::is_same_v<decltype(FjScannerLutDescriptorInput::mode), uint32_t>);
@@ -929,7 +930,7 @@ static_assert(std::is_same_v<decltype(FjScannerLutDescriptor::observer_hash), ui
 static_assert(std::is_same_v<decltype(FjScannerLutDescriptor::hash), uint64_t>);
 static_assert(std::is_same_v<decltype(FjScannerLutDescriptorFailure::reason), uint32_t>);
 static_assert(std::is_same_v<decltype(FjScannerLutDescriptorFailure::lane), uint32_t>);
-static_assert(std::is_same_v<decltype(&fj_legacy_scanner_lut_describe), FjStatus (*)(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_scanner_lut_describe), FjStatus (*)(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_lut_describe), FjStatus (*)(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*)>);
 
 static_assert(sizeof(FjScannerPostEffectsInput) == 32 && alignof(FjScannerPostEffectsInput) == 4);
@@ -959,7 +960,7 @@ static_assert(sizeof(FjScannerPostEffectsFailure) == 64 && alignof(FjScannerPost
 static_assert(std::is_same_v<decltype(FjScannerPostEffectsFailure::reason), uint32_t> && offsetof(FjScannerPostEffectsFailure, reason) == 0);
 static_assert(std::is_same_v<decltype(FjScannerPostEffectsFailure::lane), uint32_t> && offsetof(FjScannerPostEffectsFailure, lane) == 4);
 static_assert(std::is_same_v<decltype(FjScannerPostEffectsFailure::rejected), FjScannerPostEffectsDescriptor> && offsetof(FjScannerPostEffectsFailure, rejected) == 8);
-static_assert(std::is_same_v<decltype(&fj_legacy_scanner_post_describe), FjStatus (*)(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_scanner_post_describe), FjStatus (*)(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_scanner_post_describe), FjStatus (*)(const FjScannerPostEffectsInput*, FjScannerPostEffectsDescriptor*, FjScannerPostEffectsFailure*, FjErrorBuffer*)>);
 
 static_assert(std::is_same_v<decltype(FjGaussianKernelInput::radius), int32_t>);
@@ -1012,11 +1013,11 @@ static_assert(sizeof(FjDiffusionFailure) == 12 && alignof(FjDiffusionFailure) ==
 static_assert(offsetof(FjDiffusionFailure, reason) == 0 && std::is_same_v<decltype(FjDiffusionFailure::reason), uint32_t>);
 static_assert(offsetof(FjDiffusionFailure, stage) == 4 && std::is_same_v<decltype(FjDiffusionFailure::stage), uint32_t>);
 static_assert(offsetof(FjDiffusionFailure, field) == 8 && std::is_same_v<decltype(FjDiffusionFailure::field), uint32_t>);
-static_assert(std::is_same_v<decltype(&fj_legacy_diffusion_sample_prepare), FjStatus (*)(const FjDiffusionSampleInput*, FjDiffusionSample*, FjDiffusionFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_diffusion_sample_prepare), FjStatus (*)(const FjDiffusionSampleInput*, FjDiffusionSample*, FjDiffusionFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_diffusion_components_prepare), FjStatus (*)(const FjDiffusionSample*, FjDiffusionComponents*, FjDiffusionFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_diffusion_sample_prepare), FjStatus (*)(const FjDiffusionSampleInput*, FjDiffusionSample*, FjDiffusionFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_diffusion_components_prepare), FjStatus (*)(const FjDiffusionSample*, FjDiffusionComponents*, FjDiffusionFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_diffusion_components_prepare), FjStatus (*)(const FjDiffusionSample*, FjDiffusionComponents*, FjDiffusionFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_diffusion_frame_prepare), FjStatus (*)(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_diffusion_frame_prepare), FjStatus (*)(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_diffusion_frame_prepare), FjStatus (*)(const FjDiffusionFrameInput*, FjDiffusionFrameSet*, FjDiffusionFailure*, FjErrorBuffer*)>);
 static_assert(FJ_DIFFUSION_REASON_NONE == 0U);
 static_assert(FJ_DIFFUSION_REASON_RAW == 1U);
@@ -1107,13 +1108,13 @@ static_assert(std::is_same_v<decltype(FjDirBoundaryFailure::sum), double>);
 static_assert(offsetof(FjDirBoundaryFailure, sum) == 24);
 static_assert(std::is_same_v<decltype(FjDirBoundaryFailure::tolerance), double>);
 static_assert(offsetof(FjDirBoundaryFailure, tolerance) == 32);
-static_assert(std::is_same_v<decltype(&fj_legacy_dir_boundary_describe), FjStatus (*)(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_dir_boundary_describe), FjStatus (*)(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_dir_boundary_describe), FjStatus (*)(const FjDirBoundaryInput*, uint64_t*, FjDirBoundaryFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_dir_boundary_acquire), FjStatus (*)(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_dir_boundary_acquire), FjStatus (*)(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_dir_boundary_acquire), FjStatus (*)(const FjDirBoundaryInput*, FjDirBoundaryOwner**, FjDirBoundaryFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_dir_boundary_view), FjStatus (*)(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_dir_boundary_view), FjStatus (*)(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_dir_boundary_view), FjStatus (*)(const FjDirBoundaryOwner*, FjDirBoundaryView*, FjDirBoundaryFailure*, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_legacy_dir_boundary_release), FjStatus (*)(FjDirBoundaryOwner*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_dir_boundary_release), FjStatus (*)(FjDirBoundaryOwner*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_dir_boundary_release), FjStatus (*)(FjDirBoundaryOwner*, FjErrorBuffer*)>);
 static_assert(FJ_DIR_BOUNDARY_NONE == 0);
 static_assert(FJ_DIR_BOUNDARY_RAW == 1);

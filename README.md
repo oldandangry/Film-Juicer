@@ -306,9 +306,10 @@ The Windows presets are **windows-clang-debug** and
 **windows-clang-release**, using ClangCl from Visual Studio 2026, CUDA Toolkit
 13.2, and C++20 for both host and CUDA code. MSVC v145 and the Windows SDK
 remain required for the Windows ABI and as NVCC's host toolchain. The consumed
-OpenFX 1.4 headers, Resolve OFXS support sources, and JSON header are vendored
-with provenance and notices. No sibling SDK checkout or Eigen installation is
-required.
+OpenFX 1.4 headers and JSON header are vendored with provenance and notices. The
+retained Resolve OFXS support headers are vendored for host integration; the old
+OFXS support implementation sources are not part of the product host source set.
+No sibling SDK checkout or Eigen installation is required.
 
 From a configured developer environment, run:
 

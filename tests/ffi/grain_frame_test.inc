@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace GrainFrameTest {
 
     float scalar(const Json& v) {
@@ -10,7 +11,7 @@ namespace GrainFrameTest {
         return {v.at(0), v.at(1), v.at(2), v.at(3)};
     }
     Json product_rows(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         Json products = Json::array();
         std::size_t expectedIndex = 0;
@@ -18,16 +19,16 @@ namespace GrainFrameTest {
             std::size_t specIndex = 0;
             for (const auto& spec : inputs.at("products")) {
                 JuicerTests::CaseEvent caseEvent("cpp", "grain-frame/product/" + std::to_string(route) + "/" + std::to_string(specIndex++));
-                ParamSnapshot params;
-                params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-                params.grainControls.active = spec.at("active");
-                params.grainControls.sublayersActive = spec.at("layers");
-                params.grainControls.debugView = spec.at("debug");
-                params.grainControls.chromaMix = scalar(spec.at("chroma"));
-                params.grainControls.amplitude = scalar(spec.value("amplitude", Json(1065353216u)));
-                params.grainControls.particleAreaUm2 = scalar(spec.value("area", Json(1051428127u)));
-                params.cameraExposureCompensationEv = spec.value("ev", 0.0);
+                JuicerTestSupport::PreparationInput params;
+                params.values.scan_route = static_cast<std::uint32_t>(route);
+                params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+                params.values.grain.active = spec.at("active");
+                params.values.grain.sublayers_active = spec.at("layers");
+                params.values.grain.debug_view = spec.at("debug");
+                params.values.grain.chroma_mix = scalar(spec.at("chroma"));
+                params.values.grain.amplitude = scalar(spec.value("amplitude", Json(1065353216u)));
+                params.values.grain.particle_area_um2 = scalar(spec.value("area", Json(1051428127u)));
+                params.values.camera_exposure_compensation_ev = spec.value("ev", 0.0);
                 auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
                 FjPreparedStateView view{};
                 FjErrorBuffer viewError{};
@@ -208,7 +209,7 @@ namespace GrainFrameTest {
         bad.layer_curves[0][0] = {&canary, SIZE_MAX};
         check(&bad, 3, {2, 1, 3, 3}, "ResourceDescriptorMismatch phase=grain_descriptor field=frame_input");
         const auto invoke = [&](const FjGrainFrameInput* source, FjGrainFrameMath* out, FjGrainFrameFailure* failure, FjErrorBuffer* error) {
-            return fj_legacy_grain_frame_prepare(source, out, failure, error);
+            return fj_test_grain_frame_prepare(source, out, failure, error);
         };
         FjGrainFrameMath out{};
         FjGrainFrameFailure failure{};

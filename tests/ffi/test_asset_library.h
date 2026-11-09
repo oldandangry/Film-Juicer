@@ -2,10 +2,8 @@
 
 #include <filesystem>
 #include <memory>
-#include <mutex>
 #include <string>
 
-#include "ProfileCatalog.h"
 #include "test_asset_bridge.h"
 
 namespace JuicerAssets {
@@ -14,11 +12,6 @@ namespace JuicerAssets {
         explicit Library(const std::filesystem::path& resourceRoot);
         ~Library();
 
-        const Spektrafilm::ProfileCatalog& spektrafilm_profile_catalog();
-        FjStatus film_defaults(
-            const std::string& key,
-            FjFilmDigest& out,
-            FjErrorBuffer& error);
         std::shared_ptr<const Gamut::InputHullHold>
         input_compression_hull();
         std::shared_ptr<const Gamut::OutputBoundaryHold>
@@ -34,11 +27,6 @@ namespace JuicerAssets {
         FjAssets* borrow_rust_assets() const noexcept;
 
     private:
-        void ensure_catalogs();
-        void load_catalogs();
-
-        std::once_flag _catalogOnce;
         AssetBridge _bridge;
-        Spektrafilm::ProfileCatalog _spektrafilmProfileCatalog;
     };
 } // namespace JuicerAssets

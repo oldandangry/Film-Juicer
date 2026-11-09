@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace PrintPreflashTest {
     namespace FrameFixture = JuicerCudaTest::PreparedFrameFixture;
     void cuda_ok(cudaError_t code);
@@ -46,20 +47,20 @@ namespace PrintPreflashTest {
         JuicerTests::Cohort density_cases("print_preflash.primitive_density_grid", density_ids);
         for (std::size_t index = 0; index < authored.size(); ++index)
             densities.emplace_back("authored/" + std::to_string(index), authored[index]);
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         const FjAssets* assets = owner.borrow().assets;
         for (const char* key : {"kodak_portra_400", "fujifilm_provia_100f"}) {
             auto profile_event = profiles.case_event(key);
             const std::string selectedKey = key;
             FjFilmProfile* acquired = nullptr;
-            status(fj_legacy_film_profile_acquire(assets, {selectedKey.data(), selectedKey.size()}, &acquired, nullptr));
+            status(fj_test_assets_film_acquire(assets, {selectedKey.data(), selectedKey.size()}, &acquired, nullptr));
             const auto releaseProfile = [](FjFilmProfile* held) {
-                (void)fj_legacy_film_profile_release(held, nullptr);
+                (void)fj_test_assets_film_release(held, nullptr);
             };
             std::unique_ptr<FjFilmProfile, decltype(releaseProfile)> film(acquired, releaseProfile);
             FjFilmProfileView view{};
-            status(fj_legacy_film_profile_view(film.get(), &view, nullptr));
+            status(fj_test_assets_film_view(film.get(), &view, nullptr));
             require(view.tables.base_density.count == 81, "primitive actual film source");
             for (std::size_t sample : {std::size_t{0}, std::size_t{40}, std::size_t{80}})
                 densities.emplace_back(std::string("profile/") + key + "/sample-" + std::to_string(sample), view.tables.base_density.data[sample]);
@@ -103,7 +104,7 @@ namespace PrintPreflashTest {
     Json product_observations(const std::filesystem::path& resources, const Json& expectedProducts) {
         Json products = Json::array();
         {
-            JuicerProcess::ProcessRuntime owner;
+            JuicerTestSupport::RuntimeFixture owner;
             owner.create(resources.string().c_str());
             const FjAssets* assets = owner.borrow().assets;
             std::vector<std::string> product_ids;
@@ -116,32 +117,35 @@ namespace PrintPreflashTest {
                 for (int mode = 0; mode < 3; ++mode)
                     for (unsigned variant = 0; variant < 6; ++variant) {
                         auto case_event = product_rows.case_event("print-preflash/route/" + std::to_string(route) + "/mode/" + std::to_string(mode) + "/variant/" + std::to_string(variant));
-                        ParamSnapshot p;
-                        p.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-                        p.printProfileKey = "kodak_portra_endura";
-                        p.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-                        p.spectralUpsamplingMode = mode;
-                        p.cameraAutoExposureEnabled = 0;
-                        p.inputCompressionEnabled = 0;
-                        p.outputGamutCompressionEnabled = 0;
-                        p.printPreflashExposure = variant ? (variant == 5 ? 0.25 : 0.125) : 0.0;
+                        JuicerTestSupport::PreparationInput p;
+                        p.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+                        p.print_key = "kodak_portra_endura";
+                        p.values.scan_route = static_cast<std::uint32_t>(route);
+                        p.values.spectral_upsampling_mode = mode;
+                        p.values.camera_auto_exposure_enabled = 0;
+                        p.values.input_compression_enabled = 0;
+                        p.values.output_gamut_compression_enabled = 0;
+                        p.values.print_preflash_exposure = variant ? (variant == 5 ? 0.25 : 0.125) : 0.0;
                         if (variant == 2) {
-                            p.preflashMFilterCc = 5;
-                            p.preflashYFilterCc = -3;
+                            p.values.preflash_m_filter_cc = 5;
+                            p.values.preflash_y_filter_cc = -3;
                         }
-                        if (variant == 3)
-                            p.printUiYmcCc = {2.1234567890123, 3.2345678901234, 4.3456789012345};
+                        if (variant == 3) {
+                            p.values.print_ui_ymc_cc[0] = 2.1234567890123;
+                            p.values.print_ui_ymc_cc[1] = 3.2345678901234;
+                            p.values.print_ui_ymc_cc[2] = 4.3456789012345;
+                        }
                         if (variant == 4)
-                            p.outputCctfEncoding = 0;
+                            p.values.output_cctf_encoding = 0;
                         std::array<char, 2048> diagnostic{};
                         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
-                        std::optional<PreparedState> product;
-                        const auto statusValue = prepare_state(assets, p, product, error);
+                        std::optional<JuicerTestSupport::PreparedStateHold> product;
+                        const auto statusValue = JuicerTestSupport::prepare_state(assets, p, product, error);
                         require(statusValue.category == FJ_STATUS_SUCCESS && product, diagnostic.data());
                         FjPreparedStateView view{};
                         status(product->view(view, error));
                         const auto& print = view.print;
-                        Json row{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", hash_params(p)}, {"final_hash", view.recipe_hash}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}};
+                        Json row{{"route", route}, {"mode", mode}, {"variant", variant}, {"snapshot_hash", JuicerTestSupport::hash_input_identity(p)}, {"final_hash", view.recipe_hash}, {"print_hash", view.print_recipe_hash}, {"balance_hash", view.print_balance.hash}};
                         if (route % 2) {
                             row["raw"] = words(print.preflash_raw_cmy, 3);
                             std::array<float, 81> lightScratch{};
@@ -380,26 +384,26 @@ namespace PrintPreflashTest {
 } // namespace PrintPreflashTest
 
 namespace PrintPreflashTest {
-    ParamSnapshot controls() {
-        ParamSnapshot p;
-        p.filmProfileKey = "kodak_portra_400";
-        p.printProfileKey = "kodak_portra_endura";
-        p.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
-        p.cameraAutoExposureEnabled = 0;
-        p.inputCompressionEnabled = 0;
-        p.outputGamutCompressionEnabled = 0;
-        p.printPreflashExposure = 0.125;
+    JuicerTestSupport::PreparationInput controls() {
+        JuicerTestSupport::PreparationInput p;
+        p.film_key = "kodak_portra_400";
+        p.print_key = "kodak_portra_endura";
+        p.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativePrintScan);
+        p.values.camera_auto_exposure_enabled = 0;
+        p.values.input_compression_enabled = 0;
+        p.values.output_gamut_compression_enabled = 0;
+        p.values.print_preflash_exposure = 0.125;
         return p;
     }
-    PreparedState build(const FjAssets* assets, const ParamSnapshot& p) {
+    JuicerTestSupport::PreparedStateHold build(const FjAssets* assets, const JuicerTestSupport::PreparationInput& p) {
         return JuicerTestSupport::prepare_product(assets, p);
     }
-    FrameFixture::FrameFacts frame_facts(const ParamSnapshot& p) {
+    FrameFixture::FrameFacts frame_facts(const JuicerTestSupport::PreparationInput& p) {
         FrameFixture::FrameFacts facts;
         facts.renderExtent = {0, 0, 64, 48};
         facts.fullFrameExtent = facts.renderExtent;
         facts.pixelDefinition = facts.renderExtent;
-        facts.filmFormatLongEdgeMm = p.cameraFilmFormatLongEdgeMm;
+        facts.filmFormatLongEdgeMm = p.values.camera_film_format_long_edge_mm;
         facts.pixelSizeUm = facts.filmFormatLongEdgeMm * 1000.0f / 64.0f;
         facts.canonicalWidth = facts.filmFormatLongEdgeMm;
         facts.canonicalHeight = facts.filmFormatLongEdgeMm * 48.0 / 64.0;
@@ -452,8 +456,8 @@ namespace PrintPreflashTest {
         return true;
     }
     void prepare_cache(const FjAssets* assets,
-                       PreparedState& state,
-                       const ParamSnapshot& p,
+                       JuicerTestSupport::PreparedStateHold& state,
+                       const JuicerTestSupport::PreparationInput& p,
                        JuicerCuda::Resources& resources,
                        JuicerCuda::Failure& failure,
                        bool consumeFault = true) {
@@ -463,7 +467,7 @@ namespace PrintPreflashTest {
                     assets, state, frame_facts(p), &call, &prepare_cache, diagnostic),
                 diagnostic.c_str());
     }
-    void consume_fault(const FjAssets* assets, PreparedState& state, const ParamSnapshot& p) {
+    void consume_fault(const FjAssets* assets, JuicerTestSupport::PreparedStateHold& state, const JuicerTestSupport::PreparationInput& p) {
         std::string diagnostic;
         require(FrameFixture::with_prepared_frame_inputs(
                     assets, state, frame_facts(p), nullptr, &consume_cache_fault, diagnostic),
@@ -556,12 +560,12 @@ namespace PrintPreflashTest {
         return true;
     }
     void caller(const std::filesystem::path& resources) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         auto p = controls();
         auto active = build(owner.borrow().assets, p);
         auto disabledControls = p;
-        disabledControls.printPreflashExposure = 0;
+        disabledControls.values.print_preflash_exposure = 0;
         auto disabled = build(owner.borrow().assets, disabledControls);
         std::string diagnostic;
         CallerInputFacts disabledFacts;
@@ -603,7 +607,7 @@ namespace PrintPreflashTest {
                     "repeated raw fault and recovery preserve exact held value and identity");
         }
         auto directControls = controls();
-        directControls.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
+        directControls.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativeDirectScan);
         const auto direct = build(owner.borrow().assets, directControls);
         std::array<char, 2048> text{};
         FjErrorBuffer error{text.data(), text.size(), 0};
@@ -619,7 +623,7 @@ namespace PrintPreflashTest {
     }
     void cache(const std::filesystem::path& resources, const Json& captured) {
         JuicerTests::CaseEvent cache_event("cpp", "print-preflash/cache");
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         cuda_ok(cudaSetDevice(0));
         cuda_ok(cudaFree(nullptr));
@@ -636,10 +640,10 @@ namespace PrintPreflashTest {
         JuicerCuda::Failure failure;
         {
             JuicerCuda::Resources cached(key, 1, ledger);
-            const auto prepare = [&](PreparedState& state, const ParamSnapshot& controls, bool consumeFault = false) {
+            const auto prepare = [&](JuicerTestSupport::PreparedStateHold& state, const JuicerTestSupport::PreparationInput& controls, bool consumeFault = false) {
                 prepare_cache(owner.borrow().assets, state, controls, cached, failure, consumeFault);
             };
-            const auto consume_preflash_fault = [&](PreparedState& state, const ParamSnapshot& controls) {
+            const auto consume_preflash_fault = [&](JuicerTestSupport::PreparedStateHold& state, const JuicerTestSupport::PreparationInput& controls) {
                 PrintPreflashTest::consume_fault(owner.borrow().assets, state, controls);
             };
             prepare(product, p);
@@ -654,11 +658,14 @@ namespace PrintPreflashTest {
                 auto variant_event = reuse_variants.case_event(std::to_string(variant));
                 auto changedControls = p;
                 if (variant == 5)
-                    changedControls.printPreflashExposure = .25;
-                if (variant == 3)
-                    changedControls.printUiYmcCc = {2.1234567890123, 3.2345678901234, 4.3456789012345};
+                    changedControls.values.print_preflash_exposure = .25;
+                if (variant == 3) {
+                    changedControls.values.print_ui_ymc_cc[0] = 2.1234567890123;
+                    changedControls.values.print_ui_ymc_cc[1] = 3.2345678901234;
+                    changedControls.values.print_ui_ymc_cc[2] = 4.3456789012345;
+                }
                 if (variant == 4)
-                    changedControls.outputCctfEncoding = 0;
+                    changedControls.values.output_cctf_encoding = 0;
                 auto changed = build(owner.borrow().assets, changedControls);
                 status(fj_test_film_recipe_fault(11, 1));
                 prepare(changed, changedControls, true);
@@ -674,8 +681,8 @@ namespace PrintPreflashTest {
             for (bool film : {true, false}) {
                 auto source_event = source_variants.case_event(film ? "1" : "0");
                 auto changedControls = p;
-                changedControls.filmProfileKey = film ? "kodak_ektar_100" : p.filmProfileKey;
-                changedControls.printProfileKey = film ? p.printProfileKey : "fujifilm_crystal_archive_typeii";
+                changedControls.film_key = film ? "kodak_ektar_100" : p.film_key;
+                changedControls.print_key = film ? p.print_key : "fujifilm_crystal_archive_typeii";
                 auto changed = build(owner.borrow().assets, changedControls);
                 status(fj_test_film_recipe_fault(11, 1));
                 consume_preflash_fault(changed, changedControls);
@@ -686,24 +693,24 @@ namespace PrintPreflashTest {
                 source_event.passed();
             }
             auto changedControls = p;
-            changedControls.preflashMFilterCc = 5;
-            changedControls.preflashYFilterCc = -3;
+            changedControls.values.preflash_m_filter_cc = 5;
+            changedControls.values.preflash_y_filter_cc = -3;
             auto changed = build(owner.borrow().assets, changedControls);
             prepare(changed, changedControls);
             require(cached.printPreflashRawDescriptorHash != originalHash && cached.printPreflashIlluminantDescriptorHash != originalLightHash, "preflash offsets invalidate both light and raw families");
             std::vector<std::string> offset_ids;
             for (const auto& row : captured.at("products"))
-                if (row.at("route") == 1 && row.at("mode") == p.spectralUpsamplingMode && row.at("variant") == 2)
+                if (row.at("route") == 1 && row.at("mode") == p.values.spectral_upsampling_mode && row.at("variant") == 2)
                     offset_ids.push_back("route-1/mode-" + std::to_string(row.at("mode").get<int>()) + "/variant-2");
             const JuicerTests::Cohort offset_rows("print_preflash.cache_offset_products", offset_ids);
             for (const auto& row : captured.at("products"))
-                if (row.at("route") == 1 && row.at("mode") == p.spectralUpsamplingMode && row.at("variant") == 2) {
+                if (row.at("route") == 1 && row.at("mode") == p.values.spectral_upsampling_mode && row.at("variant") == 2) {
                     auto offset_event = offset_rows.case_event("route-1/mode-" + std::to_string(row.at("mode").get<int>()) + "/variant-2");
                     require(words(cached.printPreflashRaw, 3) == row.at("raw"), "changed-offset cache result matches frozen actual caller");
                     offset_event.passed();
                 }
             auto disabledControls = p;
-            disabledControls.printPreflashExposure = 0;
+            disabledControls.values.print_preflash_exposure = 0;
             auto disabled = build(owner.borrow().assets, disabledControls);
             status(fj_test_film_recipe_fault(11, 1));
             prepare(disabled, disabledControls, false);

@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "ProcessRoot.h"
-#include "NativePath.h"
+#include "../ffi/native_path.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "juicer_cuda_owner.h"
 #include "module_host.h"

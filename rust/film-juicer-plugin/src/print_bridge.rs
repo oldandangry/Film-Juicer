@@ -1,13 +1,18 @@
 //! Checked print values and the retained raw balance edge.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::fmt::{self, Write};
+#[cfg(any(test, feature = "test-support"))]
 use std::mem::{align_of, size_of};
+#[cfg(any(test, feature = "test-support"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+#[cfg(any(test, feature = "test-support"))]
 use film_juicer_core::print;
 
 #[cfg(feature = "test-support")]
 use crate::asset_illuminant::FjIlluminant;
+#[cfg(any(test, feature = "test-support"))]
 use crate::cuda::sys::{
     FJ_API_NONE, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_SUCCESS,
     FJ_STATUS_UNSUPPORTED_INPUT, FjErrorBuffer, FjFloatSpan, FjStatus,
@@ -50,6 +55,7 @@ const _: () = assert!(size_of::<FjPrintIlluminantFailure>() == 8);
 #[cfg(feature = "test-support")]
 const _: () = assert!(align_of::<FjPrintIlluminantFailure>() == 4);
 
+#[cfg(any(test, feature = "test-support"))]
 fn valid_extent<T>(pointer: *const T, count: usize) -> bool {
     !pointer.is_null()
         && (pointer as usize).is_multiple_of(align_of::<T>())
@@ -58,6 +64,7 @@ fn valid_extent<T>(pointer: *const T, count: usize) -> bool {
         })
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct Diagnostic {
     record: *mut FjErrorBuffer,
     data: *mut u8,
@@ -65,6 +72,7 @@ struct Diagnostic {
     length: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Diagnostic {
     /// # Safety
     /// The optional initialized record and its positive-capacity backing are
@@ -100,6 +108,7 @@ impl Diagnostic {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Write for Diagnostic {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         if self.capacity != 0 {
@@ -165,6 +174,7 @@ fn details(reason: u32) -> FjPrintIlluminantFailure {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn status(category: u32) -> FjStatus {
     FjStatus {
         category,
@@ -263,7 +273,6 @@ pub(crate) unsafe fn prepare(
     }
 }
 
-// SF_TEMP_BRIDGE_PRINT_PREFLASH: fixed synchronous integral; remove S4.E.
 #[cfg(feature = "test-support")]
 pub(crate) const FJ_PRINT_PREFLASH_REASON_NONE: u32 = 0;
 #[cfg(feature = "test-support")]
@@ -422,15 +431,21 @@ pub(crate) unsafe fn prepare_preflash(
     }
 }
 
-// SF_TEMP_BRIDGE_PRINT_BALANCE: complete fixed balance; retire at S4.E.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_PRINT_BALANCE_REASON_NONE: u32 = 0;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_PRINT_BALANCE_REASON_RAW: u32 = 1;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_PRINT_BALANCE_REASON_BASELINE_RAW: u32 = 2;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW: u32 = 3;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_PRINT_BALANCE_REASON_BALANCE: u32 = 4;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const FJ_PRINT_BALANCE_REASON_PANIC: u32 = 5;
 
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjPrintBalanceInput {
     pub(crate) film_base_density: FjFloatSpan,
     pub(crate) film_channel_density_cmy: FjFloatSpan,
@@ -442,6 +457,7 @@ pub(crate) struct FjPrintBalanceInput {
     pub(crate) normalization_mode: u32,
 }
 #[repr(C)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjPrintBalance {
     pub(crate) baseline_raw_rgb: [f32; 3],
     pub(crate) compensated_raw_rgb: [f32; 3],
@@ -453,21 +469,25 @@ pub(crate) struct FjPrintBalance {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct FjPrintBalanceFailure {
     pub(crate) reason: u32,
     pub(crate) channel: u32,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn balance_details(reason: u32) -> FjPrintBalanceFailure {
     FjPrintBalanceFailure {
         reason,
         channel: u32::MAX,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 struct BalanceFailure {
     category: u32,
     details: FjPrintBalanceFailure,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl BalanceFailure {
     fn raw() -> Self {
         Self {
@@ -505,6 +525,7 @@ impl BalanceFailure {
 /// record/backing are live, exclusive, mutually disjoint and disjoint from inputs.
 /// All borrows expire at synchronous return. Extent checks do not prove allocation,
 /// initialization or lifetime; the caller supplies those obligations.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare_balance(
     input: *const FjPrintBalanceInput,
     out: *mut FjPrintBalance,
@@ -618,44 +639,45 @@ pub(crate) unsafe fn prepare_balance(
     }
 }
 
-/// # Safety
-/// The same initialized, live, aligned, disjoint synchronous contract as prepare_balance.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_print_balance_prepare(
-    input: *const FjPrintBalanceInput,
-    out: *mut FjPrintBalance,
-    failure: *mut FjPrintBalanceFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: Checked admission owns clearing and retains no input pointer.
-    unsafe { prepare_balance(input, out, failure, error) }
-}
-const _: unsafe extern "C" fn(
-    *const FjPrintBalanceInput,
-    *mut FjPrintBalance,
-    *mut FjPrintBalanceFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_print_balance_prepare;
-
+#[cfg(any(test, feature = "test-support"))]
 const _: () =
     assert!(size_of::<FjPrintBalanceInput>() == 104 && align_of::<FjPrintBalanceInput>() == 8);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, film_base_density) == 0);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, film_channel_density_cmy) == 16);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, print_sensitivity_rgb) == 32);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, filtered_main_illuminant) == 48);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, baseline_density_cmy) == 64);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, compensated_density_cmy) == 76);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, reference_hash) == 88);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, normalization_mode) == 96);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(size_of::<FjPrintBalance>() == 56 && align_of::<FjPrintBalance>() == 8);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalance, baseline_raw_rgb) == 0);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalance, compensated_raw_rgb) == 12);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalance, factor_midgray) == 24);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalance, factor_midgray_comp) == 28);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalance, normalizer) == 32);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalance, filtered_main_illuminant_hash) == 40);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalance, hash) == 48);
+#[cfg(any(test, feature = "test-support"))]
 const _: () =
     assert!(size_of::<FjPrintBalanceFailure>() == 8 && align_of::<FjPrintBalanceFailure>() == 4);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceFailure, reason) == 0);
+#[cfg(any(test, feature = "test-support"))]
 const _: () = assert!(std::mem::offset_of!(FjPrintBalanceFailure, channel) == 4);

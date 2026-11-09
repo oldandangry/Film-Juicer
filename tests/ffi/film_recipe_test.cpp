@@ -31,17 +31,13 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaResources.h"
-#include "JuicerState.h"
-#include "PreparedState.h"
 #include "ProcessRoot.h"
 #include "Logging.h"
-#include "RustScannerBridge.h"
-#include "RustFrameBridge.h"
-#include "RustHalationBridge.h"
-#include "RustDiffusionBridge.h"
-#include "RustDirBridge.h"
-#include "RustEffectsFrameBridge.h"
-#include "RustDirBoundaryBridge.h"
+#include "halation_fixture.h"
+#include "diffusion_fixture.h"
+#include "dir_fixture.h"
+#include "effects_fixture.h"
+#include "JuicerDirBoundary.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_cuda_call_scope.h"
 #include "juicer_host_preparation.h"
@@ -150,19 +146,19 @@ namespace {
             const auto bytes = path.string();
             const FjPathView view{bytes.data(), bytes.size(), FJ_PATH_UNIX_BYTES};
 #endif
-            status(fj_legacy_assets_create(view, &value, nullptr));
+            status(fj_test_assets_create(view, &value, nullptr));
         }
         ~Assets() {
-            if (fj_legacy_assets_destroy(value, nullptr).category != 0)
+            if (fj_test_assets_destroy(value, nullptr).category != 0)
                 std::terminate();
         }
         FjFilmDevelopmentOwner* development(const Json& row) const {
             const auto key = row.at("key").get<std::string>();
             FjFilmProfile* profile = nullptr;
-            status(fj_legacy_film_profile_acquire(value, {key.data(), key.size()}, &profile, nullptr));
+            status(fj_test_assets_film_acquire(value, {key.data(), key.size()}, &profile, nullptr));
             FjFilmDevelopmentOwner* owner = nullptr;
-            status(fj_legacy_film_development_acquire(profile, row.at("route").get<std::uint32_t>(), std::bit_cast<float>(row.at("gamma")[0].get<std::uint32_t>()), 0, &owner, nullptr));
-            status(fj_legacy_film_profile_release(profile, nullptr));
+            status(fj_test_film_development_acquire(profile, row.at("route").get<std::uint32_t>(), std::bit_cast<float>(row.at("gamma")[0].get<std::uint32_t>()), 0, &owner, nullptr));
+            status(fj_test_assets_film_release(profile, nullptr));
             return owner;
         }
     };
@@ -200,36 +196,36 @@ namespace {
                 JuicerTests::CaseEvent case_event(facade ? "c11" : "cpp", film_case_id("film/default", row));
                 auto* original = assets.development(row);
                 FjFilmDevelopmentOwner* held = nullptr;
-                status((facade ? fj_test_film_development_retain : fj_legacy_film_development_retain)(original, &held, nullptr));
+                status(fj_test_film_development_retain(original, &held, nullptr));
                 require(held == original && fj_test_film_development_live_owners() == 2, "equal address, independent holds");
-                status(fj_legacy_film_development_release(original, nullptr));
-                status(fj_legacy_assets_release_cached_payloads(assets.value, nullptr));
+                status(fj_test_film_development_release(original, nullptr));
+                status(fj_test_assets_release_cached_payloads(assets.value, nullptr));
                 FjFilmDevelopmentView development{};
-                status(fj_legacy_film_development_view(held, &development, nullptr));
+                status(fj_test_film_development_view(held, &development, nullptr));
                 auto controls = params(row.at("controls"));
                 FjFilmDirOwner* dir = nullptr;
                 FjFilmRecipeFailure failure{};
-                status((facade ? fj_test_film_dir_acquire : fj_legacy_film_dir_acquire)(held, &controls, &dir, &failure, nullptr));
+                status(fj_test_film_dir_acquire(held, &controls, &dir, &failure, nullptr));
                 metadata(failure);
                 FjFilmDirView view{};
-                status((facade ? fj_test_film_dir_view : fj_legacy_film_dir_view)(dir, &view, &failure, nullptr));
+                status(fj_test_film_dir_view(dir, &view, &failure, nullptr));
                 metadata(failure);
                 const auto copied = project(view);
                 require(copied == row.at("dir"), "all frozen DIR values/axes/identities");
                 for (auto span : view.compensated_axes_rgb)
                     require(span.count == (view.mode == 0 ? 0 : development.log_exposure.count), "RGB N-element axes");
-                status((facade ? fj_test_film_dir_release : fj_legacy_film_dir_release)(dir, nullptr));
+                status(fj_test_film_dir_release(dir, nullptr));
                 require(copied == row.at("dir") && fj_test_film_dir_live_owners() == 0, "copy owns bytes after view expiry");
                 const FjFilmDensityMinimum requested{{0.07f, 0.08f, 0.12f}};
                 FjFilmDensityMinimum minimum{};
-                status((facade ? fj_test_film_density_minimum_prepare : fj_legacy_film_density_minimum_prepare)(&requested, &minimum, &failure, nullptr));
+                status(fj_test_film_density_minimum_prepare(&requested, &minimum, &failure, nullptr));
                 metadata(failure);
                 require(words(minimum.cmy, 3) == row.at("grain_minimum"), "frozen minimum");
                 FjFilmDensityBounds bounds{};
-                status((facade ? fj_test_film_density_bounds_prepare : fj_legacy_film_density_bounds_prepare)(held, &requested, &bounds, &failure, nullptr));
+                status(fj_test_film_density_bounds_prepare(held, &requested, &bounds, &failure, nullptr));
                 metadata(failure);
                 require(project(bounds) == row.at("bounds"), "all frozen film bound values/identities");
-                status(fj_legacy_film_development_release(held, nullptr));
+                status(fj_test_film_development_release(held, nullptr));
                 require(fj_test_film_development_live_owners() == 0, "held development release");
                 case_event.passed();
             }
@@ -244,18 +240,18 @@ namespace {
         JuicerTests::Cohort diagnostic_capacities("film_recipe.diagnostic_capacity", {"0", "1", "5", "256"});
         JuicerTests::Cohort panic_stages("film_recipe.panic_stage", {"0", "1", "2", "3", "4"});
         controls.active = 2;
-        status(fj_legacy_film_dir_acquire(development, &controls, &owner, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_film_dir_acquire(development, &controls, &owner, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         require(!owner, "raw failure clears result");
         metadata(failure, FJ_FILM_RECIPE_RAW);
         controls.active = 0;
         controls.gamma_use_stock = 2;
-        status(fj_legacy_film_dir_acquire(development, &controls, &owner, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_film_dir_acquire(development, &controls, &owner, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         metadata(failure, FJ_FILM_RECIPE_RAW);
         controls = params(captured.at("cases")[2].at("controls"));
         for (unsigned fault : {1u, 2u, 3u}) {
             auto event = axis_faults.case_event(std::to_string(fault));
             status(fj_test_film_recipe_fault(5, fault));
-            status(fj_legacy_film_dir_acquire(development, &controls, &owner, &failure, nullptr), fault == 3 ? FJ_STATUS_PREPARATION_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
+            status(fj_test_film_dir_acquire(development, &controls, &owner, &failure, nullptr), fault == 3 ? FJ_STATUS_PREPARATION_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
             metadata(failure, fault == 1 ? FJ_FILM_RECIPE_SIZE : fault == 2 ? FJ_FILM_RECIPE_ALLOCATION
                                                                             : FJ_FILM_RECIPE_IDENTITY);
             require(!owner && fj_test_film_dir_live_owners() == 0, "real axis-stage fault has no owner");
@@ -265,71 +261,71 @@ namespace {
         const FjFilmDensityMinimum validMinimum{{0.07f, 0.08f, 0.12f}};
         FjFilmDensityBounds rejectedBounds{};
         status(fj_test_film_recipe_fault(6, 1));
-        status(fj_legacy_film_density_bounds_prepare(development, &validMinimum, &rejectedBounds, &failure, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+        status(fj_test_film_density_bounds_prepare(development, &validMinimum, &rejectedBounds, &failure, nullptr), FJ_STATUS_PREPARATION_FAILURE);
         metadata(failure, FJ_FILM_RECIPE_IDENTITY);
         require(rejectedBounds.hash == 0, "bounds identity failure clears fixed output");
-        status(fj_legacy_film_density_minimum_prepare(&requested, &out, &failure, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+        status(fj_test_film_density_minimum_prepare(&requested, &out, &failure, nullptr), FJ_STATUS_PREPARATION_FAILURE);
         metadata(failure, FJ_FILM_RECIPE_MINIMUM);
         require(words(out.cmy, 3) == Json::array({0, 0, 0}), "minimum failure clear");
         FjErrorBuffer malformed{nullptr, 1, 99};
-        status(fj_legacy_film_density_minimum_prepare(&requested, &out, &failure, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_film_density_minimum_prepare(&requested, &out, &failure, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
         metadata(failure, FJ_FILM_RECIPE_RAW);
         require(malformed.length == 0, "diagnostic admission priority");
         for (std::size_t capacity : {0u, 1u, 5u, 256u}) {
             auto event = diagnostic_capacities.case_event(std::to_string(capacity));
             std::array<char, 256> text{};
             FjErrorBuffer error{text.data(), capacity, 99};
-            status(fj_legacy_film_density_minimum_prepare(&requested, &out, &failure, &error), FJ_STATUS_PREPARATION_FAILURE);
+            status(fj_test_film_density_minimum_prepare(&requested, &out, &failure, &error), FJ_STATUS_PREPARATION_FAILURE);
             require(error.length == (capacity == 0 ? 0 : std::min(capacity - 1, std::string("film recipe reason=2 channel=3 sample=18446744073709551615").size())) && (capacity == 0 || text[error.length] == '\0'), "bounded diagnostic/truncation");
             event.passed();
         }
         alignas(FjFilmRecipeFailure) std::array<std::byte, sizeof(FjFilmRecipeFailure) + 8> storage{};
         auto* invalid = reinterpret_cast<FjFilmRecipeFailure*>(storage.data() + 1);
-        status(fj_legacy_film_density_minimum_prepare(&requested, &out, invalid, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_film_density_minimum_prepare(&requested, &out, invalid, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         require(words(out.cmy, 3) == Json::array({0, 0, 0}), "invalid failure slot still clears result");
-        status(fj_legacy_film_density_minimum_prepare(&requested, nullptr, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_film_density_minimum_prepare(&requested, nullptr, &failure, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         metadata(failure, FJ_FILM_RECIPE_RAW);
         for (unsigned stage : {0u, 1u, 2u, 3u, 4u}) {
             auto event = panic_stages.case_event(std::to_string(stage));
             status(fj_test_film_recipe_fault(stage, 1));
             if (stage == 0) {
-                status(fj_legacy_film_dir_acquire(development, &controls, &owner, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+                status(fj_test_film_dir_acquire(development, &controls, &owner, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
                 metadata(failure, FJ_FILM_RECIPE_PANIC);
                 require(!owner, "panic clear");
             }
             if (stage == 1 || stage == 2) {
-                status(fj_legacy_film_dir_acquire(development, &controls, &owner, &failure, nullptr));
+                status(fj_test_film_dir_acquire(development, &controls, &owner, &failure, nullptr));
                 if (stage == 1) {
                     FjFilmDirView view{};
                     view.hash = 99;
-                    status(fj_legacy_film_dir_view(owner, &view, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+                    status(fj_test_film_dir_view(owner, &view, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
                     metadata(failure, FJ_FILM_RECIPE_PANIC);
                     require(view.hash == 0, "view panic clear");
                 }
-                status(fj_legacy_film_dir_release(owner, nullptr), stage == 2 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_SUCCESS);
+                status(fj_test_film_dir_release(owner, nullptr), stage == 2 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_SUCCESS);
             }
             if (stage == 3) {
                 requested.cmy[0] = 0;
                 FjFilmDensityBounds bounds{};
-                status(fj_legacy_film_density_bounds_prepare(development, &requested, &bounds, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+                status(fj_test_film_density_bounds_prepare(development, &requested, &bounds, &failure, nullptr), FJ_STATUS_INTERNAL_FAILURE);
                 metadata(failure, FJ_FILM_RECIPE_PANIC);
                 requested.cmy[0] = -1;
             }
             if (stage == 4) {
                 std::array<char, 32> text{};
                 FjErrorBuffer error{text.data(), text.size(), 0};
-                status(fj_legacy_film_density_minimum_prepare(&requested, &out, &failure, &error), FJ_STATUS_INTERNAL_FAILURE);
+                status(fj_test_film_density_minimum_prepare(&requested, &out, &failure, &error), FJ_STATUS_INTERNAL_FAILURE);
                 metadata(failure, FJ_FILM_RECIPE_PANIC);
             }
             event.passed();
         }
         FjFilmDevelopmentOwner* retained = nullptr;
         status(fj_test_film_development_fault(3, 1));
-        status(fj_legacy_film_development_retain(development, &retained, nullptr), FJ_STATUS_INTERNAL_FAILURE);
+        status(fj_test_film_development_retain(development, &retained, nullptr), FJ_STATUS_INTERNAL_FAILURE);
         require(!retained && fj_test_film_development_live_owners() == 1, "provisional retain unwinds without consuming original");
-        status(fj_legacy_film_development_release(development, nullptr));
-        status(fj_legacy_film_dir_release(nullptr, nullptr));
-        status(fj_legacy_film_dir_release(reinterpret_cast<FjFilmDirOwner*>(std::uintptr_t{1}), nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_film_development_release(development, nullptr));
+        status(fj_test_film_dir_release(nullptr, nullptr));
+        status(fj_test_film_dir_release(reinterpret_cast<FjFilmDirOwner*>(std::uintptr_t{1}), nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         require(fj_test_film_development_live_owners() == 0 && fj_test_film_dir_live_owners() == 0, "failure cleanup holds");
     }
 } // namespace

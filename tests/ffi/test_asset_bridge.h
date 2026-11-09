@@ -8,9 +8,7 @@
 #include <span>
 #include <string>
 
-#include "ProcessRuntime.h"
-#include "ProfileCatalog.h"
-#include "juicer_legacy_api.h"
+#include "juicer_test_api.h"
 
 struct FjInputHullOwner;
 struct FjInputHullView;
@@ -129,14 +127,11 @@ namespace JuicerAssets {
         NeutralPrintCalibrationResult neutral_print_calibration(const std::string& printStock,
                                                                 const std::string& illuminant,
                                                                 const std::string& filmStock);
-        Spektrafilm::ProfileCatalog load_catalog();
-        FjStatus film_defaults(const std::string& key, FjFilmDigest& out, FjErrorBuffer& error);
         FjStatus release_cached_payloads(FjErrorBuffer* error = nullptr) noexcept;
         FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
         FjAssets* borrow_assets() const noexcept;
 
     private:
         FjAssets* _assets = nullptr;
-        FjCatalog* _catalog = nullptr;
     };
 } // namespace JuicerAssets

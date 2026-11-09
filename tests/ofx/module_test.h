@@ -30,7 +30,8 @@ size_t fj_test_ofx_path(uint32_t mode, FjPathView input, void* output, size_t ca
 int fj_test_ofx_platform_c(void);
 
 /* Render fault kinds: 1 Film copy, 2 Print copy, 3 diagnostic reservation,
- * 4 action panic, 5 abort panic, 6 release panic (after the actual release).
+ * 4 action panic, 5 abort panic, 6 release panic (after the actual release),
+ * 7 contained host-abort exception relay after the actual host invocation.
  * Tokens are fixture-only TLS; arm before Create for identity and each Render
  * for frame facts; all zeros clears. No production archive exports these. */
 void fj_test_ofx_render_control(uint32_t kind);

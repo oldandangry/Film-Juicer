@@ -1,5 +1,4 @@
-//! SF_TEMP_BRIDGE_FRAME_POLICY: early callback-local projection for the held render.
-//! Remove with the final native preparation consumer, no later than S6.D.
+//! Callback-local geometry and optics prepared from the admitted complete state.
 #![forbid(unsafe_code)]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -14,6 +13,7 @@ use film_juicer_core::{
 use super::sys;
 
 pub(super) struct Error {
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) category: u32,
     pub(super) diagnostic: String,
 }
@@ -152,6 +152,7 @@ fn empty_halation() -> sys::FjScatterHalation {
 
 fn optics_error(error: diffusion_frame::Error) -> Error {
     Error {
+        #[cfg(any(test, feature = "test-support"))]
         category: sys::FJ_STATUS_PREPARATION_FAILURE,
         diagnostic: error.diagnostic().to_owned(),
     }
@@ -176,6 +177,7 @@ fn halation_error(error: optics::HalationFrameError) -> Error {
         } => "ResourceDescriptorMismatch component=scatter_halation field=back_reflection_bounce",
     };
     Error {
+        #[cfg(any(test, feature = "test-support"))]
         category: sys::FJ_STATUS_PREPARATION_FAILURE,
         diagnostic: diagnostic.to_owned(),
     }
@@ -192,6 +194,7 @@ pub(super) fn prepare(
         )
     }))
     .map_err(|_| Error {
+        #[cfg(any(test, feature = "test-support"))]
         category: sys::FJ_STATUS_INTERNAL_FAILURE,
         diagnostic: "frame geometry preparation panicked".to_owned(),
     })?;
@@ -218,6 +221,7 @@ pub(super) fn prepare(
         crate::diffusion_bridge::checked_frame_set(diffusion_input, diffusion_fault)
     }))
     .map_err(|_| Error {
+        #[cfg(any(test, feature = "test-support"))]
         category: sys::FJ_STATUS_INTERNAL_FAILURE,
         diagnostic: "diffusion frame preparation panicked".to_owned(),
     })?
@@ -236,6 +240,7 @@ pub(super) fn prepare(
         )
     }))
     .map_err(|_| Error {
+        #[cfg(any(test, feature = "test-support"))]
         category: sys::FJ_STATUS_INTERNAL_FAILURE,
         diagnostic: "scatter/halation frame preparation panicked".to_owned(),
     })?

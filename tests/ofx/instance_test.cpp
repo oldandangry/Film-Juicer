@@ -7,8 +7,9 @@
 #include <vector>
 
 #include "instance_host.h"
+#include "host_reference.h"
+
 #include "juicer_ofx_api.h"
-#include "ofxsImageEffect.h"
 #include "../ffi/case_results.h"
 
 namespace {
@@ -60,7 +61,7 @@ namespace {
             return false;
         actual.erase(actual_write);
         expected.erase(expected_write);
-        if (actual == expected)
+        if (ofx_test::reference::calls(actual) == ofx_test::reference::calls(expected))
             return true;
         // Candidate checks the existing instance pointer before creating an owner.
         const auto is_read = [](const InstanceCall& call) {
@@ -73,7 +74,7 @@ namespace {
         if (static_cast<std::size_t>(read - actual.begin()) >= actual_position)
             return false;
         actual.erase(read);
-        return actual == expected;
+        return ofx_test::reference::calls(actual) == ofx_test::reference::calls(expected);
     }
     bool failed_create_equivalent(std::vector<InstanceCall> actual, std::vector<InstanceCall> expected) {
         const auto is_write = [](const InstanceCall& call) {
@@ -99,7 +100,7 @@ namespace {
             return false;
         expected.erase(clear);
         expected.erase(publish);
-        if (actual == expected)
+        if (ofx_test::reference::calls(actual) == ofx_test::reference::calls(expected))
             return true;
         if (actual.size() != expected.size() + 1 || std::count_if(actual.begin(), actual.end(), is_read) != 1 ||
             std::any_of(expected.begin(), expected.end(), is_read))
@@ -110,7 +111,7 @@ namespace {
             }))
             return false;
         actual.erase(read);
-        return actual == expected;
+        return ofx_test::reference::calls(actual) == ofx_test::reference::calls(expected);
     }
     struct HandleFault {
         std::string name;
@@ -270,7 +271,7 @@ namespace {
         std::vector<InstanceCall> calls;
     };
     bool same_action(const ActionObservation& actual, const ActionObservation& expected) {
-        return actual.status == expected.status && actual.calls == expected.calls;
+        return actual.status == expected.status && ofx_test::reference::calls(actual.calls) == ofx_test::reference::calls(expected.calls);
     }
     ActionObservation run_action(OfxPlugin* plugin, InstanceHost& host, OfxImageEffectHandle effect, const ActionScenario& scenario) {
         auto* args = scenario.null_args ? nullptr : host.change_args({scenario.reason, scenario.type, scenario.name}, scenario.time);
@@ -287,7 +288,7 @@ namespace {
     };
     OfxStatus change(OfxPlugin* plugin, InstanceHost& host, OfxImageEffectHandle effect, const char* reason, const char* name);
     struct ControlFault {
-        const char* operation;
+        std::string operation;
         int injected;
         OfxStatus status;
         std::string scope;
@@ -366,7 +367,7 @@ namespace {
                 a.target = expected.scope;
             else if (a.target == actual.scope + ".params")
                 a.target = expected.scope + ".params";
-            if (a != e)
+            if (ofx_test::reference::calls(std::vector<InstanceCall>{a}) != ofx_test::reference::calls(std::vector<InstanceCall>{e}))
                 return false;
         }
         return true;
@@ -478,7 +479,7 @@ namespace {
                         else if (c.target == actual.scope + ".params")
                             c.target = ref.scope + ".params";
                     }
-                    require(actual.status == ref.status && (unknown ? calls == ref.calls : create_equivalent(calls, ref.calls)), "context full continuation");
+                    require(actual.status == ref.status && (unknown ? ofx_test::reference::calls(calls) == ofx_test::reference::calls(ref.calls) : create_equivalent(calls, ref.calls)), "context full continuation");
                 }
                 if (unknown)
                     require(host.instance_data(effect) == nullptr && actual.calls.size() == 2 && actual.calls.back().operation == "get_string" && actual.calls.back().property == kOfxImageEffectPropContext, "unknown context stop");
@@ -646,33 +647,109 @@ namespace {
         std::vector<ofx_test::InstanceValue> edited_value;
         OfxStatus begin_status{}, change_status{}, end_status{}, edit_status{}, reentry_status{};
     };
-    OfxStatus change(OfxPlugin* plugin, InstanceHost& host, OfxImageEffectHandle effect, const char* reason, const char* name) {
-        return call(plugin, kOfxActionInstanceChanged, effect, host.change_args({reason, kOfxTypeParameter, name}));
+    using ofx_test::reference::Json;
+    template <class T, class F>
+    Json encode_list(const std::vector<T>& items, F f) {
+        auto out = Json::array();
+        for (const auto& item : items)
+            out.push_back(f(item));
+        return out;
     }
-    Reference reference_cohort(OfxPlugin* plugin, InstanceHost& host) {
+    Json encode(const Reference& r) {
+        using namespace ofx_test::reference;
+        auto faults = encode_list(r.faults, [](const auto& x) {
+            return Json::array({x.name, x.injected, x.status, x.params, calls(x.calls)});
+        });
+        auto controls = [](const auto& items) {
+            return encode_list(items, [](const auto& x) {
+                return Json::array({x.operation, x.injected, x.status, x.scope, calls(x.calls)});
+            });
+        };
+        auto contexts = encode_list(r.contexts, [](const auto& x) {
+            return Json::array({x.status, x.scope, calls(x.calls)});
+        });
+        auto edits = encode_list(r.edits, [](const auto& x) {
+            return Json::array({x.status, calls(x.calls), values(x.value)});
+        });
+        auto actions = [](const auto& items) {
+            return encode_list(items, [](const auto& x) {
+                return Json::array({x.status, calls(x.calls)});
+            });
+        };
+        return Json::array({faults, controls(r.controls), controls(r.typed), contexts, edits, actions(r.actions), actions(r.nested_changes), calls(r.create), calls(r.ordinary_create), calls(r.begin), calls(r.change), calls(r.end), calls(r.edit), calls(r.reentry), calls(r.destroy), values(r.edited_value), r.begin_status, r.change_status, r.end_status, r.edit_status, r.reentry_status});
+    }
+    Reference decode(const Json& record) {
+        using namespace ofx_test::reference;
+        if (!record.is_array() || record.size() != 21)
+            throw std::runtime_error("instance reference shape");
+        for (std::size_t i = 0; i < 7; ++i)
+            if (!record[i].is_array())
+                throw std::runtime_error("instance reference collection");
+        auto shape = [](const Json& x, std::size_t n) {
+            if (!x.is_array() || x.size() != n)
+                throw std::runtime_error("instance reference row");
+        };
+        Reference r;
+        for (const auto& x : record[0]) {
+            shape(x, 5);
+            r.faults.push_back({x[0].get<std::string>(), x[1].get<int>(), x[2].get<int>(), x[3].get<std::vector<std::string>>(), instance_calls(x[4])});
+        }
+        auto controls = [&](const Json& rows, auto& out) {
+            for (const auto& x : rows) {
+                shape(x, 5);
+                out.push_back({x[0].get<std::string>(), x[1].get<int>(), x[2].get<int>(), x[3].get<std::string>(), instance_calls(x[4])});
+            }
+        };
+        controls(record[1], r.controls);
+        controls(record[2], r.typed);
+        for (const auto& x : record[3]) {
+            shape(x, 3);
+            r.contexts.push_back({x[0].get<int>(), x[1].get<std::string>(), instance_calls(x[2])});
+        }
+        for (const auto& x : record[4]) {
+            shape(x, 3);
+            r.edits.push_back({x[0].get<int>(), instance_calls(x[1]), instance_values(x[2])});
+        }
+        auto actions = [&](const Json& rows, auto& out) {
+            for (const auto& x : rows) {
+                shape(x, 2);
+                out.push_back({x[0].get<int>(), instance_calls(x[1])});
+            }
+        };
+        actions(record[5], r.actions);
+        actions(record[6], r.nested_changes);
+        r.create = instance_calls(record[7]);
+        r.ordinary_create = instance_calls(record[8]);
+        r.begin = instance_calls(record[9]);
+        r.change = instance_calls(record[10]);
+        r.end = instance_calls(record[11]);
+        r.edit = instance_calls(record[12]);
+        r.reentry = instance_calls(record[13]);
+        r.destroy = instance_calls(record[14]);
+        r.edited_value = instance_values(record[15]);
+        r.begin_status = record[16].get<int>();
+        r.change_status = record[17].get<int>();
+        r.end_status = record[18].get<int>();
+        r.edit_status = record[19].get<int>();
+        r.reentry_status = record[20].get<int>();
+        if (r.faults.size() != 113 || r.controls.size() != kControlScenarios.size() * 15 || r.contexts.size() != kContextScenarios.size() || r.actions.size() != kActionScenarios.size() || r.nested_changes.size() != 2 || encode(r) != record)
+            throw std::runtime_error("instance reference membership");
+        return r;
+    }
+    void reference_record_case(const Reference& r) {
         JuicerTests::CaseEvent test(kCaller, "reference");
         const JuicerTests::Cohort rows("ofx.instance.reference", {"census", "clip_order", "action_order", "missing", "extra", "type", "premature_success", "late_stop"});
-        Reference result;
-        plugin->setHost(host.binding());
-        require(call(plugin, kOfxActionLoad) == kOfxStatOK, "reference load");
-        require(call(plugin, kOfxImageEffectActionDescribeInContext, host.descriptor_handle(), host.context_args()) == kOfxStatOK, "reference context");
-        auto* effect = host.create_effect();
-        host.set_parameter_presentation(effect, "GrainChroma", kOfxParamPropHint, {std::string("returned hint")});
-        host.return_string_on_failure_next("get_string/OfxParamPropHint", kOfxStatFailed);
-        host.clear_calls();
-        require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "reference create");
-        result.create = host.calls();
         {
             auto row = rows.case_event("census");
-            require(!host.callback_error() && constructor_census(result.create), "reference constructor census");
+            require(constructor_census(r.create), "reference constructor census");
             row.passed();
         }
         {
             auto row = rows.case_event("clip_order");
-            require(handles(result.create, "clip_handle") == std::vector<std::string>{"Source", "Output"}, "reference clip order");
+            require(handles(r.create, "clip_handle") == std::vector<std::string>{"Source", "Output"}, "reference clip order");
             row.passed();
         }
-        auto missing = result.create;
+        auto missing = r.create;
         const auto first = std::find_if(missing.begin(), missing.end(), [](const auto& c) {
             return c.operation == "param_handle";
         });
@@ -683,26 +760,17 @@ namespace {
             require(!constructor_census(missing), "missing parameter negative control");
             row.passed();
         }
-        auto extra = result.create;
+        auto extra = r.create;
         extra.push_back({"param_handle", {}, "extra", 0, {}, {}});
         {
             auto row = rows.case_event("extra");
             require(!constructor_census(extra), "extra parameter negative control");
             row.passed();
         }
-        host.clear_calls();
-        result.begin_status = call(plugin, kOfxActionBeginInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "Exposure"}));
-        result.begin = host.calls();
-        host.clear_calls();
-        result.change_status = change(plugin, host, effect, kOfxChangeUserEdited, "Exposure");
-        result.change = host.calls();
-        host.clear_calls();
-        result.end_status = call(plugin, kOfxActionEndInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "Exposure"}));
-        result.end = host.calls();
         {
             auto row = rows.case_event("action_order");
             std::vector<std::string> properties;
-            for (const auto& c : result.change)
+            for (const auto& c : r.change)
                 if (c.target == "change")
                     properties.push_back(c.property);
             require(properties == std::vector<std::string>{kOfxPropChangeReason, kOfxPropTime, kOfxImageEffectPropRenderScale, kOfxImageEffectPropRenderScale, kOfxPropType, kOfxPropName}, "reference action property order");
@@ -710,79 +778,31 @@ namespace {
         }
         {
             auto row = rows.case_event("premature_success");
-            auto shortened = result.change;
+            auto shortened = r.change;
             require(shortened.size() > 1, "change trace boundary");
             shortened.pop_back();
-            require(same_action({result.change_status, result.change}, {result.change_status, result.change}), "action verifier positive control");
-            require(!same_action({result.change_status, shortened}, {result.change_status, result.change}), "premature success negative control");
+            require(same_action({r.change_status, r.change}, {r.change_status, r.change}) && !same_action({r.change_status, shortened}, {r.change_status, r.change}), "premature success negative control");
             row.passed();
         }
         {
             auto row = rows.case_event("late_stop");
-            auto extended = result.change;
-            extended.push_back(result.change.back());
-            require(!same_action({result.change_status, extended}, {result.change_status, result.change}), "late stop negative control");
+            auto extended = r.change;
+            extended.push_back(r.change.back());
+            require(!same_action({r.change_status, extended}, {r.change_status, r.change}), "late stop negative control");
             row.passed();
-        }
-        host.set_value(effect, "CameraFilmFormatPreset", {1});
-        host.clear_calls();
-        result.edit_status = change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset");
-        result.edit = host.calls();
-        result.edited_value = host.value(effect, "CameraFilmFormatMm");
-        host.set_value(effect, "CameraFilmFormatPreset", {2});
-        host.clear_calls();
-        host.reenter_next("param_set/CameraFilmFormatMm", [&] {
-            require(change(plugin, host, effect, kOfxChangePluginEdited, "CameraFilmFormatMm") == result.change_status, "reference nested change");
-        });
-        result.reentry_status = change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset");
-        result.reentry = host.calls();
-        for (const auto& scenario : edit_scenarios()) {
-            if (!scenario.authored.empty())
-                host.set_value(effect, scenario.name, scenario.authored);
-            host.clear_calls();
-            const auto status = change(plugin, host, effect, kOfxChangeUserEdited, scenario.name);
-            result.edits.push_back({status, host.calls(), host.value(effect, scenario.observed)});
-        }
-        for (const auto& scenario : kActionScenarios)
-            result.actions.push_back(run_action(plugin, host, effect, scenario));
-        for (const auto* reason : {kOfxChangeUserEdited, kOfxChangeTime}) {
-            host.set_value(effect, "CameraFilmFormatPreset", {1});
-            host.clear_calls();
-            int nested = -1;
-            host.reenter_next("param_set/CameraFilmFormatMm", [&] {
-                nested = change(plugin, host, effect, reason, "Exposure");
-            });
-            const auto status = change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset");
-            require(nested == result.change_status, "reference nested user/time status");
-            result.nested_changes.push_back({status, host.calls()});
-        }
-        host.clear_calls();
-        require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK, "reference destroy");
-        result.destroy = host.calls();
-        require(host.instance_data(effect) == nullptr, "reference detached");
-        result.faults = handle_faults(plugin, host, false);
-        result.controls = control_faults(plugin, host);
-        result.typed = typed_controls(plugin, host);
-        result.contexts = context_cases(plugin, host);
-        {
-            auto* ordinary = host.create_effect();
-            host.clear_calls();
-            require(call(plugin, kOfxActionCreateInstance, ordinary) == kOfxStatOK, "ordinary reference create");
-            result.ordinary_create = host.calls();
-            require(call(plugin, kOfxActionDestroyInstance, ordinary) == kOfxStatOK, "ordinary reference destroy");
         }
         {
             auto row = rows.case_event("type");
-            require(result.faults.size() == 113 && std::all_of(result.faults.begin() + 105, result.faults.begin() + 113, [](const auto& fault) {
+            require(r.faults.size() == 113 && std::all_of(r.faults.begin() + 105, r.faults.end(), [](const auto& fault) {
                         return fault.injected == -1 && fault.status != kOfxStatOK;
                     }),
                     "reference type failures");
             row.passed();
         }
-        require(call(plugin, kOfxActionUnload) == kOfxStatOK, "reference unload");
-        require(!host.callback_error(), "reference host callback");
         test.passed();
-        return result;
+    }
+    OfxStatus change(OfxPlugin* plugin, InstanceHost& host, OfxImageEffectHandle effect, const char* reason, const char* name) {
+        return call(plugin, kOfxActionInstanceChanged, effect, host.change_args({reason, kOfxTypeParameter, name}));
     }
     void candidate_cohort(OfxPlugin* plugin, InstanceHost& host, const Reference& reference) {
         const JuicerTests::Cohort create_rows("ofx.instance.create", create_ids());
@@ -806,6 +826,21 @@ namespace {
             require(call(plugin, kOfxActionCreateInstance, effect) == kOfxStatOK, "candidate create");
             require(host.instance_data(effect) != nullptr, "candidate publication");
             require(create_equivalent(host.calls(), reference.create), "constructor continuation");
+            auto changed = reference.create;
+            require(!changed.empty(), "reference constructor trace boundary");
+            changed.front().operation = "altered";
+            require(!create_equivalent(host.calls(), changed), "candidate accepted altered constructor reference");
+            auto reordered = reference.create;
+            const auto first = std::find_if(reordered.begin(), reordered.end(), [](const auto& c) {
+                return c.operation == "param_handle";
+            });
+            require(first != reordered.end(), "reference constructor first parameter");
+            const auto second = std::find_if(std::next(first), reordered.end(), [](const auto& c) {
+                return c.operation == "param_handle";
+            });
+            require(second != reordered.end(), "reference constructor second parameter");
+            std::iter_swap(first, second);
+            require(!create_equivalent(host.calls(), reordered), "candidate accepted reordered constructor reference");
             auto shortened = host.calls();
             require(!shortened.empty(), "constructor trace boundary");
             shortened.pop_back();
@@ -876,15 +911,15 @@ namespace {
         {
             auto row = action_rows.case_event("change");
             host.clear_calls();
-            require(call(plugin, kOfxActionBeginInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "Exposure"})) == reference.begin_status && host.calls() == reference.begin, "begin action");
+            require(call(plugin, kOfxActionBeginInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "Exposure"})) == reference.begin_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.begin), "begin action");
             host.clear_calls();
-            require(change(plugin, host, effect, kOfxChangeUserEdited, "Exposure") == reference.change_status && host.calls() == reference.change, "change action");
+            require(change(plugin, host, effect, kOfxChangeUserEdited, "Exposure") == reference.change_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.change), "change action");
             require(std::any_of(host.calls().begin(), host.calls().end(), [](const auto& c) {
                         return c.operation == "set_string" && c.target == "GrainChroma.presentation" && c.property == kOfxParamPropHint && c.values == std::vector<ofx_test::InstanceValue>{std::string("returned hint")};
                     }),
                     "failed optional hint returned string retained");
             host.clear_calls();
-            require(call(plugin, kOfxActionEndInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "Exposure"})) == reference.end_status && host.calls() == reference.end, "end action");
+            require(call(plugin, kOfxActionEndInstanceChanged, effect, host.change_args({kOfxChangeUserEdited, kOfxTypeParameter, "Exposure"})) == reference.end_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.end), "end action");
             row.passed();
         }
         {
@@ -904,7 +939,7 @@ namespace {
             auto row = edit_rows.case_event("camera_preset");
             host.set_value(effect, "CameraFilmFormatPreset", {1});
             host.clear_calls();
-            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.edit_status && host.calls() == reference.edit, "camera preset continuation");
+            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.edit_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.edit), "camera preset continuation");
             require(host.value(effect, "CameraFilmFormatMm") == reference.edited_value, "camera preset value");
             row.passed();
         }
@@ -915,7 +950,7 @@ namespace {
             host.reenter_next("param_set/CameraFilmFormatMm", [&] {
                 require(change(plugin, host, effect, kOfxChangePluginEdited, "CameraFilmFormatMm") == reference.change_status, "candidate nested change");
             });
-            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.reentry_status && host.calls() == reference.reentry, "nested edit continuation");
+            require(change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset") == reference.reentry_status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.reentry), "nested edit continuation");
             row.passed();
         }
         require(reference.edits.size() == edit_scenarios().size(), "edit membership");
@@ -927,7 +962,7 @@ namespace {
                 host.set_value(effect, scenario.name, scenario.authored);
             host.clear_calls();
             require(change(plugin, host, effect, kOfxChangeUserEdited, scenario.name) == expected.status, "edit status");
-            require(host.calls() == expected.calls && host.value(effect, scenario.observed) == expected.value, "edit continuation");
+            require(ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(expected.calls) && ofx_test::reference::values(host.value(effect, scenario.observed)) == ofx_test::reference::values(expected.value), "edit continuation");
             row.passed();
         }
         edit_test.passed();
@@ -951,7 +986,7 @@ namespace {
                 nested = change(plugin, host, effect, reason, "Exposure");
             });
             const auto status = change(plugin, host, effect, kOfxChangeUserEdited, "CameraFilmFormatPreset");
-            require(nested == reference.change_status && status == reference.nested_changes[i].status && host.calls() == reference.nested_changes[i].calls, "nested user/time continuation");
+            require(nested == reference.change_status && status == reference.nested_changes[i].status && ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.nested_changes[i].calls), "nested user/time continuation");
             row.passed();
         }
         {
@@ -993,7 +1028,7 @@ namespace {
             host.clear_calls();
             require(call(plugin, kOfxActionDestroyInstance, effect) == kOfxStatOK, "candidate destroy");
             require(host.instance_data(effect) == nullptr, "candidate detached");
-            require(host.calls() == reference.destroy, "destroy continuation");
+            require(ofx_test::reference::calls(host.calls()) == ofx_test::reference::calls(reference.destroy), "destroy continuation");
             normal.passed();
             detached.passed();
             const auto clear = std::find_if(host.calls().begin(), host.calls().end(), [](const auto& c) {
@@ -1033,13 +1068,12 @@ int main(int argc, char** argv) try {
             JuicerTests::list_case(kCaller, id);
         return 0;
     }
+    require(argc == 3 && std::string_view(argv[1]) == "--reference", "usage: instance fixture --reference file");
     JuicerTests::CaseLog log;
-    auto* reference = OfxGetPlugin(0);
-    auto* candidate = fj_ofx_plugin(0);
-    require(reference && candidate && reference->mainEntry != candidate->mainEntry, "independent descriptors");
-    InstanceHost reference_host;
-    const auto expected = reference_cohort(reference, reference_host);
-    reference = nullptr;
+    auto* candidate = OfxGetPlugin(0);
+    require(candidate, "candidate descriptor");
+    const auto expected = decode(ofx_test::reference::read(argv[2], "instance"));
+    reference_record_case(expected);
     InstanceHost candidate_host;
     candidate_cohort(candidate, candidate_host, expected);
     log.finish();

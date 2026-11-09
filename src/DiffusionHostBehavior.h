@@ -16,20 +16,6 @@ namespace Spektrafilm {
         Cinebloom
     };
 
-    struct DiffusionFilterAuthoredControls {
-        bool active = false;
-        DiffusionFilterFamily family = DiffusionFilterFamily::BlackProMist;
-        double strength = 0.5;
-        double spatialScale = 1.0;
-        double haloWarmth = 0.0;
-        double coreIntensity = 1.0;
-        double coreSize = 1.0;
-        double haloIntensity = 1.0;
-        double haloSize = 1.0;
-        double bloomIntensity = 1.0;
-        double bloomSize = 1.0;
-    };
-
     struct DiffusionFilterResolvedParameters {
         bool active = false;
         DiffusionFilterFamily family = DiffusionFilterFamily::BlackProMist;
@@ -61,18 +47,16 @@ namespace Spektrafilm {
         std::array<double, kCount> blueWeights{};
     };
 
-    std::uint64_t hash_diffusion_authored_controls(
-        const DiffusionFilterAuthoredControls& controls);
-    bool build_diffusion_psf_sample_descriptor(
-        const DiffusionFilterResolvedParameters& resolved,
-        double pixelSizeUm,
-        int fullFrameWidth,
-        int fullFrameHeight,
-        DiffusionPsfSampleDescriptor& out,
-        std::string& diagnostic);
     bool expand_diffusion_psf_components(
         const DiffusionPsfSampleDescriptor& descriptor,
         DiffusionPsfComponents& out,
         std::string& diagnostic);
 
 } // namespace Spektrafilm
+
+namespace JuicerCuda {
+    struct Failure;
+}
+namespace JuicerDiffusion {
+    bool prepare_components(const Spektrafilm::DiffusionPsfSampleDescriptor&, Spektrafilm::DiffusionPsfComponents&, JuicerCuda::Failure&);
+}

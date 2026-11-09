@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace DirFrameTest {
     float scalar(const Json& input) {
         return std::bit_cast<float>(input.get<std::uint32_t>());
@@ -18,18 +19,18 @@ namespace DirFrameTest {
     }
 
     Json products(const std::filesystem::path& resources, const Json& inputs, const Json::array_t& expectedRows) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources.string().c_str());
         Json rows = Json::array();
         std::size_t expectedIndex = 0;
         for (unsigned route = 0; route < 4; ++route) {
-            ParamSnapshot params;
-            params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-            params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            params.grainControls.active = false;
-            params.dirCouplers.diffusionSizeUm = 20.0f;
-            params.dirCouplers.diffusionTailUm = 200.0f;
-            params.dirCouplers.diffusionTailWeight = 0.03f;
+            JuicerTestSupport::PreparationInput params;
+            params.values.scan_route = static_cast<std::uint32_t>(route);
+            params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            params.values.grain.active = false;
+            params.values.dir_couplers.diffusion_size_um = 20.0f;
+            params.values.dir_couplers.diffusion_tail_um = 200.0f;
+            params.values.dir_couplers.diffusion_tail_weight = 0.03f;
             auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
@@ -76,7 +77,7 @@ namespace DirFrameTest {
         FjDirFrameFailure failure{};
         std::array<char, 256> text{};
         FjErrorBuffer error{text.data(), text.size(), 0};
-        const auto result = fj_legacy_dir_frame_prepare(&input, &math, &failure, &error);
+        const auto result = fj_test_dir_frame_prepare(&input, &math, &failure, &error);
         return JuicerDir::MathOutcome::admit(input, result, math, failure, error, text);
     }
 
@@ -165,7 +166,7 @@ namespace DirFrameTest {
                     rejected.trace = expected_math(row.at("native"));
                     diagnostic = std::string("SpatialDirFrameFailure field=") + fieldNames[rejected.field];
                 }
-                for (auto call : {fj_legacy_dir_frame_prepare, fj_test_dir_frame_prepare, fj_test_dir_frame_c_prepare}) {
+                for (auto call : {fj_test_dir_frame_prepare, fj_test_dir_frame_prepare, fj_test_dir_frame_c_prepare}) {
                     FjDirFrameMath math;
                     FjDirFrameFailure failure;
                     std::memset(&math, 0xa5, sizeof math);
@@ -216,7 +217,7 @@ namespace DirFrameTest {
         JuicerTests::Cohort raw_cases("dir_frame.raw_defect", raw_ids);
         JuicerTests::Cohort capacity_cases("dir_frame.raw_capacity", capacity_ids);
         unsigned caller_index = 0;
-        for (auto call : {fj_legacy_dir_frame_prepare, fj_test_dir_frame_prepare, fj_test_dir_frame_c_prepare}) {
+        for (auto call : {fj_test_dir_frame_prepare, fj_test_dir_frame_prepare, fj_test_dir_frame_c_prepare}) {
             for (unsigned mode = 0; mode < 10; ++mode) {
                 auto row_event = raw_cases.case_event("caller-" + std::to_string(caller_index) + "/mode-" + std::to_string(mode));
                 FjDirFrameMath math;
@@ -292,27 +293,27 @@ namespace DirFrameTest {
         FjDirFrameFailure failure{};
         auto invalid = input;
         invalid.active = 2;
-        status(fj_legacy_dir_frame_prepare(&invalid, &math, &failure, nullptr), 2);
+        status(fj_test_dir_frame_prepare(&invalid, &math, &failure, nullptr), 2);
         std::thread other([&] {
-            status(fj_legacy_dir_frame_prepare(&input, &math, &failure, nullptr));
+            status(fj_test_dir_frame_prepare(&input, &math, &failure, nullptr));
         });
         other.join();
-        status(fj_legacy_dir_frame_prepare(&input, &math, &failure, nullptr), 8);
-        status(fj_legacy_dir_frame_prepare(&input, &math, &failure, nullptr));
+        status(fj_test_dir_frame_prepare(&input, &math, &failure, nullptr), 8);
+        status(fj_test_dir_frame_prepare(&input, &math, &failure, nullptr));
         JuicerTests::Cohort inactive_faults("dir_frame.inactive_fault", 5);
         for (unsigned fault = 2; fault <= 6; ++fault) {
             auto row_event = inactive_faults.case_event(std::to_string(fault - 2));
             auto inactive = input;
             inactive.active = 0;
             status(fj_test_dir_frame_fault(fault));
-            status(fj_legacy_dir_frame_prepare(&inactive, &math, &failure, nullptr));
+            status(fj_test_dir_frame_prepare(&inactive, &math, &failure, nullptr));
             require(math_words(math) == zero && failure.reason == 0, "inapplicable fault consumes without manufacturing work/failure");
-            status(fj_legacy_dir_frame_prepare(&input, &math, &failure, nullptr));
+            status(fj_test_dir_frame_prepare(&input, &math, &failure, nullptr));
             row_event.passed();
         }
         status(fj_test_dir_frame_fault(1));
         status(fj_test_dir_frame_fault(0));
-        status(fj_legacy_dir_frame_prepare(&input, &math, &failure, nullptr));
+        status(fj_test_dir_frame_prepare(&input, &math, &failure, nullptr));
         caseEvent.passed();
     }
 } // namespace DirFrameTest

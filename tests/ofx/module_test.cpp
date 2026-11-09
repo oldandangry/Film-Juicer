@@ -228,9 +228,12 @@ int main(int argc, char** argv) try {
     OfxPlugin* plugin = nullptr;
     {
         JuicerTests::CaseEvent test(kCaller, "discovery");
-        require(fj_ofx_plugin_count() == 1, "plugin count");
+        require(OfxGetNumberOfPlugins() == 1 && fj_ofx_plugin_count() == 1, "plugin count");
         plugin = fj_ofx_plugin(0);
-        require(plugin && plugin == fj_ofx_plugin(0) && !fj_ofx_plugin(-1) && !fj_ofx_plugin(1) && !fj_ofx_plugin(std::numeric_limits<int>::max()), "discovery bounds or identity");
+        require(plugin && plugin == OfxGetPlugin(0) && plugin == fj_ofx_plugin(0) &&
+                    !OfxGetPlugin(-1) && !OfxGetPlugin(1) && !OfxGetPlugin(std::numeric_limits<int>::min()) && !OfxGetPlugin(std::numeric_limits<int>::max()) &&
+                    !fj_ofx_plugin(-1) && !fj_ofx_plugin(1) && !fj_ofx_plugin(std::numeric_limits<int>::min()) && !fj_ofx_plugin(std::numeric_limits<int>::max()),
+                "discovery bounds or identity");
         require(std::string_view(plugin->pluginApi) == kOfxImageEffectPluginApi && plugin->apiVersion == 1 && std::string_view(plugin->pluginIdentifier) == "com.juicer.Juicer" && plugin->pluginVersionMajor == 1 && plugin->pluginVersionMinor == 0 && plugin->setHost && plugin->mainEntry, "plugin descriptor");
         {
             auto row = lifecycle_rows.case_event("discovery/native_before");

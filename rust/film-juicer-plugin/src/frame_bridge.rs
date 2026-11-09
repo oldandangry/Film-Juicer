@@ -1,14 +1,16 @@
-//! SF_TEMP_BRIDGE_FRAME_GEOMETRY: callback-local values; remove with the final
-//! native OFX preparation consumer, no later than S6.D. S4.E owns state bridges.
+//! Shared completed frame math and checked fixture transport.
 
 use std::mem::{align_of, size_of};
+#[cfg(any(test, feature = "test-support"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use film_juicer_core::frame::{Bounds, Domain, Geometry};
 
+use crate::cuda::sys::{FjExtent, FjRect};
+#[cfg(any(test, feature = "test-support"))]
 use crate::cuda::sys::{
     FJ_API_NONE, FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_SUCCESS,
-    FJ_STATUS_UNSUPPORTED_INPUT, FjErrorBuffer, FjExtent, FjRect, FjStatus,
+    FJ_STATUS_UNSUPPORTED_INPUT, FjErrorBuffer, FjStatus,
 };
 
 #[repr(C)]
@@ -29,17 +31,20 @@ pub(crate) struct FjFrameGeometryFailure {
     pub(crate) reason: u32,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn valid<T>(pointer: *const T) -> bool {
     !pointer.is_null()
         && (pointer as usize).is_multiple_of(align_of::<T>())
         && (pointer as usize).checked_add(size_of::<T>()).is_some()
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct Diagnostic {
     record: *mut FjErrorBuffer,
     data: *mut u8,
     capacity: usize,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Diagnostic {
     /// # Safety
     /// Optional initialized live record and nonempty backing are exclusive and disjoint.
@@ -91,11 +96,13 @@ impl Diagnostic {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "test-support"))]
 enum Failure {
     Raw = 1,
     Range = 2,
     Panic = 3,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Failure {
     fn status(self) -> FjStatus {
         FjStatus {
@@ -120,6 +127,7 @@ impl Failure {
 /// # Safety
 /// T is a fixed frame output with valid all-zero fields and no owned storage.
 /// Each numerically valid writable peer is initialized/live/exclusive and disjoint.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn clear<T>(out: *mut T, failure: *mut FjFrameGeometryFailure) {
     // SAFETY: Clear each independently admitted peer even when the other is malformed.
     unsafe {
@@ -135,6 +143,7 @@ unsafe fn clear<T>(out: *mut T, failure: *mut FjFrameGeometryFailure) {
 /// # Safety
 /// T is the same zero-valid fixed frame output as clear; foreign records retain
 /// the entry operation’s admitted live/exclusive/disjoint obligations.
+#[cfg(any(test, feature = "test-support"))]
 unsafe fn reject<T>(
     out: *mut T,
     failure: *mut FjFrameGeometryFailure,
@@ -154,6 +163,7 @@ unsafe fn reject<T>(
     reason.status()
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn project(domain: Domain) -> FjExtent {
     FjExtent {
         x: domain.x,
@@ -162,6 +172,7 @@ fn project(domain: Domain) -> FjExtent {
         height: domain.height,
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn domain(extent: FjExtent) -> Domain {
     Domain {
         x: extent.x,
@@ -190,6 +201,7 @@ pub(crate) fn checked_geometry(domain: Domain, film_format_long_edge_mm: f32) ->
 /// # Safety
 /// Required records authorize initialized/live aligned storage; writable records
 /// and optional diagnostic backing are exclusive/disjoint through synchronous return.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare_domain(
     input: *const FjRect,
     out: *mut FjExtent,
@@ -231,6 +243,7 @@ pub(crate) unsafe fn prepare_domain(
 
 /// # Safety
 /// Same fixed-record live/exclusive/disjoint obligations as prepare_domain.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) unsafe fn prepare_geometry(
     input: *const FjFrameGeometryInput,
     out: *mut FjFrameGeometry,
@@ -265,31 +278,6 @@ pub(crate) unsafe fn prepare_geometry(
         // SAFETY: Panic does not escape C; independently clear any completed projection.
         Err(_) => unsafe { reject(out, failure, error, Failure::Panic) },
     }
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Same synchronous foreign storage contract as prepare_domain.
-unsafe extern "C" fn fj_legacy_frame_domain_prepare(
-    input: *const FjRect,
-    out: *mut FjExtent,
-    failure: *mut FjFrameGeometryFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The exported caller supplies the checked body's storage obligations.
-    unsafe { prepare_domain(input, out, failure, error) }
-}
-#[unsafe(no_mangle)]
-/// # Safety
-/// Same synchronous foreign storage contract as prepare_geometry.
-unsafe extern "C" fn fj_legacy_frame_geometry_prepare(
-    input: *const FjFrameGeometryInput,
-    out: *mut FjFrameGeometry,
-    failure: *mut FjFrameGeometryFailure,
-    error: *mut FjErrorBuffer,
-) -> FjStatus {
-    // SAFETY: The exported caller supplies the checked body's storage obligations.
-    unsafe { prepare_geometry(input, out, failure, error) }
 }
 
 #[cfg(feature = "test-support")]
@@ -333,19 +321,6 @@ const _: () = {
     assert!(size_of::<FjFrameGeometryFailure>() == 4 && align_of::<FjFrameGeometryFailure>() == 4);
     assert!(std::mem::offset_of!(FjFrameGeometryFailure, reason) == 0);
 };
-const _: unsafe extern "C" fn(
-    *const FjRect,
-    *mut FjExtent,
-    *mut FjFrameGeometryFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_frame_domain_prepare;
-const _: unsafe extern "C" fn(
-    *const FjFrameGeometryInput,
-    *mut FjFrameGeometry,
-    *mut FjFrameGeometryFailure,
-    *mut FjErrorBuffer,
-) -> FjStatus = fj_legacy_frame_geometry_prepare;
-
 const _: fn(FjRect, FjExtent, FjFrameGeometryInput, FjFrameGeometry, FjFrameGeometryFailure) =
     |bounds, extent, input, out, failure| {
         let _: [i32; 4] = [bounds.x1, bounds.y1, bounds.x2, bounds.y2];

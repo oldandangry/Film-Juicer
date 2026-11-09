@@ -1,15 +1,13 @@
 #include "render_gpu_fixture.h"
 #include "render_assertions.h"
 #include "Hash.h"
-#include "JuicerState.h"
-#include "PreparedState.h"
 #include "../ffi/print_illuminant_fixture.h"
-#include "module_test.h"
-#include "ofxMessage.h"
-#include "ofxsImageEffect.h"
 #include "processor_test_hooks.h"
 #include "../ffi/case_results.h"
 #include "../ffi/juicer_test_api.h"
+#include "../ffi/preparation_fixture.h"
+#include "../ffi/owner_fixture.h"
+#include "module_test.h"
 
 #include <array>
 #include <bit>
@@ -23,8 +21,6 @@
 #include <vector>
 
 extern "C" FjStatus fj_test_ofx_instance_observe(OfxImageEffectHandle, FjInstanceObservation**, FjErrorBuffer*);
-
-void OFX::Plugin::getPluginIDs(OFX::PluginFactoryArray&) {}
 
 namespace {
     constexpr std::string_view kCaller = "ofx.gpu.render_trace";
@@ -173,7 +169,7 @@ namespace {
             auto event = rows.case_event(std::string("fixed/") + scenario.name);
             ofx_test::DeviceImages images({7, 5, scenario.components});
             fj_test_ofx_render_tokens(kSession, scenario.instance, kClip);
-            ofx_test::RenderHost fixture;
+            ofx_test::RenderHost fixture(OfxGetPlugin(0));
             fixture.configure(images, {scenario.x, scenario.y});
             fixture.host().set_value(fixture.effect(), "ScanRoute", {std::string(scenario.route)});
             fixture.host().set_value(fixture.effect(), "FilmProfileKey", {std::string(scenario.profile)});
@@ -212,25 +208,28 @@ namespace {
                                          seen.session_seed == kSession && seen.clip_token == kClip && seen.frame_token == 37,
                                      "frozen scenario frame identity");
             if (std::string_view(scenario.name) == "negative-print" || scenario.combined) {
-                ParamSnapshot snapshot;
-                snapshot.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
-                snapshot.spectralUpsamplingMode = scenario.reconstruction;
-                snapshot.cameraAutoExposureEnabled = 0;
+                JuicerTestSupport::PreparationInput snapshot;
+                snapshot.film_key = scenario.profile;
+                snapshot.values.scan_route = FJ_ROUTE_NEGATIVE_PRINT;
+                snapshot.values.spectral_upsampling_mode = scenario.reconstruction;
+                snapshot.values.camera_auto_exposure_enabled = 0;
                 if (scenario.combined) {
-                    snapshot.cameraDiffusion.active = true;
-                    snapshot.grainControls.active = true;
-                    std::string diagnostic;
-                    ofx_test::require_render(Spektrafilm::build_scatter_halation_controls(
-                                                 ScatterHalationRawControls{true, 1.0, 1.0, 1.0, 1.0}, snapshot.scatterHalationControls, diagnostic),
-                                             "typed combined halation controls");
+                    snapshot.values.camera_diffusion.active = 1;
+                    snapshot.values.grain.active = 1;
+                    snapshot.values.scatter_halation.active = 1;
+                    snapshot.values.scatter_halation.scatter_amount = 1.0f;
+                    snapshot.values.scatter_halation.scatter_spatial_scale = 1.0f;
+                    snapshot.values.scatter_halation.halation_amount = 1.0f;
+                    snapshot.values.scatter_halation.halation_spatial_scale = 1.0f;
                 } else {
-                    snapshot.scannerUnsharpMask = {0.0, 0.0};
+                    snapshot.values.scanner_unsharp_mask[0] = 0.0;
+                    snapshot.values.scanner_unsharp_mask[1] = 0.0;
                 }
-                std::optional<PreparedState> baseline;
+                std::optional<JuicerTestSupport::PreparedStateHold> baseline;
                 std::array<char, 1024> diagnostic{};
                 FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
                 const auto* assets = static_cast<const FjAssets*>(fj_test_ofx_assets());
-                ofx_test::require_render(prepare_state(assets, snapshot, baseline, error).category == FJ_STATUS_SUCCESS && baseline,
+                ofx_test::require_render(JuicerTestSupport::prepare_state(assets, snapshot, baseline, error).category == FJ_STATUS_SUCCESS && baseline,
                                          "typed print baseline preparation");
                 FjPreparedStateView expected{};
                 ofx_test::require_render(baseline->view(expected, error).category == FJ_STATUS_SUCCESS, "typed print baseline view");
@@ -255,7 +254,8 @@ namespace {
                                  static_cast<double>(expected.scanner_post_effects.glare_roughness),
                                  static_cast<double>(actual.scanner_post_effects.glare_blur_sigma_px),
                                  static_cast<double>(expected.scanner_post_effects.glare_blur_sigma_px));
-                    report_control_differences(observed.view.captured, preparation_params(snapshot));
+                    const FjPreparationParams expectedControls = snapshot.record();
+                    report_control_differences(observed.view.captured, expectedControls);
                     throw std::runtime_error("actual print controls differ from independent typed reference inputs");
                 }
             }
@@ -308,7 +308,7 @@ namespace {
             const bool signed_zero = pair.ends_with("-zero");
             ofx_test::DeviceImages images({7, 5, 3});
             tokens();
-            ofx_test::RenderHost fixture;
+            ofx_test::RenderHost fixture(OfxGetPlugin(0));
             fixture.configure(images);
             snapshot_defaults(fixture);
             fixture.host().set_value(fixture.effect(), "ScanRoute", {std::string(print ? "NegativePrintScan" : "NegativeDirectScan")});
@@ -335,13 +335,14 @@ namespace {
                                      (!signed_zero || std::bit_cast<std::uint32_t>(state.film_exposure.manual_exposure_ev) == (second ? 0x80000000U : 0U));
                 if (!matches) {
                     std::fprintf(stderr, "%s actual=(%llu,%llu,%llu,%llu) expected=(%llu,%llu,%llu,%llu) build=%llu previous=%llu\n", fixture_key.c_str(), static_cast<unsigned long long>(actual_identity[0]), static_cast<unsigned long long>(actual_identity[1]), static_cast<unsigned long long>(actual_identity[2]), static_cast<unsigned long long>(actual_identity[3]), static_cast<unsigned long long>(expected_identity[0]), static_cast<unsigned long long>(expected_identity[1]), static_cast<unsigned long long>(expected_identity[2]), static_cast<unsigned long long>(expected_identity[3]), static_cast<unsigned long long>(actual.view.build), static_cast<unsigned long long>(previous_build));
-                    ParamSnapshot baseline;
-                    baseline.scanRoute = print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan;
+                    JuicerTestSupport::PreparationInput baseline;
+                    baseline.values.scan_route = print ? FJ_ROUTE_NEGATIVE_PRINT : FJ_ROUTE_NEGATIVE_DIRECT;
                     if (medium)
-                        baseline.printExposure = value;
+                        baseline.values.print_exposure = value;
                     else
-                        baseline.cameraExposureCompensationEv = value;
-                    report_control_differences(actual.view.captured, preparation_params(baseline));
+                        baseline.values.camera_exposure_compensation_ev = value;
+                    const FjPreparationParams expectedControls = baseline.record();
+                    report_control_differences(actual.view.captured, expectedControls);
                     throw std::runtime_error("accepted actual-callback recipe identities");
                 }
                 previous_build = actual.view.build;
@@ -358,7 +359,7 @@ namespace {
         accepted_identities(rows);
         ofx_test::DeviceImages images({7, 5, 3});
         tokens();
-        ofx_test::RenderHost fixture;
+        ofx_test::RenderHost fixture(OfxGetPlugin(0));
         fixture.configure(images);
         std::vector<float> original;
         std::vector<float> time_a_pixels;
@@ -669,7 +670,7 @@ namespace {
             auto abort_case = rows.case_event("abort/terminal_recovery");
             {
                 tokens();
-                ofx_test::RenderHost terminal;
+                ofx_test::RenderHost terminal(OfxGetPlugin(0));
                 terminal.configure(images);
                 terminal.host().clear_calls();
                 fj_test_ofx_render_control(5);
@@ -689,7 +690,7 @@ namespace {
             }
             {
                 tokens();
-                ofx_test::RenderHost recovered;
+                ofx_test::RenderHost recovered(OfxGetPlugin(0));
                 recovered.configure(images);
                 RenderAssertions::compare_pixels("new module after abort panic", render(recovered, images, 37.0), original);
                 recovered.close();

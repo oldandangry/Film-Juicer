@@ -6,7 +6,6 @@
 #include <limits>
 
 #include "Hash.h"
-#include "RustEffectsFrameBridge.h"
 #include "juicer_cuda_call_scope.h"
 
 
@@ -328,11 +327,199 @@ namespace Spektrafilm {
 
 } // namespace Spektrafilm
 
-namespace Spektrafilm {
-    bool build_film_juicer_effects_frame_descriptor(
-        const FilmJuicerEffectsFrameDescriptorInput& input,
-        FilmJuicerEffectsFrameDescriptor& out,
+namespace JuicerEffects {
+    namespace {
+        constexpr const char* kInvalidResult = "ResourceDescriptorMismatch phase=effects_descriptor field=rust_result";
+        bool zero(float v) {
+            return std::bit_cast<std::uint32_t>(v) == 0;
+        }
+        bool empty(const FjExtent& v) {
+            return v.x == 0 && v.y == 0 && v.width == 0 && v.height == 0;
+        }
+        bool empty(const FjDefectOrigin& v) {
+            return v.cell_x == 0 && v.cell_y == 0 && zero(v.local_x_mm) && zero(v.local_y_mm);
+        }
+        bool empty(const FjEffectsFrameMath& v) {
+            return v.present == 0 && v.flags == 0 && empty(v.render_extent) && empty(v.full_frame_extent) && std::all_of(std::begin(v.origins), std::end(v.origins), [](const auto& o) {
+                       return empty(o);
+                   }) &&
+                   zero(v.sample_step_x_mm) && zero(v.sample_step_y_mm) && v.roi_offset_x == 0 && v.roi_offset_y == 0 && v.gate_width == 0 && v.gate_height == 0 && v.session_seed == 0 && v.clip_token == 0 && zero(v.weave_dx_px) && zero(v.weave_dy_px) && zero(v.weave_cos_rot) && zero(v.weave_sin_rot) && v.recipe_hash == 0 && v.hash == 0;
+        }
+        template <typename Extent>
+        bool same_extent(const FjExtent& a, const Extent& b) {
+            return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+        }
+        DefectDustRecipe native_dust(const FjDust& v) {
+            DefectDustRecipe out{};
+            out.cellWidthMm = v.cell_width_mm;
+            out.cellHeightMm = v.cell_height_mm;
+            out.slotProbability = v.slot_probability;
+            out.softnessMinMm = v.softness_min_mm;
+            out.softnessMaxMm = v.softness_max_mm;
+            out.softnessSizeCapFraction = v.softness_size_cap_fraction;
+            out.supportXMm = v.support_x_mm;
+            out.supportYMm = v.support_y_mm;
+            out.fiberFraction = v.fiber_fraction;
+            out.fiberDriftFraction = v.fiber_drift_fraction;
+            out.fiberFirstKnotMin = v.fiber_first_knot_min;
+            out.fiberFirstKnotMax = v.fiber_first_knot_max;
+            out.fiberSecondKnotMin = v.fiber_second_knot_min;
+            out.fiberSecondKnotMax = v.fiber_second_knot_max;
+            out.fiberInteriorWidthMinFraction = v.fiber_interior_width_min_fraction;
+            out.fiberInteriorWidthMaxFraction = v.fiber_interior_width_max_fraction;
+            out.diameterMinMm = v.diameter_min_mm;
+            out.diameterBulkMaxMm = v.diameter_bulk_max_mm;
+            out.diameterMaxMm = v.diameter_max_mm;
+            out.diameterTailFraction = v.diameter_tail_fraction;
+            out.fiberLengthMinMm = v.fiber_length_min_mm;
+            out.fiberLengthMaxMm = v.fiber_length_max_mm;
+            out.fiberWidthMinMm = v.fiber_width_min_mm;
+            out.fiberWidthMaxMm = v.fiber_width_max_mm;
+            out.opacityFaintCumulative = v.opacity_faint_cumulative;
+            out.opacityIntermediateCumulative = v.opacity_intermediate_cumulative;
+            out.compactOpacityMin = v.compact_opacity_min;
+            out.compactOpacityFaintEnd = v.compact_opacity_faint_end;
+            out.compactOpacityIntermediateEnd = v.compact_opacity_intermediate_end;
+            out.compactOpacityMax = v.compact_opacity_max;
+            out.fiberOpacityMin = v.fiber_opacity_min;
+            out.fiberOpacityFaintEnd = v.fiber_opacity_faint_end;
+            out.fiberOpacityIntermediateEnd = v.fiber_opacity_intermediate_end;
+            out.fiberOpacityMax = v.fiber_opacity_max;
+            out.compactDominantAspectMin = v.compact_dominant_aspect_min;
+            out.compactDominantAspectMax = v.compact_dominant_aspect_max;
+            out.compactSubsidiaryScaleMin = v.compact_subsidiary_scale_min;
+            out.compactSubsidiaryScaleMax = v.compact_subsidiary_scale_max;
+            out.compactSubsidiaryAspectMin = v.compact_subsidiary_aspect_min;
+            out.compactSubsidiaryAspectMax = v.compact_subsidiary_aspect_max;
+            out.compactSubsidiaryOffsetMax = v.compact_subsidiary_offset_max;
+            out.compactSubsidiaryAngleMaxRadians = v.compact_subsidiary_angle_max_radians;
+            return out;
+        }
+        DefectScratchRecipe native_scratch(const FjScratch& v) {
+            DefectScratchRecipe out{};
+            out.cellWidthMm = v.cell_width_mm;
+            out.cellHeightMm = v.cell_height_mm;
+            out.slotProbability = v.slot_probability;
+            out.softnessMinMm = v.softness_min_mm;
+            out.softnessMaxMm = v.softness_max_mm;
+            out.softnessSizeCapFraction = v.softness_size_cap_fraction;
+            out.supportXMm = v.support_x_mm;
+            out.supportYMm = v.support_y_mm;
+            out.lengthMinMm = v.length_min_mm;
+            out.lengthBulkMaxMm = v.length_bulk_max_mm;
+            out.lengthMaxMm = v.length_max_mm;
+            out.lengthTailFraction = v.length_tail_fraction;
+            out.widthMinMm = v.width_min_mm;
+            out.widthBulkMaxMm = v.width_bulk_max_mm;
+            out.widthMaxMm = v.width_max_mm;
+            out.widthTailFraction = v.width_tail_fraction;
+            out.driftFraction = v.drift_fraction;
+            out.firstKnotMin = v.first_knot_min;
+            out.firstKnotMax = v.first_knot_max;
+            out.secondKnotMin = v.second_knot_min;
+            out.secondKnotMax = v.second_knot_max;
+            out.interiorWidthMinFraction = v.interior_width_min_fraction;
+            out.interiorWidthMaxFraction = v.interior_width_max_fraction;
+            out.interiorDepthMinFraction = v.interior_depth_min_fraction;
+            out.interiorDepthMaxFraction = v.interior_depth_max_fraction;
+            out.endpointAbruptProbability = v.endpoint_abrupt_probability;
+            out.interruptionProbability = v.interruption_probability;
+            out.gapCenterMin = v.gap_center_min;
+            out.gapCenterMax = v.gap_center_max;
+            out.gapSpanMin = v.gap_span_min;
+            out.gapSpanMax = v.gap_span_max;
+            out.scuffProbability = v.scuff_probability;
+            out.scuffLengthMaxMm = v.scuff_length_max_mm;
+            out.scuffAngleMaxRadians = v.scuff_angle_max_radians;
+            out.strengthMin = v.strength_min;
+            out.strengthMax = v.strength_max;
+            return out;
+        }
+
+    } // namespace
+
+    bool compose_frame_descriptor(
+        const FjEffectsFrameMath& math,
+        const FjDust& filmDust,
+        const FjScratch& filmScratch,
+        const FjDust& gateDust,
+        const FjScratch& gateScratch,
+        Spektrafilm::FilmJuicerEffectsFrameDescriptor& out,
         std::string& diagnostic) {
-        return JuicerEffects::prepare_frame(input, out, diagnostic);
+        out = {};
+        diagnostic.clear();
+        if (math.present == 0) {
+            if (empty(math)) {
+                return true;
+            }
+            diagnostic = kInvalidResult;
+            return false;
+        }
+        if (math.present != 1 || (math.flags & ~31u) != 0 ||
+            math.render_extent.width <= 0 || math.render_extent.height <= 0 ||
+            math.full_frame_extent.width <= 0 || math.full_frame_extent.height <= 0) {
+            diagnostic = kInvalidResult;
+            return false;
+        }
+        const bool weave = (math.flags & FJ_EFFECTS_WEAVE) != 0;
+        const bool film = (math.flags & FJ_EFFECTS_FILM) != 0;
+        const bool gate = (math.flags & FJ_EFFECTS_GATE_TRANSMITTANCE) != 0;
+        const bool output = (math.flags & FJ_EFFECTS_GATE_OUTPUT) != 0;
+        const bool full = (math.flags & FJ_EFFECTS_FULL_FRAME) != 0;
+        if (output != (weave || gate) || full != weave ||
+            (weave && !same_extent(math.render_extent, math.full_frame_extent)) ||
+            ((film || gate) && (!std::isfinite(math.sample_step_x_mm) || !(math.sample_step_x_mm > 0) ||
+                                !std::isfinite(math.sample_step_y_mm) || !(math.sample_step_y_mm > 0))) ||
+            (!(film || gate) && (!zero(math.sample_step_x_mm) || !zero(math.sample_step_y_mm))) ||
+            math.roi_offset_x < 0 || math.roi_offset_y < 0 ||
+            (gate ? (math.gate_width <= 0 || math.gate_height <= 0 ||
+                     math.gate_width > math.full_frame_extent.width || math.gate_height > math.full_frame_extent.height)
+                  : (math.gate_width != 0 || math.gate_height != 0)) ||
+            !std::isfinite(math.weave_dx_px) || !std::isfinite(math.weave_dy_px) ||
+            !std::isfinite(math.weave_cos_rot) || !std::isfinite(math.weave_sin_rot) ||
+            (!weave && (!zero(math.weave_dx_px) || !zero(math.weave_dy_px) ||
+                        math.weave_cos_rot != 1.0f || !zero(math.weave_sin_rot)))) {
+            diagnostic = kInvalidResult;
+            return false;
+        }
+        for (const FjDefectOrigin& origin : math.origins) {
+            if (std::abs(static_cast<double>(origin.cell_x)) >= 4503599627370496.0 ||
+                std::abs(static_cast<double>(origin.cell_y)) >= 4503599627370496.0 ||
+                !std::isfinite(origin.local_x_mm) || origin.local_x_mm < 0 ||
+                !std::isfinite(origin.local_y_mm) || origin.local_y_mm < 0) {
+                diagnostic = kInvalidResult;
+                return false;
+            }
+        }
+        out.renderExtent = {math.render_extent.x, math.render_extent.y, math.render_extent.width, math.render_extent.height};
+        out.fullFrameExtent = {math.full_frame_extent.x, math.full_frame_extent.y, math.full_frame_extent.width, math.full_frame_extent.height};
+        out.filmDust = native_dust(filmDust);
+        out.filmScratch = native_scratch(filmScratch);
+        out.gateDust = native_dust(gateDust);
+        out.gateScratch = native_scratch(gateScratch);
+        for (std::size_t i = 0; i < out.origins.size(); ++i) {
+            const auto& origin = math.origins[i];
+            out.origins[i] = {origin.cell_x, origin.cell_y, origin.local_x_mm, origin.local_y_mm};
+        }
+        out.sampleStepXMm = math.sample_step_x_mm;
+        out.sampleStepYMm = math.sample_step_y_mm;
+        out.roiOffsetX = math.roi_offset_x;
+        out.roiOffsetY = math.roi_offset_y;
+        out.gateWidth = math.gate_width;
+        out.gateHeight = math.gate_height;
+        out.sessionSeed = math.session_seed;
+        out.clipToken = math.clip_token;
+        out.weaveActive = weave;
+        out.filmActive = film;
+        out.gateTransmittanceActive = gate;
+        out.gateOutputActive = output;
+        out.requiresFullFrame = full;
+        out.weaveDxPx = math.weave_dx_px;
+        out.weaveDyPx = math.weave_dy_px;
+        out.weaveCosRot = math.weave_cos_rot;
+        out.weaveSinRot = math.weave_sin_rot;
+        out.recipeHash = math.recipe_hash;
+        out.hash = math.hash;
+        return true;
     }
-} // namespace Spektrafilm
+} // namespace JuicerEffects

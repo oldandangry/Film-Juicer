@@ -1,5 +1,4 @@
-//! SF_TEMP_BRIDGE_DIR_BOUNDARY: literal native model transport. S4.E narrows
-//! execution inputs; remove at the last native model caller, no later than S6.D.
+//! Native DIR reflected-boundary description and scoped host ownership.
 
 use std::mem::{align_of, size_of};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -421,7 +420,7 @@ pub(crate) unsafe fn release(
 /// # Safety
 /// Identical initialized, live, disjoint record contract to describe.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_dir_boundary_describe(
+unsafe extern "C" fn fj_dir_boundary_describe(
     input: *const FjDirBoundaryInput,
     out: *mut u64,
     details: *mut FjDirBoundaryFailure,
@@ -433,7 +432,7 @@ unsafe extern "C" fn fj_legacy_dir_boundary_describe(
 /// # Safety
 /// Identical storage and ownership-transfer contract to acquire.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_dir_boundary_acquire(
+unsafe extern "C" fn fj_dir_boundary_acquire(
     input: *const FjDirBoundaryInput,
     out: *mut *mut FjDirBoundaryOwner,
     details: *mut FjDirBoundaryFailure,
@@ -445,7 +444,7 @@ unsafe extern "C" fn fj_legacy_dir_boundary_acquire(
 /// # Safety
 /// Identical legitimate-owner borrow and storage-expiry contract to view.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_dir_boundary_view(
+unsafe extern "C" fn fj_dir_boundary_view(
     owner: *const FjDirBoundaryOwner,
     out: *mut FjDirBoundaryView,
     details: *mut FjDirBoundaryFailure,
@@ -457,7 +456,7 @@ unsafe extern "C" fn fj_legacy_dir_boundary_view(
 /// # Safety
 /// Identical consume-once ownership and diagnostic contract to release.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn fj_legacy_dir_boundary_release(
+unsafe extern "C" fn fj_dir_boundary_release(
     owner: *mut FjDirBoundaryOwner,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {

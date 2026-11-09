@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 /* Shared C11 grain layout, field-type and export-signature assertions. */
 _Static_assert(sizeof(FjGrainFrameInput) == 344 && _Alignof(FjGrainFrameInput) == 8, "FjGrainFrameInput layout");
 _Static_assert(offsetof(FjGrainFrameInput, active) == 0, "FjGrainFrameInput.active offset");
@@ -138,7 +139,7 @@ _Static_assert(offsetof(FjGrainFrameFailure, layer) == 8, "FjGrainFrameFailure.l
 _Static_assert(_Generic(&(((FjGrainFrameFailure*)0)->layer), uint32_t(*): 1, default: 0), "FjGrainFrameFailure.layer type");
 _Static_assert(offsetof(FjGrainFrameFailure, channel) == 12, "FjGrainFrameFailure.channel offset");
 _Static_assert(_Generic(&(((FjGrainFrameFailure*)0)->channel), uint32_t(*): 1, default: 0), "FjGrainFrameFailure.channel type");
-_Static_assert(_Generic(&fj_legacy_grain_frame_prepare, FjStatus (*)(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_grain_frame_prepare signature");
+_Static_assert(_Generic(&fj_test_grain_frame_prepare, FjStatus (*)(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_grain_frame_prepare signature");
 #if defined(FJ_GRAIN_ASSERT_TEST_FACADE)
 _Static_assert(_Generic(&fj_test_grain_frame_prepare, FjStatus (*)(const FjGrainFrameInput*, FjGrainFrameMath*, FjGrainFrameFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_grain_frame_prepare signature");
 #endif

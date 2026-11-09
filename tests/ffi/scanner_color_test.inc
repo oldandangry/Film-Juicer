@@ -1,7 +1,8 @@
+#include "juicer_test_api.h"
 // Independent whole-builder values and preserved CAT02/catalogue expectations.
 namespace ScannerColorTests {
     using Prepare = FjStatus (*)(const FjScannerColorInput*, FjScannerColor*, FjScannerColorFailure*, FjErrorBuffer*);
-    static_assert(std::is_same_v<decltype(&fj_legacy_scanner_color_prepare), Prepare>);
+    static_assert(std::is_same_v<decltype(&fj_test_scanner_color_prepare), Prepare>);
     static_assert(std::is_same_v<decltype(&fj_test_scanner_color_prepare), Prepare>);
     static_assert(sizeof(FjScannerColorInput) == 40 && alignof(FjScannerColorInput) == 8);
     static_assert(offsetof(FjScannerColorInput, medium) == 0 && offsetof(FjScannerColorInput, output_space) == 4 && offsetof(FjScannerColorInput, apply_cctf) == 8);
@@ -85,22 +86,22 @@ namespace ScannerColorTests {
         illuminant.hash = 1234567;
         for (corruption = 1; corruption <= 10; ++corruption) {
             auto row_event = integrity_rows.case_event(std::to_string(corruption));
-            JuicerScanner::Test::set_color_projection(corrupt);
+            JuicerTestFixture::Scanner::Hook::Test::set_color_projection(corrupt);
             bool rejected = false;
             try {
-                (void)Scanner::build_color_runtime(Scanner::ScannerMedium::Negative, illuminant, {}, 0);
+                (void)JuicerTestFixture::Scanner::build_color_runtime(Scanner::ScannerMedium::Negative, illuminant, {}, 0);
             } catch (const JuicerCuda::ExecutionFailure& error) {
                 rejected = error.failure.status.category == FJ_STATUS_PREPARATION_FAILURE && error.failure.status.api == FJ_API_NONE && error.failure.status.native_code == 0 && error.failure.diagnostic == "scanner color projection invalid";
             }
-            JuicerScanner::Test::set_color_projection(nullptr);
+            JuicerTestFixture::Scanner::Hook::Test::set_color_projection(nullptr);
             require(rejected, "new foreign projection integrity fails as typed preparation failure");
             row_event.passed();
         }
         auto zero_event = integrity_rows.case_event("11");
         corruption = 11;
-        JuicerScanner::Test::set_color_projection(corrupt);
-        const auto zero = Scanner::build_color_runtime(Scanner::ScannerMedium::Negative, illuminant, {}, 0);
-        JuicerScanner::Test::set_color_projection(nullptr);
+        JuicerTestFixture::Scanner::Hook::Test::set_color_projection(corrupt);
+        const auto zero = JuicerTestFixture::Scanner::build_color_runtime(Scanner::ScannerMedium::Negative, illuminant, {}, 0);
+        JuicerTestFixture::Scanner::Hook::Test::set_color_projection(nullptr);
         corruption = 0;
         require(zero.hash == 0 && zero.encoding.inputIsOutputSpace, "final zero identity remains caller publication responsibility");
         zero_event.passed();
@@ -119,7 +120,7 @@ namespace ScannerColorTests {
                 FjScannerColorFailure failure{};
                 FjErrorBuffer error{nullptr, 0, 0};
                 barrier.arrive_and_wait();
-                statuses[i] = (i % 2 ? fj_test_scanner_color_prepare : fj_legacy_scanner_color_prepare)(&in, &values[i], &failure, &error);
+                statuses[i] = fj_test_scanner_color_prepare(&in, &values[i], &failure, &error);
             });
         for (auto& thread : threads)
             thread.join();
@@ -138,7 +139,7 @@ namespace ScannerColorTests {
         const auto& cat02 = expected.cat02;
         integrity();
         std::vector<std::pair<FjScannerColor, Json>> held;
-        for (auto [operation, operation_name] : {std::pair{&fj_legacy_scanner_color_prepare, "legacy"}, std::pair{&fj_test_scanner_color_prepare, "facade"}}) {
+        for (auto [operation, operation_name] : {std::pair{&fj_test_scanner_color_prepare, "legacy"}, std::pair{&fj_test_scanner_color_prepare, "facade"}}) {
             for (const auto& row : supplement.at("cases")) {
                 auto in = input(row.at("input"));
                 if (in.illuminant_hash == 0)

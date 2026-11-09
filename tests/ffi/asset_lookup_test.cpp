@@ -12,12 +12,10 @@
 
 #include <gtest/gtest.h>
 
-#include "ProcessRuntime.h"
 #include "gtest_cases.h"
 #include "asset_lookup_test.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "prepared_product_fixture.h"
 
@@ -150,15 +148,15 @@ namespace {
         return {state.film_reference.hash, state.scanner_recipe_hash, state.recipe_hash, reference_value(state.film_reference)};
     }
 
-    ParamSnapshot lookup_controls() {
-        ParamSnapshot params;
-        params.filmProfileKey = "kodak_portra_400";
-        params.printProfileKey = "kodak_portra_endura";
-        params.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
-        params.spectralUpsamplingMode = static_cast<int>(Spektrafilm::RgbToRawMethod::Mallett2019);
-        params.cameraExposureCompensationEv = 0.75;
-        params.cameraAutoExposureEnabled = 0;
-        params.inputCompressionEnabled = 0;
+    JuicerTestSupport::PreparationInput lookup_controls() {
+        JuicerTestSupport::PreparationInput params;
+        params.film_key = "kodak_portra_400";
+        params.print_key = "kodak_portra_endura";
+        params.values.scan_route = static_cast<std::uint32_t>(Spektrafilm::ScanRoute::NegativeDirectScan);
+        params.values.spectral_upsampling_mode = static_cast<int>(Spektrafilm::RgbToRawMethod::Mallett2019);
+        params.values.camera_exposure_compensation_ev = 0.75;
+        params.values.camera_auto_exposure_enabled = 0;
+        params.values.input_compression_enabled = 0;
         return params;
     }
 
@@ -412,14 +410,14 @@ namespace {
         EXPECT_EQ(reference_value(failed), ReferenceValue{});
         EXPECT_EQ(reference_value(successful), retained);
 
-        JuicerProcess::ProcessRuntime processOwner;
+        JuicerTestSupport::RuntimeFixture processOwner;
         processOwner.create(std::filesystem::path(JUICER_LOOKUP_RESOURCE_DIR));
         auto controls = lookup_controls();
         // An earlier development-construction failure must leave the later
         // baseline/channel-zero lookup fault armed and unconsumed.
-        RenderInstance early;
+        JuicerTestSupport::InstanceFixture early;
         auto invalid = controls;
-        invalid.filmGammaFactor = 0.0f;
+        invalid.values.film_gamma_factor = 0.0f;
         JuicerTestSupport::capture(early, invalid);
         ASSERT_NO_THROW(set_lookup_fault(1));
         const auto early_failure = JuicerTestSupport::admit(processOwner.borrow().assets, early);
@@ -428,7 +426,7 @@ namespace {
         EXPECT_EQ(fj_test_film_reference_lookup_fault_consumed(), 0u);
         ASSERT_NO_THROW(set_lookup_fault(0));
 
-        RenderInstance state;
+        JuicerTestSupport::InstanceFixture state;
         JuicerTestSupport::capture(state, controls);
         const auto initial = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(initial.kind, FJ_ADMISSION_READY);
@@ -440,7 +438,7 @@ namespace {
         const auto previous = JuicerTestSupport::PublicationObserver::metrics(state);
 
         auto changed = controls;
-        changed.cameraExposureCompensationEv += 0.25;
+        changed.values.camera_exposure_compensation_ev += 0.25;
         JuicerTestSupport::capture(state, changed);
         ASSERT_NO_THROW(set_lookup_fault(1));
         const auto unsupported_mode = fj_test_film_reference_lookup_fault(2);
@@ -454,7 +452,7 @@ namespace {
         EXPECT_EQ(rejected.diagnostic, "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup");
         const auto after_failure = JuicerTestSupport::PublicationObserver::metrics(state);
         EXPECT_EQ(after_failure.build, previous.build);
-        EXPECT_EQ(after_failure.inputIdentity, hash_params(changed));
+        EXPECT_EQ(after_failure.inputIdentity, JuicerTestSupport::hash_input_identity(changed));
         EXPECT_EQ(after_failure.publishedIdentity, previous.publishedIdentity);
         EXPECT_EQ(published_reference(initial), old_value);
 
@@ -470,14 +468,14 @@ namespace {
         ASSERT_EQ(retry.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(retry.state);
         auto retry_metrics = JuicerTestSupport::PublicationObserver::metrics(state);
-        EXPECT_EQ(retry_metrics.inputIdentity, hash_params(changed));
+        EXPECT_EQ(retry_metrics.inputIdentity, JuicerTestSupport::hash_input_identity(changed));
         EXPECT_EQ(retry_metrics.build, previous.build + 1);
         const auto reused = JuicerTestSupport::admit(processOwner.borrow().assets, state);
         ASSERT_EQ(reused.kind, FJ_ADMISSION_READY);
         ASSERT_TRUE(reused.state);
         EXPECT_EQ(JuicerTestSupport::PublicationObserver::backing(*reused.state), JuicerTestSupport::PublicationObserver::backing(*retry.state));
         EXPECT_EQ(JuicerTestSupport::PublicationObserver::metrics(state).build, retry_metrics.build);
-        ASSERT_EQ(fj_legacy_assets_release_cached_payloads(processOwner.borrow().assets, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_test_assets_release_cached_payloads(processOwner.borrow().assets, nullptr).category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(published_reference(initial), old_value);
         EXPECT_EQ(processOwner.close().category, FJ_STATUS_SUCCESS);
     }

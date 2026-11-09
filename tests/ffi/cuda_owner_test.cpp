@@ -7,12 +7,11 @@
 #include <type_traits>
 
 #include "ProcessRoot.h"
-#include "ProcessRuntime.h"
-#include "NativePath.h"
+#include "owner_fixture.h"
+#include "native_path.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "juicer_cuda_api.h"
 #include "juicer_cuda_owner.h"
-#include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 #include "runtime_c.h"
@@ -44,7 +43,7 @@ namespace {
         // Runtime still consumes its host ownership when native destroy fails.
         static int contextToken = 0;
         const JuicerCuda::ResourceManager::DeviceContextKey key{0, &contextToken};
-        JuicerProcess::ProcessRuntime runtime;
+        JuicerTestSupport::RuntimeFixture runtime;
         runtime.create("missing-blocked-runtime-resources");
         JuicerCuda::ResourceManager::RegistryContextSnapshot snapshot{};
         require(JuicerCuda::ResourceManager::registry_begin_submission(key, snapshot),
@@ -81,13 +80,13 @@ namespace {
     }
 
     FjStatus create_runtime(FjPathView path, FjRuntime** out, FjErrorBuffer* error) {
-        return fj_legacy_runtime_create(path, out, error);
+        return fj_test_runtime_create(path, out, error);
     }
 
 } // namespace
 
-static_assert(!std::is_copy_constructible_v<JuicerProcess::ProcessRuntime>);
-static_assert(std::is_move_constructible_v<JuicerProcess::ProcessRuntime>);
+static_assert(!std::is_copy_constructible_v<JuicerTestSupport::RuntimeFixture>);
+static_assert(std::is_move_constructible_v<JuicerTestSupport::RuntimeFixture>);
 static_assert(!std::is_constructible_v<JuicerProcess::Root>);
 static_assert(!std::is_destructible_v<JuicerProcess::Root>);
 
@@ -100,7 +99,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         JuicerTests::CaseEvent access_event("cuda_owner", "noncreating_access");
-        JuicerProcess::ProcessRuntime empty;
+        JuicerTestSupport::RuntimeFixture empty;
         FjRuntimeView emptyView{};
         std::array<char, 64> emptyDiagnostic{'s', 't', 'a', 'l', 'e'};
         FjErrorBuffer emptyError{emptyDiagnostic.data(), emptyDiagnostic.size(), 99};
@@ -158,7 +157,7 @@ int main(int argc, char** argv) {
         JuicerTests::Cohort create_variants("cuda_owner.metadata_create_variant", {directories[0], directories[1]});
         for (const auto& directory : directories) {
             auto variant_event = create_variants.case_event(directory);
-            JuicerProcess::ProcessRuntime runtime;
+            JuicerTestSupport::RuntimeFixture runtime;
             runtime.create(directory);
             {
                 const FjRuntimeView view = runtime.borrow();
@@ -175,7 +174,7 @@ int main(int argc, char** argv) {
                 FjRuntime* duplicateRuntime = nullptr;
                 const std::filesystem::path duplicateDirectory("missing-duplicate-runtime-resources");
                 const JuicerAssets::NativePathArgument duplicatePath(duplicateDirectory);
-                result = fj_legacy_runtime_create(duplicatePath.view(), &duplicateRuntime, &error);
+                result = fj_test_runtime_create(duplicatePath.view(), &duplicateRuntime, &error);
                 require(result.category == FJ_STATUS_PREPARATION_FAILURE && !duplicateRuntime && fj_test_assets_live_owners() == 1,
                         "duplicate Runtime creation published an owner or retained partial Assets");
                 FjRuntimeView repeatedView{};
@@ -192,7 +191,7 @@ int main(int argc, char** argv) {
         metadata_event.passed();
         JuicerTests::CaseEvent scoped_event("cuda_owner", "scoped_destroy");
         {
-            JuicerProcess::ProcessRuntime runtime;
+            JuicerTestSupport::RuntimeFixture runtime;
             runtime.create("missing-scoped-runtime-resources");
             require(runtime.borrow().assets && runtime.borrow().cuda, "scoped Runtime borrow failed");
         }

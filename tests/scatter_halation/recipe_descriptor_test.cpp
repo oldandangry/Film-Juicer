@@ -8,37 +8,35 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "gtest_cases.h"
 #include "gtest/gtest.h"
 
 #include "FilmEffectsFrameDescriptors.h"
 #include "ColorTransforms.h"
-#include "JuicerState.h"
-#include "ProcessRoot.h"
-#include "ProcessRuntime.h"
-#include "ProfileCatalog.h"
+#include "../ffi/owner_fixture.h"
 #include "ScatterHalation.h"
 #include "spatial_optics_fixture.h"
 #include "SpectralData.h"
-#include "juicer_legacy_api.h"
+#include "juicer_test_api.h"
 
 namespace {
 
     class ScatterHalationBootstrapTest : public testing::Test {
     protected:
         static void SetUpTestSuite() {
-            runtime.create(JuicerProcess::data_directory());
+            runtime.create(JUICER_TEST_RESOURCE_DIR);
         }
 
         static void TearDownTestSuite() {
             EXPECT_EQ(runtime.close().category, FJ_STATUS_SUCCESS);
         }
 
-        static JuicerProcess::ProcessRuntime runtime;
+        static JuicerTestSupport::RuntimeFixture runtime;
     };
 
-    JuicerProcess::ProcessRuntime ScatterHalationBootstrapTest::runtime;
+    JuicerTestSupport::RuntimeFixture ScatterHalationBootstrapTest::runtime;
 
     std::uint32_t float_bits(float value) {
         return std::bit_cast<std::uint32_t>(value);
@@ -403,22 +401,41 @@ namespace {
     }
 
     TEST_F(ScatterHalationBootstrapTest, LoadsPublishedProfilesWithoutCuda) {
-        const Spektrafilm::ProfileCatalog& catalog =
-            runtime.spektrafilm_profile_catalog();
-        ASSERT_TRUE(catalog.valid) << catalog.failure;
-        EXPECT_TRUE(catalog.defaultFilmPresent);
-        EXPECT_TRUE(catalog.defaultPrintPresent);
+        FjCatalog* acquiredCatalog = nullptr;
+        FjCatalogCounts counts{};
+        ASSERT_EQ(fj_test_catalog_acquire(runtime.borrow().assets, &acquiredCatalog, &counts, nullptr).category, FJ_STATUS_SUCCESS);
+        const auto releaseCatalog = [](FjCatalog* held) {
+            (void)fj_test_catalog_release(held, nullptr);
+        };
+        std::unique_ptr<FjCatalog, decltype(releaseCatalog)> catalog(acquiredCatalog, releaseCatalog);
+        ASSERT_TRUE(catalog);
+        const std::string key = "kodak_portra_400";
+        const std::string printKey = "kodak_portra_endura";
+        bool defaultFilmPresent = false, defaultPrintPresent = false;
+        for (const auto role : {FJ_PROFILE_ROLE_FILM, FJ_PROFILE_ROLE_PRINT}) {
+            const auto count = role == FJ_PROFILE_ROLE_FILM ? counts.film_count : counts.print_count;
+            for (std::size_t i = 0; i < count; ++i) {
+                FjCatalogEntryView entry{};
+                ASSERT_EQ(fj_test_catalog_entry(catalog.get(), role, i, &entry, nullptr).category, FJ_STATUS_SUCCESS);
+                const std::string_view entryKey(entry.key.data, entry.key.count);
+                if (role == FJ_PROFILE_ROLE_FILM && entryKey == key)
+                    defaultFilmPresent = true;
+                if (role == FJ_PROFILE_ROLE_PRINT && entryKey == printKey)
+                    defaultPrintPresent = true;
+            }
+        }
+        EXPECT_TRUE(defaultFilmPresent);
+        EXPECT_TRUE(defaultPrintPresent);
 
-        const std::string key = Spektrafilm::kDefaultFilmProfileKey;
         FjFilmProfile* acquired = nullptr;
-        ASSERT_EQ(fj_legacy_film_profile_acquire(runtime.borrow().assets, {key.data(), key.size()}, &acquired, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_test_assets_film_acquire(runtime.borrow().assets, {key.data(), key.size()}, &acquired, nullptr).category, FJ_STATUS_SUCCESS);
         const auto releaseProfile = [](FjFilmProfile* held) {
-            (void)fj_legacy_film_profile_release(held, nullptr);
+            (void)fj_test_assets_film_release(held, nullptr);
         };
         std::unique_ptr<FjFilmProfile, decltype(releaseProfile)> profile(acquired, releaseProfile);
         ASSERT_TRUE(profile);
         FjFilmProfileView view{};
-        ASSERT_EQ(fj_legacy_film_profile_view(profile.get(), &view, nullptr).category, FJ_STATUS_SUCCESS);
+        ASSERT_EQ(fj_test_assets_film_view(profile.get(), &view, nullptr).category, FJ_STATUS_SUCCESS);
         EXPECT_EQ(std::string(view.stock.data, view.stock.count), key);
         ASSERT_EQ(view.wavelengths.count, 81u);
         EXPECT_EQ(view.wavelengths.data[0], 380.0f);

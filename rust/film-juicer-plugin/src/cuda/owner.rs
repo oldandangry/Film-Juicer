@@ -70,15 +70,17 @@ impl Owner {
         failure.result(status, error.length)
     }
 
-    pub(crate) fn retire_instance(&self, token: u64) -> Result<(), Failure> {
+    pub(crate) fn retire_instance(&self, token: u64) -> Result<sys::FjStatus, Failure> {
         let mut failure = Failure::new(sys::FJ_STATUS_SUCCESS, "");
         let mut error = failure.buffer();
         // SAFETY: The Runtime retains this native owner through synchronous
         // retirement; the immutable token was bound once by its Instance.
         let status = unsafe { sys::fj_cuda_retire_instance(self.raw(), token, &mut error) };
-        failure.result(status, error.length)
+        failure.result(status, error.length)?;
+        Ok(status)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn shutdown(&self) -> Result<(), Failure> {
         let mut failure = Failure::new(sys::FJ_STATUS_SUCCESS, "");
         let mut error = failure.buffer();

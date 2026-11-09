@@ -12,7 +12,6 @@
 #include "RenderValues.h"
 #include "ProcessRoot.h"
 #include "Logging.h"
-#include "RustEffectsFrameBridge.h"
 #include "Cuda/JuicerCudaFailure.h"
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
 #include "Cuda/JuicerCudaExecutor.h"
@@ -632,7 +631,9 @@ namespace {
                 if ((report.retirement & 1u) != 0) {
                     JuicerCuda::ExecutorTest::observe_context_retirement((report.retirement & 2u) != 0, report.invalidation, report.latch_cleared != 0);
                 }
-                JuicerCuda::ExecutorTest::observe_recovery_end();
+                if (!completion->scope->recovery().pending) {
+                    JuicerCuda::ExecutorTest::observe_recovery_end();
+                }
             }
             const std::string_view diagnostic(input->diagnostic.data ? input->diagnostic.data : "", input->diagnostic.data ? input->diagnostic.count : 0);
             JuicerCuda::ExecutorTest::observe_adapter_completion(report.result.outcome, report.result.fatal != 0, diagnostic);

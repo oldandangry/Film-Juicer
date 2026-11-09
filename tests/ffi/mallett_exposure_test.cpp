@@ -155,7 +155,7 @@ namespace {
             for (bool facade : {false, true}) {
                 auto event = focused_rows.case_event(std::string(facade ? "facade/" : "legacy/") + id);
                 FjMallettMidgray result{};
-                status((facade ? fj_test_exposure_mallett_midgray : fj_legacy_exposure_mallett_midgray)(&input.input, &result, &error.error), FJ_STATUS_SUCCESS);
+                status((facade ? fj_test_exposure_mallett_midgray : fj_test_boundary_exposure_mallett_midgray)(&input.input, &result, &error.error), FJ_STATUS_SUCCESS);
                 check(result, row.at("expected"));
                 error.guards();
                 event.passed();
@@ -170,7 +170,7 @@ namespace {
                 auto event = normalization_rows.case_event(std::string(facade ? "facade/" : "legacy/") + id);
                 FjMidgrayNormalization result{};
                 Diagnostic error;
-                status((facade ? fj_test_exposure_tc_midgray : fj_legacy_exposure_tc_midgray)(green, &result, &error.error), FJ_STATUS_SUCCESS);
+                status((facade ? fj_test_exposure_tc_midgray : fj_test_boundary_exposure_tc_midgray)(green, &result, &error.error), FJ_STATUS_SUCCESS);
                 const float values[]{result.raw_green, result.scale};
                 exact<2>(values, expected);
                 error.guards();
@@ -186,7 +186,7 @@ namespace {
                 auto event = source_rows.case_event(std::string(facade ? "facade/" : "legacy/") + id);
                 float result = -1;
                 Diagnostic error;
-                status((facade ? fj_test_exposure_reference_source : fj_legacy_exposure_reference_source)(ev, &result, &error.error), built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
+                status((facade ? fj_test_exposure_reference_source : fj_test_boundary_exposure_reference_source)(ev, &result, &error.error), built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
                 if (built)
                     exact<1>(&result, Json::array({row.at("exp2_source")[1]}));
                 else
@@ -204,7 +204,7 @@ namespace {
                 auto event = reference_rows.case_event(std::string(facade ? "facade/" : "legacy/") + id);
                 FjReferenceRaw result{};
                 Diagnostic error;
-                status((facade ? fj_test_exposure_mallett_reference_raw : fj_legacy_exposure_mallett_reference_raw)(&input.input, &result, &error.error), built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
+                status((facade ? fj_test_exposure_mallett_reference_raw : fj_test_boundary_exposure_mallett_reference_raw)(&input.input, &result, &error.error), built ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
                 if (built)
                     exact<3>(result.rgb, row.at("expected"));
                 else
@@ -342,18 +342,18 @@ namespace {
                 view.basis_rgb.data = reinterpret_cast<const float*>(reinterpret_cast<const char*>(input.basis.data()) + 1);
             if (bad == 11)
                 view.basis_rgb.data = reinterpret_cast<const float*>(std::numeric_limits<std::uintptr_t>::max() - 3u);
-            status(fj_legacy_exposure_mallett_midgray(&view, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_boundary_exposure_mallett_midgray(&view, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
             require(cleared(result), "structural failure clears completed fields");
             error.guards();
             event.passed();
         }
         JuicerTests::CaseEvent arguments_event("mallett.boundary.arguments", "null_inputs_and_outputs");
         FjMallettMidgray result{};
-        status(fj_legacy_exposure_mallett_midgray(nullptr, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_exposure_mallett_midgray(&input.input, nullptr, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_mallett_midgray(nullptr, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_mallett_midgray(&input.input, nullptr, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
         FjErrorBuffer invalid{nullptr, 8, 77};
         std::memset(&result, 0x7f, sizeof(result));
-        status(fj_legacy_exposure_mallett_midgray(&input.input, &result, &invalid), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_mallett_midgray(&input.input, &result, &invalid), FJ_STATUS_UNSUPPORTED_INPUT);
         require(cleared(result), "invalid diagnostic clears output");
         arguments_event.passed();
         JuicerTests::Cohort diagnostic_capacities("mallett.boundary.diagnostic_capacity", {"0", "1", "7", "512"});
@@ -361,7 +361,7 @@ namespace {
             auto event = diagnostic_capacities.case_event(std::to_string(capacity));
             error.error.capacity = capacity;
             error.error.length = 99;
-            status(fj_legacy_exposure_mallett_midgray(nullptr, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_boundary_exposure_mallett_midgray(nullptr, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
             require(capacity == 0 ? error.error.length == 0 : error.error.length < capacity && error.error.data[error.error.length] == '\0', "bounded diagnostic/terminator");
             error.guards();
             event.passed();
@@ -379,14 +379,14 @@ namespace {
                 view.illuminant.data = nullptr;
             if (bad == 2)
                 view.sensitivity_rgb.count = std::numeric_limits<std::size_t>::max();
-            status(fj_legacy_exposure_mallett_reference_raw(bad == 3 ? nullptr : &view, &raw, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_boundary_exposure_mallett_reference_raw(bad == 3 ? nullptr : &view, &raw, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
             require(raw.rgb[0] == 0 && raw.rgb[1] == 0 && raw.rgb[2] == 0, "reference structural clearing");
             event.passed();
         }
         JuicerTests::CaseEvent rejected_arguments("mallett.boundary.rejected_arguments", "raw_tc_and_reference_outputs");
-        status(fj_legacy_exposure_mallett_reference_raw(&reference.input, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_exposure_tc_midgray(1, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-        status(fj_legacy_exposure_reference_source(0, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_mallett_reference_raw(&reference.input, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_tc_midgray(1, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_reference_source(0, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         rejected_arguments.passed();
         error.error.capacity = 512;
         std::vector<std::string> fault_ids;
@@ -405,9 +405,9 @@ namespace {
                 std::memset(&result, 0x7f, sizeof(result));
                 std::memset(&normalized, 0x7f, sizeof(normalized));
                 std::memset(&raw, 0x7f, sizeof(raw));
-                const auto observed = operation == 3 ? fj_legacy_exposure_mallett_midgray(&input.input, &result, &error.error) : operation == 4 ? fj_legacy_exposure_tc_midgray(1, &normalized, &error.error)
-                                                                                                                             : operation == 5   ? fj_legacy_exposure_reference_source(0, &source, &error.error)
-                                                                                                                                                : fj_legacy_exposure_mallett_reference_raw(&reference.input, &raw, &error.error);
+                const auto observed = operation == 3 ? fj_test_boundary_exposure_mallett_midgray(&input.input, &result, &error.error) : operation == 4 ? fj_test_boundary_exposure_tc_midgray(1, &normalized, &error.error)
+                                                                                                                                    : operation == 5   ? fj_test_boundary_exposure_reference_source(0, &source, &error.error)
+                                                                                                                                                       : fj_test_boundary_exposure_mallett_reference_raw(&reference.input, &raw, &error.error);
                 status(observed, fault == 1 ? FJ_STATUS_UNSUPPORTED_INPUT : fault == 2 ? FJ_STATUS_INTERNAL_FAILURE
                                                                                        : FJ_STATUS_PREPARATION_FAILURE);
                 require(fj_test_exposure_fault_consumed(operation, fault) == 1 && fj_test_exposure_fault_consumed(operation, fault) == 0, "same-thread consume-once before cleanup");
@@ -426,9 +426,9 @@ namespace {
         facade_event.passed();
         JuicerTests::CaseEvent skip_event("mallett.boundary.malformed_skips_math", "midgray");
         status(fj_test_exposure_arm_fault(3, 1, 1), FJ_STATUS_SUCCESS);
-        status(fj_legacy_exposure_mallett_midgray(nullptr, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_mallett_midgray(nullptr, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
         require(fj_test_exposure_fault_consumed(3, 1) == 0, "malformed input skips mathematics");
-        status(fj_legacy_exposure_mallett_midgray(&input.input, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_mallett_midgray(&input.input, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
         require(fj_test_exposure_fault_consumed(3, 1) == 1, "later valid call consumes armed fault");
         skip_event.passed();
         fj_test_exposure_clear_fault();
@@ -437,17 +437,17 @@ namespace {
         std::thread worker([&] {
             FjMallettMidgray out{};
             FjErrorBuffer silent{nullptr, 0, 0};
-            other = fj_legacy_exposure_mallett_midgray(&input.input, &out, &silent);
+            other = fj_test_boundary_exposure_mallett_midgray(&input.input, &out, &silent);
         });
         worker.join();
         status(other, FJ_STATUS_SUCCESS);
-        status(fj_legacy_exposure_mallett_midgray(&input.input, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
+        status(fj_test_boundary_exposure_mallett_midgray(&input.input, &result, &error.error), FJ_STATUS_UNSUPPORTED_INPUT);
         require(fj_test_exposure_fault_consumed(3, 1) == 1, "thread-local fault witness");
         fj_test_exposure_clear_fault();
         FjMallettMidgray retained{};
         {
             FocusedInput temporary(fixture.at("focused")[0]);
-            status(fj_legacy_exposure_mallett_midgray(&temporary.input, &retained, &error.error), FJ_STATUS_SUCCESS);
+            status(fj_test_boundary_exposure_mallett_midgray(&temporary.input, &retained, &error.error), FJ_STATUS_SUCCESS);
         }
         check(retained, fixture.at("focused")[0].at("expected"));
     }

@@ -1031,9 +1031,13 @@ class RustBoundaryTests(unittest.TestCase):
         bridge = (ROOT / "tests/ffi/test_asset_bridge.cpp").read_text(encoding="utf-8")
         for text in ("ConversionSlots", "FilmSource::", "PrintProfileSource::", "copy_tables("):
             self.assertNotIn(text, bridge)
-        self.assertIn("AssetBridge::film_defaults(", bridge)
-        self.assertIn("fj_legacy_film_profile_acquire(", bridge)
-        self.assertIn("fj_legacy_film_profile_release(owner", bridge)
+        self.assertNotIn("fj_legacy_film_profile_acquire(", bridge)
+        consumer = (ROOT / "tests/ffi/production_profile_owner_test.cpp").read_text(encoding="utf-8")
+        for operation in ("fj_test_assets_film_defaults(", "fj_test_assets_film_acquire(",
+                          "fj_test_assets_film_view(", "fj_test_assets_film_release("):
+            self.assertIn(operation, consumer)
+        assets = (ROOT / "rust/film-juicer-plugin/src/asset_bridge.rs").read_text(encoding="utf-8")
+        self.assertIn("assets_film_defaults(", assets)
         complete = (ROOT / "rust/film-juicer-core/src/recipe.rs").read_text(encoding="utf-8")
         self.assertIn("let development = film::Development::new(", complete)
         self.assertIn("layers_required: params.grain.active && params.grain.sublayers_active", complete)
@@ -1042,6 +1046,16 @@ class RustBoundaryTests(unittest.TestCase):
         preparation = (ROOT / "rust/film-juicer-plugin/src/preparation.rs").read_text(encoding="utf-8")
         self.assertIn("let completed = recipe::prepare(assets, params)", preparation)
         self.assertIn("FjPreparedState::from_state(Arc::new(completed))", preparation)
+        instance = (ROOT / "rust/film-juicer-plugin/src/instance.rs").read_text(encoding="utf-8")
+        admission = instance.split("pub(crate) fn admit(", 1)[1].split("\n    }", 1)[0]
+        self.assertLess(admission.index("self.publication.admit(|params|"),
+                        admission.index("recipe::prepare(assets, params)"))
+        publication = (ROOT / "rust/film-juicer-core/src/state.rs").read_text(encoding="utf-8")
+        self.assertRegex(publication, r"pub struct Admission\s*\{\s*state: Arc<RenderState>")
+        self.assertIn("let outcome = prepare(&params);", publication)
+        ofx = (ROOT / "rust/film-juicer-plugin/src/ofx/render.rs").read_text(encoding="utf-8")
+        self.assertLess(ofx.index("owner.state.admit(assets)"), ofx.index("let state = admitted.state();"))
+        self.assertLess(ofx.index("let state = admitted.state();"), ofx.index("callback.render_native("))
         owner = complete.split("pub struct RenderState {", 1)[1].split("\n}", 1)[0]
         self.assertIn("contents: Vec<Contents>", owner)
         contents = complete.split("struct Contents {", 1)[1].split("\n}", 1)[0]
@@ -1086,22 +1100,34 @@ class RustBoundaryTests(unittest.TestCase):
     def test_deleted_spatial_optics_producers_and_retained_consumers(self) -> None:
         import re
         sources = {name: (ROOT / ("src/" + name)).read_text(encoding="utf-8-sig")
-                   for name in ["RenderValues.cpp", "DiffusionHostBehavior.cpp", "ScatterHalation.cpp"]}
+                   for name in ["RenderValues.cpp", "DiffusionHostBehavior.cpp"]}
+        production = "\n".join(path.read_text(encoding="utf-8-sig")
+                               for directory in (ROOT / "src", ROOT / "native")
+                               for path in directory.rglob("*")
+                               if path.is_file() and path.suffix in {".h", ".cpp", ".cu", ".cuh"})
+        sources["ScatterHalation.cpp"] = production
+        self.assertFalse((ROOT / "src/ScatterHalation.cpp").exists())
         def definition(name: str, text: str) -> bool:
             return re.search(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", text) is not None
         for file, names in [("RenderValues.cpp", ["build_spatial_optics_recipe", "hash_diffusion_filter_optics", "hash_camera_lens_blur_optics"]),
                             ("DiffusionHostBehavior.cpp", ["resolve_diffusion_filter", "resolved_hash", "strength_to_scatter", "validate_authored_finite"]),
                             ("ScatterHalation.cpp", ["resolve_scatter_halation_recipe", "hash_scatter_halation_recipe", "any_positive", "build_gaussian_descriptor", "fail_descriptor", "canonical_float", "hash_value"])]:
             for name in names:
-                self.assertFalse(definition(name, sources[file]), name)
+                candidate = (ROOT / "src/ScatterHalation.h").read_text(encoding="utf-8-sig") if file == "ScatterHalation.cpp" and name == "hash_value" else sources[file]
+                self.assertFalse(definition(name, candidate), name)
                 self.assertTrue(definition(name, "bool " + name + "(const Params& params) { return true; }"))
                 self.assertFalse(definition(name, "bool " + name + "(const Params& params);"))
-        for name in ["hash_diffusion_authored_controls", "build_diffusion_psf_sample_descriptor", "expand_diffusion_psf_components"]:
-            self.assertTrue(definition(name, sources["DiffusionHostBehavior.cpp"]), name)
+        for name in ["hash_diffusion_authored_controls", "build_diffusion_psf_sample_descriptor"]:
+            self.assertFalse(definition(name, sources["DiffusionHostBehavior.cpp"]), name)
+            self.assertTrue(definition(name, "bool " + name + "() {}"))
+        self.assertTrue(definition("expand_diffusion_psf_components", sources["DiffusionHostBehavior.cpp"]))
+        self.assertIn("JuicerDiffusion::prepare_components(", sources["DiffusionHostBehavior.cpp"])
+        self.assertIn("fj_diffusion_components_prepare(", sources["DiffusionHostBehavior.cpp"])
         for name in ["build_scatter_halation_controls", "build_scatter_halation_frame_descriptor"]:
-            self.assertTrue(definition(name, sources["ScatterHalation.cpp"]), name)
-        halation = sources["ScatterHalation.cpp"]
-        self.assertEqual(halation.count("JuicerHalation::prepare_frame("), 1)
+            self.assertFalse(definition(name, sources["ScatterHalation.cpp"]), name)
+            self.assertTrue(definition(name, "bool " + name + "() {}"))
+        self.assertNotIn("JuicerHalation::prepare_frame(", production)
+        halation = (ROOT / "rust/film-juicer-plugin/src/cuda/frame_policy.rs").read_text()
         for token in ("kScatterCoreUm", "kScatterTailUm", "kExponentialSigmaRatios", "kBounceSigmaMultipliers", "kMinimumActiveSigmaPixels", "kFirDispatchSigmaPixels", "std::exp", "0.98711", '"Hash.h"'):
             self.assertNotIn(token, halation)
             with self.assertRaises(AssertionError):
@@ -1109,21 +1135,17 @@ class RustBoundaryTests(unittest.TestCase):
         fixtures = "\n".join((ROOT / "tests/ffi" / name).read_text() for name in ("film_recipe_test.cpp", "halation_frame_test.inc"))
         for token in ("capture-halation-frames", "nativeCapture", "Json capture(", "std::exp"):
             self.assertNotIn(token, fixtures)
-        self.assertIn("SF_TEMP_BRIDGE_HALATION_FRAME", (ROOT / "src/RustHalationBridge.h").read_text())
+        frame_policy = (ROOT / "rust/film-juicer-plugin/src/cuda/frame_policy.rs").read_text()
+        self.assertIn("crate::optics_bridge::checked_halation_frame(", frame_policy)
+        self.assertFalse((ROOT / "src/RustHalationBridge.h").exists())
         recipe = sources["RenderValues.cpp"]
         self.assertNotIn("JuicerAssets::prepare_spatial_optics(", recipe)
         self.assertNotIn("build_film_foundation(", recipe)
-        header = (ROOT / "src/RenderValues.h").read_text(encoding="utf-8-sig")
-        self.assertRegex(
-            header,
-            r'\bkExactOpticsNotImplementedForPhase6\[\]\s*=\s*"ExactOpticsNotImplementedForPhase6";',
-        )
-        preflight = recipe[recipe.index("    bool preflight_camera_lens_blur("):]
-        self.assertRegex(
-            preflight,
-            r'outDiagnostic\s*=\s*std::string\(kExactOpticsNotImplementedForPhase6\)'
-            r'\s*\+\s*" component=camera_lens_blur";',
-        )
+        self.assertNotIn("preflight_camera_lens_blur(", recipe)
+        render = (ROOT / "rust/film-juicer-plugin/src/cuda/render.rs").read_text(encoding="utf-8")
+        self.assertIn("preflight_camera_lens_blur(state.optics().camera_lens_blur().sigma_um())", render)
+        self.assertIn("if sigma_um > 0.0", render)
+        self.assertIn("ExactOpticsNotImplementedForPhase6 component=camera_lens_blur", render)
         complete = (ROOT / "rust/film-juicer-core/src/recipe.rs").read_text(encoding="utf-8")
         complete = complete.split("pub fn prepare(", 1)[1].split("\n}\n", 1)[0]
         self.assertLess(complete.index("input::Recipe::new("), complete.index("optics::Recipe::new("))
@@ -1199,11 +1221,10 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertIn("component.sigma_px", gaussian_fixture)
         self.assertIn("require(rows.size() == 188", gaussian_fixture)
         self.assertIn("fj_test_dir_frame_prepare(", (ROOT / "tests/ffi/spatial_optics_fixture.cpp").read_text())
-        bridge = (ROOT / "src/RustDirBridge.h").read_text()
-        self.assertNotIn("prepare_math(", bridge)
-        self.assertIn("static MathOutcome admit(", bridge)
-        self.assertIn("FjDirFrameInput", bridge)
-        self.assertIn("MathOutcome::admit(", (ROOT / "src/RustDirBridge.cpp").read_text())
+        self.assertFalse((ROOT / "src/RustDirBridge.h").exists())
+        self.assertFalse((ROOT / "src/RustDirBridge.cpp").exists())
+        self.assertIn("const FjDirFrameMath& math", recipe)
+        self.assertIn("compose_spatial_dir_descriptor(input->dir, _pixelSizeUm", scope)
 
     def test_deleted_diffusion_construction_and_retained_native_consumers(self) -> None:
         import re
@@ -1226,14 +1247,15 @@ class RustBoundaryTests(unittest.TestCase):
             self.assertIsNotNone(re.search(pattern, "bool " + name + "() { return true; }"))
             self.assertIsNone(re.search(pattern, "bool " + name + "();"))
         self.assertNotIn("kDiffusionFrameFnvPrime", recipe)
-        self.assertEqual(diffusion.count("JuicerDiffusion::prepare_sample("), 1)
+        self.assertNotIn("JuicerDiffusion::prepare_sample(", diffusion)
         self.assertEqual(diffusion.count("JuicerDiffusion::prepare_components("), 1)
+        self.assertEqual(diffusion.count("fj_diffusion_components_prepare("), 1)
         self.assertNotIn("JuicerDiffusion::prepare_frame(", recipe)
-        bridge = (ROOT / "src/RustDiffusionBridge.cpp").read_text()
-        self.assertIn("fj_legacy_diffusion_frame_prepare(&input, &wire, &rejected, &error)", bridge)
-        self.assertIn("JuicerDiffusion::prepare_frame(", (ROOT / "tests/ffi/diffusion_frame_test.inc").read_text())
-        self.assertIn("std::uint64_t hash_diffusion_authored_controls(", diffusion)
-        self.assertIn("hash_diffusion_authored_controls(", (ROOT / "src/JuicerState.cpp").read_text())
+        self.assertFalse((ROOT / "src/RustDiffusionBridge.cpp").exists())
+        frame = (ROOT / "rust/film-juicer-plugin/src/cuda/frame_policy.rs").read_text()
+        self.assertIn("crate::diffusion_bridge::checked_frame_set(", frame)
+        capture = (ROOT / "rust/film-juicer-core/src/capture.rs").read_text()
+        self.assertEqual(capture.count("optics::hash_diffusion_authored_controls("), 2)
         resources = (ROOT / "src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp").read_text()
         self.assertIn("Spektrafilm::expand_diffusion_psf_components(", resources)
         fixtures = "\n".join((ROOT / "tests/ffi" / name).read_text()
@@ -1247,7 +1269,7 @@ class RustBoundaryTests(unittest.TestCase):
         fixture = (ROOT / "tests/ffi/spatial_optics_fixture.cpp").read_text()
         for operation in ("sample", "components", "frame"):
             self.assertIn("fj_test_diffusion_" + operation + "_prepare(", fixture)
-        self.assertIn("SF_TEMP_BRIDGE_DIFFUSION_FRAME", (ROOT / "src/RustDiffusionBridge.h").read_text())
+        self.assertFalse((ROOT / "src/RustDiffusionBridge.h").exists())
 
     def test_deleted_scanner_lut_producer_and_retained_binding(self) -> None:
         import re
@@ -1334,12 +1356,13 @@ class RustBoundaryTests(unittest.TestCase):
         adapter = r"\bspectral_tables_view\s*\("
         self.assertNotRegex(processing, adapter)
         self.assertRegex("SpectralTablesView spectral_tables_view(const SpectralTables& tables)", adapter)
-        bridge = (ROOT / "src/RustScannerBridge.cpp").read_text(encoding="utf-8")
-        self.assertIn("ColorRuntime build_color_runtime(", bridge)
-        self.assertIn("SF_TEMP_BRIDGE_SCANNER_COLOR", bridge)
-        self.assertNotRegex((ROOT / "src/RustScannerBridge.h").read_text(encoding="utf-8"), r"\bclass\s+Lut\b")
-        self.assertIn("add_library(juicer_scanner_test_objects OBJECT ../src/RustScannerBridge.cpp)", cmake)
-        self.assertIn("target_compile_definitions(juicer_scanner_test_objects PRIVATE JUICER_SCANNER_TEST_HOOK=1)", cmake)
+        for suffix in ("cpp", "h"):
+            self.assertFalse((ROOT / f"src/RustScannerBridge.{suffix}").exists())
+        scanner_color = (ROOT / "rust/film-juicer-core/src/scanner/color.rs").read_text(encoding="utf-8")
+        self.assertIn("color::output_color", scanner_color)
+        self.assertIn("color::checked_cat02_matrix", scanner_color)
+        self.assertIn("scanner_bridge::prepare_host_lut(", callback)
+        self.assertIn("decoded.scanner.hash = source.scanner_lut.hash", (ROOT / "native/juicer_cuda_descriptors.cpp").read_text())
 
     def test_deleted_spectral_producers_and_white_loop(self) -> None:
         import re
@@ -1350,7 +1373,7 @@ class RustBoundaryTests(unittest.TestCase):
             for path in directory.rglob("*")
             if path.suffix in {".h", ".cpp", ".cu", ".cuh"}
         )
-        state = (ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8")
+        state = processing
         removed = (
             "build_tables_from_curves_non_global", "compute_S_inverse_from_tables",
             "hash_float_span_digest_sp", "hash_float_vector_digest_sp",
@@ -1371,7 +1394,8 @@ class RustBoundaryTests(unittest.TestCase):
         tls = r"\bthread_local\s+std::vector<float>"
         self.assertIsNone(re.search(tls, processing))
         self.assertIsNotNone(re.search(tls, processing + "\nthread_local std::vector<float> Ee_scene;"))
-        legacy = (ROOT / "rust/film-juicer-plugin/src/legacy_bridge.rs").read_text(encoding="utf-8")
+        legacy = "\n".join(path.read_text(encoding="utf-8") for path in
+                           (ROOT / "rust/film-juicer-plugin/src").rglob("*.rs"))
         for name in ("fj_legacy_adapt_cat02", "fj_legacy_input_to_dwg", "fj_legacy_input_to_linear_srgb", "fj_legacy_dwg_to_xyz"):
             pattern = rf"\bfn\s+{name}\s*\("
             self.assertIsNone(re.search(pattern, legacy))
@@ -1388,6 +1412,15 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertIn("let completed = recipe::prepare(assets, params)", preparation)
         self.assertIn("out.exposure_tables =", preparation)
         self.assertIn("out.scanner_tables =", preparation)
+        projection = (ROOT / "rust/film-juicer-plugin/src/cuda/projection.rs").read_text(encoding="utf-8")
+        for retained in ("pub(super) fn host_data(", "let scanner = state.scanner();",
+                         "let scanner_tables = scanner.tables();",
+                         "float_span(state.exposure_tables().illuminant())",
+                         "scanner_tables.dyes_cmy()", "scanner_tables.weighted_xyz()"):
+            self.assertIn(retained, projection)
+        render = (ROOT / "rust/film-juicer-plugin/src/cuda/render.rs").read_text(encoding="utf-8")
+        self.assertIn("state: &recipe::RenderState", projection)
+        self.assertIn("super::projection::host_data(\n            state,", render)
         loop = r"double\s+sum[XYZ]\s*=\s*0\.0"
         self.assertIsNone(re.search(loop, state))
         self.assertIsNotNone(re.search(loop, state + "\ndouble sumX = 0.0;"))
@@ -1425,6 +1458,7 @@ class RustBoundaryTests(unittest.TestCase):
             ("film-juicer-plugin", "asset_calibration.rs"),
             ("film-juicer-plugin", "instance.rs"),
             ("film-juicer-plugin", "submission.rs"),
+            ("film-juicer-plugin", "cuda/frame.rs"),
         )
         self.subtest_cases = tuple(
             f"{package}/{source}|{'release' if release else 'debug'}"

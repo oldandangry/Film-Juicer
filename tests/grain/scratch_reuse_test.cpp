@@ -20,9 +20,7 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
 #include "ColorTransforms.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "ProcessRuntime.h"
 #include "juicer_cuda_owner.h"
 #include "../ffi/exposure_fixture.h"
 #include "../ffi/juicer_test_api.h"
@@ -117,9 +115,9 @@ namespace {
     };
 
     struct Inputs {
-        JuicerProcess::ProcessRuntime& runtime;
-        PreparedState state;
-        ParamSnapshot controls;
+        JuicerTestSupport::RuntimeFixture& runtime;
+        JuicerTestSupport::PreparedStateHold state;
+        JuicerTestSupport::PreparationInput controls;
         Spektrafilm::VisualGrainFrameDescriptor grain{};
         JuicerCuda::VisualGrainPayloadInput grainPayload{};
         Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
@@ -134,14 +132,14 @@ namespace {
         int height;
         FrameFixture::FrameFacts facts{};
 
-        Inputs(JuicerProcess::ProcessRuntime& processRuntime, int w, int h, Spektrafilm::ScanRoute route, const GrainVariant& variant = {})
+        Inputs(JuicerTestSupport::RuntimeFixture& processRuntime, int w, int h, Spektrafilm::ScanRoute route, const GrainVariant& variant = {})
             : runtime(processRuntime), state(JuicerTestSupport::prepare_product(runtime.borrow().assets, make_controls(route, variant))),
               controls(make_controls(route, variant)), width(w), height(h) {
             facts.renderExtent = {0, 0, w, h};
             facts.fullFrameExtent = facts.renderExtent;
             facts.pixelDefinition = facts.renderExtent;
             facts.pixelSizeUm = variant.pixelSize;
-            facts.filmFormatLongEdgeMm = controls.cameraFilmFormatLongEdgeMm;
+            facts.filmFormatLongEdgeMm = controls.values.camera_film_format_long_edge_mm;
             facts.frameTime = variant.time;
             facts.frameRate = 24.0;
             facts.sessionSeed = 17;
@@ -149,23 +147,23 @@ namespace {
             capture_frame_inputs();
         }
 
-        static ParamSnapshot make_controls(Spektrafilm::ScanRoute route, const GrainVariant& variant) {
-            ParamSnapshot result;
-            result.scanRoute = route;
-            result.filmGammaFactor = variant.filmGamma;
+        static JuicerTestSupport::PreparationInput make_controls(Spektrafilm::ScanRoute route, const GrainVariant& variant) {
+            JuicerTestSupport::PreparationInput result;
+            result.values.scan_route = static_cast<std::uint32_t>(route);
+            result.values.film_gamma_factor = variant.filmGamma;
             if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive)
-                result.filmProfileKey = "fujifilm_provia_100f";
-            result.scatterHalationControls = {};
-            result.cameraDiffusion.active = variant.cameraDiffusion;
-            result.gateWeaveAmount = 0.0;
-            result.grainControls.active = variant.active;
-            result.grainControls.sublayersActive = variant.layers;
-            result.grainControls.chromaSharedWeight = variant.shared ? 1.0f : 0.0f;
-            result.grainControls.chromaIndependentWeight = variant.shared ? 0.0f : 1.0f;
-            result.grainControls.debugView = variant.debug;
-            result.dirCouplers.diffusionSizeUm = 20.0f;
-            result.dirCouplers.diffusionTailUm = 200.0f;
-            result.dirCouplers.diffusionTailWeight = 0.03f;
+                result.film_key = "fujifilm_provia_100f";
+            result.values.scatter_halation = {};
+            result.values.camera_diffusion.active = variant.cameraDiffusion;
+            result.values.gate_weave_amount = 0.0;
+            result.values.grain.active = variant.active;
+            result.values.grain.sublayers_active = variant.layers;
+            result.values.grain.chroma_shared_weight = variant.shared ? 1.0f : 0.0f;
+            result.values.grain.chroma_independent_weight = variant.shared ? 0.0f : 1.0f;
+            result.values.grain.debug_view = variant.debug;
+            result.values.dir_couplers.diffusion_size_um = 20.0f;
+            result.values.dir_couplers.diffusion_tail_um = 200.0f;
+            result.values.dir_couplers.diffusion_tail_weight = 0.03f;
             return result;
         }
 
@@ -328,7 +326,7 @@ namespace {
 
     class GrainScratch : public testing::Test {
     protected:
-        inline static JuicerProcess::ProcessRuntime runtime;
+        inline static JuicerTestSupport::RuntimeFixture runtime;
 
         static void SetUpTestSuite() {
             runtime.create(JuicerProcess::data_directory());

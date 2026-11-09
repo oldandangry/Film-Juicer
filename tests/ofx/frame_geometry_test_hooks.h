@@ -39,7 +39,6 @@ namespace JuicerFrame::FrameGeometryTest {
         std::uint64_t token = 0;
         FjStatus status{};
     };
-    void instance_retired(const FjInstance*, std::uint64_t, FjStatus) noexcept;
     InstanceRetirementObservation instance_retirement_snapshot();
     void reset_instance_retirement();
     void reset();
@@ -47,10 +46,4 @@ namespace JuicerFrame::FrameGeometryTest {
     HalationObservation halation_snapshot();
     DiffusionObservation diffusion_snapshot();
     PreparedPolicyObservation prepared_policy_snapshot();
-    void prepared_policy(const FjPreparedFramePolicy&, std::uint32_t route);
-    void diffusion_frame(double pixelSizeUm, Spektrafilm::ScanRoute, Spektrafilm::DiffusionFrameDomain, bool success, const std::optional<Spektrafilm::DiffusionFrameSetDescriptor>&);
-    void halation_frame(float pixelSizeUm, bool success, const std::optional<ScatterHalationFrameDescriptor>&);
-    void full_domain(const Spektrafilm::DiffusionFrameDomain&);
-    void scalar_pixel(float);
-    void effects_domain(const Spektrafilm::FilmJuicerEffectsGeometry&);
 } // namespace JuicerFrame::FrameGeometryTest

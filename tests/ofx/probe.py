@@ -140,13 +140,47 @@ def get_params(handle, output):
     return 0
 
 
-image_suite = (pointer_type * 13)(
-    callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_handle),
-    callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_params),
-)
+# Load validates each consumed V1 slot even though this probe only calls
+# Load/Describe/Unload. Unused clip/parameter slots fail if invoked; they do
+# not simulate image access or parameter execution. The variadic entries use
+# their fixed C prefix and are never invoked by these lifecycle actions.
+unsupported_calls = []
+messages = []
+
+
+def unsupported(name, arguments):
+    def reject(*_arguments):
+        unsupported_calls.append(name)
+        return 5  # kOfxStatErrUnsupported
+    return callback(int_type, arguments, reject)
+
+
+image_suite = (pointer_type * 13)()
+image_suite[0] = callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_handle)
+image_suite[1] = callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_params)
+image_suite[2] = unsupported("clipDefine", [pointer_type, string_type, c.POINTER(pointer_type)])
+image_suite[3] = unsupported("clipGetHandle", [pointer_type, string_type, c.POINTER(pointer_type), c.POINTER(pointer_type)])
+image_suite[5] = unsupported("clipGetImage", [pointer_type, double_type, pointer_type, c.POINTER(pointer_type)])
+image_suite[6] = unsupported("clipReleaseImage", [pointer_type])
+image_suite[7] = unsupported("clipGetRegionOfDefinition", [pointer_type, double_type, pointer_type])
+image_suite[8] = unsupported("abort", [pointer_type])
 parameter_suite = (pointer_type * 32)()
+parameter_suite[0] = unsupported("paramDefine", [pointer_type, string_type, string_type, c.POINTER(pointer_type)])
+parameter_suite[1] = unsupported("paramGetHandle", [pointer_type, string_type, c.POINTER(pointer_type), c.POINTER(pointer_type)])
 parameter_suite[2] = callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_handle)
+parameter_suite[3] = unsupported("paramGetPropertySet", [pointer_type, c.POINTER(pointer_type)])
+parameter_suite[4] = unsupported("paramGetValue", [pointer_type])
+parameter_suite[8] = unsupported("paramSetValue", [pointer_type])
+
+
+def message(_handle, kind, message_id, text):
+    messages.append([kind, message_id, text])
+    return 0
+
+
+message_suite = (pointer_type * 1)(callback(int_type, [pointer_type, string_type, string_type, string_type], message))
 dummy_suite = (pointer_type * 32)()
+
 suite_requests = []
 
 
@@ -158,7 +192,9 @@ def fetch(_handle, name, version):
         return c.addressof(image_suite)
     if name == b"OfxParameterSuite":
         return c.addressof(parameter_suite)
-    if name in (b"OfxMemorySuite", b"OfxMultiThreadSuite", b"OfxMessageSuite"):
+    if name == b"OfxMessageSuite":
+        return c.addressof(message_suite)
+    if name in (b"OfxMemorySuite", b"OfxMultiThreadSuite"):
         return c.addressof(dummy_suite)
     return None
 
@@ -195,8 +231,10 @@ class SyntheticHostLifecycleTests(unittest.TestCase):
         )
 
         host = Host(1, callback(pointer_type, [pointer_type, string_type, int_type], fetch))
-        self.preloaded_libraries = [c.CDLL(str(path), mode=os.RTLD_NOW | os.RTLD_GLOBAL) for path in preload_paths]
-        module = c.CDLL(str(module_path), mode=os.RTLD_NOW | os.RTLD_LOCAL)
+        preload_mode = os.RTLD_NOW | os.RTLD_GLOBAL if os.name != "nt" else c.DEFAULT_MODE
+        module_mode = os.RTLD_NOW | os.RTLD_LOCAL if os.name != "nt" else c.DEFAULT_MODE
+        self.preloaded_libraries = [c.CDLL(str(path), mode=preload_mode) for path in preload_paths]
+        module = c.CDLL(str(module_path), mode=module_mode)
         module.OfxGetNumberOfPlugins.restype = int_type
         module.OfxGetPlugin.argtypes = [int_type]
         module.OfxGetPlugin.restype = c.POINTER(Plugin)
@@ -244,6 +282,8 @@ class SyntheticHostLifecycleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+        self.assertEqual(unsupported_calls, [], "lifecycle requested an unsupported host operation")
+        self.assertEqual(messages, [], "unexpected lifecycle host message")
         self.assertEqual(results, {
             "OfxActionLoad": 0,
             "OfxActionDescribe": 0,

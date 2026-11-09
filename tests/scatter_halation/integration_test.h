@@ -7,10 +7,11 @@
 #include <string_view>
 #include <vector>
 
-#include "DiffusionHostBehavior.h"
+#include "../ffi/diffusion_fixture.h"
+#include "../ffi/halation_fixture.h"
 #include "ProcessRoot.h"
-#include "ProcessRuntime.h"
-#include "RenderControls.h"
+#include "../ffi/owner_fixture.h"
+#include "../ffi/juicer_test_api.h"
 #include "ScatterHalation.h"
 #include "../ffi/prepared_frame_fixture.h"
 
@@ -53,18 +54,18 @@ namespace ScatterHalationValidation {
     };
 
     PreparedRouteInputs build_prepared_route_inputs(
-        JuicerProcess::ProcessRuntime& runtime,
+        JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
         float pixelSizeUm,
         ImageExtent extent);
     PreparedRouteInputs build_prepared_route_inputs(
-        JuicerProcess::ProcessRuntime& runtime,
+        JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
-        const Spektrafilm::DirCouplersControls& dirCouplers,
+        const FjFilmDirParams& dirCouplers,
         float pixelSizeUm,
         ImageExtent extent,
         float filmGammaFactor = 1.0f,
@@ -74,7 +75,7 @@ namespace ScatterHalationValidation {
         std::string caseGroup;
         std::filesystem::path fixtureRoot;
         std::filesystem::path resourceRoot;
-        JuicerProcess::ProcessRuntime* runtimeOwner = nullptr;
+        JuicerTestSupport::RuntimeFixture* runtimeOwner = nullptr;
         std::filesystem::path scratchRoot;
         std::filesystem::path performanceOutput;
         std::string performanceMode = "active";

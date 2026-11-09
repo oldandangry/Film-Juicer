@@ -1,3 +1,4 @@
+#include "juicer_test_api.h"
 namespace {
     FjVisualGrainParams grain_params(const Json& v) {
         FjVisualGrainParams out{};
@@ -22,31 +23,6 @@ namespace {
         out.clump_temporal_mix = std::bit_cast<float>(v.at("clump_temporal_mix")[0].get<std::uint32_t>());
         out.clump_morph_period_sec = std::bit_cast<float>(v.at("clump_morph_period_sec")[0].get<std::uint32_t>());
         out.debug_view = v.at("debug_view").get<std::int32_t>();
-        return out;
-    }
-    VisualGrainControls native_grain_controls(const FjVisualGrainParams& v) {
-        VisualGrainControls out;
-        out.active = v.active != 0;
-        out.sublayersActive = v.sublayers_active != 0;
-        out.particleAreaUm2 = v.particle_area_um2;
-        std::copy_n(v.particle_scale_cmy, 3, out.particleScaleCmy.begin());
-        std::copy_n(v.particle_scale_layers, 3, out.particleScaleLayers.begin());
-        std::copy_n(v.particle_density_min_cmy, 3, out.visualParticleDensityMinCmy.begin());
-        std::copy_n(v.uniformity_cmy, 3, out.uniformityCmy.begin());
-        out.correlationSigmaPx = v.correlation_sigma_px;
-        out.dyeCloudBlurUm = v.dye_cloud_blur_um;
-        std::copy_n(v.micro_structure, 2, out.microStructure.begin());
-        out.nSubLayers = v.sublayer_count;
-        out.amplitude = v.amplitude;
-        out.chromaMix = v.chroma_mix;
-        out.chromaSharedWeight = v.chroma_shared_weight;
-        out.chromaIndependentWeight = v.chroma_independent_weight;
-        out.coarseWeight = v.coarse_weight;
-        out.midWeight = v.mid_weight;
-        out.sizeMixScale = v.size_mix_scale;
-        out.clumpTemporalMix = v.clump_temporal_mix;
-        out.clumpMorphPeriodSec = v.clump_morph_period_sec;
-        out.debugView = v.debug_view;
         return out;
     }
     Json project(const FjVisualGrainRecipe& v) {
@@ -176,18 +152,17 @@ namespace {
     }
     struct GrainDevelopment {
         FjFilmDevelopmentOwner* owner = nullptr;
-        bool facade;
-        GrainDevelopment(const Assets& assets, const Json& row, bool layers, bool useFacade) : facade(useFacade) {
+        GrainDevelopment(const Assets& assets, const Json& row, bool layers) {
             const auto key = row.at("key").get<std::string>();
             FjFilmProfile* profile = nullptr;
-            status(fj_legacy_film_profile_acquire(assets.value, {key.data(), key.size()}, &profile, nullptr));
-            const auto acquired = (facade ? fj_test_film_development_acquire : fj_legacy_film_development_acquire)(profile, row.at("route").get<std::uint32_t>(), std::bit_cast<float>(row.at("gamma")[0].get<std::uint32_t>()), layers ? 1u : 0u, &owner, nullptr);
-            const auto released = fj_legacy_film_profile_release(profile, nullptr);
+            status(fj_test_assets_film_acquire(assets.value, {key.data(), key.size()}, &profile, nullptr));
+            const auto acquired = fj_test_film_development_acquire(profile, row.at("route").get<std::uint32_t>(), std::bit_cast<float>(row.at("gamma")[0].get<std::uint32_t>()), layers ? 1u : 0u, &owner, nullptr);
+            const auto released = fj_test_assets_film_release(profile, nullptr);
             status(acquired);
             status(released);
         }
         ~GrainDevelopment() {
-            if (owner && (facade ? fj_test_film_development_release : fj_legacy_film_development_release)(owner, nullptr).category != FJ_STATUS_SUCCESS)
+            if (owner && fj_test_film_development_release(owner, nullptr).category != FJ_STATUS_SUCCESS)
                 std::terminate();
         }
         GrainDevelopment(const GrainDevelopment&) = delete;
@@ -197,16 +172,16 @@ namespace {
         require(captured.at("products").size() == 36 && captured.at("controls").size() == 758 && synthetic.at("products").size() == 28, "exact independent grain cohort membership");
         Assets assets(resources);
         for (bool facade : {false, true}) {
-            const auto call = facade ? fj_test_visual_grain_prepare : fj_legacy_visual_grain_prepare;
+            const auto call = fj_test_visual_grain_prepare;
             std::size_t product_index = 0;
             for (const auto& row : captured.at("products")) {
                 JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "grain/product-input/" + std::to_string(product_index++) + "/" + row.at("key").get<std::string>() + "/" + std::to_string(row.at("route").get<unsigned>()));
                 auto params = grain_params(row.at("controls"));
                 FjVisualGrainRecipe out{};
                 {
-                    GrainDevelopment development(assets, row, params.active && params.sublayers_active, facade);
+                    GrainDevelopment development(assets, row, params.active && params.sublayers_active);
                     const auto holds = fj_test_film_development_live_owners();
-                    status(fj_legacy_assets_release_cached_payloads(assets.value, nullptr));
+                    status(fj_test_assets_release_cached_payloads(assets.value, nullptr));
                     FjFilmRecipeFailure failure{};
                     status(call(development.owner, &params, &out, &failure, nullptr));
                     metadata(failure);
@@ -215,8 +190,8 @@ namespace {
                 require(project(out) == row.at("grain"), "all fixed grain fields survive source/cache/development release");
                 event.passed();
             }
-            GrainDevelopment withLayers(assets, captured.at("products")[2], true, facade);
-            GrainDevelopment withoutLayers(assets, captured.at("products")[2], false, facade);
+            GrainDevelopment withLayers(assets, captured.at("products")[2], true);
+            GrainDevelopment withoutLayers(assets, captured.at("products")[2], false);
             std::size_t control_index = 0;
             for (const auto& row : captured.at("controls")) {
                 JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "grain/control/" + std::to_string(control_index++) + "/" + row.at("id").get<std::string>());
@@ -241,9 +216,9 @@ namespace {
             for (const auto& row : synthetic.at("products")) {
                 JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "grain/synthetic/" + std::to_string(synthetic_index++) + "/" + row.at("source").get<std::string>());
                 Assets source(fixtureDirectory / "synthetic" / row.at("source").get<std::string>());
-                GrainDevelopment development(source, row, true, facade);
+                GrainDevelopment development(source, row, true);
                 FjFilmDevelopmentView view{};
-                status((facade ? fj_test_film_development_view : fj_legacy_film_development_view)(development.owner, &view, nullptr));
+                status(fj_test_film_development_view(development.owner, &view, nullptr));
                 require(std::all_of(view.authored_curves_cmy.data, view.authored_curves_cmy.data + view.authored_curves_cmy.count, [](float v) {
                             return std::isfinite(v);
                         }),
@@ -279,10 +254,10 @@ namespace {
         unsigned caller_index = 0;
         for (bool facade : {false, true}) {
             JuicerTests::CaseEvent event(facade ? "c11" : "cpp", "grain/failures");
-            GrainDevelopment development(assets, captured.at("products")[2], true, facade);
-            GrainDevelopment noLayers(assets, captured.at("products")[2], false, facade);
+            GrainDevelopment development(assets, captured.at("products")[2], true);
+            GrainDevelopment noLayers(assets, captured.at("products")[2], false);
             const auto base = grain_params(captured.at("products")[2].at("controls"));
-            const auto call = facade ? fj_test_visual_grain_prepare : fj_legacy_visual_grain_prepare;
+            const auto call = fj_test_visual_grain_prepare;
             FjVisualGrainRecipe out{};
             FjFilmRecipeFailure failure{};
             const FjStatus unsupported{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0};
@@ -391,28 +366,28 @@ namespace {
         require(fj_test_film_development_live_owners() == 0, "grain failure/concurrency holds drain");
     }
     void grain_products(const std::filesystem::path& resources, const Json& captured) {
-        JuicerProcess::ProcessRuntime owner;
+        JuicerTestSupport::RuntimeFixture owner;
         owner.create(resources);
         std::size_t product_index = 0;
         for (const auto& row : captured.at("products")) {
             JuicerTests::CaseEvent event("cpp", "grain/product/" + std::to_string(product_index++) + "/" + row.at("key").get<std::string>() + "/" + std::to_string(row.at("route").get<unsigned>()));
-            ParamSnapshot params;
-            params.filmProfileKey = row.at("key").get<std::string>();
-            params.printProfileKey = "kodak_portra_endura";
-            params.scanRoute = static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>());
-            params.filmGammaFactor = std::bit_cast<float>(row.at("gamma")[0].get<std::uint32_t>());
-            params.spectralUpsamplingMode = 0;
-            params.cameraAutoExposureEnabled = 0;
-            params.inputCompressionEnabled = 0;
-            params.outputGamutCompressionEnabled = 0;
-            params.grainControls = native_grain_controls(grain_params(row.at("controls")));
+            JuicerTestSupport::PreparationInput params;
+            params.film_key = row.at("key").get<std::string>();
+            params.print_key = "kodak_portra_endura";
+            params.values.scan_route = static_cast<std::uint32_t>(row.at("route").get<unsigned>());
+            params.values.film_gamma_factor = std::bit_cast<float>(row.at("gamma")[0].get<std::uint32_t>());
+            params.values.spectral_upsampling_mode = 0;
+            params.values.camera_auto_exposure_enabled = 0;
+            params.values.input_compression_enabled = 0;
+            params.values.output_gamut_compression_enabled = 0;
+            params.values.grain = grain_params(row.at("controls"));
             auto product = JuicerTestSupport::prepare_product(owner.borrow().assets, params);
             FjPreparedStateView view{};
             FjErrorBuffer error{};
             status(product.view(view, error));
             require(project(view.grain) == row.at("grain"), "all complete direct/print grain values and metadata");
-            require(hash_params(params) == row.at("snapshot_hash") && view.recipe_hash == row.at("final_hash") && view.film_development.hash == row.at("development_hash"), "36 exact native snapshot/development/final identities");
-            if (row.at("route") != 0 || row.at("gamma")[0] != 1065353216u || !params.grainControls.active || !params.grainControls.sublayersActive) {
+            require(JuicerTestSupport::hash_input_identity(params) == row.at("snapshot_hash") && view.recipe_hash == row.at("final_hash") && view.film_development.hash == row.at("development_hash"), "36 exact native snapshot/development/final identities");
+            if (row.at("route") != 0 || row.at("gamma")[0] != 1065353216u || !params.values.grain.active || !params.values.grain.sublayers_active) {
                 event.passed();
                 continue;
             }
@@ -420,14 +395,14 @@ namespace {
             const auto originalBoundsHash = view.scanner_bounds.hash;
             auto* const originalMinimum = view.grain_minimum.cmy;
             auto changed = params;
-            changed.grainControls.visualParticleDensityMinCmy[0] = 0.5f;
+            changed.values.grain.particle_density_min_cmy[0] = 0.5f;
             auto changedProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, changed);
             FjPreparedStateView changedView{};
             status(changedProduct.view(changedView, error));
             require(changedView.grain.hash != originalGrainHash && changedView.scanner_bounds.hash == originalBoundsHash && std::equal(changedView.grain_minimum.cmy, changedView.grain_minimum.cmy + 3, originalMinimum), "visual particle minimum remains distinct from scanner GrainContract");
             changed = params;
-            changed.grainControls.chromaMix = 0.5f;
-            require(hash_params(changed) == hash_params(params), "synthetic chroma-only change retains intentional snapshot omission");
+            changed.values.grain.chroma_mix = 0.5f;
+            require(JuicerTestSupport::hash_input_identity(changed) == JuicerTestSupport::hash_input_identity(params), "synthetic chroma-only change retains intentional snapshot omission");
             auto chromaProduct = JuicerTestSupport::prepare_product(owner.borrow().assets, changed);
             FjPreparedStateView chromaView{};
             status(chromaProduct.view(chromaView, error));
@@ -436,16 +411,16 @@ namespace {
         }
         for (unsigned route = 0; route < 4; ++route) {
             JuicerTests::CaseEvent event("cpp", "grain/publication/" + std::to_string(route));
-            ParamSnapshot params;
-            params.scanRoute = static_cast<Spektrafilm::ScanRoute>(route);
-            params.filmProfileKey = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
-            params.printProfileKey = "kodak_portra_endura";
-            params.grainControls.active = true;
-            params.spectralUpsamplingMode = 0;
-            params.cameraAutoExposureEnabled = 0;
-            params.inputCompressionEnabled = 0;
-            params.outputGamutCompressionEnabled = 0;
-            RenderInstance state;
+            JuicerTestSupport::PreparationInput params;
+            params.values.scan_route = static_cast<std::uint32_t>(route);
+            params.film_key = route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            params.print_key = "kodak_portra_endura";
+            params.values.grain.active = true;
+            params.values.spectral_upsampling_mode = 0;
+            params.values.camera_auto_exposure_enabled = 0;
+            params.values.input_compression_enabled = 0;
+            params.values.output_gamut_compression_enabled = 0;
+            JuicerTestSupport::InstanceFixture state;
             JuicerTestSupport::capture(state, params);
             const auto admitted = JuicerTestSupport::admit(owner.borrow().assets, state);
             require(admitted.kind == FJ_ADMISSION_READY && admitted.state, "grain publication baseline");
@@ -453,7 +428,7 @@ namespace {
             const auto hash = held.recipe_hash;
             const auto baselineMetrics = JuicerTestSupport::PublicationObserver::metrics(state);
             auto changed = params;
-            changed.grainControls.particleAreaUm2 = 0;
+            changed.values.grain.particle_area_um2 = 0;
             JuicerTestSupport::capture(state, changed);
             const auto rejected = JuicerTestSupport::admit(owner.borrow().assets, state);
             const auto failedMetrics = JuicerTestSupport::PublicationObserver::metrics(state);

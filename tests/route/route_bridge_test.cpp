@@ -7,13 +7,14 @@
 #include <type_traits>
 
 #include "ScanRoute.h"
-#include "juicer_legacy_api.h"
+#include "route_fixture.h"
+#include "../ffi/juicer_test_api.h"
 #include "../ffi/case_results.h"
 
 namespace {
 
     using ResolveSignature = std::uint32_t (*)(std::uint8_t, std::uint8_t, std::uint8_t*);
-    static_assert(std::is_same_v<decltype(&fj_legacy_resolve_route), ResolveSignature>);
+    static_assert(std::is_same_v<decltype(&fj_test_resolve_route), ResolveSignature>);
     static_assert(sizeof(Spektrafilm::ScanRoute) == 1);
     static_assert(sizeof(Spektrafilm::ProfilePolarity) == 1);
     static_assert(static_cast<std::uint8_t>(Spektrafilm::ProfilePolarity::Negative) ==
@@ -45,7 +46,7 @@ namespace {
                                                                           {ScanRoute::NegativePrintScan, ProfilePolarity::Negative, true, "NegativePrintScan", "Negative print scan"},
                                                                           {ScanRoute::PositiveDirectScan, ProfilePolarity::Positive, false, "PositiveDirectScan", "Positive direct scan"},
                                                                           {ScanRoute::PositivePrintScan, ProfilePolarity::Positive, true, "PositivePrintScan", "Positive print scan"}}};
-        if (!verify(Spektrafilm::scan_route_option_count() == static_cast<int>(expected.size()), "route option count mismatch")) {
+        if (!verify(JuicerTestFixture::Route::scan_route_option_count() == static_cast<int>(expected.size()), "route option count mismatch")) {
             return false;
         }
         for (int index = 0; index < static_cast<int>(expected.size()); ++index) {
@@ -57,11 +58,11 @@ namespace {
                     actual.route == row.route && actual.capturePolarity == row.capturePolarity &&
                         actual.printRoute == row.printRoute && std::string(actual.key) == row.key &&
                         std::string(actual.label) == row.label && Spektrafilm::scan_route_is_print(row.route) == row.printRoute &&
-                        std::string(Spektrafilm::scan_route_option_key(index)) == row.key &&
-                        std::string(Spektrafilm::scan_route_option_label(index)) == row.label &&
-                        Spektrafilm::scan_route_from_key_or(row.key, fallback) == row.route &&
-                        Spektrafilm::scan_route_from_key_or("", row.route) == row.route &&
-                        Spektrafilm::scan_route_from_key_or("unknown", row.route) == row.route,
+                        std::string(JuicerTestFixture::Route::scan_route_option_key(index)) == row.key &&
+                        std::string(JuicerTestFixture::Route::scan_route_option_label(index)) == row.label &&
+                        JuicerTestFixture::Route::scan_route_from_key_or(row.key, fallback) == row.route &&
+                        JuicerTestFixture::Route::scan_route_from_key_or("", row.route) == row.route &&
+                        JuicerTestFixture::Route::scan_route_from_key_or("unknown", row.route) == row.route,
                     "route metadata/key/index/fallback mismatch")) {
                 return false;
             }
@@ -76,8 +77,8 @@ namespace {
         }
         for (const int index : {std::numeric_limits<int>::min(), -1, 4, std::numeric_limits<int>::max()}) {
             JuicerTests::CaseEvent event("route_bridge.invalid_option_index", std::to_string(index));
-            if (!verify(std::string(Spektrafilm::scan_route_option_key(index)).empty() &&
-                            std::string(Spektrafilm::scan_route_option_label(index)).empty(),
+            if (!verify(std::string(JuicerTestFixture::Route::scan_route_option_key(index)).empty() &&
+                            std::string(JuicerTestFixture::Route::scan_route_option_label(index)).empty(),
                         "invalid route option must be empty")) {
                 return false;
             }
@@ -118,8 +119,8 @@ namespace {
             defaults.route == ScanRoute::NegativePrintScan && defaults.capturePolarity == ProfilePolarity::Negative &&
                 defaults.printRoute && std::string(defaults.key) == "NegativePrintScan" &&
                 std::string(defaults.label) == "Negative print scan" && Spektrafilm::kDefaultScanRoute == defaults.route &&
-                Spektrafilm::default_scan_route_for_polarity(ProfilePolarity::Unsupported) == defaults.route &&
-                Spektrafilm::default_scan_route_for_polarity(static_cast<ProfilePolarity>(255)) == defaults.route,
+                JuicerTestFixture::Route::default_scan_route_for_polarity(ProfilePolarity::Unsupported) == defaults.route &&
+                JuicerTestFixture::Route::default_scan_route_for_polarity(static_cast<ProfilePolarity>(255)) == defaults.route,
             "route default metadata/polarity fallback mismatch");
         default_event.complete(defaults_valid);
         return defaults_valid;
@@ -157,7 +158,7 @@ int main(int argc, char** argv) {
                                                                                                                                     : "unsupported.") +
                                                                  std::to_string(selection));
                 if (!verify(
-                        fj_legacy_resolve_route(polarity, selection, &route) ==
+                        fj_test_resolve_route(polarity, selection, &route) ==
                                 FJ_LEGACY_ROUTE_SUCCESS &&
                             route == expected[polarity][selection],
                         "route ABI table mismatch")) {
@@ -166,7 +167,7 @@ int main(int argc, char** argv) {
                 Spektrafilm::ScanRoute nativeRoute{};
                 std::string diagnostic;
                 if (!verify(
-                        Spektrafilm::resolve_scan_route(
+                        JuicerTestFixture::Route::resolve_scan_route(
                             static_cast<Spektrafilm::ProfilePolarity>(polarity),
                             static_cast<Spektrafilm::ScanRoute>(selection),
                             nativeRoute,
@@ -184,9 +185,9 @@ int main(int argc, char** argv) {
             JuicerTests::CaseEvent event("route_bridge", "abi.failures");
             std::uint8_t route = 99;
             if (!verify(
-                    fj_legacy_resolve_route(3, 0, &route) == FJ_LEGACY_ROUTE_INVALID_POLARITY &&
-                        fj_legacy_resolve_route(0, 4, &route) == FJ_LEGACY_ROUTE_INVALID_SELECTION &&
-                        fj_legacy_resolve_route(0, 0, nullptr) == FJ_LEGACY_ROUTE_NULL_OUTPUT &&
+                    fj_test_resolve_route(3, 0, &route) == FJ_LEGACY_ROUTE_INVALID_POLARITY &&
+                        fj_test_resolve_route(0, 4, &route) == FJ_LEGACY_ROUTE_INVALID_SELECTION &&
+                        fj_test_resolve_route(0, 0, nullptr) == FJ_LEGACY_ROUTE_NULL_OUTPUT &&
                         route == 99,
                     "route ABI failure contract mismatch")) {
                 return 1;
@@ -199,7 +200,7 @@ int main(int argc, char** argv) {
         {
             JuicerTests::CaseEvent event("route_bridge", "native.invalid-polarity");
             if (!verify(
-                    !Spektrafilm::resolve_scan_route(
+                    !JuicerTestFixture::Route::resolve_scan_route(
                         static_cast<Spektrafilm::ProfilePolarity>(3),
                         Spektrafilm::ScanRoute::NegativeDirectScan,
                         nativeRoute,
@@ -216,7 +217,7 @@ int main(int argc, char** argv) {
             JuicerTests::CaseEvent event("route_bridge", "native.invalid-selection");
             diagnostic.clear();
             if (!verify(
-                    !Spektrafilm::resolve_scan_route(
+                    !JuicerTestFixture::Route::resolve_scan_route(
                         Spektrafilm::ProfilePolarity::Negative,
                         static_cast<Spektrafilm::ScanRoute>(4),
                         nativeRoute,
@@ -232,15 +233,15 @@ int main(int argc, char** argv) {
 
         {
             JuicerTests::CaseEvent event("route_bridge", "defaults");
-            const auto negativeDefault = Spektrafilm::default_scan_route_for_polarity(
+            const auto negativeDefault = JuicerTestFixture::Route::default_scan_route_for_polarity(
                 Spektrafilm::ProfilePolarity::Negative);
-            const auto positiveDefault = Spektrafilm::default_scan_route_for_polarity(
+            const auto positiveDefault = JuicerTestFixture::Route::default_scan_route_for_polarity(
                 Spektrafilm::ProfilePolarity::Positive);
             if (!verify(
                     negativeDefault == Spektrafilm::ScanRoute::NegativePrintScan &&
                         positiveDefault == Spektrafilm::ScanRoute::PositiveDirectScan &&
-                        Spektrafilm::scan_route_from_key_or("", negativeDefault) == negativeDefault &&
-                        Spektrafilm::scan_route_from_key_or("unknown", positiveDefault) == positiveDefault,
+                        JuicerTestFixture::Route::scan_route_from_key_or("", negativeDefault) == negativeDefault &&
+                        JuicerTestFixture::Route::scan_route_from_key_or("unknown", positiveDefault) == positiveDefault,
                     "route default and key fallback mismatch")) {
                 return 1;
             }

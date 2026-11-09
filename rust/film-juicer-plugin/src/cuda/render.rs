@@ -300,11 +300,13 @@ impl<'owner, 'call> CallGuard<'owner, 'call> {
         {
             Ok(RenderOutcome {
                 completion,
+                #[cfg(any(test, feature = "test-support"))]
                 diagnostic,
             })
         } else {
             Err(RenderError {
                 completion,
+                #[cfg(any(test, feature = "test-support"))]
                 diagnostic,
             })
         }
@@ -455,7 +457,11 @@ fn preflight(
             "ResourceDescriptorMismatch component=diffusion field=full_frame_domain",
         ));
     }
-    if state.optics().camera_lens_blur().sigma_um() > 0.0 {
+    preflight_camera_lens_blur(state.optics().camera_lens_blur().sigma_um())
+}
+
+pub(super) fn preflight_camera_lens_blur(sigma_um: f32) -> Result<(), Failure> {
+    if sigma_um > 0.0 {
         return Err(Failure::new(
             sys::FJ_STATUS_PREPARATION_FAILURE,
             "ExactOpticsNotImplementedForPhase6 component=camera_lens_blur",
@@ -562,11 +568,13 @@ pub(crate) fn render(
     guard.finish(result)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) enum UnavailableKind {
     MissingState,
     MissingInstance,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn reject_unavailable(
     owner: &mut OwnerBorrow<'_>,
     assets: &Assets,

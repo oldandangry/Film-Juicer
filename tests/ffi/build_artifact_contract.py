@@ -22,7 +22,7 @@ from production_contract import (
 
 EXPECTED_RUST_CONSUMER_VARIANTS = {
     "juicer": "production",
-    "JuicerProductionPreparedRenderProbe": "production",
+    "JuicerProductionPreparedRenderProbe": "none",
     "JuicerFilmRecipeTests": "test-support",
     "JuicerOfxContextTests": "production",
     "JuicerOfxInstanceTests": "production",
@@ -437,6 +437,14 @@ class BuildArtifactContractTests(unittest.TestCase):
             for target, variant in EXPECTED_RUST_CONSUMER_VARIANTS.items():
                 self.assertIn(target, consumers)
                 self.assertEqual(consumers[target].get("variant"), variant)
+            for target, variant in {
+                "JuicerProductionOfxProbe": "none",
+                "JuicerCudaInspectTests": "test-support",
+                "JuicerCudaInspectGpuTests": "test-support",
+                "JuicerCudaOwnerUnloadTests": "test-support",
+            }.items():
+                self.assertIn(target, consumers)
+                self.assertEqual(consumers[target].get("variant"), variant)
 
         build = next((parent for parent in rust_manifest_path.parents
                       if (parent / "CMakeCache.txt").is_file()), None)
@@ -565,6 +573,9 @@ class BuildArtifactContractTests(unittest.TestCase):
                 symbols = inspect(nm, "--defined-only", "--demangle", str(path))
                 match = PRODUCTION_FORBIDDEN_SYMBOLS.search(symbols)
                 self.assertIsNone(match, f"forbidden production symbol in {path}: {match.group(0) if match else ''}")
+                retired_legacy = r"\bfj_legacy_[A-Za-z0-9_]+\b"
+                self.assertNotRegex(symbols, retired_legacy)
+                self.assertRegex("fj_legacy_retired", retired_legacy)
                 data = path.read_bytes()
                 forbidden_string = next((value for value in PRODUCTION_FORBIDDEN_STRINGS if value in data), None)
                 self.assertIsNone(forbidden_string, f"forbidden production string in {path}: {forbidden_string!r}")
@@ -583,9 +594,18 @@ class BuildArtifactContractTests(unittest.TestCase):
             production_exports = defined_symbols(nm, artifact_paths["production"]["archive"])
             support_exports = defined_symbols(nm, artifact_paths["test-support"]["archive"])
             native_exports = defined_symbols(nm, native_archive)
-            production_boundary = {symbol for symbol in production_exports if symbol.startswith("fj_legacy_")}
+            legacy_boundary = {symbol for symbol in production_exports if symbol.startswith("fj_legacy_")}
+            self.assertFalse(legacy_boundary, f"production archive defines retired legacy boundaries: {sorted(legacy_boundary)}")
+            production_boundary = {
+                "fj_ofx_plugin", "fj_ofx_plugin_count", "fj_diffusion_components_prepare",
+                "fj_dir_boundary_describe", "fj_dir_boundary_acquire",
+                "fj_dir_boundary_view", "fj_dir_boundary_release",
+            }
+            actual_boundary = {symbol for symbol in production_exports if symbol.startswith("fj_")}
+            self.assertEqual(actual_boundary, production_boundary,
+                             f"production boundary mismatch: missing={sorted(production_boundary - actual_boundary)} "
+                             f"unexpected={sorted(actual_boundary - production_boundary)}")
             support_boundary = {symbol for symbol in support_exports if symbol.startswith("fj_test_")}
-            self.assertTrue(production_boundary, "production archive has no defined fj_legacy_ boundary symbols")
             self.assertTrue(support_boundary, "test-support archive has no defined fj_test_ boundary symbols")
             embedded_production = native_exports & production_boundary
             embedded_support = native_exports & support_boundary

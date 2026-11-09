@@ -1,7 +1,7 @@
+#include "juicer_test_api.h"
 #include <stddef.h>
-#include "juicer_legacy_api.h"
 typedef FjStatus (*Prepare)(const FjFilmProfile*, const FjFilmInputParams*, const FjFilmInputResources*, FjFilmInput*, FjFilmInputFailure*, FjErrorBuffer*);
-_Static_assert(_Generic(&fj_legacy_film_input_prepare, Prepare: 1, default: 0), "C11 film-input signature");
+_Static_assert(_Generic(&fj_test_film_input_prepare, Prepare: 1, default: 0), "C11 film-input signature");
 typedef uint32_t FjFilmInputParams_input_space_type;
 _Static_assert(_Generic(&((FjFilmInputParams*)0)->input_space, FjFilmInputParams_input_space_type*: 1, default: 0), "FjFilmInputParams.input_space type");
 typedef uint32_t FjFilmInputParams_decode_cctf_type;
@@ -114,5 +114,5 @@ const size_t* fj_test_film_input_abi_c_facts(size_t* count) {
     return facts;
 }
 FjStatus fj_test_film_input_c_call(const FjFilmProfile* profile, const FjFilmInputParams* params, const FjFilmInputResources* resources, FjFilmInput* out, FjFilmInputFailure* failure, FjErrorBuffer* error) {
-    return fj_legacy_film_input_prepare(profile, params, resources, out, failure, error);
+    return fj_test_film_input_prepare(profile, params, resources, out, failure, error);
 }

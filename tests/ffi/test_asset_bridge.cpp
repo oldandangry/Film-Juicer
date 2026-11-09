@@ -1,11 +1,11 @@
 #include "test_asset_bridge.h"
-#include "NativePath.h"
+#include "native_path.h"
+#include "juicer_test_api.h"
 
 #include <algorithm>
 #include <array>
 #include <span>
 #include <cstddef>
-#include <limits>
 #include <memory>
 #include <new>
 #include <string_view>
@@ -42,33 +42,17 @@ namespace JuicerAssets {
         }
         struct HullDeleter {
             void operator()(FjInputHullOwner* owner) const noexcept {
-                report_cleanup(fj_legacy_input_hull_release(owner, nullptr));
+                report_cleanup(fj_test_input_hull_release(owner, nullptr));
             }
         };
         struct BoundaryDeleter {
             void operator()(FjOutputBoundaryOwner* owner) const noexcept {
-                report_cleanup(fj_legacy_output_boundary_release(owner, nullptr));
+                report_cleanup(fj_test_output_boundary_release(owner, nullptr));
             }
         };
         [[noreturn]] void invalid_view() {
             fail({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "invalid Rust asset view shape, tag or token");
         }
-        struct CatalogDeleter {
-            void operator()(FjCatalog* catalog) const noexcept {
-                report_cleanup(fj_legacy_catalog_release(catalog, nullptr));
-            }
-        };
-
-        std::string copy_text(FjStringView view) {
-            if (view.count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) || (view.count == 0 ? view.data != nullptr : !view.data)) {
-                invalid_view();
-            }
-            if (view.count > std::string().max_size()) {
-                fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "profile text exceeds native representation");
-            }
-            return view.count == 0 ? std::string() : std::string(view.data, view.count);
-        }
-
         void escaped_unit(unsigned unit, std::string& out, char prefix) {
             static constexpr char kHex[] = "0123456789abcdef";
             out += '\\';
@@ -165,49 +149,10 @@ namespace JuicerAssets {
         return readable;
     }
 
-    FjStatus AssetBridge::film_defaults(
-        const std::string& key,
-        FjFilmDigest& out,
-        FjErrorBuffer& error) {
-        out = FjFilmDigest{};
-
-        FjFilmProfile* owner = nullptr;
-        FjStatus status = fj_legacy_film_profile_acquire(
-            _assets,
-            {key.empty() ? nullptr : key.data(), key.size()},
-            &owner,
-            &error);
-        if (status.category != FJ_STATUS_SUCCESS) {
-            if (owner) {
-                FjErrorBuffer ignored{nullptr, 0, 0};
-                (void)fj_legacy_film_profile_release(owner, &ignored);
-            }
-            return status;
-        }
-        if (!owner) {
-            return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
-        }
-
-        FjFilmProfileView view{};
-        status = fj_legacy_film_profile_view(owner, &view, &error);
-        if (status.category != FJ_STATUS_SUCCESS) {
-            FjErrorBuffer ignored{nullptr, 0, 0};
-            (void)fj_legacy_film_profile_release(owner, &ignored);
-            return status;
-        }
-
-        const FjFilmDigest defaults = view.digest;
-        status = fj_legacy_film_profile_release(owner, &error);
-        if (status.category == FJ_STATUS_SUCCESS) {
-            out = defaults;
-        }
-        return status;
-    }
-
     FjStatus AssetBridge::release_cached_payloads(FjErrorBuffer* error) noexcept {
         // Rust owns the derived and source caches; preserve their cleanup order.
-        FjStatus first = fj_legacy_assets_release_derived_payloads(_assets, error);
-        const auto sources = fj_legacy_assets_release_source_payloads(_assets, first.category == FJ_STATUS_SUCCESS ? error : nullptr);
+        FjStatus first = fj_test_assets_release_derived_payloads(_assets, error);
+        const auto sources = fj_test_assets_release_source_payloads(_assets, first.category == FJ_STATUS_SUCCESS ? error : nullptr);
         if (first.category == FJ_STATUS_SUCCESS)
             first = sources;
         return first;
@@ -217,7 +162,7 @@ namespace JuicerAssets {
         const NativePathArgument argument(resourceRoot);
         std::array<char, 1024> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
-        const auto result = fj_legacy_assets_create(argument.view(), &_assets, &error);
+        const auto result = fj_test_assets_create(argument.view(), &_assets, &error);
         if (result.category != FJ_STATUS_SUCCESS) {
             fail(result, {message.data(), error.length});
         }
@@ -235,73 +180,12 @@ namespace JuicerAssets {
             }
         };
         // Terminal close excludes all host builds, source leases and views.
-        if (_catalog) {
-            collect(fj_legacy_catalog_release(std::exchange(_catalog, nullptr), first.category == FJ_STATUS_SUCCESS ? error : nullptr));
-        }
         if (_assets) {
-            collect(fj_legacy_assets_destroy(std::exchange(_assets, nullptr), first.category == FJ_STATUS_SUCCESS ? error : nullptr));
+            collect(fj_test_assets_destroy(std::exchange(_assets, nullptr), first.category == FJ_STATUS_SUCCESS ? error : nullptr));
         }
         return first;
     }
 
-    Spektrafilm::ProfileCatalog AssetBridge::load_catalog() {
-        std::array<char, 4096> message{};
-        FjErrorBuffer error{message.data(), message.size(), 0};
-        FjCatalog* acquired = nullptr;
-        FjCatalogCounts counts{};
-        const auto result = fj_legacy_catalog_acquire(_assets, &acquired, &counts, &error);
-        std::unique_ptr<FjCatalog, CatalogDeleter> owner(acquired);
-        Spektrafilm::ProfileCatalog candidate;
-        if (result.category == FJ_STATUS_PREPARATION_FAILURE) {
-#if defined(JUICER_CATALOG_TEST_HOOK)
-            CatalogTest::before_source_diagnostic();
-#endif
-            candidate.failure.assign(message.data(), error.length);
-            return candidate;
-        }
-        if (result.category != FJ_STATUS_SUCCESS) {
-            fail(result, {message.data(), error.length});
-        }
-#if defined(JUICER_CATALOG_TEST_HOOK)
-        CatalogTest::before_conversion(counts);
-#endif
-        if (counts.film_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-            counts.print_count > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "catalog count exceeds OFX option index width");
-        }
-        const auto copy_entries = [&](std::uint32_t role, std::vector<Spektrafilm::ProfileCatalogEntry>& entries, std::size_t count) {
-            entries.reserve(count);
-            for (std::size_t i = 0; i < count; ++i) {
-                FjCatalogEntryView view{};
-                const auto entryResult = fj_legacy_catalog_entry(owner.get(), role, i, &view, &error);
-                if (entryResult.category != FJ_STATUS_SUCCESS) {
-                    fail(entryResult, {message.data(), error.length});
-                }
-                Spektrafilm::ProfilePolarity polarity;
-                switch (view.polarity) {
-                    case FJ_POLARITY_NEGATIVE:
-                        polarity = Spektrafilm::ProfilePolarity::Negative;
-                        break;
-                    case FJ_POLARITY_POSITIVE:
-                        polarity = Spektrafilm::ProfilePolarity::Positive;
-                        break;
-                    default:
-                        fail({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "invalid Rust catalog polarity");
-                }
-                entries.push_back({copy_text(view.key), copy_text(view.label), polarity});
-            }
-        };
-        copy_entries(FJ_PROFILE_ROLE_FILM, candidate.filmProfiles, counts.film_count);
-        copy_entries(FJ_PROFILE_ROLE_PRINT, candidate.printProfiles, counts.print_count);
-        candidate.valid = true;
-        candidate.defaultFilmPresent = true;
-        candidate.defaultPrintPresent = true;
-#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
-        ProfileTest::before_catalog_publication();
-#endif
-        _catalog = owner.release();
-        return candidate;
-    }
 } // namespace JuicerAssets
 
 namespace JuicerAssets {
@@ -314,7 +198,7 @@ namespace JuicerAssets {
         const auto text = [](const std::string& value) -> FjStringView {
             return {value.empty() ? nullptr : value.data(), value.size()};
         };
-        const auto status = fj_legacy_neutral_calibration_lookup(_assets, text(printStock), text(illuminant), text(filmStock), &raw, &error);
+        const auto status = fj_test_neutral_calibration_lookup(_assets, text(printStock), text(illuminant), text(filmStock), &raw, &error);
         if (status.category != FJ_STATUS_SUCCESS) {
             fail(status, {diagnostic.data(), error.length});
         }
@@ -376,14 +260,14 @@ namespace JuicerAssets {
         FjInputHullOwner* raw = nullptr;
         std::array<char, 1024> bytes{};
         FjErrorBuffer error{bytes.data(), bytes.size(), 0};
-        const auto result = fj_legacy_assets_input_hull_acquire(_assets, &raw, &error);
+        const auto result = fj_test_assets_input_hull_acquire(_assets, &raw, &error);
         if (result.category == FJ_STATUS_PREPARATION_FAILURE)
             return {};
         if (result.category != FJ_STATUS_SUCCESS)
             fail(result, "Input hull preparation: " + std::string(bytes.data(), error.length));
         std::unique_ptr<FjInputHullOwner, HullDeleter> hold(raw);
         FjInputHullView view{};
-        const auto projected = fj_legacy_input_hull_view(raw, &view, &error);
+        const auto projected = fj_test_input_hull_view(raw, &view, &error);
         if (projected.category != FJ_STATUS_SUCCESS)
             fail(projected, std::string_view(bytes.data(), error.length));
         return std::shared_ptr<const Gamut::InputHullHold>(new Gamut::InputHullHold(hold.release(), view));
@@ -405,7 +289,7 @@ namespace JuicerAssets {
         FjOutputBoundaryOwner* raw = nullptr;
         std::array<char, 1024> bytes{};
         FjErrorBuffer error{bytes.data(), bytes.size(), 0};
-        const auto result = fj_legacy_assets_output_boundary_acquire(_assets, &source, transform.contractHash, &raw, &error);
+        const auto result = fj_test_assets_output_boundary_acquire(_assets, &source, transform.contractHash, &raw, &error);
         if (result.category == FJ_STATUS_PREPARATION_FAILURE || result.category == FJ_STATUS_UNSUPPORTED_INPUT) {
             diagnostic.assign(bytes.data(), error.length);
             return {};
@@ -414,7 +298,7 @@ namespace JuicerAssets {
             fail(result, "Output boundary: " + std::string(bytes.data(), error.length));
         std::unique_ptr<FjOutputBoundaryOwner, BoundaryDeleter> hold(raw);
         FjOutputBoundaryView view{};
-        const auto projected = fj_legacy_output_boundary_view(raw, &view, &error);
+        const auto projected = fj_test_output_boundary_view(raw, &view, &error);
         if (projected.category != FJ_STATUS_SUCCESS)
             fail(projected, std::string_view(bytes.data(), error.length));
         return std::shared_ptr<const Gamut::OutputBoundaryHold>(new Gamut::OutputBoundaryHold(hold.release(), view));
@@ -425,11 +309,11 @@ namespace Gamut {
     InputHullHold::InputHullHold(FjInputHullOwner* owner, const FjInputHullView& view) noexcept
         : xy(std::span<const float>(view.xy.data, view.xy.count)), center{view.center_xy[0], view.center_xy[1]}, hash(view.hash), entryIdentity(view.entry_identity), _owner(owner) {}
     InputHullHold::~InputHullHold() {
-        (void)fj_legacy_input_hull_release(_owner, nullptr);
+        (void)fj_test_input_hull_release(_owner, nullptr);
     }
     OutputBoundaryHold::OutputBoundaryHold(FjOutputBoundaryOwner* owner, const FjOutputBoundaryView& view) noexcept
         : cmax(view.cmax.data, view.cmax.count), transformHash(view.transform_hash), contractHash(view.contract_hash), hash(view.hash), entryIdentity(view.entry_identity), _owner(owner) {}
     OutputBoundaryHold::~OutputBoundaryHold() {
-        (void)fj_legacy_output_boundary_release(_owner, nullptr);
+        (void)fj_test_output_boundary_release(_owner, nullptr);
     }
 } // namespace Gamut

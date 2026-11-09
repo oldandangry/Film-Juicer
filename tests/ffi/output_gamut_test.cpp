@@ -17,7 +17,7 @@
 
 #include "Cuda/JuicerCudaExecutor.h"
 #include "GamutCompression.h"
-#include "RustGamutBridge.h"
+#include "gamut_fixture.h"
 #include "juicer_test_api.h"
 #include "case_results.h"
 
@@ -407,10 +407,10 @@ namespace {
                 JuicerTests::CaseEvent event("output_gamut.binding", row_id(row));
                 Gamut::OutputGamutTransform transform;
                 std::string diagnostic;
-                require(JuicerGamut::output_transform(static_cast<OutputEncoding::ColorSpace>(row["tag"].get<int>()), transform, diagnostic), diagnostic);
+                require(JuicerTestFixture::Gamut::output_transform(static_cast<OutputEncoding::ColorSpace>(row["tag"].get<int>()), transform, diagnostic), diagnostic);
                 require(transform.hash == row["transform"]["hash"].get<std::uint64_t>() && transform.contractHash == row["transform"]["contract_hash"].get<std::uint64_t>() && bits(transform.nativeRgbToD65Xyz) == row["transform"]["entry"] && bits(transform.d65XyzToNativeRgb) == row["transform"]["exit"], "native binding exact completed transform");
                 auto table = std::make_unique<Gamut::OutputBoundaryTable>();
-                require(JuicerGamut::output_boundary(transform, *table), table->diagnostic);
+                require(JuicerTestFixture::Gamut::output_boundary(transform, *table), table->diagnostic);
                 require(table->hash == row["boundary_hash"].get<std::uint64_t>(), "native binding complete table identity");
                 event.passed();
             }
@@ -420,12 +420,12 @@ namespace {
                 FaultScope scope;
                 Gamut::OutputGamutTransform transform;
                 std::string diagnostic;
-                require(JuicerGamut::output_transform(OutputEncoding::ColorSpace::sRGB, transform, diagnostic), diagnostic);
+                require(JuicerTestFixture::Gamut::output_transform(OutputEncoding::ColorSpace::sRGB, transform, diagnostic), diagnostic);
                 auto table = std::make_unique<Gamut::OutputBoundaryTable>();
                 status(fj_test_output_gamut_arm_fault(operation, 0, fault), FJ_STATUS_SUCCESS);
                 bool ordinary = false, caught = false;
                 try {
-                    ordinary = !(operation == 1 ? JuicerGamut::output_transform(OutputEncoding::ColorSpace::sRGB, transform, diagnostic) : JuicerGamut::output_boundary(transform, *table));
+                    ordinary = !(operation == 1 ? JuicerTestFixture::Gamut::output_transform(OutputEncoding::ColorSpace::sRGB, transform, diagnostic) : JuicerTestFixture::Gamut::output_boundary(transform, *table));
                 } catch (const std::bad_alloc&) {
                     require(fault == 3, "native allocation mapping");
                     caught = true;
