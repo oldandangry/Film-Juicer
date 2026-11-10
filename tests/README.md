@@ -4,6 +4,8 @@ The public suite is organized by product domain and has one normal scheduler:
 CTest. C++ tests use ordinary executables and selective GoogleTest discovery;
 Python tests use `unittest`. Reference generation and benchmarks are explicit
 maintenance operations, never hidden parts of a correctness run.
+See the public [ownership and maintenance map](../CONTRIBUTING.md#ownership-and-maintenance-map)
+for the Rust model/host, native execution and ABI entry points.
 
 ## Testing workflow milestone: 16 October 2026
 
@@ -363,8 +365,9 @@ transition evidence.
 ## Prerequisites
 
 - CMake 4.3 or newer and Ninja.
-- CUDA Toolkit 13.2, including its host runtime libraries. The project still
-  configures CUDA even for host-only test selection.
+- CUDA Toolkit 13.2, including its host runtime libraries, for the product entry,
+  including product-linked host-only selections. The focused `--cuda-free`
+  entry below does not discover CUDA.
 - Linux: GCC/G++ 13 at `/usr/bin/g++-13`.
 - Windows: Visual Studio 18, ClangCL from its LLVM tools, and NVCC with the VS
   18 MSVC host compiler.
@@ -972,7 +975,7 @@ operation failures on a live GPU, not actual driver-loss tests; production
 objects contain none of their injection hooks.
 
 `Ofx.Gpu.WorkspaceTransitions` uses the same isolated executable with
-`--workspace-transitions` (GPU prerequisite, `juicer_gpu` lock, 300 seconds).
+`--workspace-transitions` (GPU prerequisite, `juicer_gpu` lock, no elapsed deadline).
 It checks the actual direct/print schedules and completed native workspace layouts,
 logical grain work versus physical allocation, scanner/grain plane associations,
 source/staged cache channels and the strict-YVV candidate order. The bounded seam
@@ -1123,8 +1126,9 @@ first to `out/validation/`.
 
 ## Boundaries and limitations
 
-- The build still requires CUDA 13.2 even for `-L host`; a toolkit-free C++
-  mode is outside this consolidation.
+- Product-linked tests require CUDA 13.2 to build even for `-L host`. The focused
+  [`tests/host` entry](#build-and-run) supports only the listed CUDA-independent
+  Rust/tooling and native targets; it supplies no plug-in or GPU qualification.
 - Standard public CI runs Linux and Windows Debug and Release host selections,
   with one tracked native/CUDA/Rust quality pass per platform. The required job
   names retain `Debug host and Python checks` for branch-protection continuity.
@@ -1680,11 +1684,11 @@ products and 57 independently captured primitives. `Film.Host.EffectsFrameProduc
 compares complete policy, geometry and identity fields for the genuine products.
 The [frame fixtures](film/effects-frame-fixtures/README.md) retain four native
 contexts and exact raw words, including the existing Windows Release static
-scratch rounding. Each host group has a 180-second limit. Rust owns immutable
+scratch rounding. Each host group has no elapsed deadline. Rust owns immutable
 frame mathematics and identity; native code copies static policy and binds CUDA.
 
 `Ofx.Gpu.EffectsFrame` checks both actual caller sites across all four routes,
-with a GPU lock and 180-second limit. Pixel executions and successful construction
+with a GPU lock and no elapsed deadline. Pixel executions and successful construction
 checks canceled before preparation are counted separately. Literal policy
 substitutions stop before resource admission. Existing physical-family pixel,
 prepared-resource and lifecycle groups retain insertion-point, alpha, all-off,
@@ -1769,7 +1773,7 @@ metadata. Ordinary tests never regenerate expectations. The constructor preserve
 ascending f64 exp accumulation and both f32 rounding points; family radius and
 FIR/YVV selection remain with their existing owners.
 
-`Resource.Gpu.GaussianKernel` is one 180-second process with `juicer_gpu` exclusion
+`Resource.Gpu.GaussianKernel` is one process with no elapsed deadline, `juicer_gpu` exclusion
 and a real supported driver/device prerequisite. Its isolated resource object
 exercises real candidate allocation, a one-shot synchronous-copy result, the real
 map-node allocation rejection, deterministic two-upload insertion loser, explicit
@@ -1836,11 +1840,11 @@ discovery, native ABI and the prepared-render contract.
 `Ffi.Host.DirFrame` and `Film.Host.DirFrameProducts` check the fixed Rust boundary,
 private complete results, ordinary failed progress and common native composition
 against [four native captures](dir/frame-fixtures/README.md). Both are host groups
-with 180-second limits. Every mathematical/default word and final native hash is
+with no elapsed deadlines. Every mathematical/default word and final native hash is
 compared exactly; fixtures are never regenerated during tests.
 
-`Ofx.Gpu.DirFrame` uses the existing executor-failure probe and GPU lock with a
-180-second limit. Its 100 bounded invocations cover the two actual prepared route
+`Ofx.Gpu.DirFrame` uses the existing executor-failure probe and GPU lock with
+no elapsed deadline. Its 100 bounded invocations cover the two actual prepared route
 sites, all four routes/polarities, current pixel/domain/origin facts, full-frame
 fallback, inactive/Identity/FIR/YVV/mixed plans, zero-weight construction and
 pre-builder/mathematical failure stops. Four genuine route products execute
@@ -1859,7 +1863,7 @@ contract below.
 `Ffi.Host.DirBoundary` and `Film.Host.DirBoundaryProducts` compare complete Rust
 owners, key bytes, typed failures and native adapters against
 [independent native captures](dir/boundary-fixtures/README.md). Each host group has
-a 180-second limit. Comparisons cover 114 whole products and 56 bounded primitives
+no elapsed deadline. Comparisons cover 114 whole products and 56 bounded primitives
 in each native profile, including the original explicit fused product residual.
 
 The existing `Dir.Gpu.ExposureCache` group has no elapsed deadline and retains its GPU
@@ -1879,7 +1883,7 @@ never regenerate expectations.
 `Ffi.Host.GrainFrame` and `Film.Host.GrainFrameProducts` compare complete raw
 values, typed failures, native defaults and final native hashes against
 [four independent native contexts](grain/frame-fixtures/README.md). Each host
-group has a 180-second limit. The frozen cohort has 153 literals, 44 genuine
+group has no elapsed deadline. The frozen cohort has 153 literals, 44 genuine
 recipe/development products and 50 independently captured bounded primitives.
 The core keeps original f64 Gaussian energy samples; uploaded f32 coefficient
 arrays remain a separate owner. Published fields and hashes compare exactly.
@@ -1890,8 +1894,8 @@ three layers after checking its total. C layer0 particle-count failure precedes
 M total0: category3/API0/code0, reason2/field12/layer0/channel0. Legacy and facade
 readers require cleared raw mathematics and native-default failed output.
 
-`Ofx.Gpu.GrainFrame` uses the existing executor probe, GPU lock and 180-second
-limit. Its 122 invocations distinguish 16 genuine pixel executions, 92 successful
+`Ofx.Gpu.GrainFrame` uses the existing executor probe and GPU lock with no elapsed
+deadline. Its 122 invocations distinguish 16 genuine pixel executions, 92 successful
 constructions canceled before preparation and 14 failures. It checks both real
 caller sites, four routes/polarities, current time/seeds/geometry, full-frame
 fallback, inactive delegation and failure short-circuiting. Literal recipe

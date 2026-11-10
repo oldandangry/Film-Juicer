@@ -11,9 +11,11 @@ render implementation.
 
 `Rust.Bridge` additionally runs the plugin's internal ABI tests. The fixture's
 Test exports are gated by the nondefault `test-support` feature selected by
-CMake only for `BUILD_TESTING=ON`. Product builds consume the committed bindings;
-they do not require bindgen or libclang. Toggling `BUILD_TESTING` rebuilds the
-archive with the corresponding feature selection.
+CMake for facade/fault consumers with `BUILD_TESTING=ON`. Shipping and production
+witnesses always select the separate `cargo/production` archive; test-support
+consumers select `cargo/test-support`. Enabling tests does not switch shipping
+features. Product builds consume committed bindings without bindgen or libclang.
+See the [ownership and maintenance map](../../CONTRIBUTING.md#ownership-and-maintenance-map).
 
 ## OFX C ABI evidence
 
@@ -111,13 +113,12 @@ the component and its native producer/zero contract. Their `clip_token`,
 or temporal facts; they are not resource content fingerprints. Fixed ABI field
 names remain governed by `native/juicer_cuda_api.h`.
 
-Configure and build first, then run the bounded evidence (substitute any of the
-four supported presets):
+Prepare and run the focused evidence through the maintained owner (substitute
+any of the four supported presets):
 
 ```sh
-cmake --preset linux-debug -DBUILD_TESTING=ON
-cmake --build --preset linux-debug --target juicer JuicerCudaAbiTests
-ctest --preset linux-debug -R '^(Ffi\.Host\.CudaAbi|Rust\.Bridge)$'
+python -B scripts/verify.py development --preset linux-debug \
+  --tests Ffi.Host.CudaAbi Rust.Bridge --runtime host
 ```
 
 ## Native owner lifecycle
@@ -739,13 +740,14 @@ asset panic/capacity cases exercise the shared admission boundary separately.
 address/content/identity reuse across Hanatos/Mallett direct/print CCTF-only and
 warm transitions. It records bounded preparation times and retires only its idle
 test-owned context between completed triplets.
-The host groups execute no device operation. All groups have finite CTest
-process timeouts. No ordinary run generates or changes expectations.
+The host groups execute no device operation. Ordinary CTest processes have no
+elapsed deadline (`TIMEOUT 0`); explicit fault-control bounds remain. No ordinary
+run generates or changes expectations.
 
 `fixtures/color/manifest.json` records native-parent provenance, representation,
 case membership and exact identity order. Finite values, signed zero and infinity
 signs are exact; NaNs compare classification. Each complete-consumer run selects
-its preset capture. Existing Rust-density/render fixtures and their limits stay
+its preset capture. Existing Rust-density/render fixtures and their numerical bounds stay
 unchanged. The strict-C11 value fixture uses the direct checked test facade; no production
 C++ value bridge is retained.
 
@@ -1055,7 +1057,8 @@ changes. This pilot adds no CI lane.
 
 ## Bounded cache and owner repetition
 
-After configuring and building the complete native Debug preset, run this exact
+For this explicit maintenance campaign, prepare the owning native Debug targets
+through `verify.py prepare` before running this exact
 seven-group host cohort (replace `linux-debug` with `windows-clang-debug` on
 native Windows). Create a fresh campaign directory under the preset's validation
 root and retain the verbose output, log and JUnit from that invocation:
@@ -1074,11 +1077,13 @@ ctest --preset linux-debug --parallel 1 --no-tests=error --repeat until-fail:20 
 Confirm discovery contains exactly these seven groups before execution. Each
 successful invocation runs 140 independent test processes. Repetition launches
 fresh processes rather than looping inside a retained process owner. Existing
-arguments, per-test timeouts and `RUN_SERIAL`/resource-lock properties remain;
-this cohort executes no GPU work or Cargo operation. Keep configuration/build
+arguments and `RUN_SERIAL`/resource-lock properties remain. Ordinary processes
+use `TIMEOUT 0` with no elapsed deadline. This cohort executes no GPU work or
+Cargo operation. Keep configuration/build
 writers and other CTest invocations out of the same build tree while it runs.
-Use an outer finite campaign deadline; the qualified 20-repeat workload and
-actual native timings are recorded in the investigation handoff.
+Keep the finite repetition count and injected-control bounds. Historical campaign
+deadlines and timings retain their observation-time meaning; ordinary execution
+now has no outer elapsed kill deadline.
 
 The cache test retains its W1–W7 acknowledged gates, matching/conflicting fixed
 operands, all table-word comparisons, fault codes, generation exhaustion,
@@ -1283,7 +1288,7 @@ the permanent prepared boundary's existing identity admission.
 See the [four-context native characterization](../dir/frame-fixtures/README.md),
 `Ffi.Host.DirFrame`, `Film.Host.DirFrameProducts` and `Ofx.Gpu.DirFrame`.
 The last group observes both actual prepared direct/print schedules before their
-existing failure branches, and uses the existing GPU lock and 180-second limit.
+existing failure branches, and uses the existing GPU lock with no elapsed deadline.
 The ON strict-C11 DIR-frame fixture executes all 121 mathematical/default/failure
 rows through the direct checked test facade. OFF Release contract commands cover
 standard discovery, native ABI and prepared rendering. Native execution inputs

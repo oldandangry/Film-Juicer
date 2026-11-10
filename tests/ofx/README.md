@@ -53,9 +53,11 @@ It shares the existing instrumented processor failure hooks; original numerical
 expectations and readers stay independent. Both own the real callback image/native
 scope. No host-only fixture presents CPU storage as valid CUDA memory.
 
-The twelve host adapter groups compile with CUDA but run without a device. They
+The twelve OFX host-fixture groups compile with CUDA but run without a device. They
 and the two focused GPU groups exercise the Rust-owned descriptor and callbacks;
 they do not install the candidate or establish installed-host or saved-project acceptance.
+See the [ownership and maintenance map](../../CONTRIBUTING.md#ownership-and-maintenance-map)
+for the production discovery shim and Rust/native responsibilities.
 
 `RustBoundaryTests.test_ofx_callback_borrows` compiles seven real scoped/private/
 image/thread/escape consumers, including actual instance access, typed parameter borrows
@@ -148,12 +150,12 @@ Ordinary tests only read checked-in fixtures. `--emit-reference` is an explicit
 maintenance output aid, not an acceptance oracle: never adopt output from the
 implementation under test alone. Generate candidates under `out/validation/`,
 retain independent provenance, review them separately, and adopt an update only
-when its behavior is approved. Routine changes require automated renders, not a
-new user-supplied render or automatic baseline regeneration.
+when its behavior is approved. Changes affecting rendering use the owning
+automated fixtures; documentation-only work follows the public validation cadence.
 
 `Ofx.Gpu.FrameGeometry` uses `JuicerAdapterTraceProbe --frame-geometry
-<frame-manifest> <preset> <trace-output> <halation-manifest>` with the existing GPU lock and a finite
-180-second deadline. Its three isolated observations are completed full-domain,
+<frame-manifest> <preset> <trace-output> <halation-manifest>` with the existing GPU
+lock and no elapsed deadline. Its three isolated observations are completed full-domain,
 scalar-pixel and conditional effects-domain phases. The host independently records
 image acquisition property reads and the live clip canonical query/time. Effects
 off preserves acquisition reads and skips the conditional phase/query. Distinct

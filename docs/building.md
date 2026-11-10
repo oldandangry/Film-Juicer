@@ -4,6 +4,8 @@ Open this folder directly in Visual Studio 2026 and select a CMake preset.
 The shared build uses Ninja, Rust 1.98.1, C++20 and CUDA C++20 with CUDA
 Toolkit 13.2. CMake invokes Cargo for the two-crate Rust workspace and links the
 resulting `film-juicer-plugin` static library into the OFX module.
+See the [ownership and maintenance map](../CONTRIBUTING.md#ownership-and-maintenance-map)
+for model, host, ABI and native execution entry points.
 The consumed OpenFX 1.4/Resolve OFXS variant and nlohmann JSON 3.12.0 are vendored;
 no sibling SDK checkout, Eigen, or package manager is required.
 
@@ -60,7 +62,7 @@ cmake --build --preset linux-release --target bundle-archive
 ```
 
 Replace the preset name for Windows. Configure caches live in `out/build`,
-staged bundles in `out/stage`, and archives in the selected build directory.
+staged bundles and archives in `out/stage/<preset>` (the configured install prefix).
 Install stages locally; it does not write to a system OFX directory. The archive
 target rebuilds and stages into a clean bundle tree before packaging resources
 and notices. Windows packaging includes the required CUDA and MSVC runtime
@@ -91,8 +93,7 @@ Ninja uses separate pools of at most eight compile jobs and two link jobs.
 The verification runner defaults to at most eight available CPU workers and
 honours a positive `CMAKE_BUILD_PARALLEL_LEVEL`; ordinary CMake builds also accept
 `--parallel <count>`. Changing this scheduling limit preserves compiled artifacts.
-Preparation receipts bind the actual build command and worker count. The desktop
-`CODEX_TOOL_CALL_ID` is removed from compiler/test subprocess environments and
+The desktop `CODEX_TOOL_CALL_ID` is removed from compiler/test subprocess environments and
 freshness identities. Preparation consumes `CMAKE_BUILD_PARALLEL_LEVEL` before
 removing it from configure/compiler subprocess environments, so it cannot become
 an untracked compiler input. Other environment inputs remain tracked.
@@ -101,25 +102,25 @@ the pinned Cargo can perform package-scoped cleanup safely when preparation
 requires it. CUDA library discovery uses the toolkit already selected by NVCC
 and system library locations, avoiding unrelated environment `PATH` scans.
 
-For local compiler analysis, configure with `BUILD_TESTING=ON`, then prepare
-`juicer_analysis_inputs` instead of the complete product/test build:
+For local compiler analysis, prepare `juicer_analysis_inputs` through the native
+owner instead of the complete product/test build:
 
 ```sh
-cmake --preset linux-debug -DBUILD_TESTING=ON
-cmake --build --preset linux-debug --target juicer_analysis_inputs
-python scripts/check-quality.py --base <accepted-base> --preset linux-debug
+python -B scripts/verify.py prepare --preset linux-debug --testing ON --targets juicer_analysis_inputs
+python -B scripts/check-quality.py --base <accepted-base> --preset linux-debug
 ```
 
-The same target works with the Windows preset. It builds the ordinary native,
-host and adapter objects required by isolation checks, the Rust archive and
-the generated diffusion reference header consumed by compiler analysis.
+The same target works with the Windows preset. It builds the ordinary native
+and retained host objects required by isolation checks, the production Rust
+archive and generated diffusion reference header consumed by compiler analysis.
 The compilation database still contains every configured test-hook variant.
 Quality analysis defaults to at most four CPUs available to the process;
 `--jobs <count>` provides an explicit limit, including `--jobs 1` for serial
 diagnosis. Compiler commands, checks and before/after content verification are
 unchanged by the worker count.
-Receipt-backed local preparation also accepts
-`python scripts/verify.py prepare --preset linux-debug --targets juicer_analysis_inputs`.
+Preparation configures and builds the selected closure; it does not run tests or
+create a qualification result. Select checks using the
+[validation cadence](../tests/README.md#validation-cadence).
 
 The build preserves explicit SM 7.5 machine code plus compute_75 PTX. It does
 not select the build machine's CPU/GPU architecture. Windows uses the CUDA
@@ -132,22 +133,40 @@ host libraries cannot interpose an incompatible libstdc++ implementation. See
 ## Public test suite
 
 Public tests are organized by domain under `tests/` and use CTest as the
-scheduler. Enable them on the normal build preset, build, and run the matching
-test preset:
+scheduler. Test binaries and Rust test metadata are excluded from the default
+product build. Use the maintained verifier to configure `BUILD_TESTING=ON`, build
+the selected dependencies and run a focused check, for example:
 
 ```sh
-cmake --preset linux-release -DBUILD_TESTING=ON
-cmake --build --preset linux-release
-ctest --preset linux-release
+python -B scripts/verify.py development --preset linux-release --tests Ofx.Host.Module --runtime host
 ```
 
-Replace the preset name for Windows or Debug. The unfiltered run is the
-complete automated suite for a supported GPU machine. `ctest --preset
-linux-release -L host` selects tests that require no NVIDIA driver/device at
-runtime; configuration and compilation still require CUDA 13.2. The `gpu`
-label requires a supported driver/device, while `reference` describes fixture
-authority and is not an execution requirement. Python tests require Python
-3.13 and `tests/requirements.txt`.
+Replace the preset name for Windows or Debug. Use `qualification` with an explicit
+selection and reason at a named broader checkpoint; see
+[validation cadence](../tests/README.md#validation-cadence) and
+[shared native verification](../tests/README.md#shared-native-verification).
+Direct CTest expects all selected binaries and metadata to be prepared first.
+The `host` label needs no NVIDIA driver/device at runtime, but product-linked
+configuration and compilation still require CUDA 13.2. The `gpu` label requires
+a supported driver/device; `reference` describes fixture authority. Python tests
+require Python 3.13 and `tests/requirements.txt`.
+
+For CUDA-independent Rust model checks, use the maintained `tests/host` entry:
+
+```sh
+python -B scripts/verify.py development --preset linux-debug --cuda-free --tests Rust.Core
+```
+
+This builds/runs the selected core registration without CUDA discovery, sharing
+the preset's Cargo artifacts and native build owner. It is focused test-support
+core evidence, not production-feature, GPU or installed-host qualification. The
+[test guide](../tests/README.md#build-and-run) lists the other supported CUDA-free
+targets and distinguishes product-linked host tests.
+
+Ordinary build, analysis, compiler-probe and CTest execution has no elapsed kill
+deadline (`timeout=None`, ordinary CTest `TIMEOUT 0`). Explicit fault-control
+bounds and hosted job limits remain. Quiet output alone is not a hang; follow
+the native owner's cancellation and descendant-drainage rules.
 
 See [the public test guide](../tests/README.md) for environment setup, domain
 selection, fixture policy, diagnostics, benchmarks, and reference maintenance.
