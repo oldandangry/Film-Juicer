@@ -32,13 +32,13 @@ TOOLING_TESTS = (
     "Quality.NativeResults", "Quality.HostResults", "Quality.GpuResults",
     "Quality.Dispatcher", "Quality.ToolingLint", "Quality.Execution", "Quality.BuildEvidence",
     "Quality.BuildRegistration", "Quality.Verify", "Quality.Checkpoint",
-    "Ctest.Host.Report", "Ctest.Host.Repetition", "Ffi.Host.RustBuild",
+    "Ctest.Host.Report", "Ctest.Host.Repetition", "Ffi.Host.RustBuild", "Ofx.Host.MeasurementReport",
 )
 WINDOWS_TOOLING_SHARDS = {
     "core": {
         "Quality.NativeResults", "Quality.HostResults", "Quality.GpuResults", "Quality.Dispatcher",
         "Quality.ToolingLint", "Quality.Execution", "Quality.BuildRegistration", "Quality.Verify",
-        "Ctest.Host.Report", "Ctest.Host.Repetition", "Ffi.Host.RustBuild",
+        "Ctest.Host.Report", "Ctest.Host.Repetition", "Ffi.Host.RustBuild", "Ofx.Host.MeasurementReport",
     },
     "BuildEvidence": {"Quality.BuildEvidence"},
     "Checkpoint": {"Quality.Checkpoint"},

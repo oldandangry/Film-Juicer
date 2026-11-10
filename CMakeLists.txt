@@ -97,7 +97,7 @@ if(UNIX)
 endif()
 
 add_executable(JuicerProductionPreparedRenderProbe EXCLUDE_FROM_ALL
-    tests/ffi/production-ofx-render.cpp tests/ofx/instance_host.cpp)
+    tests/ffi/production-ofx-render.cpp tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
 target_include_directories(JuicerProductionPreparedRenderProbe PRIVATE
     "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi")
 target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE

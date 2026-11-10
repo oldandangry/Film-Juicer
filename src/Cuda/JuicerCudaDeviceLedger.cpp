@@ -1,6 +1,12 @@
 // Cuda/JuicerCudaDeviceLedger.cpp
 
 #include "Cuda/JuicerCudaDeviceLedger.h"
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+#include "Cuda/JuicerCudaPerformanceObservation.h"
+#define FJ_OBSERVE_LEDGER() PerformanceObservation::ledger(_deviceId, PerformanceObservation::LedgerSnapshot{_reservedBytes, _committedBytes, _retiringBytes, static_cast<std::uint64_t>(_records.size())})
+#else
+#define FJ_OBSERVE_LEDGER() ((void)0)
+#endif
 
 #include <exception>
 #include <limits>
@@ -252,6 +258,10 @@ namespace JuicerCuda {
         }
         _nextRecordId += 1;
         _reservedBytes += request.bytes;
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+        PerformanceObservation::context(_deviceId, request.contextKey.contextOpaque, request.contextEpoch);
+#endif
+        FJ_OBSERVE_LEDGER();
         outReservation = DeviceByteReservation(std::move(self), recordId);
         return true;
     }
@@ -298,6 +308,7 @@ namespace JuicerCuda {
         }
         _nextRecordId += 1;
         parent.bytes -= request.childBytes;
+        FJ_OBSERVE_LEDGER();
         outResult.childRecordId = childRecordId;
         return true;
     }
@@ -323,6 +334,7 @@ namespace JuicerCuda {
         _committedBytes += request.actualBytes;
         record.bytes = request.actualBytes;
         record.state = DeviceReservationState::Committed;
+        FJ_OBSERVE_LEDGER();
         return true;
     }
 
@@ -340,6 +352,7 @@ namespace JuicerCuda {
         _committedBytes -= record.bytes;
         _retiringBytes += record.bytes;
         record.state = DeviceReservationState::Retiring;
+        FJ_OBSERVE_LEDGER();
         return true;
     }
 
@@ -363,6 +376,7 @@ namespace JuicerCuda {
             _retiringBytes -= it->second.bytes;
         }
         _records.erase(it);
+        FJ_OBSERVE_LEDGER();
         return true;
     }
 
@@ -377,8 +391,10 @@ namespace JuicerCuda {
             if (it->second.state == DeviceReservationState::Reserved) {
                 _reservedBytes -= it->second.bytes;
                 _records.erase(it);
+                FJ_OBSERVE_LEDGER();
             } else {
                 it->second.abandoned = true;
+                FJ_OBSERVE_LEDGER();
             }
         } catch (...) {
             std::terminate();
@@ -479,6 +495,7 @@ namespace JuicerCuda {
                 }
                 outReleasedBytes += record.bytes;
                 it = _records.erase(it);
+                FJ_OBSERVE_LEDGER();
             }
             return true;
         } catch (...) {

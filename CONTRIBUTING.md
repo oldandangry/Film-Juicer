@@ -233,9 +233,9 @@ negative cases remain in their owning tests; do not add product APIs just for a
 compiler fixture. Cargo metadata is read from the command output and source
 workspace.
 
-The shared tooling CMake entry registers 13 Debug tests: the three native result
+The shared tooling CMake entry registers 14 Debug tests: the three native result
 groups; Dispatcher, ToolingLint, Execution, BuildEvidence, BuildRegistration,
-Verify and Checkpoint; CTest Report and Repetition; and the Rust build contract.
+Verify and Checkpoint; CTest Report and Repetition; the Rust build contract; and the offline OFX measurement report tests.
 Ordinary host/GPU CTest registrations use explicit `TIMEOUT 0`, and the native
 verifier dispatches CTest with `timeout=None`. Live execution rejects finite,
 missing or malformed ordinary timeouts. Historical result readers still accept

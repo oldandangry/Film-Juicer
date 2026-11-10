@@ -334,3 +334,142 @@ fn completed_hull_survives_source_expiry_and_thread_transfer() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn ray_order_and_nonfinite_boundaries() {
+    // Horizontal connectors stay above or below the ray; the remaining points
+    // repeat the final vertex so the fixed-size tails add only degenerate edges.
+    let vertices = [
+        [4.0, -1.0],
+        [4.0, 1.0],
+        [2.0, 1.0],
+        [2.0, -1.0],
+        [6.0, -1.0],
+        [6.0, 1.0],
+        [2.0, 1.0],
+        [2.0, -1.0],
+    ];
+    let mut locus = [[2.0_f64, -1.0]; 66];
+    locus[..vertices.len()].copy_from_slice(&vertices);
+    let mut hull = [[2.0_f32, -1.0]; 1025];
+    for (dst, src) in hull.iter_mut().zip(vertices) {
+        *dst = src.map(|value| value as f32);
+    }
+    let degenerate_locus = [[2.0_f64, -1.0]; 66];
+    let degenerate_hull = [[2.0_f32, -1.0]; 1025];
+    let cases = [
+        ("ordered-nearest-tie", [0.0, 0.0], [1.0, 0.0], 2.0),
+        ("signed-zero-forward", [0.0, 0.0], [1.0, -0.0], 2.0),
+        ("backward", [0.0, 0.0], [-1.0, 0.0], f64::INFINITY),
+        ("parallel-outside", [0.0, 2.0], [1.0, 0.0], f64::INFINITY),
+        (
+            "signed-zero-vertical",
+            [0.0, 0.0],
+            [-0.0, 1.0],
+            f64::INFINITY,
+        ),
+        ("origin-x-nan", [f64::NAN, 0.0], [1.0, 0.0], f64::INFINITY),
+        ("origin-y-nan", [0.0, f64::NAN], [1.0, 0.0], f64::INFINITY),
+        (
+            "origin-positive-infinity",
+            [f64::INFINITY, 0.0],
+            [1.0, 0.0],
+            f64::INFINITY,
+        ),
+        (
+            "origin-negative-infinity",
+            [f64::NEG_INFINITY, 0.0],
+            [1.0, 0.0],
+            f64::INFINITY,
+        ),
+        (
+            "origin-y-positive-infinity",
+            [0.0, f64::INFINITY],
+            [1.0, 0.0],
+            f64::INFINITY,
+        ),
+        (
+            "origin-y-negative-infinity",
+            [0.0, f64::NEG_INFINITY],
+            [1.0, 0.0],
+            f64::INFINITY,
+        ),
+        (
+            "direction-x-nan",
+            [0.0, 0.0],
+            [f64::NAN, 0.0],
+            f64::INFINITY,
+        ),
+        (
+            "direction-y-nan",
+            [0.0, 0.0],
+            [1.0, f64::NAN],
+            f64::INFINITY,
+        ),
+        (
+            "direction-positive-infinity",
+            [0.0, 0.0],
+            [f64::INFINITY, 0.0],
+            f64::INFINITY,
+        ),
+        (
+            "direction-negative-infinity",
+            [0.0, 0.0],
+            [f64::NEG_INFINITY, 0.0],
+            f64::INFINITY,
+        ),
+        (
+            "direction-y-positive-infinity",
+            [0.0, 0.0],
+            [1.0, f64::INFINITY],
+            f64::INFINITY,
+        ),
+        (
+            "direction-y-negative-infinity",
+            [0.0, 0.0],
+            [1.0, f64::NEG_INFINITY],
+            f64::INFINITY,
+        ),
+    ];
+    let ids: Vec<_> = cases
+        .iter()
+        .map(|case| case.0)
+        .chain(["degenerate", "zero-polygon"])
+        .collect();
+    let mut rows = RowCases::new("input-hull-ray-order-boundaries", ids);
+    for (id, origin, direction, expected) in cases {
+        let row = rows.case(id);
+        assert_eq!(
+            fixtures::locus_ray(origin, direction, &locus).to_bits(),
+            expected.to_bits(),
+            "locus {id}"
+        );
+        assert_eq!(
+            fixtures::hull_ray(origin, direction, &hull).to_bits(),
+            expected.to_bits(),
+            "hull {id}"
+        );
+        row.passed();
+    }
+    let row = rows.case("degenerate");
+    assert_eq!(
+        fixtures::locus_ray([0.0, 0.0], [1.0, 0.0], &degenerate_locus).to_bits(),
+        f64::INFINITY.to_bits()
+    );
+    assert_eq!(
+        fixtures::hull_ray([0.0, 0.0], [1.0, 0.0], &degenerate_hull).to_bits(),
+        f64::INFINITY.to_bits()
+    );
+    row.passed();
+    let row = rows.case("zero-polygon");
+    assert_eq!(
+        fixtures::locus_ray([0.0, 0.0], [1.0, 0.0], &[[0.0; 2]; 66]).to_bits(),
+        f64::INFINITY.to_bits()
+    );
+    assert_eq!(
+        fixtures::hull_ray([0.0, 0.0], [1.0, 0.0], &[[0.0; 2]; 1025]).to_bits(),
+        f64::INFINITY.to_bits()
+    );
+    row.passed();
+    rows.finish();
+}

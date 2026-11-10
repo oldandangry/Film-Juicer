@@ -1117,6 +1117,68 @@ add_custom_target(juicer_test_module
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:juicer>" "${JUICER_TEST_BINARY_DIR}/$<TARGET_FILE_NAME:juicer>"
     DEPENDS juicer juicer_test_resources)
 
+# Explicit OFX measurements use discovery-only shipping loads and a nonshipping
+# companion. Ordinary objects and shipping Rust selection remain unchanged.
+add_executable(JuicerOfxMeasurement benchmarks/ofx_measurement.cpp
+    ofx/instance_host.cpp ofx/production_images.cpp benchmarks/observation_contract.cpp)
+target_include_directories(JuicerOfxMeasurement PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ofx")
+target_link_libraries(JuicerOfxMeasurement PRIVATE
+    juicer_settings juicer_ofx_headers Threads::Threads ${CMAKE_DL_LIBS}
+    CUDA::cudart CUDA::cuda_driver)
+set_target_properties(JuicerOfxMeasurement PROPERTIES
+    JUICER_RUST_VARIANT none RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(WIN32)
+    target_link_libraries(JuicerOfxMeasurement PRIVATE Psapi)
+endif()
+
+add_library(juicer_measurement_objects OBJECT
+    ../src/Cuda/JuicerCudaDeviceLedger.cpp ../src/Cuda/JuicerCudaResources.cpp)
+target_link_libraries(juicer_measurement_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_measurement_objects PRIVATE JUICER_PERFORMANCE_OBSERVATION=1)
+add_library(JuicerOfxMeasurementModule MODULE ../native/ofx_exports.cpp
+    benchmarks/observation.cpp $<TARGET_OBJECTS:juicer_measurement_objects>)
+target_link_libraries(JuicerOfxMeasurementModule PRIVATE
+    juicer_core film_juicer_rust_test_support juicer_dependencies)
+set_target_properties(JuicerOfxMeasurementModule PROPERTIES
+    PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX
+    LIBRARY_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerOfxMeasurementModule juicer_test_resources)
+if(WIN32)
+    target_sources(JuicerOfxMeasurementModule PRIVATE benchmarks/measurement.def)
+else()
+    set_property(TARGET JuicerOfxMeasurementModule PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    target_link_options(JuicerOfxMeasurementModule PRIVATE
+        -static-libstdc++ -static-libgcc
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/measurement.exports"
+        "LINKER:--exclude-libs,ALL" "LINKER:--no-undefined")
+    set_property(TARGET JuicerOfxMeasurementModule APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/measurement.exports")
+endif()
+
+add_executable(JuicerOfxMeasurementTests benchmarks/observation_test.cpp
+    benchmarks/observation.cpp benchmarks/observation_contract.cpp benchmarks/observation_c11.c)
+target_link_libraries(JuicerOfxMeasurementTests PRIVATE
+    juicer_settings GTest::gtest juicer_host_gtest_main)
+set_target_properties(JuicerOfxMeasurementTests PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF JUICER_RUST_VARIANT none
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(WIN32)
+    target_compile_options(JuicerOfxMeasurementTests PRIVATE $<$<COMPILE_LANGUAGE:C>:/TC;/W4;/WX>)
+else()
+    target_compile_options(JuicerOfxMeasurementTests PRIVATE $<$<COMPILE_LANGUAGE:C>:-Wall;-Wextra;-Werror;-pedantic-errors>)
+endif()
+juicer_add_host_test(Ofx.Host.Measurement JuicerOfxMeasurementTests gtest)
+set_tests_properties(Ofx.Host.Measurement PROPERTIES LABELS "host" TIMEOUT 0)
+
+juicer_add_python_test(NAME Ofx.Gpu.Measurement
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks" -p test_ofx_measurement.py -v)
+set_tests_properties(Ofx.Gpu.Measurement PROPERTIES LABELS "gpu" TIMEOUT 0 RESOURCE_LOCK juicer_gpu
+    ENVIRONMENT "FJ_MEASUREMENT_DRIVER=$<TARGET_FILE:JuicerOfxMeasurement>;FJ_MEASUREMENT_SHIPPING=${JUICER_TEST_BINARY_DIR}/$<TARGET_FILE_NAME:juicer>;FJ_MEASUREMENT_OBSERVED=$<TARGET_FILE:JuicerOfxMeasurementModule>;FJ_MEASUREMENT_RESOURCES=${JUICER_TEST_RESOURCE_STAGE_DIR};FJ_MEASUREMENT_OUTPUT=${JUICER_TEST_ARTIFACT_ROOT}/ofx-measurement")
+set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Ofx.Gpu.Measurement
+    "JuicerOfxMeasurement;JuicerOfxMeasurementModule;juicer_test_module")
+
 set(juicer_processor_rust_pixels "${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat")
 foreach(mode IN ITEMS Gpu Trace)
     if(mode STREQUAL "Gpu")
@@ -1570,7 +1632,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Record final link owners, not source spellings, for the artifact contract.
     set(juicer_without_cufft_targets
         JuicerHashContractTests JuicerScratchRequestTests JuicerProfileCudaSafetyTests
-        JuicerGrainDeltaTests JuicerRenderAssertionTests JuicerProductionPreparedRenderProbe)
+        JuicerGrainDeltaTests JuicerRenderAssertionTests JuicerProductionPreparedRenderProbe
+        JuicerOfxMeasurement JuicerOfxMeasurementTests)
     set(juicer_shared_cufft_targets)
     get_property(juicer_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     foreach(target IN LISTS juicer_test_targets)
@@ -1585,7 +1648,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             message(FATAL_ERROR "Missing artifact dependency contract for ${target}")
         endif()
     endforeach()
-    set(juicer_static_cufft_targets juicer ${JUICER_PRODUCTION_C_PROBES})
+    set(juicer_static_cufft_targets juicer JuicerOfxMeasurementModule ${JUICER_PRODUCTION_C_PROBES})
     string(APPEND juicer_artifact_contract
         "  \"cufft\": \"$<TARGET_FILE:CUDA::cufft>\",\n")
     foreach(role IN ITEMS static shared without_cufft)
@@ -1682,6 +1745,7 @@ foreach(target IN LISTS juicer_rust_candidates)
         list(APPEND juicer_rust_consumers ${target})
     endif()
 endforeach()
+list(APPEND juicer_rust_consumers JuicerOfxMeasurementModule)
 set_property(GLOBAL PROPERTY JUICER_PYTHON_CLOSURE_Ffi.Host.BuildArtifacts
     "${juicer_rust_consumers};juicer;JuicerProductionPreparedRenderProbe;JuicerProductionOfxProbe;${JUICER_PRODUCTION_C_PROBES};juicer_test_resources")
 juicer_write_python_targets()

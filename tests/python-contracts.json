@@ -124,6 +124,14 @@
       "platforms": [
         "linux"
       ]
+    },
+    "Ofx.Host.MeasurementReport": {
+      "source": "tests/benchmarks/test_ofx_report.py",
+      "tooling": true
+    },
+    "Ofx.Gpu.Measurement": {
+      "source": "tests/benchmarks/test_ofx_measurement.py",
+      "tooling": false
     }
   }
 }

@@ -261,7 +261,7 @@ python -B scripts/verify.py qualification --preset linux-debug \
 On Windows use `out/build/tooling-windows` and `-DCMAKE_C_COMPILER=clang-cl.exe`
 inside the qualified VS 18 environment. `Python3_EXECUTABLE` and
 `JUICER_TOOLING_CARGO` can select qualified executables explicitly. Both entries
-use `tests/ToolingTests.cmake` and register the same 13 Debug tooling members as
+use `tests/ToolingTests.cmake` and register the same 14 Debug tooling members as
 the product test suite. The verifier writes results under the native Debug preset's
 `out/validation/<preset>/results/<run-id>/` directory. Linux also needs LLD for
 the compiler-selected-linker freshness control.
@@ -270,7 +270,7 @@ Hosted Windows tooling uses three independent runners labelled `tooling-core`,
 `tooling-BuildEvidence` and `tooling-Checkpoint`. The shard labels are selected
 with an explicit CTest label regex; each shard result is focused and cannot be
 combined into complete qualification. Every shard must succeed, and a failed
-shard does not cancel the others. Local unfiltered tooling runs all 13 groups.
+shard does not cancel the others. Local unfiltered tooling runs all 14 groups.
 
 For WSL filesystem diagnosis, `JUICER_TOOLING_ARTIFACT_ROOT` can place synthetic
 fixtures under an absolute native Linux `out/validation/linux-debug` root. Both
@@ -752,12 +752,12 @@ regardless of the invocation directory. Windows compiler fixtures resolve
 `clang-cl` from the active qualified VS 18 environment, including Community and
 Enterprise installations.
 
-The shared standalone and product tooling registration has 13 Debug tests:
+The shared standalone and product tooling registration has 14 Debug tests:
 `Quality.NativeResults`, `Quality.HostResults`, `Quality.GpuResults`,
 `Quality.Dispatcher`, `Quality.ToolingLint`, `Quality.Execution`,
 `Quality.BuildEvidence`, `Quality.BuildRegistration`, `Quality.Verify`,
 `Quality.Checkpoint`, `Ctest.Host.Report`, `Ctest.Host.Repetition` and
-`Ffi.Host.RustBuild`. All ordinary tooling registrations have explicit zero
+`Ffi.Host.RustBuild` and `Ofx.Host.MeasurementReport`. All ordinary tooling registrations have explicit zero
 timeouts. Windows CI runs three independent
 shards: `tooling-core`, `tooling-BuildEvidence` and `tooling-Checkpoint`. A shard
 uses its exact label regex and does not claim complete tooling qualification.
@@ -1153,6 +1153,25 @@ See [MIGRATION.md](MIGRATION.md) for the bounded family inventory and exact
 retained/deferred/archive decisions, [benchmarks/README.md](benchmarks/README.md)
 for measurement commands, and [manual/resolve.md](manual/resolve.md) for
 owner-run host acceptance.
+
+### OFX callback, construction and memory measurements
+
+`tests/benchmarks/ofx.py` owns explicit OFX performance experiments. Its
+`prepare-reference`, `check`, `measure` and offline `report` operations use supplied
+module identities and the maintained execution owner. They use all four
+workloads by default and support an explicit ordered subset.
+See [the benchmark guide](benchmarks/README.md) for inputs and native commands.
+Shipping modules supply external callback/stream intervals and process memory;
+nonshipping companions separately observe complete-state construction and native
+owned memory. Pinned observations cover upload-pool staging only, excluding the
+separate scan-error staging family. Stream intervals include host gaps.
+
+Focused correctness registrations are `Ofx.Host.Measurement` (six native/C11 rows),
+`Ofx.Gpu.Measurement` (four 7x5 workloads, both current module forms), and
+`Ofx.Host.MeasurementReport` (six offline unittest methods). The report registration
+is also available from the shared tooling entry, bringing current Debug tooling
+membership to fourteen. These registrations execute no performance campaign.
+Upload-pool state arrays use available, reserved, in-flight, quarantined order.
 
 ### Grain scratch maintenance benchmark
 

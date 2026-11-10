@@ -2,6 +2,10 @@
 //
 // Descriptor-driven CUDA uploads and primitive validation hooks.
 //
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+#include "Cuda/JuicerCudaPerformanceObservation.h"
+#endif
+
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaDriver.h"
@@ -2195,6 +2199,31 @@ namespace JuicerCuda {
         return state;
     }
 
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+    bool PerformanceObservation::upload_snapshot(UploadPoolSnapshot& snapshot) noexcept {
+        try {
+            auto& policy = pinned_upload_staging_policy_state();
+            std::lock_guard lock(policy.mutex);
+            for (unsigned i = 0; i < 4; ++i) {
+                snapshot.bytes[i] = 0;
+                snapshot.counts[i] = 0;
+            }
+            for (const auto& entry : policy.pools) {
+                for (const auto& block : entry.second.blocks) {
+                    const auto i = static_cast<unsigned>(block.state);
+                    if (i >= 4 || block.capacity > UINT64_MAX - snapshot.bytes[i] || snapshot.counts[i] == UINT64_MAX)
+                        return false;
+                    snapshot.bytes[i] += block.capacity;
+                    ++snapshot.counts[i];
+                }
+            }
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+#endif
+
     static std::uint64_t pinned_upload_now_ms() noexcept {
         using Clock = std::chrono::steady_clock;
         const auto now = Clock::now().time_since_epoch();
@@ -2430,6 +2459,9 @@ namespace JuicerCuda {
                     totalBytesAfterTrim);
                 continue;
             }
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+            PerformanceObservation::upload_free(detached.block.capacity);
+#endif
             freedBytes += detached.block.capacity;
             detached.block.ptr = nullptr;
             if (detached.block.doneEventOpaque) {
@@ -2496,12 +2528,20 @@ namespace JuicerCuda {
 
     static void destroy_unpublished_pinned_upload_block(
         void* pinnedPtr,
-        cudaEvent_t doneEvent) noexcept {
+        cudaEvent_t doneEvent,
+        std::size_t bytes) noexcept {
         if (doneEvent) {
             (void)cudaEventDestroy(doneEvent);
         }
         if (pinnedPtr) {
-            (void)cudaFreeHost(pinnedPtr);
+            const cudaError_t freeErr = cudaFreeHost(pinnedPtr);
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+            if (freeErr == cudaSuccess)
+                PerformanceObservation::upload_free(bytes);
+#else
+            (void)freeErr;
+            (void)bytes;
+#endif
         }
     }
 
@@ -2631,8 +2671,12 @@ namespace JuicerCuda {
         if (allocErr == cudaSuccess) {
             allocErr = cudaMallocHost(&pinnedPtr, bytes);
         }
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+        if (allocErr == cudaSuccess && pinnedPtr)
+            PerformanceObservation::upload_allocate(bytes);
+#endif
         if (allocErr != cudaSuccess || !pinnedPtr) {
-            destroy_unpublished_pinned_upload_block(pinnedPtr, nullptr);
+            destroy_unpublished_pinned_upload_block(pinnedPtr, nullptr, bytes);
             outError.status = runtime_failure_status(allocErr);
             // Host staging exhaustion is not device capacity and must not select device reclaim.
             if (allocErr == cudaErrorMemoryAllocation) {
@@ -2654,7 +2698,7 @@ namespace JuicerCuda {
             eventErr = cudaEventCreateWithFlags(&doneEvent, cudaEventDisableTiming);
         }
         if (eventErr != cudaSuccess || !doneEvent) {
-            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent);
+            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent, bytes);
             outError.status = runtime_failure_status(eventErr);
             if (eventErr == cudaErrorMemoryAllocation) {
                 outError.status.category = FJ_STATUS_CUDA_FAILURE;
@@ -2695,7 +2739,7 @@ namespace JuicerCuda {
         }
 
         if (!inserted) {
-            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent);
+            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent, bytes);
             outError.diagnostic = "pinned staging pool_insert_failed";
             return result;
         }
@@ -3318,10 +3362,12 @@ namespace JuicerCuda {
                         block.capacity);
                 }
                 if (block.ptr && completionProven) {
-                    trace_cuda_failure(
-                        "cudaFreeHost",
-                        cudaFreeHost(block.ptr),
-                        block.capacity);
+                    const cudaError_t freeErr = cudaFreeHost(block.ptr);
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+                    if (freeErr == cudaSuccess)
+                        PerformanceObservation::upload_free(block.capacity);
+#endif
+                    trace_cuda_failure("cudaFreeHost", freeErr, block.capacity);
                 } else if (block.ptr) {
                     trace_pinned_staging_event(
                         "context_purge",

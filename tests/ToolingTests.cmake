@@ -123,6 +123,12 @@ function(juicer_register_tooling_tests)
         endforeach()
     endif()
 
+    juicer_add_python_test(NAME Ofx.Host.MeasurementReport
+        COMMAND "${ARG_PYTHON}" -m unittest discover
+            -s "${test_source}/benchmarks" -p test_ofx_report.py -v)
+    set_tests_properties(Ofx.Host.MeasurementReport PROPERTIES LABELS "host" TIMEOUT 0)
+    list(APPEND tooling_tests Ofx.Host.MeasurementReport)
+
     juicer_add_python_test(NAME Ctest.Host.Report
         COMMAND "${ARG_PYTHON}" -m unittest discover
             -s "${test_source}/ctest" -p test_report.py -v)
