@@ -1,0 +1,914 @@
+#include <array>
+#include <barrier>
+#include <bit>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <optional>
+#include <string>
+#include <thread>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+
+#include "gtest_cases.h"
+#include "Cuda/JuicerCudaExecutor.h"
+#include "test_asset_workspace.h"
+#include "ProcessRoot.h"
+#include "ColorTransforms.h"
+#include "Hash.h"
+#include "Cuda/JuicerCudaResources.h"
+#include "juicer_cuda_owner.h"
+#include "native_path.h"
+#include "juicer_test_api.h"
+#include "exposure_fixture.h"
+#include "owner_fixture.h"
+#include "preparation_fixture.h"
+
+extern "C" const std::size_t* fj_test_production_profile_abi_c_facts(std::size_t* count);
+extern "C" const std::size_t* fj_test_production_profile_abi_facts(std::size_t* count);
+#define FJ_ABI_TYPE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
+#define FJ_ABI_FIELD(type, field, offset) static_assert(offsetof(type, field) == offset);
+#define FJ_ABI_VALUE(tag, value) static_assert(tag == value);
+#include "production_profile_abi_facts.inc"
+#undef FJ_ABI_TYPE
+#undef FJ_ABI_FIELD
+#undef FJ_ABI_VALUE
+
+static_assert(std::is_same_v<decltype(&fj_test_assets_film_acquire), FjStatus (*)(const FjAssets*, FjStringView, FjFilmProfile**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_profile_acquire), FjStatus (*)(const FjAssets*, FjStringView, FjPrintProfile**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_film_view), FjStatus (*)(const FjFilmProfile*, FjFilmProfileView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_profile_view), FjStatus (*)(const FjPrintProfile*, FjPrintProfileView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_profile_sample_density), FjStatus (*)(const FjPrintProfile*, double, FjPrintDensityCurves**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_density_view), FjStatus (*)(const FjPrintDensityCurves*, FjPrintDensityView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_film_release), FjStatus (*)(FjFilmProfile*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_profile_release), FjStatus (*)(FjPrintProfile*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_print_density_release), FjStatus (*)(FjPrintDensityCurves*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_release_cached_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_release_derived_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_assets_release_source_payloads), FjStatus (*)(const FjAssets*, FjErrorBuffer*)>);
+
+namespace {
+    namespace fs = std::filesystem;
+    using Json = nlohmann::json;
+    fs::path resources;
+    fs::path fixtures;
+    fs::path scratch;
+    FjStringView text(const std::string& value) {
+        return {value.empty() ? nullptr : value.data(), value.size()};
+    }
+    void expect_status(FjStatus status, std::uint32_t expected) {
+        EXPECT_EQ(status.category, expected);
+        EXPECT_EQ(status.api, FJ_API_NONE);
+        EXPECT_EQ(status.native_code, 0);
+    }
+    void require_release(FjStatus status) noexcept {
+        if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
+            std::fprintf(stderr, "unexpected destructor release status=%u/%u/%d\n", status.category, status.api, status.native_code);
+            std::abort();
+        }
+    }
+    Json read_json(const fs::path& path) {
+        std::ifstream file(path);
+        return Json::parse(file);
+    }
+    struct Assets {
+        FjAssets* owner = nullptr;
+        explicit Assets(const fs::path& root) {
+            const JuicerAssets::NativePathArgument path(root);
+            expect_status(fj_test_assets_create(path.view(), &owner, nullptr), FJ_STATUS_SUCCESS);
+        }
+        ~Assets() {
+            require_release(fj_test_assets_destroy(owner, nullptr));
+        }
+    };
+    struct Film {
+        FjFilmProfile* owner = nullptr;
+        Film(const FjAssets* assets, const std::string& key) {
+            expect_status(fj_test_assets_film_acquire(assets, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
+        }
+        Film(const Assets& assets, const std::string& key)
+            : Film(assets.owner, key) {}
+        ~Film() {
+            require_release(fj_test_assets_film_release(owner, nullptr));
+        }
+        FjFilmProfileView view() const {
+            FjFilmProfileView out{};
+            expect_status(fj_test_assets_film_view(owner, &out, nullptr), FJ_STATUS_SUCCESS);
+            return out;
+        }
+    };
+    struct Print {
+        FjPrintProfile* owner = nullptr;
+        Print(const FjAssets* assets, const std::string& key) {
+            expect_status(fj_test_print_profile_acquire(assets, text(key), &owner, nullptr), FJ_STATUS_SUCCESS);
+        }
+        Print(const Assets& assets, const std::string& key)
+            : Print(assets.owner, key) {}
+        ~Print() {
+            require_release(fj_test_print_profile_release(owner, nullptr));
+        }
+        FjPrintProfileView view() const {
+            FjPrintProfileView out{};
+            expect_status(fj_test_print_profile_view(owner, &out, nullptr), FJ_STATUS_SUCCESS);
+            return out;
+        }
+    };
+    struct Density {
+        FjPrintDensityCurves* owner = nullptr;
+        Density(const Print& print, double gamma) {
+            expect_status(fj_test_print_profile_sample_density(print.owner, gamma, &owner, nullptr), FJ_STATUS_SUCCESS);
+        }
+        ~Density() {
+            require_release(fj_test_print_density_release(owner, nullptr));
+        }
+        FjPrintDensityView view() const {
+            FjPrintDensityView out{};
+            expect_status(fj_test_print_density_view(owner, &out, nullptr), FJ_STATUS_SUCCESS);
+            return out;
+        }
+    };
+    void bits(FjFloatSpan span, const Json& expected) {
+        ASSERT_EQ(span.count, expected.size());
+        for (std::size_t i = 0; i < span.count; ++i) {
+            EXPECT_EQ(std::bit_cast<std::uint32_t>(span.data[i]), expected[i].get<std::uint32_t>());
+        }
+    }
+    void expect_span_bits(FjFloatSpan actual, const std::vector<float>& expected) {
+        ASSERT_EQ(actual.count, expected.size());
+        for (std::size_t i = 0; i < actual.count; ++i) {
+            EXPECT_EQ(std::bit_cast<std::uint32_t>(actual.data[i]),
+                      std::bit_cast<std::uint32_t>(expected[i]));
+        }
+    }
+    std::vector<float> copy_span(FjFloatSpan span) {
+        return span.count == 0 ? std::vector<float>{}
+                               : std::vector<float>(span.data, span.data + span.count);
+    }
+    std::vector<unsigned char> density_payload() {
+        std::ifstream file(fixtures / "density-samples.bin", std::ios::binary);
+        return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    }
+    std::uint32_t word(const std::vector<unsigned char>& bytes, std::size_t offset) {
+        return std::uint32_t(bytes[offset]) | std::uint32_t(bytes[offset + 1]) << 8 | std::uint32_t(bytes[offset + 2]) << 16 | std::uint32_t(bytes[offset + 3]) << 24;
+    }
+    void density_bits(FjFloatSpan span, const Json& capture, const std::vector<unsigned char>& bytes) {
+        const auto start = capture["sample_start"].get<std::size_t>();
+        for (std::size_t i = 0; i < span.count / 3; ++i) {
+            ASSERT_EQ(bytes[(start + i) * 49], 1);
+            for (std::size_t c = 0; c < 3; ++c) {
+                EXPECT_EQ(std::bit_cast<std::uint32_t>(span.data[3 * i + c]), word(bytes, (start + i) * 49 + 1 + c * 4));
+            }
+        }
+    }
+    void tables(FjProfileTablesView view, const Json& expected) {
+        bits(view.channel_density_cmy, expected["fields"]["channel_density"]);
+        bits(view.base_density, expected["fields"]["base_density"]);
+        bits(view.log_exposure, expected["fields"]["log_exposure"]);
+#if defined(_WIN32)
+        bits(view.linear_sensitivity_rgb, expected["linear_windows"]);
+#else
+        bits(view.linear_sensitivity_rgb, expected["linear_linux"]);
+#endif
+    }
+    const Json& capture(const Json& density, const std::string& id) {
+        for (const auto& row : density["cases"]) {
+            if (row["id"] == id) {
+                return row;
+            }
+        }
+        throw std::runtime_error("missing independent capture");
+    }
+
+    TEST(ProductionProfileOwner, ActualCAndRustLayoutsMatchEveryField) {
+        const std::size_t cpp[] = {
+#define FJ_ABI_TYPE(type, size, alignment) sizeof(type), alignof(type),
+#define FJ_ABI_FIELD(type, field, offset) offsetof(type, field),
+#define FJ_ABI_VALUE(tag, value) tag,
+#include "production_profile_abi_facts.inc"
+#undef FJ_ABI_TYPE
+#undef FJ_ABI_FIELD
+#undef FJ_ABI_VALUE
+        };
+        std::size_t cCount = 0, rustCount = 0;
+        const auto* c = fj_test_production_profile_abi_c_facts(&cCount);
+        const auto* rust = fj_test_production_profile_abi_facts(&rustCount);
+        ASSERT_EQ(cCount, std::size(cpp));
+        ASSERT_EQ(rustCount, std::size(cpp));
+        for (std::size_t i = 0; i < cCount; ++i) {
+            EXPECT_EQ(c[i], cpp[i]);
+            EXPECT_EQ(rust[i], cpp[i]);
+        }
+    }
+
+    TEST(ProductionProfileOwner, All28TokensTablesDigestsAndGammaMatchIndependentCaptures) {
+        const auto completed = read_json(fixtures / "completed.json");
+        const auto density = read_json(fixtures / "density.json");
+        const auto gamma = read_json(fixtures / "print-gamma.json");
+        const auto payload = density_payload();
+        std::vector<std::string> profile_ids, gamma_ids;
+        for (const auto& expected : completed.at("profiles").items())
+            profile_ids.push_back(expected.key());
+        for (const auto& expected : gamma.at("captured")) {
+            const auto id = expected.at("id").get<std::string>();
+            if (completed.at("profiles").contains(id.substr(0, id.find("/gamma-"))))
+                gamma_ids.push_back(id);
+        }
+        JuicerTests::GtestCohort profile_rows("frozen-profiles", profile_ids);
+        JuicerTests::GtestCohort gamma_rows("frozen-gammas", gamma_ids);
+        Assets assets(resources);
+        FjCatalog* catalog = nullptr;
+        FjCatalogCounts counts{};
+        expect_status(fj_test_catalog_acquire(assets.owner, &catalog, &counts, nullptr), FJ_STATUS_SUCCESS);
+        ASSERT_EQ(counts.film_count + counts.print_count, 28u);
+        for (std::uint32_t role : {FJ_PROFILE_ROLE_FILM, FJ_PROFILE_ROLE_PRINT}) {
+            const auto count = role == FJ_PROFILE_ROLE_FILM ? counts.film_count : counts.print_count;
+            for (std::size_t i = 0; i < count; ++i) {
+                FjCatalogEntryView entry{};
+                expect_status(fj_test_catalog_entry(catalog, role, i, &entry, nullptr), FJ_STATUS_SUCCESS);
+                const std::string key(entry.key.data, entry.key.count);
+                auto profile_row = profile_rows.case_event(key);
+                SCOPED_TRACE(key);
+                const auto& expected = completed["profiles"][key];
+                const std::string baselineId = key + "/gamma-1.0";
+                const auto& baseline = capture(density, baselineId);
+                if (role == FJ_PROFILE_ROLE_FILM) {
+                    Film film(assets, key);
+                    const auto view = film.view();
+                    EXPECT_EQ(view.asset_token, expected["asset_token"].get<std::uint64_t>());
+                    tables(view.tables, expected);
+                    bits(view.wavelengths, expected["fields"]["wavelengths"]);
+                    density_bits(view.tables.density_curves_cmy, baseline, payload);
+                    for (std::size_t layer = 0; layer < 3; ++layer) {
+                        for (std::size_t channel = 0; channel < 3; ++channel) {
+                            const auto span = view.density_curves_layers[layer][channel];
+                            ASSERT_EQ(span.count, view.tables.log_exposure.count);
+                            for (std::size_t row = 0; row < span.count; ++row) {
+                                EXPECT_EQ(std::bit_cast<std::uint32_t>(span.data[row]), word(payload, (baseline["sample_start"].get<std::size_t>() + row) * 49 + 1 + (3 + layer * 3 + channel) * 4));
+                            }
+                        }
+                    }
+                    bits({view.digest.gamma_samelayer_rgb, 3}, expected["digest"]["gamma_samelayer_rgb"]);
+                    bits({view.digest.gamma_interlayer_r_to_gb, 2}, expected["digest"]["gamma_interlayer_r_to_gb"]);
+                    bits({view.digest.gamma_interlayer_g_to_rb, 2}, expected["digest"]["gamma_interlayer_g_to_rb"]);
+                    bits({view.digest.gamma_interlayer_b_to_rg, 2}, expected["digest"]["gamma_interlayer_b_to_rg"]);
+                    bits({view.digest.halation_first_sigma_um, 3}, expected["digest"]["halation_first_sigma_um"]);
+                    bits({view.digest.halation_primary_amount, 3}, expected["digest"]["halation_primary_amount"]);
+                    EXPECT_EQ(std::bit_cast<std::uint32_t>(view.digest.hanatos_spectral_gaussian_blur_default), expected["digest"]["hanatos_spectral_gaussian_blur_default"].get<std::uint32_t>());
+                    if (!expected["fields"]["window"].is_null()) {
+                        bits(view.hanatos_window, expected["fields"]["window"]);
+                    } else {
+                        EXPECT_EQ(view.hanatos_window.count, 0u);
+                        EXPECT_EQ(view.hanatos_window.data, nullptr);
+                    }
+                    if (!expected["fields"]["surface"].is_null()) {
+                        bits(view.hanatos_surface_rgb, expected["fields"]["surface"]);
+                    }
+                } else {
+                    Print print(assets, key);
+                    const auto view = print.view();
+                    EXPECT_EQ(view.asset_token, expected["asset_token"].get<std::uint64_t>());
+                    tables(view.tables, expected);
+                    density_bits(view.tables.density_curves_cmy, baseline, payload);
+                    for (const auto& item : gamma["captured"]) {
+                        const auto id = item["id"].get<std::string>();
+                        if (!id.starts_with(key + "/gamma-")) {
+                            continue;
+                        }
+                        auto gamma_row = gamma_rows.case_event(id);
+                        const auto& row = capture(density, id);
+                        Density curves(print, std::bit_cast<double>(row["gamma_bits"].get<std::uint64_t>()));
+                        const auto sampled = curves.view();
+                        EXPECT_EQ(sampled.hash, row["identities"]["print_hash"].get<std::uint64_t>());
+                        ASSERT_EQ(sampled.totals_cmy.count, view.tables.log_exposure.count * 3);
+                        density_bits(sampled.totals_cmy, row, payload);
+                        gamma_row.passed();
+                    }
+                }
+                profile_row.passed();
+            }
+        }
+        expect_status(fj_test_catalog_release(catalog, nullptr), FJ_STATUS_SUCCESS);
+    }
+
+    TEST(ProductionProfileOwner, BorrowedViewsAndOwnedGammaSurviveCacheAndAssetsDrop) {
+        Assets assets(resources);
+        Film film(assets, "kodak_portra_400");
+        Print print(assets, "kodak_portra_endura");
+        const auto fv = film.view();
+        const auto pv = print.view();
+        Density density(print, 1.1);
+        const auto dv = density.view();
+        const auto first = dv.totals_cmy.data[0];
+        const auto hash = dv.hash;
+        expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_destroy(std::exchange(assets.owner, nullptr), nullptr), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(film.view().tables.log_exposure.data, fv.tables.log_exposure.data);
+        EXPECT_EQ(print.view().tables.log_exposure.data, pv.tables.log_exposure.data);
+        std::array<std::thread, 8> readers;
+        std::array<bool, 8> passed{};
+        for (std::size_t i = 0; i < readers.size(); ++i) {
+            readers[i] = std::thread([&, i] {
+                FjPrintDensityCurves* curves = nullptr;
+                FjPrintDensityView view{};
+                FjFilmProfileView filmView{};
+                const auto a = fj_test_print_profile_sample_density(print.owner, 1.1, &curves, nullptr);
+                const auto b = fj_test_print_density_view(curves, &view, nullptr);
+                const auto c = fj_test_assets_film_view(film.owner, &filmView, nullptr);
+                passed[i] = a.category == FJ_STATUS_SUCCESS && b.category == FJ_STATUS_SUCCESS && c.category == FJ_STATUS_SUCCESS && view.hash == hash && filmView.tables.log_exposure.data == fv.tables.log_exposure.data;
+                passed[i] = passed[i] && fj_test_print_density_release(curves, nullptr).category == FJ_STATUS_SUCCESS;
+            });
+        }
+        for (auto& reader : readers) {
+            reader.join();
+        }
+        for (bool pass : passed) {
+            EXPECT_TRUE(pass);
+        }
+        expect_status(fj_test_print_profile_release(std::exchange(print.owner, nullptr), nullptr), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(density.view().hash, hash);
+        EXPECT_EQ(density.view().totals_cmy.data[0], first);
+    }
+
+    TEST(ProductionProfileOwner, ForeignFailuresClearOutputsAndConsumeMalformedReleases) {
+        Assets assets(resources);
+        JuicerTests::GtestCohort malformed_keys_cases("malformed-keys", 3u);
+        std::size_t malformed_keys_index = 0;
+        for (auto key : {FjStringView{nullptr, 1}, FjStringView{"x", std::numeric_limits<std::size_t>::max()}, FjStringView{"\xff", 1}}) {
+            auto malformed_keys_case = malformed_keys_cases.case_event(std::to_string(malformed_keys_index++));
+            FjFilmProfile* film = nullptr;
+            FjPrintProfile* print = nullptr;
+            expect_status(fj_test_assets_film_acquire(assets.owner, key, &film, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            expect_status(fj_test_print_profile_acquire(assets.owner, key, &print, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            EXPECT_EQ(film, nullptr);
+            EXPECT_EQ(print, nullptr);
+
+            malformed_keys_case.passed();
+        }
+        JuicerTests::GtestCohort missing_keys_cases("missing-keys", 4u);
+        std::size_t missing_keys_index = 0;
+        for (const std::string& key : {std::string(), std::string("missing"), std::string("kodak_portra_400\0", 17), std::string("kodak_portra_endura")}) {
+            auto missing_keys_case = missing_keys_cases.case_event(std::to_string(missing_keys_index++));
+            FjFilmProfile* film = nullptr;
+            expect_status(fj_test_assets_film_acquire(assets.owner, text(key), &film, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+            EXPECT_EQ(film, nullptr);
+
+            missing_keys_case.passed();
+        }
+        FjFilmProfileView fv{};
+        fv.asset_token = 42;
+        expect_status(fj_test_assets_film_view(nullptr, &fv, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(fv.asset_token, 0u);
+        EXPECT_EQ(fv.tables.log_exposure.data, nullptr);
+        Print print(assets, "kodak_portra_endura");
+        JuicerTests::GtestCohort invalid_gamma_cases("invalid-gamma", 4u);
+        std::size_t invalid_gamma_index = 0;
+        for (double gamma : {0.0, -1.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+            auto invalid_gamma_case = invalid_gamma_cases.case_event(std::to_string(invalid_gamma_index++));
+            FjPrintDensityCurves* curves = nullptr;
+            expect_status(fj_test_print_profile_sample_density(print.owner, gamma, &curves, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+            EXPECT_EQ(curves, nullptr);
+
+            invalid_gamma_case.passed();
+        }
+        JuicerTests::GtestCohort faults_cases("faults", 2u);
+        std::size_t faults_index = 0;
+        for (unsigned fault : {1u, 2u}) {
+            auto faults_case = faults_cases.case_event(std::to_string(faults_index++));
+            fj_test_profile_fault(fault);
+            FjFilmProfile* out = nullptr;
+            expect_status(fj_test_assets_film_acquire(assets.owner, text("kodak_portra_400"), &out, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
+            EXPECT_EQ(out, nullptr);
+            fj_test_profile_fault(fault);
+            FjPrintDensityCurves* curves = nullptr;
+            expect_status(fj_test_print_profile_sample_density(print.owner, 1.1, &curves, nullptr), fault == 1 ? FJ_STATUS_INTERNAL_FAILURE : FJ_STATUS_ALLOCATION_FAILURE);
+            EXPECT_EQ(curves, nullptr);
+
+            faults_case.passed();
+        }
+        Film film(assets, "kodak_portra_400");
+        FjErrorBuffer malformedFilm{nullptr, 1, 99};
+        expect_status(fj_test_assets_film_release(std::exchange(film.owner, nullptr), &malformedFilm), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(fj_test_profile_live_owners(), 1u);
+        JuicerTests::GtestCohort malformed_releases_cases("malformed-releases", 2u);
+        std::size_t malformed_releases_index = 0;
+        for (bool gammaResult : {false, true}) {
+            auto malformed_releases_case = malformed_releases_cases.case_event(std::to_string(malformed_releases_index++));
+            if (gammaResult) {
+                Density released(print, 1.1);
+                fj_test_profile_fault(3);
+                expect_status(fj_test_print_density_release(std::exchange(released.owner, nullptr), nullptr), FJ_STATUS_INTERNAL_FAILURE);
+                EXPECT_EQ(fj_test_print_density_live_owners(), 0u);
+            } else {
+                Film released(assets, "kodak_portra_400");
+                fj_test_profile_fault(3);
+                expect_status(fj_test_assets_film_release(std::exchange(released.owner, nullptr), nullptr), FJ_STATUS_INTERNAL_FAILURE);
+                EXPECT_EQ(fj_test_profile_live_owners(), 1u);
+            }
+
+            malformed_releases_case.passed();
+        }
+        FjErrorBuffer malformed{nullptr, 1, 99};
+        Density density(print, 1.1);
+        expect_status(fj_test_print_density_release(std::exchange(density.owner, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(fj_test_print_density_live_owners(), 0u);
+        EXPECT_EQ(malformed.length, 0u);
+        expect_status(fj_test_print_profile_release(std::exchange(print.owner, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(fj_test_profile_live_owners(), 0u);
+        std::array<char, 4> bytes{};
+        FjErrorBuffer tiny{bytes.data(), bytes.size(), 99};
+        expect_status(fj_test_print_density_view(nullptr, nullptr, &tiny), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(tiny.length, 3u);
+        EXPECT_EQ(bytes.back(), '\0');
+        expect_status(fj_test_print_density_release(nullptr, nullptr), FJ_STATUS_SUCCESS);
+    }
+
+
+    void check_cleanup_precedence(bool earlier) {
+        Assets assets(resources);
+        Film original(assets, "kodak_portra_400");
+        Film warm(assets, "kodak_portra_400");
+        const auto before = original.view();
+        ASSERT_EQ(before.tables.log_exposure.data, warm.view().tables.log_exposure.data);
+        FjIlluminantsOwner* illuminants = nullptr;
+        expect_status(fj_test_assets_illuminants_acquire(assets.owner, &illuminants, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_illuminants_release(illuminants, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_cache_clear_failures(assets.owner, earlier, 1, nullptr), FJ_STATUS_SUCCESS);
+        std::array<char, 256> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        const auto result = fj_test_assets_release_cached_payloads(assets.owner, &error);
+        expect_status(result, earlier ? FJ_STATUS_ALLOCATION_FAILURE : FJ_STATUS_INTERNAL_FAILURE);
+        EXPECT_STREQ(message.data(), earlier ? "host cache cleanup allocation failed" : "injected post-release cache failure");
+        EXPECT_EQ(error.length, std::strlen(message.data()));
+        FjCacheMetrics metrics{};
+        expect_status(fj_test_cache_metrics(assets.owner, FJ_TEST_CACHE_ILLUMINANTS, &metrics, nullptr), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(metrics.destructions, earlier ? 0u : 1u);
+        EXPECT_EQ(original.view().tables.log_exposure.data, before.tables.log_exposure.data);
+        Film fresh(assets, "kodak_portra_400");
+        const auto after = fresh.view();
+        EXPECT_NE(before.tables.log_exposure.data, after.tables.log_exposure.data);
+        ASSERT_EQ(before.tables.log_exposure.count, after.tables.log_exposure.count);
+        EXPECT_EQ(std::memcmp(before.tables.log_exposure.data, after.tables.log_exposure.data, before.tables.log_exposure.count * sizeof(float)), 0);
+        // Source release still runs after an earlier derived-cache failure; a
+        // second call observes the already-consumed injected source failure.
+        expect_status(fj_test_assets_release_source_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(original.view().tables.log_exposure.data, before.tables.log_exposure.data);
+    }
+
+    TEST(ProductionProfileOwner, RawHoldersSurviveCacheReleaseAndPreserveFirstError) {
+        check_cleanup_precedence(false);
+        check_cleanup_precedence(true);
+    }
+
+    TEST(ProductionProfileOwner, CacheReleaseOverlapsFirstCatalogPublication) {
+        JuicerTests::GtestCohort publication_overlap_cases("publication-overlap", 8u);
+        std::size_t publication_overlap_index = 0;
+        for (unsigned attempt = 0; attempt < 8; ++attempt) {
+            auto publication_overlap_case = publication_overlap_cases.case_event(std::to_string(publication_overlap_index++));
+            Assets assets(resources);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(fj_test_catalog_live_owners(), 0u);
+            std::barrier barrier(2);
+            struct HookContext {
+                std::barrier<>* barrier;
+            } hook{&barrier};
+            FjCatalog* selected = nullptr;
+            FjCatalogCounts counts{};
+            FjStatus acquireStatus{};
+            std::thread loader([&] {
+                fj_test_catalog_publication_hook([](void* opaque) {
+                    auto* context = static_cast<HookContext*>(opaque);
+                    context->barrier->arrive_and_wait();
+                    context->barrier->arrive_and_wait();
+                },
+                                                 &hook);
+                acquireStatus = fj_test_catalog_acquire(assets.owner, &selected, &counts, nullptr);
+                fj_test_catalog_publication_hook(nullptr, nullptr);
+            });
+            barrier.arrive_and_wait();
+            // Release must finish while the first catalog is still unpublished.
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            barrier.arrive_and_wait();
+            for (unsigned release = 0; release < 32; ++release) {
+                expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            }
+            loader.join();
+            expect_status(acquireStatus, FJ_STATUS_SUCCESS);
+            ASSERT_NE(selected, nullptr);
+            EXPECT_GT(counts.film_count, 0u);
+            EXPECT_GT(counts.print_count, 0u);
+            FjCatalogEntryView firstEntry{};
+            expect_status(fj_test_catalog_entry(selected, FJ_PROFILE_ROLE_FILM, 0, &firstEntry, nullptr), FJ_STATUS_SUCCESS);
+            const char* firstKey = firstEntry.key.data;
+            uintptr_t firstBacking = 0;
+            expect_status(fj_test_catalog_backing_identity(selected, &firstBacking, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_NE(firstBacking, 0u);
+            expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+            FjCatalogEntryView heldEntry{};
+            expect_status(fj_test_catalog_entry(selected, FJ_PROFILE_ROLE_FILM, 0, &heldEntry, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(heldEntry.key.data, firstKey);
+            uintptr_t heldBacking = 0;
+            expect_status(fj_test_catalog_backing_identity(selected, &heldBacking, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(heldBacking, firstBacking);
+
+            FjCatalog* repeated = nullptr;
+            FjCatalogCounts repeatedCounts{};
+            expect_status(fj_test_catalog_acquire(assets.owner, &repeated, &repeatedCounts, nullptr), FJ_STATUS_SUCCESS);
+            FjCatalogEntryView repeatedEntry{};
+            expect_status(fj_test_catalog_entry(repeated, FJ_PROFILE_ROLE_FILM, 0, &repeatedEntry, nullptr), FJ_STATUS_SUCCESS);
+            uintptr_t repeatedBacking = 0;
+            expect_status(fj_test_catalog_backing_identity(repeated, &repeatedBacking, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(repeatedBacking, firstBacking);
+            EXPECT_EQ(repeatedEntry.key.data, firstKey);
+            expect_status(fj_test_catalog_release(repeated, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(fj_test_catalog_live_owners(), 1u);
+            expect_status(fj_test_catalog_release(selected, nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(fj_test_catalog_live_owners(), 0u);
+            expect_status(fj_test_assets_destroy(std::exchange(assets.owner, nullptr), nullptr), FJ_STATUS_SUCCESS);
+            EXPECT_EQ(fj_test_assets_live_owners(), 0u);
+
+            publication_overlap_case.passed();
+        }
+    }
+
+    TEST(ProductionProfileOwner, CacheReleasePreservesRawPrintAndDensityOwners) {
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / "same-source");
+        fs::create_directories(root / "profiles");
+        fs::copy_file(resources / "profiles/kodak_portra_400.json", root / "profiles/kodak_portra_400.json", fs::copy_options::overwrite_existing);
+        fs::copy_file(resources / "profiles/kodak_portra_endura.json", root / "profiles/kodak_portra_endura.json", fs::copy_options::overwrite_existing);
+        Assets assets(root);
+        Print oldPrint(assets, "kodak_portra_endura");
+        const auto oldView = oldPrint.view();
+        Density oldDensity(oldPrint, 1.1);
+        const auto oldDensityView = oldDensity.view();
+        auto modified = read_json(root / "profiles/kodak_portra_endura.json");
+        modified["data"]["density_curves_model"]["amplitudes"][0][0] = 0.123;
+        {
+            std::ofstream file(root / "profiles/kodak_portra_endura.json");
+            file << modified;
+        }
+        expect_status(fj_test_assets_release_cached_payloads(assets.owner, nullptr), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(oldPrint.view().asset_token, oldView.asset_token);
+        EXPECT_EQ(oldDensity.view().hash, oldDensityView.hash);
+        EXPECT_EQ(oldDensity.view().totals_cmy.data, oldDensityView.totals_cmy.data);
+        Print newer(assets, "kodak_portra_endura");
+        const auto newView = newer.view();
+        EXPECT_NE(newView.asset_token, oldView.asset_token);
+        Density newDensity(newer, 1.1);
+        EXPECT_NE(newDensity.view().hash, oldDensityView.hash);
+        EXPECT_EQ(oldPrint.view().tables.log_exposure.data, oldView.tables.log_exposure.data);
+    }
+    fs::path consumer_resources(const char* name) {
+        const auto root = JuicerTestSupport::test_asset_workspaces.create(scratch / name);
+        JuicerTestSupport::copy_print_preparation_assets(resources, root);
+        return root;
+    }
+    void save_film(const FjAssets* assets, const fs::path& root, const Json& document) {
+        {
+            std::ofstream file(root / "profiles/kodak_portra_400.json");
+            file << document;
+        }
+        expect_status(fj_test_assets_release_cached_payloads(assets, nullptr), FJ_STATUS_SUCCESS);
+    }
+    JuicerTestSupport::PreparationInput direct_controls() {
+        JuicerTestSupport::PreparationInput controls;
+        controls.values.scan_route = FJ_ROUTE_NEGATIVE_DIRECT;
+        controls.values.spectral_upsampling_mode = 1;
+        controls.values.dir_couplers.active = 0;
+        controls.values.output_gamut_compression_enabled = 0;
+        return controls;
+    }
+
+    bool prepared_view(
+        const FjAssets* assets,
+        const JuicerTestSupport::PreparationInput& controls,
+        std::optional<JuicerTestSupport::PreparedStateHold>& owner,
+        FjPreparedStateView& view,
+        std::string& diagnostic) {
+        diagnostic.clear();
+        std::array<char, 1024> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjStatus status = JuicerTestSupport::prepare_state(
+            assets,
+            controls,
+            owner,
+            error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(message.data(), error.length);
+            return false;
+        }
+        status = owner->view(view, error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(message.data(), error.length);
+            return false;
+        }
+        return true;
+    }
+
+    TEST(ProductionProfileOwner, FilmDefaultsCopiesFixedDigestAndClearsMissingResult) {
+        Assets assets(resources);
+        FjFilmDigest defaults{};
+        std::array<char, 1024> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        expect_status(fj_test_assets_film_defaults(assets.owner, text("kodak_portra_400"), &defaults, &error), FJ_STATUS_SUCCESS);
+        Film source(assets, "kodak_portra_400");
+        const FjFilmProfileView view = source.view();
+        EXPECT_EQ(std::memcmp(&defaults, &view.digest, sizeof(defaults)), 0);
+
+        std::memset(&defaults, 0xa5, sizeof(defaults));
+        error.length = 0;
+        const FjStatus missing = fj_test_assets_film_defaults(assets.owner, text("missing-film-profile"), &defaults, &error);
+        EXPECT_EQ(missing.category, FJ_STATUS_PREPARATION_FAILURE);
+        EXPECT_EQ(missing.api, FJ_API_NONE);
+        EXPECT_EQ(missing.native_code, 0);
+        const FjFilmDigest cleared{};
+        EXPECT_EQ(std::memcmp(&defaults, &cleared, sizeof(defaults)), 0);
+    }
+
+    TEST(ProductionProfileConsumer, TypedOriginalBbReachesEveryProfileIlluminantConsumer) {
+        const auto root = consumer_resources("bb-consumers");
+        const auto original = read_json(root / "profiles/kodak_portra_400.json");
+        JuicerTestSupport::RuntimeFixture owner;
+        owner.create(root);
+        JuicerTests::GtestCohort typed_blackbody_cases("typed-blackbody", 3u);
+        std::size_t typed_blackbody_index = 0;
+        for (const auto& item : std::array<std::pair<const char*, double>, 3>{{{" BB+3200.5 ", 3200.5}, {"bb3.2005e3", 3200.5}, {"BB6500.25", 6500.25}}}) {
+            auto typed_blackbody_case = typed_blackbody_cases.case_event(std::to_string(typed_blackbody_index++));
+            SCOPED_TRACE(item.first);
+            auto changed = original;
+            changed["info"]["reference_illuminant"] = item.first;
+            changed["info"]["viewing_illuminant"] = item.first;
+            save_film(owner.borrow().assets, root, changed);
+            auto controls = direct_controls();
+            std::string diagnostic;
+            std::optional<JuicerTestSupport::PreparedStateHold> prepared;
+            FjPreparedStateView preparedState{};
+            ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
+            Film filmSource(owner.borrow().assets, "kodak_portra_400");
+            const FjFilmProfileView filmView = filmSource.view();
+            EXPECT_EQ(filmView.reference_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
+            EXPECT_EQ(filmView.viewing_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
+            EXPECT_EQ(
+                std::string(filmView.reference_illuminant.label.data, filmView.reference_illuminant.label.count),
+                item.first);
+            EXPECT_EQ(
+                std::string(filmView.viewing_illuminant.label.data, filmView.viewing_illuminant.label.count),
+                item.first);
+            EXPECT_EQ(
+                std::bit_cast<std::uint64_t>(filmView.reference_illuminant.temperature_kelvin),
+                std::bit_cast<std::uint64_t>(item.second));
+            EXPECT_EQ(preparedState.film_profile_asset_version, filmView.asset_token);
+#if defined(_WIN32)
+            const std::string platform = "windows-clang";
+#else
+            const std::string platform = "linux";
+#endif
+#if defined(NDEBUG)
+            const std::string configuration = "release";
+#else
+            const std::string configuration = "debug";
+#endif
+            std::string captureName = "construction-";
+            captureName.append(platform).append("-").append(configuration).append(".json");
+            const auto path = fixtures.parent_path().parent_path() / "ffi/fixtures/illuminants" / captureName;
+            const auto expectations = load_shared_fixture(path, "construction-manifest.json");
+            const auto temperature = std::bit_cast<std::uint32_t>(static_cast<float>(item.second));
+            const auto& rows = expectations["leaf"]["blackbody"];
+            const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& value) {
+                return value["temperature"].template get<std::uint32_t>() == temperature;
+            });
+            ASSERT_NE(row, rows.end());
+            std::vector<float> expected;
+            for (const auto& word : (*row)["normalized"]) {
+                expected.push_back(std::bit_cast<float>(word.template get<std::uint32_t>()));
+            }
+            expect_span_bits(preparedState.exposure_tables.illuminant, expected);
+            expect_span_bits(preparedState.scanner_tables.illuminant, expected);
+            EXPECT_NE(preparedState.film_reference.hash, 0u);
+            // The print scanner's authored viewing label also binds a typed owner.
+            auto printDocument = read_json(resources / "profiles/kodak_portra_endura.json");
+            printDocument["info"]["viewing_illuminant"] = item.first;
+            {
+                std::ofstream file(root / "profiles/kodak_portra_endura.json");
+                file << printDocument;
+            }
+            expect_status(fj_test_assets_release_cached_payloads(owner.borrow().assets, nullptr), FJ_STATUS_SUCCESS);
+            controls.values.scan_route = FJ_ROUTE_NEGATIVE_PRINT;
+            prepared.reset();
+            ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
+            expect_span_bits(preparedState.scanner_tables.illuminant, expected);
+            Print printSource(owner.borrow().assets, "kodak_portra_endura");
+            const FjPrintProfileView printView = printSource.view();
+            EXPECT_EQ(printView.viewing_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
+            EXPECT_EQ(
+                std::string(printView.viewing_illuminant.label.data, printView.viewing_illuminant.label.count),
+                item.first);
+            EXPECT_EQ(
+                std::bit_cast<std::uint64_t>(printView.viewing_illuminant.temperature_kelvin),
+                std::bit_cast<std::uint64_t>(item.second));
+            EXPECT_EQ(preparedState.print_profile_asset_version, printView.asset_token);
+
+            typed_blackbody_case.passed();
+        }
+        JuicerTests::GtestCohort invalid_blackbody_cases("invalid-blackbody", 4u);
+        std::size_t invalid_blackbody_index = 0;
+        for (const auto* label : {"BB0", "BB-0.0", "BB-3200", "BB1e-400"}) {
+            auto invalid_blackbody_case = invalid_blackbody_cases.case_event(std::to_string(invalid_blackbody_index++));
+            auto changed = original;
+            changed["info"]["reference_illuminant"] = label;
+            save_film(owner.borrow().assets, root, changed);
+            Film selected(owner.borrow().assets, "kodak_portra_400");
+            const FjFilmProfileView selectedView = selected.view();
+            EXPECT_EQ(selectedView.reference_illuminant.kind, FJ_ILLUMINANT_BLACKBODY);
+            std::optional<JuicerTestSupport::PreparedStateHold> rejected;
+            FjPreparedStateView rejectedView{};
+            std::string diagnostic;
+            EXPECT_FALSE(prepared_view(owner.borrow().assets, direct_controls(), rejected, rejectedView, diagnostic));
+            EXPECT_FALSE(rejected.has_value());
+            EXPECT_FALSE(diagnostic.empty());
+
+            invalid_blackbody_case.passed();
+        }
+    }
+
+    TEST(ProductionProfileConsumer, CanonicalAxesIgnoreAuthoredLabelsWhileIdentityRetainsThem) {
+        const auto root = consumer_resources("canonical-consumers");
+        const auto original = read_json(root / "profiles/kodak_portra_400.json");
+        const auto canonicalProfile = read_json(resources / "profiles/kodak_portra_400.json");
+        JuicerTestSupport::RuntimeFixture owner;
+        owner.create(root);
+        auto controls = direct_controls();
+        controls.print_key = "missing-unselected-print";
+        {
+            std::ofstream file(root / "profiles/kodak_portra_endura.json");
+            file << R"({"info":{"stock":"kodak_portra_endura","stage":"printing"},"data":{"wavelengths":[]}})";
+        }
+        std::string diagnostic;
+        std::optional<JuicerTestSupport::PreparedStateHold> prepared;
+        FjPreparedStateView preparedState{};
+        ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
+        const auto baselineFilmVersion = preparedState.film_profile_asset_version;
+        const auto baselineExposureLambda = copy_span(preparedState.exposure_tables.lambda_nm);
+        const auto baselineScannerLambda = copy_span(preparedState.scanner_tables.lambda_nm);
+        const auto baselineExposureEpsC = copy_span(preparedState.exposure_tables.dyes_cmy[0]);
+        const auto baselineScannerEpsC = copy_span(preparedState.scanner_tables.dyes_cmy[0]);
+        const auto baselineSensitivity = copy_span(preparedState.film_exposure.sensitivity_rgb);
+        auto changed = original;
+        for (std::size_t i = 0; i < 81; ++i) {
+            changed["data"]["wavelengths"][i] = 381.0 + 5.0 * static_cast<double>(i);
+        }
+        save_film(owner.borrow().assets, root, changed);
+        ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
+        EXPECT_NE(preparedState.film_profile_asset_version, baselineFilmVersion);
+        expect_span_bits(preparedState.exposure_tables.lambda_nm, baselineExposureLambda);
+        expect_span_bits(preparedState.scanner_tables.lambda_nm, baselineScannerLambda);
+        expect_span_bits(preparedState.exposure_tables.dyes_cmy[0], baselineExposureEpsC);
+        expect_span_bits(preparedState.scanner_tables.dyes_cmy[0], baselineScannerEpsC);
+        expect_span_bits(preparedState.film_exposure.sensitivity_rgb, baselineSensitivity);
+        Film shiftedSource(owner.borrow().assets, "kodak_portra_400");
+        const FjFilmProfileView shiftedView = shiftedSource.view();
+        EXPECT_EQ(preparedState.film_profile_asset_version, shiftedView.asset_token);
+        EXPECT_EQ(shiftedView.wavelengths.data[0], 381.0f);
+        changed["data"]["wavelengths"][0] = 1e40;
+        save_film(owner.borrow().assets, root, changed);
+        ASSERT_TRUE(prepared_view(owner.borrow().assets, controls, prepared, preparedState, diagnostic)) << diagnostic;
+        Film nonfiniteSource(owner.borrow().assets, "kodak_portra_400");
+        const FjFilmProfileView nonfiniteView = nonfiniteSource.view();
+        EXPECT_TRUE(std::isinf(nonfiniteView.wavelengths.data[0]));
+        expect_span_bits(preparedState.exposure_tables.lambda_nm, baselineExposureLambda);
+        expect_span_bits(preparedState.scanner_tables.lambda_nm, baselineScannerLambda);
+        expect_span_bits(preparedState.scanner_tables.dyes_cmy[0], baselineScannerEpsC);
+        EXPECT_EQ(read_json(resources / "profiles/kodak_portra_400.json"), canonicalProfile);
+    }
+
+    TEST(ProductionProfileConsumer, HanatosWindowBroaderValuesReachAcceptedFormula) {
+        const auto root = consumer_resources("hanatos-consumers");
+        const auto original = read_json(root / "profiles/kodak_portra_400.json");
+        JuicerTestSupport::RuntimeFixture owner;
+        owner.create(root);
+        auto controls = direct_controls();
+        controls.values.spectral_upsampling_mode = 0;
+        controls.values.hanatos2025_adaptation_window = 1;
+        controls.values.hanatos2025_adaptation_surface = 0;
+        JuicerTests::GtestCohort hanatos_widths_cases("hanatos-widths", 3u);
+        std::size_t hanatos_widths_index = 0;
+        for (double width : {-100.0, 1e40, 0.0}) {
+            auto hanatos_widths_case = hanatos_widths_cases.case_event(std::to_string(hanatos_widths_index++));
+            SCOPED_TRACE(width);
+            auto changed = original;
+            changed["data"]["hanatos2025_adaptation_window_params"] = {380.0, width, 780.0, 100.0};
+            save_film(owner.borrow().assets, root, changed);
+            Film source(owner.borrow().assets, "kodak_portra_400");
+            const FjFilmProfileView sourceView = source.view();
+            ASSERT_EQ(sourceView.hanatos_window.count, 4u);
+            EXPECT_EQ(sourceView.hanatos_window.data[1], static_cast<float>(width));
+            std::optional<JuicerTestSupport::PreparedStateHold> prepared;
+            FjPreparedStateView preparedState{};
+            std::string preparedDiagnostic;
+            const bool preparedBuilt = prepared_view(
+                owner.borrow().assets, controls, prepared, preparedState, preparedDiagnostic);
+            if (width == 0.0) {
+                EXPECT_FALSE(preparedBuilt);
+                EXPECT_FALSE(prepared.has_value());
+                EXPECT_NE(preparedDiagnostic.find("sensitivity"), std::string::npos)
+                    << preparedDiagnostic;
+            } else {
+                ASSERT_TRUE(preparedBuilt) << preparedDiagnostic;
+                EXPECT_EQ(preparedState.input_policy.apply_hanatos_window, 1u);
+                EXPECT_NE(preparedState.film_exposure.sensitivity_hash, 0u);
+            }
+
+            hanatos_widths_case.passed();
+        }
+    }
+
+    TEST(ProductionProfileConsumer, BroaderAxesAreCopiedAndReachLocalComputations) {
+        const auto root = consumer_resources("axis-consumers");
+        const auto original = read_json(root / "profiles/kodak_portra_400.json");
+        JuicerTestSupport::RuntimeFixture owner;
+        owner.create(root);
+        const std::array<Json, 4> axes{Json::array({0.0}), Json::array({-1.0, 0.0, 0.0, 1.0}), Json::array({1.00000004, 1.00000003}), Json::array({-1e40, 0.0, 1e40})};
+        JuicerTests::GtestCohort broader_axes_cases("broader-axes", axes.size());
+        std::size_t broader_axes_index = 0;
+        for (const auto& axis : axes) {
+            auto broader_axes_case = broader_axes_cases.case_event(std::to_string(broader_axes_index++));
+            SCOPED_TRACE(axis.dump());
+            auto changed = original;
+            changed["data"]["log_exposure"] = axis;
+            save_film(owner.borrow().assets, root, changed);
+            Film source(owner.borrow().assets, "kodak_portra_400");
+            const FjFilmProfileView sourceView = source.view();
+            ASSERT_EQ(sourceView.tables.log_exposure.count, axis.size());
+            ASSERT_EQ(sourceView.tables.density_curves_cmy.count, axis.size() * 3);
+            for (std::size_t i = 0; i < axis.size(); ++i) {
+                EXPECT_EQ(sourceView.tables.log_exposure.data[i], static_cast<float>(axis[i].get<double>()));
+            }
+            std::optional<JuicerTestSupport::PreparedStateHold> prepared;
+            FjPreparedStateView preparedState{};
+            std::string preparedDiagnostic;
+            const bool preparedBuilt = prepared_view(
+                owner.borrow().assets, direct_controls(), prepared, preparedState, preparedDiagnostic);
+            if (preparedBuilt) {
+                EXPECT_EQ(std::string(preparedState.film_profile_key.data,
+                                      preparedState.film_profile_key.count),
+                          "kodak_portra_400");
+                EXPECT_EQ(preparedState.film_profile_asset_version, sourceView.asset_token);
+                EXPECT_EQ(preparedState.film_development.density_rgb.count,
+                          axis.size() * 3);
+            } else {
+                EXPECT_FALSE(prepared.has_value());
+                EXPECT_FALSE(preparedDiagnostic.empty());
+            }
+            auto active = direct_controls();
+            active.values.dir_couplers.active = 1;
+            if (axis.size() == 1 || std::isinf(sourceView.tables.log_exposure.data[0])) {
+                std::optional<JuicerTestSupport::PreparedStateHold> activePrepared;
+                EXPECT_FALSE(prepared_view(owner.borrow().assets, active, activePrepared, preparedState, preparedDiagnostic));
+                EXPECT_FALSE(activePrepared.has_value());
+                EXPECT_FALSE(preparedDiagnostic.empty());
+            }
+
+            broader_axes_case.passed();
+        }
+    }
+
+
+} // namespace
+
+int main(int argc, char** argv) {
+    try {
+        ::testing::InitGoogleTest(&argc, argv);
+        if (::testing::GTEST_FLAG(list_tests))
+            return RUN_ALL_TESTS();
+        JuicerTests::CaseLog case_log;
+        if (argc != 4) {
+            std::fprintf(stderr, "resources, fixtures and scratch paths required\n");
+            return 2;
+        }
+        resources = argv[1];
+        fixtures = argv[2];
+        scratch = argv[3];
+        fs::create_directories(scratch);
+        const int result = RUN_ALL_TESTS();
+        case_log.finish();
+        const bool ownersDrained = fj_test_profile_live_owners() == 0 && fj_test_print_density_live_owners() == 0 && fj_test_catalog_live_owners() == 0 && fj_test_assets_live_owners() == 0;
+        return JuicerTestSupport::test_asset_workspaces.finish(result, ownersDrained);
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "production profile fixture: %s\n", error.what());
+        return 1;
+    } catch (...) {
+        std::fputs("production profile fixture: unknown exception\n", stderr);
+        return 1;
+    }
+}

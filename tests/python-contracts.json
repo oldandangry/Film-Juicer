@@ -1,0 +1,137 @@
+{
+  "schema": "python-contracts-v1",
+  "registrations": {
+    "Quality.NativeResults": {
+      "source": "tests/quality/test_native_results.py",
+      "tooling": true
+    },
+    "Quality.HostResults": {
+      "source": "tests/quality/test_host_results.py",
+      "tooling": true
+    },
+    "Quality.GpuResults": {
+      "source": "tests/quality/test_gpu_results.py",
+      "tooling": true
+    },
+    "Quality.Dispatcher": {
+      "source": "tests/quality/test_check_quality.py",
+      "tooling": true
+    },
+    "Quality.ToolingLint": {
+      "source": "tests/quality/test_tooling_lint.py",
+      "tooling": true
+    },
+    "Quality.Execution": {
+      "source": "tests/quality/test_execution.py",
+      "tooling": true,
+      "configurations": [
+        "Debug"
+      ]
+    },
+    "Quality.BuildEvidence": {
+      "source": "tests/quality/test_build_evidence.py",
+      "tooling": true,
+      "configurations": [
+        "Debug"
+      ]
+    },
+    "Quality.BuildRegistration": {
+      "source": "tests/quality/test_build_registration.py",
+      "tooling": true,
+      "configurations": [
+        "Debug"
+      ]
+    },
+    "Quality.Verify": {
+      "source": "tests/quality/test_verify.py",
+      "tooling": true,
+      "configurations": [
+        "Debug"
+      ]
+    },
+    "Quality.Checkpoint": {
+      "source": "tests/quality/test_checkpoint.py",
+      "tooling": true,
+      "configurations": [
+        "Debug"
+      ]
+    },
+    "Ctest.Host.Report": {
+      "source": "tests/ctest/test_report.py",
+      "tooling": true
+    },
+    "Ctest.Host.Repetition": {
+      "source": "tests/ctest/test_repeat.py",
+      "tooling": true
+    },
+    "Ffi.Host.RustBuild": {
+      "source": "tests/ffi/run_rust_build_contract.py",
+      "tooling": true
+    },
+    "Quality.RustNaming": {
+      "source": "tests/quality/test_rust_naming.py",
+      "tooling": false,
+      "cuda_free": true
+    },
+    "Quality.RustBoundaries": {
+      "source": "tests/quality/test_rust_boundaries.py",
+      "tooling": false,
+      "cuda_free": true
+    },
+    "Ffi.Host.NativeBoundary": {
+      "source": "tests/ffi/test_native_boundary.py",
+      "tooling": false
+    },
+    "Ffi.Host.SanitizerRunner": {
+      "source": "tests/ffi/test_prepared_sanitizer_control.py",
+      "tooling": false
+    },
+    "Exposure.Host.FixtureFormat": {
+      "source": "tests/ffi/test_exposure_fixtures.py",
+      "tooling": false
+    },
+    "Ffi.Host.SharedFixtureFormat": {
+      "source": "tests/ffi/test_shared_fixtures.py",
+      "tooling": false
+    },
+    "Exposure.Host.Mallett.FixtureFormat": {
+      "source": "tests/ffi/test_mallett_exposure_fixtures.py",
+      "tooling": false
+    },
+    "Reconstruction.Host.TcLut.FixtureFormat": {
+      "source": "tests/ffi/test_tc_lut_fixtures.py",
+      "tooling": false
+    },
+    "Gamut.Host.InputHull.FixtureFormat": {
+      "source": "tests/ffi/test_input_hull_fixtures.py",
+      "tooling": false
+    },
+    "Gamut.Host.Output.FixtureFormat": {
+      "source": "tests/ffi/test_output_gamut_fixtures.py",
+      "tooling": false
+    },
+    "Gamma.Comparator": {
+      "source": "tests/gamma/test_compare.py",
+      "tooling": false
+    },
+    "Ffi.Host.BuildArtifacts": {
+      "source": "tests/ffi/build_artifact_contract.py",
+      "tooling": false
+    },
+    "Ofx.SyntheticHostLifecycle": {
+      "source": "tests/ofx/probe.py",
+      "tooling": false,
+      "platforms": [
+        "linux"
+      ]
+    },
+    "Ofx.Host.MeasurementReport": {
+      "source": "tests/benchmarks/test_ofx_report.py",
+      "tooling": true
+    },
+    "Ofx.Gpu.Measurement": {
+      "source": "tests/benchmarks/test_ofx_measurement.py",
+      "tooling": false
+    }
+  }
+}

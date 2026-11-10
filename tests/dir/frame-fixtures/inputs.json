@@ -1,0 +1,1880 @@
+{
+  "schema": 1,
+  "kind": "Film-Juicer native migration characterization inputs; no reference pixel contract",
+  "cases": [
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "fir",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1042983594,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1042983594",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1042983595,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1042983595",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1042983596,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1042983596",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1077936127,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1077936127",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1077936128,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1077936128",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1077936129,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1077936129",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1082130432",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1101004800,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1101004800",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1120403456,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1120403456",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1148846080,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1148846080",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1232348160,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1232348160",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1311419049,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1311419049",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1311419050,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1311419050",
+      "expected_field": 9,
+      "expected_component": 0
+    },
+    {
+      "active": true,
+      "size": 1311419051,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1311419051",
+      "expected_field": 9,
+      "expected_component": 0
+    },
+    {
+      "active": true,
+      "size": 1900671690,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-word-1900671690",
+      "expected_field": 9,
+      "expected_component": 0
+    },
+    {
+      "active": false,
+      "size": 1065353216,
+      "tail": 2139095040,
+      "weight": 2143289345,
+      "pixel": 2143306529,
+      "render": [
+        -9,
+        6,
+        -1,
+        0
+      ],
+      "full": [
+        8,
+        -3,
+        0,
+        -1
+      ],
+      "hash": 0,
+      "label": "direct",
+      "name": "inactive",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 0,
+      "tail": 2139095040,
+      "weight": 2143289345,
+      "pixel": 2143306529,
+      "render": [
+        -9,
+        6,
+        -1,
+        0
+      ],
+      "full": [
+        8,
+        -3,
+        0,
+        -1
+      ],
+      "hash": 0,
+      "label": "direct",
+      "name": "size-zero",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 2147483648,
+      "tail": 2139095040,
+      "weight": 2143289345,
+      "pixel": 2143306529,
+      "render": [
+        -9,
+        6,
+        -1,
+        0
+      ],
+      "full": [
+        8,
+        -3,
+        0,
+        -1
+      ],
+      "hash": 0,
+      "label": "direct",
+      "name": "size-minus-zero",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 3212836864,
+      "tail": 2139095040,
+      "weight": 2143289345,
+      "pixel": 2143306529,
+      "render": [
+        -9,
+        6,
+        -1,
+        0
+      ],
+      "full": [
+        8,
+        -3,
+        0,
+        -1
+      ],
+      "hash": 0,
+      "label": "direct",
+      "name": "size-negative",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 2143294004,
+      "tail": 2139095040,
+      "weight": 2143289345,
+      "pixel": 2143306529,
+      "render": [
+        -9,
+        6,
+        -1,
+        0
+      ],
+      "full": [
+        8,
+        -3,
+        0,
+        -1
+      ],
+      "hash": 0,
+      "label": "direct",
+      "name": "size-nan",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 0,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "pixel-zero",
+      "expected_field": 1,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 2147483648,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "pixel-minus-zero",
+      "expected_field": 1,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 3212836864,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "pixel-negative",
+      "expected_field": 1,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 2143289344,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "pixel-nan",
+      "expected_field": 1,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 2139095040,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "pixel-inf",
+      "expected_field": 1,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        0,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "render-2-0",
+      "expected_field": 2,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        -1,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "render-2--1",
+      "expected_field": 2,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        0
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "render-3-0",
+      "expected_field": 2,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        -1
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "render-3--1",
+      "expected_field": 2,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        0,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "full-2-0",
+      "expected_field": 3,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        -1,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "full-2--1",
+      "expected_field": 3,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        0
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "full-3-0",
+      "expected_field": 3,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        -1
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "full-3--1",
+      "expected_field": 3,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 0,
+      "render": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "full": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "pixel-before-extents",
+      "expected_field": 1,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "full": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "render-before-full",
+      "expected_field": 2,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 2139095040,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-inf",
+      "expected_field": 5,
+      "expected_component": 0
+    },
+    {
+      "active": true,
+      "size": 2139095039,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-overflow",
+      "expected_field": 5,
+      "expected_component": 0
+    },
+    {
+      "active": true,
+      "size": 1,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 2139095039,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-underflow",
+      "expected_field": 5,
+      "expected_component": 0
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 2143289344,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-weight-nan",
+      "expected_field": 5,
+      "expected_component": 0
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 2139095040,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-weight-inf",
+      "expected_field": 5,
+      "expected_component": 0
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 1065353217,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-weight-above-one",
+      "expected_field": 5,
+      "expected_component": 0
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        1,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "offset",
+      "expected_field": 4,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        63,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "width",
+      "expected_field": 4,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        -11,
+        -7,
+        64,
+        48
+      ],
+      "full": [
+        -11,
+        -7,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "negative-origin",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        27,
+        33,
+        64,
+        48
+      ],
+      "full": [
+        27,
+        33,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "positive-origin",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        2147483647,
+        -2147483648,
+        64,
+        48
+      ],
+      "full": [
+        2147483647,
+        -2147483648,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "int-origin",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        96,
+        71
+      ],
+      "full": [
+        0,
+        0,
+        96,
+        71
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "geometry-change",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 1073741824,
+      "pixel": 1065353216,
+      "render": [
+        1,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "core-before-partial",
+      "expected_field": 5,
+      "expected_component": 0
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 2143289344,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-nan",
+      "expected_field": 6,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 2143289344,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "ignored-tail-nan",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 2139095040,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-inf",
+      "expected_field": 6,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 2139095040,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "ignored-tail-inf",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 3212836864,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-negative",
+      "expected_field": 6,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 3212836864,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "ignored-tail-negative",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1036831949,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-weight-zero",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1036831949,
+      "weight": 2147483648,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-weight-minus-zero",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1036831949,
+      "weight": 3196059648,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-weight-negative",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1036831949,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-weight-quarter",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1036831949,
+      "weight": 1065353216,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-weight-one",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1036831949,
+      "weight": 1,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-weight-tiny",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 0,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-zero",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 2147483648,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-minus-zero",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1056964608,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-fir",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1073741824,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-mixed",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1101004800,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-yvv",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1082130432,
+      "tail": 1,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-tiny",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 2139095039,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-sigma-overflow",
+      "expected_field": 7,
+      "expected_component": 1
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1324247848,
+      "weight": 1048576000,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "tail-radius",
+      "expected_field": 9,
+      "expected_component": 1
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 0,
+      "label": "direct",
+      "name": "active-hash-zero",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486894,
+      "label": "direct",
+      "name": "hash-change",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "print",
+      "name": "label-change",
+      "expected_field": 0,
+      "expected_component": 4
+    },
+    {
+      "active": true,
+      "size": 1065353216,
+      "tail": 1065353216,
+      "weight": 0,
+      "pixel": 1073741824,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "hash": 81985529216486895,
+      "label": "direct",
+      "name": "pixel-change",
+      "expected_field": 0,
+      "expected_component": 4
+    }
+  ],
+  "products": [
+    {
+      "name": "pixel-1",
+      "pixel": 1065353216,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ]
+    },
+    {
+      "name": "pixel-8",
+      "pixel": 1090519040,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ]
+    },
+    {
+      "name": "pixel-20",
+      "pixel": 1101004800,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ]
+    },
+    {
+      "name": "pixel-100",
+      "pixel": 1120403456,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ]
+    },
+    {
+      "name": "pixel-200",
+      "pixel": 1128792064,
+      "render": [
+        0,
+        0,
+        64,
+        48
+      ],
+      "full": [
+        0,
+        0,
+        64,
+        48
+      ]
+    },
+    {
+      "name": "origin-change",
+      "pixel": 1090519040,
+      "render": [
+        -11,
+        7,
+        96,
+        71
+      ],
+      "full": [
+        -11,
+        7,
+        96,
+        71
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "preset": "linux-debug",
+  "provenance": {
+    "native_head": "937652c659a336760524cd9dbefab55ab769bade",
+    "native_body_sha256": "1d3a4afaf6a9506f580172a1e0eb22878ff25cdbac6867d953817c657e6f4fb6",
+    "capture": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-c-slice-10-2026-10-24/native-fir-capture.json",
+    "capture_sha256": "fddd782b7496c70b043fc6377f5501132ec100598e6caa5e5df72f3f67f37007",
+    "executable": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-c-slice-10-2026-10-24/native-fir-producer",
+    "executable_sha256": "766f56a4868e154ef889653138440109d66c9904955fc180cb7c24160f7a8c1d",
+    "cohort_sha256": "95efd67891f4064483c5a111d02065f7037bb8b0c13ccce10a702f84aa474669",
+    "source_evidence": "/mnt/c/Dev/Codex/.juicer-local/validation/s4-c-slice-10-2026-10-24/initial-native-source",
+    "supplement_source": "/mnt/c/Dev/Codex/.juicer-local/validation/s4-c-slice-10-2026-10-24/fir-native-source",
+    "compiler_link_configuration": "/mnt/c/Dev/Codex/.juicer-local/validation/s4-c-slice-10-2026-10-24/initial-config/linux-debug",
+    "metric": "exact entire f32 array/count/radius/input-sigma; native unchanged whole function"
+  }
+}

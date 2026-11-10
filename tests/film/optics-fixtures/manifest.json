@@ -1,0 +1,189 @@
+{
+  "kind": "Film-Juicer unchanged-native spatial-optics characterization",
+  "source_revision": "c87bfcd50c275c782651aace6866ec90700691e8",
+  "source_tree": "a3a0d3bd9c1814fce3f7d3d5bc7848a230ccd708",
+  "comparison": "exact semantic fields encoded as raw IEEE f32/f64 words and u64 identities; no padding comparisons or tolerance",
+  "presets": {
+    "linux-debug": {
+      "literal": "linux-debug-literal.json",
+      "products": "linux-debug-products.json",
+      "ofx": "linux-debug-ofx.json",
+      "defaults": "linux-debug-defaults.json"
+    },
+    "linux-release": {
+      "literal": "linux-debug-literal.json",
+      "products": "linux-debug-products.json",
+      "ofx": "linux-debug-ofx.json",
+      "defaults": "linux-debug-defaults.json"
+    },
+    "windows-clang-debug": {
+      "literal": "windows-clang-debug-literal.json",
+      "products": "windows-clang-debug-products.json",
+      "ofx": "windows-clang-debug-ofx.json",
+      "defaults": "windows-clang-debug-defaults.json"
+    },
+    "windows-clang-release": {
+      "literal": "windows-clang-debug-literal.json",
+      "products": "windows-clang-debug-products.json",
+      "ofx": "windows-clang-release-ofx.json",
+      "defaults": "windows-clang-debug-defaults.json"
+    }
+  },
+  "payload_sha256": {
+    "linux-debug-literal.json": "369db45f9719ebe6cd1a1b61e23ec655b5b95d6122374657b357a7d82768bb1c",
+    "linux-debug-products.json": "b155bc13b795884bc944f1c08c7542232866f29317c1d804b1f66c96ea109435",
+    "linux-debug-ofx.json": "0fe775d09c8a867b817de3750b10499e164b57235d55b6cb8d29dbfb522beed5",
+    "linux-debug-defaults.json": "ea42a4bfb074d000414350dba8666a7f977aa90810af626246c4853f63eaf5f9",
+    "windows-clang-debug-literal.json": "176bedf7dd512d31e5a86e67710721a18b9e37dae946e4173d3799c9b27fa8bd",
+    "windows-clang-debug-products.json": "7066fad34b045180f9132db9e14e637fef7b4666e868e7d487c17423d8acd445",
+    "windows-clang-debug-ofx.json": "5a76ed7def0301ff108005223b2b97cdcdff01650dc3101ef6809af3768124dc",
+    "windows-clang-debug-defaults.json": "29905299480ff29018e0a9638b5db657f75659891585ea689b545b4f697ab7f3",
+    "windows-clang-release-ofx.json": "58c5cdce102c6a3fb9ee4861a16dafefdec2a974cfef848f25778ff925a1513d"
+  },
+  "provenance": {
+    "linux-debug": {
+      "capture_collection": "out/validation/linux-debug/s4-b-slice-6-native-baseline-2026-10-18/capture-repaired/collection.json",
+      "capture_collection_sha256": "6bd36016e7ab49484adcedd8c54790658d81a3a862e8cb8fe63919398bcdbd43",
+      "defaults_collection": "out/validation/linux-debug/s4-b-slice-6-native-defaults-2026-10-18/collection.json",
+      "defaults_collection_sha256": "cf119f9e0ba23eed0869c4645426a84fe5ea7f834d7ca7a54cc100b9e026da98",
+      "commands": "Original supervised receipts under the named campaigns; every source/compiler/FP/configuration/resource/executable/module identity remains bound there.",
+      "case_counts": {
+        "literal": 553,
+        "capture_controls": 72,
+        "products": 32,
+        "ofx": 96,
+        "completed_profile_defaults": 12,
+        "lens_preflight": 4
+      },
+      "retained_loaded_witness": {
+        "actual_module": {
+          "original": "/mnt/c/Dev/Codex/out/build/linux-debug/tests/bin/juicer.ofx",
+          "retained": "out/validation/linux-debug/s4-b-slice-6-native-baseline-2026-10-18/frozen-native/juicer.ofx",
+          "sha256": "6b3947478505590cc20078418b72f9e0bdddbcb3de3cfc8e7f274f8e30b0e05c"
+        },
+        "actual_executable": {
+          "original": "/mnt/c/Dev/Codex/out/build/linux-debug/tests/bin/JuicerAdapterTraceProbe",
+          "retained": "out/validation/linux-debug/s4-b-slice-6-native-baseline-2026-10-18/frozen-native/JuicerAdapterTraceProbe",
+          "sha256": "90bdc5af9fdec3849dea485111fd43d5aec3c0020fd19865a0f235a4295f2ad5"
+        }
+      }
+    },
+    "linux-release": {
+      "capture_collection": "out/validation/linux-release/s4-b-slice-6-native-baseline-2026-10-18/capture-repaired/collection.json",
+      "capture_collection_sha256": "274eb74906f8215b935c424905d2213758c4321a4439f47ec8edfab10939138b",
+      "defaults_collection": "out/validation/linux-release/s4-b-slice-6-native-defaults-2026-10-18/collection.json",
+      "defaults_collection_sha256": "acf7d8dbcb8cbe6927f8ae486eca232cf7e046f5b4653b70890f12e68d451481",
+      "commands": "Original supervised receipts under the named campaigns; every source/compiler/FP/configuration/resource/executable/module identity remains bound there.",
+      "case_counts": {
+        "literal": 553,
+        "capture_controls": 72,
+        "products": 32,
+        "ofx": 96,
+        "completed_profile_defaults": 12,
+        "lens_preflight": 4
+      },
+      "retained_loaded_witness": {
+        "actual_module": {
+          "original": "/mnt/c/Dev/Codex/out/build/linux-release/tests/bin/juicer.ofx",
+          "retained": "out/validation/linux-release/s4-b-slice-6-native-baseline-2026-10-18/frozen-native/juicer.ofx",
+          "sha256": "ba1bc52dd75d99968abaac2705c3e08da7a274aa58421e14b6607e95eae5ebdf"
+        },
+        "actual_executable": {
+          "original": "/mnt/c/Dev/Codex/out/build/linux-release/tests/bin/JuicerAdapterTraceProbe",
+          "retained": "out/validation/linux-release/s4-b-slice-6-native-baseline-2026-10-18/frozen-native/JuicerAdapterTraceProbe",
+          "sha256": "fcbbcd7113a687a087d2269c89dc814060e96aeab264612fcf8c4870e84f6f54"
+        }
+      }
+    },
+    "windows-clang-debug": {
+      "capture_collection": "out/validation/windows-clang-debug/s4-b-slice-6-native-baseline-2026-10-18/capture-repaired/collection.json",
+      "capture_collection_sha256": "3eab7f959541f288ab98c97f15f3dad8c3b650adcb8d461d0f71833a9f8349ea",
+      "defaults_collection": "out/validation/windows-clang-debug/s4-b-slice-6-native-defaults-2026-10-18/collection.json",
+      "defaults_collection_sha256": "89754503a8777fba226f7bb60c725f8fceac6b40ab13feb4571df9c5bb197153",
+      "commands": "Original supervised receipts under the named campaigns; every source/compiler/FP/configuration/resource/executable/module identity remains bound there.",
+      "case_counts": {
+        "literal": 553,
+        "capture_controls": 72,
+        "products": 32,
+        "ofx": 96,
+        "completed_profile_defaults": 12,
+        "lens_preflight": 4
+      },
+      "retained_loaded_witness": {
+        "actual_module": {
+          "original": "C:\\Dev\\Codex\\out\\build\\windows-clang-debug\\tests\\bin\\juicer.ofx",
+          "retained": "out/validation/windows-clang-debug/s4-b-slice-6-native-baseline-2026-10-18/frozen-native/juicer.ofx",
+          "sha256": "0a0b6c4c4c5e3b28caa36b934339a0f2b8f75246989735c840772972a378c28b"
+        },
+        "actual_executable": {
+          "original": "C:\\Dev\\Codex\\out\\build\\windows-clang-debug\\tests\\bin\\JuicerAdapterTraceProbe.exe",
+          "retained": "out/validation/windows-clang-debug/s4-b-slice-6-native-baseline-2026-10-18/frozen-native/JuicerAdapterTraceProbe.exe",
+          "sha256": "a7ed1259471b74a4cac2c0ae6591bf95a42f8be36c5e439ee191ab70f19664c2"
+        }
+      }
+    },
+    "windows-clang-release": {
+      "capture_collection": "out/validation/windows-clang-release/s4-b-slice-6-native-baseline-2026-10-18/capture-repaired/collection.json",
+      "capture_collection_sha256": "93f4d4227b4ac59785ce9bf2356188238abc9a74651820a45851e47d9dea73e1",
+      "defaults_collection": "out/validation/windows-clang-release/s4-b-slice-6-native-defaults-2026-10-18/collection.json",
+      "defaults_collection_sha256": "78c4430bcf4a661694ffae546e62ecca8ad1c9ee7c92748e4b5d100d00af61c2",
+      "commands": "Original supervised receipts under the named campaigns; every source/compiler/FP/configuration/resource/executable/module identity remains bound there.",
+      "case_counts": {
+        "literal": 553,
+        "capture_controls": 72,
+        "products": 32,
+        "ofx": 96,
+        "completed_profile_defaults": 12,
+        "lens_preflight": 4
+      },
+      "retained_loaded_witness": {
+        "actual_module": {
+          "original": "C:\\Dev\\Codex\\out\\build\\windows-clang-release\\tests\\bin\\juicer.ofx",
+          "retained": "out/validation/windows-clang-release/s4-b-slice-6-native-baseline-2026-10-18/frozen-native/juicer.ofx",
+          "sha256": "7ebfdc95e3428de1f448772f1f366dde1a004fae2716bbd15314e18d34bd95bf"
+        },
+        "actual_executable": {
+          "original": "C:\\Dev\\Codex\\out\\build\\windows-clang-release\\tests\\bin\\JuicerAdapterTraceProbe.exe",
+          "retained": "out/validation/windows-clang-release/s4-b-slice-6-native-baseline-2026-10-18/frozen-native/JuicerAdapterTraceProbe.exe",
+          "sha256": "e81e4a7e72f90480bf4152abda30a076b12ef28a79fe53c96aeacebdd963d405"
+        }
+      }
+    }
+  },
+  "native_partial_failures": "Historical unpublished partial recipes are retained as native evidence only; new raw failure clearing/envelopes are normative ABI requirements, not captures of an old operation.",
+  "input_diffusion_f64_order": [
+    "strength",
+    "spatial_scale",
+    "halo_warmth",
+    "core_intensity",
+    "core_size",
+    "halo_intensity",
+    "halo_size",
+    "bloom_intensity",
+    "bloom_size"
+  ],
+  "diffusion_recipe_f64_order": [
+    "scatter_fraction",
+    "core_weight",
+    "halo_weight",
+    "bloom_weight",
+    "core_lambda_um",
+    "halo_lambda_um",
+    "bloom_lambda_um",
+    "warmth",
+    "spatial_scale"
+  ],
+  "halation_recipe_f32_order": [
+    "scatter_amount",
+    "scatter_spatial_scale",
+    "halation_spatial_scale",
+    "first_sigma_r_um",
+    "first_sigma_g_um",
+    "first_sigma_b_um",
+    "total_strength_r",
+    "total_strength_g",
+    "total_strength_b"
+  ],
+  "channels": "RGB; diffusion groups core/halo/bloom",
+  "flags_domains_families": "JSON booleans and numeric enum tags; native hashes use one-byte bool/family/domain/component, f32/f64/u64 little endian"
+}

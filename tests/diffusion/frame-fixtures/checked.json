@@ -1,0 +1,1735 @@
+{
+  "authority": "Closed diffusion status/reason/stage/field/text contract; native characterization remains separate.",
+  "frames": {
+    "camera-before-enlarger": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=camera_linear_domain",
+      "field": 18,
+      "reason": 2,
+      "stage": 1
+    },
+    "camera/active/True": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "camera/domain/1": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=camera_linear_domain",
+      "field": 18,
+      "reason": 2,
+      "stage": 1
+    },
+    "camera/resolved_hash/123": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "camera/scale/9218868437227405312": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=camera_sample",
+      "field": 19,
+      "reason": 2,
+      "stage": 1
+    },
+    "camera/scatter/9221120237041090560": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "camera/scatter/9223372036854775808": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "enlarger/active/True": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "enlarger/domain/0": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=enlarger_linear_domain",
+      "field": 18,
+      "reason": 2,
+      "stage": 2
+    },
+    "enlarger/resolved_hash/123": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "enlarger/scale/9218868437227405312": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=enlarger_sample",
+      "field": 19,
+      "reason": 2,
+      "stage": 2
+    },
+    "enlarger/scatter/9221120237041090560": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "enlarger/scatter/9223372036854775808": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "frame/16": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=route",
+      "field": 15,
+      "reason": 2,
+      "stage": 0
+    },
+    "frame/17": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=pixel_size_um",
+      "field": 1,
+      "reason": 2,
+      "stage": 0
+    },
+    "frame/18": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=full_frame_domain",
+      "field": 16,
+      "reason": 2,
+      "stage": 0
+    },
+    "frame/19": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "frame/20": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "inactive/ignored": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/0/0/0": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/0/0/1": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=enlarger_route",
+      "field": 17,
+      "reason": 2,
+      "stage": 0
+    },
+    "route/0/1/0": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/0/1/1": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=enlarger_route",
+      "field": 17,
+      "reason": 2,
+      "stage": 0
+    },
+    "route/1/0/0": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/1/0/1": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/1/1/0": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/1/1/1": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/2/0/0": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/2/0/1": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=enlarger_route",
+      "field": 17,
+      "reason": 2,
+      "stage": 0
+    },
+    "route/2/1/0": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/2/1/1": {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=enlarger_route",
+      "field": 17,
+      "reason": 2,
+      "stage": 0
+    },
+    "route/3/0/0": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/3/0/1": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/3/1/0": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    },
+    "route/3/1/1": {
+      "category": 0,
+      "diagnostic": "",
+      "field": 0,
+      "reason": 0,
+      "stage": 0
+    }
+  },
+  "raw": [
+    {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionHostBehavior field=family",
+      "field": 3,
+      "mutation": "family",
+      "name": "sample/family",
+      "operation": 1,
+      "reason": 2,
+      "stage": 0
+    },
+    {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionHostBehavior field=sample_descriptor_inactive",
+      "field": 6,
+      "mutation": "zero-hash",
+      "name": "components/zero-hash",
+      "operation": 2,
+      "reason": 2,
+      "stage": 0
+    },
+    {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionHostBehavior field=sample_descriptor_hash",
+      "field": 5,
+      "mutation": "tampered-hash",
+      "name": "components/tampered-hash",
+      "operation": 2,
+      "reason": 2,
+      "stage": 0
+    },
+    {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionHostBehavior field=radius_pixels",
+      "field": 4,
+      "mutation": "negative-radius",
+      "name": "components/negative-radius",
+      "operation": 2,
+      "reason": 2,
+      "stage": 0
+    },
+    {
+      "category": 3,
+      "diagnostic": "InvalidDiffusionFrameDescriptor field=camera_sample",
+      "field": 19,
+      "mutation": "family",
+      "name": "frame/family",
+      "operation": 3,
+      "reason": 2,
+      "stage": 1
+    }
+  ],
+  "samples": {
+    "bad-extent/-1/10": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=pixel_size_um",
+        "field": 1,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "bad-extent/0/1": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=full_frame_extent",
+        "field": 2,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "bad-extent/1/0": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=full_frame_extent",
+        "field": 2,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "bad-extent/10/-1": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=full_frame_extent",
+        "field": 2,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "bloom-weight-overflow": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=component_expansion",
+        "field": 11,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/0/0": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/0/1": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/0/13830554455654793216": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/0/9214871658872686752": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/0/9218868437227405312": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/0/9221120237041090560": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/1/0": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/1/1": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=component_expansion",
+        "field": 11,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/1/13830554455654793216": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/1/9214871658872686752": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=component_expansion",
+        "field": 11,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/1/9218868437227405312": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/1/9221120237041090560": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/2/0": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/2/1": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=component_expansion",
+        "field": 11,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/2/13830554455654793216": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_centers_um",
+        "field": 8,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "center/2/9214871658872686752": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=radius_pixels",
+        "field": 4,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "center/2/9218868437227405312": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=radius_pixels",
+        "field": 4,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "center/2/9221120237041090560": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=radius_pixels",
+        "field": 4,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "component-output-overflow": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=component_output",
+        "field": 14,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "extent/1/1": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "extent/11/12": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "extent/12/11": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "extent/13/17": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "extent/2/3": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "extent/2161/4095": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "extent/4095/2161": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/0/warmth/0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/0/warmth/13832806255468478464": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/0/warmth/4600336947366414254": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/0/warmth/4609434218613702656": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/0/warmth/9223372036854775808": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/1/warmth/0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/1/warmth/13832806255468478464": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/1/warmth/4600336947366414254": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/1/warmth/4609434218613702656": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/1/warmth/9223372036854775808": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/2/warmth/0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/2/warmth/13832806255468478464": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/2/warmth/4600336947366414254": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/2/warmth/4609434218613702656": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/2/warmth/9223372036854775808": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/3/warmth/0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/3/warmth/13832806255468478464": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/3/warmth/4600336947366414254": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/3/warmth/4609434218613702656": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "family/3/warmth/9223372036854775808": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "pixel/0": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=pixel_size_um",
+        "field": 1,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "pixel/1000000.0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "pixel/13830554455654793216": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=pixel_size_um",
+        "field": 1,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "pixel/18442240474082181120": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=pixel_size_um",
+        "field": 1,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "pixel/1e+300": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "pixel/1e-06": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "pixel/1e-07": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "pixel/1e-300": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "pixel/9218868437227405312": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=pixel_size_um",
+        "field": 1,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "pixel/9221120237041090560": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=pixel_size_um",
+        "field": 1,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "pixel/9223372036854775808": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=pixel_size_um",
+        "field": 1,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "radius/1078.0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "radius/1079.0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "radius/1080.0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "radius/4.999999999999999": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "radius/5.0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "radius/5.000000000000001": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "radius/6.0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "radius/6.000000000000001": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/0": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=spatial_scale",
+        "field": 10,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/1000.0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/13830554455654793216": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=spatial_scale",
+        "field": 10,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/18442240474082181120": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=spatial_scale",
+        "field": 10,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/1e+300": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/1e-05": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/1e-06": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/1e-07": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/1e-300": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "scale/9218868437227405312": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=radius_pixels",
+        "field": 4,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "scale/9221120237041090560": {
+      "sample": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=radius_pixels",
+        "field": 4,
+        "reason": 2,
+        "stage": 0
+      }
+    },
+    "scale/9223372036854775808": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=spatial_scale",
+        "field": 10,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "warmth/0": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "warmth/13830554455654793216": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "warmth/18442240474082181120": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=effective_warmth",
+        "field": 9,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "warmth/9218868437227405312": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=effective_warmth",
+        "field": 9,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "warmth/9221120237041090560": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=effective_warmth",
+        "field": 9,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "warmth/9223372036854775808": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "weights/46": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "weights/47": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "weights/48": {
+      "components": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "weights/49": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_weights",
+        "field": 7,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "weights/50": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_weights",
+        "field": 7,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "weights/51": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_weights",
+        "field": 7,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "weights/52": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_weights",
+        "field": 7,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    },
+    "weights/53": {
+      "components": {
+        "category": 3,
+        "diagnostic": "InvalidDiffusionHostBehavior field=group_weights",
+        "field": 7,
+        "reason": 2,
+        "stage": 0
+      },
+      "sample": {
+        "category": 0,
+        "diagnostic": "",
+        "field": 0,
+        "reason": 0,
+        "stage": 0
+      }
+    }
+  }
+}

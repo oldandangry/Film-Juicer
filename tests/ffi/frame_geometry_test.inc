@@ -1,0 +1,223 @@
+#include "juicer_test_api.h"
+#include "frame_fixture.h"
+namespace FrameGeometryTest {
+    Json fields(FjExtent d) {
+        return Json::array({d.x, d.y, d.width, d.height});
+    }
+    FjExtent extent(const Json& a) {
+        return {a.at(0), a.at(1), a.at(2), a.at(3)};
+    }
+    bool cleared(FjExtent d) {
+        return fields(d) == Json::array({0, 0, 0, 0});
+    }
+    void values(const Json& captured, bool products) {
+        std::size_t domain_index = 0;
+        for (const auto& row : captured.at("domains")) {
+            const auto id = "frame/domain/" + (row.contains("id") ? row.at("id").get<std::string>() : std::to_string(domain_index));
+            ++domain_index;
+            const auto& b = row.at("bounds");
+            const FjRect input{b.at(0), b.at(1), b.at(2), b.at(3)};
+            if (!products) {
+                std::size_t call_index = 0;
+                for (auto prepare : {fj_test_frame_domain_prepare, fj_test_frame_domain_prepare, fj_test_frame_domain_c_prepare}) {
+                    JuicerTests::CaseEvent case_event(call_index == 2 ? "c11" : "cpp", id + "/api-" + std::to_string(call_index));
+                    ++call_index;
+                    FjExtent out{7, 8, 9, 10};
+                    FjFrameGeometryFailure failure{99};
+                    char text[128] = "stale";
+                    FjErrorBuffer error{text, sizeof(text), 99};
+                    const bool range = row.at("range");
+                    status(prepare(&input, &out, &failure, &error), range ? 3u : 0u);
+                    require(failure.reason == (range ? 2u : 0u), "frame domain reason");
+                    require(range ? cleared(out) : fields(out) == row.at("domain"), "every frozen signed domain field");
+                    require(std::string_view(text, error.length) == (range ? "frame descriptor dimensions exceed signed integer range" : ""), "exact domain diagnostic");
+                    case_event.passed();
+                }
+            }
+            if (products) {
+                JuicerTests::CaseEvent case_event("cpp", id);
+                JuicerTestFixture::Frame::Domain out{};
+                JuicerTestFixture::Frame::Failure failure;
+                const bool ready = JuicerTestFixture::Frame::domain_from_bounds({input.x1, input.y1, input.x2, input.y2}, out, failure);
+                require(ready != row.at("range").get<bool>(), "native domain wrapper result");
+                if (ready)
+                    require(Json::array({out.x, out.y, out.width, out.height}) == row.at("domain"), "native wrapper complete signed domain");
+                else
+                    require(failure.reason == JuicerTestFixture::Frame::FailureReason::DomainRange, "native typed range failure");
+                case_event.passed();
+            }
+        }
+        std::size_t geometry_index = 0;
+        for (const auto& row : captured.at("geometry")) {
+            const auto id = "frame/geometry/" + (row.contains("id") ? row.at("id").get<std::string>() : std::to_string(geometry_index));
+            ++geometry_index;
+            const auto d = extent(row.at("domain"));
+            const FjFrameGeometryInput input{d, std::bit_cast<float>(row.at("film_bits").get<std::uint32_t>())};
+            if (!products) {
+                std::size_t call_index = 0;
+                for (auto prepare : {fj_test_frame_geometry_prepare, fj_test_frame_geometry_prepare, fj_test_frame_geometry_c_prepare}) {
+                    JuicerTests::CaseEvent case_event(call_index == 2 ? "c11" : "cpp", id + "/api-" + std::to_string(call_index));
+                    ++call_index;
+                    FjFrameGeometry out{{7, 8, 9, 10}, -9};
+                    FjFrameGeometryFailure failure{99};
+                    status(prepare(&input, &out, &failure, nullptr));
+                    require(failure.reason == 0 && fields(out.full_frame) == row.at("domain"), "complete geometry domain fields");
+                    require(std::bit_cast<std::uint32_t>(out.pixel_size_um) == row.at("pixel_bits"), "frozen final f32 pixel word");
+                    require(std::bit_cast<std::uint64_t>(static_cast<double>(out.pixel_size_um)) == row.at("diffusion_bits"), "frozen widened diffusion word");
+                    case_event.passed();
+                }
+            }
+            if (products) {
+                JuicerTests::CaseEvent case_event("cpp", id);
+                JuicerTestFixture::Frame::Geometry out{};
+                JuicerTestFixture::Frame::Failure failure;
+                require(JuicerTestFixture::Frame::prepare_geometry({d.x, d.y, d.width, d.height}, input.film_format_long_edge_mm, out, failure), "native scalar wrapper accepts every contract result");
+                require(Json::array({out.fullFrame.x, out.fullFrame.y, out.fullFrame.width, out.fullFrame.height}) == row.at("domain") &&
+                            std::bit_cast<std::uint32_t>(out.pixelSizeUm) == row.at("pixel_bits") &&
+                            std::bit_cast<std::uint64_t>(static_cast<double>(out.pixelSizeUm)) == row.at("diffusion_bits"),
+                        "native full geometry projection");
+                case_event.passed();
+            }
+        }
+    }
+
+    template <typename Input, typename Output, typename Prepare>
+    void raw(const Input& input, Prepare prepare, unsigned operation, std::string_view domain, std::string_view api, JuicerTests::Cohort& raw_rows, JuicerTests::Cohort& capacities, JuicerTests::Cohort& panic_operations) {
+        for (unsigned kind = 0; kind < 14; ++kind) {
+            auto row_event = raw_rows.case_event(std::string(domain) + "/" + std::string(api) + "/" + std::to_string(kind));
+            Output out{};
+            std::memset(&out, 0x55, sizeof(out));
+            FjFrameGeometryFailure failure{99};
+            char text[128] = "stale";
+            FjErrorBuffer error{text, sizeof(text), 99};
+            auto* diagnostic = &error;
+            const Input* in = &input;
+            Output* output = &out;
+            auto* rejected = &failure;
+            switch (kind) {
+                case 0:
+                    in = nullptr;
+                    break;
+                case 1:
+                    output = nullptr;
+                    break;
+                case 2:
+                    rejected = nullptr;
+                    break;
+                case 3:
+                    in = reinterpret_cast<const Input*>(std::uintptr_t{1});
+                    break;
+                case 4:
+                    output = reinterpret_cast<Output*>(std::uintptr_t{1});
+                    break;
+                case 5:
+                    rejected = reinterpret_cast<FjFrameGeometryFailure*>(std::uintptr_t{1});
+                    break;
+                case 6:
+                    in = reinterpret_cast<const Input*>(std::numeric_limits<std::uintptr_t>::max() - 3u);
+                    break;
+                case 7:
+                    output = reinterpret_cast<Output*>(std::numeric_limits<std::uintptr_t>::max() - 3u);
+                    break;
+                case 8:
+                    rejected = reinterpret_cast<FjFrameGeometryFailure*>(std::numeric_limits<std::uintptr_t>::max() - 3u);
+                    break;
+                case 9:
+                    error.data = nullptr;
+                    error.capacity = 1;
+                    break;
+                case 10:
+                    diagnostic = reinterpret_cast<FjErrorBuffer*>(std::uintptr_t{1});
+                    break;
+                case 11:
+                    error.data = reinterpret_cast<char*>(std::numeric_limits<std::uintptr_t>::max() - 1u);
+                    error.capacity = 8;
+                    break;
+                case 12:
+                    diagnostic = nullptr;
+                    break;
+                case 13:
+                    error.data = reinterpret_cast<char*>(std::uintptr_t{1});
+                    error.capacity = 0;
+                    break;
+            }
+            const bool success = kind >= 12;
+            status(prepare(in, output, rejected, diagnostic), success ? 0u : 2u);
+            if (rejected == &failure)
+                require(failure.reason == (success ? 0u : 1u), "raw failure peer independently cleared then assigned");
+            if (output == &out && !success) {
+                if constexpr (std::is_same_v<Output, FjExtent>)
+                    require(cleared(out), "domain cleared despite malformed peer");
+                else
+                    require(cleared(out.full_frame) && std::bit_cast<std::uint32_t>(out.pixel_size_um) == 0, "geometry cleared despite malformed peer");
+            }
+            if (kind < 9)
+                require(std::string_view(text, error.length) == "invalid frame geometry arguments", "exact raw diagnostic");
+            if (kind == 13)
+                require(error.length == 0, "zero capacity diagnostics never touch backing");
+            row_event.passed();
+        }
+        for (std::size_t capacity : {std::size_t{1}, std::size_t{8}}) {
+            auto row_event = capacities.case_event(std::string(domain) + "/" + std::string(api) + "/" + std::to_string(capacity));
+            Output out{};
+            FjFrameGeometryFailure failure{};
+            std::array<char, 128> text{};
+            text.fill('!');
+            FjErrorBuffer error{text.data(), capacity, 99};
+            status(prepare(nullptr, &out, &failure, &error), 2);
+            require(error.length == capacity - 1 && text[capacity - 1] == '\0' && text[capacity] == '!', "bounded diagnostics include NUL and preserve canary");
+            row_event.passed();
+        }
+        auto panic_event = panic_operations.case_event(std::string(domain) + "/" + std::string(api));
+        status(fj_test_frame_geometry_fault(operation, 1));
+        Output out{};
+        FjFrameGeometryFailure failure{};
+        char text[128]{};
+        FjErrorBuffer error{text, sizeof(text), 0};
+        status(prepare(&input, &out, &failure, &error), 8);
+        require(failure.reason == 3 && std::string_view(text) == "frame geometry preparation panicked", "whole-operation contained frame panic");
+        if constexpr (std::is_same_v<Output, FjExtent>)
+            require(cleared(out), "panic domain clear");
+        else
+            require(cleared(out.full_frame) && std::bit_cast<std::uint32_t>(out.pixel_size_um) == 0, "panic geometry clear");
+        status(prepare(&input, &out, &failure, nullptr));
+        panic_event.passed();
+    }
+
+    void boundary() {
+        JuicerTests::CaseEvent boundary_event("cpp", "frame/boundary");
+        const FjRect bounds{0, 0, 7, 5};
+        const FjFrameGeometryInput input{{0, 0, 7, 5}, 36};
+        std::vector<std::string> raw_ids, capacity_ids, panic_ids;
+        for (const auto* domain : {"domain", "geometry"})
+            for (const auto* api : {"legacy", "facade"}) {
+                for (unsigned kind = 0; kind < 14; ++kind)
+                    raw_ids.emplace_back(std::string(domain) + "/" + api + "/" + std::to_string(kind));
+                for (std::size_t capacity : {std::size_t{1}, std::size_t{8}})
+                    capacity_ids.emplace_back(std::string(domain) + "/" + api + "/" + std::to_string(capacity));
+                panic_ids.emplace_back(std::string(domain) + "/" + api);
+            }
+        JuicerTests::Cohort raw_rows("frame_geometry.raw_input", raw_ids);
+        JuicerTests::Cohort capacities("frame_geometry.diagnostic_capacity", capacity_ids);
+        JuicerTests::Cohort panic_operations("frame_geometry.panic_operation", panic_ids);
+        raw<FjRect, FjExtent>(bounds, fj_test_frame_domain_prepare, 0, "domain", "legacy", raw_rows, capacities, panic_operations);
+        raw<FjRect, FjExtent>(bounds, fj_test_frame_domain_prepare, 0, "domain", "facade", raw_rows, capacities, panic_operations);
+        raw<FjFrameGeometryInput, FjFrameGeometry>(input, fj_test_frame_geometry_prepare, 1, "geometry", "legacy", raw_rows, capacities, panic_operations);
+        raw<FjFrameGeometryInput, FjFrameGeometry>(input, fj_test_frame_geometry_prepare, 1, "geometry", "facade", raw_rows, capacities, panic_operations);
+        status(fj_test_frame_geometry_fault(2, 1), 2);
+        status(fj_test_frame_geometry_fault(0, 2), 2);
+        status(fj_test_frame_geometry_fault(0, 1));
+        std::thread other([&] {
+            FjExtent out{};
+            FjFrameGeometryFailure failure{};
+            status(fj_test_frame_domain_prepare(&bounds, &out, &failure, nullptr));
+        });
+        other.join();
+        FjExtent out{};
+        FjFrameGeometryFailure failure{};
+        status(fj_test_frame_domain_prepare(&bounds, &out, &failure, nullptr), 8);
+        status(fj_test_frame_geometry_fault(0, 0));
+        status(fj_test_frame_geometry_fault(1, 0));
+        boundary_event.passed();
+    }
+} // namespace FrameGeometryTest

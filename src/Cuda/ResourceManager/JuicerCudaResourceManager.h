@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "Cuda/JuicerCudaFailure.h"
+
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -36,7 +38,7 @@ namespace JuicerCuda {
             SubmissionTransaction& outTransaction,
             const SubmissionSnapshot& snapshot,
             std::uint64_t deviceBudgetBytes,
-            std::string& outError);
+            Failure& outError);
 
         bool commit_submission(
             SubmissionTransaction& transaction,
@@ -49,7 +51,7 @@ namespace JuicerCuda {
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
             const char* commandName,
-            std::string& outError);
+            Failure& outError);
 
         bool command_ensure_spatial_dir_cached_log_raw_stage(
             SubmissionTransaction& transaction,
@@ -57,7 +59,7 @@ namespace JuicerCuda {
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
             JuicerCuda::SpatialDirCachedLogRawStageStats& outStats,
-            std::string& outError);
+            Failure& outError);
 
         bool command_shed_post_frame_scratch(
             SubmissionTransaction& transaction,
@@ -65,23 +67,29 @@ namespace JuicerCuda {
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
             const char* commandName,
-            std::string& outError);
+            Failure& outError);
 
         bool command_ensure_optics_scratch(
             SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
-            std::string& outError);
+            Failure& outError);
 
         bool command_ensure_spatial_dir_scratch(
             SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
-            std::string& outError);
+            Failure& outError);
 
-        bool error_is_allocation_capacity_exhausted(const std::string& error) noexcept;
+
+#if defined(JUICER_ALLOCATION_RETRY_TEST_HOOK)
+        bool test_allocation_retry(
+            bool (*action)(Failure&),
+            bool (*reclaim)(std::size_t&, Failure&),
+            Failure& failure);
+#endif
 
         void rollback_submission(SubmissionTransaction& transaction) noexcept;
 

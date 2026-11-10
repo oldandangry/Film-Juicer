@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "Cuda/JuicerCudaFailure.h"
 #include "DiffusionExecution.h"
 #include "DiffusionHostBehavior.h"
 
@@ -75,6 +76,8 @@ namespace JuicerCuda::Diffusion {
             return api == FailureApi::None;
         }
     };
+
+    FjStatus launch_failure_status(const LaunchResult& result) noexcept;
 
     LaunchResult build_psf_plane(
         const SpectrumBuildRequest& request,

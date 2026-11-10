@@ -12,6 +12,8 @@ if(CMAKE_HOST_WIN32)
     endif()
     set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT ProgramDatabase)
+    # MSVC's /RTC stack/uninitialised checks cannot be combined with /O2.
+    set(CMAKE_MSVC_RUNTIME_CHECKS "")
 endif()
 
 project(FilmJuicer LANGUAGES CXX CUDA)
@@ -33,12 +35,20 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-# The supported Release configurations retain standard assertions.
-# Keep that behavior on both platforms instead of CMake's default NDEBUG.
+# Both configurations use the same optimisation policy and retain assertions.
+# Debug adds symbols and invariant diagnostics to the optimised product.
 foreach(language IN ITEMS CXX CUDA)
     string(REGEX REPLACE "(^| )[/-]DNDEBUG( |$)" " "
         CMAKE_${language}_FLAGS_RELEASE "${CMAKE_${language}_FLAGS_RELEASE}")
+    set(CMAKE_${language}_FLAGS_DEBUG "${CMAKE_${language}_FLAGS_RELEASE}")
+    if(NOT WIN32)
+        string(APPEND CMAKE_${language}_FLAGS_DEBUG " -g")
+    endif()
 endforeach()
+# Bound memory use independently of Ninja's overall worker count.
+set_property(GLOBAL PROPERTY JOB_POOLS juicer_compile=8 juicer_link=2)
+set(CMAKE_JOB_POOL_COMPILE juicer_compile)
+set(CMAKE_JOB_POOL_LINK juicer_link)
 if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "75-real;75-virtual")
     message(FATAL_ERROR "The supported GPU policy is SM 7.5 plus compute_75 PTX; use the shared presets")
 endif()
@@ -48,46 +58,32 @@ endif()
 
 include(cmake/JuicerDependencies.cmake)
 include(cmake/JuicerSources.cmake)
+include(cmake/JuicerRust.cmake)
 
-add_library(juicer_settings INTERFACE)
-target_include_directories(juicer_settings INTERFACE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(juicer_settings INTERFACE juicer_dependencies)
-target_compile_definitions(juicer_settings INTERFACE
-    JUICER_DIAGNOSTICS_COMPILED=$<IF:$<CONFIG:Debug>,1,0>)
-if(WIN32)
-    message(STATUS "CUDA 13.2 Windows: explicit hybrid runtime integration (CMake 4.3)")
-    target_compile_definitions(juicer_settings INTERFACE WIN32 NOMINMAX _CRT_SECURE_NO_WARNINGS
-        $<$<COMPILE_LANGUAGE:CXX>:_WINDLL>
-        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>:UNICODE;_UNICODE>)
-    target_compile_options(juicer_settings INTERFACE
-        $<$<COMPILE_LANGUAGE:CXX>:/W3;/WX;/sdl;/permissive-;/EHsc>
-        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/O2;/Oi;/Ob2;/Gy>
-        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-O3;-Xptxas=-O3;-Xcompiler=/EHsc,/O2,/Oi,/Ob2,/Gy,/Gw,/GF>)
-    target_link_options(juicer_settings INTERFACE /DEBUG /INCREMENTAL:NO
-        $<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>)
-    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        message(FATAL_ERROR "Windows requires ClangCl with NVCC/MSVC")
-    endif()
-    target_compile_options(juicer_settings INTERFACE
-        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/Gw;/GF;-flto=thin>)
-else()
-    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
-       CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10 OR
-       CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16)
-        message(FATAL_ERROR "Linux requires CUDA 13.2-supported GCC 10 through 15")
-    endif()
-    target_compile_options(juicer_settings INTERFACE
-        $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Werror>
-        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fvisibility=hidden>
-        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-O3;-Xptxas=-O3>)
-endif()
+include(cmake/JuicerSettings.cmake)
 
-add_library(juicer_core STATIC ${JUICER_SOURCES})
-target_link_libraries(juicer_core PUBLIC juicer_settings)
+add_library(juicer_native OBJECT ${JUICER_NATIVE_SOURCES})
+target_link_libraries(juicer_native PRIVATE juicer_settings)
+add_library(juicer_host OBJECT ${JUICER_HOST_SOURCES})
+target_link_libraries(juicer_host PRIVATE juicer_settings)
+
+# Compiler analysis consumes the ordinary objects for isolation checks and the
+# Rust archive. Testing adds generated headers consumed by compiler analysis;
+# the configured database retains every test-hook variant.
+add_custom_target(juicer_analysis_inputs)
+add_dependencies(juicer_analysis_inputs
+    juicer_native juicer_host juicer_rust_production_build)
+
+# Preserve one aggregate archive for current product/test links and isolated
+# test-hook object replacement, without compiling a second CUDA implementation.
+add_library(juicer_core STATIC
+    $<TARGET_OBJECTS:juicer_native>
+    $<TARGET_OBJECTS:juicer_host>)
+target_link_libraries(juicer_core PUBLIC juicer_settings juicer_ofx_headers)
 set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 
-add_library(juicer MODULE src/main.cpp)
-target_link_libraries(juicer PRIVATE juicer_core juicer_ofxs)
+add_library(juicer MODULE native/ofx_exports.cpp)
+target_link_libraries(juicer PRIVATE juicer_core film_juicer_rust juicer_dependencies)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do
@@ -100,9 +96,92 @@ if(UNIX)
     set_property(TARGET juicer APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/cmake/juicer.exports")
 endif()
 
+add_executable(JuicerProductionPreparedRenderProbe EXCLUDE_FROM_ALL
+    tests/ffi/production-ofx-render.cpp tests/ofx/instance_host.cpp tests/ofx/production_images.cpp)
+target_include_directories(JuicerProductionPreparedRenderProbe PRIVATE
+    "${PROJECT_SOURCE_DIR}/tests/ofx" "${PROJECT_SOURCE_DIR}/tests/ffi")
+target_link_libraries(JuicerProductionPreparedRenderProbe PRIVATE
+    juicer_settings juicer_ofx_headers Threads::Threads ${CMAKE_DL_LIBS}
+    CUDA::cudart CUDA::cuda_driver)
+set_target_properties(JuicerProductionPreparedRenderProbe PROPERTIES
+    LINKER_LANGUAGE CXX JUICER_RUST_VARIANT none
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
+
+# Frozen expectations belong to the two test-support C11 value consumers.
+# Production probes below use only discovery and the retained native ABI.
+set(JUICER_PRODUCTION_C_PROBES)
+if(BUILD_TESTING)
+    enable_language(C)
+    find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Interpreter)
+    if(WIN32)
+        string(TOLOWER "${CMAKE_BUILD_TYPE}" probe_configuration)
+        set(probe_preset "windows-clang-${probe_configuration}")
+    else()
+        string(TOLOWER "${CMAKE_BUILD_TYPE}" probe_configuration)
+        set(probe_preset "linux-${probe_configuration}")
+    endif()
+    set(probe_fixture_directories
+        tests/film/fixtures tests/film/input-fixtures tests/film/reference-fixtures
+        tests/film/dir-fixtures tests/film/grain-fixtures tests/film/effects-fixtures
+        tests/print/balance-fixtures tests/scanner/correction-fixtures
+        tests/scanner/color-fixtures tests/dir/boundary-fixtures
+        tests/film/effects-frame-fixtures tests/grain/frame-fixtures
+        tests/dir/frame-fixtures tests/diffusion/frame-fixtures
+        tests/scatter_halation/frame-fixtures tests/frame/geometry-fixtures
+        tests/scanner/post-effects-fixtures tests/scanner/descriptor-fixtures)
+    set(probe_fixture_inputs)
+    foreach(directory IN LISTS probe_fixture_directories)
+        file(GLOB_RECURSE fixture_inputs CONFIGURE_DEPENDS
+            "${PROJECT_SOURCE_DIR}/${directory}/*.json")
+        list(APPEND probe_fixture_inputs ${fixture_inputs})
+    endforeach()
+    set(probe_expected_header "${CMAKE_BINARY_DIR}/production-probes/production-film-expected.h")
+    add_custom_command(OUTPUT "${probe_expected_header}"
+        COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/ffi/production_contract.py"
+            --preset "${probe_preset}" --artifacts "${CMAKE_BINARY_DIR}/production-probes"
+            --generate-expected-header
+        DEPENDS ${probe_fixture_inputs}
+            tests/ffi/production_contract.py tests/ffi/shared_fixture.py
+            tests/ffi/compact_exposure_fixtures.py tests/ffi/grain_probe_contract.py
+            tests/ffi/effects_frame_probe_contract.py
+        COMMENT "Generating C11 production fixture expectations"
+        VERBATIM)
+    add_custom_target(juicer_prepared_value_expectations DEPENDS "${probe_expected_header}")
+
+endif()
+
+enable_language(C)
+add_executable(JuicerProductionOfxProbe EXCLUDE_FROM_ALL tests/ffi/production-ofx.c)
+set_property(TARGET JuicerProductionOfxProbe PROPERTY JUICER_RUST_VARIANT none)
+target_link_libraries(JuicerProductionOfxProbe PRIVATE juicer_ofx_headers ${CMAKE_DL_LIBS})
+add_executable(JuicerProductionCudaAbiProbe EXCLUDE_FROM_ALL tests/ffi/production-cuda-abi.c)
+target_link_libraries(JuicerProductionCudaAbiProbe PRIVATE
+    juicer_core film_juicer_rust juicer_dependencies)
+foreach(probe_target IN ITEMS JuicerProductionOfxProbe JuicerProductionCudaAbiProbe)
+    set_target_properties(${probe_target} PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+        LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/bin")
+    target_include_directories(${probe_target} PRIVATE
+        "${PROJECT_SOURCE_DIR}/native" "${PROJECT_SOURCE_DIR}/tests/ffi")
+    if(WIN32)
+        target_compile_options(${probe_target} PRIVATE /TC /W4 /WX /Od /Ob0 /UNDEBUG)
+    else()
+        target_compile_options(${probe_target} PRIVATE -Wall -Wextra -Werror -pedantic-errors -O0 -UNDEBUG)
+    endif()
+endforeach()
+if(UNIX)
+    set_property(TARGET JuicerProductionCudaAbiProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+list(APPEND JUICER_PRODUCTION_C_PROBES JuicerProductionCudaAbiProbe)
+
+include(cmake/JuicerBundle.cmake)
+add_dependencies(JuicerProductionPreparedRenderProbe bundle-archive)
+
 option(BUILD_TESTING "Build the public Film-Juicer test suite" OFF)
 include(CTest)
 if(BUILD_TESTING)
-    add_subdirectory(tests)
+    add_subdirectory(tests EXCLUDE_FROM_ALL)
 endif()
-include(cmake/JuicerBundle.cmake)
+
+juicer_write_rust_artifacts(juicer JuicerProductionPreparedRenderProbe JuicerProductionOfxProbe
+    ${JUICER_PRODUCTION_C_PROBES} ${JUICER_RUST_TEST_CONSUMERS})

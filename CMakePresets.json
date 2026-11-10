@@ -52,8 +52,10 @@
         "rhs": "Linux"
       },
       "cacheVariables": {
+        "CMAKE_C_COMPILER": "/usr/bin/gcc-13",
         "CMAKE_CXX_COMPILER": "/usr/bin/g++-13",
-        "CMAKE_CUDA_HOST_COMPILER": "/usr/bin/g++-13"
+        "CMAKE_CUDA_HOST_COMPILER": "/usr/bin/g++-13",
+        "CMAKE_LINKER_TYPE": "LLD"
       }
     },
     {
@@ -112,10 +114,13 @@
       "name": "test-base",
       "hidden": true,
       "output": {
-        "outputOnFailure": true
+        "outputOnFailure": true,
+        "maxPassedTestOutputSize": 65536,
+        "testOutputTruncation": "middle"
       },
       "execution": {
-        "noTestsAction": "error"
+        "noTestsAction": "error",
+        "jobs": 4
       }
     },
     {

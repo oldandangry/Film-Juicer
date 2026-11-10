@@ -11,51 +11,7 @@ install(TARGETS juicer LIBRARY DESTINATION "${JUICER_CONTENTS}/${JUICER_ARCH_DIR
 # Keep the bundle resource surface explicit. Repository artwork, generators,
 # and documentation remain available to the project without becoming runtime
 # plug-in payload.
-set(JUICER_RUNTIME_RESOURCES
-    Noise/Wang/tiles.json
-    Noise/Wang/wang_tiles_256x256x16_u8.bin
-    Noise/stbn_scalar_512x512x256_u8.bin
-    cie1931_2deg.csv
-    com.juicer.Juicer.png
-    filters/heat_absorbing/schott/KG3.csv
-    filters/lens_transmission/canon/canon_24_f28_is.csv
-    filters/neutral_print_filters.json
-    illuminants/D50.csv
-    illuminants/D55.csv
-    illuminants/D65.csv
-    illuminants/K75P.csv
-    illuminants/T.csv
-    luts/spectral_upsampling/irradiance_xy_tc.npy
-    luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy
-    luts/spectral_upsampling/mallett2019_basis.npy
-    profiles/fujifilm_c200.json
-    profiles/fujifilm_crystal_archive_typeii.json
-    profiles/fujifilm_pro_400h.json
-    profiles/fujifilm_provia_100f.json
-    profiles/fujifilm_velvia_100.json
-    profiles/fujifilm_xtra_400.json
-    profiles/kodak_2383.json
-    profiles/kodak_2393.json
-    profiles/kodak_ektachrome_100.json
-    profiles/kodak_ektacolor_edge.json
-    profiles/kodak_ektar_100.json
-    profiles/kodak_endura_premier.json
-    profiles/kodak_gold_200.json
-    profiles/kodak_kodachrome_64.json
-    profiles/kodak_portra_160.json
-    profiles/kodak_portra_400.json
-    profiles/kodak_portra_800.json
-    profiles/kodak_portra_800_push1.json
-    profiles/kodak_portra_800_push2.json
-    profiles/kodak_portra_endura.json
-    profiles/kodak_supra_endura.json
-    profiles/kodak_ultra_endura.json
-    profiles/kodak_ultramax_400.json
-    profiles/kodak_verita_200d.json
-    profiles/kodak_vision3_200t.json
-    profiles/kodak_vision3_250d.json
-    profiles/kodak_vision3_500t.json
-    profiles/kodak_vision3_50d.json)
+include("${CMAKE_CURRENT_LIST_DIR}/JuicerResources.cmake")
 foreach(resource IN LISTS JUICER_RUNTIME_RESOURCES)
     get_filename_component(resource_directory "${resource}" DIRECTORY)
     if(resource_directory)
@@ -74,6 +30,32 @@ install(DIRECTORY third_party/ofxs/Legal/ DESTINATION "${JUICER_CONTENTS}/Legal/
 install(FILES third_party/ofxs/PROVENANCE.json DESTINATION "${JUICER_CONTENTS}/Legal/ofxs")
 install(FILES third_party/nlohmann/LICENSE.MIT third_party/nlohmann/PROVENANCE.md
     DESTINATION "${JUICER_CONTENTS}/Legal/nlohmann")
+install(FILES third_party/rust/PROVENANCE.md DESTINATION "${JUICER_CONTENTS}/Legal/rust")
+install(FILES third_party/rust/itoa-1.0.18/LICENSE-MIT third_party/rust/itoa-1.0.18/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/itoa-1.0.18")
+install(FILES third_party/rust/libm-0.2.15/LICENSE.txt
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/libm-0.2.15")
+install(FILES third_party/rust/memchr-2.8.3/COPYING third_party/rust/memchr-2.8.3/LICENSE-MIT
+    third_party/rust/memchr-2.8.3/UNLICENSE DESTINATION "${JUICER_CONTENTS}/Legal/rust/memchr-2.8.3")
+install(FILES third_party/rust/proc-macro2-1.0.107/LICENSE-MIT third_party/rust/proc-macro2-1.0.107/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/proc-macro2-1.0.107")
+install(FILES third_party/rust/quote-1.0.47/LICENSE-MIT third_party/rust/quote-1.0.47/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/quote-1.0.47")
+install(FILES third_party/rust/serde-1.0.229/LICENSE-MIT third_party/rust/serde-1.0.229/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/serde-1.0.229")
+install(FILES third_party/rust/serde_core-1.0.229/LICENSE-MIT third_party/rust/serde_core-1.0.229/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/serde_core-1.0.229")
+install(FILES third_party/rust/serde_derive-1.0.229/LICENSE-MIT third_party/rust/serde_derive-1.0.229/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/serde_derive-1.0.229")
+install(FILES third_party/rust/serde_json-1.0.151/LICENSE-MIT third_party/rust/serde_json-1.0.151/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/serde_json-1.0.151")
+install(FILES third_party/rust/syn-3.0.6/LICENSE-MIT third_party/rust/syn-3.0.6/LICENSE-APACHE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/syn-3.0.6")
+install(FILES third_party/rust/unicode-ident-1.0.26/LICENSE-MIT third_party/rust/unicode-ident-1.0.26/LICENSE-APACHE
+    third_party/rust/unicode-ident-1.0.26/LICENSE-UNICODE
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/unicode-ident-1.0.26")
+install(FILES third_party/rust/zmij-1.0.23/LICENSE-MIT
+    DESTINATION "${JUICER_CONTENTS}/Legal/rust/zmij-1.0.23")
 # Toolkit package layouts differ. Require the redistributable's license rather
 # than silently producing a bundle without CUDA's redistribution terms.
 find_file(JUICER_CUDA_LICENSE NAMES LICENSE EULA.txt copyright
@@ -110,6 +92,6 @@ add_custom_target(bundle-archive
     COMMAND "${CMAKE_COMMAND}" -E rm -rf "${CMAKE_INSTALL_PREFIX}/${JUICER_BUNDLE}"
     COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --config "$<CONFIG>"
     COMMAND "${CMAKE_COMMAND}" -E chdir "${CMAKE_INSTALL_PREFIX}"
-        "${CMAKE_COMMAND}" -E tar czf "${CMAKE_BINARY_DIR}/juicer-${JUICER_ARCH_DIR}.tar.gz"
+        "${CMAKE_COMMAND}" -E tar czf "${CMAKE_INSTALL_PREFIX}/juicer-${JUICER_ARCH_DIR}.tar.gz"
         "${JUICER_BUNDLE}"
     DEPENDS juicer VERBATIM USES_TERMINAL)

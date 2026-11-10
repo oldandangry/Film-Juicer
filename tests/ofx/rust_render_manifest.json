@@ -1,0 +1,169 @@
+{
+  "authority": "Film-Juicer characterization under owner-accepted Rust libm 0.2.15 density policy (30 September 2026)",
+  "not_external_reference": true,
+  "pixel_bound": {
+    "absolute": 0.0002,
+    "relative": 0.0003
+  },
+  "shape": "Seven 7x5 scenarios; row-major interleaved RGB/RGBA, alpha retained exactly",
+  "derivation": "Preserved pre-Rust CUDA renderer, only density samples substituted by exact frozen accepted Rust model/polarity/f64-exposure tuple lookup. The renderer under test does not generate these expectations.",
+  "reference_revision": "86bf1af12eea620baefb56001919848b9eb06997",
+  "accepted_capture_revision": "c999eca89e90dde53ec81856b7bf50fa4687b5de",
+  "platforms": {
+    "windows": {
+      "native_control_bit_exact": true,
+      "old_pixels_sha256": "e3a28389f3bd2d56419e4f1f3ac68aca245060ee9ef3ee8e8ab96ee145b4835e",
+      "pixels_sha256": "7fc2fc3ff90cf53f556666b7afe4357c716ff1e1b29ceff26f349968d1252f01",
+      "identities_sha256": "5af78f4d5dcf2d60137dbebaeae3e4b6719de9a7e49ca40cb53905d71374ae71",
+      "reference_source_sha256": "d518dffa850e165f5d466bee5f3991952543a6eba3965259dcd69ce56d76fc35",
+      "native_identities": "direct-exposure-small/A recipe=dfcabb6e6759a780 filmRaw=490500e8b8b605af printSeedInput=0 fixedGlareSeed=0\r\ndirect-exposure-small/B recipe=f9696f2fa63dacec filmRaw=64123468ae706b13 printSeedInput=0 fixedGlareSeed=0\r\ndirect-exposure-zero/A recipe=c6e074fb35227a43 filmRaw=f97a0a9d566ca20a printSeedInput=0 fixedGlareSeed=0\r\ndirect-exposure-zero/B recipe=8eda58c315f7260d filmRaw=3ae737796e1dca8a printSeedInput=0 fixedGlareSeed=0\r\nprint-exposure-small/A recipe=5a1b3da9ec40632e filmRaw=490500e8b8b605af printSeedInput=9df7d770d575371b fixedGlareSeed=e16a200be10e91b5\r\nprint-exposure-small/B recipe=3e76bfb906ecbda6 filmRaw=64123468ae706b13 printSeedInput=16cb45119ad471c9 fixedGlareSeed=cb9e1d42321c5b47\r\nprint-exposure-zero/A recipe=b804fb11ade82dd9 filmRaw=f97a0a9d566ca20a printSeedInput=9bef5a74ee002bf6 fixedGlareSeed=3c249a5b8360e4f1\r\nprint-exposure-zero/B recipe=4ecc7154f0985236 filmRaw=3ae737796e1dca8a printSeedInput=7dca83ea271274c5 fixedGlareSeed=573f180892665854\r\nprint-medium-exposure-small/A recipe=b804fb11ade82dd9 filmRaw=f97a0a9d566ca20a printSeedInput=9bef5a74ee002bf6 fixedGlareSeed=3c249a5b8360e4f1\r\nprint-medium-exposure-small/B recipe=d019f32dd5a43605 filmRaw=f97a0a9d566ca20a printSeedInput=a965462e4057d804 fixedGlareSeed=3c6e4abcde81e015\r\n",
+      "rust_identities": {
+        "direct-exposure-small/A": {
+          "recipe": 12771119467689768263,
+          "filmRaw": 5261612739183642031,
+          "printSeedInput": 0,
+          "fixedGlareSeed": 0
+        },
+        "direct-exposure-small/B": {
+          "recipe": 16581083533892032570,
+          "filmRaw": 7210883577581431571,
+          "printSeedInput": 0,
+          "fixedGlareSeed": 0
+        },
+        "direct-exposure-zero/A": {
+          "recipe": 5725654671477586013,
+          "filmRaw": 17976692533478859274,
+          "printSeedInput": 0,
+          "fixedGlareSeed": 0
+        },
+        "direct-exposure-zero/B": {
+          "recipe": 919196568334933143,
+          "filmRaw": 4244422168497998474,
+          "printSeedInput": 0,
+          "fixedGlareSeed": 0
+        },
+        "print-exposure-small/A": {
+          "recipe": 940331765904393646,
+          "filmRaw": 5261612739183642031,
+          "printSeedInput": 16675067243406099459,
+          "fixedGlareSeed": 5488173323995551866
+        },
+        "print-exposure-small/B": {
+          "recipe": 13332292849580782174,
+          "filmRaw": 7210883577581431571,
+          "printSeedInput": 5152450905121949187,
+          "fixedGlareSeed": 74160430759140466
+        },
+        "print-exposure-zero/A": {
+          "recipe": 2216161849170876727,
+          "filmRaw": 17976692533478859274,
+          "printSeedInput": 17431698372859810648,
+          "fixedGlareSeed": 12436739752606508266
+        },
+        "print-exposure-zero/B": {
+          "recipe": 10614201906539366203,
+          "filmRaw": 4244422168497998474,
+          "printSeedInput": 3586009479824871567,
+          "fixedGlareSeed": 8553412445416878196
+        },
+        "print-medium-exposure-small/A": {
+          "recipe": 2216161849170876727,
+          "filmRaw": 17976692533478859274,
+          "printSeedInput": 17431698372859810648,
+          "fixedGlareSeed": 12436739752606508266
+        },
+        "print-medium-exposure-small/B": {
+          "recipe": 8389189748971351299,
+          "filmRaw": 17976692533478859274,
+          "printSeedInput": 10203730902527705798,
+          "fixedGlareSeed": 14223143357698744422
+        }
+      },
+      "native_identity_control_exact": true
+    },
+    "linux": {
+      "native_control_bit_exact": true,
+      "old_pixels_sha256": "db058e718254ec2c26761880b37c10647d94f942c599aaf541baa56304c58dc6",
+      "pixels_sha256": "c9e301b4f7f7513aa7bcc7cfd94d95121b5e8d135a7dd08611669200a8e7d09a",
+      "identities_sha256": "0177d2017961e7bca3fd5b4abe7277ce4e68c6f020df0e416ec6d21e8424f0ae",
+      "reference_source_sha256": "d518dffa850e165f5d466bee5f3991952543a6eba3965259dcd69ce56d76fc35",
+      "native_identities": "direct-exposure-small/A recipe=338170d935d02a04 filmRaw=5cf0615ba88212a5 printSeedInput=0 fixedGlareSeed=0\ndirect-exposure-small/B recipe=80046ccce934defc filmRaw=445480c2ed12931 printSeedInput=0 fixedGlareSeed=0\ndirect-exposure-zero/A recipe=1cf69f5f80e30ca7 filmRaw=d99013f993d44c8c printSeedInput=0 fixedGlareSeed=0\ndirect-exposure-zero/B recipe=3c9e966627a3d263 filmRaw=a60caaf53143ad0c printSeedInput=0 fixedGlareSeed=0\nprint-exposure-small/A recipe=9f199e0860dc6c8f filmRaw=5cf0615ba88212a5 printSeedInput=2b30c3117010018d fixedGlareSeed=c0b706a628429f8b\nprint-exposure-small/B recipe=f2d421fdf52861b7 filmRaw=445480c2ed12931 printSeedInput=2a80092e5d768da0 fixedGlareSeed=be3a24ef5d0467a1\nprint-exposure-zero/A recipe=d47539b394dd7974 filmRaw=d99013f993d44c8c printSeedInput=ad737c77fdce1f57 fixedGlareSeed=1bf0cce1723b593c\nprint-exposure-zero/B recipe=28cd11ce8a544701 filmRaw=a60caaf53143ad0c printSeedInput=6fe6d2f9916b573c fixedGlareSeed=704844fef09d3445\nprint-medium-exposure-small/A recipe=d47539b394dd7974 filmRaw=d99013f993d44c8c printSeedInput=ad737c77fdce1f57 fixedGlareSeed=1bf0cce1723b593c\nprint-medium-exposure-small/B recipe=3ce25ffd7c1e33d7 filmRaw=d99013f993d44c8c printSeedInput=c1628d37147a0705 fixedGlareSeed=cde831039d9c6b57\n",
+      "rust_identities": {
+        "direct-exposure-small/A": {
+          "recipe": 281681802271729634,
+          "filmRaw": 6696959692196942501,
+          "printSeedInput": 0,
+          "fixedGlareSeed": 0
+        },
+        "direct-exposure-small/B": {
+          "recipe": 12083654655582018690,
+          "filmRaw": 307731366707013937,
+          "printSeedInput": 0,
+          "fixedGlareSeed": 0
+        },
+        "direct-exposure-zero/A": {
+          "recipe": 5225554873318619461,
+          "filmRaw": 15677052265524645004,
+          "printSeedInput": 0,
+          "fixedGlareSeed": 0
+        },
+        "direct-exposure-zero/B": {
+          "recipe": 13634267202202047425,
+          "filmRaw": 11965126280086793484,
+          "printSeedInput": 0,
+          "fixedGlareSeed": 0
+        },
+        "print-exposure-small/A": {
+          "recipe": 4067249121681997683,
+          "filmRaw": 6696959692196942501,
+          "printSeedInput": 16312388205967670732,
+          "fixedGlareSeed": 1318145344201406608
+        },
+        "print-exposure-small/B": {
+          "recipe": 2837114948899585072,
+          "filmRaw": 307731366707013937,
+          "printSeedInput": 18242935842115474169,
+          "fixedGlareSeed": 16547054074878292913
+        },
+        "print-exposure-zero/A": {
+          "recipe": 2956779334115822724,
+          "filmRaw": 15677052265524645004,
+          "printSeedInput": 5523891265610635958,
+          "fixedGlareSeed": 4535407019636741979
+        },
+        "print-exposure-zero/B": {
+          "recipe": 8261062757512151081,
+          "filmRaw": 11965126280086793484,
+          "printSeedInput": 5478385043447690157,
+          "fixedGlareSeed": 16574562118048825634
+        },
+        "print-medium-exposure-small/A": {
+          "recipe": 2956779334115822724,
+          "filmRaw": 15677052265524645004,
+          "printSeedInput": 5523891265610635958,
+          "fixedGlareSeed": 4535407019636741979
+        },
+        "print-medium-exposure-small/B": {
+          "recipe": 10714969833707554101,
+          "filmRaw": 15677052265524645004,
+          "printSeedInput": 5530122791595908184,
+          "fixedGlareSeed": 4447971929894960310
+        }
+      },
+      "native_identity_control_exact": true
+    }
+  },
+  "frozen_rust_tables_sha256": "490c95ac6d2a42cd6c4cab095977428dda517ddfdefa475936aa85ab9328632c",
+  "spektrafilm_revision": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "libm_version": "0.2.15",
+  "capture_and_adoption_date": "2026-10-03",
+  "maintenance_sources_sha256": {
+    "capture.cpp": "7f95bad2009a4bb4c3286bf6251e1c6c7d99b5dca1a8026cfd21669da2b0784b",
+    "ProfileAssets.cpp": "15dd53b28194f93dfb713f80f23da09f0525228fc0f9b75e2dcd829b162139d7",
+    "replay.cpp": "fbd166f50746b12b61a31d5b320c520bc3a54fc836168e7bfc7742c4f6ea89e3",
+    "replay.h": "b9c53d2120ffed388aab28d0a954a13dc2ec864bd1b21e7fe0019ea983c53a80",
+    "processor.inc": "d518dffa850e165f5d466bee5f3991952543a6eba3965259dcd69ce56d76fc35",
+    "identities.inc": "ed9045cb4aa8cfac74a9308e72a5309a11d9cf41ed2576b30f8afcd5387542d1",
+    "CMakeLists.txt": "92cb4ca43ccc2b886124806c0039bc9357fb8d72b5d4034b6081d6105584cf38"
+  }
+}

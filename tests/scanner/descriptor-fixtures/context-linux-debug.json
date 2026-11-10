@@ -1,0 +1,15 @@
+{
+  "preset": "linux-debug",
+  "provenance": {
+    "original_capture": "out/validation/linux-debug/s4-c-slice-8-descriptor-native.json",
+    "original_sha256": "9c886f177a3b67ca9440275eb9a243b47810df87c630be5d38eae2bd2e0185c2",
+    "producer": "out/build/linux-debug/tests/bin/JuicerFilmRecipeTests",
+    "producer_sha256": "f09057dcf86657a4727755b76109ac645858ed3c248eabeb22d5bc48463244cc",
+    "native_source": "src/Scanner.cpp",
+    "native_source_sha256": "b65ca149abaa83686d10821a88817c291a65483e40b22975257b897f826a8722",
+    "command": "out/build/linux-debug/tests/bin/JuicerFilmRecipeTests out/build/linux-debug/tests/Resources unused capture-scanner-descriptors linux-debug out/validation/linux-debug/s4-c-slice-8-descriptor-native.json",
+    "result": 0,
+    "compiler_context": "linux-debug",
+    "reference_role": "Film-Juicer characterization; no new external numerical authority"
+  }
+}

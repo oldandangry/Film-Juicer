@@ -2,18 +2,16 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 
 #include "Hash.h"
 #include "OutputColor.h"
+#include "juicer_cuda_api.h"
 #include "ScanRoute.h"
 #include "SpectralData.h"
 
-struct DensityBoundsRecipe;
-struct ProfileRoute;
-struct ScannerOutputRecipe;
-struct RenderRecipe;
 
 namespace Scanner {
 
@@ -42,13 +40,28 @@ namespace Scanner {
         float xyzToRgb[9]{0.0f};
         float illuminantXYZ[3]{0.0f, 0.0f, 0.0f};
         OutputEncoding::Params encoding{};
+        // Pointer-free encoding coefficients resolved in Rust.
+        FjOutputEncoding preparedEncoding{};
         std::uint64_t outputGamutRecipeHash = 0;
         std::uint64_t hash = 0;
     };
 
-    struct ScannerMediumRuntime {
+    struct SpectralTablesView {
+        std::span<const float> epsC;
+        std::span<const float> epsM;
+        std::span<const float> epsY;
+        std::span<const float> Ax;
+        std::span<const float> Ay;
+        std::span<const float> Az;
+        std::span<const float> baseDensityMin;
+        int K = 0;
+        float invYn = 1.0f;
+        bool hasBaseline = false;
+    };
+
+    struct MediumView {
         ScannerMedium medium = ScannerMedium::Negative;
-        const Spectral::SpectralTables* tables = nullptr;
+        SpectralTablesView tables;
         ScannerDensityRange range;
     };
 
@@ -57,12 +70,10 @@ namespace Scanner {
         Print
     };
 
-    inline constexpr std::uint32_t kScannerSpectralLutSchemaVersion = 2;
-
     // ScannerSpectralLutDescriptor family contract:
-    // Producer: focused direct or print-medium builder from selected recipe payloads.
+    // Producer: safe Rust scanner::describe_lut through the synchronous S4.E bridge.
     // Consumer: focused scanner LUT preparation behind PreparedCudaFrame.
-    // Identity: route, medium/polarity, DensityBoundsRecipe hash, selected channel/base density,
+    // Identity: route, medium/polarity, density-bounds hash, selected channel/base density,
     // viewing illuminant, observer, LUT resolution, and the fixed LUT representation schema.
     // Scanner correction, output color/CCTF, glare, blur, unsharp, frame bounds, auto exposure,
     // and downstream scanner effects are excluded.
@@ -80,33 +91,6 @@ namespace Scanner {
         std::uint64_t hash = 0;
     };
 
-    struct DirectScannerSpectralLutDescriptorInput {
-        const ::ProfileRoute* profileRoute = nullptr;
-        const ::DensityBoundsRecipe* densityBounds = nullptr;
-        const ::ScannerOutputRecipe* scannerOutput = nullptr;
-        std::string_view observerIdentity = "CIE1931_2deg_380_780_5nm";
-    };
-
-    struct PrintScannerSpectralLutDescriptorInput {
-        const ::ProfileRoute* profileRoute = nullptr;
-        const ::DensityBoundsRecipe* densityBounds = nullptr;
-        const ::ScannerOutputRecipe* scannerOutput = nullptr;
-        std::string_view observerIdentity = "CIE1931_2deg_380_780_5nm";
-    };
-
-    std::uint64_t hash_scanner_spectral_lut_descriptor(
-        const ScannerSpectralLutDescriptor& descriptor);
-
-    bool build_direct_scanner_spectral_lut_descriptor(
-        const DirectScannerSpectralLutDescriptorInput& input,
-        ScannerSpectralLutDescriptor& outDescriptor,
-        std::string& outDiagnostic);
-
-    bool build_print_scanner_spectral_lut_descriptor(
-        const PrintScannerSpectralLutDescriptorInput& input,
-        ScannerSpectralLutDescriptor& outDescriptor,
-        std::string& outDiagnostic);
-
     struct ScannerColorCorrectionDescriptor {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         bool active = false;
@@ -123,15 +107,7 @@ namespace Scanner {
         std::uint64_t hash = 0;
     };
 
-    struct PrintCorrectionDerivationInput {
-        const ::RenderRecipe* recipe = nullptr;
-        const Spectral::SpectralTables* scannerTables = nullptr;
-        const float* mainIlluminant = nullptr;
-        int spectralSampleCount = 0;
-        const float* preflashRawCmy = nullptr;
-        float normalizer = 1.0f;
-    };
-
+    // Resolved post-effects values; Gaussian weights and residency remain native.
     struct ScannerPostEffectsDescriptor {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
         bool glareActive = false;
@@ -152,35 +128,5 @@ namespace Scanner {
         }
     };
 
-    bool build_direct_scanner_color_correction_descriptor(
-        const ::RenderRecipe& recipe,
-        const Spectral::SpectralTables& scannerTables,
-        ScannerColorCorrectionDescriptor& outDescriptor,
-        std::string& outDiagnostic);
-
-    bool build_print_scanner_color_correction_descriptor(
-        const PrintCorrectionDerivationInput& input,
-        ScannerColorCorrectionDescriptor& outDescriptor,
-        std::string& outDiagnostic);
-
-    bool build_scanner_post_effects_descriptor(
-        const ::ScannerOutputRecipe& recipe,
-        ScannerPostEffectsDescriptor& outDescriptor,
-        std::string& outDiagnostic);
-
-    // Canonical scanner spectral core (agx-emulsion parity):
-    // - Accepts normalized density (0..1), denormalizes per medium range
-    // - Converts dyes -> XYZ under the medium's spectral tables
-    // - Applies log10(max(xyz, 0) + 1e-10)
-    void spectral_to_log_xyz(const ScannerMediumRuntime& medium, const double D_norm[3], double logXYZ[3]);
-
-    // Canonical normalization for LUT coordinates (mirrors agx _normalize_* semantics).
-    void normalize_density(const ScannerMediumRuntime& medium, const float D_cmy[3], double D_norm[3]);
-
-    ColorRuntime build_color_runtime(
-        ScannerMedium medium,
-        const ScannerIlluminant& illuminant,
-        const OutputEncoding::Params& outputEncoding,
-        std::uint64_t activeOutputGamutRecipeHash);
 
 } // namespace Scanner

@@ -8,6 +8,8 @@
 #include <mutex>
 #include <string>
 
+#include "Cuda/JuicerCudaFailure.h"
+
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
 #include "Cuda/JuicerCudaDeviceLedger.h"
 #include "DiffusionExecution.h"
@@ -116,13 +118,13 @@ namespace JuicerCuda::Diffusion {
             const Spektrafilm::DiffusionExecutionDescriptor&,
             void*,
             PreparedDiffusionLease&,
-            std::string&);
+            Failure&);
         friend bool release_diffusion_resources(
             DiffusionContextResources&,
             PreparedDiffusionLease&,
             void*,
             bool,
-            std::string&) noexcept;
+            Failure&) noexcept;
         friend void mark_diffusion_work_enqueued(PreparedDiffusionLease&) noexcept;
 
         void reset() noexcept;
@@ -148,7 +150,7 @@ namespace JuicerCuda::Diffusion {
         const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
         void* cudaStreamOpaque,
         PreparedDiffusionLease& outLease,
-        std::string& outError);
+        Failure& outError);
 
     void mark_diffusion_work_enqueued(PreparedDiffusionLease& lease) noexcept;
 
@@ -157,16 +159,16 @@ namespace JuicerCuda::Diffusion {
         PreparedDiffusionLease& lease,
         void* cudaStreamOpaque,
         bool dependentFailure,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
 
     bool trim_inactive_diffusion_resources(
         DiffusionContextResources& resources,
         const ResourceManager::DeviceContextKey& contextKey,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
 
     bool drain_diffusion_resources(
         DiffusionContextResources& resources,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
 
     void invalidate_diffusion_resources_after_proven_context_loss(
         DiffusionContextResources& resources) noexcept;

@@ -1,15 +1,30 @@
 #pragma once
 
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
-#include "DiffusionHostBehavior.h"
+#include "../ffi/diffusion_fixture.h"
+#include "../ffi/halation_fixture.h"
 #include "ProcessRoot.h"
+#include "../ffi/owner_fixture.h"
+#include "../ffi/juicer_test_api.h"
 #include "ScatterHalation.h"
+#include "../ffi/prepared_frame_fixture.h"
+
+namespace JuicerTests {
+    class CaseEvent;
+}
 
 namespace ScatterHalationValidation {
+
+    struct ImageExtent {
+        int width = 0;
+        int height = 0;
+    };
 
     class PreparedRouteInputs final {
     public:
@@ -22,38 +37,37 @@ namespace ScatterHalationValidation {
         PreparedRouteInputs(const PreparedRouteInputs&) = delete;
         PreparedRouteInputs& operator=(const PreparedRouteInputs&) = delete;
 
-        [[nodiscard]] JuicerProcess::Root::CudaFramePreparationRequest request(
-            int width,
-            int height) const;
-        [[nodiscard]] JuicerCuda::ResourceManager::SubmissionSnapshot
-        submission_snapshot(
+        [[nodiscard]] JuicerProcess::Root::PreparedCudaFrame prepare_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
-            std::uint64_t identity) const;
+            std::uint64_t identity,
+            ImageExtent extent,
+            void* stream,
+            JuicerCuda::Failure& failure,
+            std::uint64_t expectedScatterHash = 0) const;
         [[nodiscard]] const ScatterHalationFrameDescriptor*
         scatter_descriptor() const noexcept;
         [[nodiscard]] const Spektrafilm::DiffusionFrameSetDescriptor*
         diffusion_frame_set() const noexcept;
-        [[nodiscard]] const RenderRecipe& recipe() const noexcept;
 
     private:
         std::unique_ptr<Impl> _impl;
     };
 
     PreparedRouteInputs build_prepared_route_inputs(
+        JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
         float pixelSizeUm,
-        int width,
-        int height);
+        ImageExtent extent);
     PreparedRouteInputs build_prepared_route_inputs(
+        JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
-        const Spektrafilm::DirCouplersControls& dirCouplers,
+        const FjFilmDirParams& dirCouplers,
         float pixelSizeUm,
-        int width,
-        int height,
+        ImageExtent extent,
         float filmGammaFactor = 1.0f,
         const std::string& filmProfileKey = {});
 
@@ -61,6 +75,7 @@ namespace ScatterHalationValidation {
         std::string caseGroup;
         std::filesystem::path fixtureRoot;
         std::filesystem::path resourceRoot;
+        JuicerTestSupport::RuntimeFixture* runtimeOwner = nullptr;
         std::filesystem::path scratchRoot;
         std::filesystem::path performanceOutput;
         std::string performanceMode = "active";
@@ -80,11 +95,16 @@ namespace ScatterHalationValidation {
 
     class Results final {
     public:
+        explicit Results(bool listing = false);
+        ~Results();
+        bool expect(std::string_view caller, const std::vector<std::string>& names);
         void record(std::string name, bool passed, std::string detail);
         [[nodiscard]] int failure_count() const noexcept;
         [[nodiscard]] const std::vector<CaseResult>& cases() const noexcept;
 
     private:
+        bool _listing;
+        std::map<std::string, std::unique_ptr<JuicerTests::CaseEvent>> _namedEvents;
         std::vector<CaseResult> _cases;
     };
 
@@ -101,5 +121,8 @@ namespace ScatterHalationValidation {
     void run_zero_work_rows(const Arguments& arguments, Results& results);
     void run_lifecycle_rows(const Arguments& arguments, Results& results);
     void run_performance_rows(const Arguments& arguments, Results& results);
+    void list_case_memberships(
+        const Arguments& arguments,
+        std::string_view group);
 
 } // namespace ScatterHalationValidation

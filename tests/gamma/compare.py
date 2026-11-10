@@ -57,6 +57,8 @@ def fused_observation(
 
     if difference is None:
         raise RuntimeError(f"{label}: missing fused maximum difference")
+    if isinstance(difference, bool):
+        raise RuntimeError(f"{label}: fused maximum difference must not be Boolean")
     try:
         measured = float(difference)
     except (TypeError, ValueError) as error:

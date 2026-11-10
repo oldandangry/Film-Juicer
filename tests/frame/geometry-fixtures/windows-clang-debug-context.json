@@ -1,0 +1,47 @@
+{
+  "commands": [
+    {
+      "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_DIAGNOSTICS_COMPILED=1 -DNOMINMAX -DUNICODE -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -D_WINDLL -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\OpenFX-1.4\\include -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\Support\\include /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od -std:c++20 -MD -RTC1 -Z7 /W3 /WX /sdl /permissive- /EHsc /FoCMakeFiles\\juicer_adapter.dir\\src\\JuicerEffect.cpp.obj /FdCMakeFiles\\juicer_adapter.dir\\ -c -- C:\\Dev\\Codex\\src\\JuicerEffect.cpp",
+      "directory": "C:/Dev/Codex/out/build/windows-clang-debug",
+      "file": "C:/Dev/Codex/src/JuicerEffect.cpp",
+      "output": "C:/Dev/Codex/out/build/windows-clang-debug/CMakeFiles/juicer_adapter.dir/src/JuicerEffect.cpp.obj"
+    },
+    {
+      "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_DIAGNOSTICS_COMPILED=1 -DJUICER_FRAME_GEOMETRY_TEST_HOOK=1 -DNOMINMAX -DUNICODE -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -D_WINDLL -Dresolve_scan_route=resolve_scan_route_with_fault -IC:\\Dev\\Codex\\native -IC:\\Dev\\Codex\\src -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\OpenFX-1.4\\include -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\Support\\include /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od -std:c++20 -MD -RTC1 -Z7 /W3 /WX /sdl /permissive- /EHsc /Fotests\\CMakeFiles\\JuicerAdapterTraceProbe.dir\\__\\src\\JuicerEffect.cpp.obj /Fdtests\\CMakeFiles\\JuicerAdapterTraceProbe.dir\\ -c -- C:\\Dev\\Codex\\src\\JuicerEffect.cpp",
+      "directory": "C:/Dev/Codex/out/build/windows-clang-debug",
+      "file": "C:/Dev/Codex/src/JuicerEffect.cpp",
+      "output": "C:/Dev/Codex/out/build/windows-clang-debug/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/__/src/JuicerEffect.cpp.obj"
+    }
+  ],
+  "executable": "C:\\Dev\\Codex\\out\\build\\windows-clang-debug\\tests\\bin\\JuicerAdapterTraceProbe.exe",
+  "preset": "windows-clang-debug",
+  "schema": 1,
+  "producer": {
+    "directory": "out/validation/windows-clang-debug/s4-d-slice-1-native-capture",
+    "files": {
+      "JuicerAdapterTraceProbe.exe": {
+        "bytes": 11346944,
+        "sha256": "94296e8d207fb42f9f592c08113856e624ea1dde1399f86041d16e293bb0a3b8"
+      },
+      "JuicerEffect.cpp.txt": {
+        "bytes": 99355,
+        "sha256": "196d6acc9a9c5ddf4ae0b7ffa0cded27c9b746c22240ba8c72b41b24e573ff9e"
+      },
+      "inputs.json": {
+        "bytes": 5003,
+        "sha256": "2b22fe5bf8841ea63f6d7e438580ec4b6cc149ef7feacd5162e7662a2a995205"
+      },
+      "payload.json": {
+        "bytes": 8051,
+        "sha256": "42e100dca96eaee0d80ac7eafbd5d28e6c0e23b1ddfd9f446822b35e34252e15"
+      },
+      "context.json": {
+        "bytes": 2465,
+        "sha256": "fb2ae338be8e2f97426f973d0b5e5f6ba89e97fde68001ac69fdb52a5294c10a"
+      }
+    }
+  },
+  "linked_source_head": "66eb51a2613bbc08c026f592a0055206ada93517",
+  "factoring_diff_sha256": "c18ce6a0c6eceb4f5a0a48dcf7468d15a5c8877be5dafb47b21a39c85ae448a9",
+  "native_payload_line_ending": "CRLF"
+}

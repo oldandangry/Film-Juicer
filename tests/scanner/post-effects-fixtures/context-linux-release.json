@@ -1,0 +1,36 @@
+{
+  "preset": "linux-release",
+  "provenance": {
+    "capture_source_sha256": "f3324b3a74ce1e2bbc1a913de3e75361978637d37e84cd8c230a9be896eda14a",
+    "command": [
+      "out/validation/linux-release/s4-c-slice-9-native/JuicerFilmRecipeTests",
+      "out/build/linux-release/tests/Resources",
+      "unused",
+      "capture-scanner-post-effects",
+      "linux-release",
+      "out/validation/linux-release/s4-c-slice-9-native/capture.json"
+    ],
+    "compiler_context": "linux-release",
+    "native_source": "src/Scanner.cpp",
+    "native_source_sha256": "bdf6f288938bd04b0eeca0d271593433a841f461c7284d8f9e0b753ab5df21d5",
+    "original_capture": "out/validation/linux-release/s4-c-slice-9-native/capture.json",
+    "original_sha256": "9d91049f4ce271a486b0252f3654bacde8073fe4523adac8715e3b2cef195fec",
+    "preparation_receipt": {
+      "path": "out/validation/linux-release/preparation-45c840845ffa4c16add5a3efe915dad9/attempts/prepare-soyobly5/result.json",
+      "role": "original source/configuration/tool/command/build and descendant-drainage proof",
+      "sha256": "e356500fc9b191dc009b502394fd7bf50cbe10055c39efa9dc4e096c30fbc2e7"
+    },
+    "producer": "out/validation/linux-release/s4-c-slice-9-native/JuicerFilmRecipeTests",
+    "producer_sha256": "dcb2672be34f9b3b8e2d2d4074020097853db3be04b0eb20dc7b1878a6848941",
+    "result": 0,
+    "retained_inputs": {
+      "out/validation/linux-release/s4-c-slice-9-native/CMakeCache.txt": "a43e98af3f5ef05cb6c125aae6393a2b215e816b1d60b57273176a432794bdd2",
+      "out/validation/linux-release/s4-c-slice-9-native/GaussianSciPy.h": "864b812b1b5462d8d04c0c292cb688855ac29925e5e03fd9b76c9a67d98044b3",
+      "out/validation/linux-release/s4-c-slice-9-native/Scanner.cpp": "bdf6f288938bd04b0eeca0d271593433a841f461c7284d8f9e0b753ab5df21d5",
+      "out/validation/linux-release/s4-c-slice-9-native/cargo-features.txt": "46bea939415006deecb5ef9c679f7653396a6cec027c810d7496582aeb0fa2e1",
+      "out/validation/linux-release/s4-c-slice-9-native/compile_commands.json": "2020bc4fcf0053b2beb00dbdd05b9f8c37addbb1b585879cde2347edf33d90fd",
+      "out/validation/linux-release/s4-c-slice-9-native/film_recipe_test.cpp": "bd92c91a6387472f51050345cb26d0e9ec361015531ebbf34b9e2d6ec17365cb",
+      "out/validation/linux-release/s4-c-slice-9-native/scanner_post_effects_test.inc": "f3324b3a74ce1e2bbc1a913de3e75361978637d37e84cd8c230a9be896eda14a"
+    }
+  }
+}

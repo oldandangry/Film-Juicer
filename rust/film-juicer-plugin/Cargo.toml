@@ -1,0 +1,18 @@
+[package]
+name = "film-juicer-plugin"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[features]
+test-support = ["film-juicer-core/test-support"]
+
+[dependencies]
+film-juicer-core = { path = "../film-juicer-core" }
+
+[lints]
+workspace = true

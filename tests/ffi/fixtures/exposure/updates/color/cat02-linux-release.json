@@ -1,0 +1,530 @@
+{
+  "original_fixture": "cat02-linux-release.json",
+  "original_sha256": "5d83d12ff48408f3789409238350c80e2afcf13f38cad2dafe00f87f81790af6",
+  "authority": "Owner-approved A5 libm::erff 0.2.15 rounding and actual-value identities; all other contracts unchanged",
+  "parent_commit": "4fe634bd3ba4ff4b4543e6a18846594c0d9203c0",
+  "preset": "linux-release",
+  "independent_native_replay_sha256": "9f8d2aade4d353ae943b0f7141e3a99f57981ae138ff335018e9dc5d223911e7",
+  "patch": [
+    {
+      "op": "test",
+      "path": "/recipes/8/expected/compensated_raw/2",
+      "value": 1071077392
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/8/expected/compensated_raw/2",
+      "value": 1071077391
+    },
+    {
+      "op": "test",
+      "path": "/recipes/8/expected/hashes/0",
+      "value": 12389557650220679336
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/8/expected/hashes/0",
+      "value": 5403279899458735079
+    },
+    {
+      "op": "test",
+      "path": "/recipes/8/expected/hashes/1",
+      "value": 13598277374775541127
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/8/expected/hashes/1",
+      "value": 12261147894503865165
+    },
+    {
+      "op": "test",
+      "path": "/recipes/8/expected/hashes/2",
+      "value": 16852424536830225233
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/8/expected/hashes/2",
+      "value": 12420372827373912454
+    },
+    {
+      "op": "test",
+      "path": "/recipes/8/expected/hashes/5",
+      "value": 12656615805128546407
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/8/expected/hashes/5",
+      "value": 1302585692904921566
+    },
+    {
+      "op": "test",
+      "path": "/recipes/8/expected/hashes/7",
+      "value": 14013310000670373539
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/8/expected/hashes/7",
+      "value": 3214612454736840231
+    },
+    {
+      "op": "test",
+      "path": "/recipes/8/expected/hashes/8",
+      "value": 14013310000670373539
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/8/expected/hashes/8",
+      "value": 3214612454736840231
+    },
+    {
+      "op": "test",
+      "path": "/recipes/8/expected/raw_midgray/2",
+      "value": 1065356517
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/8/expected/raw_midgray/2",
+      "value": 1065356516
+    },
+    {
+      "op": "test",
+      "path": "/recipes/10/expected/compensated_raw/2",
+      "value": 1071077392
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/10/expected/compensated_raw/2",
+      "value": 1071077391
+    },
+    {
+      "op": "test",
+      "path": "/recipes/10/expected/hashes/0",
+      "value": 12389557650220679336
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/10/expected/hashes/0",
+      "value": 5403279899458735079
+    },
+    {
+      "op": "test",
+      "path": "/recipes/10/expected/hashes/1",
+      "value": 13598277374775541127
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/10/expected/hashes/1",
+      "value": 12261147894503865165
+    },
+    {
+      "op": "test",
+      "path": "/recipes/10/expected/hashes/2",
+      "value": 16852424536830225233
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/10/expected/hashes/2",
+      "value": 12420372827373912454
+    },
+    {
+      "op": "test",
+      "path": "/recipes/10/expected/hashes/5",
+      "value": 11640752110787588402
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/10/expected/hashes/5",
+      "value": 159388282500477343
+    },
+    {
+      "op": "test",
+      "path": "/recipes/10/expected/hashes/7",
+      "value": 4684935752917829980
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/10/expected/hashes/7",
+      "value": 12459781975903146324
+    },
+    {
+      "op": "test",
+      "path": "/recipes/10/expected/hashes/8",
+      "value": 4684935752917829980
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/10/expected/hashes/8",
+      "value": 12459781975903146324
+    },
+    {
+      "op": "test",
+      "path": "/recipes/10/expected/raw_midgray/2",
+      "value": 1065356517
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/10/expected/raw_midgray/2",
+      "value": 1065356516
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/compensated_raw/2",
+      "value": 1071077392
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/compensated_raw/2",
+      "value": 1071077391
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/hashes/0",
+      "value": 12389557650220679336
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/hashes/0",
+      "value": 5403279899458735079
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/hashes/1",
+      "value": 13598277374775541127
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/hashes/1",
+      "value": 12261147894503865165
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/hashes/2",
+      "value": 16852424536830225233
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/hashes/2",
+      "value": 12420372827373912454
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/hashes/3",
+      "value": 13061208648669315662
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/hashes/3",
+      "value": 8055478196359014871
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/hashes/4",
+      "value": 6407473968008475194
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/hashes/4",
+      "value": 3653039944312991576
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/hashes/5",
+      "value": 6115830424279747947
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/hashes/5",
+      "value": 3087695087595333050
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/hashes/7",
+      "value": 13594891094427440900
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/hashes/7",
+      "value": 5190020358039857918
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/hashes/8",
+      "value": 13594891094427440900
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/hashes/8",
+      "value": 5190020358039857918
+    },
+    {
+      "op": "test",
+      "path": "/recipes/22/expected/raw_midgray/2",
+      "value": 1065356517
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/22/expected/raw_midgray/2",
+      "value": 1065356516
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/compensated_raw/2",
+      "value": 1071077392
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/compensated_raw/2",
+      "value": 1071077391
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/hashes/0",
+      "value": 12389557650220679336
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/hashes/0",
+      "value": 5403279899458735079
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/hashes/1",
+      "value": 13598277374775541127
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/hashes/1",
+      "value": 12261147894503865165
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/hashes/2",
+      "value": 16852424536830225233
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/hashes/2",
+      "value": 12420372827373912454
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/hashes/3",
+      "value": 13061208648669315662
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/hashes/3",
+      "value": 8055478196359014871
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/hashes/4",
+      "value": 6407473968008475194
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/hashes/4",
+      "value": 3653039944312991576
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/hashes/5",
+      "value": 5912225505064918518
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/hashes/5",
+      "value": 10275732315496482347
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/hashes/7",
+      "value": 3976679441688550543
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/hashes/7",
+      "value": 1079946351153928103
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/hashes/8",
+      "value": 3976679441688550543
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/hashes/8",
+      "value": 1079946351153928103
+    },
+    {
+      "op": "test",
+      "path": "/recipes/24/expected/raw_midgray/2",
+      "value": 1065356517
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/24/expected/raw_midgray/2",
+      "value": 1065356516
+    },
+    {
+      "op": "test",
+      "path": "/recipes/36/expected/hashes/0",
+      "value": 9598215912959896068
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/36/expected/hashes/0",
+      "value": 364623000904760530
+    },
+    {
+      "op": "test",
+      "path": "/recipes/36/expected/hashes/1",
+      "value": 6069418442731433707
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/36/expected/hashes/1",
+      "value": 9273117019108679986
+    },
+    {
+      "op": "test",
+      "path": "/recipes/36/expected/hashes/7",
+      "value": 14083337969461797097
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/36/expected/hashes/7",
+      "value": 10321355970153076010
+    },
+    {
+      "op": "test",
+      "path": "/recipes/36/expected/hashes/8",
+      "value": 14083337969461797097
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/36/expected/hashes/8",
+      "value": 10321355970153076010
+    },
+    {
+      "op": "test",
+      "path": "/recipes/38/expected/hashes/0",
+      "value": 9598215912959896068
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/38/expected/hashes/0",
+      "value": 364623000904760530
+    },
+    {
+      "op": "test",
+      "path": "/recipes/38/expected/hashes/1",
+      "value": 6069418442731433707
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/38/expected/hashes/1",
+      "value": 9273117019108679986
+    },
+    {
+      "op": "test",
+      "path": "/recipes/38/expected/hashes/7",
+      "value": 17642746504620915995
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/38/expected/hashes/7",
+      "value": 14496825054819786264
+    },
+    {
+      "op": "test",
+      "path": "/recipes/38/expected/hashes/8",
+      "value": 17642746504620915995
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/38/expected/hashes/8",
+      "value": 14496825054819786264
+    },
+    {
+      "op": "test",
+      "path": "/recipes/50/expected/hashes/0",
+      "value": 9598215912959896068
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/50/expected/hashes/0",
+      "value": 364623000904760530
+    },
+    {
+      "op": "test",
+      "path": "/recipes/50/expected/hashes/1",
+      "value": 6069418442731433707
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/50/expected/hashes/1",
+      "value": 9273117019108679986
+    },
+    {
+      "op": "test",
+      "path": "/recipes/50/expected/hashes/7",
+      "value": 8859710358617331262
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/50/expected/hashes/7",
+      "value": 224727088122203417
+    },
+    {
+      "op": "test",
+      "path": "/recipes/50/expected/hashes/8",
+      "value": 8859710358617331262
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/50/expected/hashes/8",
+      "value": 224727088122203417
+    },
+    {
+      "op": "test",
+      "path": "/recipes/52/expected/hashes/0",
+      "value": 9598215912959896068
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/52/expected/hashes/0",
+      "value": 364623000904760530
+    },
+    {
+      "op": "test",
+      "path": "/recipes/52/expected/hashes/1",
+      "value": 6069418442731433707
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/52/expected/hashes/1",
+      "value": 9273117019108679986
+    },
+    {
+      "op": "test",
+      "path": "/recipes/52/expected/hashes/7",
+      "value": 9259798063623350431
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/52/expected/hashes/7",
+      "value": 9841701339072485736
+    },
+    {
+      "op": "test",
+      "path": "/recipes/52/expected/hashes/8",
+      "value": 9259798063623350431
+    },
+    {
+      "op": "replace",
+      "path": "/recipes/52/expected/hashes/8",
+      "value": 9841701339072485736
+    }
+  ]
+}

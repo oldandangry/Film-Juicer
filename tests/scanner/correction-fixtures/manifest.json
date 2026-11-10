@@ -1,0 +1,247 @@
+{
+  "schema": 1,
+  "contract": "Film-Juicer native characterization; exact current scanner correction computation, not external-reference pixels",
+  "native_source_commit": "1d2a57b37c6cae6bf51d3f0a35d70fc5ee1d3451",
+  "spektrafilm_revision": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "literal_count": 150,
+  "product_count": 48,
+  "result_words": [
+    "target_black_linear",
+    "target_white_linear",
+    "reference_black_y",
+    "reference_white_y",
+    "xyz_slope",
+    "xyz_offset",
+    "exposure_scale"
+  ],
+  "channel_order": "C/M/Y; film/print row-major spectral channels. Reference integration Y uses f64; print and targets/inverse lookup use f32. IEEE words are unsigned raw bit patterns.",
+  "route_bytes": {
+    "0": "negative direct",
+    "1": "negative print",
+    "2": "positive direct",
+    "3": "positive print",
+    "4-255": "literal byte domain; inactive preserved"
+  },
+  "flags": {
+    "black": 1,
+    "white": 2
+  },
+  "presets": {
+    "linux-debug": {
+      "native": "linux-debug.json",
+      "traces": "linux-debug-traces.json"
+    },
+    "linux-release": {
+      "native": "linux-release.json",
+      "traces": "linux-release-traces.json"
+    },
+    "windows-clang-debug": {
+      "native": "windows-clang-debug.json",
+      "traces": "windows-clang-debug-traces.json"
+    },
+    "windows-clang-release": {
+      "native": "windows-clang-release.json",
+      "traces": "windows-clang-release-traces.json"
+    }
+  },
+  "files": {
+    "linux-debug.json": {
+      "bytes": 4402211,
+      "sha256": "6822f61cdc84aa309265ec16877a4041da6fa2fbffc65ede9b63a7292fc7329e"
+    },
+    "linux-debug-traces.json": {
+      "bytes": 57338,
+      "sha256": "865d9ab7ce9dc12ee3896043573a12907fdb07d6dcfba7f8e48da097540b9a25"
+    },
+    "linux-release.json": {
+      "bytes": 4402214,
+      "sha256": "4a194532e1b3bc39b436e5f9405ad6ceb9bc6ffbcf5894fa500e65e49fadd778"
+    },
+    "linux-release-traces.json": {
+      "bytes": 6675,
+      "sha256": "ed0346885051875b78f8fa0829379e7c798b98a9c3381d69d55e7e6b67c98791"
+    },
+    "windows-clang-debug.json": {
+      "bytes": 4609752,
+      "sha256": "104a99e4baa3f18428806997c9aad727b19f583183422eacb38c2e5f345eb648"
+    },
+    "windows-clang-debug-traces.json": {
+      "bytes": 57450,
+      "sha256": "333e031a1ef1377c4c7af1b85a7e3863f9676daf630b8791abf4f81674cdc99b"
+    },
+    "windows-clang-release.json": {
+      "bytes": 4609755,
+      "sha256": "86dab5fa1993aca50c73244c2cacbfddab03cb46a11edbe55150ed26ccb1ef32"
+    },
+    "windows-clang-release-traces.json": {
+      "bytes": 6675,
+      "sha256": "ed0346885051875b78f8fa0829379e7c798b98a9c3381d69d55e7e6b67c98791"
+    },
+    "checked-expectations.json": {
+      "bytes": 29938,
+      "sha256": "c5e2b67b0e327f2bac719334f44bbef08c7095f06bbf64483bba468028b23940"
+    }
+  },
+  "capture_sources": [
+    {
+      "path": "src/Scanner.cpp",
+      "bytes": 41387,
+      "sha256": "a6ca4f78182b462a8bfb96d5ec3c9dcac872e792f460d755bd11d4db40dfbc40"
+    },
+    {
+      "path": "src/Scanner.h",
+      "bytes": 7645,
+      "sha256": "e7f2329e86c866ee8ca6a8137df9a0f73aae010c81c4d1c2778b352c74fa3044"
+    },
+    {
+      "path": "src/ScanRoute.cpp",
+      "bytes": 3619,
+      "sha256": "b795bc2fe1af74b98d09baca64ba7e08593d442b7d7f4c85e0170764158402b4"
+    },
+    {
+      "path": "tests/ffi/scanner_correction_test.inc",
+      "bytes": 20763,
+      "sha256": "0620ed3dc83440fa00d80fdb6a98b47914e7b436c5f21c75f93f70289da49f60"
+    },
+    {
+      "path": "tests/ffi/film_recipe_test.cpp",
+      "bytes": 24976,
+      "sha256": "43ad5628bc2c2078f9f58230cdd2d0ca609497ed874ef3d05ce5320c3f76a635"
+    },
+    {
+      "path": "tests/ffi/juicer_test_api.h",
+      "bytes": 22429,
+      "sha256": "0f02b62440a066044d797b900dc3c9af7fa56c91ccf43bbaf0dfad132b1b45fd"
+    },
+    {
+      "path": "rust/film-juicer-plugin/src/test_support.rs",
+      "bytes": 79606,
+      "sha256": "63c9ea9aee7951aa19ed0a359433194f0ea18565d44ca6932143a6af282106f0"
+    }
+  ],
+  "normative": "checked-expectations.json",
+  "numerical_exception": null,
+  "case_spec_sha256": "282689674a1199c3f82045637284ae9c1493ea63d8f79ff0f1001433f39f79ff",
+  "case_spec_storage": "Every literal retains its exact spec and admitted input in the native payload; no private file is a test input.",
+  "capture_provenance": {
+    "linux-debug": {
+      "executable_sha256": "5f6abeb79736d6e8d0de647a7188b13fb517ddbf081c872b5f917745f32d0977",
+      "executable_bytes": 339992952,
+      "compiler_contexts": [
+        {
+          "directory": "/mnt/c/Dev/Codex/out/build/linux-debug",
+          "command": "/usr/bin/g++-13 -DJUICER_DIAGNOSTICS_COMPILED=1 -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -isystem /mnt/c/Dev/Codex/third_party/ofxs/OpenFX-1.4/include -isystem /mnt/c/Dev/Codex/third_party/ofxs/Support/include -g -std=c++20 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o CMakeFiles/juicer_host.dir/src/Scanner.cpp.o -c /mnt/c/Dev/Codex/src/Scanner.cpp",
+          "file": "/mnt/c/Dev/Codex/src/Scanner.cpp",
+          "output": "/mnt/c/Dev/Codex/out/build/linux-debug/CMakeFiles/juicer_host.dir/src/Scanner.cpp.o"
+        },
+        {
+          "directory": "/mnt/c/Dev/Codex/out/build/linux-debug",
+          "command": "/usr/bin/g++-13 -DJUICER_ASSET_LOOKUP_TEST_HOOK=1 -DJUICER_DIAGNOSTICS_COMPILED=1 -I/mnt/c/Dev/Codex/tests/ffi -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -g -std=c++20 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o tests/CMakeFiles/juicer_asset_lookup_test_objects.dir/__/src/Scanner.cpp.o -c /mnt/c/Dev/Codex/src/Scanner.cpp",
+          "file": "/mnt/c/Dev/Codex/src/Scanner.cpp",
+          "output": "/mnt/c/Dev/Codex/out/build/linux-debug/tests/CMakeFiles/juicer_asset_lookup_test_objects.dir/__/src/Scanner.cpp.o"
+        }
+      ],
+      "process_sha256": "7bf6a617d36ca646cb40c206b5956ac71aaaf0490af361f502abed16b0f149c6",
+      "drained": true,
+      "ordinary_invocation": [
+        "JuicerFilmRecipeTests",
+        "<resources>",
+        "<frozen-case-spec>",
+        "capture-scanner-correction-native",
+        "linux-debug",
+        "<output-json>"
+      ]
+    },
+    "linux-release": {
+      "executable_sha256": "1592ad34fb567fa8536c92952267d307a481e3effc17a1f130ad6432578082f0",
+      "executable_bytes": 319505744,
+      "compiler_contexts": [
+        {
+          "directory": "/mnt/c/Dev/Codex/out/build/linux-release",
+          "command": "/usr/bin/g++-13 -DJUICER_DIAGNOSTICS_COMPILED=0 -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -isystem /mnt/c/Dev/Codex/third_party/ofxs/OpenFX-1.4/include -isystem /mnt/c/Dev/Codex/third_party/ofxs/Support/include -O3  -std=c++20 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o CMakeFiles/juicer_host.dir/src/Scanner.cpp.o -c /mnt/c/Dev/Codex/src/Scanner.cpp",
+          "file": "/mnt/c/Dev/Codex/src/Scanner.cpp",
+          "output": "/mnt/c/Dev/Codex/out/build/linux-release/CMakeFiles/juicer_host.dir/src/Scanner.cpp.o"
+        },
+        {
+          "directory": "/mnt/c/Dev/Codex/out/build/linux-release",
+          "command": "/usr/bin/g++-13 -DJUICER_ASSET_LOOKUP_TEST_HOOK=1 -DJUICER_DIAGNOSTICS_COMPILED=0 -I/mnt/c/Dev/Codex/tests/ffi -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -O3  -std=c++20 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o tests/CMakeFiles/juicer_asset_lookup_test_objects.dir/__/src/Scanner.cpp.o -c /mnt/c/Dev/Codex/src/Scanner.cpp",
+          "file": "/mnt/c/Dev/Codex/src/Scanner.cpp",
+          "output": "/mnt/c/Dev/Codex/out/build/linux-release/tests/CMakeFiles/juicer_asset_lookup_test_objects.dir/__/src/Scanner.cpp.o"
+        }
+      ],
+      "process_sha256": "57f2b65f9ac22ff6b824ac78e14a822107c7291b14fb7bb22399a1a9f2e42ec7",
+      "drained": true,
+      "ordinary_invocation": [
+        "JuicerFilmRecipeTests",
+        "<resources>",
+        "<frozen-case-spec>",
+        "capture-scanner-correction-native",
+        "linux-release",
+        "<output-json>"
+      ]
+    },
+    "windows-clang-debug": {
+      "executable_sha256": "5813e5510397539745a73900c66579a7525c16f85ff4ba094f4a9ac071a415ba",
+      "executable_bytes": 10728960,
+      "compiler_contexts": [
+        {
+          "directory": "C:/Dev/Codex/out/build/windows-clang-debug",
+          "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_DIAGNOSTICS_COMPILED=1 -DNOMINMAX -DUNICODE -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -D_WINDLL -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\OpenFX-1.4\\include -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\Support\\include /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od -std:c++20 -MD -RTC1 -Z7 /W3 /WX /sdl /permissive- /EHsc /FoCMakeFiles\\juicer_host.dir\\src\\Scanner.cpp.obj /FdCMakeFiles\\juicer_host.dir\\ -c -- C:\\Dev\\Codex\\src\\Scanner.cpp",
+          "file": "C:/Dev/Codex/src/Scanner.cpp",
+          "output": "C:/Dev/Codex/out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/Scanner.cpp.obj"
+        },
+        {
+          "directory": "C:/Dev/Codex/out/build/windows-clang-debug",
+          "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_ASSET_LOOKUP_TEST_HOOK=1 -DJUICER_DIAGNOSTICS_COMPILED=1 -DNOMINMAX -DUNICODE -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -D_WINDLL -IC:\\Dev\\Codex\\tests\\ffi -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od -std:c++20 -MD -RTC1 -Z7 /W3 /WX /sdl /permissive- /EHsc /Fotests\\CMakeFiles\\juicer_asset_lookup_test_objects.dir\\__\\src\\Scanner.cpp.obj /Fdtests\\CMakeFiles\\juicer_asset_lookup_test_objects.dir\\ -c -- C:\\Dev\\Codex\\src\\Scanner.cpp",
+          "file": "C:/Dev/Codex/src/Scanner.cpp",
+          "output": "C:/Dev/Codex/out/build/windows-clang-debug/tests/CMakeFiles/juicer_asset_lookup_test_objects.dir/__/src/Scanner.cpp.obj"
+        }
+      ],
+      "process_sha256": "7dbfa6191da7b65d7d6fa5584702539ff534c097319f0982cdace3a72f5c0c60",
+      "drained": true,
+      "ordinary_invocation": [
+        "JuicerFilmRecipeTests",
+        "<resources>",
+        "<frozen-case-spec>",
+        "capture-scanner-correction-native",
+        "windows-clang-debug",
+        "<output-json>"
+      ]
+    },
+    "windows-clang-release": {
+      "executable_sha256": "aa122c46bf78a6b4cc32c63f474642b19db3d191c87698a4fe19094e53e54e22",
+      "executable_bytes": 6880256,
+      "compiler_contexts": [
+        {
+          "directory": "C:/Dev/Codex/out/build/windows-clang-release",
+          "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_DIAGNOSTICS_COMPILED=0 -DNOMINMAX -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_MBCS -D_WINDLL -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\OpenFX-1.4\\include -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\Support\\include /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2  -std:c++20 -MD -Z7 /W3 /WX /sdl /permissive- /EHsc /O2 /Oi /Ob2 /Gy /Gw /GF -flto=thin /FoCMakeFiles\\juicer_host.dir\\src\\Scanner.cpp.obj /FdCMakeFiles\\juicer_host.dir\\ -c -- C:\\Dev\\Codex\\src\\Scanner.cpp",
+          "file": "C:/Dev/Codex/src/Scanner.cpp",
+          "output": "C:/Dev/Codex/out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/Scanner.cpp.obj"
+        },
+        {
+          "directory": "C:/Dev/Codex/out/build/windows-clang-release",
+          "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_ASSET_LOOKUP_TEST_HOOK=1 -DJUICER_DIAGNOSTICS_COMPILED=0 -DNOMINMAX -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_MBCS -D_WINDLL -IC:\\Dev\\Codex\\tests\\ffi -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2  -std:c++20 -MD -Z7 /W3 /WX /sdl /permissive- /EHsc /O2 /Oi /Ob2 /Gy /Gw /GF -flto=thin /Fotests\\CMakeFiles\\juicer_asset_lookup_test_objects.dir\\__\\src\\Scanner.cpp.obj /Fdtests\\CMakeFiles\\juicer_asset_lookup_test_objects.dir\\ -c -- C:\\Dev\\Codex\\src\\Scanner.cpp",
+          "file": "C:/Dev/Codex/src/Scanner.cpp",
+          "output": "C:/Dev/Codex/out/build/windows-clang-release/tests/CMakeFiles/juicer_asset_lookup_test_objects.dir/__/src/Scanner.cpp.obj"
+        }
+      ],
+      "process_sha256": "47ed93f179261cec08e96f038455739e75d35192cd30827f00d872c45f3fdb98",
+      "drained": true,
+      "ordinary_invocation": [
+        "JuicerFilmRecipeTests",
+        "<resources>",
+        "<frozen-case-spec>",
+        "capture-scanner-correction-native",
+        "windows-clang-release",
+        "<output-json>"
+      ]
+    }
+  },
+  "capture_mode_retired": "Retired at caller cutover; these payloads cannot be recaptured from replacement builders.",
+  "diagnostic_trace_equivalence": {
+    "scope": "Only floating numeric fields in rejected scanner_correction_descriptor events",
+    "rule": "NaN class equivalence permits sign, payload and platform spelling differences; all other text and all successful stored words/hashes remain exact. Tests retain actual raw traces and report each differing NaN token.",
+    "authority": "Owner-approved bounded diagnostic ruling, 2026-10-21",
+    "numerical_exception_scope": "No tolerance or exception for finite values, infinities, signed zero, result words/hashes, status/reason, clearing, event gates or ordinary diagnostics."
+  }
+}

@@ -1,0 +1,621 @@
+//! Shared color records and checked fixture preparation at the private raw edge.
+
+use film_juicer_core::color::{self, Whites};
+use crate::cuda::sys::{
+    FjStatus, FJ_API_NONE, FJ_STATUS_SUCCESS, FJ_STATUS_UNSUPPORTED_INPUT,
+    FJ_STATUS_INTERNAL_FAILURE,
+};
+
+#[cfg(test)]
+use film_juicer_core::route::{self, CapturePolarity, RouteSelection, ScanRoute};
+
+#[cfg(test)]
+const SUCCESS: u32 = 0;
+#[cfg(test)]
+const INVALID_POLARITY: u32 = 1;
+#[cfg(test)]
+const INVALID_SELECTION: u32 = 2;
+#[cfg(test)]
+const NULL_OUTPUT: u32 = 3;
+#[cfg(test)]
+const INTERNAL_PANIC: u32 = 4;
+
+#[cfg(test)]
+fn resolve_foreign(capture_polarity: u8, selected_route: u8) -> Result<u8, u32> {
+    let polarity = match capture_polarity {
+        0 | 2 => CapturePolarity::Negative,
+        1 => CapturePolarity::Positive,
+        _ => return Err(INVALID_POLARITY),
+    };
+    let selection = match selected_route {
+        0 | 2 => RouteSelection::Direct,
+        1 | 3 => RouteSelection::Print,
+        _ => return Err(INVALID_SELECTION),
+    };
+    Ok(match route::resolve(polarity, selection) {
+        ScanRoute::NegativeDirect => 0,
+        ScanRoute::NegativePrint => 1,
+        ScanRoute::PositiveDirect => 2,
+        ScanRoute::PositivePrint => 3,
+    })
+}
+
+#[cfg(test)]
+fn contain_panic(
+    resolve: impl FnOnce() -> Result<u8, u32> + std::panic::UnwindSafe,
+) -> Result<u8, u32> {
+    std::panic::catch_unwind(resolve).unwrap_or(Err(INTERNAL_PANIC))
+}
+
+/// Resolve a route for the C++ callers.
+///
+/// # Safety
+/// A nonnull `out_route` must point to one exclusively writable byte until return.
+#[cfg(test)]
+unsafe fn resolve_route_for_test(
+    capture_polarity: u8,
+    selected_route: u8,
+    out_route: *mut u8,
+) -> u32 {
+    if out_route.is_null() {
+        return NULL_OUTPUT;
+    }
+    match contain_panic(|| resolve_foreign(capture_polarity, selected_route)) {
+        Ok(route) => {
+            // SAFETY: The foreign caller guarantees one writable byte for this call.
+            unsafe { out_route.write(route) };
+            SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+const _: () = assert!(
+    std::mem::size_of::<f32>() == 4
+        && std::mem::size_of::<[f32; 3]>() == 12
+        && std::mem::size_of::<[f32; 9]>() == 36
+);
+
+fn color_status(category: u32) -> FjStatus {
+    FjStatus {
+        category,
+        api: FJ_API_NONE,
+        native_code: 0,
+    }
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn arm_color_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
+    clear_color_fault();
+    if !matches!(operation, 1 | 2 | 3 | 5 | 8 | 10 | 11)
+        || call_index == 0
+        || !(1..=2).contains(&fault)
+    {
+        return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    film_juicer_core::film::input::testing::arm_color(operation, call_index, fault);
+    color_status(FJ_STATUS_SUCCESS)
+}
+#[cfg(feature = "test-support")]
+pub(crate) fn clear_color_fault() -> FjStatus {
+    film_juicer_core::film::input::testing::clear_color();
+    color_status(FJ_STATUS_SUCCESS)
+}
+#[cfg(feature = "test-support")]
+fn color_fault(operation: u32) -> Result<(), u32> {
+    film_juicer_core::film::input::testing::color_fault(operation)
+}
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_cat16_matrix(
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_row_major.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller provides the exclusive nine-float output extent.
+        unsafe { out_row_major.write_bytes(0, 9) };
+        if source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: Both nonnull read-only inputs authorize exactly three floats.
+        let whites = unsafe {
+            Whites {
+                source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+            }
+        };
+        let matrix = match color::checked_cat16_matrix(whites) {
+            Ok(matrix) => matrix,
+            #[cfg(feature = "test-support")]
+            Err(color::CheckedError::UnsupportedInput) => {
+                return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+            }
+            #[cfg(not(feature = "test-support"))]
+            Err(error) => match error {},
+        };
+        // SAFETY: The complete local result is disjoint from the authorized output.
+        unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_adapt_cat16(
+    xyz: *const f32,
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller provides the exclusive three-float output extent.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if xyz.is_null() || source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: Each nonnull read-only input authorizes exactly three floats.
+        let (value, whites) = unsafe {
+            (
+                xyz.cast::<[f32; 3]>().read(),
+                Whites {
+                    source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                    destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+                },
+            )
+        };
+        let adapted = match color::checked_adapt_cat16(value, whites) {
+            Ok(adapted) => adapted,
+            #[cfg(feature = "test-support")]
+            Err(color::CheckedError::UnsupportedInput) => {
+                return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+            }
+            #[cfg(not(feature = "test-support"))]
+            Err(error) => match error {},
+        };
+        // SAFETY: The complete local result is disjoint from the authorized output.
+        unsafe { out_xyz.copy_from_nonoverlapping(adapted.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_cat02_matrix(
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_row_major.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller provides the exclusive nine-float output extent.
+        unsafe { out_row_major.write_bytes(0, 9) };
+        if source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: Both nonnull read-only inputs authorize exactly three floats.
+        let whites = unsafe {
+            Whites {
+                source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+            }
+        };
+        let matrix = match color::checked_cat02_matrix(whites) {
+            Ok(matrix) => matrix,
+            #[cfg(feature = "test-support")]
+            Err(color::CheckedError::UnsupportedInput) => {
+                return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+            }
+            #[cfg(not(feature = "test-support"))]
+            Err(error) => match error {},
+        };
+        // SAFETY: The complete local result is disjoint from the authorized output.
+        unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+#[repr(C)]
+pub(crate) struct FjInputColorMatrices {
+    pub(crate) rgb_to_xyz: [f32; 9],
+    pub(crate) nominal_white_xyz: [f32; 3],
+    pub(crate) xyz_to_linear_srgb: [f32; 9],
+    pub(crate) d65_white_xyz: [f32; 3],
+}
+
+impl From<color::InputMatrices> for FjInputColorMatrices {
+    fn from(input: color::InputMatrices) -> Self {
+        Self {
+            rgb_to_xyz: input.rgb_to_xyz,
+            nominal_white_xyz: input.nominal_white_xyz,
+            xyz_to_linear_srgb: input.xyz_to_linear_srgb,
+            d65_white_xyz: input.d65_white_xyz,
+        }
+    }
+}
+
+#[repr(C)]
+pub(crate) struct FjInputColorConversion {
+    pub(crate) input_space: u32,
+    pub(crate) decode_cctf: u32,
+    pub(crate) adapt_xyz: u32,
+    pub(crate) rgb_to_xyz: [f32; 9],
+    pub(crate) xyz_adapt: [f32; 9],
+}
+
+pub(crate) fn input_space(tag: u32) -> Option<color::InputSpace> {
+    match tag {
+        0 => Some(color::InputSpace::DavinciWideGamut),
+        1 => Some(color::InputSpace::Bt2020),
+        2 => Some(color::InputSpace::Aces2065_1),
+        3 => Some(color::InputSpace::SrgbRec709),
+        _ => None,
+    }
+}
+
+impl FjInputColorConversion {
+    pub(crate) fn into_core(self) -> Option<color::InputConversion> {
+        let space = input_space(self.input_space)?;
+        if self.decode_cctf > 1 || self.adapt_xyz > 1 {
+            return None;
+        }
+        Some(color::InputConversion {
+            space,
+            decode_cctf: self.decode_cctf != 0,
+            rgb_to_xyz: self.rgb_to_xyz,
+            xyz_adaptation: (self.adapt_xyz != 0).then_some(self.xyz_adapt),
+        })
+    }
+}
+
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+    assert!(size_of::<FjInputColorMatrices>() == 96 && align_of::<FjInputColorMatrices>() == 4);
+    assert!(offset_of!(FjInputColorMatrices, rgb_to_xyz) == 0);
+    assert!(offset_of!(FjInputColorMatrices, nominal_white_xyz) == 36);
+    assert!(offset_of!(FjInputColorMatrices, xyz_to_linear_srgb) == 48);
+    assert!(offset_of!(FjInputColorMatrices, d65_white_xyz) == 84);
+    assert!(size_of::<FjInputColorConversion>() == 84 && align_of::<FjInputColorConversion>() == 4);
+    assert!(offset_of!(FjInputColorConversion, input_space) == 0);
+    assert!(offset_of!(FjInputColorConversion, decode_cctf) == 4);
+    assert!(offset_of!(FjInputColorConversion, adapt_xyz) == 8);
+    assert!(offset_of!(FjInputColorConversion, rgb_to_xyz) == 12);
+    assert!(offset_of!(FjInputColorConversion, xyz_adapt) == 48);
+};
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_input_matrices(
+    input_space_tag: u32,
+    out: *mut FjInputColorMatrices,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes the complete exclusive output record.
+        unsafe { out.write_bytes(0, 1) };
+        let Some(space) = input_space(input_space_tag) else {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(5) {
+            return color_status(category);
+        }
+        let output = FjInputColorMatrices::from(color::input_matrices(space));
+        // SAFETY: The initialized local record is committed to the exclusive output.
+        unsafe { out.write(output) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_linear_srgb_to_xyz(rgb: *const f32, out_xyz: *mut f32) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(8) {
+            return color_status(category);
+        }
+        // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
+        let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        let output = color::linear_srgb_to_xyz(rgb);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_project_linear_rgb_to_xyz(
+    rgb: *const f32,
+    rgb_to_xyz: *const f32,
+    xyz_adapt: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() || rgb_to_xyz.is_null() || xyz_adapt.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(10) {
+            return color_status(category);
+        }
+        // SAFETY: Inputs authorize an initialized RGB triplet and two nine-float matrices.
+        let (rgb, matrix, adaptation) = unsafe {
+            (
+                rgb.cast::<[f32; 3]>().read(),
+                rgb_to_xyz.cast::<[f32; 9]>().read(),
+                xyz_adapt.cast::<[f32; 9]>().read(),
+            )
+        };
+        let output = color::project_linear_rgb_to_xyz(rgb, matrix, adaptation);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_reconstruction_tc_lut(
+    input: *const crate::reconstruction_bridge::FjFilmTcLutInput,
+    out: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The foreign caller supplies the documented synchronous storage.
+    unsafe {
+        crate::reconstruction_bridge::build_call(input, out, error, || {
+            crate::reconstruction_bridge::fault(1)
+        })
+    }
+}
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_reconstruction_sample_tc_lut(
+    lut: crate::cuda::sys::FjFloatSpan,
+    xyz: *const f32,
+    out: *mut f32,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The foreign caller supplies the documented three-float extents.
+    unsafe {
+        crate::reconstruction_bridge::sample_call(lut, xyz, out, error, || {
+            crate::reconstruction_bridge::fault(2)
+        })
+    }
+}
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_reconstruction_release_tc_lut(
+    owned: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+) -> FjStatus {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: Caller consumes its sole exact Vec allocation/layout once.
+        unsafe { crate::reconstruction_bridge::release_call(owned) }
+    })) {
+        Ok(status) => status,
+        Err(_) => FjStatus {
+            category: FJ_STATUS_INTERNAL_FAILURE,
+            api: FJ_API_NONE,
+            native_code: 0,
+        },
+    }
+}
+#[repr(C)]
+pub(crate) struct FjOutputColorPreparation {
+    pub(crate) output_space: u32,
+    pub(crate) rgb_to_xyz: [f32; 9],
+    pub(crate) xyz_to_rgb: [f32; 9],
+    pub(crate) white_xyz: [f32; 3],
+    pub(crate) encoding: crate::cuda::sys::FjOutputEncoding,
+    pub(crate) entry_hash: u64,
+}
+impl FjOutputColorPreparation {
+    pub(crate) fn prepare(space: color::OutputSpace) -> Self {
+        let color = color::output_color(space);
+        let c = color.cctf();
+        Self {
+            output_space: space as u32,
+            rgb_to_xyz: *color.rgb_to_xyz(),
+            xyz_to_rgb: *color.xyz_to_rgb(),
+            white_xyz: *color.white_xyz(),
+            encoding: crate::cuda::sys::FjOutputEncoding {
+                schema: crate::cuda::sys::FJ_OUTPUT_ENCODING_SCHEMA,
+                cctf_kind: c.kind as u32,
+                gamma: c.gamma,
+                a: c.a,
+                b: c.b,
+                c: c.c,
+                d: c.d,
+                linear_cutoff: c.linear_cutoff,
+                dwg_to_output: *color.dwg_to_output(),
+            },
+            entry_hash: color.hash(),
+        }
+    }
+}
+pub(crate) fn output_record_valid(out: *const FjOutputColorPreparation) -> bool {
+    !out.is_null()
+        && (out as usize).is_multiple_of(std::mem::align_of::<FjOutputColorPreparation>())
+        && (out as usize)
+            .checked_add(std::mem::size_of::<FjOutputColorPreparation>())
+            .is_some()
+}
+
+/// # Safety
+/// Initialized immutable inputs and their extents remain live through return;
+/// outputs/diagnostics are aligned, exclusive and disjoint from every borrow.
+/// Matching TC-LUT ownership is consumed once with readers excluded on release.
+/// This checked edge contains panics, invokes no foreign callback and retains
+/// no input pointer; only an explicitly returned owned result outlives the call.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) unsafe fn boundary_output_color(
+    output_space: u32,
+    out: *mut FjOutputColorPreparation,
+) -> FjStatus {
+    let valid = output_record_valid(out);
+    if valid {
+        // SAFETY: The checked extent is exclusively writable by caller contract.
+        unsafe { out.write_bytes(0, 1) };
+    }
+    std::panic::catch_unwind(|| {
+        if !valid {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        let Ok(space) = color::OutputSpace::try_from(output_space) else {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(11) {
+            return color_status(category);
+        }
+        let prepared = FjOutputColorPreparation::prepare(space);
+        // SAFETY: Only the complete local value is copied; storage is not retained.
+        unsafe { out.write(prepared) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+    assert!(
+        size_of::<FjOutputColorPreparation>() == 168 && align_of::<FjOutputColorPreparation>() == 8
+    );
+    assert!(offset_of!(FjOutputColorPreparation, output_space) == 0);
+    assert!(offset_of!(FjOutputColorPreparation, rgb_to_xyz) == 4);
+    assert!(offset_of!(FjOutputColorPreparation, xyz_to_rgb) == 40);
+    assert!(offset_of!(FjOutputColorPreparation, white_xyz) == 76);
+    assert!(offset_of!(FjOutputColorPreparation, encoding) == 88);
+    assert!(offset_of!(FjOutputColorPreparation, entry_hash) == 160);
+};
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_cases::RowCases;
+
+    #[test]
+    fn foreign_tags_preserve_the_reference_table() {
+        let expected = [[0, 1, 0, 1], [2, 3, 2, 3], [0, 1, 0, 1]];
+        let ids: Vec<String> = (0..expected.len())
+            .flat_map(|polarity| {
+                (0..expected[polarity].len())
+                    .map(move |selection| format!("polarity-{polarity}/selection-{selection}"))
+            })
+            .collect();
+        let mut rows = RowCases::new("foreign-route-table", &ids);
+        for (polarity, routes) in expected.into_iter().enumerate() {
+            for (selection, route) in routes.into_iter().enumerate() {
+                let row = rows.case(format!("polarity-{polarity}/selection-{selection}"));
+                assert_eq!(resolve_foreign(polarity as u8, selection as u8), Ok(route));
+                row.passed();
+            }
+        }
+        rows.finish();
+    }
+
+    #[test]
+    fn foreign_failures_leave_output_unchanged() {
+        let mut route = 99;
+        // SAFETY: `route` is a live, exclusively borrowed output byte.
+        unsafe {
+            assert_eq!(
+                resolve_route_for_test(3, 0, &raw mut route),
+                INVALID_POLARITY
+            );
+            assert_eq!(
+                resolve_route_for_test(0, 4, &raw mut route),
+                INVALID_SELECTION
+            );
+            assert_eq!(
+                resolve_route_for_test(0, 0, std::ptr::null_mut()),
+                NULL_OUTPUT
+            );
+            assert_eq!(route, 99);
+            assert_eq!(resolve_route_for_test(1, 0, &raw mut route), SUCCESS);
+            assert_eq!(route, 2);
+        }
+    }
+
+    #[test]
+    fn panic_is_contained_as_status() {
+        let result = contain_panic(|| panic!("test route panic"));
+        assert_eq!(result, Err(INTERNAL_PANIC));
+    }
+}

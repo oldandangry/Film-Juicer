@@ -1,0 +1,434 @@
+{
+  "case:direct-route-0-flags-0": [],
+  "case:direct-route-0-flags-1": [],
+  "case:direct-route-0-flags-2": [],
+  "case:direct-route-0-flags-3": [],
+  "case:direct-route-1-flags-0": [],
+  "case:direct-route-1-flags-1": [],
+  "case:direct-route-1-flags-2": [],
+  "case:direct-route-1-flags-3": [],
+  "case:direct-route-2-flags-0": [],
+  "case:direct-route-2-flags-1": [],
+  "case:direct-route-2-flags-2": [],
+  "case:direct-route-2-flags-3": [],
+  "case:direct-route-3-flags-0": [],
+  "case:direct-route-3-flags-1": [],
+  "case:direct-route-3-flags-2": [],
+  "case:direct-route-3-flags-3": [],
+  "case:direct-route-4-flags-0": [],
+  "case:direct-route-4-flags-1": [],
+  "case:direct-route-4-flags-2": [],
+  "case:direct-route-4-flags-3": [],
+  "case:direct-route-255-flags-0": [],
+  "case:direct-route-255-flags-1": [],
+  "case:direct-route-255-flags-2": [],
+  "case:direct-route-255-flags-3": [],
+  "case:print-route-0-flags-0": [],
+  "case:print-route-0-flags-1": [],
+  "case:print-route-0-flags-2": [],
+  "case:print-route-0-flags-3": [],
+  "case:print-route-1-flags-0": [],
+  "case:print-route-1-flags-1": [],
+  "case:print-route-1-flags-2": [],
+  "case:print-route-1-flags-3": [],
+  "case:print-route-2-flags-0": [],
+  "case:print-route-2-flags-1": [],
+  "case:print-route-2-flags-2": [],
+  "case:print-route-2-flags-3": [],
+  "case:print-route-3-flags-0": [],
+  "case:print-route-3-flags-1": [],
+  "case:print-route-3-flags-2": [],
+  "case:print-route-3-flags-3": [],
+  "case:print-route-4-flags-0": [],
+  "case:print-route-4-flags-1": [],
+  "case:print-route-4-flags-2": [],
+  "case:print-route-4-flags-3": [],
+  "case:print-route-255-flags-0": [],
+  "case:print-route-255-flags-1": [],
+  "case:print-route-255-flags-2": [],
+  "case:print-route-255-flags-3": [],
+  "case:direct-none": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=8943260833500562926"
+  ],
+  "case:direct-scan": [],
+  "case:direct-midgray": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=0 targetBlackLinear=0 targetWhiteLinear=0 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=0 xyzOffset=0 correctedMidgrayInput=inf exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B direct corrected midgray\""
+  ],
+  "case:direct-range": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1 referenceWhiteY=1 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1e+10 correctedMidgrayInput=1 exposureScale=9.55527 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-zero-inverse": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=0.00215443 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-infinite-inverse": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=0.00215443 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-narrow-overflow": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=6.80565e+35 referenceWhiteY=inf referenceDeltaY=inf xyzSlope=0 xyzOffset=0 correctedMidgrayInput=inf exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B direct corrected midgray\""
+  ],
+  "case:direct-baseline-nan": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=0.00215443 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-negative-ay": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=0.00215443 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-nan-ay": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=0.00215443 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-none": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=15825485235529860962"
+  ],
+  "case:print-scan": [],
+  "case:print-midgray": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=0 targetBlackLinear=0 targetWhiteLinear=0 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=0 xyzOffset=0 correctedMidgrayInput=inf exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B print corrected midgray\""
+  ],
+  "case:print-range": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1 referenceWhiteY=1 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1e+10 correctedMidgrayInput=1 exposureScale=0.104654 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-zero-inverse": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=1046.54 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-infinite-inverse": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=1046.54 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-narrow-overflow": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=2.15214e+37 referenceWhiteY=inf referenceDeltaY=inf xyzSlope=0 xyzOffset=0 correctedMidgrayInput=inf exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B print corrected midgray\""
+  ],
+  "case:print-baseline-nan": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=1046.54 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-negative-ay": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=1046.54 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-nan-ay": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=1046.54 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-reference": [],
+  "case:direct-direct-lookup": [],
+  "case:direct-provenance": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=8943260833500562926"
+  ],
+  "case:print-print-lookup": [],
+  "case:print-normalizer-nan": [],
+  "case:print-normalizer-zero": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1 referenceWhiteY=1 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1e+10 correctedMidgrayInput=1 exposureScale=0.104654 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-normalizer-negative": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1 referenceWhiteY=1 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1e+10 correctedMidgrayInput=1 exposureScale=0.104654 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-preflash": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0310425 referenceWhiteY=0.488394 referenceDeltaY=0.457351 xyzSlope=2.1865 xyzOffset=-0.0678746 correctedMidgrayInput=0.115195 exposureScale=1.86715 descriptorHash=1202886659821889760"
+  ],
+  "case:print-finite-negative-sensitivity": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1 referenceWhiteY=1 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1e+10 correctedMidgrayInput=1 exposureScale=0.104654 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-nan-light": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0319188 referenceWhiteY=1 referenceDeltaY=0.968081 xyzSlope=1.03297 xyzOffset=-0.0329712 correctedMidgrayInput=0.210046 exposureScale=0.838182 descriptorHash=13001386402569880408"
+  ],
+  "case:print-null-recipe": [],
+  "case:direct-levels-1-0-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=5464515089195493025"
+  ],
+  "case:direct-levels-1-2147483648-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=-0 whiteLevelEncoded=1 targetBlackLinear=-0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=7417137918052209185"
+  ],
+  "case:direct-levels-1-1025879789-1065353215": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.04045 whiteLevelEncoded=1 targetBlackLinear=0.00313081 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=0.997867 xyzOffset=0.00213294 correctedMidgrayInput=0.182256 exposureScale=0.987381 descriptorHash=17318614501424098589"
+  ],
+  "case:direct-levels-1-2143289344-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=nan whiteLevelEncoded=1 targetBlackLinear=nan targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=nan xyzOffset=-nan(ind) correctedMidgrayInput=-nan(ind) exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B direct corrected midgray\""
+  ],
+  "case:direct-levels-1-0-2143289344": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0 whiteLevelEncoded=nan targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=5464515089195493025"
+  ],
+  "case:direct-levels-1-1065353216-0": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=1 whiteLevelEncoded=0 targetBlackLinear=1 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=0 xyzOffset=1 correctedMidgrayInput=-inf exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B direct corrected midgray\""
+  ],
+  "case:direct-levels-2-0-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0.001 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1 xyzOffset=0 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=9338068192112167755"
+  ],
+  "case:direct-levels-2-2147483648-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=-0 whiteLevelEncoded=1 targetBlackLinear=0.001 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1 xyzOffset=0 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=9338068192112167755"
+  ],
+  "case:direct-levels-2-1025879789-1065353215": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.04045 whiteLevelEncoded=1 targetBlackLinear=0.001 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1 xyzOffset=0 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=9338068192112167755"
+  ],
+  "case:direct-levels-2-2143289344-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=nan whiteLevelEncoded=1 targetBlackLinear=0.001 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1 xyzOffset=0 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=9338068192112167755"
+  ],
+  "case:direct-levels-2-0-2143289344": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=nan targetBlackLinear=0.001 targetWhiteLinear=nan referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=nan xyzOffset=-nan(ind) correctedMidgrayInput=-nan(ind) exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B direct corrected midgray\""
+  ],
+  "case:direct-levels-2-1065353216-0": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=1 whiteLevelEncoded=0 targetBlackLinear=0.001 targetWhiteLinear=0 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=-0.001001 xyzOffset=0.001001 correctedMidgrayInput=-182.816 exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B direct corrected midgray\""
+  ],
+  "case:direct-levels-3-0-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=8943260833500562926"
+  ],
+  "case:direct-levels-3-2147483648-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=-0 whiteLevelEncoded=1 targetBlackLinear=-0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=14203506748924291694"
+  ],
+  "case:direct-levels-3-1025879789-1065353215": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.04045 whiteLevelEncoded=1 targetBlackLinear=0.00313081 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=0.997867 xyzOffset=0.00213294 correctedMidgrayInput=0.182256 exposureScale=0.987381 descriptorHash=5502502944926282122"
+  ],
+  "case:direct-levels-3-2143289344-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=nan whiteLevelEncoded=1 targetBlackLinear=nan targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=nan xyzOffset=-nan(ind) correctedMidgrayInput=-nan(ind) exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B direct corrected midgray\""
+  ],
+  "case:direct-levels-3-0-2143289344": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=nan targetBlackLinear=0 targetWhiteLinear=nan referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=nan xyzOffset=-nan(ind) correctedMidgrayInput=-nan(ind) exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B direct corrected midgray\""
+  ],
+  "case:direct-levels-3-1065353216-0": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=1 whiteLevelEncoded=0 targetBlackLinear=1 targetWhiteLinear=0 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=-1.001 xyzOffset=1.001 correctedMidgrayInput=0.816184 exposureScale=7.28831 descriptorHash=12233786923816205538"
+  ],
+  "case:print-levels-1-0-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=16058567651057463409"
+  ],
+  "case:print-levels-1-2147483648-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=-0 whiteLevelEncoded=1 targetBlackLinear=-0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=13261053175612261105"
+  ],
+  "case:print-levels-1-1025879789-1065353215": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.04045 whiteLevelEncoded=1 targetBlackLinear=0.00313081 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.02942 xyzOffset=-0.0294224 correctedMidgrayInput=0.207322 exposureScale=0.852894 descriptorHash=14457027637989805356"
+  ],
+  "case:print-levels-1-2143289344-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=NegativePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=nan whiteLevelEncoded=1 targetBlackLinear=nan targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=nan xyzOffset=-nan(ind) correctedMidgrayInput=-nan(ind) exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B print corrected midgray\""
+  ],
+  "case:print-levels-1-0-2143289344": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0 whiteLevelEncoded=nan targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=16058567651057463409"
+  ],
+  "case:print-levels-1-1065353216-0": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=NegativePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=1 whiteLevelEncoded=0 targetBlackLinear=1 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=0 xyzOffset=1 correctedMidgrayInput=-inf exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B print corrected midgray\""
+  ],
+  "case:print-levels-2-0-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0.0316228 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1 xyzOffset=0 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=17757128266117577006"
+  ],
+  "case:print-levels-2-2147483648-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=-0 whiteLevelEncoded=1 targetBlackLinear=0.0316228 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1 xyzOffset=0 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=17757128266117577006"
+  ],
+  "case:print-levels-2-1025879789-1065353215": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.04045 whiteLevelEncoded=1 targetBlackLinear=0.0316228 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1 xyzOffset=0 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=17757128266117577006"
+  ],
+  "case:print-levels-2-2143289344-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=nan whiteLevelEncoded=1 targetBlackLinear=0.0316228 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1 xyzOffset=0 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=17757128266117577006"
+  ],
+  "case:print-levels-2-0-2143289344": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=NegativePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=nan targetBlackLinear=0.0316228 targetWhiteLinear=nan referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=nan xyzOffset=-nan(ind) correctedMidgrayInput=-nan(ind) exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B print corrected midgray\""
+  ],
+  "case:print-levels-2-1065353216-0": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=NegativePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=1 whiteLevelEncoded=0 targetBlackLinear=0.0316228 targetWhiteLinear=0 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=-0.0326554 xyzOffset=0.0326554 correctedMidgrayInput=-4.63459 exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B print corrected midgray\""
+  ],
+  "case:print-levels-3-0-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=15825485235529860962"
+  ],
+  "case:print-levels-3-2147483648-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=-0 whiteLevelEncoded=1 targetBlackLinear=-0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=13372925438535550178"
+  ],
+  "case:print-levels-3-1025879789-1065353215": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.04045 whiteLevelEncoded=1 targetBlackLinear=0.00313081 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.02942 xyzOffset=-0.0294224 correctedMidgrayInput=0.207322 exposureScale=0.852894 descriptorHash=17735560394333607447"
+  ],
+  "case:print-levels-3-2143289344-1065353216": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=nan whiteLevelEncoded=1 targetBlackLinear=nan targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=nan xyzOffset=-nan(ind) correctedMidgrayInput=-nan(ind) exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B print corrected midgray\""
+  ],
+  "case:print-levels-3-0-2143289344": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_corrected_midgray route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=nan targetBlackLinear=0 targetWhiteLinear=nan referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=nan xyzOffset=-nan(ind) correctedMidgrayInput=-nan(ind) exposureScale=nan descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B print corrected midgray\""
+  ],
+  "case:print-levels-3-1065353216-0": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=1 whiteLevelEncoded=0 targetBlackLinear=1 targetWhiteLinear=0 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=-1.03266 xyzOffset=1.03266 correctedMidgrayInput=0.821819 exposureScale=0.135953 descriptorHash=7551165505512260131"
+  ],
+  "case:direct-baseline": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.000752564 referenceWhiteY=0.752564 referenceDeltaY=0.751811 xyzSlope=1.33012 xyzOffset=-0.001001 correctedMidgrayInput=0.139086 exposureScale=0.688578 descriptorHash=7577309262658921240"
+  ],
+  "case:direct-baseline-infinite": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=0.00215443 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-nonfinite-eps": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=0.00215443 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-k-zero": [],
+  "case:direct-k-81": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.000197832 referenceWhiteY=1 referenceDeltaY=0.999802 xyzSlope=1.0002 xyzOffset=-0.000197871 correctedMidgrayInput=0.184161 exposureScale=1.00117 descriptorHash=186666567172089105"
+  ],
+  "case:direct-medium-literal": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=8943260833500562926"
+  ],
+  "case:direct-medium-opposite": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=8943260833500562926"
+  ],
+  "case:direct-base-nonfinite": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=8943260833500562926"
+  ],
+  "case:direct-mean-nonfinite": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=8943260833500562926"
+  ],
+  "case:direct-mean-zero": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00295 descriptorHash=12417040960961346362"
+  ],
+  "case:direct-singleton": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1 descriptorHash=1304555634711911374"
+  ],
+  "case:direct-duplicate": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00295 descriptorHash=17319496576027150268"
+  ],
+  "case:direct-descending": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=8943260833500562926"
+  ],
+  "case:direct-mismatch": [],
+  "case:direct-axis-nan": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=-nan(ind) descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-axis-infinite": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=-nan(ind) descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-baseline": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0237982 referenceWhiteY=0.752564 referenceDeltaY=0.728766 xyzSlope=1.37218 xyzOffset=-0.0326554 correctedMidgrayInput=0.157891 exposureScale=1.22635 descriptorHash=2784304247123995509"
+  ],
+  "case:print-baseline-infinite": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=1046.54 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-nonfinite-eps": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=1046.54 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-k-zero": [],
+  "case:print-k-81": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0140653 referenceWhiteY=1 referenceDeltaY=0.985935 xyzSlope=1.01427 xyzOffset=-0.0142659 correctedMidgrayInput=0.195477 exposureScale=0.922491 descriptorHash=1542431937883613095"
+  ],
+  "case:print-medium-literal": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=15825485235529860962"
+  ],
+  "case:print-medium-opposite": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=15825485235529860962"
+  ],
+  "case:print-base-nonfinite": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0322213 referenceWhiteY=1 referenceDeltaY=0.967779 xyzSlope=1.03329 xyzOffset=-0.0332941 correctedMidgrayInput=0.210293 exposureScale=0.83687 descriptorHash=15281202331014531948"
+  ],
+  "case:print-mean-nonfinite": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1 referenceDeltaY=1 xyzSlope=1 xyzOffset=-1e-10 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=14240249768401305907"
+  ],
+  "case:print-mean-zero": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1 referenceDeltaY=1 xyzSlope=1 xyzOffset=-1e-10 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=14240249768401305907"
+  ],
+  "case:print-singleton": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.1 referenceWhiteY=0.1 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1e+09 correctedMidgrayInput=0.1 exposureScale=1 descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:print-duplicate": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=15825485235529860962"
+  ],
+  "case:print-descending": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=15825485235529860962"
+  ],
+  "case:print-mismatch": [],
+  "case:print-axis-nan": [],
+  "case:print-axis-infinite": [
+    "SCAN | event=scanner_correction_descriptor outcome=rejected_malformed route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=1e-10 referenceWhiteY=1e-10 referenceDeltaY=0 xyzSlope=1e+10 xyzOffset=-1 correctedMidgrayInput=1.184e-10 exposureScale=-nan(ind) descriptorHash=0 diagnostic=\"MalformedRequiredProfileData phase=8B scanner correction\""
+  ],
+  "case:direct-black": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1.001 xyzOffset=-0.001001 correctedMidgrayInput=0.184816 exposureScale=1.00592 descriptorHash=5464515089195493025"
+  ],
+  "case:direct-white": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0.001 targetWhiteLinear=1 referenceBlackY=0.001 referenceWhiteY=1 referenceDeltaY=0.999 xyzSlope=1 xyzOffset=0 correctedMidgrayInput=0.184 exposureScale=1 descriptorHash=9338068192112167755"
+  ],
+  "case:positive-print": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0 whiteLevelEncoded=1 targetBlackLinear=0 targetWhiteLinear=1 referenceBlackY=0.0316228 referenceWhiteY=1 referenceDeltaY=0.968377 xyzSlope=1.03266 xyzOffset=-0.0326554 correctedMidgrayInput=0.209804 exposureScale=0.839469 descriptorHash=5054984262577549376"
+  ],
+  "product:0:0:0": [],
+  "product:0:0:1": [],
+  "product:0:0:2": [],
+  "product:0:0:3": [],
+  "product:0:1:0": [],
+  "product:0:1:1": [],
+  "product:0:1:2": [],
+  "product:0:1:3": [],
+  "product:0:2:0": [],
+  "product:0:2:1": [],
+  "product:0:2:2": [],
+  "product:0:2:3": [],
+  "product:1:0:0": [],
+  "product:1:0:1": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.159453 referenceBlackY=0.00366227 referenceWhiteY=0.159453 referenceDeltaY=0.155791 xyzSlope=1.01854 xyzOffset=-0.00295617 correctedMidgrayInput=0.183553 exposureScale=1.00108 descriptorHash=5439433760800605625"
+  ],
+  "product:1:0:2": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.00366227 targetWhiteLinear=0.955105 referenceBlackY=0.00366227 referenceWhiteY=0.159453 referenceDeltaY=0.155791 xyzSlope=6.10717 xyzOffset=-0.0187038 correctedMidgrayInput=0.0331911 exposureScale=1.92763 descriptorHash=7716107542295912574"
+  ],
+  "product:1:0:3": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.955105 referenceBlackY=0.00366227 referenceWhiteY=0.159453 referenceDeltaY=0.155791 xyzSlope=6.12571 xyzOffset=-0.02166 correctedMidgrayInput=0.0335732 exposureScale=1.91896 descriptorHash=2665982574192596547"
+  ],
+  "product:1:1:0": [],
+  "product:1:1:1": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.159708 referenceBlackY=0.00367795 referenceWhiteY=0.159708 referenceDeltaY=0.15603 xyzSlope=1.01861 xyzOffset=-0.00297241 correctedMidgrayInput=0.183556 exposureScale=1.00107 descriptorHash=12119902837490076235"
+  ],
+  "product:1:1:2": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.00367795 targetWhiteLinear=0.955105 referenceBlackY=0.00367795 referenceWhiteY=0.159708 referenceDeltaY=0.15603 xyzSlope=6.09771 xyzOffset=-0.0187491 correctedMidgrayInput=0.03325 exposureScale=1.92629 descriptorHash=5634879817265684148"
+  ],
+  "product:1:1:3": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.955105 referenceBlackY=0.00367795 referenceWhiteY=0.159708 referenceDeltaY=0.15603 xyzSlope=6.11632 xyzOffset=-0.0217216 correctedMidgrayInput=0.0336348 exposureScale=1.91757 descriptorHash=823926743423917987"
+  ],
+  "product:1:2:0": [],
+  "product:1:2:1": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.164591 referenceBlackY=0.0041379 referenceWhiteY=0.164591 referenceDeltaY=0.160453 xyzSlope=1.02096 xyzOffset=-0.00345066 correctedMidgrayInput=0.183601 exposureScale=1.00096 descriptorHash=10075224845819480793"
+  ],
+  "product:1:2:2": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.0041379 targetWhiteLinear=0.955105 referenceBlackY=0.0041379 referenceWhiteY=0.164591 referenceDeltaY=0.160453 xyzSlope=5.92674 xyzOffset=-0.0203864 correctedMidgrayInput=0.0344854 exposureScale=1.89878 descriptorHash=13133720739681604205"
+  ],
+  "product:1:2:3": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=NegativePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.955105 referenceBlackY=0.0041379 referenceWhiteY=0.164591 referenceDeltaY=0.160453 xyzSlope=5.94771 xyzOffset=-0.0238371 correctedMidgrayInput=0.0349441 exposureScale=1.88892 descriptorHash=13123874032758759799"
+  ],
+  "product:2:0:0": [],
+  "product:2:0:1": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.812265 referenceBlackY=0.000621113 referenceWhiteY=0.812265 referenceDeltaY=0.811644 xyzSlope=0.999812 xyzOffset=0.000152998 correctedMidgrayInput=0.183882 exposureScale=0.999364 descriptorHash=3062284082911369103"
+  ],
+  "product:2:0:2": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000621113 targetWhiteLinear=0.955105 referenceBlackY=0.000621113 referenceWhiteY=0.812265 referenceDeltaY=0.811644 xyzSlope=1.17599 xyzOffset=-0.000109309 correctedMidgrayInput=0.156557 exposureScale=0.855149 descriptorHash=12460626257386352008"
+  ],
+  "product:2:0:3": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.955105 referenceBlackY=0.000621113 referenceWhiteY=0.812265 referenceDeltaY=0.811644 xyzSlope=1.1758 xyzOffset=4.3689e-05 correctedMidgrayInput=0.156452 exposureScale=0.854604 descriptorHash=2303505430219896648"
+  ],
+  "product:2:1:0": [],
+  "product:2:1:1": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.812265 referenceBlackY=0.000621113 referenceWhiteY=0.812265 referenceDeltaY=0.811644 xyzSlope=0.999812 xyzOffset=0.000152998 correctedMidgrayInput=0.183882 exposureScale=0.999364 descriptorHash=3062284082911369103"
+  ],
+  "product:2:1:2": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000621113 targetWhiteLinear=0.955105 referenceBlackY=0.000621113 referenceWhiteY=0.812265 referenceDeltaY=0.811644 xyzSlope=1.17599 xyzOffset=-0.000109309 correctedMidgrayInput=0.156557 exposureScale=0.854826 descriptorHash=1315858955349249777"
+  ],
+  "product:2:1:3": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.955105 referenceBlackY=0.000621113 referenceWhiteY=0.812265 referenceDeltaY=0.811644 xyzSlope=1.1758 xyzOffset=4.3689e-05 correctedMidgrayInput=0.156452 exposureScale=0.854281 descriptorHash=15326933285297503448"
+  ],
+  "product:2:2:0": [],
+  "product:2:2:1": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.812265 referenceBlackY=0.000621113 referenceWhiteY=0.812265 referenceDeltaY=0.811644 xyzSlope=0.999812 xyzOffset=0.000152998 correctedMidgrayInput=0.183882 exposureScale=0.99943 descriptorHash=1702248810324896972"
+  ],
+  "product:2:2:2": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000621113 targetWhiteLinear=0.955105 referenceBlackY=0.000621113 referenceWhiteY=0.812265 referenceDeltaY=0.811644 xyzSlope=1.17599 xyzOffset=-0.000109309 correctedMidgrayInput=0.156557 exposureScale=0.869464 descriptorHash=15204686518610745944"
+  ],
+  "product:2:2:3": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositiveDirectScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.955105 referenceBlackY=0.000621113 referenceWhiteY=0.812265 referenceDeltaY=0.811644 xyzSlope=1.1758 xyzOffset=4.3689e-05 correctedMidgrayInput=0.156452 exposureScale=0.86897 descriptorHash=6689306481737378790"
+  ],
+  "product:3:0:0": [],
+  "product:3:0:1": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.0137824 referenceBlackY=0.00438522 referenceWhiteY=0.0137824 referenceDeltaY=0.00939715 xyzSlope=1.38429 xyzOffset=-0.00529642 correctedMidgrayInput=0.136746 exposureScale=1.13252 descriptorHash=3101805674172550091"
+  ],
+  "product:3:0:2": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.00438522 targetWhiteLinear=0.955105 referenceBlackY=0.00438522 referenceWhiteY=0.0137824 referenceDeltaY=0.00939715 xyzSlope=101.171 xyzOffset=-0.439272 correctedMidgrayInput=0.00616058 exposureScale=9216.63 descriptorHash=5051528375741755968"
+  ],
+  "product:3:0:3": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.955105 referenceBlackY=0.00438522 referenceWhiteY=0.0137824 referenceDeltaY=0.00939715 xyzSlope=101.555 xyzOffset=-0.444569 correctedMidgrayInput=0.00618942 exposureScale=9216.63 descriptorHash=2970957679544084188"
+  ],
+  "product:3:1:0": [],
+  "product:3:1:1": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.0137839 referenceBlackY=0.00440729 referenceWhiteY=0.0137839 referenceDeltaY=0.00937658 xyzSlope=1.38749 xyzOffset=-0.00534106 correctedMidgrayInput=0.136463 exposureScale=1.13346 descriptorHash=7569117679926563531"
+  ],
+  "product:3:1:2": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.00440729 targetWhiteLinear=0.955105 referenceBlackY=0.00440729 referenceWhiteY=0.0137839 referenceDeltaY=0.00937658 xyzSlope=101.391 xyzOffset=-0.442451 correctedMidgrayInput=0.00617859 exposureScale=9216.63 descriptorHash=12597746347501465369"
+  ],
+  "product:3:1:3": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.955105 referenceBlackY=0.00440729 referenceWhiteY=0.0137839 referenceDeltaY=0.00937658 xyzSlope=101.778 xyzOffset=-0.447792 correctedMidgrayInput=0.00620754 exposureScale=9216.63 descriptorHash=14819615177576748867"
+  ],
+  "product:3:2:0": [],
+  "product:3:2:1": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=true whiteCorrection=false blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.0136578 referenceBlackY=0.00353396 referenceWhiteY=0.0136578 referenceDeltaY=0.0101238 xyzSlope=1.27262 xyzOffset=-0.00372339 correctedMidgrayInput=0.147509 exposureScale=1.09866 descriptorHash=9644995558589716333"
+  ],
+  "product:3:2:2": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=false whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.00353396 targetWhiteLinear=0.955105 referenceBlackY=0.00353396 referenceWhiteY=0.0136578 referenceDeltaY=0.0101238 xyzSlope=93.9931 xyzOffset=-0.328633 correctedMidgrayInput=0.00545395 exposureScale=9216.63 descriptorHash=89487664649829639"
+  ],
+  "product:3:2:3": [
+    "SCAN | event=scanner_correction_descriptor outcome=accepted route=PositivePrintScan blackCorrection=true whiteCorrection=true blackLevelEncoded=0.01 whiteLevelEncoded=0.98 targetBlackLinear=0.000773994 targetWhiteLinear=0.955105 referenceBlackY=0.00353396 referenceWhiteY=0.0136578 referenceDeltaY=0.0101238 xyzSlope=94.2657 xyzOffset=-0.332357 correctedMidgrayInput=0.00547767 exposureScale=9216.63 descriptorHash=987373756888275758"
+  ]
+}

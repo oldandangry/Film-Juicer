@@ -1,0 +1,22 @@
+#pragma once
+
+#include <string>
+
+#include "juicer_cuda_api.h"
+#include "Cuda/JuicerCudaExecutor.h"
+
+struct FjHostPreparation;
+
+namespace JuicerCuda {
+
+    bool execute_prepared_host_data(
+        JuicerProcess::Root& root,
+        const FjPreparedHostData& source,
+        const ExecutionFrame& frame,
+        ResourceManager::SubmissionSnapshot& snapshot,
+        PendingContextLossRecovery& recovery,
+        FjAbortCallback abortCallback,
+        std::string& diagnostic,
+        const FjHostPreparation* hostPreparation = nullptr);
+
+} // namespace JuicerCuda

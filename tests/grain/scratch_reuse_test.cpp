@@ -3,6 +3,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <iostream>
 #include <optional>
 #include <set>
@@ -12,17 +13,76 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
 
-#include "SpectralProcessing.h"
-#include "JuicerState.h"
+#include "Cuda/JuicerCudaFailure.h"
+#include "Cuda/JuicerCudaHostViews.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
+
+#include "ColorTransforms.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
+#include "../ffi/exposure_fixture.h"
+#include "../ffi/juicer_test_api.h"
+#include "../ffi/prepared_frame_fixture.h"
+#include "../ffi/prepared_product_fixture.h"
+#include "../ffi/spatial_optics_fixture.h"
+#include "../ffi/case_results.h"
+#include "../ffi/gtest_cases.h"
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
 
+namespace JuicerProcess::TestSupport {
+    class RootLifetimeObserver final {
+    public:
+        struct GrainSnapshot {
+            std::weak_ptr<JuicerCuda::Resources> frame;
+            std::weak_ptr<JuicerCuda::Resources> grain;
+            std::size_t members = 0;
+            bool first = false;
+            bool second = false;
+            std::uint64_t epoch = 0;
+            std::uint64_t grainRecords = 0;
+            JuicerCuda::DeviceLedgerSnapshot ledger;
+        };
+
+        static GrainSnapshot grain_snapshot(Root& root,
+                                            const JuicerCuda::ResourceManager::DeviceContextKey& context,
+                                            std::uint64_t first,
+                                            std::uint64_t second) {
+            GrainSnapshot result{};
+            std::lock_guard<std::mutex> lock(root._cudaResourcesMutex);
+            for (const auto& [key, entry] : root._cudaContextResources) {
+                if (key.deviceContextKey == context) {
+                    result.frame = entry.frameOwner;
+                    result.grain = entry.grainOwner;
+                    result.members = entry.grainInstances.size();
+                    result.first = entry.grainInstances.contains(first);
+                    result.second = entry.grainInstances.contains(second);
+                    result.epoch = key.contextEpoch;
+                    if (entry.grainOwner) {
+                        std::lock_guard<std::mutex> allocations(entry.grainOwner->deviceAllocationRecordsMutex);
+                        result.grainRecords = entry.grainOwner->deviceAllocationRecords.size();
+                    }
+                }
+            }
+            const auto ledger = root._cudaDeviceLedgers.find(context.deviceId);
+            if (ledger != root._cudaDeviceLedgers.end()) {
+                result.ledger = ledger->second->snapshot();
+            }
+            return result;
+        }
+    };
+} // namespace JuicerProcess::TestSupport
+
 namespace {
     using Frame = JuicerProcess::Root::PreparedCudaFrame;
+    namespace FrameFixture = JuicerCudaTest::PreparedFrameFixture;
+
+    std::string route_case_key(Spektrafilm::ScanRoute route) {
+        return "route-" + std::to_string(static_cast<int>(route));
+    }
 
     void require(bool ok, const std::string& detail) {
         if (!ok) {
@@ -35,100 +95,246 @@ namespace {
     }
 
     struct GrainVariant {
+        bool active = true;
         bool layers = true;
         bool shared = true;
         int debug = 0;
         double time = 12.0;
         float pixelSize = 6.0f;
         bool cameraDiffusion = false;
+        float filmGamma = 1.0f;
+    };
+
+    struct CurvePointers {
+        std::array<JuicerCuda::DeviceCurveView, 3> normalized{};
+        std::array<JuicerCuda::DeviceCurveView, 3> layerBase{};
+        std::array<std::array<const float*, 3>, 3> layers{};
+        std::uint64_t normalizedHash = 0;
+        std::uint64_t layersHash = 0;
+        bool layersActive = false;
     };
 
     struct Inputs {
-        FocusedRenderStateBuildProduct product;
-        Scanner::ScannerSpectralLutDescriptor scanner;
-        Spektrafilm::SpatialDirDescriptor dir;
-        Spektrafilm::VisualGrainFrameDescriptor grain;
-        std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
+        JuicerTestSupport::RuntimeFixture& runtime;
+        JuicerTestSupport::PreparedStateHold state;
+        JuicerTestSupport::PreparationInput controls;
+        Spektrafilm::VisualGrainFrameDescriptor grain{};
+        JuicerCuda::VisualGrainPayloadInput grainPayload{};
+        Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
+        std::uint64_t uploadCoreHash = 0;
+        std::uint64_t scannerHash = 0;
+        std::uint64_t dirRecipeHash = 0;
+        std::uint64_t recipeHash = 0;
+        std::uint64_t filmDevelopmentHash = 0;
+        std::uint64_t normalizedDensityCurvesHash = 0;
+        std::uint64_t densityCurvesLayersHash = 0;
         int width;
         int height;
+        FrameFixture::FrameFacts facts{};
 
-        Inputs(int w, int h, Spektrafilm::ScanRoute route, const GrainVariant& variant = {})
-            : width(w), height(h) {
-            ParamSnapshot controls;
-            controls.scanRoute = route;
-            if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive) {
-                controls.filmProfileKey = "fujifilm_provia_100f";
-            }
-            controls.scatterHalationControls = {};
-            controls.cameraDiffusion.active = variant.cameraDiffusion;
-            controls.gateWeaveAmount = 0.0;
-            controls.grainControls.active = true;
-            controls.grainControls.sublayersActive = variant.layers;
-            controls.grainControls.chromaSharedWeight = variant.shared ? 1.0f : 0.0f;
-            controls.grainControls.chromaIndependentWeight = variant.shared ? 0.0f : 1.0f;
-            controls.grainControls.debugView = variant.debug;
-            controls.dirCouplers.diffusionSizeUm = 20.0f;
-            controls.dirCouplers.diffusionTailUm = 200.0f;
-            controls.dirCouplers.diffusionTailWeight = 0.03f;
-            std::string error;
-            const bool print = Spektrafilm::scan_route_is_print(route);
-            require(print ? build_print_render_state_product(controls, product, error)
-                          : build_direct_render_state_product(controls, product, error),
-                    error);
-            if (print) {
-                require(Scanner::build_print_scanner_spectral_lut_descriptor(
-                            {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error),
-                        error);
-            } else {
-                require(Scanner::build_direct_scanner_spectral_lut_descriptor(
-                            {&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, scanner, error),
-                        error);
-            }
-            if (variant.cameraDiffusion) {
-                require(Spektrafilm::build_diffusion_frame_set_descriptor(
-                            product.recipe.spatialOptics, route, variant.pixelSize, {0, 0, w, h}, diffusion, error),
-                        error);
-            }
-            const Spektrafilm::DirFrameExtent extent{0, 0, w, h};
-            require(Spektrafilm::build_spatial_dir_descriptor(
-                        product.recipe.dirCouplers, variant.pixelSize, extent, extent, "grain-scratch-test", dir),
-                    "DIR descriptor failed");
-            Spektrafilm::VisualGrainFrameDescriptorInput input;
-            input.recipe = &product.recipe.visualGrain;
-            input.filmDevelop = &product.recipe.filmDevelop;
-            input.capturePolarity = product.recipe.profileRoute.capturePolarity;
-            input.renderExtent = {0, 0, w, h};
-            input.fullFrameExtent = input.renderExtent;
-            input.pixelSizeUm = variant.pixelSize;
-            input.frameTime = variant.time;
-            input.frameRate = 24.0;
-            input.sessionSeed = 17;
-            input.clipToken = 23;
-            require(Spektrafilm::build_visual_grain_frame_descriptor(input, grain, error), error);
+        Inputs(JuicerTestSupport::RuntimeFixture& processRuntime, int w, int h, Spektrafilm::ScanRoute route, const GrainVariant& variant = {})
+            : runtime(processRuntime), state(JuicerTestSupport::prepare_product(runtime.borrow().assets, make_controls(route, variant))),
+              controls(make_controls(route, variant)), width(w), height(h) {
+            facts.renderExtent = {0, 0, w, h};
+            facts.fullFrameExtent = facts.renderExtent;
+            facts.pixelDefinition = facts.renderExtent;
+            facts.pixelSizeUm = variant.pixelSize;
+            facts.filmFormatLongEdgeMm = controls.values.camera_film_format_long_edge_mm;
+            facts.frameTime = variant.time;
+            facts.frameRate = 24.0;
+            facts.sessionSeed = 17;
+            facts.clipToken = 23;
+            capture_frame_inputs();
         }
 
-        JuicerProcess::Root::CudaFramePreparationRequest request(bool withDir = true) const {
-            JuicerProcess::Root::CudaFramePreparationRequest r;
-            r.recipe = &product.recipe;
-            r.exposureTables = &product.payload.exposureTables;
-            r.filmRawConfig = &product.payload.filmRawConfig;
-            r.filmTcLut = product.payload.filmTcLut ? &*product.payload.filmTcLut : nullptr;
-            r.printMainIlluminant = product.payload.printMainIlluminant ? &*product.payload.printMainIlluminant : nullptr;
-            r.scannerTables = &product.payload.scannerTables;
-            r.scannerColor = &product.payload.scannerColor;
-            r.scannerLutDescriptor = &scanner;
-            r.outputBoundaryTable = product.payload.outputBoundaryTable.get();
-            r.spatialDirDescriptor = withDir ? &dir : nullptr;
-            r.visualGrainDescriptor = grain;
-            r.diffusionFrameSetDescriptor = diffusion ? &*diffusion : nullptr;
-            r.requestedWidth = width;
-            r.requestedHeight = height;
-            return r;
+        static JuicerTestSupport::PreparationInput make_controls(Spektrafilm::ScanRoute route, const GrainVariant& variant) {
+            JuicerTestSupport::PreparationInput result;
+            result.values.scan_route = static_cast<std::uint32_t>(route);
+            result.values.film_gamma_factor = variant.filmGamma;
+            if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive)
+                result.film_key = "fujifilm_provia_100f";
+            result.values.scatter_halation = {};
+            result.values.camera_diffusion.active = variant.cameraDiffusion;
+            result.values.gate_weave_amount = 0.0;
+            result.values.grain.active = variant.active;
+            result.values.grain.sublayers_active = variant.layers;
+            result.values.grain.chroma_shared_weight = variant.shared ? 1.0f : 0.0f;
+            result.values.grain.chroma_independent_weight = variant.shared ? 0.0f : 1.0f;
+            result.values.grain.debug_view = variant.debug;
+            result.values.dir_couplers.diffusion_size_um = 20.0f;
+            result.values.dir_couplers.diffusion_tail_um = 200.0f;
+            result.values.dir_couplers.diffusion_tail_weight = 0.03f;
+            return result;
+        }
+
+        struct Capture {
+            Inputs* inputs = nullptr;
+        };
+
+        static bool capture_values(void* user, const FrameFixture::Inputs& prepared, std::string&) {
+            auto& inputs = *static_cast<Capture*>(user)->inputs;
+            inputs.grain = prepared.descriptors.grain.value_or(Spektrafilm::VisualGrainFrameDescriptor{});
+            inputs.grainPayload = prepared.grainPayload;
+            inputs.polarity = prepared.descriptors.capturePolarity;
+            inputs.uploadCoreHash = prepared.state.upload_core_hash;
+            inputs.scannerHash = prepared.state.scanner_hash;
+            inputs.dirRecipeHash = prepared.state.dir_recipe.hash;
+            inputs.recipeHash = prepared.state.recipe_hash;
+            inputs.filmDevelopmentHash = prepared.state.film_development.hash;
+            inputs.normalizedDensityCurvesHash = prepared.state.film_development.density_curves_hash;
+            inputs.densityCurvesLayersHash = prepared.state.film_development.density_layers_hash;
+            return true;
+        }
+
+        void capture_frame_inputs() {
+            Capture capture{this};
+            std::string diagnostic;
+            require(FrameFixture::with_prepared_frame_inputs(
+                        runtime.borrow().assets, state, facts, &capture, &capture_values, diagnostic),
+                    diagnostic);
+        }
+
+        void build_grain_frame(double time) {
+            facts.frameTime = time;
+            capture_frame_inputs();
         }
     };
 
+    struct FrameCall {
+        JuicerProcess::Root& root;
+        const bool withDir;
+        const JuicerCuda::ResourceManager::DeviceContextKey& key;
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;
+        cudaStream_t stream;
+        JuicerCuda::Failure failure;
+        Frame frame;
+        CurvePointers* curves = nullptr;
+        const CurvePointers* expectedCurves = nullptr;
+    };
+
+    void audit_curve_storage(const FrameFixture::Inputs& prepared,
+                             Frame& frame,
+                             CurvePointers* output,
+                             const CurvePointers* expected) {
+        if (!output && !expected)
+            return;
+        const auto& development = prepared.state.film_development;
+        const auto film = frame.focused_resources().film;
+        const auto layers = frame.visual_grain_resources().densityLayers;
+        const std::size_t count = development.log_exposure.count;
+        require(count == static_cast<std::size_t>(film.normalizedDensR.n), "film curve sample count matches held state");
+        const std::array<JuicerCuda::DeviceCurveView, 3> normalized{{film.normalizedDensR, film.normalizedDensG, film.normalizedDensB}};
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            require(normalized[channel].n == static_cast<int>(count), "normalized curve extent");
+            std::vector<float> axis(count), density(count);
+            require_cuda(cudaMemcpy(axis.data(), normalized[channel].x, count * sizeof(float), cudaMemcpyDeviceToHost));
+            require_cuda(cudaMemcpy(density.data(), normalized[channel].y, count * sizeof(float), cudaMemcpyDeviceToHost));
+            for (std::size_t row = 0; row < count; ++row) {
+                require(std::bit_cast<std::uint32_t>(axis[row]) == std::bit_cast<std::uint32_t>(development.log_exposure.data[row]), "device exposure axis matches held state");
+                require(std::bit_cast<std::uint32_t>(density[row]) == std::bit_cast<std::uint32_t>(development.density_rgb.data[row * 3 + channel]), "device normalized density matches held state");
+            }
+            if (prepared.state.grain.sublayers_active != 0) {
+                for (std::size_t layer = 0; layer < 3; ++layer) {
+                    const auto* actual = layers.curves[layer][channel];
+                    require(actual != nullptr, "active layer curve present");
+                    std::vector<float> values(count);
+                    require_cuda(cudaMemcpy(values.data(), actual, count * sizeof(float), cudaMemcpyDeviceToHost));
+                    for (std::size_t row = 0; row < count; ++row) {
+                        const auto& source = development.density_layers[layer][channel];
+                        require(std::bit_cast<std::uint32_t>(values[row]) == std::bit_cast<std::uint32_t>(source.data[row]), "device layer density matches held state");
+                    }
+                }
+            }
+        }
+        if (output) {
+            output->normalized = normalized;
+            std::copy(std::begin(layers.baseCurvesCmy), std::end(layers.baseCurvesCmy), output->layerBase.begin());
+            for (std::size_t layer = 0; layer < 3; ++layer)
+                for (std::size_t channel = 0; channel < 3; ++channel)
+                    output->layers[layer][channel] = layers.curves[layer][channel];
+            output->normalizedHash = development.density_curves_hash;
+            output->layersHash = layers.hash;
+            output->layersActive = layers.active;
+        }
+        if (expected) {
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                require(expected->normalized[channel].x == normalized[channel].x && expected->normalized[channel].y == normalized[channel].y, "exact normalized curve storage reused");
+                if (expected->layersActive) {
+                    require(expected->layerBase[channel].x == layers.baseCurvesCmy[channel].x && expected->layerBase[channel].y == layers.baseCurvesCmy[channel].y, "exact layer base storage reused");
+                    for (std::size_t layer = 0; layer < 3; ++layer)
+                        require(expected->layers[layer][channel] == layers.curves[layer][channel], "exact layer curve storage reused");
+                }
+            }
+            require(expected->layersActive == layers.active && expected->layersHash == layers.hash, "layer storage identity retained");
+        }
+    }
+
+    bool prepare_root_frame(void* user, const FrameFixture::Inputs& prepared, std::string& diagnostic) {
+        auto& call = *static_cast<FrameCall*>(user);
+        auto preparation = prepared.preparation;
+        if (!call.withDir)
+            preparation.spatialDirDescriptor = nullptr;
+        Frame frame = call.root.prepare_cuda_frame(
+            call.key, call.snapshot, preparation, {}, call.stream, call.failure, prepared.hostPreparation);
+        if (!frame.active()) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        const auto lease = frame.workspace_lease();
+        if (call.withDir && !frame.prepare_spatial_dir_resources(
+                                prepared.descriptors.spatialDir, lease, call.stream, call.failure, prepared.hostPreparation)) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        if (!frame.stage_optical_workspace(lease, call.stream, call.failure)) {
+            diagnostic = call.failure.diagnostic;
+            return false;
+        }
+        if (call.curves || call.expectedCurves)
+            require_cuda(cudaStreamSynchronize(call.stream));
+        audit_curve_storage(prepared, frame, call.curves, call.expectedCurves);
+        call.frame = std::move(frame);
+        return true;
+    }
+
+    struct ConsumerThrowSentinel final : std::exception {
+        const char* what() const noexcept override {
+            return "prepared-frame consumer sentinel";
+        }
+    };
+
+    struct NoiseFaultReset {
+        NoiseFaultReset() {
+            fj_test_noise_fault(0);
+        }
+        ~NoiseFaultReset() {
+            fj_test_noise_fault(0);
+        }
+    };
+
+    bool throw_after_release_fault(void*, const FrameFixture::Inputs&, std::string&) {
+        fj_test_noise_fault(3);
+        throw ConsumerThrowSentinel{};
+    }
+
+    bool prepare_then_arm_release_fault(void* user,
+                                        const FrameFixture::Inputs& prepared,
+                                        std::string& diagnostic) {
+        fj_test_noise_fault(3);
+        return prepare_root_frame(user, prepared, diagnostic);
+    }
+
     class GrainScratch : public testing::Test {
     protected:
+        inline static JuicerTestSupport::RuntimeFixture runtime;
+
+        static void SetUpTestSuite() {
+            runtime.create(JuicerProcess::data_directory());
+        }
+        static void TearDownTestSuite() {
+            require(runtime.close().category == FJ_STATUS_SUCCESS, "grain Runtime close failed");
+        }
+
         void SetUp() override {
             require_cuda(cudaSetDevice(0));
             require_cuda(cudaFree(nullptr));
@@ -142,37 +348,36 @@ namespace {
             require_cuda(cudaStreamSynchronize(stream));
             std::string error;
             const bool retired = contextRetired ||
-                                 JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error);
+                                 JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, key.contextOpaque, error);
             const cudaError_t destroyStatus = cudaStreamDestroy(stream);
             stream = nullptr;
             require(retired, error);
             require_cuda(destroyStatus);
         }
 
-        Frame prepare(const Inputs& inputs, bool withDir = true) {
+        Frame prepare(const Inputs& inputs,
+                      bool withDir = true,
+                      std::uint64_t instanceToken = 0x475241494eull,
+                      CurvePointers* curves = nullptr,
+                      const CurvePointers* expectedCurves = nullptr) {
             JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
-            snapshot.instanceToken.value = 0x475241494eull;
+            snapshot.instanceToken.value = instanceToken;
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
-            snapshot.contextEpoch = 1;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-                inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
-            std::string error;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(
-                key, snapshot, inputs.request(withDir), {}, stream, error);
-            require(frame.active(), error);
-            const auto lease = frame.workspace_lease();
-            if (withDir) {
-                require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error);
-            }
-            require(frame.stage_optical_workspace(lease, stream, error), error);
-            return frame;
+                inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
+            FrameCall call{JuicerCuda::borrow_root(runtime.borrow().cuda), withDir, key, snapshot, stream, {}, {}, curves, expectedCurves};
+            std::string diagnostic;
+            const bool ready = FrameFixture::with_prepared_frame_inputs(
+                inputs.runtime.borrow().assets, inputs.state, inputs.facts, &call, &prepare_root_frame, diagnostic);
+            require(ready, diagnostic.empty() ? call.failure.diagnostic : diagnostic);
+            return std::move(call.frame);
         }
 
         void finish(Frame& frame) {
-            std::string error;
-            require(frame.finish(stream, error), error);
+            JuicerCuda::Failure error;
+            require(frame.finish(stream, error), error.diagnostic);
         }
 
         void compare_grain(const Inputs& inputs, Frame& frame) {
@@ -183,7 +388,7 @@ namespace {
             JuicerCuda::GrainPayload payload;
             JuicerCuda::GrainKernelPayload kernels;
             std::string error;
-            require(JuicerCuda::pack_visual_grain_payload(inputs.product.recipe.visualGrain,
+            require(JuicerCuda::pack_visual_grain_payload(inputs.grainPayload,
                                                           frame.visual_grain_resources(),
                                                           payload,
                                                           kernels,
@@ -242,10 +447,149 @@ namespace {
         bool contextRetired = false;
     };
 
+    TEST_F(GrainScratch, PreparedFrameNoiseReleaseFailurePreservesConsumerAndRootOutcomes) {
+        JuicerTests::GtestCohort cases("noise-release-operation", {"consumer-exception-preserved", "release-failure-preserved", "retry-after-release-failure"});
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
+        const std::size_t baseline = fj_test_live_noise_owners();
+        NoiseFaultReset resetFault;
+        FrameFixture::FrameFacts facts = inputs.facts;
+
+        auto consumerException = cases.case_event("consumer-exception-preserved");
+        bool sentinelRethrown = false;
+        std::string diagnostic;
+        try {
+            (void)FrameFixture::with_prepared_frame_inputs(
+                inputs.runtime.borrow().assets, inputs.state, facts, nullptr, &throw_after_release_fault, diagnostic);
+        } catch (const ConsumerThrowSentinel&) {
+            sentinelRethrown = true;
+        } catch (...) {
+            FAIL() << "prepared-frame cleanup replaced the consumer exception";
+        }
+        EXPECT_TRUE(sentinelRethrown);
+        EXPECT_EQ(fj_test_live_noise_owners(), baseline);
+        consumerException.passed();
+
+        auto releaseFailure = cases.case_event("release-failure-preserved");
+        JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+        snapshot.instanceToken.value = 0x475241494eull;
+        snapshot.frameToken.value = nextIdentity;
+        snapshot.snapshotId = nextIdentity++;
+        snapshot.deviceContextKey = key;
+        snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+            inputs.uploadCoreHash, inputs.dirRecipeHash, inputs.scannerHash, 0);
+        FrameCall call{JuicerCuda::borrow_root(runtime.borrow().cuda), true, key, snapshot, stream, {}, {}};
+        diagnostic.clear();
+        const bool releaseFailed = FrameFixture::with_prepared_frame_inputs(
+            inputs.runtime.borrow().assets, inputs.state, facts, &call, &prepare_then_arm_release_fault, diagnostic);
+        EXPECT_FALSE(releaseFailed);
+        EXPECT_TRUE(call.frame.active());
+        EXPECT_NE(diagnostic.find("asset boundary panic"), std::string::npos);
+        EXPECT_EQ(fj_test_live_noise_owners(), baseline);
+        if (call.frame.active())
+            finish(call.frame);
+        releaseFailure.passed();
+
+        auto retry_event = cases.case_event("retry-after-release-failure");
+        fj_test_noise_fault(0);
+        FrameCall retry{JuicerCuda::borrow_root(runtime.borrow().cuda), true, key, snapshot, stream, {}, {}};
+        diagnostic.clear();
+        EXPECT_TRUE(FrameFixture::with_prepared_frame_inputs(
+            inputs.runtime.borrow().assets, inputs.state, facts, &retry, &prepare_root_frame, diagnostic))
+            << diagnostic;
+        EXPECT_TRUE(retry.frame.active());
+        if (retry.frame.active())
+            finish(retry.frame);
+        EXPECT_EQ(fj_test_live_noise_owners(), baseline);
+        retry_event.passed();
+    }
+
+    TEST(GrainUpload, RetainsCapacityFailureAfterRelock) {
+        require_cuda(cudaSetDevice(0));
+        require_cuda(cudaFree(nullptr));
+        CUcontext context = nullptr;
+        ASSERT_EQ(cuCtxGetCurrent(&context), CUDA_SUCCESS);
+        ASSERT_NE(context, nullptr);
+        const JuicerCuda::ResourceManager::DeviceContextKey key{0, context};
+        std::string diagnostic;
+        auto ledger = JuicerCuda::DeviceAllocationLedger::create({key.deviceId, 1024}, diagnostic);
+        ASSERT_NE(ledger, nullptr) << diagnostic;
+        ASSERT_TRUE(ledger->bind_or_validate_cap(4, diagnostic)) << diagnostic;
+        JuicerCuda::Resources resources(key, 1, ledger);
+        const std::array<std::uint8_t, 8> bytes{};
+        const JuicerCuda::StaticNoiseInput input{bytes, bytes, bytes, 1, 1, 1, 1, 1, 1, 1};
+        JuicerCuda::Failure failure;
+        ASSERT_FALSE(JuicerCuda::ensure_grain_static_assets_uploaded(resources, input, nullptr, failure));
+        EXPECT_EQ(failure.status.category, FJ_STATUS_ALLOCATION_FAILURE);
+        EXPECT_EQ(failure.status.api, FJ_API_NONE);
+        EXPECT_EQ(failure.status.native_code, 0);
+        EXPECT_EQ(failure.diagnostic, "device_cap_exceeded | Wang upload failed: device_cap_exceeded");
+        EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
+        EXPECT_EQ(resources.stbnData, nullptr);
+        EXPECT_EQ(resources.wangTilesData, nullptr);
+    }
+
+    TEST_F(GrainScratch, GaussianPreparedArraysMatchFrozenWordsAndWarmHitsDoNoConstruction) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array pixelSizes{2.0f, 6.0f};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * pixelSizes.size());
+        for (const auto route : routes)
+            for (const auto pixelSize : pixelSizes)
+                ids.push_back(route_case_key(route) + "/pixel-" +
+                              std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
+        JuicerTests::GtestCohort cases("route-pixel-size", ids);
+        for (auto route : routes)
+            for (float pixelSize : pixelSizes) {
+                auto row = cases.case_event(
+                    route_case_key(route) + "/pixel-" +
+                    std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
+                Inputs inputs(runtime, 64, 48, route, {.pixelSize = pixelSize});
+                auto frame = prepare(inputs);
+                const auto kernels = frame.visual_grain_resources();
+                ASSERT_TRUE(kernels.active);
+                const auto check = [](const auto& kernel) {
+                    if (!kernel.weights)
+                        return;
+                    const auto expected = gaussian_kernel_fixture_words(JUICER_GAUSSIAN_FIXTURE_PATH, kernel.radius, kernel.sigma);
+                    std::vector<float> actual(expected.size());
+                    require_cuda(cudaMemcpy(actual.data(), kernel.weights, actual.size() * sizeof(float), cudaMemcpyDeviceToHost));
+                    for (std::size_t i = 0; i < actual.size(); ++i)
+                        require(std::bit_cast<std::uint32_t>(actual[i]) == expected[i], "all grain Gaussian words match independent native coefficients");
+                };
+                for (const auto& kernel : kernels.correlation)
+                    check(kernel);
+                for (const auto& layer : kernels.dyeCloud)
+                    for (const auto& kernel : layer)
+                        check(kernel);
+                finish(frame);
+                const auto acquisitions = fj_test_gaussian_kernel_acquires();
+                auto warm = prepare(inputs);
+                EXPECT_EQ(fj_test_gaussian_kernel_acquires(), acquisitions);
+                const auto reused = warm.visual_grain_resources();
+                for (std::size_t c = 0; c < 3; ++c) {
+                    EXPECT_EQ(reused.correlation[c].weights, kernels.correlation[c].weights);
+                    for (std::size_t layer = 0; layer < 3; ++layer)
+                        EXPECT_EQ(reused.dyeCloud[layer][c].weights, kernels.dyeCloud[layer][c].weights);
+                }
+                finish(warm);
+                row.passed();
+            }
+    }
+
     TEST_F(GrainScratch, ReusesFinishedRawCorrectionPlanesWithoutDedicatedGrainAllocations) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan,
-                           Spektrafilm::ScanRoute::NegativePrintScan}) {
-            Inputs inputs(128, 96, route);
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
+            Inputs inputs(runtime, 128, 96, route);
             auto frame = prepare(inputs);
             const auto lease = frame.workspace_lease();
             const auto grain = frame.visual_grain_workspace(lease);
@@ -264,11 +608,53 @@ namespace {
             EXPECT_NE(grain.layerWork, optics.rgbG);
             EXPECT_NE(grain.sharedDelta, optics.rgbB);
             finish(frame);
+            row.passed();
+        }
+    }
+
+    TEST_F(GrainScratch, FilmGammaRebuildReusesExactCurveAndLayerDeviceStorage) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array layerModes{false, true};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * layerModes.size());
+        for (const auto route : routes)
+            for (const auto layers : layerModes)
+                ids.push_back(route_case_key(route) + "/layers-" + (layers ? "on" : "off"));
+        JuicerTests::GtestCohort cases("route-layer-mode", ids);
+        for (auto route : routes) {
+            for (bool layers : layerModes) {
+                auto row = cases.case_event(route_case_key(route) + "/layers-" + (layers ? "on" : "off"));
+                GrainVariant variant;
+                variant.layers = layers;
+                Inputs before(runtime, 64, 48, route, variant);
+                variant.filmGamma = 1.1f;
+                Inputs changed(runtime, 64, 48, route, variant);
+                EXPECT_NE(before.filmDevelopmentHash, changed.filmDevelopmentHash);
+                EXPECT_NE(before.recipeHash, changed.recipeHash);
+                EXPECT_EQ(before.normalizedDensityCurvesHash, changed.normalizedDensityCurvesHash);
+                EXPECT_EQ(before.densityCurvesLayersHash, changed.densityCurvesLayersHash);
+                CurvePointers firstCurves;
+                auto first = prepare(before, false, 0x475241494eull, &firstCurves);
+                require_cuda(cudaStreamSynchronize(stream));
+                ASSERT_EQ(firstCurves.layersActive, layers);
+                finish(first);
+                CurvePointers changedCurves;
+                auto second = prepare(changed, false, 0x475241494eull, &changedCurves, &firstCurves);
+                require_cuda(cudaStreamSynchronize(stream));
+                EXPECT_EQ(changedCurves.layersActive, layers);
+                EXPECT_EQ(firstCurves.normalizedHash, changedCurves.normalizedHash);
+                EXPECT_EQ(firstCurves.layersHash, changedCurves.layersHash);
+                finish(second);
+                row.passed();
+            }
         }
     }
 
     TEST_F(GrainScratch, KeepsDedicatedWorkspaceWithoutSpatialDir) {
-        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
         auto frame = prepare(inputs, false);
         const auto grain = frame.visual_grain_workspace(frame.workspace_lease());
         const auto optics = frame.scanner_workspace(frame.workspace_lease());
@@ -279,14 +665,50 @@ namespace {
         finish(frame);
     }
     TEST_F(GrainScratch, GrainMatchesDedicatedScratchBitForBitAcrossRoutesShapesTimesAndDebugViews) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
-            for (bool layers : {false, true}) {
-                for (bool shared : {false, true}) {
-                    for (double time : {12.0, 12.375}) {
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array layerModes{false, true};
+        const std::array sharedModes{false, true};
+        const std::array times{12.0, 12.375};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * layerModes.size() * sharedModes.size() * times.size() * 7);
+        for (const auto route : routes)
+            for (const auto layers : layerModes)
+                for (const auto shared : sharedModes)
+                    for (const auto time : times)
+                        for (int debug = 0; debug <= 6; ++debug)
+                            ids.push_back(route_case_key(route) + "/layers-" + (layers ? "on" : "off") +
+                                          "/shared-" + (shared ? "on" : "off") + "/time-" +
+                                          std::to_string(std::bit_cast<std::uint64_t>(time)) +
+                                          "/debug-" + std::to_string(debug));
+        JuicerTests::GtestCohort cases("route-layer-shared-time-debug", ids);
+        for (auto route : routes) {
+            for (bool layers : layerModes) {
+                for (bool shared : sharedModes) {
+                    // Only frame time changes between passes. Retain one host
+                    // product per debug view; every CUDA frame remains fresh.
+                    std::array<std::optional<Inputs>, 7> inputsByDebug;
+                    for (double time : times) {
                         for (int debug = 0; debug <= 6; ++debug) {
+                            auto row = cases.case_event(route_case_key(route) + "/layers-" + (layers ? "on" : "off") +
+                                                        "/shared-" + (shared ? "on" : "off") + "/time-" +
+                                                        std::to_string(std::bit_cast<std::uint64_t>(time)) +
+                                                        "/debug-" + std::to_string(debug));
                             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route)
                                                             << " layers=" << layers << " shared=" << shared << " time=" << time << " debug=" << debug);
-                            Inputs inputs(48, 32, route, {.layers = layers, .shared = shared, .debug = debug, .time = time});
+                            auto& retained = inputsByDebug[debug];
+                            if (!retained) {
+                                retained.emplace(runtime, 48, 32, route, GrainVariant{.layers = layers, .shared = shared, .debug = debug, .time = time});
+                            } else {
+                                retained->build_grain_frame(time);
+                            }
+                            const auto& inputs = *retained;
+                            ASSERT_EQ(inputs.grainPayload.coefficients.debug_view, static_cast<std::uint32_t>(debug));
+                            ASSERT_EQ(inputs.grain.frame0, 12);
+                            ASSERT_EQ(std::bit_cast<std::uint32_t>(inputs.grain.frameAlpha),
+                                      std::bit_cast<std::uint32_t>(static_cast<float>(time - 12.0)));
                             auto frame = prepare(inputs);
                             const auto work = frame.visual_grain_workspace(frame.workspace_lease());
                             ASSERT_TRUE(work.active);
@@ -294,6 +716,7 @@ namespace {
                             EXPECT_EQ(work.sharedDelta != nullptr, shared && debug <= 1);
                             compare_grain(inputs, frame);
                             finish(frame);
+                            row.passed();
                         }
                     }
                 }
@@ -302,32 +725,55 @@ namespace {
     }
 
     TEST_F(GrainScratch, ReusesOnlyWithinEligibleRouteAndRetainedTier) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
-            for (float pixelSize : {6.0f, 200.0f}) {
-                Inputs inputs(64, 48, route, {.pixelSize = pixelSize});
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::PositiveDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan,
+                                Spektrafilm::ScanRoute::PositivePrintScan};
+        const std::array pixelSizes{6.0f, 200.0f};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size() * pixelSizes.size());
+        for (const auto route : routes)
+            for (const auto pixelSize : pixelSizes)
+                ids.push_back(route_case_key(route) + "/pixel-" +
+                              std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
+        JuicerTests::GtestCohort cases("route-pixel-size", ids);
+        for (auto route : routes) {
+            for (float pixelSize : pixelSizes) {
+                auto row = cases.case_event(route_case_key(route) + "/pixel-" +
+                                            std::to_string(std::bit_cast<std::uint32_t>(pixelSize)));
+                Inputs inputs(runtime, 64, 48, route, {.pixelSize = pixelSize});
                 auto frame = prepare(inputs);
                 auto lease = frame.workspace_lease();
                 const auto before = frame.visual_grain_workspace(lease);
                 const auto dir = frame.spatial_dir_scratch(lease);
-                const bool negative = inputs.product.recipe.profileRoute.capturePolarity == Spektrafilm::ProfilePolarity::Negative;
+                const bool negative = inputs.polarity == Spektrafilm::ProfilePolarity::Negative;
                 const auto optics = frame.scanner_workspace(lease);
                 EXPECT_EQ(before.deltaAccum, negative ? dir.rawCorrectionY : optics.aux);
-                std::string error;
+                JuicerCuda::Failure error;
                 if (dir.targetPlaneRoles.cachedLogRawPlanes == 3) {
-                    require(frame.stage_spatial_dir_cached_log_raw_for_final_develop(lease, stream, error), error);
+                    require(frame.stage_spatial_dir_cached_log_raw_for_final_develop(lease, stream, error), error.diagnostic);
                 }
                 const auto after = frame.visual_grain_workspace(lease);
                 ASSERT_TRUE(after.active);
                 EXPECT_EQ(after.deltaAccum, before.deltaAccum);
                 compare_grain(inputs, frame);
                 finish(frame);
+                row.passed();
             }
         }
     }
 
     TEST_F(GrainScratch, SurvivesResolutionChangesQueuedAbortAndContextRetirement) {
-        for (int width : {64, 320, 48, 128}) {
-            Inputs inputs(width, width / 2, Spektrafilm::ScanRoute::NegativePrintScan);
+        const std::array widths{64, 320, 48, 128};
+        std::vector<std::string> ids;
+        ids.reserve(widths.size() + 1);
+        for (const int width : widths)
+            ids.push_back("width-" + std::to_string(width));
+        ids.push_back("context-retirement-recreation");
+        JuicerTests::GtestCohort cases("width-context-transition", ids);
+        for (int width : widths) {
+            auto row = cases.case_event("width-" + std::to_string(width));
+            Inputs inputs(runtime, width, width / 2, Spektrafilm::ScanRoute::NegativePrintScan);
             auto frame = prepare(inputs);
             const auto marker = frame.workspace_lease();
             const auto grain = frame.visual_grain_workspace(marker);
@@ -338,18 +784,21 @@ namespace {
             auto next = prepare(inputs);
             compare_grain(inputs, next);
             finish(next);
+            row.passed();
         }
+        auto retirement = cases.case_event("context-retirement-recreation");
         require_cuda(cudaStreamSynchronize(stream));
         std::string error;
-        require(JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error), error);
-        Inputs inputs(96, 64, Spektrafilm::ScanRoute::NegativeDirectScan);
+        require(JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, key.contextOpaque, error), error);
+        Inputs inputs(runtime, 96, 64, Spektrafilm::ScanRoute::NegativeDirectScan);
         auto recreated = prepare(inputs);
         compare_grain(inputs, recreated);
         finish(recreated);
+        retirement.passed();
     }
 
     TEST_F(GrainScratch, RejectsConcurrentRetainedLeasesAndOrdersLaterStreamReuse) {
-        Inputs inputs(96, 64, Spektrafilm::ScanRoute::NegativePrintScan);
+        Inputs inputs(runtime, 96, 64, Spektrafilm::ScanRoute::NegativePrintScan);
         auto first = prepare(inputs);
         try {
             auto overlap = prepare(inputs);
@@ -360,7 +809,7 @@ namespace {
         first.abort();
         require_cuda(cudaStreamSynchronize(stream));
         std::string error;
-        require(JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error), error);
+        require(JuicerCuda::borrow_root(runtime.borrow().cuda).retire_idle_context(0, key.contextOpaque, error), error);
         auto queued = prepare(inputs);
         const auto work = queued.visual_grain_workspace(queued.workspace_lease());
         require_cuda(cudaMemsetAsync(work.deltaAccum, 0xff, static_cast<std::size_t>(inputs.width) * inputs.height * sizeof(float), stream));
@@ -375,25 +824,23 @@ namespace {
     }
 
     TEST_F(GrainScratch, GrainToggleReleasesLogicalWorkspaceAndReenablesReuse) {
-        Inputs inputs(128, 96, Spektrafilm::ScanRoute::NegativePrintScan);
+        Inputs inputs(runtime, 128, 96, Spektrafilm::ScanRoute::NegativePrintScan);
         auto first = prepare(inputs);
         finish(first);
-        auto request = inputs.request();
-        request.visualGrainDescriptor.reset();
-        auto recipe = inputs.product.recipe;
-        recipe.visualGrain = {};
-        request.recipe = &recipe;
+        Inputs disabled(runtime, 128, 96, Spektrafilm::ScanRoute::NegativePrintScan, GrainVariant{.active = false});
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
         snapshot.instanceToken.value = 0x475241494eull;
         snapshot.frameToken.value = nextIdentity;
         snapshot.snapshotId = nextIdentity++;
         snapshot.deviceContextKey = key;
-        snapshot.contextEpoch = 1;
         snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
-            inputs.product.payload.uploadCoreHash, recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
-        std::string error;
-        auto off = JuicerProcess::root().prepare_cuda_frame(key, snapshot, request, {}, stream, error);
-        require(off.active(), error);
+            disabled.uploadCoreHash, disabled.dirRecipeHash, disabled.scannerHash, 0);
+        FrameCall call{JuicerCuda::borrow_root(runtime.borrow().cuda), true, key, snapshot, stream, {}, {}};
+        std::string diagnostic;
+        const bool ready = FrameFixture::with_prepared_frame_inputs(
+            disabled.runtime.borrow().assets, disabled.state, disabled.facts, &call, &prepare_root_frame, diagnostic);
+        require(ready, diagnostic.empty() ? call.failure.diagnostic : diagnostic);
+        auto off = std::move(call.frame);
         EXPECT_FALSE(off.visual_grain_workspace(off.workspace_lease()).active);
         finish(off);
         auto on = prepare(inputs);
@@ -402,8 +849,16 @@ namespace {
     }
 
     TEST_F(GrainScratch, AdmittedTierPreservesGrainBindingAndOutput) {
-        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan}) {
-            Inputs inputs(96, 64, route);
+        const std::array routes{Spektrafilm::ScanRoute::NegativeDirectScan,
+                                Spektrafilm::ScanRoute::NegativePrintScan};
+        std::vector<std::string> ids;
+        ids.reserve(routes.size());
+        for (const auto route : routes)
+            ids.push_back(route_case_key(route));
+        JuicerTests::GtestCohort cases("route", ids);
+        for (auto route : routes) {
+            auto row = cases.case_event(route_case_key(route));
+            Inputs inputs(runtime, 96, 64, route);
             auto frame = prepare(inputs);
             const auto lease = frame.workspace_lease();
             const auto work = frame.visual_grain_workspace(lease);
@@ -425,11 +880,12 @@ namespace {
             std::cout << "ADMITTED_DIR_PLANES=" << dir.planeRoles.total_float_planes() << '\n';
             compare_grain(inputs, frame);
             finish(frame);
+            row.passed();
         }
     }
 
     TEST_F(GrainScratch, DiffusionKeepsDedicatedGrainScratch) {
-        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativeDirectScan, {.cameraDiffusion = true});
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativeDirectScan, {.cameraDiffusion = true});
         auto frame = prepare(inputs);
         const auto lease = frame.workspace_lease();
         const auto work = frame.visual_grain_workspace(lease);
@@ -444,20 +900,146 @@ namespace {
         finish(frame);
     }
 
+    TEST_F(GrainScratch, RetiresOnlyEligibleInstanceMembershipAcrossExactContexts) {
+        constexpr std::uint64_t firstToken = 0x475241494eull;
+        constexpr std::uint64_t secondToken = firstToken + 1;
+        using Observer = JuicerProcess::TestSupport::RootLifetimeObserver;
+        auto& root = JuicerCuda::borrow_root(runtime.borrow().cuda);
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
+        const auto originalKey = key;
+        auto* const originalStream = stream;
+        {
+            auto first = prepare(inputs, true, firstToken);
+            finish(first);
+        }
+        {
+            auto second = prepare(inputs, true, secondToken);
+            finish(second);
+        }
+        require_cuda(cudaStreamSynchronize(stream));
+        const auto before = Observer::grain_snapshot(root, key, firstToken, secondToken);
+        ASSERT_EQ(before.members, 2u);
+        ASSERT_GT(before.grainRecords, 0u);
+        ASSERT_FALSE(before.frame.expired());
+
+        CUcontext other = nullptr;
+        require(cuCtxCreate(&other, nullptr, 0, 0) == CUDA_SUCCESS, "create fixture context");
+        key = {0, other};
+        require_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        {
+            auto foreign = prepare(inputs, true, firstToken);
+            finish(foreign);
+        }
+        require_cuda(cudaStreamSynchronize(stream));
+        const auto otherBefore = Observer::grain_snapshot(root, key, firstToken, secondToken);
+        require(otherBefore.members == 1 && otherBefore.grainRecords != 0, "other context lacks grain ownership");
+
+        EXPECT_EQ(fj_cuda_retire_instance(runtime.borrow().cuda, firstToken, nullptr).category, FJ_STATUS_SUCCESS);
+        const auto remaining = Observer::grain_snapshot(root, originalKey, firstToken, secondToken);
+        const auto otherAfter = Observer::grain_snapshot(root, key, firstToken, secondToken);
+        EXPECT_FALSE(remaining.first);
+        EXPECT_TRUE(remaining.second);
+        EXPECT_EQ(remaining.members, 1u);
+        EXPECT_EQ(remaining.epoch, before.epoch);
+        EXPECT_EQ(remaining.grain.lock().get(), before.grain.lock().get());
+        EXPECT_EQ(remaining.frame.lock().get(), before.frame.lock().get());
+        EXPECT_EQ(remaining.grainRecords, before.grainRecords);
+        EXPECT_EQ(otherAfter.members, 0u);
+        EXPECT_TRUE(otherAfter.grain.expired());
+        EXPECT_EQ(otherAfter.frame.lock().get(), otherBefore.frame.lock().get());
+        EXPECT_EQ(otherAfter.epoch, otherBefore.epoch);
+
+        // Last primary-context member is retired while the other exact context
+        // is current. Its physical ownership must enter deferred destruction,
+        // without reentering Root or retiring either context implicitly.
+        const auto chargedBefore = otherAfter.ledger.chargedBytes;
+        EXPECT_EQ(fj_cuda_retire_instance(runtime.borrow().cuda, secondToken, nullptr).category, FJ_STATUS_SUCCESS);
+        const auto deferred = Observer::grain_snapshot(root, originalKey, firstToken, secondToken);
+        EXPECT_EQ(deferred.members, 0u);
+        EXPECT_TRUE(deferred.grain.expired());
+        EXPECT_EQ(deferred.frame.lock().get(), before.frame.lock().get());
+        EXPECT_EQ(deferred.epoch, before.epoch);
+        EXPECT_EQ(deferred.ledger.chargedBytes, chargedBefore);
+        std::vector<JuicerCuda::ResourceManager::DeviceContextKey> live;
+        JuicerCuda::ResourceManager::registry_snapshot_context_keys(live);
+        EXPECT_NE(std::find(live.begin(), live.end(), originalKey), live.end());
+        EXPECT_NE(std::find(live.begin(), live.end(), key), live.end());
+
+        std::string diagnostic;
+        require(root.retire_idle_context(0, other, diagnostic), diagnostic);
+        require_cuda(cudaStreamDestroy(stream));
+        require(cuCtxDestroy(other) == CUDA_SUCCESS, "destroy fixture context");
+        require(cuCtxSetCurrent(static_cast<CUcontext>(originalKey.contextOpaque)) == CUDA_SUCCESS, "restore fixture context");
+        key = originalKey;
+        stream = originalStream;
+        require(root.retire_idle_context(0, key.contextOpaque, diagnostic), diagnostic);
+        contextRetired = true;
+        const auto retired = Observer::grain_snapshot(root, key, firstToken, secondToken);
+        EXPECT_EQ(retired.ledger.chargedBytes, 0u);
+        EXPECT_EQ(retired.ledger.recordCount, 0u);
+        EXPECT_TRUE(before.frame.expired());
+    }
+
+    TEST_F(GrainScratch, ResetRetiresDeferredOwnershipAfterFixtureContextDestruction) {
+        constexpr std::uint64_t primaryToken = 0x475241494eull;
+        constexpr std::uint64_t foreignToken = primaryToken + 1;
+        using Observer = JuicerProcess::TestSupport::RootLifetimeObserver;
+        auto& root = JuicerCuda::borrow_root(runtime.borrow().cuda);
+        Inputs inputs(runtime, 32, 24, Spektrafilm::ScanRoute::NegativeDirectScan);
+        const auto primaryKey = key;
+        auto* const primaryStream = stream;
+        {
+            auto frame = prepare(inputs, true, primaryToken);
+            finish(frame);
+        }
+        require_cuda(cudaStreamSynchronize(stream));
+        const auto primary = Observer::grain_snapshot(root, key, primaryToken, foreignToken);
+        CUcontext other = nullptr;
+        require(cuCtxCreate(&other, nullptr, 0, 0) == CUDA_SUCCESS, "create reset fixture context");
+        key = {0, other};
+        require_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        {
+            auto frame = prepare(inputs, true, foreignToken);
+            finish(frame);
+        }
+        require_cuda(cudaStreamSynchronize(stream));
+        require_cuda(cudaStreamDestroy(stream));
+        const auto foreignKey = key;
+        require(cuCtxSetCurrent(static_cast<CUcontext>(primaryKey.contextOpaque)) == CUDA_SUCCESS, "restore primary fixture context");
+        key = primaryKey;
+        stream = primaryStream;
+        EXPECT_EQ(fj_cuda_retire_instance(runtime.borrow().cuda, foreignToken, nullptr).category, FJ_STATUS_SUCCESS);
+        const auto deferred = Observer::grain_snapshot(root, foreignKey, primaryToken, foreignToken);
+        EXPECT_TRUE(deferred.grain.expired());
+        EXPECT_GT(deferred.ledger.chargedBytes, primary.ledger.chargedBytes);
+        // Only this fixture owns 'other'. Its actual destruction establishes the
+        // reset fact; no live host context is reset and no driver fault is claimed.
+        require(cuCtxDestroy(other) == CUDA_SUCCESS, "destroy owned reset fixture context");
+        std::string diagnostic;
+        require(root.retire_reset_context(0, other, diagnostic), diagnostic);
+        const auto after = Observer::grain_snapshot(root, key, primaryToken, foreignToken);
+        EXPECT_EQ(after.ledger.chargedBytes, primary.ledger.chargedBytes);
+        EXPECT_EQ(after.ledger.recordCount, primary.ledger.recordCount);
+        EXPECT_EQ(after.epoch, primary.epoch);
+        EXPECT_TRUE(after.first);
+        EXPECT_EQ(after.frame.lock().get(), primary.frame.lock().get());
+        EXPECT_EQ(after.grain.lock().get(), primary.grain.lock().get());
+    }
+
     TEST_F(GrainScratch, ResetRetiresReusedWorkspace) {
-        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativePrintScan);
+        Inputs inputs(runtime, 64, 48, Spektrafilm::ScanRoute::NegativePrintScan);
         auto frame = prepare(inputs);
         compare_grain(inputs, frame);
         finish(frame);
         require_cuda(cudaStreamSynchronize(stream));
         std::string error;
-        require(JuicerProcess::root().retire_reset_context(0, key.contextOpaque, error), error);
+        require(JuicerCuda::borrow_root(runtime.borrow().cuda).retire_reset_context(0, key.contextOpaque, error), error);
         contextRetired = true;
     }
 
     // Explicit maintenance benchmark, excluded from ordinary CTest runs.
     TEST_F(GrainScratch, DISABLED_SixKMemoryAndTiming) {
-        Inputs inputs(6048, 4032, Spektrafilm::ScanRoute::NegativePrintScan);
+        Inputs inputs(runtime, 6048, 4032, Spektrafilm::ScanRoute::NegativePrintScan);
         auto frame = prepare(inputs);
         const auto lease = frame.workspace_lease();
         const auto work = frame.visual_grain_workspace(lease);
@@ -485,7 +1067,7 @@ namespace {
         JuicerCuda::GrainPayload payload;
         JuicerCuda::GrainKernelPayload kernels;
         std::string error;
-        require(JuicerCuda::pack_visual_grain_payload(inputs.product.recipe.visualGrain,
+        require(JuicerCuda::pack_visual_grain_payload(inputs.grainPayload,
                                                       frame.visual_grain_resources(),
                                                       payload,
                                                       kernels,
@@ -522,10 +1104,14 @@ namespace {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
     testing::InitGoogleTest(&argc, argv);
-    JuicerProcess::root().ensure_bootstrap();
+    if (testing::GTEST_FLAG(list_tests))
+        return RUN_ALL_TESTS();
+    JuicerTests::CaseLog case_log;
     const int result = RUN_ALL_TESTS();
-    JuicerProcess::shutdown_if_initialized();
+    case_log.finish();
     return result;
+} catch (...) {
+    return 1;
 }

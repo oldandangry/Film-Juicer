@@ -3,14 +3,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <string>
 
 #include "OutputColor.h"
-
-namespace Spectral {
-    struct Curve;
-    struct FilmTcLut;
-} // namespace Spectral
 
 namespace Gamut {
 
@@ -19,29 +13,21 @@ namespace Gamut {
     inline constexpr int kOutputBoundaryHueCount = 720;
     inline constexpr float kOutputBoundaryMinimumLightness = 0.02f;
     inline constexpr float kOutputBoundaryMaximumLightness = 1.0f;
-    inline constexpr float kOutputBoundaryCubeSlack = 1.0e-6f;
-    inline constexpr float kOutputBoundaryMaximumChroma = 2.0f;
     inline constexpr std::size_t kOutputBoundaryValueCount =
         static_cast<std::size_t>(kOutputBoundaryLightnessCount) *
         static_cast<std::size_t>(kOutputBoundaryHueCount);
 
+    // Completed Rust transform coefficients consumed by native execution.
     struct OutputGamutTransform {
         std::array<float, 9> nativeRgbToD65Xyz{};
         std::array<float, 9> d65XyzToNativeRgb{};
         OutputEncoding::ColorSpace outputColorSpace =
             OutputEncoding::ColorSpace::sRGB;
         std::uint64_t hash = 0;
+        std::uint64_t contractHash = 0;
         bool valid = false;
     };
 
-    struct OutputBoundaryTable {
-        std::array<float, kOutputBoundaryValueCount> cmax{};
-        std::uint64_t transformHash = 0;
-        std::uint64_t contractHash = 0;
-        std::uint64_t hash = 0;
-        bool valid = false;
-        std::string diagnostic;
-    };
 
     // Pinned colour-science 0.4.6 OkLab matrices, shared by host construction
     // and the CUDA scalar path added at the execution boundary.
@@ -228,50 +214,5 @@ namespace Gamut {
 
 #undef JUICER_GAMUT_HOST_DEVICE
 
-    bool build_output_gamut_transform(
-        OutputEncoding::ColorSpace outputColorSpace,
-        OutputGamutTransform& out,
-        std::string& diagnostic);
-
-    bool build_output_boundary_table(
-        const OutputGamutTransform& transform,
-        OutputBoundaryTable& out);
-
-    std::uint64_t output_boundary_contract_hash(
-        const OutputGamutTransform& transform);
-
-    std::array<float, 3> native_rgb_to_oklab(
-        const OutputGamutTransform& transform,
-        const std::array<float, 3>& rgb);
-
-    std::array<float, 3> oklab_to_native_rgb(
-        const OutputGamutTransform& transform,
-        const std::array<float, 3>& lab);
-
-    struct InputCompressionHull {
-        std::array<std::array<float, 2>, kInputHullDirectionCount + 1> xy{};
-        std::array<float, 2> center{};
-        std::uint64_t hash = 0;
-        bool valid = false;
-        std::string diagnostic;
-    };
-
-    bool build_input_compression_hull(
-        const Spectral::Curve& xBar,
-        const Spectral::Curve& yBar,
-        const Spectral::Curve& zBar,
-        const Spectral::Curve& d65,
-        InputCompressionHull& out);
-
-    bool compress_input_xy(
-        const InputCompressionHull& hull,
-        const std::array<float, 2>& xy,
-        std::array<float, 2>& out);
-
-    bool remap_film_tc_lut_for_input_compression(
-        const InputCompressionHull& hull,
-        const Spectral::FilmTcLut& source,
-        Spectral::FilmTcLut& out,
-        std::string& diagnostic);
 
 } // namespace Gamut

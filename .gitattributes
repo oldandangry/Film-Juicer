@@ -61,10 +61,83 @@ CMakeLists.txt text
 
 *.csv text eol=lf
 
+# Preserve the original bytes of provenance-pinned CUDA pixel fixtures.
+tests/ofx/processor_rust_pixels_*.dat -text whitespace=cr-at-eol
+
+# Preserve the original bytes of platform-specific native illuminant captures.
+tests/ffi/fixtures/illuminants/*.bits -text whitespace=cr-at-eol
+
+# Preserve the original bytes of provenance-pinned native CAT16 captures.
+tests/ffi/fixtures/color/*.json -text whitespace=cr-at-eol
+
 # Preserve whitespace in byte-identifiable vendored dependency snapshots.
 third_party/nlohmann/LICENSE.MIT -whitespace
+# Retain complete upstream Rust notice bytes across native Git transports.
+third_party/rust/*/* -text -whitespace
 third_party/ofxs/Legal/OFXS-LICENSE.txt -whitespace
 third_party/ofxs/OpenFX-1.4/include/ofxImageEffect.h -whitespace
 third_party/ofxs/Support/LICENSE -whitespace
 third_party/ofxs/Support/Library/ofxsCore.cpp -whitespace
 third_party/ofxs/Support/include/ofxsInteract.h -whitespace
+
+# Preserve reviewed bytes of A5 numerical and GPU replay fixtures.
+tests/ffi/fixtures/exposure/** -text whitespace=cr-at-eol
+tests/ofx/fixtures/exposure/** -text whitespace=cr-at-eol
+
+# Preserve original bytes of provenance-pinned native input-hull captures.
+tests/ffi/fixtures/input_hull/** -text whitespace=cr-at-eol
+
+# Preserve original bytes of provenance-pinned native output-gamut captures.
+tests/ffi/fixtures/output_gamut/** -text whitespace=cr-at-eol
+
+# A10 native words and oracle provenance must survive both native Git transports.
+tests/ffi/fixtures/output-color/*.json -text
+
+# Independent S4.B film-development captures preserve exact fixture bytes.
+tests/film/fixtures/** -text whitespace=cr-at-eol
+
+# Independent S4.B film-input compound captures preserve native bytes.
+tests/film/input-fixtures/*.json -text whitespace=cr-at-eol
+
+# Independent S4.B DIR/density captures preserve reviewed native bytes.
+tests/film/dir-fixtures/*.json -text whitespace=cr-at-eol
+
+# Independent S4.B visual-grain captures preserve exact native bytes.
+tests/film/grain-fixtures/** -text whitespace=cr-at-eol
+
+# Physical-effects native characterization preserves exact words and provenance bytes.
+tests/film/effects-fixtures/** -text whitespace=cr-at-eol
+
+# Spatial-optics native characterization preserves exact words and provenance bytes.
+tests/film/optics-fixtures/** -text whitespace=cr-at-eol
+
+# Filtered print illuminant characterization preserves exact native capture bytes.
+tests/print/illuminant-fixtures/** -text whitespace=cr-at-eol
+
+# Preflash native characterization preserves exact input/output and provenance bytes.
+tests/print/preflash-fixtures/** -text whitespace=cr-at-eol
+
+# Print balance characterization preserves exact native capture bytes.
+tests/print/balance-fixtures/** -text whitespace=cr-at-eol
+
+# Scanner correction native characterization preserves exact capture bytes.
+tests/scanner/correction-fixtures/** -text whitespace=cr-at-eol
+
+# Scanner LUT characterization preserves complete independent native words.
+tests/scanner/lut-fixtures/** -text whitespace=cr-at-eol
+
+# Scanner color characterization preserves independent complete field words.
+tests/scanner/color-fixtures/*.json -text whitespace=cr-at-eol
+
+# Synthetic reference captures preserve independent native IEEE words.
+tests/film/reference-fixtures/*.json -text whitespace=cr-at-eol
+
+# Reflected-YVV native characterization preserves exact capture bytes.
+tests/dir/boundary-fixtures/*.json -text whitespace=cr-at-eol
+
+# Visual-grain frame native characterization preserves original platform bytes.
+tests/grain/frame-fixtures/*-debug.json -text whitespace=cr-at-eol
+tests/grain/frame-fixtures/*-release.json -text whitespace=cr-at-eol
+
+# Physical-effects frame fixtures preserve exact capture/expectation transport bytes.
+tests/film/effects-frame-fixtures/*.json -text whitespace=cr-at-eol

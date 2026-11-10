@@ -1,0 +1,90 @@
+{
+  "schema": "film-juicer-s6-d-reference-manifest-v1",
+  "reference_revision": "d4bc2135d02ed88c91403040c4429a4fdb802a2b",
+  "presets": [
+    "linux-debug",
+    "linux-release",
+    "windows-clang-debug",
+    "windows-clang-release"
+  ],
+  "files": {
+    "context.json": {
+      "sha256": "cb8732b8d7b0a736a4da41b832f5ef1e22e1709a4d694e75d64fe0e57401415c",
+      "size": 180848,
+      "source_sha256": {
+        "linux-debug": "851b46bde5442e4b6db79d52decc0ce2fb0da1ee19859b319bb3cfd40a4c8706",
+        "linux-release": "ec7d5c1c8cc9106c97cff7dc69e815f70ae211ad24ede5516c98dee8824cbcde",
+        "windows-clang-debug": "608b0fecbec835d0670dfbeaac11e181ec69df2086abae8b599a9fbf69f82c93",
+        "windows-clang-release": "709c1c5edad68d09cbad3684bc08a00ea3e9c50d38a7b6aa5c1759ef7e0d15d9"
+      }
+    },
+    "instance.json": {
+      "sha256": "77e150dca3fe2769e2510d8bfe15a4d31838734b2ec3237e7ffa71b2050ef454",
+      "size": 4283793,
+      "source_sha256": {
+        "linux-debug": "da215b94153e9459d8f371541c9e8a34560cb9fba21ccd1199d7c3dfde454fb1",
+        "linux-release": "b7ee300d276236f6db6326839203c7d09ba8755fc58942aa66ab3f7bdc393e29",
+        "windows-clang-debug": "29cdf33a5be3458baca4adbb0ae284e55368e1668613366182de508c6855b112",
+        "windows-clang-release": "66d9fc0c0c75527efdd4a34360a2d34926018e247bdeae473e09822d77ca4f37"
+      }
+    },
+    "actions.json": {
+      "sha256": "f49389a2c84a97575df218e5fbd6220da9876cfab3e040da0edeeb725e10049a",
+      "size": 542393,
+      "source_sha256": {
+        "linux-debug": "fdc19a2a9fafc69d2bb94873143f0c41301b85e951fad1afd62e08ed85effaa1",
+        "linux-release": "22c36af6b8146ce53bd1953a921c095cdeb3e2d7bd8ea56b391cddd4542f41ac",
+        "windows-clang-debug": "066728b685deac0a19444bd8abecc7aef55de064e7a989c375a93901c2903ad9",
+        "windows-clang-release": "32cd8f0f452f088d83becae309c1f1ce547e51356a72f78c027d503a28fa40c5"
+      }
+    },
+    "render.json": {
+      "sha256": "3d8c9709db566df4c1cf86f2c6937f3b0e6822ef93545d8867470f2eb73c6412",
+      "size": 299438,
+      "source_sha256": {
+        "linux-debug": "7fd7f296a99ae0378dcf8ae8ebe291c5decec32d8a0d5fe425061eda9bbb62c9",
+        "linux-release": "2b770ff9b3e776703e6017a45805fbe72740e64e699e0d5a5a52cd8b3e2bf54a",
+        "windows-clang-debug": "df7b7ce2091d2628087cbf4335f5930d3483ec77a766a5b64b6a867dc347e242",
+        "windows-clang-release": "3bf7787fba0af606d5eb031adf44909c92887bb98b6f7e8e2b0e6aaf90e2c508"
+      }
+    },
+    "capture-identity.json": {
+      "sha256": "5207b524748655b57c7ebc4ed575858157c3ae0f39bb10e03b62a4ac89f60dc6",
+      "size": 1498,
+      "source_sha256": {
+        "linux-debug": "f84dc4f2e9d526823af0e56e2c5040f2f92f44a3c922cfe3de40f041ecc6e88a",
+        "linux-release": "5baca0e78d205fd256404a0aa646c147e466c2efb0508b5600be2433fb7aaa7d",
+        "windows-clang-debug": "7387c203705759f882f79857d5692eb541575628762efdeb0777c944b366ddd6",
+        "windows-clang-release": "9786031542bf0551462de15de69fff1cf07054cf63959e53973a7d392c1eb02d"
+      }
+    },
+    "render-gpu-linux-debug.json": {
+      "sha256": "14b5398129004056a16a9123507e32ae73be34e118616409bebe6032abdaf723",
+      "size": 6427,
+      "source_sha256": {
+        "linux-debug": "e5fb5bb14241d2d8c78caf2b6c9e8ddb7e2eddfe8b9f0f6d1485ff6b8917260a"
+      }
+    },
+    "render-gpu-linux-release.json": {
+      "sha256": "30653b93c4a08830c4cf3d95cbe00b8996242e4bdb21e08adfb0c8797bde1249",
+      "size": 6429,
+      "source_sha256": {
+        "linux-release": "7b77864ab15698da28ffe1ec9f8e5f6a6c515facc3d96d64d23091fb4fc4871c"
+      }
+    },
+    "render-gpu-windows-clang-debug.json": {
+      "sha256": "176f5f80b8411ab7aeeb6174c8af2f0001d19d852e2578414a08a983d38eda4d",
+      "size": 6435,
+      "source_sha256": {
+        "windows-clang-debug": "e3fcec512f10dee5d812cf7bd2f6033eb14fc5b19ba98def9b9d955d9da747e1"
+      }
+    },
+    "render-gpu-windows-clang-release.json": {
+      "sha256": "59151eb1468298d9cded18cf9c6042e1ca3a2b936eb04921ad86a734f05e03a1",
+      "size": 6437,
+      "source_sha256": {
+        "windows-clang-release": "cdd7a5892519257000f05f8fef93a8d4fc3c179bd365027668f78a2ca336830d"
+      }
+    }
+  }
+}

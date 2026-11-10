@@ -1,0 +1,367 @@
+{
+  "classification": "Film-Juicer native characterization; accepted Rust Development sampling; exact raw words/identities, no tolerance",
+  "authority": {
+    "head": "09643ce82f2390b57efff4b1f42eff4f2ac7b152",
+    "tree": "982a5d51cfa32fa889f9065e7e94ca9b94d9bbf8",
+    "native_producer_sha256": "f618e9937068e4af25f35acae6ebd39bd748d0bda6913dc19375037fdbdcda74",
+    "handoff_sha256": "311b57b74cb5fd12eaa518d5593e47c5803c428b3ce1c0fec9852c943b791a64"
+  },
+  "presets": {
+    "linux-debug": {
+      "values": "linux-debug.json",
+      "synthetic": "linux-debug-synthetic.json",
+      "ofx": "linux-debug-ofx.txt"
+    },
+    "linux-release": {
+      "values": "linux-debug.json",
+      "synthetic": "linux-debug-synthetic.json",
+      "ofx": "linux-debug-ofx.txt"
+    },
+    "windows-clang-debug": {
+      "values": "windows-clang-debug.json",
+      "synthetic": "windows-clang-debug-synthetic.json",
+      "ofx": "windows-clang-debug-ofx.txt"
+    },
+    "windows-clang-release": {
+      "values": "windows-clang-debug.json",
+      "synthetic": "windows-clang-debug-synthetic.json",
+      "ofx": "windows-clang-debug-ofx.txt"
+    }
+  },
+  "payload_sha256": {
+    "linux-debug.json": "0dab652f528aebcbecf8a659c68ceb632d1fce07c4e134a4de6d318e91d859fb",
+    "linux-debug-synthetic.json": "9afcd3f0542505f78e64ba45ce29a35543abfe3a606c31904a1dbfd11a3438bd",
+    "linux-debug-ofx.txt": "2d70568b99a92654c19370aad445d3df412effd5b0905bd967a4a5f0f81ca958",
+    "windows-clang-debug.json": "2b1d199c5a526dd06d5332da9e152eebd59a984d260aed3680a64d8922353935",
+    "windows-clang-debug-synthetic.json": "067563241f380c6a6c6f57ced55912e8ca803f8ecbbfd98372d34a1fcb25ddc2",
+    "windows-clang-debug-ofx.txt": "6a4264693d20b3a6c1b494021386a69acd4da0f9e1094beb0cb82c9420f8bb58",
+    "synthetic/negative-n1/profiles/kodak_portra_400.json": "c3dd6b6354e7c2eae3d6b71bd52828f13f0e7b926e67c115ea5ee40cea9b4102",
+    "synthetic/negative-n1/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/negative-n21/profiles/kodak_portra_400.json": "ed6b7da33dc18718cfaa680e4b924fd1c8405dc63b15d9243371292fc91a6770",
+    "synthetic/negative-n21/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/negative-n22/profiles/kodak_portra_400.json": "f466e6b39956197282d3ef6c154e25a62fdd6487bcbbf22ff90f992172ae15a8",
+    "synthetic/negative-n22/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/negative-n255/profiles/kodak_portra_400.json": "55255b2ecaa69dcfa55a28133ede3cbd3ff915b18e74d2f66c94b6ff0c166cba",
+    "synthetic/negative-n255/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/negative-n256/profiles/kodak_portra_400.json": "5f9bd538a05b76d721972cad605a28a59a42f28ef81409f66752ef05a65f344c",
+    "synthetic/negative-n256/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/negative-n257/profiles/kodak_portra_400.json": "21abde32fad426a1192c8c0099ae3fa7bafbcf2446a69eefa3bd305cf8d36070",
+    "synthetic/negative-n257/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/positive-n1/profiles/kodak_portra_400.json": "05cfacdb3bd3f12e67790e3001e6b7c049b161c0fecec6f174ce17fd778c5753",
+    "synthetic/positive-n1/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/positive-n21/profiles/kodak_portra_400.json": "3faa829adc974ed7d7e0e02c74b766f10cc603279290a38491c5f7666402cec3",
+    "synthetic/positive-n21/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/positive-n22/profiles/kodak_portra_400.json": "e530ab10a906b14115f51f42286d2e2f329c3a73ca7d7d70324c9acb6f6e6e09",
+    "synthetic/positive-n22/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/positive-n255/profiles/kodak_portra_400.json": "72abf5bb397f606b23e7b746d2e025273f8c1c88898684ebb69516157bde4efe",
+    "synthetic/positive-n255/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/positive-n256/profiles/kodak_portra_400.json": "849c4895703c8a4147d6513c7c4aa2c7c9908255a58647086ddc693d0fa5f117",
+    "synthetic/positive-n256/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/positive-n257/profiles/kodak_portra_400.json": "6a9befc598ef1906e71ca4ca405faab641f8bfcd38840dd921bd98169bb45d36",
+    "synthetic/positive-n257/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/negative-overflow-v2/profiles/kodak_portra_400.json": "5c9861fcb412976e1122c4c41f4bd60a2f7d1df763b55b8db962485b22d115b2",
+    "synthetic/negative-overflow-v2/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/positive-overflow-v2/profiles/kodak_portra_400.json": "e74bee2435b6825d20defc840a0c75abdc10e2792bfab3339670998dedb56719",
+    "synthetic/positive-overflow-v2/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969"
+  },
+  "capture_provenance": {
+    "linux-debug": {
+      "values": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/freeze-summary.json",
+          "sha256": "40cbe080c4dd2e5b5f8b9ddaf6015571c9eff32d42af3fc01b7a20c944744c11"
+        },
+        "runtime": {
+          "path": "out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-f75ui0b5/result.json",
+          "sha256": "0cd69fb359e310b561f198d7dd4ad2dd63532edbe3fa6e2c0bec853545187a89"
+        },
+        "process": {
+          "path": "out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-f75ui0b5/process.json",
+          "sha256": "347ffe432af86d6125fce9b332ecccd88cf1b8d9d666a5fe3dcaf4ca94c15149"
+        },
+        "output": {
+          "path": "out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-f75ui0b5/output.log",
+          "sha256": "c3164d3317abca536feee5fa3e2e0fb41f3840b151080f1504d45c2c4b6d5f03"
+        },
+        "probe": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/freeze",
+          "sha256": "fa82550ad6df5ee6ae7f1a5cf0aaf7a4ae9318f5c86b55f9075a8b4a89089e80"
+        },
+        "consumed_inputs_sha256": "f8846e8c348b4b6746ea309df955c2837da87b5fe6d57521b470f312fa3dc1f7",
+        "case_count": 36
+      },
+      "synthetic": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/synthetic-freeze-summary.json",
+          "sha256": "e5b4b904d4d7bf128b1964c65babfa925f64948f4385f03e65c169e0b78ff683"
+        },
+        "runtime": {
+          "path": "out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-clio94zy/result.json",
+          "sha256": "7342c3a732ea64d99af5d03d3e3949ce45032b0fd533e6a4c448fdc5302ba552"
+        },
+        "process": {
+          "path": "out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-clio94zy/process.json",
+          "sha256": "2ea3f0ac51ac46b823ac1183613ebfa08bf5b609a2c984ff2f92b619fcd4be0e"
+        },
+        "output": {
+          "path": "out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-clio94zy/output.log",
+          "sha256": "c3164d3317abca536feee5fa3e2e0fb41f3840b151080f1504d45c2c4b6d5f03"
+        },
+        "probe": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-b-slice-4-2026-10-17-capture/synthetic-frozen",
+          "sha256": "51cbfd57bbd7627f3608d462387118015517fe595f90f187869fd5419c2f1620"
+        },
+        "consumed_inputs_sha256": "ec17816b47d37464a3aeda72c4dbe31db788fd14ea8c72faac1831a89dec8e53",
+        "case_count": 28
+      },
+      "ofx": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-b-slice-4-2026-10-17-ofx/freeze-summary.json",
+          "sha256": "ba7726af0ec1873301c15a55448ea820fb0bf07996941e7e13ccf9f684997eb6"
+        },
+        "runtime": {
+          "path": "out/validation/linux-debug/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-u1nls1vb/result.json",
+          "sha256": "46b13fb434ede20ab32a17fe71b65209e53707a74a7934f61dccfbc89c357d4f"
+        },
+        "process": {
+          "path": "out/validation/linux-debug/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-u1nls1vb/process.json",
+          "sha256": "884c06609425b3c15633763e03066a133136993b69c375b6d454c16f9e6938c7"
+        },
+        "output": {
+          "path": "out/validation/linux-debug/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-u1nls1vb/output.log",
+          "sha256": "28be11ca7e71220f064a5b48a584ec3fa3a9a49330227934bcdbc50ce9ec6c86"
+        },
+        "probe": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-b-slice-4-2026-10-17-ofx/ofx-final",
+          "sha256": "4da4c450823acb0a6769f8d1b06fe7074b7636e8b4ab74ef5f492526eaeecaa4"
+        },
+        "consumed_inputs_sha256": "77fa732ebf6d49a7444b2248ae5be97cfa09ff62478b206a1a7b8575b9d46b5c",
+        "case_count": 234
+      }
+    },
+    "linux-release": {
+      "values": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/freeze-summary.json",
+          "sha256": "cc727d4f0bb58d02dbedcd69ffaa9e0df5863d04f04ea6842e876cae647c799d"
+        },
+        "runtime": {
+          "path": "out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-c4ptyl9i/result.json",
+          "sha256": "293cf135d706093ae813a0abc33d02d15ff8679c243d79ef6016b1a59ba005d0"
+        },
+        "process": {
+          "path": "out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-c4ptyl9i/process.json",
+          "sha256": "cbf4b418eb5eab62131862b42d982faaa0f9ddb7b59ee20c8cf70976d9813850"
+        },
+        "output": {
+          "path": "out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-c4ptyl9i/output.log",
+          "sha256": "c3164d3317abca536feee5fa3e2e0fb41f3840b151080f1504d45c2c4b6d5f03"
+        },
+        "probe": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/freeze",
+          "sha256": "7af4dd84a8827a923e5e3bdb97b5a0acd2d1d40f9da785c244f599be1947685d"
+        },
+        "consumed_inputs_sha256": "48dbf8e89d00acb4c00108ae76e0d98f72901b0a34db126361db84ea7d79c9c2",
+        "case_count": 36
+      },
+      "synthetic": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/synthetic-freeze-summary.json",
+          "sha256": "6b0d600870b832f22556b40986bbe975ddd690b30134b0b325350989091b3f89"
+        },
+        "runtime": {
+          "path": "out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-ff03y89d/result.json",
+          "sha256": "b9ec584ff0e25f3da24736995bbc144d494749f6d53d6f07adcb178a6e8bd793"
+        },
+        "process": {
+          "path": "out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-ff03y89d/process.json",
+          "sha256": "f2ebc4f6b50af0d56d6f306e02785c35005e97bc172e868249b47add0b2c8eb8"
+        },
+        "output": {
+          "path": "out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-ff03y89d/output.log",
+          "sha256": "c3164d3317abca536feee5fa3e2e0fb41f3840b151080f1504d45c2c4b6d5f03"
+        },
+        "probe": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-b-slice-4-2026-10-17-capture/synthetic-frozen",
+          "sha256": "befbcbb82508a0d9723c26445ea87c7f880a3c5ab1606056d7e07b6172a04f2d"
+        },
+        "consumed_inputs_sha256": "043513c9316ff7df84cb726b97b9743963b5d08edd103042260c9fd891f14334",
+        "case_count": 28
+      },
+      "ofx": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-b-slice-4-2026-10-17-ofx/freeze-summary.json",
+          "sha256": "1b79c99b7b5758ee41632aa2350e530b77a58067aaa5f4f78be0ec4c0a0570e2"
+        },
+        "runtime": {
+          "path": "out/validation/linux-release/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-alcxhd4p/result.json",
+          "sha256": "6e5f8510210e0e84bfbb43c499705d971cb2bf6a1441627dda6f2df2915e3301"
+        },
+        "process": {
+          "path": "out/validation/linux-release/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-alcxhd4p/process.json",
+          "sha256": "a38845418519c97869af73db1f5d0fbf82740d09c2ee5d84362c96ccbff3a506"
+        },
+        "output": {
+          "path": "out/validation/linux-release/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-alcxhd4p/output.log",
+          "sha256": "0c5ad9542ea61a347d3f91b1f5c1b4247a7873e37b72a534a83cfe64d8af578b"
+        },
+        "probe": {
+          "path": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-b-slice-4-2026-10-17-ofx/ofx-final",
+          "sha256": "991159d042ee82737f7927d0b61af7f71305efa152ee06eec39ed3031d718867"
+        },
+        "consumed_inputs_sha256": "0881886ea2d510cee934430b8d06a188966e4cf43c12bc111d7644509929655b",
+        "case_count": 234
+      }
+    },
+    "windows-clang-debug": {
+      "values": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-capture/freeze-summary.json",
+          "sha256": "74f563b87eec6171baecd2187e89611f42786db0a6ac89716be0c7ecbc249b48"
+        },
+        "runtime": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-yunhyubi/result.json",
+          "sha256": "e22155f272af7c8ca8d2f6c5a89b85a2eb16d4eb2a5e23ab09490a58d1ed6d49"
+        },
+        "process": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-yunhyubi/process.json",
+          "sha256": "db0ef221f5cfe877a40808feacff069ac30adda23008fbc0b84508e20d14fe89"
+        },
+        "output": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-yunhyubi/output.log",
+          "sha256": "33aebe1ea3e08a8175ff1f2ad267d99899d1a6aa0fff45f05d25d8f4829cdd08"
+        },
+        "probe": {
+          "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-debug\\s4-b-slice-4-2026-10-17-capture\\freeze.exe",
+          "sha256": "986682f63b282cc6c38317365d5f15f7908b0d980dd752ad6d63a6fa1d3d7fa8"
+        },
+        "consumed_inputs_sha256": "ae78e683b71456bc35200c14d19608d678cb81f697f10b465d5020108799809e",
+        "case_count": 36
+      },
+      "synthetic": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-capture/synthetic-freeze-summary.json",
+          "sha256": "e395860fa5ba1982d3ed0ee3e53fd2984350915bd2d431c61fcd942cd4a5d032"
+        },
+        "runtime": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-btr_0ikr/result.json",
+          "sha256": "bb41d8b76b60ddfff915949c63e5a088e3bee85d9e778b9a6cf1778a8e3293c9"
+        },
+        "process": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-btr_0ikr/process.json",
+          "sha256": "b17012ecbde2dfd27cc28b059cf26848c1e4e89837ce18e2b69a71cd9b1e1715"
+        },
+        "output": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-btr_0ikr/output.log",
+          "sha256": "33aebe1ea3e08a8175ff1f2ad267d99899d1a6aa0fff45f05d25d8f4829cdd08"
+        },
+        "probe": {
+          "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-debug\\s4-b-slice-4-2026-10-17-capture\\synthetic-frozen.exe",
+          "sha256": "d3ffc4f4ef96af677295dc619490ee9af8c6367b931b7d9dc3951708a616a5e0"
+        },
+        "consumed_inputs_sha256": "6b337b6046d858a1e220ec5ce3b0e6c18f07170b5979c3cb763bfe44efb61520",
+        "case_count": 28
+      },
+      "ofx": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-ofx/freeze-summary.json",
+          "sha256": "464c0eb9e849c61590bba9e96f9b0f263b0b97aef56690eadd160001f88ba91e"
+        },
+        "runtime": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-k8mdq9iv/result.json",
+          "sha256": "d3172cb5d4ff4e112a4609e6d3b35bd66fddb1af0408d45e231adee84644b99f"
+        },
+        "process": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-k8mdq9iv/process.json",
+          "sha256": "bb2b036a5087478c75623977c998d8f30d4255259b0b5d44670c8b03ce15c577"
+        },
+        "output": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-k8mdq9iv/output.log",
+          "sha256": "d6f1250bdba666fb0e5b422f25b3bf429eea9e1ff65178b8008772b035c922ae"
+        },
+        "probe": {
+          "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-debug\\s4-b-slice-4-2026-10-17-ofx\\ofx-final.exe",
+          "sha256": "1b8e2658d8564b0d752f8172846300d19f97545a84adf0040517a9dd833236ee"
+        },
+        "consumed_inputs_sha256": "61ff192c97c05fe065539d49d4a65556f88034587fbfd515d83516206b226291",
+        "case_count": 234
+      }
+    },
+    "windows-clang-release": {
+      "values": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-capture/freeze-summary.json",
+          "sha256": "b025d2151230f7359aac9f998c51c60492b3e3af6ac4d59234a1861240123f71"
+        },
+        "runtime": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-qpluti14/result.json",
+          "sha256": "13ad016b3705fadab47fac2f82737e90d3ad6fc05a3d89daf33f11401114cb5e"
+        },
+        "process": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-qpluti14/process.json",
+          "sha256": "bb0d70305ced936e5c939104d4016e9c22a40e840765d3f354c79234323f23dc"
+        },
+        "output": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-qpluti14/output.log",
+          "sha256": "33aebe1ea3e08a8175ff1f2ad267d99899d1a6aa0fff45f05d25d8f4829cdd08"
+        },
+        "probe": {
+          "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-release\\s4-b-slice-4-2026-10-17-capture\\freeze.exe",
+          "sha256": "a1813eddbcd21b11c9e3214462692254012d8ab6524840a6e4cf157c640cb910"
+        },
+        "consumed_inputs_sha256": "2cfd3202bbf240a5e5e888e7e9a033d0e908bae0ff87fa07e28c8516b424448f",
+        "case_count": 36
+      },
+      "synthetic": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-capture/synthetic-freeze-summary.json",
+          "sha256": "eea5c2ed1d257d7fcd246695121aa2c5c610629cf11bc96488ccf269d906050c"
+        },
+        "runtime": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-3e76o9as/result.json",
+          "sha256": "83a7d7ee5c64e6811bb4b4dd044e68f5c8dec14152da43855ac099b2e840e820"
+        },
+        "process": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-3e76o9as/process.json",
+          "sha256": "8d24aa80e669777610b1d30104a1f30526a0a98d3484eb38597018b7911c81c5"
+        },
+        "output": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-capture/attempts/capture-runtime-3e76o9as/output.log",
+          "sha256": "33aebe1ea3e08a8175ff1f2ad267d99899d1a6aa0fff45f05d25d8f4829cdd08"
+        },
+        "probe": {
+          "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-release\\s4-b-slice-4-2026-10-17-capture\\synthetic-frozen.exe",
+          "sha256": "4074bdae6ee68798e55c8f5360af6ee0d02f4403056b5375728b6437163496fa"
+        },
+        "consumed_inputs_sha256": "274be89117d88d1b41587c4e54e50a37154c8105d44d83f20f26edd7d8c7fac4",
+        "case_count": 28
+      },
+      "ofx": {
+        "summary": {
+          "path": "/mnt/c/Dev/Codex/out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-ofx/freeze-summary.json",
+          "sha256": "96985061933898bc46b8f7f554a966ff04898135facd08f6d49baa3dc131eefc"
+        },
+        "runtime": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-nqpe6o1y/result.json",
+          "sha256": "bf82f87b7a6a3adb72ca2fbb6436d67708ddef20f81102d26a03a4ab920a1efd"
+        },
+        "process": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-nqpe6o1y/process.json",
+          "sha256": "b4324c60344df27997da65dfb3344430573aad054160bcf72e0139511ef7eaf2"
+        },
+        "output": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-4-2026-10-17-ofx/attempts/ofx-runtime-nqpe6o1y/output.log",
+          "sha256": "8b9b170b65325cb2fd0eae328f4ac99f0cc92b39ecd5cd9e50fe80d47fc76ea6"
+        },
+        "probe": {
+          "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-release\\s4-b-slice-4-2026-10-17-ofx\\ofx-final.exe",
+          "sha256": "a4e6eb87ed843756ce805768378308a025312f2d8d83e4e4490133097dc21fe6"
+        },
+        "consumed_inputs_sha256": "365abc608e9de098121f1a6f29207a3b1ea351f0ebddcacf2c400ad86b60c61e",
+        "case_count": 234
+      }
+    }
+  },
+  "word_encoding": "f32 unsigned u32 bits; i32 counts/debug, u64 identities; CMY channel-major metadata 3x16. Padding excluded.",
+  "synthetic": "Existing n21 source data and attribution retained, authored exposure counts 1/21/22/255/256/257; polarity and bounded extreme finite models are explicitly captured. Helper-only unsupported polarity/nonfinite rows never fabricate a completed Development."
+}

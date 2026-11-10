@@ -1,0 +1,3051 @@
+// Native CUDA execution; the temporary host adapter owns publication and host access.
+
+#include "Cuda/JuicerCudaFailure.h"
+#include <vector>
+#include <cmath>
+#include <algorithm>
+#include <cstring>
+#include <cstddef>
+#include <cstdint>
+#include <cctype>
+#include <string>
+#include <limits>
+#include <optional>
+#include <variant>
+
+#include "FilmEffectsFrameDescriptors.h"
+#include "GaussianSciPy.h"
+
+#include <cuda_runtime.h>
+
+#include "Cuda/Diffusion/JuicerCudaDiffusion.h"
+#include "Cuda/JuicerCudaDriver.h"
+#include "Cuda/JuicerCudaFilmPayloads.h"
+#include "Cuda/JuicerCudaResources.h"
+#include "Cuda/JuicerCudaPayloads.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
+
+extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_focused_pipeline(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    int glareOriginX,
+    int glareOriginY,
+    std::uint64_t glareSeed,
+    float glarePercent,
+    float glareRoughness,
+    const float* dGlareKernel,
+    int glareRadius,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_direct_focused_capture_density(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_focused_capture_density(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_direct_camera_film_linear_exposure(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    JuicerCuda::CameraFilmLinearExposurePlanes planes,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_camera_film_linear_exposure(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    JuicerCuda::CameraFilmLinearExposurePlanes planes,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t
+juicer_cuda_direct_focused_capture_density_from_camera_film_linear(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    JuicerCuda::CameraFilmLinearExposurePlanes planes,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t
+juicer_cuda_print_focused_capture_density_from_camera_film_linear(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    JuicerCuda::CameraFilmLinearExposurePlanes planes,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_focused_continue_from_capture_density(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
+    const float* filmDustTransmittance,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_focused_enlarger_linear_exposure(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    const float* dDensityC,
+    const float* dDensityM,
+    const float* dDensityY,
+    JuicerCuda::EnlargerPrintLinearExposurePlanes planes,
+    const float* filmDustTransmittance,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t
+juicer_cuda_print_focused_develop_from_enlarger_linear(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    JuicerCuda::EnlargerPrintLinearExposurePlanes planes,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    const float* dDensityC,
+    const float* dDensityM,
+    const float* dDensityY,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    const float* filmDustTransmittance,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_density_rgb(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    const float* dDensityC,
+    const float* dDensityM,
+    const float* dDensityY,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    int glareOriginX,
+    int glareOriginY,
+    std::uint64_t glareSeed,
+    float glarePercent,
+    float glareRoughness,
+    const float* dGlareKernel,
+    int glareRadius,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    const JuicerCuda::FilmDefectsPayload* gateDefects,
+    const JuicerCuda::GateWeavePayload* weave,
+    const float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    const JuicerCuda::FilmDefectsPayload* gateDefects,
+    const JuicerCuda::GateWeavePayload* weave,
+    const float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_apply_visual_grain(
+    const JuicerCuda::GrainPayload* grain,
+    const JuicerCuda::GrainKernelPayload* kernels,
+    int width,
+    int height,
+    float* densityC,
+    float* densityM,
+    float* densityY,
+    float* filterTemp,
+    float* scaleWork,
+    float* deltaAccum,
+    float* layerWork,
+    float* sharedDelta,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_apply_film_defects(
+    const JuicerCuda::FilmDefectsPayload* defects,
+    int width,
+    int height,
+    float* densityC,
+    float* densityM,
+    float* densityY,
+    float* filmDustTransmittance,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_build_gate_defect_transmittance_focused(
+    const JuicerCuda::FilmDefectsPayload* defects,
+    float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    JuicerCuda::SpatialDirBuildRequest request);
+
+extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    JuicerCuda::SpatialDirBuildRequest request);
+
+extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_build_print_spatial_dir_cached_log_raw(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t
+juicer_cuda_build_direct_spatial_dir_cached_log_raw_from_camera_film_linear(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    JuicerCuda::CameraFilmLinearExposurePlanes cameraFilmLinear,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t
+juicer_cuda_build_print_spatial_dir_cached_log_raw_from_camera_film_linear(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    JuicerCuda::CameraFilmLinearExposurePlanes cameraFilmLinear,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_pipeline(
+    const JuicerCuda::PipelineRunParams* hParams,
+    void* cudaStreamOpaque);
+
+#include "Cuda/JuicerCudaExecutor.h"
+#include "Logging.h"
+#include "Hash.h"
+#include "SpectralData.h"
+#include "ColorTransforms.h"
+#include "ProcessRoot.h"
+#include "Scanner.h"
+#include "OutputColor.h"
+
+namespace {
+    inline void copy_float3(float dst[3], const float src[3]) {
+        std::memcpy(dst, src, 3u * sizeof(float));
+    }
+
+    inline const char* nonempty_cstr_or(const char* value, const char* fallback) {
+        return (value && value[0] != '\0') ? value : fallback;
+    }
+
+    inline const char* detail_or_unknown(const char* detail) {
+        return nonempty_cstr_or(detail, "(unknown)");
+    }
+
+    inline const char* cstr_or_null_if_empty(const std::string& value) {
+        return value.empty() ? nullptr : value.c_str();
+    }
+
+    inline int bool_to_i32(bool value) {
+        return value ? 1 : 0;
+    }
+
+    struct DiffusionStageBinding {
+        Spektrafilm::PlanLayout layout{};
+        Spektrafilm::DiffusionStageTileGeometry geometry{};
+        Spektrafilm::DiffusionFrameDomain fullFrame{};
+        JuicerCuda::Diffusion::SpectrumPackageView spectra{};
+        JuicerCuda::Diffusion::ExecutionWorkspaceView execution{};
+        JuicerCuda::Diffusion::StagePlaneSet stagePlanes{};
+        bool active = false;
+    };
+
+    bool same_diffusion_spectrum_key(
+        const Spektrafilm::DiffusionSpectrumKey& left,
+        const Spektrafilm::DiffusionSpectrumKey& right) noexcept {
+        return left.sampleHash == right.sampleHash &&
+               left.extent == right.extent &&
+               left.hash == right.hash;
+    }
+
+    bool same_diffusion_plan_key(
+        const Spektrafilm::DiffusionPlanKey& left,
+        const Spektrafilm::DiffusionPlanKey& right) noexcept {
+        return left.extent == right.extent &&
+               left.hash == right.hash;
+    }
+
+    bool bind_diffusion_stage(
+        const Spektrafilm::DiffusionFrameSetDescriptor& frameSet,
+        Spektrafilm::DiffusionLinearStage expectedStage,
+        const JuicerCuda::Diffusion::DiffusionPreparedView& prepared,
+        DiffusionStageBinding& out,
+        std::string& diagnostic) {
+        out = {};
+        diagnostic.clear();
+        const char* stageLabel =
+            expectedStage ==
+                    Spektrafilm::DiffusionLinearStage::CameraFilmLinear
+                ? "camera"
+                : "enlarger";
+        const std::size_t stageIndex =
+            expectedStage ==
+                        Spektrafilm::DiffusionLinearStage::CameraFilmLinear ||
+                    !frameSet.camera
+                ? 0
+                : 1;
+        const auto& stageGeometry =
+            prepared.executionDescriptor.stages[stageIndex];
+        const std::size_t spectrumIndex =
+            stageGeometry.spectrumKeyIndex;
+        if (spectrumIndex >= prepared.spectrumCount ||
+            spectrumIndex >= prepared.spectra.size() ||
+            spectrumIndex >=
+                prepared.executionDescriptor.spectrumKeys.size()) {
+            diagnostic =
+                "ResourceDescriptorMismatch component=diffusion stage=";
+            diagnostic += stageLabel;
+            diagnostic += " field=spectrum_index";
+            return false;
+        }
+
+        if (!same_diffusion_spectrum_key(
+                prepared.executionDescriptor.spectrumKeys[spectrumIndex],
+                prepared.spectra[spectrumIndex].key) ||
+            !same_diffusion_plan_key(
+                prepared.executionDescriptor.planKey,
+                prepared.execution.planKey)) {
+            diagnostic =
+                "ResourceDescriptorMismatch component=diffusion stage=";
+            diagnostic += stageLabel;
+            diagnostic += " field=resource_key";
+            return false;
+        }
+
+        const auto& spectra = prepared.spectra[spectrumIndex].spectra;
+        const auto& execution = prepared.execution.execution;
+        const auto& planes = prepared.execution.stagePlanes;
+        if (!spectra.red || !spectra.green || !spectra.blue ||
+            !execution.transformBuffer || execution.r2cPlan == 0 ||
+            execution.c2rPlan == 0 || !planes.redSensitive ||
+            !planes.greenSensitive || !planes.blueSensitive ||
+            !planes.auxiliary ||
+            planes.redSensitive == planes.greenSensitive ||
+            planes.redSensitive == planes.blueSensitive ||
+            planes.redSensitive == planes.auxiliary ||
+            planes.greenSensitive == planes.blueSensitive ||
+            planes.greenSensitive == planes.auxiliary ||
+            planes.blueSensitive == planes.auxiliary ||
+            planes.rowStrideFloats <
+                static_cast<std::size_t>(frameSet.fullFrame.width)) {
+            diagnostic = "MissingRequiredResource component=diffusion stage=";
+            diagnostic += stageLabel;
+            diagnostic += " field=execution_workspace";
+            return false;
+        }
+
+        out.layout = prepared.executionDescriptor.layout;
+        out.geometry = stageGeometry;
+        out.fullFrame = frameSet.fullFrame;
+        out.spectra = spectra;
+        out.execution = execution;
+        out.stagePlanes = planes;
+        out.active = true;
+        return true;
+    }
+
+    JuicerCuda::CameraFilmLinearExposurePlanes camera_film_linear_planes(
+        const JuicerCuda::Diffusion::StagePlaneSet& planes) noexcept {
+        return {
+            planes.redSensitive,
+            planes.greenSensitive,
+            planes.blueSensitive,
+            planes.rowStrideFloats};
+    }
+
+    JuicerCuda::EnlargerPrintLinearExposurePlanes
+    enlarger_print_linear_planes(
+        const JuicerCuda::Diffusion::StagePlaneSet& planes) noexcept {
+        return {
+            planes.redSensitive,
+            planes.greenSensitive,
+            planes.blueSensitive,
+            planes.rowStrideFloats};
+    }
+
+    const char* diffusion_failure_api_label(
+        JuicerCuda::Diffusion::FailureApi api) noexcept {
+        switch (api) {
+            case JuicerCuda::Diffusion::FailureApi::Validation:
+                return "validation";
+            case JuicerCuda::Diffusion::FailureApi::Cuda:
+                return "cuda";
+            case JuicerCuda::Diffusion::FailureApi::Cufft:
+                return "cufft";
+            case JuicerCuda::Diffusion::FailureApi::None:
+                break;
+        }
+        return "none";
+    }
+
+    std::string diffusion_launch_failure_diagnostic(
+        const JuicerCuda::Diffusion::LaunchResult& result) {
+        std::string diagnostic = "DiffusionLaunchFailure api=";
+        diagnostic += diffusion_failure_api_label(result.api);
+        diagnostic += " code=";
+        diagnostic += std::to_string(result.code);
+        diagnostic += " stage=";
+        diagnostic += nonempty_cstr_or(result.stage, "unknown");
+        return diagnostic;
+    }
+
+    bool launch_scatter_halation_for_route(
+        JuicerCuda::ScatterHalationPreparedView view,
+        JuicerCuda::CameraFilmLinearExposurePlanes cameraDiffusionCarrier,
+        bool cameraDiffusionLeaseActive,
+        const char* route,
+        std::string_view filmProfileKey,
+        std::uint64_t filmProfileAssetVersionToken,
+        const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
+        std::uint64_t contextEpoch,
+        cudaStream_t stream,
+        JuicerCuda::Failure& failure) {
+        auto& outDiagnostic = failure.diagnostic;
+        const auto stage_label = [](JuicerCuda::ScatterHalationLaunchStage stage) {
+            switch (stage) {
+                case JuicerCuda::ScatterHalationLaunchStage::Binding:
+                    return "Binding";
+                case JuicerCuda::ScatterHalationLaunchStage::ScatterAccumulatorClear:
+                    return "ScatterAccumulatorClear";
+                case JuicerCuda::ScatterHalationLaunchStage::ScatterTail:
+                    return "ScatterTail";
+                case JuicerCuda::ScatterHalationLaunchStage::ScatterCore:
+                    return "ScatterCore";
+                case JuicerCuda::ScatterHalationLaunchStage::BackReflectionAccumulatorClear:
+                    return "BackReflectionAccumulatorClear";
+                case JuicerCuda::ScatterHalationLaunchStage::BackReflectionBounce:
+                    return "BackReflectionBounce";
+                case JuicerCuda::ScatterHalationLaunchStage::BackReflectionFinalize:
+                    return "BackReflectionFinalize";
+                case JuicerCuda::ScatterHalationLaunchStage::None:
+                    break;
+            }
+            return static_cast<const char*>(nullptr);
+        };
+        const auto channel_label = [](JuicerCuda::ScatterHalationLaunchChannel channel) {
+            switch (channel) {
+                case JuicerCuda::ScatterHalationLaunchChannel::Red:
+                    return "Red";
+                case JuicerCuda::ScatterHalationLaunchChannel::Green:
+                    return "Green";
+                case JuicerCuda::ScatterHalationLaunchChannel::Blue:
+                    return "Blue";
+                case JuicerCuda::ScatterHalationLaunchChannel::None:
+                    break;
+            }
+            return static_cast<const char*>(nullptr);
+        };
+        const auto valid_distinct_planes = [](const auto& planes, int width) {
+            return planes.redSensitive && planes.greenSensitive &&
+                   planes.blueSensitive &&
+                   planes.rowStrideFloats >= static_cast<std::size_t>(width) &&
+                   planes.redSensitive != planes.greenSensitive &&
+                   planes.redSensitive != planes.blueSensitive &&
+                   planes.greenSensitive != planes.blueSensitive;
+        };
+        const auto append_identity = [&](const char* failedRequirement,
+                                         cudaError_t status) {
+            outDiagnostic = "ScatterHalationLaunchFailure route=";
+            outDiagnostic += nonempty_cstr_or(route, "unknown");
+            outDiagnostic += " domain=FilmLinearExposure film_profile_key=";
+            outDiagnostic += filmProfileKey;
+            outDiagnostic += " film_profile_asset_version_token=";
+            outDiagnostic += std::to_string(filmProfileAssetVersionToken);
+            outDiagnostic += " backend=Exact descriptor_recipe_hash=";
+            outDiagnostic += std::to_string(
+                view.descriptor ? view.descriptor->recipeHash : 0);
+            outDiagnostic += " device_id=" +
+                             std::to_string(contextKey.deviceId);
+            outDiagnostic += " context=" +
+                             std::to_string(static_cast<unsigned long long>(
+                                 reinterpret_cast<std::uintptr_t>(
+                                     contextKey.contextOpaque)));
+            outDiagnostic += " context_epoch=" +
+                             std::to_string(contextEpoch);
+            outDiagnostic += " cuda_status=" +
+                             std::to_string(static_cast<int>(status));
+            outDiagnostic += " failed_requirement=";
+            outDiagnostic += failedRequirement;
+        };
+
+        if (!view.descriptor || view.descriptor->recipeHash == 0 ||
+            view.fullFrameWidth <= 0 || view.fullFrameHeight <= 0 ||
+            !view.filterTemp || !view.weightedAccumulation ||
+            view.filterTemp == view.weightedAccumulation) {
+            append_identity("prepared_view_binding", cudaErrorInvalidValue);
+            return false;
+        }
+        if (view.carrierSource ==
+            JuicerCuda::ScatterHalationCarrierSource::CameraDiffusionStagePlanes) {
+            const bool preparedCarrierEmpty =
+                !view.currentCarrier.redSensitive &&
+                !view.currentCarrier.greenSensitive &&
+                !view.currentCarrier.blueSensitive &&
+                view.currentCarrier.rowStrideFloats == 0;
+            if (!cameraDiffusionLeaseActive || !preparedCarrierEmpty ||
+                !valid_distinct_planes(
+                    cameraDiffusionCarrier,
+                    view.fullFrameWidth) ||
+                cameraDiffusionCarrier.redSensitive == view.filterTemp ||
+                cameraDiffusionCarrier.redSensitive ==
+                    view.weightedAccumulation ||
+                cameraDiffusionCarrier.greenSensitive == view.filterTemp ||
+                cameraDiffusionCarrier.greenSensitive ==
+                    view.weightedAccumulation ||
+                cameraDiffusionCarrier.blueSensitive == view.filterTemp ||
+                cameraDiffusionCarrier.blueSensitive ==
+                    view.weightedAccumulation) {
+                append_identity(
+                    "camera_diffusion_carrier_binding",
+                    cudaErrorInvalidValue);
+                return false;
+            }
+            view.currentCarrier = cameraDiffusionCarrier;
+        } else if (cameraDiffusionLeaseActive ||
+                   cameraDiffusionCarrier.redSensitive ||
+                   cameraDiffusionCarrier.greenSensitive ||
+                   cameraDiffusionCarrier.blueSensitive ||
+                   cameraDiffusionCarrier.rowStrideFloats != 0 ||
+                   !valid_distinct_planes(
+                       view.currentCarrier,
+                       view.fullFrameWidth)) {
+            append_identity("dedicated_carrier_binding", cudaErrorInvalidValue);
+            return false;
+        }
+
+        const JuicerCuda::ScatterHalationLaunchResult result =
+            JuicerCuda::launch_scatter_halation(view, stream);
+        if (result.status == cudaSuccess) {
+            outDiagnostic.clear();
+            return true;
+        }
+        if (result.stage != JuicerCuda::ScatterHalationLaunchStage::Binding) {
+            failure.status = JuicerCuda::runtime_failure_status(result.status);
+        }
+        append_identity(
+            result.stage == JuicerCuda::ScatterHalationLaunchStage::Binding
+                ? "launcher_binding"
+                : "launcher_submission",
+            result.status);
+        if (const char* stage = stage_label(result.stage)) {
+            outDiagnostic += " observing_stage=";
+            outDiagnostic += stage;
+        }
+        if (const char* channel = channel_label(result.channel)) {
+            outDiagnostic += " observing_channel=";
+            outDiagnostic += channel;
+        }
+        if (result.gaussianIndex >= 0) {
+            outDiagnostic += " observing_gaussian_index=" +
+                             std::to_string(result.gaussianIndex);
+        }
+        return false;
+    }
+
+    bool spatial_dir_source_build_retains_cached_log_raw(
+        const Spektrafilm::DirScratchPlaneRoles& roles,
+        const Spektrafilm::DirScratchPlaneRoles& targetRoles) noexcept {
+        // The three-channel source pass already computes log exposure. Populate
+        // cache planes retained through final develop, including grain routes.
+        return roles.rawCorrectionPlanes == 3 &&
+               roles.cachedLogRawPlanes > 0 &&
+               roles.cachedLogRawPlanes == targetRoles.cachedLogRawPlanes;
+    }
+
+    bool spatial_dir_required_cached_log_raw_present(
+        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirScratchView& scratch,
+        int cachedLogRawPlanes) noexcept {
+        if (cachedLogRawPlanes <= 0) {
+            return true;
+        }
+        if (!scratch.logRawB) {
+            return false;
+        }
+        if (cachedLogRawPlanes >= 2 && !scratch.logRawG) {
+            return false;
+        }
+        if (cachedLogRawPlanes >= 3 && !scratch.logRawR) {
+            return false;
+        }
+        return true;
+    }
+
+    const Spektrafilm::DirGaussianComponentPlan& spatial_dir_component_or_empty(
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        int index) {
+        static const Spektrafilm::DirGaussianComponentPlan kEmpty{};
+        if (index < 0 || index >= descriptor.filterPlan.componentCount) {
+            return kEmpty;
+        }
+        return descriptor.filterPlan.components[static_cast<std::size_t>(index)];
+    }
+
+    JuicerCuda::SpatialDirFilterOperator cuda_dir_filter_operator(
+        Spektrafilm::DirReferenceOperator referenceOperator) noexcept {
+        switch (referenceOperator) {
+            case Spektrafilm::DirReferenceOperator::Identity:
+                return JuicerCuda::SpatialDirFilterOperator::Identity;
+            case Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect:
+                return JuicerCuda::SpatialDirFilterOperator::FirReflect;
+            case Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect:
+                return JuicerCuda::SpatialDirFilterOperator::YvvReflect;
+            case Spektrafilm::DirReferenceOperator::None:
+            default:
+                return JuicerCuda::SpatialDirFilterOperator::None;
+        }
+    }
+
+    void bind_spatial_dir_iir(
+        JuicerCuda::SpatialDirFilterSpec& destination,
+        const Spektrafilm::DirGaussianComponentPlan& component,
+        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirPreparedView::BoundaryView&
+            boundary) noexcept {
+        destination.iir.feedforward = component.iir.feedforward;
+        std::copy(
+            component.iir.feedback.begin(),
+            component.iir.feedback.end(),
+            std::begin(destination.iir.feedback));
+        destination.horizontalBoundary.initialWeights = boundary.horizontalWeights;
+        destination.horizontalBoundary.initialWeightLength = boundary.horizontalLength;
+        destination.horizontalBoundary.terminalSize = boundary.horizontalTerminalSize;
+        std::copy(
+            boundary.horizontalTerminalMatrix.begin(),
+            boundary.horizontalTerminalMatrix.end(),
+            std::begin(destination.horizontalBoundary.terminalMatrix));
+        destination.verticalBoundary.initialWeights = boundary.verticalWeights;
+        destination.verticalBoundary.initialWeightLength = boundary.verticalLength;
+        destination.verticalBoundary.terminalSize = boundary.verticalTerminalSize;
+        std::copy(
+            boundary.verticalTerminalMatrix.begin(),
+            boundary.verticalTerminalMatrix.end(),
+            std::begin(destination.verticalBoundary.terminalMatrix));
+    }
+
+    void bind_spatial_dir_final_develop_to_payload(
+        JuicerCuda::FilmDevelopPayload& payload,
+        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirScratchView& scratch) {
+        payload.spatialDir.active = 1;
+        payload.spatialDir.filteredCorrectionY = scratch.filteredCorrectionY;
+        payload.spatialDir.filteredCorrectionM = scratch.filteredCorrectionM;
+        payload.spatialDir.filteredCorrectionC = scratch.filteredCorrectionC;
+        payload.spatialDir.logRawB = scratch.logRawB;
+        payload.spatialDir.logRawG = scratch.logRawG;
+        payload.spatialDir.logRawR = scratch.logRawR;
+    }
+
+    void clear_spatial_dir_final_develop_payload_bindings(
+        JuicerCuda::FilmDevelopPayload& payload) {
+        payload.spatialDir = JuicerCuda::SpatialDirPayload{};
+    }
+
+    struct CudaFailureTrace {
+        const char* prefix = "CUDA operation failed";
+        const char* detail = nullptr;
+    };
+
+    inline void trace_cuda_fatal_prefixed_if(
+        bool traceEnabled,
+        const CudaFailureTrace& failure) {
+        if (!traceEnabled) {
+            return;
+        }
+        const char* safePrefix = nonempty_cstr_or(failure.prefix, "CUDA operation failed");
+        const bool hasDetail = failure.detail && failure.detail[0] != '\0';
+        std::string traceMsg;
+        traceMsg.reserve(
+            8 + std::strlen(safePrefix) + (hasDetail ? (2 + std::strlen(failure.detail)) : 0));
+        traceMsg = "FATAL: ";
+        traceMsg += safePrefix;
+        if (hasDetail) {
+            traceMsg += ": ";
+            traceMsg += failure.detail;
+        }
+        JTRACE("CUDA", traceMsg);
+    }
+
+    inline void copy_float9(float dst[9], const float src[9]) {
+        std::memcpy(dst, src, 9u * sizeof(float));
+    }
+
+    bool visual_grain_full_frame_preflight(
+        const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& descriptor,
+        const JuicerCuda::FrameRect& renderWindow,
+        const JuicerCuda::FrameRect& sourceBounds,
+        const JuicerCuda::FrameRect& fullFrameBounds) {
+        if (!descriptor.has_value() || !descriptor->requiresFullFrame) {
+            return true;
+        }
+        const Spektrafilm::VisualGrainFrameExtent& full =
+            descriptor->fullFrameExtent;
+        const auto matches = [&full](const JuicerCuda::FrameRect& rect) {
+            return rect.x1 == full.x && rect.y1 == full.y &&
+                   rect.x2 - rect.x1 == full.width &&
+                   rect.y2 - rect.y1 == full.height;
+        };
+        return descriptor->renderExtent.x == full.x &&
+               descriptor->renderExtent.y == full.y &&
+               descriptor->renderExtent.width == full.width &&
+               descriptor->renderExtent.height == full.height &&
+               matches(renderWindow) && matches(sourceBounds) &&
+               matches(fullFrameBounds);
+    }
+
+    bool film_juicer_effects_full_frame_preflight(
+        const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& descriptor,
+        const JuicerCuda::FrameRect& renderWindow,
+        const JuicerCuda::FrameRect& sourceBounds,
+        const JuicerCuda::FrameRect& fullFrameBounds) {
+        if (!descriptor.has_value() || !descriptor->requiresFullFrame) {
+            return true;
+        }
+        const Spektrafilm::FilmJuicerEffectsFrameExtent& full =
+            descriptor->fullFrameExtent;
+        const auto matches = [&full](const JuicerCuda::FrameRect& rect) {
+            return rect.x1 == full.x && rect.y1 == full.y &&
+                   rect.x2 - rect.x1 == full.width &&
+                   rect.y2 - rect.y1 == full.height;
+        };
+        return matches(renderWindow) && matches(sourceBounds) &&
+               matches(fullFrameBounds);
+    }
+
+} // namespace
+
+namespace JuicerCuda {
+    JuicerCuda::AutoExposurePreviewDescriptor make_auto_exposure_preview_descriptor(
+        const JuicerCuda::FrameRect& sourceBounds,
+        const JuicerCuda::FrameRect& meterBounds,
+        Spektrafilm::AutoExposureMethod method) {
+        JuicerCuda::AutoExposurePreviewDescriptor descriptor{};
+        descriptor.sourceX1 = sourceBounds.x1;
+        descriptor.sourceY1 = sourceBounds.y1;
+        descriptor.sourceX2 = sourceBounds.x2;
+        descriptor.sourceY2 = sourceBounds.y2;
+        descriptor.meterX1 = meterBounds.x1;
+        descriptor.meterY1 = meterBounds.y1;
+        descriptor.meterX2 = meterBounds.x2;
+        descriptor.meterY2 = meterBounds.y2;
+        descriptor.method = method;
+
+        const auto width = std::max<std::int64_t>(0, static_cast<std::int64_t>(meterBounds.x2) - meterBounds.x1);
+        const auto height = std::max<std::int64_t>(0, static_cast<std::int64_t>(meterBounds.y2) - meterBounds.y1);
+        const auto longEdge = std::max(width, height);
+        if (longEdge > std::numeric_limits<int>::max()) {
+            return descriptor;
+        }
+        descriptor.previewWidth = static_cast<int>(width);
+        descriptor.previewHeight = static_cast<int>(height);
+        if (longEdge > JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge) {
+            if (width >= height) {
+                descriptor.previewWidth = JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge;
+                descriptor.previewHeight = static_cast<int>(std::max<std::int64_t>(
+                    1,
+                    (height * JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge + width / 2) /
+                        width));
+            } else {
+                descriptor.previewHeight = JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge;
+                descriptor.previewWidth = static_cast<int>(std::max<std::int64_t>(
+                    1,
+                    (width * JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge + height / 2) /
+                        height));
+            }
+        }
+        descriptor.hash = Hash::kFnvOffset;
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.sourceX1, sizeof(descriptor.sourceX1));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.sourceY1, sizeof(descriptor.sourceY1));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.sourceX2, sizeof(descriptor.sourceX2));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.sourceY2, sizeof(descriptor.sourceY2));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.meterX1, sizeof(descriptor.meterX1));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.meterY1, sizeof(descriptor.meterY1));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.meterX2, sizeof(descriptor.meterX2));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.meterY2, sizeof(descriptor.meterY2));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.previewWidth, sizeof(descriptor.previewWidth));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.previewHeight, sizeof(descriptor.previewHeight));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.method, sizeof(descriptor.method));
+        if (descriptor.hash == 0) {
+            descriptor.hash = 1;
+        }
+        return descriptor;
+    }
+
+
+} // namespace JuicerCuda
+
+namespace {
+    struct ExecutionErrors {
+        JuicerCuda::PendingContextLossRecovery& pendingContextLossRecovery;
+        bool traceInfo = false;
+        const char* restrictionPrefix = nullptr;
+        void mark_context_loss_recovery(const char* stage, const JuicerCuda::Failure& failure) const {
+            if (pendingContextLossRecovery.pending || !JuicerCuda::context_loss(failure)) {
+                return;
+            }
+            pendingContextLossRecovery.pending = true;
+            pendingContextLossRecovery.failure = failure;
+            pendingContextLossRecovery.stage = stage;
+        }
+
+        [[noreturn]] void fail_policy(const char* failurePrefix, JuicerCuda::Failure failure) const {
+            trace_cuda_fatal_prefixed_if(
+                traceInfo,
+                CudaFailureTrace{
+                    nonempty_cstr_or(failurePrefix, "CUDA render cannot continue"),
+                    cstr_or_null_if_empty(failure.diagnostic)});
+            throw JuicerCuda::ExecutionFailure{std::move(failure)};
+        }
+
+        [[noreturn]] void fail_stage(const char* stageTag, const char* failurePrefix, cudaError_t errorCode) const {
+            const char* detail = detail_or_unknown(cudaGetErrorString(errorCode));
+            JuicerCuda::Failure failure{JuicerCuda::runtime_failure_status(errorCode), detail};
+            mark_context_loss_recovery(nonempty_cstr_or(stageTag, "cuda_stage"), failure);
+            fail_policy(nonempty_cstr_or(failurePrefix, "CUDA stage failed"), std::move(failure));
+        }
+
+        [[noreturn]] void fail_submission(const char* stageTag, const char* failurePrefix, const JuicerCuda::Failure& failure, bool deferredDirError = false) const {
+            mark_context_loss_recovery(nonempty_cstr_or(stageTag, "submission_stage"), failure);
+            trace_cuda_fatal_prefixed_if(
+                traceInfo,
+                CudaFailureTrace{
+                    nonempty_cstr_or(failurePrefix, "submission stage failed"),
+                    cstr_or_null_if_empty(failure.diagnostic)});
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            JuicerCuda::ExecutorTest::observe_classification(stageTag, failure, pendingContextLossRecovery.pending);
+#endif
+            throw JuicerCuda::ExecutionFailure{failure, deferredDirError};
+        }
+
+        [[noreturn]] void fail_route(const char* diagnostic) const {
+            fail_policy(restrictionPrefix, {{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, detail_or_unknown(diagnostic)});
+        }
+    };
+
+    struct RouteDescriptors {
+        Scanner::ScannerSpectralLutDescriptor scanner{};
+        Scanner::ScannerPostEffectsDescriptor post{};
+        Spektrafilm::SpatialDirDescriptor dir{};
+        std::optional<Spektrafilm::VisualGrainFrameDescriptor> grain;
+        std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effects;
+    };
+
+    struct ScheduleInput {
+        const JuicerCuda::ExecutionFrame& frame;
+        JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;
+        JuicerProcess::Root::PreparationIdentity identity;
+        const RouteDescriptors& descriptors;
+        JuicerCuda::FilmPayloadInput film;
+        float filmRouteCorrectionScale{};
+        const JuicerCuda::VisualGrainPayloadInput& grain;
+        const OutputGamutRecipe& outputGamut;
+        std::uint64_t scannerBoundsHash{};
+        std::uint64_t recipeHash{};
+        bool cameraAutoEnabled{};
+        Spektrafilm::AutoExposureMethod meteringMethod{};
+        const JuicerProcess::Root::PreparedFrameInput& preparation;
+        Scanner::ScannerColorCorrectionDescriptor correction;
+        float printExposure = 0.0f;
+        float preflashExposure = 0.0f;
+        const FjHostPreparation* hostPreparation = nullptr;
+    };
+
+    struct OpticalWorkspace {
+        JuicerProcess::Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView density{};
+        JuicerProcess::Root::PreparedCudaFrame::FocusedRgbWorkspaceView rgb{};
+        JuicerProcess::Root::PreparedCudaFrame::ScannerWorkspaceView scanner{};
+    };
+
+    struct GrainBinding {
+        JuicerProcess::Root::PreparedCudaFrame::VisualGrainWorkspaceView workspace{};
+        JuicerCuda::GrainPayload payload{};
+        JuicerCuda::GrainKernelPayload kernels{};
+    };
+
+    enum class CaptureExecution : unsigned char {
+        Monolithic,
+        MaterializedDensity,
+        FusedDirScanner
+    };
+    struct MonolithicScan {};
+    struct FusedDirScanner {};
+    struct MaterializedDensity {
+        JuicerProcess::Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView planes;
+    };
+    // Materialized density is published after development enqueue; completion remains native.
+    using ScannerInput = std::variant<MonolithicScan, FusedDirScanner, MaterializedDensity>;
+
+    enum class DirCache : unsigned char {
+        Absent,
+        SourceBg,
+        SourceBgr,
+        StagedBgr
+    };
+    struct DirBuildResult {
+        DirCache cache;
+        bool uses_source_cache() const noexcept {
+            return cache == DirCache::SourceBg || cache == DirCache::SourceBgr;
+        }
+    };
+
+    struct EffectsPayloads {
+        JuicerCuda::FilmDefectsPayload film{};
+        JuicerCuda::GateWeavePayload weave{};
+    };
+
+    void copy_scan_density_range_payload(JuicerCuda::ScannerDensityRangePayload& destination, const JuicerCuda::Resources::DeviceScanRange& source) {
+        destination.mediumIsNegative = source.mediumIsNegative;
+        copy_float3(destination.min_cmy, source.min_cmy);
+        copy_float3(destination.inv_max_cmy, source.inv_max_cmy);
+    }
+
+    void pack_output_gamut_payload(
+        JuicerCuda::ScanColorPayload& destination,
+        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared,
+        const OutputGamutRecipe& recipe,
+        const ExecutionErrors& errors) {
+        destination.outputGamutActive = 0;
+        destination.outputGamutCmax = nullptr;
+        if (!recipe.enabled) {
+            return;
+        }
+        if (!prepared.outputGamutTransform ||
+            !prepared.outputGamutCmax) {
+            errors.fail_submission(
+                "pack_output_gamut_payload",
+                "CUDA output gamut payload binding failed",
+                JuicerCuda::Failure{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "ResourceDescriptorMismatch component=scan_color_payload field=output_gamut_identity"});
+        }
+        destination.outputGamutCmax = prepared.outputGamutCmax;
+        copy_float9(
+            destination.outputGamutNativeRgbToD65Xyz,
+            prepared.outputGamutTransform->nativeRgbToD65Xyz.data());
+        copy_float9(
+            destination.outputGamutD65XyzToNativeRgb,
+            prepared.outputGamutTransform->d65XyzToNativeRgb.data());
+        copy_float9(
+            destination.outputGamutOklabXyzToLms,
+            Gamut::kOklabXyzToLms.data());
+        copy_float9(
+            destination.outputGamutOklabLmsToXyz,
+            Gamut::kOklabLmsToXyz.data());
+        copy_float9(
+            destination.outputGamutOklabLmsRootToLab,
+            Gamut::kOklabLmsRootToLab.data());
+        copy_float9(
+            destination.outputGamutOklabLabToLmsRoot,
+            Gamut::kOklabLabToLmsRoot.data());
+        destination.outputGamutLightnessKnee[0] =
+            recipe.lightnessKneeThreshold;
+        destination.outputGamutLightnessKnee[1] =
+            recipe.lightnessKneeLimit;
+        destination.outputGamutLightnessKnee[2] =
+            recipe.lightnessKneePower;
+        destination.outputGamutChromaKnee[0] =
+            recipe.chromaKneeThreshold;
+        destination.outputGamutChromaKnee[1] =
+            recipe.chromaKneeLimit;
+        destination.outputGamutChromaKnee[2] =
+            recipe.chromaKneePower;
+        destination.outputGamutActive = 1;
+    }
+
+    void meter_camera_exposure(
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        JuicerCuda::FilmPayloadPack& filmPayloads,
+        const JuicerCuda::ExecutionFrame& frame,
+        Spektrafilm::AutoExposureMethod cameraMeteringMethod,
+        const char* missingBuffersDiagnostic,
+        const ExecutionErrors& errors) {
+        const auto& autoExposureDescriptor = frame.autoExposureDescriptor;
+
+        const auto buffers = preparedFrame.auto_exposure_buffers();
+        if (!buffers.active) {
+            errors.fail_route(missingBuffersDiagnostic);
+        }
+        const char* meterError = nullptr;
+        if (cameraMeteringMethod == Spektrafilm::AutoExposureMethod::CenterWeighted &&
+            (buffers.weightsWidth != autoExposureDescriptor.previewWidth ||
+             buffers.weightsHeight != autoExposureDescriptor.previewHeight)) {
+            const int weightsRc = juicer_cuda_auto_exposure_build_center_weight_tables(
+                autoExposureDescriptor.previewWidth,
+                autoExposureDescriptor.previewHeight,
+                buffers.scratch.weightsX,
+                buffers.scratch.weightsY,
+                frame.stream,
+                &meterError);
+            if (weightsRc != 0) {
+                errors.fail_route(detail_or_unknown(meterError));
+            }
+            preparedFrame.mark_auto_exposure_weights_built(
+                JuicerProcess::Root::PreparedCudaFrame::AutoExposureWeightsExtent{
+                    autoExposureDescriptor.previewWidth,
+                    autoExposureDescriptor.previewHeight});
+        }
+        JuicerCuda::AutoExposureSourceFormat autoExposureSourceFormat{};
+        autoExposureSourceFormat.componentCount = frame.components;
+        autoExposureSourceFormat.filmRaw = filmPayloads.filmRaw;
+        autoExposureSourceFormat.reconstruction =
+            filmPayloads.filmExposure.reconstruction;
+        const int meterRc = juicer_cuda_auto_exposure_meter_to_device(
+            frame.sourceBase,
+            static_cast<std::size_t>(frame.sourceRowBytes),
+            autoExposureDescriptor,
+            autoExposureSourceFormat,
+            buffers.scratch,
+            buffers.deviceState,
+            frame.stream,
+            &meterError);
+        if (meterRc != 0) {
+            errors.fail_route(detail_or_unknown(meterError));
+        }
+        preparedFrame.mark_auto_exposure_metered(
+            JuicerProcess::Root::PreparedCudaFrame::AutoExposureMeteredResult{
+                autoExposureDescriptor.hash});
+        filmPayloads.filmExposure.exposureScaleDevice =
+            buffers.deviceState.exposureScale;
+    }
+
+    std::string halation_completion_diagnostic(
+        const JuicerProcess::Root::PreparationIdentity& identity,
+        const JuicerCuda::ScatterHalationPreparedView& halation,
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        std::uint64_t contextEpoch,
+        const char* boundary,
+        const std::string& cudaStatus) {
+        const auto& deviceContextKey = snapshot.deviceContextKey;
+
+        std::string diagnostic =
+            "ScatterHalationCompletionObservation route=";
+        diagnostic += Spektrafilm::scan_route_label(
+            identity.scanRoute);
+        diagnostic +=
+            " domain=FilmLinearExposure component=pipeline film_profile_key=";
+        diagnostic += identity.filmProfileKey;
+        diagnostic += " film_profile_asset_version_token=";
+        diagnostic += std::to_string(
+            identity.filmProfileAssetVersionToken);
+        diagnostic +=
+            " backend=Exact in_flight_descriptor_recipe_hash=";
+        diagnostic += std::to_string(
+            halation.descriptor
+                ? halation.descriptor->recipeHash
+                : 0);
+        diagnostic += " device_id=" +
+                      std::to_string(deviceContextKey.deviceId);
+        diagnostic += " context=" +
+                      std::to_string(static_cast<unsigned long long>(
+                          reinterpret_cast<std::uintptr_t>(
+                              deviceContextKey.contextOpaque)));
+        diagnostic += " context_epoch=" +
+                      std::to_string(contextEpoch);
+        diagnostic += " observing_completion_boundary=";
+        diagnostic += boundary;
+        diagnostic += " cuda_status=";
+        diagnostic += cudaStatus;
+        return diagnostic;
+    }
+
+    void bind_direct_diffusion(
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerCuda::ExecutionFrame& frame,
+        DiffusionStageBinding& directCameraDiffusion,
+        const ExecutionErrors& errors) {
+        const auto diffusionPrepared = preparedFrame.diffusion_resources();
+
+        if (frame.diffusionFrameSet) {
+            if (!diffusionPrepared.active ||
+                diffusionPrepared.executionDescriptor.frameSetHash !=
+                    frame.diffusionFrameSet->hash ||
+                diffusionPrepared.executionDescriptor.contextEpoch !=
+                    preparedFrame.admitted_context_epoch() ||
+                diffusionPrepared.spectrumCount == 0 ||
+                diffusionPrepared.spectrumCount !=
+                    diffusionPrepared.executionDescriptor.uniqueSpectrumCount) {
+                errors.fail_route(
+                    "MissingRequiredResource component=diffusion field=prepared_view");
+            }
+            std::string cameraBindingDiagnostic;
+            if (!bind_diffusion_stage(
+                    *frame.diffusionFrameSet,
+                    Spektrafilm::DiffusionLinearStage::CameraFilmLinear,
+                    diffusionPrepared,
+                    directCameraDiffusion,
+                    cameraBindingDiagnostic)) {
+                errors.fail_route(cameraBindingDiagnostic.c_str());
+            }
+        } else if (diffusionPrepared.active) {
+            errors.fail_route(
+                "ResourceDescriptorMismatch component=diffusion field=disabled_prepared_view");
+        }
+    }
+
+    JuicerCuda::CameraFilmLinearExposurePlanes expose_direct_camera(
+        JuicerCuda::DirectPipelineRunParams& run,
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerProcess::Root::PreparationIdentity& identity,
+        const JuicerCuda::ExecutionFrame& frame,
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        bool cameraDiffusionActive,
+        DiffusionStageBinding& directCameraDiffusion,
+        JuicerCuda::ScatterHalationPreparedView& directHalation,
+        const ExecutionErrors& errors) {
+        const auto& deviceContextKey = snapshot.deviceContextKey;
+        const bool halationExecutable = directHalation.descriptor != nullptr;
+        JuicerCuda::CameraFilmLinearExposurePlanes directCameraFilmLinear{};
+        if (cameraDiffusionActive) {
+            if (!directCameraDiffusion.active) {
+                errors.fail_route(
+                    "MissingRequiredResource component=diffusion field=camera_stage_binding");
+            }
+            preparedFrame.mark_diffusion_work_enqueued();
+            directCameraFilmLinear = camera_film_linear_planes(
+                directCameraDiffusion.stagePlanes);
+            const cudaError_t exposureError =
+                juicer_cuda_direct_camera_film_linear_exposure(
+                    &run,
+                    directCameraFilmLinear,
+                    frame.stream);
+            if (exposureError != cudaSuccess) {
+                errors.fail_stage(
+                    "direct_camera_film_linear_exposure_launch",
+                    "direct camera film-linear exposure launch failed",
+                    exposureError);
+            }
+            JuicerCuda::Diffusion::StageLaunchRequest diffusionLaunch{};
+            diffusionLaunch.layout = directCameraDiffusion.layout;
+            diffusionLaunch.geometry = directCameraDiffusion.geometry;
+            diffusionLaunch.fullFrame = directCameraDiffusion.fullFrame;
+            diffusionLaunch.spectra = directCameraDiffusion.spectra;
+            diffusionLaunch.execution = directCameraDiffusion.execution;
+            diffusionLaunch.planes = &directCameraDiffusion.stagePlanes;
+            diffusionLaunch.stream = reinterpret_cast<cudaStream_t>(
+                frame.stream);
+            const JuicerCuda::Diffusion::LaunchResult diffusionResult =
+                JuicerCuda::Diffusion::launch_stage(diffusionLaunch);
+            if (!diffusionResult.ok()) {
+                if (diffusionResult.api ==
+                    JuicerCuda::Diffusion::FailureApi::Cuda) {
+                    errors.fail_stage(
+                        diffusionResult.stage,
+                        "direct camera diffusion launch failed",
+                        static_cast<cudaError_t>(diffusionResult.code));
+                }
+                const std::string diagnostic =
+                    diffusion_launch_failure_diagnostic(diffusionResult);
+                errors.fail_policy(errors.restrictionPrefix, {JuicerCuda::Diffusion::launch_failure_status(diffusionResult), diagnostic});
+            }
+            // launch_stage rotates semantic plane pointers after each channel.
+            directCameraFilmLinear = camera_film_linear_planes(
+                directCameraDiffusion.stagePlanes);
+        } else if (halationExecutable) {
+            directCameraFilmLinear = directHalation.currentCarrier;
+            const cudaError_t exposureError =
+                juicer_cuda_direct_camera_film_linear_exposure(
+                    &run,
+                    directCameraFilmLinear,
+                    frame.stream);
+            if (exposureError != cudaSuccess) {
+                errors.fail_stage(
+                    "direct_camera_film_linear_exposure_launch",
+                    "direct camera film-linear exposure launch failed",
+                    exposureError);
+            }
+        }
+        if (halationExecutable) {
+            JuicerCuda::Failure halationDiagnostic;
+            // bind_camera_diffusion_carrier_immediately
+            if (!launch_scatter_halation_for_route(
+                    directHalation,
+                    cameraDiffusionActive
+                        ? directCameraFilmLinear
+                        : JuicerCuda::CameraFilmLinearExposurePlanes{},
+                    cameraDiffusionActive && directCameraDiffusion.active,
+                    Spektrafilm::scan_route_label(
+                        identity.scanRoute),
+                    identity.filmProfileKey,
+                    identity.filmProfileAssetVersionToken,
+                    deviceContextKey,
+                    preparedFrame.admitted_context_epoch(),
+                    reinterpret_cast<cudaStream_t>(frame.stream),
+                    halationDiagnostic)) {
+                errors.fail_submission(
+                    "direct_scatter_halation_launch",
+                    "direct scatter-halation launch failed",
+                    halationDiagnostic);
+            }
+            // post_halation_camera_film_linear
+        }
+
+        return directCameraFilmLinear;
+    }
+
+    EffectsPayloads pack_effects_payloads(
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& descriptor,
+        const ExecutionErrors& errors) {
+        EffectsPayloads effects;
+        const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
+            preparedEffectsDescriptor =
+                preparedFrame.film_juicer_effects_descriptor();
+        if (descriptor.has_value()) {
+            std::string effectsPayloadDiagnostic;
+            if (!preparedEffectsDescriptor ||
+                !JuicerCuda::pack_film_juicer_effects_payload(
+                    *preparedEffectsDescriptor,
+                    effects.film,
+                    effects.weave,
+                    effectsPayloadDiagnostic)) {
+                errors.fail_route(
+                    effectsPayloadDiagnostic.empty()
+                        ? "MissingRequiredResource phase=effects_route field=effects_binding"
+                        : effectsPayloadDiagnostic.c_str());
+            }
+        } else if (preparedEffectsDescriptor) {
+            errors.fail_route(
+                "ResourceDescriptorMismatch phase=effects_route field=inactive_descriptor");
+        }
+
+        return effects;
+    }
+
+    OpticalWorkspace bind_direct_optical_workspace(
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
+        void* stream,
+        const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& descriptor,
+        const ExecutionErrors& errors) {
+        OpticalWorkspace optical;
+
+        JuicerCuda::Failure focusedWorkspaceError;
+        if (!preparedFrame.stage_optical_workspace(
+                focusedWorkspace,
+                stream,
+                focusedWorkspaceError)) {
+            errors.fail_submission(
+                "direct_focused_workspace_stage",
+                "direct focused workspace staging failed",
+                focusedWorkspaceError);
+        }
+        optical.density =
+            preparedFrame.capture_film_density_workspace(
+                focusedWorkspace);
+        optical.rgb = preparedFrame.focused_rgb_workspace(
+            focusedWorkspace);
+        if (!optical.density.active || !optical.rgb.active ||
+            optical.density.c != optical.rgb.r ||
+            optical.density.m != optical.rgb.g ||
+            optical.density.y != optical.rgb.b) {
+            errors.fail_route(
+                "MissingRequiredResource phase=grain_route field=focused_triplet");
+        }
+        optical.scanner =
+            preparedFrame.scanner_workspace(focusedWorkspace);
+        if (!optical.scanner.active ||
+            (descriptor.has_value() && descriptor->filmDust.slotProbability > 0.0f &&
+             !optical.scanner.filmDustTransmittance) ||
+            (descriptor.has_value() &&
+             descriptor->gateTransmittanceActive &&
+             !optical.scanner.hasGateTransmittance)) {
+            errors.fail_route(
+                "MissingRequiredResource phase=effects_route field=effects_workspace");
+        }
+
+        return optical;
+    }
+
+    void bind_grain(
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
+        const JuicerCuda::VisualGrainPayloadInput& input,
+        GrainBinding& grain,
+        const ExecutionErrors& errors) {
+        const auto resources = preparedFrame.visual_grain_resources();
+        grain.workspace = preparedFrame.visual_grain_workspace(
+            focusedWorkspace);
+        std::string grainPayloadDiagnostic;
+        if (!resources.active ||
+            !grain.workspace.active ||
+            !JuicerCuda::pack_visual_grain_payload(
+                input,
+                resources,
+                grain.payload,
+                grain.kernels,
+                grainPayloadDiagnostic)) {
+            errors.fail_route(
+                grainPayloadDiagnostic.empty()
+                    ? "MissingRequiredResource phase=grain_route field=grain_binding"
+                    : grainPayloadDiagnostic.c_str());
+        }
+        grain.payload.frameUniforms =
+            grain.workspace.frameUniforms;
+    }
+
+    DirBuildResult build_direct_dir(
+        JuicerCuda::DirectPipelineRunParams& run,
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        const JuicerCuda::CameraFilmLinearExposurePlanes& directCameraFilmLinear,
+        bool cameraFilmLinearActive,
+        void* stream,
+        CaptureExecution execution,
+        const ExecutionErrors& errors) {
+        bool directDirUsesSourceBuildCachedLogRaw = false;
+
+        const auto scratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
+        const auto resources =
+            preparedFrame.spatial_dir_resources(focusedWorkspace, descriptor.hash);
+        if (!scratch.active || !resources.active) {
+            errors.fail_route(
+                "MissingRequiredResource phase=3D-3 field=prepared_spatial_dir");
+        }
+        const Spektrafilm::DirScratchPlaneRoles& directDirAdmittedRoles =
+            scratch.planeRoles;
+        const Spektrafilm::DirScratchPlaneRoles& directDirAdmittedTargetRoles =
+            scratch.targetPlaneRoles;
+        directDirUsesSourceBuildCachedLogRaw =
+            spatial_dir_source_build_retains_cached_log_raw(
+                directDirAdmittedRoles,
+                directDirAdmittedTargetRoles);
+        if (directDirUsesSourceBuildCachedLogRaw &&
+            !spatial_dir_required_cached_log_raw_present(
+                scratch,
+                directDirAdmittedRoles.cachedLogRawPlanes)) {
+            errors.fail_route(
+                "MissingRequiredResource phase=3D-3 field=spatial_dir_source_build_cached_log_raw");
+        }
+        float* cachedLogRawB =
+            directDirUsesSourceBuildCachedLogRaw ? scratch.logRawB : nullptr;
+        float* cachedLogRawG =
+            directDirUsesSourceBuildCachedLogRaw ? scratch.logRawG : nullptr;
+        float* cachedLogRawR =
+            directDirUsesSourceBuildCachedLogRaw ? scratch.logRawR : nullptr;
+        JuicerCuda::SpatialDirBuildRequest dirBuildRequest{};
+        dirBuildRequest.planes.rawCorrectionY = scratch.rawCorrectionY;
+        dirBuildRequest.planes.rawCorrectionM = scratch.rawCorrectionM;
+        dirBuildRequest.planes.rawCorrectionC = scratch.rawCorrectionC;
+        dirBuildRequest.planes.filteredCorrectionY = scratch.filteredCorrectionY;
+        dirBuildRequest.planes.filteredCorrectionM = scratch.filteredCorrectionM;
+        dirBuildRequest.planes.filteredCorrectionC = scratch.filteredCorrectionC;
+        dirBuildRequest.planes.filterTemp = scratch.filterTemp;
+        dirBuildRequest.planes.filterTempM = scratch.filterTempM;
+        dirBuildRequest.planes.filterTempC = scratch.filterTempC;
+        dirBuildRequest.planes.logRawB = cachedLogRawB;
+        dirBuildRequest.planes.logRawG = cachedLogRawG;
+        dirBuildRequest.planes.logRawR = cachedLogRawR;
+        dirBuildRequest.cameraFilmLinear = directCameraFilmLinear;
+        dirBuildRequest.gaussian.kernel = resources.gaussian.weights;
+        dirBuildRequest.gaussian.radius = resources.gaussian.radius;
+        dirBuildRequest.gaussian.sigma = resources.gaussian.sigma;
+        const Spektrafilm::DirGaussianComponentPlan& coreComponent =
+            spatial_dir_component_or_empty(descriptor, 0);
+        dirBuildRequest.gaussian.weight = coreComponent.weight;
+        dirBuildRequest.gaussian.filterOperator =
+            cuda_dir_filter_operator(coreComponent.referenceOperator);
+        bind_spatial_dir_iir(
+            dirBuildRequest.gaussian,
+            coreComponent,
+            resources.boundaries[0]);
+        for (int tailIndex = 0; tailIndex < 3; ++tailIndex) {
+            dirBuildRequest.tails[tailIndex].kernel = resources.exponential[tailIndex].weights;
+            dirBuildRequest.tails[tailIndex].radius = resources.exponential[tailIndex].radius;
+            dirBuildRequest.tails[tailIndex].sigma = resources.exponential[tailIndex].sigma;
+            const Spektrafilm::DirGaussianComponentPlan& tailComponent =
+                spatial_dir_component_or_empty(descriptor, tailIndex + 1);
+            dirBuildRequest.tails[tailIndex].weight = tailComponent.weight;
+            dirBuildRequest.tails[tailIndex].filterOperator =
+                cuda_dir_filter_operator(tailComponent.referenceOperator);
+            bind_spatial_dir_iir(
+                dirBuildRequest.tails[tailIndex],
+                tailComponent,
+                resources.boundaries[static_cast<std::size_t>(tailIndex) + 1u]);
+        }
+        dirBuildRequest.streamOpaque = stream;
+        const cudaError_t dirError = juicer_cuda_build_direct_spatial_dir(
+            &run,
+            dirBuildRequest);
+        if (dirError != cudaSuccess) {
+            errors.fail_stage(
+                "direct_spatial_dir_launch",
+                "direct spatial DIR build failed",
+                dirError);
+        }
+        if (execution != CaptureExecution::FusedDirScanner &&
+            !directDirUsesSourceBuildCachedLogRaw) {
+            JuicerCuda::Failure stageError;
+            if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
+                    focusedWorkspace,
+                    stream,
+                    stageError)) {
+                errors.fail_submission(
+                    "direct_spatial_dir_cached_log_raw_stage",
+                    "direct spatial DIR cached log raw staging failed",
+                    stageError);
+            }
+        }
+        const auto finalScratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
+        const bool directDirRequiresCachedLogRaw =
+            directDirUsesSourceBuildCachedLogRaw ||
+            (execution != CaptureExecution::FusedDirScanner &&
+             directDirAdmittedTargetRoles.cachedLogRawPlanes == 3);
+        if (!finalScratch.filteredCorrectionY || !finalScratch.filteredCorrectionM ||
+            !finalScratch.filteredCorrectionC) {
+            errors.fail_route(
+                "MissingRequiredResource phase=3D-3 field=spatial_dir_filtered_correction");
+        }
+        if (directDirRequiresCachedLogRaw &&
+            !spatial_dir_required_cached_log_raw_present(
+                finalScratch,
+                directDirAdmittedTargetRoles.cachedLogRawPlanes)) {
+            errors.fail_route(
+                "MissingRequiredResource phase=3D-3 field=spatial_dir_cached_log_raw");
+        }
+        if (directDirRequiresCachedLogRaw && !directDirUsesSourceBuildCachedLogRaw) {
+            const cudaError_t logRawError = cameraFilmLinearActive
+                                                ? juicer_cuda_build_direct_spatial_dir_cached_log_raw_from_camera_film_linear(
+                                                      &run,
+                                                      directCameraFilmLinear,
+                                                      finalScratch.logRawB,
+                                                      finalScratch.logRawG,
+                                                      finalScratch.logRawR,
+                                                      stream)
+                                                : juicer_cuda_build_direct_spatial_dir_cached_log_raw(
+                                                      &run,
+                                                      finalScratch.logRawB,
+                                                      finalScratch.logRawG,
+                                                      finalScratch.logRawR,
+                                                      stream);
+            if (logRawError != cudaSuccess) {
+                errors.fail_stage(
+                    "direct_spatial_dir_cached_log_raw_launch",
+                    "direct spatial DIR cached log raw build failed",
+                    logRawError);
+            }
+        }
+        bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
+
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_dir_build({.source = directDirUsesSourceBuildCachedLogRaw ? static_cast<unsigned>(directDirAdmittedRoles.cachedLogRawPlanes) : 0u,
+                                                               .final = directDirRequiresCachedLogRaw ? static_cast<unsigned>(directDirAdmittedTargetRoles.cachedLogRawPlanes) : 0u});
+#endif
+        return {directDirUsesSourceBuildCachedLogRaw
+                    ? (directDirAdmittedRoles.cachedLogRawPlanes == 2 ? DirCache::SourceBg : DirCache::SourceBgr)
+                : directDirRequiresCachedLogRaw ? DirCache::StagedBgr
+                                                : DirCache::Absent};
+    }
+
+    void pack_scan_stage(
+        JuicerCuda::ScanStagePayload& scanStage,
+        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared,
+        const OutputGamutRecipe& outputGamut,
+        const Scanner::ScannerColorCorrectionDescriptor& scannerCorrection,
+        const ExecutionErrors& errors) {
+        copy_scan_density_range_payload(
+            scanStage.densityRange,
+            *prepared.scanRange);
+        scanStage.scanLutLog2PchipXYZ = prepared.scanLut->log2PchipXYZ;
+        scanStage.scanLutPchipSlopeC = prepared.scanLut->slopeC;
+        scanStage.scanLutPchipSlopeM = prepared.scanLut->slopeM;
+        scanStage.scanLutPchipSlopeY = prepared.scanLut->slopeY;
+        scanStage.scanLutPchipCellMin = prepared.scanLut->cellMin;
+        scanStage.scanLutPchipCellMax = prepared.scanLut->cellMax;
+        scanStage.scanLutRes = static_cast<int>(prepared.scanLut->res);
+        const Scanner::ColorRuntime& color = *prepared.scannerColor;
+        copy_float9(scanStage.scanColor.cat02, color.cat02);
+        copy_float9(scanStage.scanColor.xyzToRgb, color.xyzToRgb);
+        copy_float3(scanStage.scanColor.illuminantXYZ, color.illuminantXYZ);
+        pack_output_gamut_payload(
+            scanStage.scanColor,
+            prepared,
+            outputGamut,
+            errors);
+        scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
+        scanStage.scanColor.encoding.applyCctfEncoding = bool_to_i32(color.encoding.applyCctfEncoding);
+        scanStage.scanColor.encoding.inputIsOutputSpace = bool_to_i32(color.encoding.inputIsOutputSpace);
+        const auto& encoding = color.preparedEncoding;
+        scanStage.scanColor.encoding.cctf.kind = static_cast<int>(encoding.cctf_kind);
+        scanStage.scanColor.encoding.cctf.gamma = encoding.gamma;
+        scanStage.scanColor.encoding.cctf.a = encoding.a;
+        scanStage.scanColor.encoding.cctf.b = encoding.b;
+        scanStage.scanColor.encoding.cctf.c = encoding.c;
+        scanStage.scanColor.encoding.cctf.d = encoding.d;
+        scanStage.scanColor.encoding.cctf.linearCutoff = encoding.linear_cutoff;
+        copy_float9(scanStage.scanColor.encoding.dwgToOutput, encoding.dwg_to_output);
+        scanStage.correctionActive = scannerCorrection.active ? 1 : 0;
+        scanStage.correctionSlope = scannerCorrection.xyzSlope;
+        scanStage.correctionOffset = scannerCorrection.xyzOffset;
+    }
+
+    void develop_direct_capture(
+        JuicerCuda::DirectPipelineRunParams& run,
+        const JuicerCuda::CameraFilmLinearExposurePlanes& directCameraFilmLinear,
+        bool cameraFilmLinearActive,
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        const OpticalWorkspace& optical,
+        bool grainStageActive,
+        const GrainBinding& grain,
+        bool filmEffectsActive,
+        const EffectsPayloads& effects,
+        bool grainDebugActive,
+        void* stream,
+        const ExecutionErrors& errors) {
+        cudaError_t launchError = cudaSuccess;
+        const int width = run.width;
+        const int height = run.height;
+
+        launchError = cameraFilmLinearActive
+                          ? juicer_cuda_direct_focused_capture_density_from_camera_film_linear(
+                                &run,
+                                directCameraFilmLinear,
+                                optical.density.c,
+                                optical.density.m,
+                                optical.density.y,
+                                stream)
+                          : juicer_cuda_direct_focused_capture_density(
+                                &run,
+                                optical.density.c,
+                                optical.density.m,
+                                optical.density.y,
+                                stream);
+        if (launchError != cudaSuccess) {
+            errors.fail_stage(
+                "direct_capture_density_launch",
+                "direct capture-film density launch failed",
+                launchError);
+        }
+
+        if (descriptor.hash != 0) {
+            run.filmDevelop.spatialDir.logRawB = nullptr;
+            run.filmDevelop.spatialDir.logRawG = nullptr;
+            run.filmDevelop.spatialDir.logRawR = nullptr;
+        }
+        if (grainStageActive) {
+            launchError = juicer_cuda_apply_visual_grain(
+                &grain.payload,
+                &grain.kernels,
+                width,
+                height,
+                optical.density.c,
+                optical.density.m,
+                optical.density.y,
+                grain.workspace.filterTemp,
+                grain.workspace.scaleWork,
+                grain.workspace.deltaAccum,
+                grain.workspace.layerWork,
+                grain.workspace.sharedDelta,
+                stream);
+            if (launchError != cudaSuccess) {
+                errors.fail_stage(
+                    "direct_visual_grain_launch",
+                    "direct visual grain launch failed",
+                    launchError);
+            }
+        }
+        if (filmEffectsActive && !grainDebugActive) {
+            launchError = juicer_cuda_apply_film_defects(
+                &effects.film,
+                width,
+                height,
+                optical.density.c,
+                optical.density.m,
+                optical.density.y,
+                optical.scanner.filmDustTransmittance,
+                stream);
+            if (launchError != cudaSuccess) {
+                errors.fail_stage(
+                    "direct_film_effects_launch",
+                    "direct film defects launch failed",
+                    launchError);
+            }
+        }
+    }
+
+    void scan_direct_output(
+        JuicerCuda::DirectPipelineRunParams& run,
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
+        const RouteDescriptors& descriptors,
+        const OpticalWorkspace& optical,
+        const EffectsPayloads& effects,
+        const ScannerInput& scannerInput,
+        bool grainDebugActive,
+        const std::optional<DirBuildResult>& dirBuild,
+        bool gateOutputActive,
+        const JuicerCuda::ExecutionFrame& frame,
+        const ExecutionErrors& errors) {
+        cudaError_t launchError = cudaSuccess;
+
+        if (!std::holds_alternative<MonolithicScan>(scannerInput)) {
+            JuicerProcess::Root::PreparedCudaFrame::ScannerPostEffectsPreparedView
+                post{};
+            if (descriptors.post.active() && !grainDebugActive) {
+                post = preparedFrame.scanner_post_effects_resources(
+                    focusedWorkspace,
+                    descriptors.post.hash);
+                if (!post.active ||
+                    post.scratch.rgbR != optical.rgb.r ||
+                    post.scratch.rgbG != optical.rgb.g ||
+                    post.scratch.rgbB != optical.rgb.b) {
+                    errors.fail_route(
+                        "MissingRequiredResource phase=8C field=scanner_post_effects");
+                }
+            }
+            if (!grainDebugActive) {
+                if (std::holds_alternative<FusedDirScanner>(scannerInput)) {
+                    launchError = juicer_cuda_direct_focused_scan_linear_rgb(
+                        &run,
+                        optical.rgb.r,
+                        optical.rgb.g,
+                        optical.rgb.b,
+                        frame.stream);
+                } else {
+                    const auto& density = std::get<MaterializedDensity>(scannerInput).planes;
+                    launchError = juicer_cuda_direct_focused_scan_linear_density_rgb(
+                        &run,
+                        density.c,
+                        density.m,
+                        density.y,
+                        optical.rgb.r,
+                        optical.rgb.g,
+                        optical.rgb.b,
+                        optical.scanner.filmDustTransmittance,
+                        frame.stream);
+                }
+                if (launchError != cudaSuccess) {
+                    errors.fail_stage(
+                        "direct_scanner_linear_launch",
+                        "direct scanner-linear launch failed",
+                        launchError);
+                }
+            }
+            if (dirBuild && dirBuild->uses_source_cache()) {
+                run.filmDevelop.spatialDir.logRawB = nullptr;
+                run.filmDevelop.spatialDir.logRawG = nullptr;
+                run.filmDevelop.spatialDir.logRawR = nullptr;
+            }
+            launchError = juicer_cuda_direct_focused_scanner_post_output(
+                &run,
+                optical.rgb.r,
+                optical.rgb.g,
+                optical.rgb.b,
+                post.active ? post.scratch.tmp : nullptr,
+                post.active ? post.lensBlur.weights : nullptr,
+                post.active ? post.lensBlur.radius : 0,
+                post.active ? post.unsharp.weights : nullptr,
+                post.active ? post.unsharp.radius : 0,
+                post.active ? descriptors.post.unsharpAmount : 0.0f,
+                gateOutputActive && !grainDebugActive
+                    ? &effects.film
+                    : nullptr,
+                gateOutputActive && !grainDebugActive
+                    ? &effects.weave
+                    : nullptr,
+                gateOutputActive && !grainDebugActive &&
+                        descriptors.effects->gateTransmittanceActive
+                    ? optical.scanner.gateTransmittance
+                    : nullptr,
+                gateOutputActive && !grainDebugActive &&
+                        descriptors.effects->gateTransmittanceActive
+                    ? optical.scanner.gateTransmittanceWidth
+                    : 0,
+                gateOutputActive && !grainDebugActive &&
+                        descriptors.effects->gateTransmittanceActive
+                    ? optical.scanner.gateTransmittanceHeight
+                    : 0,
+                frame.stream);
+            // Focused RGB can alias the spatial-DIR filtered planes, so scanner output is their final consumer.
+            if (launchError == cudaSuccess && descriptors.dir.hash != 0) {
+                clear_spatial_dir_final_develop_payload_bindings(run.filmDevelop);
+            }
+        } else {
+            launchError = juicer_cuda_negative_direct_pipeline(&run, frame.stream);
+        }
+        if (launchError != cudaSuccess) {
+            errors.fail_stage("direct_negative_pipeline_launch", "direct negative pipeline launch failed", launchError);
+        }
+        if (descriptors.dir.hash != 0 && std::holds_alternative<MonolithicScan>(scannerInput)) {
+            run.filmDevelop.spatialDir.logRawB = nullptr;
+            run.filmDevelop.spatialDir.logRawG = nullptr;
+            run.filmDevelop.spatialDir.logRawR = nullptr;
+        }
+    }
+
+    void build_direct_gate_mask(const EffectsPayloads& effects, const OpticalWorkspace& optical, void* stream, const ExecutionErrors& errors) {
+        cudaError_t launchError = cudaSuccess;
+
+        launchError = juicer_cuda_build_gate_defect_transmittance_focused(
+            &effects.film,
+            optical.scanner.gateTransmittance,
+            optical.scanner.gateTransmittanceWidth,
+            optical.scanner.gateTransmittanceHeight,
+            stream);
+        if (launchError != cudaSuccess) {
+            errors.fail_stage(
+                "direct_gate_transmittance_launch",
+                "direct gate defect mask launch failed",
+                launchError);
+        }
+    }
+
+    void bind_print_diffusion(
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerCuda::ExecutionFrame& frame,
+        DiffusionStageBinding& printCameraDiffusion,
+        DiffusionStageBinding& printEnlargerDiffusion,
+        const ExecutionErrors& errors) {
+        const auto diffusionPrepared = preparedFrame.diffusion_resources();
+
+        if (frame.diffusionFrameSet) {
+            if (!diffusionPrepared.active ||
+                diffusionPrepared.executionDescriptor.frameSetHash !=
+                    frame.diffusionFrameSet->hash ||
+                diffusionPrepared.executionDescriptor.contextEpoch !=
+                    preparedFrame.admitted_context_epoch() ||
+                diffusionPrepared.spectrumCount == 0 ||
+                diffusionPrepared.spectrumCount !=
+                    diffusionPrepared.executionDescriptor.uniqueSpectrumCount) {
+                errors.fail_route(
+                    "MissingRequiredResource component=diffusion field=prepared_view");
+            }
+            if (frame.diffusionFrameSet->camera) {
+                std::string cameraBindingDiagnostic;
+                if (!bind_diffusion_stage(
+                        *frame.diffusionFrameSet,
+                        Spektrafilm::DiffusionLinearStage::CameraFilmLinear,
+                        diffusionPrepared,
+                        printCameraDiffusion,
+                        cameraBindingDiagnostic)) {
+                    errors.fail_route(
+                        cameraBindingDiagnostic.c_str());
+                }
+            }
+            if (frame.diffusionFrameSet->enlarger) {
+                std::string enlargerBindingDiagnostic;
+                if (!bind_diffusion_stage(
+                        *frame.diffusionFrameSet,
+                        Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear,
+                        diffusionPrepared,
+                        printEnlargerDiffusion,
+                        enlargerBindingDiagnostic)) {
+                    errors.fail_route(
+                        enlargerBindingDiagnostic.c_str());
+                }
+            }
+        } else if (diffusionPrepared.active) {
+            errors.fail_route(
+                "ResourceDescriptorMismatch component=diffusion field=disabled_prepared_view");
+        }
+    }
+
+
+    JuicerCuda::CameraFilmLinearExposurePlanes expose_print_camera(
+        JuicerCuda::PrintPipelineRunParams& run,
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerProcess::Root::PreparationIdentity& identity,
+        const JuicerCuda::ExecutionFrame& frame,
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        bool cameraDiffusionActive,
+        DiffusionStageBinding& printCameraDiffusion,
+        JuicerCuda::ScatterHalationPreparedView& printHalation,
+        const ExecutionErrors& errors) {
+        const auto& deviceContextKey = snapshot.deviceContextKey;
+        const bool halationExecutable = printHalation.descriptor != nullptr;
+        JuicerCuda::CameraFilmLinearExposurePlanes printCameraFilmLinear{};
+        if (cameraDiffusionActive) {
+            if (!printCameraDiffusion.active) {
+                errors.fail_route(
+                    "MissingRequiredResource component=diffusion field=camera_stage_binding");
+            }
+            preparedFrame.mark_diffusion_work_enqueued();
+            printCameraFilmLinear = camera_film_linear_planes(
+                printCameraDiffusion.stagePlanes);
+            const cudaError_t exposureError =
+                juicer_cuda_print_camera_film_linear_exposure(
+                    &run,
+                    printCameraFilmLinear,
+                    frame.stream);
+            if (exposureError != cudaSuccess) {
+                errors.fail_stage(
+                    "print_camera_film_linear_exposure_launch",
+                    "print camera film-linear exposure launch failed",
+                    exposureError);
+            }
+            JuicerCuda::Diffusion::StageLaunchRequest diffusionLaunch{};
+            diffusionLaunch.layout = printCameraDiffusion.layout;
+            diffusionLaunch.geometry = printCameraDiffusion.geometry;
+            diffusionLaunch.fullFrame = printCameraDiffusion.fullFrame;
+            diffusionLaunch.spectra = printCameraDiffusion.spectra;
+            diffusionLaunch.execution = printCameraDiffusion.execution;
+            diffusionLaunch.planes = &printCameraDiffusion.stagePlanes;
+            diffusionLaunch.stream = reinterpret_cast<cudaStream_t>(
+                frame.stream);
+            const JuicerCuda::Diffusion::LaunchResult diffusionResult =
+                JuicerCuda::Diffusion::launch_stage(diffusionLaunch);
+            if (!diffusionResult.ok()) {
+                if (diffusionResult.api ==
+                    JuicerCuda::Diffusion::FailureApi::Cuda) {
+                    errors.fail_stage(
+                        diffusionResult.stage,
+                        "print camera diffusion launch failed",
+                        static_cast<cudaError_t>(diffusionResult.code));
+                }
+                const std::string diagnostic =
+                    diffusion_launch_failure_diagnostic(diffusionResult);
+                errors.fail_policy(errors.restrictionPrefix, {JuicerCuda::Diffusion::launch_failure_status(diffusionResult), diagnostic});
+            }
+            // launch_stage rotates semantic plane pointers after each channel.
+            printCameraFilmLinear = camera_film_linear_planes(
+                printCameraDiffusion.stagePlanes);
+        } else if (halationExecutable) {
+            printCameraFilmLinear = printHalation.currentCarrier;
+            const cudaError_t exposureError =
+                juicer_cuda_print_camera_film_linear_exposure(
+                    &run,
+                    printCameraFilmLinear,
+                    frame.stream);
+            if (exposureError != cudaSuccess) {
+                errors.fail_stage(
+                    "print_camera_film_linear_exposure_launch",
+                    "print camera film-linear exposure launch failed",
+                    exposureError);
+            }
+        }
+        if (halationExecutable) {
+            JuicerCuda::Failure halationDiagnostic;
+            // bind_camera_diffusion_carrier_immediately
+            if (!launch_scatter_halation_for_route(
+                    printHalation,
+                    cameraDiffusionActive
+                        ? printCameraFilmLinear
+                        : JuicerCuda::CameraFilmLinearExposurePlanes{},
+                    cameraDiffusionActive && printCameraDiffusion.active,
+                    Spektrafilm::scan_route_label(
+                        identity.scanRoute),
+                    identity.filmProfileKey,
+                    identity.filmProfileAssetVersionToken,
+                    deviceContextKey,
+                    preparedFrame.admitted_context_epoch(),
+                    reinterpret_cast<cudaStream_t>(frame.stream),
+                    halationDiagnostic)) {
+                errors.fail_submission(
+                    "print_scatter_halation_launch",
+                    "print scatter-halation launch failed",
+                    halationDiagnostic);
+            }
+            // post_halation_camera_film_linear
+        }
+
+        return printCameraFilmLinear;
+    }
+
+    OpticalWorkspace bind_print_optical_workspace(
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
+        void* stream,
+        const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& descriptor,
+        const ExecutionErrors& errors) {
+        OpticalWorkspace optical;
+
+        JuicerCuda::Failure focusedWorkspaceError;
+        if (!preparedFrame.stage_optical_workspace(
+                focusedWorkspace,
+                stream,
+                focusedWorkspaceError)) {
+            errors.fail_submission(
+                "print_focused_workspace_stage",
+                "print focused workspace staging failed",
+                focusedWorkspaceError);
+        }
+        optical.density =
+            preparedFrame.capture_film_density_workspace(
+                focusedWorkspace);
+        optical.rgb = preparedFrame.focused_rgb_workspace(
+            focusedWorkspace);
+        if (!optical.density.active || !optical.rgb.active ||
+            optical.density.c != optical.rgb.r ||
+            optical.density.m != optical.rgb.g ||
+            optical.density.y != optical.rgb.b) {
+            errors.fail_route(
+                "MissingRequiredResource phase=grain_route field=focused_triplet");
+        }
+        optical.scanner =
+            preparedFrame.scanner_workspace(focusedWorkspace);
+        if (!optical.scanner.active ||
+            (descriptor.has_value() && descriptor->filmDust.slotProbability > 0.0f &&
+             !optical.scanner.filmDustTransmittance) ||
+            (descriptor.has_value() &&
+             descriptor->gateTransmittanceActive &&
+             !optical.scanner.hasGateTransmittance)) {
+            errors.fail_route(
+                "MissingRequiredResource phase=effects_route field=effects_workspace");
+        }
+
+        return optical;
+    }
+
+    DirBuildResult build_print_dir(
+        JuicerCuda::PrintPipelineRunParams& run,
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        const JuicerCuda::CameraFilmLinearExposurePlanes& printCameraFilmLinear,
+        bool cameraFilmLinearActive,
+        void* stream,
+        CaptureExecution execution,
+        const ExecutionErrors& errors) {
+        bool printDirUsesSourceBuildCachedLogRaw = false;
+
+        const auto scratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
+        const auto resources =
+            preparedFrame.spatial_dir_resources(focusedWorkspace, descriptor.hash);
+        if (!scratch.active || !resources.active) {
+            errors.fail_route(
+                "MissingRequiredResource phase=4C field=prepared_spatial_dir");
+        }
+        const Spektrafilm::DirScratchPlaneRoles& printDirAdmittedRoles =
+            scratch.planeRoles;
+        const Spektrafilm::DirScratchPlaneRoles& printDirAdmittedTargetRoles =
+            scratch.targetPlaneRoles;
+        printDirUsesSourceBuildCachedLogRaw =
+            spatial_dir_source_build_retains_cached_log_raw(
+                printDirAdmittedRoles,
+                printDirAdmittedTargetRoles);
+        if (printDirUsesSourceBuildCachedLogRaw &&
+            !spatial_dir_required_cached_log_raw_present(
+                scratch,
+                printDirAdmittedRoles.cachedLogRawPlanes)) {
+            errors.fail_route(
+                "MissingRequiredResource phase=4C field=spatial_dir_source_build_cached_log_raw");
+        }
+        float* cachedLogRawB =
+            printDirUsesSourceBuildCachedLogRaw ? scratch.logRawB : nullptr;
+        float* cachedLogRawG =
+            printDirUsesSourceBuildCachedLogRaw ? scratch.logRawG : nullptr;
+        float* cachedLogRawR =
+            printDirUsesSourceBuildCachedLogRaw ? scratch.logRawR : nullptr;
+        JuicerCuda::SpatialDirBuildRequest dirBuildRequest{};
+        dirBuildRequest.planes.rawCorrectionY = scratch.rawCorrectionY;
+        dirBuildRequest.planes.rawCorrectionM = scratch.rawCorrectionM;
+        dirBuildRequest.planes.rawCorrectionC = scratch.rawCorrectionC;
+        dirBuildRequest.planes.filteredCorrectionY = scratch.filteredCorrectionY;
+        dirBuildRequest.planes.filteredCorrectionM = scratch.filteredCorrectionM;
+        dirBuildRequest.planes.filteredCorrectionC = scratch.filteredCorrectionC;
+        dirBuildRequest.planes.filterTemp = scratch.filterTemp;
+        dirBuildRequest.planes.filterTempM = scratch.filterTempM;
+        dirBuildRequest.planes.filterTempC = scratch.filterTempC;
+        dirBuildRequest.planes.logRawB = cachedLogRawB;
+        dirBuildRequest.planes.logRawG = cachedLogRawG;
+        dirBuildRequest.planes.logRawR = cachedLogRawR;
+        dirBuildRequest.cameraFilmLinear = printCameraFilmLinear;
+        dirBuildRequest.gaussian.kernel = resources.gaussian.weights;
+        dirBuildRequest.gaussian.radius = resources.gaussian.radius;
+        dirBuildRequest.gaussian.sigma = resources.gaussian.sigma;
+        const Spektrafilm::DirGaussianComponentPlan& coreComponent =
+            spatial_dir_component_or_empty(descriptor, 0);
+        dirBuildRequest.gaussian.weight = coreComponent.weight;
+        dirBuildRequest.gaussian.filterOperator =
+            cuda_dir_filter_operator(coreComponent.referenceOperator);
+        bind_spatial_dir_iir(
+            dirBuildRequest.gaussian,
+            coreComponent,
+            resources.boundaries[0]);
+        for (int tailIndex = 0; tailIndex < 3; ++tailIndex) {
+            dirBuildRequest.tails[tailIndex].kernel = resources.exponential[tailIndex].weights;
+            dirBuildRequest.tails[tailIndex].radius = resources.exponential[tailIndex].radius;
+            dirBuildRequest.tails[tailIndex].sigma = resources.exponential[tailIndex].sigma;
+            const Spektrafilm::DirGaussianComponentPlan& tailComponent =
+                spatial_dir_component_or_empty(descriptor, tailIndex + 1);
+            dirBuildRequest.tails[tailIndex].weight = tailComponent.weight;
+            dirBuildRequest.tails[tailIndex].filterOperator =
+                cuda_dir_filter_operator(tailComponent.referenceOperator);
+            bind_spatial_dir_iir(
+                dirBuildRequest.tails[tailIndex],
+                tailComponent,
+                resources.boundaries[static_cast<std::size_t>(tailIndex) + 1u]);
+        }
+        dirBuildRequest.streamOpaque = stream;
+        const cudaError_t dirError = juicer_cuda_build_print_spatial_dir(
+            &run,
+            dirBuildRequest);
+        if (dirError != cudaSuccess) {
+            errors.fail_stage(
+                "print_spatial_dir_launch",
+                "print spatial DIR build failed",
+                dirError);
+        }
+        if (execution != CaptureExecution::FusedDirScanner &&
+            !printDirUsesSourceBuildCachedLogRaw) {
+            JuicerCuda::Failure stageError;
+            if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
+                    focusedWorkspace,
+                    stream,
+                    stageError)) {
+                errors.fail_submission(
+                    "print_spatial_dir_cached_log_raw_stage",
+                    "print spatial DIR cached log raw staging failed",
+                    stageError);
+            }
+        }
+        const auto finalScratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
+        const bool printDirRequiresCachedLogRaw =
+            printDirUsesSourceBuildCachedLogRaw ||
+            (execution != CaptureExecution::FusedDirScanner &&
+             printDirAdmittedTargetRoles.cachedLogRawPlanes == 3);
+        if (!finalScratch.filteredCorrectionY || !finalScratch.filteredCorrectionM ||
+            !finalScratch.filteredCorrectionC) {
+            errors.fail_route(
+                "MissingRequiredResource phase=4C field=spatial_dir_filtered_correction");
+        }
+        if (printDirRequiresCachedLogRaw &&
+            !spatial_dir_required_cached_log_raw_present(
+                finalScratch,
+                printDirAdmittedTargetRoles.cachedLogRawPlanes)) {
+            errors.fail_route(
+                "MissingRequiredResource phase=4C field=spatial_dir_cached_log_raw");
+        }
+        if (printDirRequiresCachedLogRaw && !printDirUsesSourceBuildCachedLogRaw) {
+            const cudaError_t logRawError = cameraFilmLinearActive
+                                                ? juicer_cuda_build_print_spatial_dir_cached_log_raw_from_camera_film_linear(
+                                                      &run,
+                                                      printCameraFilmLinear,
+                                                      finalScratch.logRawB,
+                                                      finalScratch.logRawG,
+                                                      finalScratch.logRawR,
+                                                      stream)
+                                                : juicer_cuda_build_print_spatial_dir_cached_log_raw(
+                                                      &run,
+                                                      finalScratch.logRawB,
+                                                      finalScratch.logRawG,
+                                                      finalScratch.logRawR,
+                                                      stream);
+            if (logRawError != cudaSuccess) {
+                errors.fail_stage(
+                    "print_spatial_dir_cached_log_raw_launch",
+                    "print spatial DIR cached log raw build failed",
+                    logRawError);
+            }
+        }
+        bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
+
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_dir_build({.source = printDirUsesSourceBuildCachedLogRaw ? static_cast<unsigned>(printDirAdmittedRoles.cachedLogRawPlanes) : 0u,
+                                                               .final = printDirRequiresCachedLogRaw ? static_cast<unsigned>(printDirAdmittedTargetRoles.cachedLogRawPlanes) : 0u});
+#endif
+        return {printDirUsesSourceBuildCachedLogRaw
+                    ? (printDirAdmittedRoles.cachedLogRawPlanes == 2 ? DirCache::SourceBg : DirCache::SourceBgr)
+                : printDirRequiresCachedLogRaw ? DirCache::StagedBgr
+                                               : DirCache::Absent};
+    }
+
+    void develop_print_capture(
+        JuicerCuda::PrintPipelineRunParams& run,
+        const JuicerCuda::CameraFilmLinearExposurePlanes& printCameraFilmLinear,
+        bool cameraFilmLinearActive,
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        const OpticalWorkspace& optical,
+        bool grainStageActive,
+        const GrainBinding& grain,
+        bool filmEffectsActive,
+        const EffectsPayloads& effects,
+        bool grainDebugActive,
+        void* stream,
+        const ExecutionErrors& errors) {
+        cudaError_t launchError = cudaSuccess;
+        const int width = run.width;
+        const int height = run.height;
+
+        launchError = cameraFilmLinearActive
+                          ? juicer_cuda_print_focused_capture_density_from_camera_film_linear(
+                                &run,
+                                printCameraFilmLinear,
+                                optical.density.c,
+                                optical.density.m,
+                                optical.density.y,
+                                stream)
+                          : juicer_cuda_print_focused_capture_density(
+                                &run,
+                                optical.density.c,
+                                optical.density.m,
+                                optical.density.y,
+                                stream);
+        if (launchError != cudaSuccess) {
+            errors.fail_stage(
+                "print_capture_density_launch",
+                "print capture-film density launch failed",
+                launchError);
+        }
+
+        if (descriptor.hash != 0) {
+            run.filmDevelop.spatialDir.logRawB = nullptr;
+            run.filmDevelop.spatialDir.logRawG = nullptr;
+            run.filmDevelop.spatialDir.logRawR = nullptr;
+        }
+        if (grainStageActive) {
+            launchError = juicer_cuda_apply_visual_grain(
+                &grain.payload,
+                &grain.kernels,
+                width,
+                height,
+                optical.density.c,
+                optical.density.m,
+                optical.density.y,
+                grain.workspace.filterTemp,
+                grain.workspace.scaleWork,
+                grain.workspace.deltaAccum,
+                grain.workspace.layerWork,
+                grain.workspace.sharedDelta,
+                stream);
+            if (launchError != cudaSuccess) {
+                errors.fail_stage(
+                    "print_visual_grain_launch",
+                    "print visual grain launch failed",
+                    launchError);
+            }
+        }
+        if (filmEffectsActive && !grainDebugActive) {
+            launchError = juicer_cuda_apply_film_defects(
+                &effects.film,
+                width,
+                height,
+                optical.density.c,
+                optical.density.m,
+                optical.density.y,
+                optical.scanner.filmDustTransmittance,
+                stream);
+            if (launchError != cudaSuccess) {
+                errors.fail_stage(
+                    "print_film_effects_launch",
+                    "print film defects launch failed",
+                    launchError);
+            }
+        }
+    }
+
+    void develop_print_medium(
+        JuicerCuda::PrintPipelineRunParams& run,
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        DiffusionStageBinding& printEnlargerDiffusion,
+        bool enlargerDiffusionActive,
+        const OpticalWorkspace& optical,
+        void* stream,
+        const ExecutionErrors& errors) {
+        cudaError_t launchError = cudaSuccess;
+
+        if (enlargerDiffusionActive) {
+            if (!printEnlargerDiffusion.active) {
+                errors.fail_route(
+                    "MissingRequiredResource component=diffusion field=enlarger_stage_binding");
+            }
+            preparedFrame.mark_diffusion_work_enqueued();
+            JuicerCuda::EnlargerPrintLinearExposurePlanes
+                printEnlargerLinear = enlarger_print_linear_planes(
+                    printEnlargerDiffusion.stagePlanes);
+            launchError =
+                juicer_cuda_print_focused_enlarger_linear_exposure(
+                    &run,
+                    optical.density.c,
+                    optical.density.m,
+                    optical.density.y,
+                    printEnlargerLinear,
+                    optical.scanner.filmDustTransmittance,
+                    stream);
+            if (launchError != cudaSuccess) {
+                errors.fail_stage(
+                    "print_enlarger_linear_exposure_launch",
+                    "print enlarger-linear exposure launch failed",
+                    launchError);
+            }
+
+            JuicerCuda::Diffusion::StageLaunchRequest
+                diffusionLaunch{};
+            diffusionLaunch.layout = printEnlargerDiffusion.layout;
+            diffusionLaunch.geometry =
+                printEnlargerDiffusion.geometry;
+            diffusionLaunch.fullFrame =
+                printEnlargerDiffusion.fullFrame;
+            diffusionLaunch.spectra = printEnlargerDiffusion.spectra;
+            diffusionLaunch.execution =
+                printEnlargerDiffusion.execution;
+            diffusionLaunch.planes =
+                &printEnlargerDiffusion.stagePlanes;
+            diffusionLaunch.stream =
+                reinterpret_cast<cudaStream_t>(stream);
+            const JuicerCuda::Diffusion::LaunchResult
+                diffusionResult =
+                    JuicerCuda::Diffusion::launch_stage(
+                        diffusionLaunch);
+            if (!diffusionResult.ok()) {
+                if (diffusionResult.api ==
+                    JuicerCuda::Diffusion::FailureApi::Cuda) {
+                    errors.fail_stage(
+                        diffusionResult.stage,
+                        "print enlarger diffusion launch failed",
+                        static_cast<cudaError_t>(
+                            diffusionResult.code));
+                }
+                const std::string diagnostic =
+                    diffusion_launch_failure_diagnostic(
+                        diffusionResult);
+                errors.fail_policy(errors.restrictionPrefix, {JuicerCuda::Diffusion::launch_failure_status(diffusionResult), diagnostic});
+            }
+            // launch_stage rotates semantic plane pointers after each channel.
+            printEnlargerLinear = enlarger_print_linear_planes(
+                printEnlargerDiffusion.stagePlanes);
+            launchError =
+                juicer_cuda_print_focused_develop_from_enlarger_linear(
+                    &run,
+                    printEnlargerLinear,
+                    optical.density.c,
+                    optical.density.m,
+                    optical.density.y,
+                    stream);
+            if (launchError != cudaSuccess) {
+                errors.fail_stage(
+                    "print_develop_from_enlarger_linear_launch",
+                    "print development from enlarger-linear exposure failed",
+                    launchError);
+            }
+        } else {
+            launchError =
+                juicer_cuda_print_focused_continue_from_capture_density(
+                    &run,
+                    optical.density.c,
+                    optical.density.m,
+                    optical.density.y,
+                    optical.scanner.filmDustTransmittance,
+                    stream);
+            if (launchError != cudaSuccess) {
+                errors.fail_stage(
+                    "print_continuation_from_capture_density_launch",
+                    "print continuation from capture density launch failed",
+                    launchError);
+            }
+        }
+    }
+
+    void scan_print_output(
+        JuicerCuda::PrintPipelineRunParams& run,
+        JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& focusedWorkspace,
+        const RouteDescriptors& descriptors,
+        const OpticalWorkspace& optical,
+        const EffectsPayloads& effects,
+        const ScannerInput& scannerInput,
+        bool grainDebugActive,
+        const std::optional<DirBuildResult>& dirBuild,
+        bool gateOutputActive,
+        const JuicerCuda::ExecutionFrame& frame,
+        std::uint64_t recipeHash,
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        const ExecutionErrors& errors) {
+        cudaError_t launchError = cudaSuccess;
+        const auto& srcBounds = frame.sourceBounds;
+        if (!std::holds_alternative<MonolithicScan>(scannerInput)) {
+            JuicerProcess::Root::PreparedCudaFrame::ScannerPostEffectsPreparedView
+                post{};
+            if (descriptors.post.active() && !grainDebugActive) {
+                post = preparedFrame.scanner_post_effects_resources(
+                    focusedWorkspace,
+                    descriptors.post.hash);
+                if (!post.active ||
+                    post.scratch.rgbR != optical.rgb.r ||
+                    post.scratch.rgbG != optical.rgb.g ||
+                    post.scratch.rgbB != optical.rgb.b) {
+                    errors.fail_route(
+                        "MissingRequiredResource phase=8C field=scanner_post_effects");
+                }
+            }
+            const std::uint64_t glareSeed = Hash::hash_uint64_values(
+                {recipeHash,
+                 snapshot.frameToken.value,
+                 static_cast<std::uint64_t>(srcBounds.x1),
+                 static_cast<std::uint64_t>(srcBounds.y1)});
+            if (!grainDebugActive) {
+                if (std::holds_alternative<FusedDirScanner>(scannerInput)) {
+                    launchError = juicer_cuda_print_focused_scan_linear_rgb(
+                        &run,
+                        optical.rgb.r,
+                        optical.rgb.g,
+                        optical.rgb.b,
+                        post.scratch.tmp,
+                        post.scratch.blurred,
+                        srcBounds.x1,
+                        srcBounds.y1,
+                        glareSeed,
+                        descriptors.post.glarePercent,
+                        descriptors.post.glareRoughness,
+                        post.glare.weights,
+                        post.glare.radius,
+                        frame.stream);
+                } else {
+                    const auto& density = std::get<MaterializedDensity>(scannerInput).planes;
+                    launchError = juicer_cuda_print_focused_scan_linear_density_rgb(
+                        &run,
+                        density.c,
+                        density.m,
+                        density.y,
+                        optical.rgb.r,
+                        optical.rgb.g,
+                        optical.rgb.b,
+                        post.active ? post.scratch.tmp : nullptr,
+                        post.active ? post.scratch.blurred : nullptr,
+                        srcBounds.x1,
+                        srcBounds.y1,
+                        glareSeed,
+                        post.active ? descriptors.post.glarePercent : 0.0f,
+                        post.active ? descriptors.post.glareRoughness : 0.0f,
+                        post.active ? post.glare.weights : nullptr,
+                        post.active ? post.glare.radius : 0,
+                        frame.stream);
+                }
+                if (launchError != cudaSuccess) {
+                    errors.fail_stage(
+                        "print_scanner_linear_launch",
+                        "print scanner-linear launch failed",
+                        launchError);
+                }
+            }
+            if (dirBuild && dirBuild->uses_source_cache()) {
+                run.filmDevelop.spatialDir.logRawB = nullptr;
+                run.filmDevelop.spatialDir.logRawG = nullptr;
+                run.filmDevelop.spatialDir.logRawR = nullptr;
+            }
+            launchError = juicer_cuda_print_focused_scanner_post_output(
+                &run,
+                optical.rgb.r,
+                optical.rgb.g,
+                optical.rgb.b,
+                post.active ? post.scratch.tmp : nullptr,
+                post.active ? post.lensBlur.weights : nullptr,
+                post.active ? post.lensBlur.radius : 0,
+                post.active ? post.unsharp.weights : nullptr,
+                post.active ? post.unsharp.radius : 0,
+                post.active ? descriptors.post.unsharpAmount : 0.0f,
+                gateOutputActive && !grainDebugActive
+                    ? &effects.film
+                    : nullptr,
+                gateOutputActive && !grainDebugActive
+                    ? &effects.weave
+                    : nullptr,
+                gateOutputActive && !grainDebugActive &&
+                        descriptors.effects->gateTransmittanceActive
+                    ? optical.scanner.gateTransmittance
+                    : nullptr,
+                gateOutputActive && !grainDebugActive &&
+                        descriptors.effects->gateTransmittanceActive
+                    ? optical.scanner.gateTransmittanceWidth
+                    : 0,
+                gateOutputActive && !grainDebugActive &&
+                        descriptors.effects->gateTransmittanceActive
+                    ? optical.scanner.gateTransmittanceHeight
+                    : 0,
+                frame.stream);
+            // Focused RGB can alias the spatial-DIR filtered planes, so scanner output is their final consumer.
+            if (launchError == cudaSuccess && descriptors.dir.hash != 0) {
+                clear_spatial_dir_final_develop_payload_bindings(run.filmDevelop);
+            }
+        } else {
+            launchError = juicer_cuda_print_focused_pipeline(&run, frame.stream);
+        }
+        if (launchError != cudaSuccess) {
+            errors.fail_stage(
+                "print_pipeline_launch",
+                "focused print pipeline launch failed",
+                launchError);
+        }
+        if (descriptors.dir.hash != 0 && std::holds_alternative<MonolithicScan>(scannerInput)) {
+            run.filmDevelop.spatialDir.logRawB = nullptr;
+            run.filmDevelop.spatialDir.logRawG = nullptr;
+            run.filmDevelop.spatialDir.logRawR = nullptr;
+        }
+    }
+
+    void build_print_gate_mask(const EffectsPayloads& effects, const OpticalWorkspace& optical, void* stream, const ExecutionErrors& errors) {
+        cudaError_t launchError = cudaSuccess;
+
+        launchError = juicer_cuda_build_gate_defect_transmittance_focused(
+            &effects.film,
+            optical.scanner.gateTransmittance,
+            optical.scanner.gateTransmittanceWidth,
+            optical.scanner.gateTransmittanceHeight,
+            stream);
+        if (launchError != cudaSuccess) {
+            errors.fail_stage(
+                "print_gate_transmittance_launch",
+                "print gate defect mask launch failed",
+                launchError);
+        }
+    }
+
+} // namespace
+
+namespace JuicerCuda {
+
+    static void check_abort(FjAbortCallback callback) {
+        if (!callback.query) {
+            return;
+        }
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+        RenderTest::before_abort_query();
+#endif
+        switch (callback.query(callback.user)) {
+            case FJ_ABORT_CONTINUE:
+                return;
+            case FJ_ABORT_REQUESTED:
+                throw ExecutionFailure{{{FJ_STATUS_CANCELLED, FJ_API_NONE, 0}, "CUDA render cancelled"}};
+            default:
+                throw ExecutionFailure{{{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "invalid CUDA abort query result"}};
+        }
+    }
+
+    static void execute_direct_schedule(JuicerProcess::Root& root, const ScheduleInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
+        const auto& frame = input.frame;
+        const auto& requestedSnapshot = input.snapshot;
+        const auto& deviceContextKey = requestedSnapshot.deviceContextKey;
+        const auto& win = frame.renderWindow;
+        const int width = win.x2 - win.x1;
+        const int height = win.y2 - win.y1;
+        const auto& autoExposureDescriptor = frame.autoExposureDescriptor;
+        const bool cameraAutoEnabled = input.cameraAutoEnabled;
+        const auto cameraMeteringMethod = input.meteringMethod;
+        const auto& descriptors = input.descriptors;
+        const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA direct route blocked"};
+        JuicerProcess::Root::AutoExposureBufferRequest autoExposureBufferRequest{};
+        autoExposureBufferRequest.enabled =
+            cameraAutoEnabled &&
+            (frame.components == 3 || frame.components == 4) &&
+            autoExposureDescriptor.previewWidth > 0 &&
+            autoExposureDescriptor.previewHeight > 0;
+        autoExposureBufferRequest.descriptor = autoExposureDescriptor;
+        const bool grainStageActive =
+            descriptors.grain.has_value();
+        const bool grainDebugActive =
+            grainStageActive && input.grain.coefficients.debug_view != 0;
+        const bool filmEffectsActive =
+            descriptors.effects.has_value() &&
+            descriptors.effects->filmActive;
+        const bool gateOutputActive =
+            descriptors.effects.has_value() &&
+            descriptors.effects->gateOutputActive;
+        const bool cameraDiffusionActive =
+            frame.diffusionFrameSet.has_value() &&
+            frame.diffusionFrameSet->camera.has_value();
+        const bool captureDensityConsumerActive =
+            grainStageActive || filmEffectsActive;
+        const auto scannerCorrection = input.correction;
+        JuicerCuda::Failure directPrepareError;
+        check_abort(abortCallback);
+        JuicerProcess::Root::PreparedCudaFrame preparedFrame =
+            root.prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, directPrepareError, input.hostPreparation);
+        if (!preparedFrame.active()) {
+            errors.fail_submission(
+                preparedFrame.failure_stage_tag(),
+                preparedFrame.failure_prefix(),
+                directPrepareError);
+        }
+
+        check_abort(abortCallback);
+
+        const auto& snapshot = preparedFrame.admitted_snapshot();
+
+        JuicerCuda::ScatterHalationPreparedView directHalation =
+            preparedFrame.scatter_halation_resources();
+        const bool halationExecutable = directHalation.descriptor != nullptr;
+        const bool cameraFilmLinearActive =
+            cameraDiffusionActive || halationExecutable;
+        DiffusionStageBinding directCameraDiffusion{};
+        bind_direct_diffusion(preparedFrame, frame, directCameraDiffusion, errors);
+        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView prepared =
+            preparedFrame.focused_resources();
+        if (!prepared.active ||
+            prepared.densityBoundsHash != input.scannerBoundsHash ||
+            prepared.scannerDescriptorHash != descriptors.scanner.hash ||
+            prepared.selectedMethod != input.film.method) {
+            errors.fail_route("ResourceDescriptorMismatch phase=3C field=direct_prepared_view");
+        }
+
+        JuicerCuda::DirectPipelineRunParams run{};
+        run.src = frame.source;
+        run.srcRowBytes = static_cast<std::size_t>(frame.sourceRowBytes);
+        run.dst = frame.destination;
+        run.dstRowBytes = static_cast<std::size_t>(frame.destinationRowBytes);
+        run.width = width;
+        run.height = height;
+        run.nComponents = frame.components;
+
+        JuicerCuda::FilmPayloadPack directFilmPayloads{};
+        std::string packDiagnostic;
+        if (!JuicerCuda::pack_film_payloads(
+                input.film,
+                prepared.film,
+                nullptr,
+                input.filmRouteCorrectionScale,
+                directFilmPayloads,
+                packDiagnostic)) {
+            errors.fail_route(packDiagnostic.c_str());
+        }
+
+        if (cameraAutoEnabled) {
+            meter_camera_exposure(
+                preparedFrame,
+                directFilmPayloads,
+                frame,
+                cameraMeteringMethod,
+                "MissingRequiredResource phase=3C field=auto_exposure_buffers",
+                errors);
+        }
+
+        run.filmRaw = directFilmPayloads.filmRaw;
+        run.filmExpose = directFilmPayloads.filmExposure;
+        run.filmDevelop = directFilmPayloads.filmDevelop;
+        auto directCameraFilmLinear = expose_direct_camera(
+            run,
+            preparedFrame,
+            input.identity,
+            frame,
+            snapshot,
+            cameraDiffusionActive,
+            directCameraDiffusion,
+            directHalation,
+            errors);
+        const CaptureExecution execution = (!cameraFilmLinearActive && descriptors.dir.hash != 0 && descriptors.post.active() && !captureDensityConsumerActive)
+                                               ? CaptureExecution::FusedDirScanner
+                                           : (cameraFilmLinearActive || descriptors.post.active() || captureDensityConsumerActive || gateOutputActive)
+                                               ? CaptureExecution::MaterializedDensity
+                                               : CaptureExecution::Monolithic;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_handoff(
+            execution == CaptureExecution::FusedDirScanner       ? JuicerCuda::ExecutorTest::WorkspaceHandoff::FusedDirScanner
+            : execution == CaptureExecution::MaterializedDensity ? JuicerCuda::ExecutorTest::WorkspaceHandoff::MaterializedDensity
+                                                                 : JuicerCuda::ExecutorTest::WorkspaceHandoff::Monolithic);
+#endif
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
+            preparedFrame.workspace_lease();
+        if (focusedWorkspace.active()) {
+            JuicerCuda::Failure transitionError;
+            if (!preparedFrame.checkpoint_large_scratch_transition(
+                    focusedWorkspace,
+                    frame.stream,
+                    "direct_large_scratch_transition",
+                    transitionError)) {
+                errors.fail_submission(
+                    "direct_large_scratch_transition",
+                    "direct large scratch transition checkpoint failed",
+                    transitionError);
+            }
+        }
+        std::optional<DirBuildResult> dirBuild;
+        if (descriptors.dir.hash != 0) {
+            JuicerCuda::Failure spatialError;
+            if (!preparedFrame.prepare_spatial_dir_resources(
+                    descriptors.dir,
+                    focusedWorkspace,
+                    frame.stream,
+                    spatialError,
+                    input.hostPreparation)) {
+                errors.fail_submission(
+                    "direct_spatial_dir_prepare",
+                    "direct spatial DIR preparation failed",
+                    spatialError);
+            }
+        }
+        const EffectsPayloads effects = pack_effects_payloads(preparedFrame, descriptors.effects, errors);
+        OpticalWorkspace optical;
+        if (execution != CaptureExecution::Monolithic) {
+            optical = bind_direct_optical_workspace(preparedFrame, focusedWorkspace, frame.stream, descriptors.effects, errors);
+        }
+        GrainBinding grain;
+        if (grainStageActive) {
+            bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
+        }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_bindings(preparedFrame, focusedWorkspace);
+#endif
+        if (descriptors.dir.hash != 0) {
+            dirBuild = build_direct_dir(
+                run,
+                preparedFrame,
+                focusedWorkspace,
+                descriptors.dir,
+                directCameraFilmLinear,
+                cameraFilmLinearActive,
+                frame.stream,
+                execution,
+                errors);
+        }
+        pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
+        JuicerCuda::Failure scanError;
+        auto scanResult = JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (!JuicerCuda::ExecutorTest::inject_scan_error(scanError, scanResult))
+#endif
+        {
+            scanResult = preparedFrame.prepare_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError);
+        }
+        if (scanResult != JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready) {
+            errors.fail_submission("direct_scan_error_stage", "direct scan error stage failed", scanError, scanResult == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::DeferredDirFailure);
+        }
+        const ScannerInput scannerInput = [&]() -> ScannerInput {
+            if (execution == CaptureExecution::Monolithic) {
+                return MonolithicScan{};
+            }
+            if (execution == CaptureExecution::FusedDirScanner) {
+                return FusedDirScanner{};
+            }
+            develop_direct_capture(
+                run,
+                directCameraFilmLinear,
+                cameraFilmLinearActive,
+                descriptors.dir,
+                optical,
+                grainStageActive,
+                grain,
+                filmEffectsActive,
+                effects,
+                grainDebugActive,
+                frame.stream,
+                errors);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            JuicerCuda::ExecutorTest::observe_workspace_capture();
+#endif
+            return MaterializedDensity{optical.density};
+        }();
+        if (cameraDiffusionActive) {
+            JuicerCuda::Failure diffusionReleaseError;
+            if (!preparedFrame.release_diffusion_resources_after_use(
+                    frame.stream,
+                    diffusionReleaseError)) {
+                errors.fail_submission(
+                    "direct_diffusion_release_after_use",
+                    "direct diffusion resource release failed",
+                    diffusionReleaseError);
+            }
+            directCameraDiffusion = {};
+            directCameraFilmLinear = {};
+        }
+
+        if (gateOutputActive && !grainDebugActive && descriptors.effects->gateTransmittanceActive) {
+            build_direct_gate_mask(effects, optical, frame.stream, errors);
+        }
+        scan_direct_output(
+            run,
+            preparedFrame,
+            focusedWorkspace,
+            descriptors,
+            optical,
+            effects,
+            scannerInput,
+            grainDebugActive,
+            dirBuild,
+            gateOutputActive,
+            frame,
+            errors);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_scanner();
+#endif
+        if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError)) {
+            const std::string diagnostic = halationExecutable
+                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError.diagnostic)
+                                               : scanError.diagnostic;
+            errors.fail_submission("direct_scan_error_finalize", "direct scan error finalize failed", {scanError.status, diagnostic});
+        }
+        check_abort(abortCallback);
+        JuicerCuda::Failure useError;
+        if (!preparedFrame.record_use(frame.stream, useError)) {
+            errors.fail_submission("prepared_frame_use_fence", "CUDA prepared-frame use fencing failed", useError);
+        }
+        JuicerCuda::Failure finishError;
+        if (!preparedFrame.finish(frame.stream, finishError)) {
+            const std::string diagnostic = halationExecutable
+                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "prepared_frame_finish", finishError.diagnostic)
+                                               : finishError.diagnostic;
+            errors.fail_submission("direct_prepared_frame_finish", "direct prepared frame finish failed", {finishError.status, diagnostic});
+        }
+        return;
+    }
+
+    static void execute_print_schedule(JuicerProcess::Root& root, const ScheduleInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
+        const auto& frame = input.frame;
+        const auto& requestedSnapshot = input.snapshot;
+        const auto& deviceContextKey = requestedSnapshot.deviceContextKey;
+        const auto& win = frame.renderWindow;
+        const int width = win.x2 - win.x1;
+        const int height = win.y2 - win.y1;
+        const auto& autoExposureDescriptor = frame.autoExposureDescriptor;
+        const bool cameraAutoEnabled = input.cameraAutoEnabled;
+        const auto cameraMeteringMethod = input.meteringMethod;
+        const auto& descriptors = input.descriptors;
+        const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA print route blocked"};
+        JuicerProcess::Root::AutoExposureBufferRequest autoExposureBufferRequest{};
+        autoExposureBufferRequest.enabled =
+            cameraAutoEnabled &&
+            (frame.components == 3 || frame.components == 4) &&
+            autoExposureDescriptor.previewWidth > 0 &&
+            autoExposureDescriptor.previewHeight > 0;
+        autoExposureBufferRequest.descriptor = autoExposureDescriptor;
+        const bool grainStageActive =
+            descriptors.grain.has_value();
+        const bool grainDebugActive =
+            grainStageActive && input.grain.coefficients.debug_view != 0;
+        const bool filmEffectsActive =
+            descriptors.effects.has_value() &&
+            descriptors.effects->filmActive;
+        const bool gateOutputActive =
+            descriptors.effects.has_value() &&
+            descriptors.effects->gateOutputActive;
+        const bool cameraDiffusionActive =
+            frame.diffusionFrameSet.has_value() &&
+            frame.diffusionFrameSet->camera.has_value();
+        const bool enlargerDiffusionActive =
+            frame.diffusionFrameSet.has_value() &&
+            frame.diffusionFrameSet->enlarger.has_value();
+        const bool routeDiffusionActive =
+            cameraDiffusionActive || enlargerDiffusionActive;
+        const bool captureDensityConsumerActive =
+            grainStageActive || filmEffectsActive;
+        JuicerCuda::Failure prepareError;
+        check_abort(abortCallback);
+        JuicerProcess::Root::PreparedCudaFrame preparedFrame =
+            root.prepare_cuda_frame(deviceContextKey, requestedSnapshot, input.preparation, autoExposureBufferRequest, frame.stream, prepareError, input.hostPreparation);
+        if (!preparedFrame.active()) {
+            errors.fail_submission(
+                preparedFrame.failure_stage_tag(),
+                preparedFrame.failure_prefix(),
+                prepareError);
+        }
+
+        check_abort(abortCallback);
+
+        const auto& snapshot = preparedFrame.admitted_snapshot();
+
+        JuicerCuda::ScatterHalationPreparedView printHalation =
+            preparedFrame.scatter_halation_resources();
+        const bool halationExecutable = printHalation.descriptor != nullptr;
+        const bool cameraFilmLinearActive =
+            cameraDiffusionActive || halationExecutable;
+        DiffusionStageBinding printCameraDiffusion{};
+        DiffusionStageBinding printEnlargerDiffusion{};
+        bind_print_diffusion(preparedFrame, frame, printCameraDiffusion, printEnlargerDiffusion, errors);
+        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView prepared =
+            preparedFrame.focused_resources();
+        const JuicerProcess::Root::PreparedCudaFrame::PrintPreparedView preparedPrint =
+            preparedFrame.print_resources();
+        if (!prepared.active || !preparedPrint.active ||
+            prepared.densityBoundsHash != input.scannerBoundsHash ||
+            prepared.scannerDescriptorHash != descriptors.scanner.hash ||
+            prepared.selectedMethod != input.film.method) {
+            errors.fail_route(
+                "ResourceDescriptorMismatch phase=4C field=print_prepared_view");
+        }
+        const auto scannerCorrection = input.correction;
+        JuicerCuda::PrintPipelineRunParams run{};
+        run.src = frame.source;
+        run.srcRowBytes = static_cast<std::size_t>(frame.sourceRowBytes);
+        run.dst = frame.destination;
+        run.dstRowBytes = static_cast<std::size_t>(frame.destinationRowBytes);
+        run.width = width;
+        run.height = height;
+        run.nComponents = frame.components;
+
+        JuicerCuda::FilmPayloadPack filmPayloads{};
+        std::string payloadDiagnostic;
+        if (!JuicerCuda::pack_film_payloads(
+                input.film,
+                prepared.film,
+                nullptr,
+                input.filmRouteCorrectionScale,
+                filmPayloads,
+                payloadDiagnostic)) {
+            errors.fail_route(payloadDiagnostic.c_str());
+        }
+
+        if (cameraAutoEnabled) {
+            meter_camera_exposure(
+                preparedFrame,
+                filmPayloads,
+                frame,
+                cameraMeteringMethod,
+                "MissingRequiredResource phase=4C field=auto_exposure_buffers",
+                errors);
+        }
+
+        JuicerCuda::PrintCudaPayloadPack printPayloads{};
+        if (!JuicerCuda::pack_print_cuda_payloads(
+                input.printExposure,
+                input.preflashExposure,
+                preparedPrint,
+                scannerCorrection.exposureScale,
+                printPayloads,
+                payloadDiagnostic)) {
+            errors.fail_route(payloadDiagnostic.c_str());
+        }
+        run.filmRaw = filmPayloads.filmRaw;
+        run.filmExpose = filmPayloads.filmExposure;
+        run.filmDevelop = filmPayloads.filmDevelop;
+        run.printExpose = printPayloads.expose;
+        run.printDevelop = printPayloads.develop;
+        auto printCameraFilmLinear = expose_print_camera(
+            run,
+            preparedFrame,
+            input.identity,
+            frame,
+            snapshot,
+            cameraDiffusionActive,
+            printCameraDiffusion,
+            printHalation,
+            errors);
+        const CaptureExecution execution = (!routeDiffusionActive && !halationExecutable && descriptors.dir.hash != 0 && descriptors.post.active() && !captureDensityConsumerActive)
+                                               ? CaptureExecution::FusedDirScanner
+                                           : (routeDiffusionActive || halationExecutable || descriptors.post.active() || captureDensityConsumerActive || gateOutputActive)
+                                               ? CaptureExecution::MaterializedDensity
+                                               : CaptureExecution::Monolithic;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_handoff(
+            execution == CaptureExecution::FusedDirScanner       ? JuicerCuda::ExecutorTest::WorkspaceHandoff::FusedDirScanner
+            : execution == CaptureExecution::MaterializedDensity ? JuicerCuda::ExecutorTest::WorkspaceHandoff::MaterializedDensity
+                                                                 : JuicerCuda::ExecutorTest::WorkspaceHandoff::Monolithic);
+#endif
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
+            preparedFrame.workspace_lease();
+        if (focusedWorkspace.active()) {
+            JuicerCuda::Failure transitionError;
+            if (!preparedFrame.checkpoint_large_scratch_transition(
+                    focusedWorkspace,
+                    frame.stream,
+                    "print_large_scratch_transition",
+                    transitionError)) {
+                errors.fail_submission(
+                    "print_large_scratch_transition",
+                    "print large scratch transition checkpoint failed",
+                    transitionError);
+            }
+        }
+        std::optional<DirBuildResult> dirBuild;
+        if (descriptors.dir.hash != 0) {
+            JuicerCuda::Failure spatialError;
+            if (!preparedFrame.prepare_spatial_dir_resources(
+                    descriptors.dir,
+                    focusedWorkspace,
+                    frame.stream,
+                    spatialError,
+                    input.hostPreparation)) {
+                errors.fail_submission(
+                    "print_spatial_dir_prepare",
+                    "print spatial DIR preparation failed",
+                    spatialError);
+            }
+        }
+        const EffectsPayloads effects = pack_effects_payloads(preparedFrame, descriptors.effects, errors);
+        OpticalWorkspace optical;
+        if (execution != CaptureExecution::Monolithic) {
+            optical = bind_print_optical_workspace(preparedFrame, focusedWorkspace, frame.stream, descriptors.effects, errors);
+        }
+        GrainBinding grain;
+        if (grainStageActive) {
+            bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
+        }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_bindings(preparedFrame, focusedWorkspace);
+#endif
+        if (descriptors.dir.hash != 0) {
+            dirBuild = build_print_dir(
+                run,
+                preparedFrame,
+                focusedWorkspace,
+                descriptors.dir,
+                printCameraFilmLinear,
+                cameraFilmLinearActive,
+                frame.stream,
+                execution,
+                errors);
+        }
+        pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
+        JuicerCuda::Failure scanError;
+        auto scanResult = JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (!JuicerCuda::ExecutorTest::inject_scan_error(scanError, scanResult))
+#endif
+        {
+            scanResult = preparedFrame.prepare_scan_error_stage(
+                run.scanStage.scanErrorFlag,
+                frame.stream,
+                scanError);
+        }
+        if (scanResult != JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready) {
+            errors.fail_submission(
+                "print_scan_error_stage",
+                "print scan error stage failed",
+                scanError,
+                scanResult == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::DeferredDirFailure);
+        }
+        const ScannerInput scannerInput = [&]() -> ScannerInput {
+            if (execution == CaptureExecution::Monolithic) {
+                return MonolithicScan{};
+            }
+            if (execution == CaptureExecution::FusedDirScanner) {
+                return FusedDirScanner{};
+            }
+            develop_print_capture(
+                run,
+                printCameraFilmLinear,
+                cameraFilmLinearActive,
+                descriptors.dir,
+                optical,
+                grainStageActive,
+                grain,
+                filmEffectsActive,
+                effects,
+                grainDebugActive,
+                frame.stream,
+                errors);
+            if (!grainDebugActive) {
+                develop_print_medium(run, preparedFrame, printEnlargerDiffusion, enlargerDiffusionActive, optical, frame.stream, errors);
+            }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            JuicerCuda::ExecutorTest::observe_workspace_capture();
+#endif
+            return MaterializedDensity{optical.density};
+        }();
+        if (routeDiffusionActive) {
+            JuicerCuda::Failure diffusionReleaseError;
+            if (!preparedFrame.release_diffusion_resources_after_use(
+                    frame.stream,
+                    diffusionReleaseError)) {
+                errors.fail_submission(
+                    "print_diffusion_release_after_use",
+                    "print diffusion resource release failed",
+                    diffusionReleaseError);
+            }
+            printCameraDiffusion = {};
+            printEnlargerDiffusion = {};
+            printCameraFilmLinear = {};
+        }
+
+        if (gateOutputActive && !grainDebugActive && descriptors.effects->gateTransmittanceActive) {
+            build_print_gate_mask(effects, optical, frame.stream, errors);
+        }
+        scan_print_output(
+            run,
+            preparedFrame,
+            focusedWorkspace,
+            descriptors,
+            optical,
+            effects,
+            scannerInput,
+            grainDebugActive,
+            dirBuild,
+            gateOutputActive,
+            frame,
+            input.recipeHash,
+            snapshot,
+            errors);
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        JuicerCuda::ExecutorTest::observe_workspace_scanner();
+#endif
+        if (!preparedFrame.finalize_scan_error_stage(
+                run.scanStage.scanErrorFlag,
+                frame.stream,
+                scanError)) {
+            const std::string diagnostic = halationExecutable
+                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError.diagnostic)
+                                               : scanError.diagnostic;
+            errors.fail_submission(
+                "print_scan_error_finalize",
+                "print scan error finalize failed",
+                {scanError.status, diagnostic});
+        }
+        check_abort(abortCallback);
+        JuicerCuda::Failure useError;
+        if (!preparedFrame.record_use(frame.stream, useError)) {
+            errors.fail_submission("prepared_frame_use_fence", "CUDA prepared-frame use fencing failed", useError);
+        }
+        JuicerCuda::Failure finishError;
+        if (!preparedFrame.finish(frame.stream, finishError)) {
+            const std::string diagnostic = halationExecutable
+                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, preparedFrame.admitted_context_epoch(), "prepared_frame_finish", finishError.diagnostic)
+                                               : finishError.diagnostic;
+            errors.fail_submission(
+                "print_prepared_frame_finish",
+                "print prepared frame finish failed",
+                {finishError.status, diagnostic});
+        }
+        return;
+    }
+    void execute_prepared(JuicerProcess::Root& root, const PreparedExecutionInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
+        const bool print = Spektrafilm::scan_route_is_print(input.descriptors.route);
+        const ExecutionErrors errors{recovery, input.frame.traceInfo, print ? "CUDA print route blocked" : "CUDA direct route blocked"};
+        if (!print && input.frame.autoExposureDescriptor.method == Spektrafilm::AutoExposureMethod::Median) {
+            errors.fail_route(Spektrafilm::kQuantizedMedianNotAcceptedForPhase3);
+        }
+        if (!(input.frame.components == 3 || input.frame.components == 4)) {
+            errors.fail_route(print ? "UnsupportedPrintComponentCountForPhase4C" : "UnsupportedDirectComponentCountForPhase3C");
+        }
+        if (!visual_grain_full_frame_preflight(input.descriptors.grain, input.frame.renderWindow, input.frame.sourceBounds, input.frame.fullFrameExtent) ||
+            !film_juicer_effects_full_frame_preflight(input.descriptors.effects, input.frame.renderWindow, input.frame.sourceBounds, input.frame.fullFrameExtent)) {
+            errors.fail_route("ResourceDescriptorMismatch component=prepared_frame field=full_frame_domain");
+        }
+        const RouteDescriptors descriptors{input.descriptors.scanner, input.descriptors.post, input.descriptors.spatialDir, input.descriptors.grain, input.descriptors.effects};
+        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainPayload, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.recipeHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, input.preparation, input.descriptors.correction, input.printExposure, input.preflashExposure, input.hostPreparation};
+        if (Spektrafilm::scan_route_is_print(input.descriptors.route)) {
+            execute_print_schedule(root, schedule, recovery, abortCallback);
+        } else {
+            execute_direct_schedule(root, schedule, recovery, abortCallback);
+        }
+    }
+
+} // namespace JuicerCuda

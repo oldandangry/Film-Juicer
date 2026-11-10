@@ -1,0 +1,50 @@
+{
+  "classification": "Unchanged native source/digest and qualified sensitivity; approved Rust density tokens from independent native replay; synthetic native identity with analytic endpoints/half responses",
+  "baseline": "594c78becbef6ff4df6294f1cd917c7269900830",
+  "spektrafilm": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "bundle_digest": "deaddd9e79004008ff0bce40ba48de616d23456cf026c554bb9b111224744773",
+  "capture_before_token_and_digest_implementation": true,
+  "sources": {
+    "out/validation/s3b-density/reference/linux-debug.json": "0208992a2008f4a44c03b1dab824a0e7a1d3594b6e1bd55207c0737ac18b001b",
+    "out/validation/s3b-density/reference/windows-debug.json": "04cbd0c01dd0af54f135226f2abd822e624bdf5f59d1d21bf6e92e460222256f",
+    "out/validation/s3b-density/candidate/linux-debug-native-rehash.json": "a5c571b8770814466d60ab4b769a497e62111a94e8c194887f88ac65a1ec828d",
+    "out/validation/s3b-density/candidate/linux-release-native-rehash.json": "a5c571b8770814466d60ab4b769a497e62111a94e8c194887f88ac65a1ec828d",
+    "out/validation/s3b-density/candidate/windows-debug-native-rehash.json": "afaf2633d5804318622acc3d5dbf1e9bd347761142dcf409eb66094103de1e9f",
+    "out/validation/s3b-density/candidate/windows-release-native-rehash.json": "08db8c27758a617961ed84eaaed2befd48e45d474d7c768918f6487d21d2d37e",
+    "out/validation/linux-debug/trusted-resource-decoding/C4/independent-input.json": "a325cf939db463cb0fc8cc6d4a70b308683de8b61d666e42e787c648e21251e6",
+    "out/validation/linux-debug/trusted-resource-decoding/C4/independent-output.json": "9aaa34ef6d6fd66589c9a6480d475122f0317300007e7ea93ff72a39f9729034",
+    "src/ProfileAssets.cpp": "12a580ddb4535994c76e96ece85ac939c8af08e30cfc077f2f99b3f823d1459f",
+    "src/ProfileAssets.h": "83bbecfcabefcfa4735413c1ee2df072e37b4554172a9be6a47115661f8ac807",
+    "src/Hash.h": "3ee49d25b57ded21f8af59e86a276fde4dcd44a80e0b1180add3bc8e35baed01",
+    ".juicer-local/validation/trusted-resource-decoding/C4/reference.cpp": "f33010237ad1180daafc24f0804a17e0726c381969a8a499009cf4394fb3323d",
+    ".juicer-local/validation/trusted-resource-decoding/C4/freeze.py": "bd0973698fc367d1063e94ee11de1102db0f6d57fc77de4ab0ca03b2085545e7"
+  },
+  "commands": [
+    [
+      "g++-13",
+      "-std=c++20",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-Isrc",
+      "-Ithird_party",
+      ".juicer-local/validation/trusted-resource-decoding/C4/reference.cpp",
+      "-Wl,--gc-sections",
+      "-o",
+      "/mnt/c/Dev/Codex/out/validation/linux-debug/trusted-resource-decoding/C4/reference"
+    ]
+  ],
+  "payload": {
+    "path": "completed.json",
+    "sha256": "7e6ee935232603141d0437d586cfbe6746a39974c8f5b2f0ecdf77b6a696f6a3",
+    "bytes": 927837
+  },
+  "counts": {
+    "bundled": 28,
+    "synthetic": 40
+  },
+  "numeric_limits": "Exact bits; sensitivity selects its native platform; approved density payload unchanged."
+}

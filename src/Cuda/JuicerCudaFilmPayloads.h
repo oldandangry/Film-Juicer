@@ -6,9 +6,16 @@
 
 #include "Cuda/JuicerCudaPayloads.h"
 #include "FilmEffectsFrameDescriptors.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
+#include "juicer_cuda_frame_values.h"
 
 namespace JuicerCuda {
+
+    struct VisualGrainPayloadInput {
+        FjGrainCoefficients coefficients{};
+        std::uint64_t recipeHash = 0;
+        std::uint64_t densityLayersHash = 0;
+    };
 
     struct FilmPreparedView {
         DeviceCurveView finalSensB{};
@@ -42,11 +49,31 @@ namespace JuicerCuda {
         std::uint64_t densityBoundsHash = 0;
     };
 
+    // Invocation-local resolved coefficients. Density tables remain in the resource input.
+    struct FilmPayloadInput {
+        int inputColorSpace = 0;
+        bool inputCctfDecoding = false;
+        Spektrafilm::RgbToRawMethod method = Spektrafilm::RgbToRawMethod::Hanatos2025;
+        float manualExposureEv = 0;
+        float mallettGreenMidgrayScale = 1;
+        std::uint64_t sensitivityHash = 0;
+        std::uint64_t densityCurvesHash = 0;
+        std::size_t densitySampleCount = 0;
+        std::array<float, 3> gammaRgb{};
+        DirNonlinearMode dirMode = DirNonlinearMode::Inactive;
+        std::array<std::array<float, 3>, 3> dirMatrixRgb{};
+        std::array<float, 3> densityMaxRgb{};
+        std::array<float, 3> densityRefRgb{};
+        std::array<float, 3> donorKRgb{};
+        std::array<float, 3> receiverCRefRgb{};
+        std::array<float, 3> receiverKrRgb{};
+        std::uint64_t dirAxesHash = 0;
+        std::uint64_t dirHash = 0;
+        std::uint64_t densityBoundsHash = 0;
+    };
+
     bool pack_film_payloads(
-        const FilmRawRecipe& filmRaw,
-        const FilmDevelopRecipe& filmDevelop,
-        const DirCouplersRecipe& dirCouplers,
-        const DensityBoundsRecipe& densityBounds,
+        const FilmPayloadInput& input,
         const FilmPreparedView& prepared,
         const float* autoExposureScaleDevice,
         float routeCorrectionScale,
@@ -94,7 +121,7 @@ namespace JuicerCuda {
     };
 
     bool pack_visual_grain_payload(
-        const Spektrafilm::VisualGrainRecipe& recipe,
+        const VisualGrainPayloadInput& input,
         const PreparedVisualGrainView& prepared,
         GrainPayload& outGrain,
         GrainKernelPayload& outKernels,

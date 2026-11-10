@@ -4,7 +4,10 @@
 #include <cstdint>
 #include <string>
 
-#include "RenderRecipe.h"
+#include "RenderValues.h"
+
+struct FjGrainFrameMath;
+struct FjGrainCoefficients;
 
 namespace Spektrafilm {
 
@@ -71,21 +74,12 @@ namespace Spektrafilm {
         std::uint64_t hash = 0;
     };
 
-    struct VisualGrainFrameDescriptorInput {
-        const VisualGrainRecipe* recipe = nullptr;
-        const FilmDevelopRecipe* filmDevelop = nullptr;
-        ProfilePolarity capturePolarity = ProfilePolarity::Unsupported;
-        VisualGrainFrameExtent renderExtent{};
-        VisualGrainFrameExtent fullFrameExtent{};
-        float pixelSizeUm = 0.0f;
-        double frameTime = 0.0;
-        double frameRate = 0.0;
-        std::uint64_t sessionSeed = 0;
-        std::uint64_t clipToken = 0;
-    };
+    VisualGrainScratchShape visual_grain_scratch_shape(const FjGrainCoefficients& coefficients) noexcept;
 
-    bool build_visual_grain_frame_descriptor(
-        const VisualGrainFrameDescriptorInput& input,
+    bool compose_visual_grain_frame_descriptor(
+        const FjGrainCoefficients& coefficients,
+        ProfilePolarity capturePolarity,
+        const FjGrainFrameMath& math,
         VisualGrainFrameDescriptor& out,
         std::string& diagnostic);
 
@@ -143,25 +137,12 @@ namespace Spektrafilm {
         std::uint64_t hash = 0;
     };
 
-    struct FilmJuicerEffectsFrameDescriptorInput final {
-        const FilmJuicerEffectsRecipe* recipe = nullptr;
-        FilmJuicerEffectsFrameExtent renderExtent{};
-        FilmJuicerEffectsFrameExtent fullFrameExtent{};
-        float pixelSizeUm = 0.0f;
-        double frameTime = 0.0;
-        double frameRate = 0.0;
-        std::uint64_t sessionSeed = 0;
-        std::uint64_t clipToken = 0;
-        FilmJuicerEffectsGeometry geometry{};
-        float filmFormatLongEdgeMm = 0.0f;
-    };
-
-    std::uint64_t hash_film_juicer_effects_descriptor(
-        const FilmJuicerEffectsFrameDescriptor& descriptor);
-
-    bool build_film_juicer_effects_frame_descriptor(
-        const FilmJuicerEffectsFrameDescriptorInput& input,
-        FilmJuicerEffectsFrameDescriptor& out,
-        std::string& diagnostic);
 
 } // namespace Spektrafilm
+
+struct FjEffectsFrameMath;
+struct FjDust;
+struct FjScratch;
+namespace JuicerEffects {
+    bool compose_frame_descriptor(const FjEffectsFrameMath&, const FjDust&, const FjScratch&, const FjDust&, const FjScratch&, Spektrafilm::FilmJuicerEffectsFrameDescriptor&, std::string&);
+}

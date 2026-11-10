@@ -1,4 +1,7 @@
+#include "../route/route_fixture.h"
 #include "integration_test.h"
+
+#include "../ffi/case_results.h"
 
 #include <algorithm>
 #include <array>
@@ -24,13 +27,16 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include "Cuda/JuicerCudaFailure.h"
+
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "ProcessRoot.h"
-#include "ProfileAssets.h"
+#include "RenderValues.h"
 #include "Scanner.h"
 #include "ScatterHalation.h"
+#include "spatial_optics_fixture.h"
 #include "nlohmann/json.hpp"
 
 extern "C" cudaError_t
@@ -322,7 +328,8 @@ namespace {
 
     struct ResolvedRow {
         ScatterHalationControls controls{};
-        Profiles::ProfileDigest profile{};
+        std::array<float, 3> firstSigmaUm{};
+        std::array<float, 3> primaryAmount{};
         ScatterHalationOpticsRecipe recipe{};
         ScatterHalationFrameDescriptor descriptor{};
         float pixelSizeUm = 0.0f;
@@ -350,20 +357,20 @@ namespace {
         }
         const auto& profile = input.at("profile");
         for (std::size_t channel = 0; channel < 3; ++channel) {
-            row.profile.halationFirstSigmaUm[channel] = parse_float(
+            row.firstSigmaUm[channel] = parse_float(
                 profile.at("halationFirstSigmaUmFloat32Bits").at(channel));
-            row.profile.halationPrimaryAmount[channel] = parse_float(
+            row.primaryAmount[channel] = parse_float(
                 profile.at("halationPrimaryAmountFloat32Bits").at(channel));
         }
-        if (!Spektrafilm::resolve_scatter_halation_recipe(
-                row.controls, row.profile, row.recipe, diagnostic)) {
+        if (!JuicerTestSupport::prepare_scatter_halation(
+                row.controls, row.firstSigmaUm, row.primaryAmount, row.recipe, diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
         row.pixelSizeUm = parse_float(input.at("pixelSizeUmFloat32Bits"));
         row.width = input.at("fullFrameWidth").get<int>();
         row.height = input.at("fullFrameHeight").get<int>();
         std::optional<ScatterHalationFrameDescriptor> descriptor;
-        if (!Spektrafilm::build_scatter_halation_frame_descriptor(
+        if (!JuicerTestSupport::prepare_halation_frame(
                 row.recipe, row.pixelSizeUm, descriptor, diagnostic) ||
             !descriptor) {
             throw std::runtime_error(
@@ -376,15 +383,16 @@ namespace {
     template <typename T>
     std::vector<T> visual_to_storage(
         const std::vector<T>& visual,
-        int width,
-        int height) {
+        ScatterHalationValidation::ImageExtent extent) {
         std::vector<T> storage(visual.size());
-        for (int visualY = 0; visualY < height; ++visualY) {
-            const int storageY = height - 1 - visualY;
+        for (int visualY = 0; visualY < extent.height; ++visualY) {
+            const int storageY = extent.height - 1 - visualY;
             std::copy_n(
-                visual.begin() + static_cast<std::size_t>(visualY) * width,
-                width,
-                storage.begin() + static_cast<std::size_t>(storageY) * width);
+                visual.begin() +
+                    static_cast<std::size_t>(visualY) * extent.width,
+                extent.width,
+                storage.begin() +
+                    static_cast<std::size_t>(storageY) * extent.width);
         }
         return storage;
     }
@@ -392,9 +400,8 @@ namespace {
     template <typename T>
     std::vector<T> storage_to_visual(
         const std::vector<T>& storage,
-        int width,
-        int height) {
-        return visual_to_storage(storage, width, height);
+        ScatterHalationValidation::ImageExtent extent) {
+        return visual_to_storage(storage, extent);
     }
 
     void require_cuda(cudaError_t status, std::string_view operation) {
@@ -470,7 +477,7 @@ namespace {
         float* const accumulation = temporary + planeElements;
         for (std::size_t channel = 0; channel < source.size(); ++channel) {
             const std::vector<float> storage =
-                visual_to_storage(source[channel], row.width, row.height);
+                visual_to_storage(source[channel], {row.width, row.height});
             std::vector<float> carrier(carrierElements, std::bit_cast<float>(kPaddingBits));
             for (int y = 0; y < row.height; ++y) {
                 std::copy_n(storage.data() + static_cast<std::size_t>(y) * row.width,
@@ -541,7 +548,7 @@ namespace {
                         cudaMemcpyDeviceToHost),
                     "cudaMemcpy downstream");
                 (*output.downstreamLog)[channel] =
-                    storage_to_visual(storage, row.width, row.height);
+                    storage_to_visual(storage, {row.width, row.height});
             }
         } else {
             require_cuda(cudaStreamSynchronize(stream.get()), "halation synchronize");
@@ -567,7 +574,7 @@ namespace {
                 }
             }
             output.finalExposure[channel] =
-                storage_to_visual(storage, row.width, row.height);
+                storage_to_visual(storage, {row.width, row.height});
         }
         return output;
     }
@@ -751,13 +758,16 @@ namespace {
         return passed;
     }
 
-    ScatterHalationFrameDescriptor build_descriptor(
-        double spatialScale,
-        float pixelSizeUm) {
+    struct DescriptorScale {
+        double spatialScale;
+        float pixelSizeUm;
+    };
+
+    ScatterHalationFrameDescriptor build_descriptor(DescriptorScale scale) {
         ScatterHalationRawControls raw;
         raw.active = true;
         raw.scatterAmount = 1.0;
-        raw.scatterSpatialScale = spatialScale;
+        raw.scatterSpatialScale = scale.spatialScale;
         raw.halationAmount = 0.0;
         raw.halationSpatialScale = 1.0;
         ScatterHalationControls controls;
@@ -766,17 +776,16 @@ namespace {
                 raw, controls, diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
-        Profiles::ProfileDigest profile;
-        profile.halationFirstSigmaUm = {65.0f, 65.0f, 65.0f};
-        profile.halationPrimaryAmount = {0.08f, 0.02f, 0.0f};
+        const std::array<float, 3> firstSigmaUm{65.0f, 65.0f, 65.0f};
+        const std::array<float, 3> primaryAmount{0.08f, 0.02f, 0.0f};
         ScatterHalationOpticsRecipe recipe;
-        if (!Spektrafilm::resolve_scatter_halation_recipe(
-                controls, profile, recipe, diagnostic)) {
+        if (!JuicerTestSupport::prepare_scatter_halation(
+                controls, firstSigmaUm, primaryAmount, recipe, diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
         std::optional<ScatterHalationFrameDescriptor> descriptor;
-        if (!Spektrafilm::build_scatter_halation_frame_descriptor(
-                recipe, pixelSizeUm, descriptor, diagnostic) ||
+        if (!JuicerTestSupport::prepare_halation_frame(
+                recipe, scale.pixelSizeUm, descriptor, diagnostic) ||
             !descriptor) {
             throw std::runtime_error(diagnostic);
         }
@@ -786,14 +795,27 @@ namespace {
     void run_carrier_stride_rows(Results& results) {
         // Carrier layout must not alter the operator or leak poisoned padding
         // into the image, including complete and partial row batches and tiles.
-        for (const auto extent : {std::array{1, 33}, std::array{33, 1}, std::array{19, 7}, std::array{19, 8}, std::array{19, 9}, std::array{19, 15}, std::array{19, 16}, std::array{19, 17}, std::array{31, 31}, std::array{32, 32}, std::array{33, 33}, std::array{63, 65}, std::array{65, 63}, std::array{129, 67}}) {
+        constexpr std::array extents{
+            std::array{1, 33}, std::array{33, 1}, std::array{19, 7}, std::array{19, 8}, std::array{19, 9}, std::array{19, 15}, std::array{19, 16}, std::array{19, 17}, std::array{31, 31}, std::array{32, 32}, std::array{33, 33}, std::array{63, 65}, std::array{65, 63}, std::array{129, 67}};
+        std::vector<std::string> ids;
+        ids.reserve(extents.size());
+        for (const auto extent : extents) {
+            ids.push_back(std::to_string(extent[0]) + "x" +
+                          std::to_string(extent[1]));
+        }
+        constexpr std::string_view caller = "scatter_halation.carrier_strides";
+        JuicerTests::Cohort rows(std::string(caller), ids);
+        for (const auto extent : extents) {
+            const std::string caseId = std::to_string(extent[0]) + "x" +
+                                       std::to_string(extent[1]);
+            JuicerTests::CaseEvent event(caller, caseId);
             const std::string name = "operator/carrier-stride/" +
                                      std::to_string(extent[0]) + "x" + std::to_string(extent[1]);
             try {
                 ResolvedRow row;
                 row.width = extent[0];
                 row.height = extent[1];
-                row.descriptor = build_descriptor(2.0, 0.5f);
+                row.descriptor = build_descriptor({2.0, 0.5f});
                 const std::size_t elements = static_cast<std::size_t>(row.width) * row.height;
                 SemanticPlanes<float> source;
                 for (std::size_t channel = 0; channel < source.size(); ++channel) {
@@ -817,8 +839,10 @@ namespace {
                     }
                 }
                 results.record(name, passed, "bit-exact compact/padded carrier; padding intact; zero channel isolated");
+                event.complete(passed);
             } catch (const std::exception& error) {
                 results.record(name, false, error.what());
+                event.complete(false);
             }
         }
     }
@@ -828,8 +852,8 @@ namespace {
         Results& results) {
         const float below = std::nextafter(1.5f, 0.0f);
         const auto belowDescriptor = build_descriptor(
-            static_cast<double>(below), 1.0f);
-        const auto exactDescriptor = build_descriptor(1.5, 1.0f);
+            {static_cast<double>(below), 1.0f});
+        const auto exactDescriptor = build_descriptor({1.5, 1.0f});
         results.record(
             "reference/descriptor/green-core-dispatch-seam",
             belowDescriptor.channels[1].core.kind ==
@@ -838,9 +862,19 @@ namespace {
                     ScatterHalationGaussianKind::YvvReplicate,
             "pixel_size_um=1 green_core_um=2 retained_scale=nextafter(1.5,0)/1.5");
 
+        const auto& nativeRows = manifest.at("nativeDoubleAcquisitionRows");
+        std::vector<std::string> nativeIds;
+        nativeIds.reserve(nativeRows.size());
+        for (const auto& row : nativeRows)
+            nativeIds.push_back(row.at("id").get<std::string>());
+        constexpr std::string_view nativeCaller =
+            "scatter_halation.native_double_acquisition";
+        JuicerTests::Cohort nativeCohort(std::string(nativeCaller), nativeIds);
         bool nativePassed = true;
         std::ostringstream nativeDetail;
-        for (const auto& row : manifest.at("nativeDoubleAcquisitionRows")) {
+        for (const auto& row : nativeRows) {
+            const std::string id = row.at("id").get<std::string>();
+            JuicerTests::CaseEvent event(nativeCaller, id);
             const std::string rawText = row.at("rawDoubleHex").get<std::string>();
             char* end = nullptr;
             const double raw = std::strtod(rawText.c_str(), &end);
@@ -848,7 +882,7 @@ namespace {
             nativePassed = nativePassed && end && *end == '\0' &&
                            std::bit_cast<std::uint32_t>(retained) ==
                                parse_bits(row.at("retainedFloat32Bits"));
-            const auto descriptor = build_descriptor(raw, 1.0f);
+            const auto descriptor = build_descriptor({raw, 1.0f});
             const bool onto =
                 row.at("id").get<std::string>().find("onto") != std::string::npos;
             nativePassed = nativePassed &&
@@ -857,20 +891,37 @@ namespace {
                                      : ScatterHalationGaussianKind::FirReflect);
             nativeDetail << row.at("id").get<std::string>() << '='
                          << row.at("retainedFloat32Bits").get<std::string>() << ' ';
+            event.complete(end && *end == '\0' &&
+                           std::bit_cast<std::uint32_t>(retained) ==
+                               parse_bits(row.at("retainedFloat32Bits")) &&
+                           descriptor.channels[1].core.kind ==
+                               (onto ? ScatterHalationGaussianKind::YvvReplicate
+                                     : ScatterHalationGaussianKind::FirReflect));
         }
         results.record(
             "reference/descriptor/native-double-one-time-narrowing",
             nativePassed,
             nativeDetail.str());
 
+        constexpr std::array<int, 3> longEdgeRows{1920, 3840, 7680};
+        std::vector<std::string> formatIds;
+        formatIds.reserve(longEdgeRows.size());
+        for (int longEdgePixels : longEdgeRows)
+            formatIds.push_back(std::to_string(longEdgePixels));
+        constexpr std::string_view formatCaller =
+            "scatter_halation.pixel_format_descriptor";
+        JuicerTests::Cohort formatCohort(std::string(formatCaller), formatIds);
         bool formatRowsPassed = true;
         std::ostringstream formatDetail;
-        for (int longEdgePixels : {1920, 3840, 7680}) {
+        for (int longEdgePixels : longEdgeRows) {
+            const std::string id = std::to_string(longEdgePixels);
+            JuicerTests::CaseEvent event(formatCaller, id);
             const float pixelSize =
                 static_cast<float>(35000.0 / static_cast<double>(longEdgePixels));
-            const auto descriptor = build_descriptor(1.0, pixelSize);
+            const auto descriptor = build_descriptor({1.0, pixelSize});
             formatRowsPassed = formatRowsPassed && descriptor.recipeHash != 0;
             formatDetail << longEdgePixels << ':' << pixelSize << ' ';
+            event.complete(descriptor.recipeHash != 0);
         }
         results.record(
             "reference/descriptor/35mm-pixel-size-rows",
@@ -878,7 +929,7 @@ namespace {
             formatDetail.str());
 
         const auto extreme = build_descriptor(
-            2.0, std::numeric_limits<float>::denorm_min());
+            {2.0, std::numeric_limits<float>::denorm_min()});
         bool extremePassed = extreme.recipeHash != 0;
         for (const auto& channel : extreme.channels) {
             extremePassed = extremePassed &&
@@ -896,17 +947,21 @@ namespace {
 
 namespace ScatterHalationValidation {
     void run_scanner_post_effect_cuda_rows(Results& results) {
+        if (results.expect(
+                "scatter_halation.scanner_post_named_operations",
+                {"scanner-post/half-sample-reflect-border"}))
+            return;
         constexpr int kWidth = 5;
         constexpr int kHeight = 4;
         constexpr int kRadius = 2;
         constexpr float kAmount = 0.7f;
-        constexpr std::array<float, kWidth * kHeight> kSource{{0.03f, 0.11f, 0.29f, 0.47f, 0.83f, 0.07f, 0.19f, 0.31f, 0.61f, 0.97f, 0.13f, 0.23f, 0.41f, 0.73f, 1.09f, 0.17f, 0.37f, 0.59f, 0.89f, 1.31f}};
+        constexpr std::array<float, static_cast<std::size_t>(kWidth) * kHeight> kSource{{0.03f, 0.11f, 0.29f, 0.47f, 0.83f, 0.07f, 0.19f, 0.31f, 0.61f, 0.97f, 0.13f, 0.23f, 0.41f, 0.73f, 1.09f, 0.17f, 0.37f, 0.59f, 0.89f, 1.31f}};
         constexpr std::array<float, 2 * kRadius + 1> kKernel{{0.00962005683f,
                                                               0.205423697f,
                                                               0.569912492f,
                                                               0.205423697f,
                                                               0.00962005683f}};
-        constexpr std::array<float, kWidth * kHeight> kExpected{{0.008215948f, 0.08396746f, 0.27832553f, 0.4252918f, 0.86518514f, 0.048741654f, 0.18746452f, 0.27515787f, 0.6005329f, 1.0301093f, 0.11236872f, 0.2057411f, 0.37625948f, 0.71667653f, 1.1366233f, 0.14732751f, 0.38531336f, 0.6033108f, 0.90200037f, 1.4113867f}};
+        constexpr std::array<float, static_cast<std::size_t>(kWidth) * kHeight> kExpected{{0.008215948f, 0.08396746f, 0.27832553f, 0.4252918f, 0.86518514f, 0.048741654f, 0.18746452f, 0.27515787f, 0.6005329f, 1.0301093f, 0.11236872f, 0.2057411f, 0.37625948f, 0.71667653f, 1.1366233f, 0.14732751f, 0.38531336f, 0.6033108f, 0.90200037f, 1.4113867f}};
 
         try {
             constexpr std::size_t kElements = kSource.size();
@@ -939,9 +994,11 @@ namespace ScatterHalationValidation {
 
             JuicerCuda::DirectPipelineRunParams params;
             params.src = pixels.floats();
-            params.srcRowBytes = kWidth * 3 * sizeof(float);
+            params.srcRowBytes =
+                static_cast<std::size_t>(kWidth) * 3u * sizeof(float);
             params.dst = pixels.floats() + kElements * 3;
-            params.dstRowBytes = kWidth * 3 * sizeof(float);
+            params.dstRowBytes =
+                static_cast<std::size_t>(kWidth) * 3u * sizeof(float);
             params.width = kWidth;
             params.height = kHeight;
             params.nComponents = 3;
@@ -997,6 +1054,17 @@ namespace ScatterHalationValidation {
     void run_focused_cuda_reference_rows(
         const Arguments& arguments,
         Results& results) {
+        if (results.expect(
+                "scatter_halation.reference_named_operations",
+                {"reference/fixture/provenance-and-container",
+                 "reference/descriptor/green-core-dispatch-seam",
+                 "reference/descriptor/native-double-one-time-narrowing",
+                 "reference/descriptor/35mm-pixel-size-rows",
+                 "reference/descriptor/min-positive-pixel-finite-schedule",
+                 "reference/fixture/exactly-one-descriptor-input",
+                 "reference/comparison/non-finite-rejected",
+                 "reference/launcher/mechanical-binding-rejected"}))
+            return;
         try {
             const std::filesystem::path manifestPath =
                 arguments.fixtureRoot / "manifest.json";
@@ -1020,6 +1088,42 @@ namespace ScatterHalationValidation {
                     manifest.at("binary").at("sha256").get<std::string>()) {
                 throw std::runtime_error("fixture binary checksum mismatch");
             }
+            std::vector<std::string> operatorIds;
+            std::vector<std::string> downstreamIds;
+            std::vector<std::string> descriptorIds;
+            operatorIds.reserve(manifest.at("rows").size());
+            downstreamIds.reserve(manifest.at("rows").size());
+            descriptorIds.reserve(manifest.at("rows").size());
+            bool hasBackReflectionOnly = false;
+            for (const auto& fixture : manifest.at("rows")) {
+                const std::string identifier = fixture.at("id").get<std::string>();
+                operatorIds.push_back("operator/" + identifier);
+                if (fixture.contains("downstreamExpected"))
+                    downstreamIds.push_back("downstream/" + identifier);
+                if (fixture.contains("descriptorInput"))
+                    descriptorIds.push_back("descriptor-input/" + identifier);
+                hasBackReflectionOnly = hasBackReflectionOnly ||
+                                        identifier == "back_reflection_only";
+            }
+            constexpr std::string_view operatorCaller =
+                "scatter_halation.reference_operator";
+            constexpr std::string_view downstreamCaller =
+                "scatter_halation.reference_downstream";
+            constexpr std::string_view descriptorCaller =
+                "scatter_halation.reference_descriptor_input";
+            JuicerTests::Cohort operatorCohort(
+                std::string(operatorCaller), operatorIds);
+            std::optional<JuicerTests::Cohort> downstreamCohort;
+            std::optional<JuicerTests::Cohort> descriptorCohort;
+            if (!downstreamIds.empty())
+                downstreamCohort.emplace(std::string(downstreamCaller), downstreamIds);
+            if (!descriptorIds.empty())
+                descriptorCohort.emplace(std::string(descriptorCaller), descriptorIds);
+            std::optional<JuicerTests::Cohort> scheduleCohort;
+            if (hasBackReflectionOnly)
+                scheduleCohort.emplace(
+                    "scatter_halation.reference_launch_schedule",
+                    std::vector<std::string>{"back-reflection-only"});
             results.record(
                 "reference/fixture/provenance-and-container",
                 true,
@@ -1034,6 +1138,18 @@ namespace ScatterHalationValidation {
             std::size_t descriptorInputCount = 0;
             for (const auto& fixture : manifest.at("rows")) {
                 const std::string identifier = fixture.at("id").get<std::string>();
+                JuicerTests::CaseEvent operatorEvent(
+                    operatorCaller, "operator/" + identifier);
+                std::optional<JuicerTests::CaseEvent> downstreamEvent;
+                std::optional<JuicerTests::CaseEvent> descriptorEvent;
+                if (fixture.contains("downstreamExpected")) {
+                    downstreamEvent.emplace(
+                        downstreamCaller, "downstream/" + identifier);
+                }
+                if (fixture.contains("descriptorInput")) {
+                    descriptorEvent.emplace(
+                        descriptorCaller, "descriptor-input/" + identifier);
+                }
                 try {
                     const ResolvedRow row = resolve_row(fixture.at("recipeInput"));
                     const SemanticPlanes<float> source = read_planes<float>(
@@ -1058,8 +1174,12 @@ namespace ScatterHalationValidation {
                         "reference/operator/" + identifier,
                         operatorPassed,
                         fixture.at("category").get<std::string>() + " " + detail);
+                    operatorEvent.complete(operatorPassed);
 
                     if (identifier == "back_reflection_only") {
+                        JuicerTests::CaseEvent scheduleEvent(
+                            "scatter_halation.reference_launch_schedule",
+                            "back-reflection-only");
                         bool schedulePassed = row.descriptor.scatterAmount == 0.0f;
                         for (const auto& channel : row.descriptor.channels) {
                             schedulePassed = schedulePassed &&
@@ -1071,6 +1191,7 @@ namespace ScatterHalationValidation {
                             "scatter-clear=0 tail=0 core=0 scatter-finalize=0 "
                             "bounce=three-independent-per-active-channel "
                             "back-reflection-finalize=one-per-active-channel");
+                        scheduleEvent.complete(schedulePassed);
                     }
 
                     if (downstream) {
@@ -1094,6 +1215,7 @@ namespace ScatterHalationValidation {
                             "reference/downstream/" + identifier,
                             downstreamPassed,
                             downstreamDetail);
+                        downstreamEvent->complete(downstreamPassed);
                     }
 
                     if (fixture.contains("descriptorInput")) {
@@ -1123,6 +1245,7 @@ namespace ScatterHalationValidation {
                             "reference/descriptor-input/" + identifier,
                             identityPassed,
                             identityDetail.str());
+                        descriptorEvent->complete(identityPassed);
                     }
                 } catch (const std::exception& error) {
                     results.record(
@@ -1162,6 +1285,115 @@ namespace ScatterHalationValidation {
                 "closed result attributes only the binding observation boundary");
         } catch (const std::exception& error) {
             results.record("reference/fixture/fatal", false, error.what());
+        }
+    }
+} // namespace ScatterHalationValidation
+
+namespace ScatterHalationValidation {
+    void list_case_memberships(
+        const Arguments& arguments,
+        std::string_view group) {
+        const auto list_ids = [](std::string_view caller,
+                                 const std::vector<std::string>& ids) {
+            for (const auto& id : ids)
+                JuicerTests::list_case(caller, id);
+        };
+        if (group == "host-contracts") {
+            constexpr std::array<std::string_view, 6> recipeIds{
+                "recipe/still-strong", "recipe/still-weak", "recipe/still-no", "recipe/cine-strong", "recipe/cine-weak", "recipe/cine-no"};
+            for (const auto id : recipeIds)
+                JuicerTests::list_case("scatter_halation.recipe_mappings", id);
+            constexpr std::array<std::string_view, 6> profileRows{
+                "profile/still-strong", "profile/still-weak", "profile/still-no", "profile/cine-strong", "profile/cine-weak", "profile/cine-no"};
+            for (const auto id : profileRows)
+                JuicerTests::list_case("scatter_halation.profile_mappings", id);
+            constexpr std::array<std::string_view, 5> coefficientRows{
+                "profile/zero-sigma-completed", "profile/negative-sigma-completed", "profile/unrepresentable-center-completed", "profile/unrepresentable-amplitude-computed-failure", "profile/unrepresentable-sigma-completed"};
+            for (const auto id : coefficientRows)
+                JuicerTests::list_case("scatter_halation.profile_coefficients", id);
+            return;
+        }
+        if (group == "focused-cuda-reference") {
+            Results listing(true);
+            run_focused_cuda_reference_rows(arguments, listing);
+            const nlohmann::json manifest = read_manifest(
+                arguments.fixtureRoot / "manifest.json");
+            std::vector<std::string> operatorIds;
+            std::vector<std::string> downstreamIds;
+            std::vector<std::string> descriptorIds;
+            operatorIds.reserve(manifest.at("rows").size());
+            downstreamIds.reserve(manifest.at("rows").size());
+            descriptorIds.reserve(manifest.at("rows").size());
+            bool hasBackReflectionOnly = false;
+            for (const auto& fixture : manifest.at("rows")) {
+                const std::string identifier = fixture.at("id").get<std::string>();
+                operatorIds.push_back("operator/" + identifier);
+                if (fixture.contains("downstreamExpected"))
+                    downstreamIds.push_back("downstream/" + identifier);
+                if (fixture.contains("descriptorInput"))
+                    descriptorIds.push_back("descriptor-input/" + identifier);
+                hasBackReflectionOnly = hasBackReflectionOnly ||
+                                        identifier == "back_reflection_only";
+            }
+            list_ids("scatter_halation.reference_operator", operatorIds);
+            list_ids("scatter_halation.reference_downstream", downstreamIds);
+            list_ids("scatter_halation.reference_descriptor_input", descriptorIds);
+            if (hasBackReflectionOnly) {
+                JuicerTests::list_case(
+                    "scatter_halation.reference_launch_schedule",
+                    "back-reflection-only");
+            }
+            const auto& nativeRows = manifest.at("nativeDoubleAcquisitionRows");
+            for (const auto& row : nativeRows)
+                JuicerTests::list_case(
+                    "scatter_halation.native_double_acquisition",
+                    row.at("id").get<std::string>());
+            constexpr std::array<std::string_view, 14> carrierExtents{
+                "1x33", "33x1", "19x7", "19x8", "19x9", "19x15", "19x16", "19x17", "31x31", "32x32", "33x33", "63x65", "65x63", "129x67"};
+            for (const auto id : carrierExtents)
+                JuicerTests::list_case("scatter_halation.carrier_strides", id);
+            constexpr std::array<std::string_view, 3> formatRows{
+                "1920", "3840", "7680"};
+            for (const auto id : formatRows)
+                JuicerTests::list_case(
+                    "scatter_halation.pixel_format_descriptor", id);
+            return;
+        }
+        if (group == "route-boundaries") {
+            Results listing(true);
+            run_scanner_post_effect_cuda_rows(listing);
+            for (int index = 0; index < JuicerTestFixture::Route::scan_route_option_count(); ++index) {
+                const auto route = static_cast<Spektrafilm::ScanRoute>(index);
+                JuicerTests::list_case(
+                    "scatter_halation.route_boundaries",
+                    Spektrafilm::scan_route_key(route));
+            }
+            return;
+        }
+        if (group == "zero-work") {
+            constexpr std::array<std::string_view, 2> variants{
+                "active-dir", "all-other-work-off"};
+            constexpr std::array routes{
+                Spektrafilm::ScanRoute::NegativeDirectScan,
+                Spektrafilm::ScanRoute::NegativePrintScan};
+            for (const auto variant : variants) {
+                for (const auto route : routes) {
+                    JuicerTests::list_case(
+                        "scatter_halation.zero_work",
+                        std::string(variant) + "/" +
+                            Spektrafilm::scan_route_key(route));
+                }
+            }
+            return;
+        }
+        if (group == "captured-carrier") {
+            for (const auto route : {
+                     Spektrafilm::ScanRoute::NegativeDirectScan,
+                     Spektrafilm::ScanRoute::NegativePrintScan}) {
+                JuicerTests::list_case(
+                    "scatter_halation.captured_carrier_route",
+                    Spektrafilm::scan_route_key(route));
+            }
         }
     }
 } // namespace ScatterHalationValidation
@@ -1211,7 +1443,7 @@ namespace {
         const std::size_t bytes = elements * sizeof(float);
         for (std::size_t channel = 0; channel < 3; ++channel) {
             const std::vector<float> storage = visual_to_storage(
-                source[channel], width, height);
+                source[channel], {width, height});
             float* destination =
                 channel == 0   ? planes.redSensitive
                 : channel == 1 ? planes.greenSensitive
@@ -1276,12 +1508,13 @@ namespace {
         SemanticPlanes<float> visual;
         for (std::size_t channel = 0; channel < 3; ++channel) {
             visual[channel] = storage_to_visual(
-                storage[channel], width, height);
+                storage[channel], {width, height});
         }
         return visual;
     }
 
     void run_captured_route(
+        JuicerTestSupport::RuntimeFixture& runtime,
         Spektrafilm::ScanRoute route,
         const nlohmann::json& fixture,
         const std::vector<std::uint8_t>& binary,
@@ -1290,36 +1523,35 @@ namespace {
         const SemanticPlanes<double>& expected,
         Results& results,
         std::uint64_t identity) {
+        const std::string routeCaseId =
+            Spektrafilm::scan_route_key(route);
+        JuicerTests::CaseEvent route_event(
+            "scatter_halation.captured_carrier_route", routeCaseId);
         Spektrafilm::DiffusionFilterAuthoredControls cameraDiffusion;
         cameraDiffusion.active = true;
         cameraDiffusion.strength = 1.0e-12;
         cameraDiffusion.spatialScale = 1.0e-12;
         PreparedRouteInputs inputs = build_prepared_route_inputs(
+            runtime,
             route,
             row.controls,
             cameraDiffusion,
             row.pixelSizeUm,
-            row.width,
-            row.height);
+            {row.width, row.height});
         const std::uint64_t expectedHash = parse_hash(
             fixture.at("descriptorInput").at("expectedRecipeHash"));
-        if (!inputs.scatter_descriptor() ||
-            inputs.scatter_descriptor()->recipeHash != expectedHash) {
-            throw std::runtime_error("captured route descriptor identity mismatch");
-        }
         CudaStream stream;
         const auto contextKey = current_context_key(0);
-        auto request = inputs.request(row.width, row.height);
-        std::string diagnostic;
-        auto frame = JuicerProcess::root().prepare_cuda_frame(
+        JuicerCuda::Failure diagnostic;
+        auto frame = inputs.prepare_frame(
             contextKey,
-            inputs.submission_snapshot(contextKey, identity),
-            request,
-            {},
+            identity,
+            {row.width, row.height},
             stream.get(),
-            diagnostic);
+            diagnostic,
+            expectedHash);
         if (!frame.active()) {
-            throw std::runtime_error(diagnostic);
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         auto stagePlanes = run_camera_diffusion_from_source(
             frame,
@@ -1370,15 +1602,17 @@ namespace {
             expected,
             candidate,
             comparisonDetail);
-        std::string finishDiagnostic;
+        JuicerCuda::Failure finishDiagnostic;
         const bool finished = frame.finish(stream.get(), finishDiagnostic);
+        const bool passed = comparisonPassed && finished;
         results.record(
             std::string("captured-carrier/") +
                 Spektrafilm::scan_route_key(route),
-            comparisonPassed && finished,
+            passed,
             "captured_e0_reused_sample_identically=1 seed_to_e0_max_delta=" +
                 std::to_string(capturedSourceMaximumDelta) + " " +
-                comparisonDetail + " " + finishDiagnostic);
+                comparisonDetail + " " + finishDiagnostic.diagnostic);
+        route_event.complete(passed);
         (void)binary;
     }
 
@@ -1435,7 +1669,17 @@ namespace ScatterHalationValidation {
     void run_captured_carrier_rows(
         const Arguments& arguments,
         Results& results) {
+        const std::vector<std::string> routeIds{
+            Spektrafilm::scan_route_key(
+                Spektrafilm::ScanRoute::NegativeDirectScan),
+            Spektrafilm::scan_route_key(
+                Spektrafilm::ScanRoute::NegativePrintScan)};
+        JuicerTests::Cohort routeCohort(
+            "scatter_halation.captured_carrier_route", routeIds);
         try {
+            if (!arguments.runtimeOwner) {
+                throw std::runtime_error("captured carrier rows require a live process Runtime");
+            }
             const nlohmann::json manifest = read_manifest(
                 arguments.fixtureRoot / "manifest.json");
             const auto fixture = std::find_if(
@@ -1458,6 +1702,7 @@ namespace ScatterHalationValidation {
             const SemanticPlanes<double> expected = read_planes<double>(
                 fixture->at("expected"), binary, "<f8", row.width, row.height);
             run_captured_route(
+                *arguments.runtimeOwner,
                 Spektrafilm::ScanRoute::NegativeDirectScan,
                 *fixture,
                 binary,
@@ -1467,6 +1712,7 @@ namespace ScatterHalationValidation {
                 results,
                 0x4101);
             run_captured_route(
+                *arguments.runtimeOwner,
                 Spektrafilm::ScanRoute::NegativePrintScan,
                 *fixture,
                 binary,
@@ -1484,6 +1730,9 @@ namespace ScatterHalationValidation {
         const Arguments& arguments,
         Results& results) {
         try {
+            if (!arguments.runtimeOwner) {
+                throw std::runtime_error("performance rows require a live process Runtime");
+            }
             require_cuda(cudaSetDevice(arguments.deviceIndex), "cudaSetDevice");
             const nlohmann::json manifest = read_manifest(
                 arguments.fixtureRoot / "manifest.json");
@@ -1507,27 +1756,23 @@ namespace ScatterHalationValidation {
                               std::max(arguments.performanceWidth,
                                        arguments.performanceHeight)));
             PreparedRouteInputs inputs = build_prepared_route_inputs(
+                *arguments.runtimeOwner,
                 Spektrafilm::ScanRoute::NegativeDirectScan,
                 controls,
                 {},
                 pixelSizeUm,
-                arguments.performanceWidth,
-                arguments.performanceHeight);
+                {arguments.performanceWidth, arguments.performanceHeight});
             CudaStream stream;
             const auto contextKey = current_context_key(arguments.deviceIndex);
-            auto request = inputs.request(
-                arguments.performanceWidth,
-                arguments.performanceHeight);
-            std::string diagnostic;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(
+            JuicerCuda::Failure diagnostic;
+            auto frame = inputs.prepare_frame(
                 contextKey,
-                inputs.submission_snapshot(contextKey, 0x50455246),
-                request,
-                {},
+                0x50455246,
+                {arguments.performanceWidth, arguments.performanceHeight},
                 stream.get(),
                 diagnostic);
             if (!frame.active()) {
-                throw std::runtime_error(diagnostic);
+                throw std::runtime_error(diagnostic.diagnostic);
             }
             const std::size_t elements =
                 static_cast<std::size_t>(arguments.performanceWidth) *
@@ -1627,7 +1872,9 @@ namespace ScatterHalationValidation {
                 const std::size_t index = std::min(
                     sorted.size() - 1,
                     static_cast<std::size_t>(
-                        std::ceil(fraction * sorted.size()) - 1.0));
+                        std::ceil(
+                            fraction * static_cast<double>(sorted.size())) -
+                        1.0));
                 return sorted[index];
             };
             int driverVersion = 0;
@@ -1669,13 +1916,13 @@ namespace ScatterHalationValidation {
                 {"carrierBytes", active ? 3 * planeBytes : 0},
                 {"admittedBytes", active ? 5 * planeBytes : 0}};
             write_performance_report(arguments, report);
-            std::string finishDiagnostic;
+            JuicerCuda::Failure finishDiagnostic;
             const bool finished = frame.finish(stream.get(), finishDiagnostic);
             results.record(
                 "performance/" + arguments.performanceMode + "/" +
                     std::to_string(arguments.performanceWidth),
                 finished,
-                finishDiagnostic);
+                finishDiagnostic.diagnostic);
         } catch (const std::exception& error) {
             results.record("performance/fatal", false, error.what());
         }

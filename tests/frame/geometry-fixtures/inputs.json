@@ -1,0 +1,362 @@
+{
+  "schema": 1,
+  "domains": [
+    {
+      "name": "landscape",
+      "bounds": [
+        0,
+        0,
+        7,
+        5
+      ]
+    },
+    {
+      "name": "portrait",
+      "bounds": [
+        -11,
+        17,
+        -6,
+        24
+      ]
+    },
+    {
+      "name": "square",
+      "bounds": [
+        3,
+        -4,
+        10,
+        3
+      ]
+    },
+    {
+      "name": "empty",
+      "bounds": [
+        9,
+        -8,
+        9,
+        -8
+      ]
+    },
+    {
+      "name": "reversed",
+      "bounds": [
+        10,
+        20,
+        -3,
+        -8
+      ]
+    },
+    {
+      "name": "max-width",
+      "bounds": [
+        0,
+        1,
+        2147483647,
+        2
+      ]
+    },
+    {
+      "name": "min-width",
+      "bounds": [
+        0,
+        0,
+        -2147483648,
+        1
+      ]
+    },
+    {
+      "name": "positive-limit",
+      "bounds": [
+        -2147483648,
+        -4,
+        -1,
+        2
+      ]
+    },
+    {
+      "name": "negative-limit",
+      "bounds": [
+        2147483647,
+        0,
+        -1,
+        1
+      ]
+    },
+    {
+      "name": "width-over",
+      "bounds": [
+        -1,
+        0,
+        2147483647,
+        1
+      ]
+    },
+    {
+      "name": "width-under",
+      "bounds": [
+        1,
+        0,
+        -2147483648,
+        1
+      ]
+    },
+    {
+      "name": "height-over",
+      "bounds": [
+        0,
+        -1,
+        1,
+        2147483647
+      ]
+    },
+    {
+      "name": "height-under",
+      "bounds": [
+        0,
+        1,
+        1,
+        -2147483648
+      ]
+    },
+    {
+      "name": "both-over",
+      "bounds": [
+        -2147483648,
+        -2147483648,
+        2147483647,
+        2147483647
+      ]
+    },
+    {
+      "name": "both-min",
+      "bounds": [
+        0,
+        0,
+        -2147483648,
+        -2147483648
+      ]
+    }
+  ],
+  "geometry": [
+    {
+      "name": "landscape",
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "name": "portrait",
+      "domain": [
+        -11,
+        17,
+        5,
+        7
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "name": "square",
+      "domain": [
+        3,
+        -4,
+        9,
+        9
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "name": "zero",
+      "domain": [
+        1,
+        -2,
+        0,
+        0
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "name": "negative",
+      "domain": [
+        2,
+        3,
+        -7,
+        -5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "name": "mixed",
+      "domain": [
+        9,
+        10,
+        -7,
+        5
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "name": "max",
+      "domain": [
+        0,
+        0,
+        2147483647,
+        1
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "name": "min",
+      "domain": [
+        0,
+        0,
+        -2147483648,
+        -2147483648
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "name": "film-lower",
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 1090519040
+    },
+    {
+      "name": "film-upper",
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 1123024896
+    },
+    {
+      "name": "film-fractional",
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 1108279296
+    },
+    {
+      "name": "film-positive-zero",
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 0
+    },
+    {
+      "name": "film-negative-zero",
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 2147483648
+    },
+    {
+      "name": "film-negative",
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 3212836864
+    },
+    {
+      "name": "film-infinity",
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 2139095040
+    },
+    {
+      "name": "film-subnormal",
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 1
+    },
+    {
+      "name": "film-normal",
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 8388608
+    },
+    {
+      "name": "film-max",
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 2139095039
+    },
+    {
+      "name": "film-nan",
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 2143294004
+    },
+    {
+      "name": "film-negative-nan",
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 4290777652
+    },
+    {
+      "name": "exact-quotient",
+      "domain": [
+        0,
+        0,
+        1000,
+        500
+      ],
+      "film_bits": 1108344832
+    },
+    {
+      "name": "roi-scale-par-independent",
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832
+    }
+  ]
+}

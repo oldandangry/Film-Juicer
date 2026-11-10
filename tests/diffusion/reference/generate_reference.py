@@ -24,9 +24,9 @@ os.environ.setdefault(
     str(_DEFAULT_REPO_ROOT / ".tmp/diffusion/matplotlib"),
 )
 
-from spektrafilm.model import diffusion
-from spektrafilm.runtime import params_schema
-from spektrafilm.runtime.params_schema import DiffusionFilterParams
+from spektrafilm.model import diffusion  # noqa: E402 - configure Matplotlib before normal reference imports.
+from spektrafilm.runtime import params_schema  # noqa: E402, F401 - retain the explicit provenance import.
+from spektrafilm.runtime.params_schema import DiffusionFilterParams  # noqa: E402 - same reference import boundary.
 
 
 FAMILIES = ("glimmerglass", "black_pro_mist", "pro_mist", "cinebloom")
@@ -261,15 +261,25 @@ def make_pattern(name: str, height: int, width: int) -> np.ndarray:
 
 def build_reference_bundle(
     repo_root: Path,
+    *,
+    environment_dir: Path | None = None,
+    evidence_dir: Path | None = None,
 ) -> tuple[dict[str, object], dict[str, np.ndarray]]:
     repo_root = repo_root.resolve()
     reference_root = (repo_root / "external/spektrafilm").resolve()
-    expected_interpreter = (repo_root / ".tmp/diffusion/reference-venv/bin/python").resolve()
+    environment_dir = environment_dir or repo_root / ".tmp/diffusion/reference-venv"
+    evidence_dir = evidence_dir or repo_root / ".tmp/diffusion/evidence/reference"
+    interpreter = environment_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    expected_interpreter = interpreter.resolve()
     if sys.version_info[:2] != (3, 13):
         raise RuntimeError(f"reference generation requires Python 3.13, got {sys.version}")
     if Path(sys.executable).resolve() != expected_interpreter:
         raise RuntimeError(
             f"reference generation requires {expected_interpreter}, got {sys.executable}"
+        )
+    if Path(sys.prefix).resolve() != environment_dir.resolve():
+        raise RuntimeError(
+            f"reference generation requires environment prefix {environment_dir}, got {sys.prefix}"
         )
     if tuple(diffusion.DIFFUSION_FILTER_FAMILIES) != FAMILIES:
         raise RuntimeError(
@@ -281,13 +291,13 @@ def build_reference_bundle(
     if reference_status:
         raise RuntimeError(f"dirty external/spektrafilm checkout:\n{reference_status}")
 
-    freeze_path = repo_root / ".tmp/diffusion/evidence/reference/python-freeze.txt"
-    uv_path = repo_root / ".tmp/diffusion/evidence/reference/uv-version.txt"
+    freeze_path = evidence_dir / "python-freeze.txt"
+    uv_path = evidence_dir / "uv-version.txt"
     lock_path = repo_root / "tests/diffusion/reference/requirements.lock"
     for required in (freeze_path, uv_path, lock_path):
         if not required.is_file():
             raise RuntimeError(f"missing Task 1 environment evidence: {required}")
-    expected_editable = f"-e file://{reference_root}"
+    expected_editable = f"-e {reference_root.as_uri()}"
     freeze_lines = freeze_path.read_text(encoding="utf-8").splitlines()
     if expected_editable not in freeze_lines:
         raise RuntimeError(
@@ -503,7 +513,7 @@ def build_reference_bundle(
             "major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
             "version": platform.python_version(),
             "implementation": platform.python_implementation(),
-            "executable": ".tmp/diffusion/reference-venv/bin/python",
+            "executable": interpreter.relative_to(repo_root).as_posix(),
             "platform": platform.platform(),
             "machine": platform.machine(),
         },
@@ -587,17 +597,29 @@ def write_bundle(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=_DEFAULT_REPO_ROOT)
+    parser.add_argument("--environment-dir", type=Path)
+    parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("tests/diffusion/fixtures"),
+        required=True,
     )
     args = parser.parse_args()
     repo_root = args.repo_root.resolve()
     output_dir = args.output_dir
     if not output_dir.is_absolute():
         output_dir = repo_root / output_dir
-    manifest, arrays = build_reference_bundle(repo_root)
+    if output_dir.resolve().is_relative_to((repo_root / "tests/diffusion/fixtures").resolve()):
+        parser.error("generate a candidate outside the committed fixture directory")
+    environment_dir = args.environment_dir
+    evidence_dir = args.evidence_dir
+    if environment_dir is not None and not environment_dir.is_absolute():
+        environment_dir = repo_root / environment_dir
+    if evidence_dir is not None and not evidence_dir.is_absolute():
+        evidence_dir = repo_root / evidence_dir
+    manifest, arrays = build_reference_bundle(
+        repo_root, environment_dir=environment_dir, evidence_dir=evidence_dir,
+    )
     write_bundle(output_dir, manifest, arrays)
     print(
         "reference_bundle=PASS "

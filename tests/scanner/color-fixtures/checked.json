@@ -1,0 +1,155 @@
+{
+  "authority": "Approved Slice 6 fixed-value ABI contract. Failure envelopes are specified independently of implementation.",
+  "production_cases": [
+    {
+      "id": "SC6-GAMUT-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "SC6-NON-SRGB",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "SC6-CCTF-OFF",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "SC6-BYTES-255-255",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "SC6-FAIL-ILLUMINANT",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-MEDIUM",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-OUTPUT",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-APPLY",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-NULL-INPUT",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-NULL-OUTPUT",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-NULL-FAILURE",
+      "envelope": [
+        2,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-OUTPUT-ALIGNMENT",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-FAILURE-ALIGNMENT",
+      "envelope": [
+        2,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-ERROR-BACKING",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "id": "SC6-RAW-NULL-ERROR",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ]
+    }
+  ]
+}

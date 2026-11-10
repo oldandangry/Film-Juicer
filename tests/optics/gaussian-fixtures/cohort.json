@@ -1,0 +1,171 @@
+{
+  "schema": 1,
+  "metric": "exact complete f32 words and metadata in each native configuration",
+  "cases": [
+    {
+      "name": "minimum-subnormal",
+      "radius": 1,
+      "sigma_bits": 1
+    },
+    {
+      "name": "minimum-normal",
+      "radius": 3,
+      "sigma_bits": 8388608
+    },
+    {
+      "name": "maximum-finite",
+      "radius": 75,
+      "sigma_bits": 2139095039
+    },
+    {
+      "name": "upper-maximum-finite",
+      "radius": 2048,
+      "sigma_bits": 2139095039
+    },
+    {
+      "name": "upper-subnormal",
+      "radius": 2048,
+      "sigma_bits": 1
+    },
+    {
+      "name": "r1",
+      "radius": 1,
+      "sigma_bits": 1048576000
+    },
+    {
+      "name": "r2",
+      "radius": 2,
+      "sigma_bits": 1056964608
+    },
+    {
+      "name": "r3",
+      "radius": 3,
+      "sigma_bits": 1065353216
+    },
+    {
+      "name": "asymmetric-reduction",
+      "radius": 7,
+      "sigma_bits": 1067320907
+    },
+    {
+      "name": "cap",
+      "radius": 75,
+      "sigma_bits": 1100349440
+    },
+    {
+      "name": "dir76",
+      "radius": 76,
+      "sigma_bits": 1100480512
+    },
+    {
+      "name": "dir127",
+      "radius": 127,
+      "sigma_bits": 1107165184
+    },
+    {
+      "name": "dir512",
+      "radius": 512,
+      "sigma_bits": 1124073472
+    },
+    {
+      "name": "dir2048",
+      "radius": 2048,
+      "sigma_bits": 1140850688
+    },
+    {
+      "name": "underflow-tail",
+      "radius": 75,
+      "sigma_bits": 1056964608
+    },
+    {
+      "name": "narrow",
+      "radius": 17,
+      "sigma_bits": 1023410176
+    },
+    {
+      "name": "wide",
+      "radius": 31,
+      "sigma_bits": 1621981420
+    },
+    {
+      "name": "upper-narrow",
+      "radius": 2048,
+      "sigma_bits": 1040187392
+    },
+    {
+      "name": "upper-sigma1",
+      "radius": 2048,
+      "sigma_bits": 1065353216
+    },
+    {
+      "name": "adjacent-sigma-low",
+      "radius": 3,
+      "sigma_bits": 1065353215
+    },
+    {
+      "name": "adjacent-sigma-high",
+      "radius": 3,
+      "sigma_bits": 1065353217
+    },
+    {
+      "name": "inactive",
+      "radius": 0,
+      "sigma_bits": 1065353216
+    },
+    {
+      "name": "negative-radius",
+      "radius": -1,
+      "sigma_bits": 1065353216
+    },
+    {
+      "name": "zero-sigma",
+      "radius": 1,
+      "sigma_bits": 0
+    },
+    {
+      "name": "negative-zero-sigma",
+      "radius": 1,
+      "sigma_bits": 2147483648
+    },
+    {
+      "name": "negative-sigma",
+      "radius": 1,
+      "sigma_bits": 3212836864
+    },
+    {
+      "name": "infinite-sigma",
+      "radius": 1,
+      "sigma_bits": 2139095040
+    },
+    {
+      "name": "nan-sigma",
+      "radius": 1,
+      "sigma_bits": 2143289344
+    }
+  ],
+  "products": {
+    "routes": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "profiles": [
+      "kodak_portra_400",
+      "fujifilm_provia_100f"
+    ],
+    "pixel_size_um": [
+      2,
+      6,
+      12
+    ],
+    "families": [
+      "scanner-lens",
+      "scanner-unsharp",
+      "scanner-glare",
+      "grain-correlation[3]",
+      "grain-dye-cloud[3][3]",
+      "small-fir-dir"
+    ]
+  }
+}

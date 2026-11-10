@@ -1,0 +1,36 @@
+{
+  "preset": "windows-clang-release",
+  "provenance": {
+    "capture_source_sha256": "f3324b3a74ce1e2bbc1a913de3e75361978637d37e84cd8c230a9be896eda14a",
+    "command": [
+      "out/validation/windows-clang-release/s4-c-slice-9-native/JuicerFilmRecipeTests.exe",
+      "out/build/windows-clang-release/tests/Resources",
+      "unused",
+      "capture-scanner-post-effects",
+      "windows-clang-release",
+      "out/validation/windows-clang-release/s4-c-slice-9-native/capture.json"
+    ],
+    "compiler_context": "windows-clang-release",
+    "native_source": "src/Scanner.cpp",
+    "native_source_sha256": "bdf6f288938bd04b0eeca0d271593433a841f461c7284d8f9e0b753ab5df21d5",
+    "original_capture": "out/validation/windows-clang-release/s4-c-slice-9-native/capture.json",
+    "original_sha256": "17f46d75eb4aa214945c9bce318e6538f2b14c7a14039c00b8ce622706958371",
+    "preparation_receipt": {
+      "path": "out/validation/windows-clang-release/preparation-06a025289fa94ccf9bca4e74a0d79487/attempts/prepare-ztl9rv7t/result.json",
+      "role": "original source/configuration/tool/command/build and descendant-drainage proof",
+      "sha256": "7f4426c9ff379e08118ba402d23daebf8611da48a7eedb0bbaadbe2e6832727c"
+    },
+    "producer": "out/validation/windows-clang-release/s4-c-slice-9-native/JuicerFilmRecipeTests.exe",
+    "producer_sha256": "e3cedc2eb90ccb6ce6f16d325ab9a1a4521342c108d0ef653f4b49d5bd4b9037",
+    "result": 0,
+    "retained_inputs": {
+      "out/validation/windows-clang-release/s4-c-slice-9-native/CMakeCache.txt": "bc0dd3f7ab3f396268a1708b3cb5d7e1339b53e53f9563928af947c5b5a309bc",
+      "out/validation/windows-clang-release/s4-c-slice-9-native/GaussianSciPy.h": "864b812b1b5462d8d04c0c292cb688855ac29925e5e03fd9b76c9a67d98044b3",
+      "out/validation/windows-clang-release/s4-c-slice-9-native/Scanner.cpp": "bdf6f288938bd04b0eeca0d271593433a841f461c7284d8f9e0b753ab5df21d5",
+      "out/validation/windows-clang-release/s4-c-slice-9-native/cargo-features.txt": "43bcd48ff056b3b63d4038632148c3146283c730556611fb6a87ef92cd677a7b",
+      "out/validation/windows-clang-release/s4-c-slice-9-native/compile_commands.json": "af321f719a1ccce1002e5d9519951e459003a33bb55d88fc9940914df44c8e45",
+      "out/validation/windows-clang-release/s4-c-slice-9-native/film_recipe_test.cpp": "bd92c91a6387472f51050345cb26d0e9ec361015531ebbf34b9e2d6ec17365cb",
+      "out/validation/windows-clang-release/s4-c-slice-9-native/scanner_post_effects_test.inc": "f3324b3a74ce1e2bbc1a913de3e75361978637d37e84cd8c230a9be896eda14a"
+    }
+  }
+}

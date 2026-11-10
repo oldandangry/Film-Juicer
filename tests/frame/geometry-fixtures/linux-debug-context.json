@@ -1,0 +1,47 @@
+{
+  "commands": [
+    {
+      "command": "/usr/bin/g++-13 -DJUICER_DIAGNOSTICS_COMPILED=1 -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -isystem /mnt/c/Dev/Codex/third_party/ofxs/OpenFX-1.4/include -isystem /mnt/c/Dev/Codex/third_party/ofxs/Support/include -g -std=c++20 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o CMakeFiles/juicer_adapter.dir/src/JuicerEffect.cpp.o -c /mnt/c/Dev/Codex/src/JuicerEffect.cpp",
+      "directory": "/mnt/c/Dev/Codex/out/build/linux-debug",
+      "file": "/mnt/c/Dev/Codex/src/JuicerEffect.cpp",
+      "output": "/mnt/c/Dev/Codex/out/build/linux-debug/CMakeFiles/juicer_adapter.dir/src/JuicerEffect.cpp.o"
+    },
+    {
+      "command": "/usr/bin/g++-13 -DJUICER_DIAGNOSTICS_COMPILED=1 -DJUICER_FRAME_GEOMETRY_TEST_HOOK=1 -Dresolve_scan_route=resolve_scan_route_with_fault -I/mnt/c/Dev/Codex/native -I/mnt/c/Dev/Codex/src -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -isystem /mnt/c/Dev/Codex/third_party/ofxs/OpenFX-1.4/include -isystem /mnt/c/Dev/Codex/third_party/ofxs/Support/include -g -std=c++20 -fPIE -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o tests/CMakeFiles/JuicerAdapterTraceProbe.dir/__/src/JuicerEffect.cpp.o -c /mnt/c/Dev/Codex/src/JuicerEffect.cpp",
+      "directory": "/mnt/c/Dev/Codex/out/build/linux-debug",
+      "file": "/mnt/c/Dev/Codex/src/JuicerEffect.cpp",
+      "output": "/mnt/c/Dev/Codex/out/build/linux-debug/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/__/src/JuicerEffect.cpp.o"
+    }
+  ],
+  "executable": "/mnt/c/Dev/Codex/out/build/linux-debug/tests/bin/JuicerAdapterTraceProbe",
+  "preset": "linux-debug",
+  "schema": 1,
+  "producer": {
+    "directory": "out/validation/linux-debug/s4-d-slice-1-native-capture",
+    "files": {
+      "JuicerAdapterTraceProbe": {
+        "bytes": 346510488,
+        "sha256": "62bf2a31a2b49cf645c2863b10987868d9fd9edf7adbc0a8414453bfbb8946d6"
+      },
+      "JuicerEffect.cpp.txt": {
+        "bytes": 99355,
+        "sha256": "196d6acc9a9c5ddf4ae0b7ffa0cded27c9b746c22240ba8c72b41b24e573ff9e"
+      },
+      "inputs.json": {
+        "bytes": 5003,
+        "sha256": "2b22fe5bf8841ea63f6d7e438580ec4b6cc149ef7feacd5162e7662a2a995205"
+      },
+      "payload.json": {
+        "bytes": 7571,
+        "sha256": "8866288b8ba4b97b83c6b79fd006e25843bfa920a94f00789cc3b5e3bca548c4"
+      },
+      "context.json": {
+        "bytes": 1930,
+        "sha256": "e5a2c52ca4246ba0adc0c5e285511132b0d4e353095d7d2d17650ed54b2ebd84"
+      }
+    }
+  },
+  "linked_source_head": "66eb51a2613bbc08c026f592a0055206ada93517",
+  "factoring_diff_sha256": "c18ce6a0c6eceb4f5a0a48dcf7468d15a5c8877be5dafb47b21a39c85ae448a9",
+  "native_payload_line_ending": "LF"
+}

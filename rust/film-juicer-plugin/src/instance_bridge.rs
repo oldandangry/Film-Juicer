@@ -1,0 +1,1741 @@
+//! Private instance C edge; only this module admits foreign capture records.
+
+#![expect(
+    clippy::result_large_err,
+    reason = "The instance boundary carries bounded inline capture diagnostics through nonallocating failure cleanup."
+)]
+
+use std::fmt::{self, Write};
+use std::mem::{align_of, size_of};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
+
+use film_juicer_core::state::{self, CaptureFailure, CaptureFailureKind};
+
+use crate::asset_bridge::{Failure as PreparationFailure, FjAssets};
+use crate::cuda::sys::{
+    FjErrorBuffer, FjStatus, FjStringView, FJ_API_NONE, FJ_STATUS_SUCCESS,
+    FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_PREPARATION_FAILURE,
+    FJ_STATUS_INTERNAL_FAILURE,
+};
+use crate::instance::Instance;
+use crate::submission;
+use crate::preparation::{self, FjPreparationParams, FjPreparedState};
+
+pub(crate) struct FjInstance {
+    instance: Arc<Instance>,
+}
+pub(crate) struct FjHostWrite {
+    write: Option<state::HostWrite>,
+    instance: Arc<Instance>,
+}
+#[repr(C)]
+pub(crate) struct FjCaptureStart {
+    capture: u64,
+    kind: u32,
+}
+#[repr(C)]
+pub(crate) struct FjSnapshotStart {
+    write_revision: u64,
+    kind: u32,
+}
+#[repr(C)]
+pub(crate) struct FjAdmission {
+    state: *mut FjPreparedState,
+    input_identity: u64,
+    build: u64,
+    kind: u32,
+    route: u32,
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The foreign edge preserves the inline capture failure without a new allocation during unwind."
+)]
+enum Failure {
+    Input(&'static str),
+    State(state::Error),
+    Preparation(PreparationFailure),
+    Submission(submission::Error),
+}
+impl From<state::Error> for Failure {
+    fn from(error: state::Error) -> Self {
+        Self::State(error)
+    }
+}
+impl From<submission::Error> for Failure {
+    fn from(error: submission::Error) -> Self {
+        Self::Submission(error)
+    }
+}
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Input(message) => f.write_str(message),
+            Self::State(error) => error.fmt(f),
+            Self::Preparation(error) => error.fmt(f),
+            Self::Submission(error) => error.fmt(f),
+        }
+    }
+}
+fn state_category(error: &state::Error) -> u32 {
+    match error {
+        state::Error::InvalidCaptureTicket | state::Error::InvalidCaptureOperation => {
+            FJ_STATUS_UNSUPPORTED_INPUT
+        }
+        state::Error::CaptureFailed(failure)
+            if failure.kind() == CaptureFailureKind::Allocation =>
+        {
+            FJ_STATUS_ALLOCATION_FAILURE
+        }
+        state::Error::Preparation(error) => preparation::failure_category(error),
+        state::Error::Poisoned => FJ_STATUS_INTERNAL_FAILURE,
+        _ => FJ_STATUS_PREPARATION_FAILURE,
+    }
+}
+impl Failure {
+    fn category(&self) -> u32 {
+        match self {
+            Self::Input(_) => FJ_STATUS_UNSUPPORTED_INPUT,
+            Self::State(error) => state_category(error),
+            Self::Preparation(error) => error.category(),
+            Self::Submission(_) => FJ_STATUS_INTERNAL_FAILURE,
+        }
+    }
+}
+fn status(category: u32) -> FjStatus {
+    FjStatus {
+        category,
+        api: FJ_API_NONE,
+        native_code: 0,
+    }
+}
+fn aligned<T>(pointer: *const T) -> bool {
+    !pointer.is_null()
+        && (pointer as usize).is_multiple_of(align_of::<T>())
+        && (pointer as usize).checked_add(size_of::<T>()).is_some()
+}
+
+// The foreign diagnostic writer is bounded and performs no allocation, including
+// capture-guard failure and malformed consuming host-write completion.
+struct Diagnostic {
+    bytes: [u8; 2048],
+    len: usize,
+}
+impl Write for Diagnostic {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        let count = text.len().min(self.bytes.len() - self.len);
+        self.bytes[self.len..self.len + count].copy_from_slice(&text.as_bytes()[..count]);
+        self.len += count;
+        Ok(())
+    }
+}
+/// # Safety
+/// The optional aligned record and its nonempty backing are initialized, live,
+/// exclusive and disjoint from every other input/output for this call.
+unsafe fn diagnostic_valid(error: *mut FjErrorBuffer) -> bool {
+    if error.is_null() {
+        return true;
+    }
+    if !aligned(error) {
+        return false;
+    }
+    // SAFETY: The caller authorizes this initialized record, including zero capacity.
+    unsafe {
+        (*error).length = 0;
+        let capacity = (*error).capacity;
+        if capacity == 0 {
+            return true;
+        }
+        let data = (*error).data;
+        if data.is_null()
+            || capacity > isize::MAX as usize
+            || (data as usize).checked_add(capacity).is_none()
+        {
+            return false;
+        }
+        data.write(0);
+    }
+    true
+}
+/// # Safety
+/// diagnostic_valid admitted the caller's exclusive record/backing extent.
+unsafe fn write_diagnostic(error: *mut FjErrorBuffer, message: impl fmt::Display) {
+    if error.is_null() {
+        return;
+    }
+    // SAFETY: Admitted record; capacity zero leaves the data field unread.
+    unsafe {
+        let capacity = (*error).capacity;
+        if capacity == 0 {
+            return;
+        }
+        let mut diagnostic = Diagnostic {
+            bytes: [0; 2048],
+            len: 0,
+        };
+        let _ = write!(&mut diagnostic, "{message}");
+        let count = diagnostic.len.min(capacity - 1);
+        std::ptr::copy_nonoverlapping(diagnostic.bytes.as_ptr(), (*error).data.cast(), count);
+        (*error).data.add(count).write(0);
+        (*error).length = count;
+    }
+}
+/// # Safety
+/// Every input is caller-authorized live storage; diagnostics obey the contract
+/// above. Consumed owners captured by operation must drop even on protocol rejection.
+unsafe fn run_with(
+    instance: Option<&Instance>,
+    error: *mut FjErrorBuffer,
+    operation: impl FnOnce() -> Result<(), Failure>,
+    on_panic: impl Fn(),
+) -> FjStatus {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: The caller authorizes the diagnostic record/backing.
+        if !unsafe { diagnostic_valid(error) } {
+            drop(operation);
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        match catch_unwind(AssertUnwindSafe(operation)) {
+            Ok(Ok(())) => status(FJ_STATUS_SUCCESS),
+            Ok(Err(failure)) => {
+                // SAFETY: diagnostic_valid admitted this exclusive extent.
+                unsafe { write_diagnostic(error, &failure) };
+                status(failure.category())
+            }
+            Err(_) => {
+                if let Some(instance) = instance {
+                    instance.block();
+                }
+                on_panic();
+                // SAFETY: diagnostic_valid admitted this exclusive extent.
+                unsafe { write_diagnostic(error, "instance boundary panic") };
+                status(FJ_STATUS_INTERNAL_FAILURE)
+            }
+        }
+    }));
+    result.unwrap_or_else(|_| {
+        if let Some(instance) = instance {
+            instance.block();
+        }
+        on_panic();
+        status(FJ_STATUS_INTERNAL_FAILURE)
+    })
+}
+/// # Safety
+/// Same initialized, exclusive foreign storage contract as run_with.
+unsafe fn run(
+    instance: Option<&Instance>,
+    error: *mut FjErrorBuffer,
+    operation: impl FnOnce() -> Result<(), Failure>,
+) -> FjStatus {
+    // SAFETY: Forward the caller's exact extents and operation lifetime.
+    unsafe { run_with(instance, error, operation, || {}) }
+}
+/// # Safety
+/// A matching live instance handle remains borrowed for this synchronous call.
+pub(crate) unsafe fn borrow_instance<'a>(owner: *const FjInstance) -> Option<&'a Instance> {
+    if !aligned(owner) {
+        return None;
+    }
+    // SAFETY: The foreign caller authorizes the live matching handle.
+    Some(unsafe { &(*owner).instance })
+}
+/// # Safety
+/// The pointer authorizes exclusive aligned initialized storage for T.
+unsafe fn clear<T>(out: *mut T) -> bool {
+    if !aligned(out) {
+        return false;
+    }
+    // SAFETY: All output C records/scalars/pointers are zero-valid.
+    unsafe { out.write_bytes(0, 1) };
+    true
+}
+fn update_tag(update: state::Update) -> u32 {
+    match update {
+        state::Update::Applied => 1,
+        state::Update::Ignored => 2,
+        state::Update::Deferred => 3,
+    }
+}
+fn failure_kind(tag: u32) -> Result<CaptureFailureKind, Failure> {
+    match tag {
+        1 => Ok(CaptureFailureKind::InvalidControls),
+        2 => Ok(CaptureFailureKind::Host),
+        3 => Ok(CaptureFailureKind::Allocation),
+        _ => Err(Failure::Input("invalid capture failure kind")),
+    }
+}
+/// # Safety
+/// The input authorizes its initialized immutable byte extent until return.
+unsafe fn diagnostic_text<'a>(text: FjStringView) -> Result<&'a str, Failure> {
+    if text.count == 0 {
+        return Ok("");
+    }
+    if text.data.is_null()
+        || text.count > isize::MAX as usize
+        || (text.data as usize).checked_add(text.count).is_none()
+    {
+        return Err(Failure::Input("invalid capture diagnostic extent"));
+    }
+    // SAFETY: The caller authorizes this initialized byte extent.
+    let bytes = unsafe { std::slice::from_raw_parts(text.data.cast::<u8>(), text.count) };
+    std::str::from_utf8(bytes).map_err(|_| Failure::Input("capture diagnostic is not UTF-8"))
+}
+
+#[cfg(feature = "test-support")]
+macro_rules! test_export {
+    ($name:ident($($arg:ident: $ty:ty),*) $body:block) => {
+        /// # Safety
+        /// The caller meets the matching checked operation's safety contract: live,
+        /// initialized, aligned, disjoint records and spans; valid owner provenance;
+        /// synchronous execution on this thread; no host reentry or retained inputs.
+        #[unsafe(no_mangle)]
+        pub(crate) unsafe extern "C" fn $name($($arg: $ty),*) -> FjStatus {
+            // SAFETY: The caller's documented protocol authorizes all raw accesses.
+            unsafe { $body }
+        }
+    };
+}
+/// # Safety
+/// Creates one Assets-independent Instance owner. Output and diagnostic storage must be
+/// initialized, live, aligned, exclusive, and disjoint; no pointer is retained. The call is
+/// synchronous on this thread and performs no host reentry.
+pub(crate) unsafe fn create(out: *mut *mut FjInstance, error: *mut FjErrorBuffer) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out);
+        run(None, error, || {
+            if !valid {
+                return Err(Failure::Input("invalid instance output"));
+            }
+            out.write(Box::into_raw(Box::new(FjInstance {
+                instance: Arc::new(Instance::new()),
+            })));
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance through return. Inputs and diagnostics are initialized,
+/// live, aligned, and disjoint as required by the C contract. The call is synchronous, retains
+/// no raw pointer, and performs no host reentry.
+pub(crate) unsafe fn bind_identity(
+    owner: *const FjInstance,
+    session_seed: u64,
+    instance_token: u64,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let instance = borrow_instance(owner);
+        run(instance, error, || {
+            let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+            instance.bind_identity(session_seed, instance_token)?;
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance through return. Each writable output and diagnostic
+/// record is initialized, live, aligned, exclusive, and disjoint. The call is synchronous and
+/// performs no host reentry.
+pub(crate) unsafe fn identity(
+    owner: *const FjInstance,
+    out_initialized: *mut u32,
+    out_seed: *mut u64,
+    out_token: *mut u64,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out_initialized);
+        let seed_valid = clear(out_seed);
+        let token_valid = clear(out_token);
+        let instance = borrow_instance(owner);
+        run(instance, error, || {
+            let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+            if !valid || !seed_valid || !token_valid {
+                return Err(Failure::Input("invalid identity output"));
+            }
+            if let Some(identity) = instance.identity() {
+                out_initialized.write(1);
+                out_seed.write(identity.session_seed);
+                out_token.write(identity.instance_token);
+            }
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance through return. Output and diagnostic records are
+/// initialized, live, aligned, exclusive, and disjoint. The call is synchronous and retains no
+/// raw pointer.
+pub(crate) unsafe fn invalidate_submission(
+    owner: *const FjInstance,
+    device_id: i32,
+    context: usize,
+    out_cleared: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out_cleared);
+        let instance = borrow_instance(owner);
+        run(instance, error, || {
+            let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+            if !valid {
+                return Err(Failure::Input("invalid invalidation output"));
+            }
+            out_cleared.write(u32::from(
+                instance.invalidate_submission(device_id, context)?,
+            ));
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance through return. The output and diagnostic records are
+/// initialized, live, aligned, exclusive, and disjoint. The call is synchronous and retains no
+/// raw pointer.
+pub(crate) unsafe fn begin_capture(
+    owner: *mut FjInstance,
+    mode: u32,
+    out: *mut FjCaptureStart,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out);
+        let instance = borrow_instance(owner);
+        run(instance, error, || {
+            let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+            if !valid {
+                return Err(Failure::Input("invalid capture output"));
+            }
+            let mode = match mode {
+                0 => state::CaptureMode::Initial,
+                1 => state::CaptureMode::Change,
+                2 => state::CaptureMode::Refresh,
+                _ => return Err(Failure::Input("invalid capture mode")),
+            };
+            match instance.begin_capture(mode)? {
+                state::CaptureStart::Started { capture } => {
+                    out.write(FjCaptureStart { capture, kind: 1 })
+                }
+                state::CaptureStart::NotStarted => (*out).kind = 2,
+            }
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance through return. The output and diagnostic records are
+/// initialized, live, aligned, exclusive, and disjoint. The call is synchronous and retains no
+/// raw pointer.
+pub(crate) unsafe fn capture_is_current(
+    owner: *const FjInstance,
+    capture: u64,
+    out_current: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out_current);
+        let instance = borrow_instance(owner);
+        run(instance, error, || {
+            let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+            if !valid {
+                return Err(Failure::Input("invalid current output"));
+            }
+            out_current.write(u32::from(instance.capture_is_current(capture)?));
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance through return and may return one owned HostWrite handle.
+/// Input/output records are initialized, live, aligned, exclusive, and disjoint. The call is
+/// synchronous and retains no raw input pointer.
+pub(crate) unsafe fn begin_host_write(
+    owner: *mut FjInstance,
+    capture: u64,
+    out: *mut *mut FjHostWrite,
+    out_start: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out);
+        let start_valid = clear(out_start);
+        let instance = borrow_instance(owner);
+        run(instance, error, || {
+            let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+            if !valid || !start_valid {
+                return Err(Failure::Input("invalid host write output"));
+            }
+            match instance.begin_host_write(capture)? {
+                state::HostWriteStart::Started(write) => {
+                    let owner = FjHostWrite {
+                        write: Some(write),
+                        instance: Arc::clone(&(*owner).instance),
+                    };
+                    out.write(Box::into_raw(Box::new(owner)));
+                    out_start.write(1);
+                }
+                state::HostWriteStart::Ignored => out_start.write(2),
+            }
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Consumes a live matching HostWrite handle exactly once before validating remaining finish
+/// arguments. Caller excludes all concurrent use. Output, diagnostic, and input extents are
+/// initialized, live, aligned, and disjoint; calls are synchronous and perform no host reentry.
+pub(crate) unsafe fn host_write_finish(
+    owner: *mut FjHostWrite,
+    failure: u32,
+    diagnostic: FjStringView,
+    out_refresh: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out_refresh);
+        if !aligned(owner) {
+            return run(None, error, || {
+                Err(Failure::Input("invalid host write owner"))
+            });
+        }
+        // Consume before validating any other finish argument. Rejected operations
+        // drop the still-armed safe guard, recording bounded Host failure.
+        let mut owner = Box::from_raw(owner);
+        let instance = Arc::clone(&owner.instance);
+        run(Some(&instance), error, move || {
+            if !valid {
+                return Err(Failure::Input("invalid refresh output"));
+            }
+            let text = diagnostic_text(diagnostic)?;
+            let outcome = if failure == 0 {
+                if !text.is_empty() {
+                    return Err(Failure::Input("successful write has diagnostic"));
+                }
+                Ok(())
+            } else {
+                Err(CaptureFailure::new(failure_kind(failure)?, text))
+            };
+            let end = owner
+                .write
+                .take()
+                .expect("live host write")
+                .finish(outcome)?;
+            out_refresh.write(u32::from(end == state::WriteEnd::RefreshRequired));
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance through return. The output and diagnostic records are
+/// initialized, live, aligned, exclusive, and disjoint. The call is synchronous and retains no
+/// raw pointer.
+pub(crate) unsafe fn begin_snapshot(
+    owner: *mut FjInstance,
+    capture: u64,
+    out: *mut FjSnapshotStart,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out);
+        let instance = borrow_instance(owner);
+        run(instance, error, || {
+            let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+            if !valid {
+                return Err(Failure::Input("invalid snapshot output"));
+            }
+            match instance.begin_snapshot(capture)? {
+                state::SnapshotStart::Ready { write_revision } => out.write(FjSnapshotStart {
+                    write_revision,
+                    kind: 1,
+                }),
+                state::SnapshotStart::Deferred => (*out).kind = 2,
+                state::SnapshotStart::Ignored => (*out).kind = 3,
+            }
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance and initialized preparation record through return.
+/// Writable output and diagnostic storage is aligned, exclusive, and disjoint. The call is
+/// synchronous, retains no raw pointer, and performs no host reentry.
+pub(crate) unsafe fn install(
+    owner: *mut FjInstance,
+    capture: u64,
+    write_revision: u64,
+    params: *const FjPreparationParams,
+    input_identity: u64,
+    out_update: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out_update);
+        let instance = borrow_instance(owner);
+        run(instance, error, || {
+            let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+            if !valid || !aligned(params) {
+                return Err(Failure::Input("invalid capture input/output"));
+            }
+            // Protocol rejection precedes snapshot parsing without mutation. This
+            // query does not grant a write or replace install's atomic recheck.
+            if !instance.capture_is_current(capture)? {
+                out_update.write(2);
+                return Ok(());
+            }
+            match preparation::params(&*params) {
+                Ok(params) => out_update.write(update_tag(instance.install(
+                    capture,
+                    write_revision,
+                    params,
+                    input_identity,
+                )?)),
+                Err(error) => {
+                    let kind = if error.category() == FJ_STATUS_ALLOCATION_FAILURE {
+                        CaptureFailureKind::Allocation
+                    } else {
+                        CaptureFailureKind::InvalidControls
+                    };
+                    let mut diagnostic = Diagnostic {
+                        bytes: [0; 2048],
+                        len: 0,
+                    };
+                    let _ = write!(&mut diagnostic, "{error}");
+                    let mut len = diagnostic.len;
+                    while std::str::from_utf8(&diagnostic.bytes[..len]).is_err() {
+                        len -= 1;
+                    }
+                    let text =
+                        std::str::from_utf8(&diagnostic.bytes[..len]).expect("UTF-8 preview");
+                    let update = instance.fail_snapshot(
+                        capture,
+                        write_revision,
+                        CaptureFailure::new(kind, text),
+                    )?;
+                    out_update.write(update_tag(update));
+                    if update == state::Update::Applied {
+                        return Err(Failure::Preparation(error));
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance and initialized diagnostic extent through return. Output
+/// and diagnostic storage is aligned, exclusive, and disjoint. The call is synchronous and
+/// retains no raw pointer.
+pub(crate) unsafe fn invalidate(
+    owner: *mut FjInstance,
+    capture: u64,
+    failure: u32,
+    diagnostic: FjStringView,
+    out_update: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out_update);
+        let instance = borrow_instance(owner);
+        run(instance, error, || {
+            let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+            if !valid {
+                return Err(Failure::Input("invalid update output"));
+            }
+            let failure = CaptureFailure::new(failure_kind(failure)?, diagnostic_text(diagnostic)?);
+            out_update.write(update_tag(instance.invalidate(capture, failure)?));
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Out is cleared, live, aligned and exclusive; both safe owners remain borrowed
+/// through this synchronous projection. Success transfers the complete state.
+unsafe fn write_admission(
+    instance: &Instance,
+    assets: &film_juicer_core::assets::Assets,
+    out: *mut FjAdmission,
+) -> Result<(), Failure> {
+    // SAFETY: The caller admits the exclusive complete output before this helper.
+    unsafe {
+        match instance.admit(assets) {
+            Ok(admission) => {
+                let input_identity = admission.input_identity();
+                let build = admission.build();
+                let route = admission.state().development().route() as u32;
+                let state = Box::into_raw(Box::new(FjPreparedState::from_state(
+                    admission.into_state(),
+                )));
+                out.write(FjAdmission {
+                    state,
+                    input_identity,
+                    build,
+                    kind: 1,
+                    route,
+                });
+                Ok(())
+            }
+            Err(state::Error::Uninitialized) => {
+                (*out).kind = 2;
+                Ok(())
+            }
+            Err(state::Error::RefreshRequired) => {
+                (*out).kind = 7;
+                Ok(())
+            }
+            Err(state::Error::Preparation(error)) => {
+                (*out).kind = if error.is_panic() { 6 } else { 5 };
+                Err(Failure::Preparation(match error {
+                    film_juicer_core::recipe::PrepareError::Asset(error) => {
+                        PreparationFailure::Asset(error)
+                    }
+                    error => PreparationFailure::Preparation(error),
+                }))
+            }
+            Err(error) => {
+                (*out).kind = match &error {
+                    state::Error::Capturing => 3,
+                    state::Error::CaptureFailed(_) => 4,
+                    state::Error::Preparation(_) => 5,
+                    state::Error::Poisoned => 6,
+                    _ => 0,
+                };
+                Err(Failure::State(error))
+            }
+        }
+    }
+}
+
+/// # Safety
+/// The initialized output/error extents are live, aligned and disjoint from each
+/// other and the safe owners. No caller pointer is retained or callback invoked.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn admit_safe_full(
+    instance: &Instance,
+    assets: &film_juicer_core::assets::Assets,
+    out: *mut FjAdmission,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The OFX fixture keeps both owners and output/diagnostics live while
+    // its action admission excludes destruction; this helper retains no borrow.
+    unsafe {
+        let valid = clear(out);
+        run_with(
+            Some(instance),
+            error,
+            || {
+                if !valid {
+                    return Err(Failure::Input("invalid admission output"));
+                }
+                write_admission(instance, assets, out)
+            },
+            || {
+                if valid {
+                    let state = (*out).state;
+                    clear(out);
+                    (*out).kind = 6;
+                    if !state.is_null() {
+                        drop(Box::from_raw(state));
+                    }
+                }
+            },
+        )
+    }
+}
+
+/// # Safety
+/// Borrows one live matching Instance and Assets owner through return. The output and
+/// diagnostic records are initialized, live, aligned, exclusive, and disjoint. A successful
+/// output owns the admitted state; no input pointer is retained.
+pub(crate) unsafe fn admit(
+    owner: *mut FjInstance,
+    assets: *const FjAssets,
+    out: *mut FjAdmission,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        let valid = clear(out);
+        let instance = borrow_instance(owner);
+        run_with(
+            instance,
+            error,
+            || {
+                let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+                if !valid {
+                    return Err(Failure::Input("invalid admission output"));
+                }
+                let assets = preparation::assets(assets).map_err(Failure::Preparation)?;
+                write_admission(instance, assets, out)
+            },
+            || {
+                if valid {
+                    let state = (*out).state;
+                    clear(out);
+                    (*out).kind = 6;
+                    if !state.is_null() {
+                        drop(Box::from_raw(state));
+                    }
+                }
+            },
+        )
+    }
+}
+
+/// # Safety
+/// Consumes one matching live Instance owner exactly once. Caller excludes callbacks, writes,
+/// readers, and outstanding borrows. Diagnostic storage is initialized, live, aligned,
+/// exclusive, and disjoint; the call is synchronous and performs no host reentry.
+pub(crate) unsafe fn destroy(owner: *mut FjInstance, error: *mut FjErrorBuffer) -> FjStatus {
+    // SAFETY: This function owns the checked C operation's raw boundary.
+    unsafe {
+        if !aligned(owner) {
+            return run(None, error, || {
+                Err(Failure::Input("invalid instance owner"))
+            });
+        }
+        let owner = Box::from_raw(owner);
+        run(None, error, move || {
+            // Callback/write exclusion is a caller prerequisite. Admitted states
+            // own their independent Arc and neither close nor drop calls host/CUDA.
+            match Arc::try_unwrap(owner.instance) {
+                Ok(instance) => instance.close(),
+                Err(instance) => {
+                    instance.block();
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// count authorizes exclusive initialized usize storage; static facts are borrowed.
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_instance_abi_facts(count: *mut usize) -> *const usize {
+    if !aligned(count) {
+        return std::ptr::null();
+    }
+    use std::mem::offset_of;
+    static FACTS: &[usize] = &[
+        size_of::<FjCaptureStart>(),
+        align_of::<FjCaptureStart>(),
+        offset_of!(FjCaptureStart, capture),
+        offset_of!(FjCaptureStart, kind),
+        size_of::<FjSnapshotStart>(),
+        align_of::<FjSnapshotStart>(),
+        offset_of!(FjSnapshotStart, write_revision),
+        offset_of!(FjSnapshotStart, kind),
+        size_of::<FjAdmission>(),
+        align_of::<FjAdmission>(),
+        offset_of!(FjAdmission, state),
+        offset_of!(FjAdmission, input_identity),
+        offset_of!(FjAdmission, build),
+        offset_of!(FjAdmission, kind),
+        offset_of!(FjAdmission, route),
+    ];
+    // SAFETY: The caller authorizes the checked exclusive scalar slot.
+    unsafe { count.write(FACTS.len()) };
+    FACTS.as_ptr()
+}
+
+/// # Safety
+/// All initialized outputs/error extents are live, aligned, mutually disjoint
+/// and disjoint from the borrowed Instance. Nothing escapes this calling thread.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn submission_safe(
+    instance: &Instance,
+    out_valid: *mut u32,
+    out: *mut crate::cuda::sys::FjSubmission,
+    out_context: *mut crate::cuda::sys::FjCudaContext,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The OFX action guard retains the real owner through this immediate
+    // projection; the fixture supplies exclusive disjoint outputs/diagnostics.
+    unsafe {
+        let valid = clear(out_valid);
+        let submission_valid = clear(out);
+        let context_valid = clear(out_context);
+        run(Some(instance), error, || {
+            if !valid || !submission_valid || !context_valid {
+                return Err(Failure::Input("invalid submission observation output"));
+            }
+            if let Some(selected) = instance.observe_submission()? {
+                let identity = instance
+                    .identity()
+                    .ok_or(submission::Error::MissingIdentity)?;
+                out.write(crate::cuda::sys::FjSubmission {
+                    instance_token: identity.instance_token,
+                    frame_token: selected.key.frame_token,
+                    submission_id: selected.id,
+                    upload_core_hash: selected.key.upload_core,
+                    dir_hash: selected.key.dir,
+                    scanner_hash: selected.key.scanner,
+                    auto_exposure_hash: selected.key.auto_exposure,
+                });
+                out_context.write(crate::cuda::sys::FjCudaContext {
+                    device_id: selected.key.device_id,
+                    context: selected.key.context,
+                });
+                out_valid.write(1);
+            }
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Output and diagnostics are initialized, live, aligned, exclusive and disjoint
+/// from each other and the borrowed Instance. No pointer survives this call.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn capture_current_safe(
+    instance: &Instance,
+    capture: u64,
+    out: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Action admission retains the owner and the fixture admits each
+    // exclusive output/diagnostic extent for this synchronous projection.
+    unsafe {
+        let valid = clear(out);
+        run(Some(instance), error, || {
+            if !valid {
+                return Err(Failure::Input("invalid current-capture output"));
+            }
+            out.write(u32::from(instance.capture_is_current(capture)?));
+            Ok(())
+        })
+    }
+}
+
+#[cfg(feature = "test-support")]
+test_export!(fj_test_instance_submission(owner: *const FjInstance, out_valid: *mut u32, out: *mut crate::cuda::sys::FjSubmission, out_context: *mut crate::cuda::sys::FjCudaContext, error: *mut FjErrorBuffer) {
+    let valid = clear(out_valid);
+    let submission_valid = clear(out);
+    let context_valid = clear(out_context);
+    let instance = borrow_instance(owner);
+    run(instance, error, || {
+        let instance = instance.ok_or(Failure::Input("invalid instance"))?;
+        if !valid || !submission_valid || !context_valid { return Err(Failure::Input("invalid submission observation output")); }
+        if let Some(selected) = instance.observe_submission()? {
+            let identity = instance.identity().ok_or(submission::Error::MissingIdentity)?;
+            out.write(crate::cuda::sys::FjSubmission {
+                instance_token: identity.instance_token,
+                frame_token: selected.key.frame_token,
+                submission_id: selected.id,
+                upload_core_hash: selected.key.upload_core,
+                dir_hash: selected.key.dir,
+                scanner_hash: selected.key.scanner,
+                auto_exposure_hash: selected.key.auto_exposure,
+            });
+            out_context.write(crate::cuda::sys::FjCudaContext { device_id: selected.key.device_id, context: selected.key.context });
+            out_valid.write(1);
+        }
+        Ok(())
+    })
+});
+
+#[cfg(feature = "test-support")]
+pub(crate) struct FjOfxLifetime {
+    lifetime: std::sync::Weak<()>,
+}
+
+/// # Safety
+/// Initialized output/error extents are live, aligned, exclusive and disjoint.
+/// The Weak owns only observation backing and never retains the OFX instance.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn ofx_lifetime_create(
+    lifetime: std::sync::Weak<()>,
+    out: *mut *mut FjOfxLifetime,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The fixture supplies exclusive storage through synchronous return.
+    unsafe {
+        let valid = clear(out);
+        run(None, error, || {
+            if !valid {
+                return Err(Failure::Input("invalid OFX lifetime output"));
+            }
+            out.write(Box::into_raw(Box::new(FjOfxLifetime { lifetime })));
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Owner is a live matching observation; initialized output/error storage is
+/// aligned, exclusive and disjoint from the owner and every other output.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn ofx_lifetime_live(
+    owner: *const FjOfxLifetime,
+    out: *mut u32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Checked numeric admission precedes caller-authorized live access.
+    unsafe {
+        let valid = clear(out);
+        run(None, error, || {
+            if !valid || !aligned(owner) {
+                return Err(Failure::Input("invalid OFX lifetime observation"));
+            }
+            out.write(u32::from((*owner).lifetime.strong_count() != 0));
+            Ok(())
+        })
+    }
+}
+
+/// # Safety
+/// Matching observation is consumed exactly once, with all readers excluded;
+/// initialized diagnostics are live, aligned, exclusive and disjoint.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn ofx_lifetime_release(
+    owner: *mut FjOfxLifetime,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Matching ownership permits taking the allocation before containment;
+    // even malformed diagnostics or a contained failure must consume this handle.
+    unsafe {
+        if !aligned(owner) {
+            return run(None, error, || {
+                Err(Failure::Input("invalid OFX lifetime owner"))
+            });
+        }
+        let owner = Box::from_raw(owner);
+        run(None, error, move || {
+            drop(owner);
+            Ok(())
+        })
+    }
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) struct FjInstanceLifetime {
+    instance: std::sync::Weak<Instance>,
+}
+
+#[cfg(feature = "test-support")]
+test_export!(fj_test_instance_lifetime_acquire(owner: *const FjInstance, out: *mut *mut FjInstanceLifetime, error: *mut FjErrorBuffer) {
+    let valid = clear(out);
+    let instance = borrow_instance(owner);
+    run(instance, error, || {
+        instance.ok_or(Failure::Input("invalid instance"))?;
+        if !valid { return Err(Failure::Input("invalid lifetime output")); }
+        out.write(Box::into_raw(Box::new(FjInstanceLifetime { instance: Arc::downgrade(&(*owner).instance) })));
+        Ok(())
+    })
+});
+#[cfg(feature = "test-support")]
+test_export!(fj_test_instance_lifetime_live(owner: *const FjInstanceLifetime, out_live: *mut u32, error: *mut FjErrorBuffer) {
+    let valid = clear(out_live);
+    run(None, error, || {
+        if !valid || !aligned(owner) { return Err(Failure::Input("invalid lifetime observation")); }
+        out_live.write(u32::from((*owner).instance.upgrade().is_some()));
+        Ok(())
+    })
+});
+#[cfg(feature = "test-support")]
+test_export!(fj_test_instance_lifetime_release(owner: *mut FjInstanceLifetime, error: *mut FjErrorBuffer) {
+    if !aligned(owner) { return run(None, error, || Err(Failure::Input("invalid lifetime owner"))); }
+    let owner = Box::from_raw(owner);
+    run(None, error, move || { drop(owner); Ok(()) })
+});
+
+#[cfg(feature = "test-support")]
+pub(crate) struct FjInstanceObservation {
+    observation: state::Observation,
+}
+
+#[cfg(feature = "test-support")]
+/// # Safety
+/// Output and error obey the existing observation ABI and remain writable for
+/// this call. Instance is the callback-scoped live safe publication owner.
+pub(crate) unsafe fn observe_safe(
+    instance: &Instance,
+    out: *mut *mut FjInstanceObservation,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The fixture authorizes the output extent under the existing ABI.
+    let valid = unsafe { clear(out) };
+    // SAFETY: Error/output storage is call-local and all writes remain within
+    // their admitted extents; the returned box holds the actual observation.
+    unsafe {
+        run(Some(instance), error, || {
+            if !valid {
+                return Err(Failure::Input("invalid observation output"));
+            }
+            let observation = instance.observe()?;
+            out.write(Box::into_raw(Box::new(FjInstanceObservation {
+                observation,
+            })));
+            Ok(())
+        })
+    }
+}
+
+#[cfg(feature = "test-support")]
+/// # Safety
+/// Output and error obey the existing prepared-state ABI. Instance and Assets
+/// are retained by the original Runtime through synchronous admission.
+pub(crate) unsafe fn admit_safe(
+    instance: &Instance,
+    assets: &film_juicer_core::assets::Assets,
+    out: *mut *mut FjPreparedState,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The fixture authorizes the prepared owner output slot.
+    let valid = unsafe { clear(out) };
+    // SAFETY: Same existing ABI output/error contract; safe admission owns the
+    // complete result before its sole box crosses the test boundary.
+    unsafe {
+        run(Some(instance), error, || {
+            if !valid {
+                return Err(Failure::Input("invalid prepared output"));
+            }
+            let admitted = instance.admit(assets)?;
+            out.write(Box::into_raw(Box::new(FjPreparedState::from_state(
+                admitted.into_state(),
+            ))));
+            Ok(())
+        })
+    }
+}
+#[cfg(feature = "test-support")]
+#[repr(C)]
+pub(crate) struct FjInstanceObservationView {
+    pending_kind: u32,
+    failure_kind: u32,
+    issued: u64,
+    write_revision: u64,
+    outstanding_writes: u64,
+    input_identity: u64,
+    published_identity: u64,
+    build: u64,
+    backing_identity: usize,
+    diagnostic: FjStringView,
+    captured: FjPreparationParams,
+    published: preparation::FjPreparedStateView,
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn captured_projection(
+    params: &film_juicer_core::recipe::Params,
+) -> FjPreparationParams {
+    fn diffusion(
+        params: &film_juicer_core::optics::DiffusionParams,
+    ) -> crate::optics_bridge::FjDiffusionParams {
+        crate::optics_bridge::FjDiffusionParams {
+            active: u32::from(params.active),
+            family: params.family,
+            strength: params.strength,
+            spatial_scale: params.spatial_scale,
+            halo_warmth: params.halo_warmth,
+            core_intensity: params.core_intensity,
+            core_size: params.core_size,
+            halo_intensity: params.halo_intensity,
+            halo_size: params.halo_size,
+            bloom_intensity: params.bloom_intensity,
+            bloom_size: params.bloom_size,
+        }
+    }
+    let dir = &params.dir_couplers;
+    let grain = &params.grain;
+    let halation = &params.scatter_halation;
+    FjPreparationParams {
+        print_exposure: params.print_exposure,
+        print_preflash_exposure: params.print_preflash_exposure,
+        print_gamma_factor: params.print_gamma_factor,
+        preflash_m_filter_cc: params.preflash_m_filter_cc,
+        preflash_y_filter_cc: params.preflash_y_filter_cc,
+        print_shadow_compensation_factor: params.print_shadow_compensation_factor,
+        print_shadow_compensation_density: params.print_shadow_compensation_density,
+        print_shadow_compensation_transition: params.print_shadow_compensation_transition,
+        glare_percent: params.glare_percent,
+        glare_roughness: params.glare_roughness,
+        glare_blur_sigma_px: params.glare_blur_sigma_px,
+        camera_exposure_compensation_ev: params.camera_exposure_compensation_ev,
+        camera_film_format_long_edge_mm: params.camera_film_format_long_edge_mm,
+        film_gamma_factor: params.film_gamma_factor,
+        scanner_lens_blur_sigma_px: params.scanner_lens_blur_sigma_px,
+        scanner_black_level: params.scanner_black_level,
+        scanner_white_level: params.scanner_white_level,
+        gate_weave_amount: params.gate_weave_amount,
+        scanner_unsharp_mask: params.scanner_unsharp_mask,
+        print_ui_ymc_cc: params.print_ui_ymc_cc,
+        camera_filter_uv: params.camera_filter_uv,
+        camera_filter_ir: params.camera_filter_ir,
+        spectral_upsampling_mode: params.spectral_upsampling_mode,
+        ref_ill: params.ref_ill,
+        enl_ill: params.enl_ill,
+        normalize_print_exposure: params.normalize_print_exposure,
+        print_exposure_compensation: params.print_exposure_compensation,
+        input_color_space: params.input_color_space,
+        input_cctf_decoding: params.input_cctf_decoding,
+        input_compression_enabled: params.input_compression_enabled,
+        hanatos2025_adaptation_window: params.hanatos2025_adaptation_window,
+        hanatos2025_adaptation_surface: params.hanatos2025_adaptation_surface,
+        camera_auto_exposure_enabled: params.camera_auto_exposure_enabled,
+        camera_metering_method: params.camera_metering_method,
+        scanner_black_correction: params.scanner_black_correction,
+        scanner_white_correction: params.scanner_white_correction,
+        scanner_lut_resolution: params.scanner_lut_resolution,
+        output_color_space: params.output_color_space,
+        output_cctf_encoding: params.output_cctf_encoding,
+        output_gamut_compression_enabled: params.output_gamut_compression_enabled,
+        film_dust_amount: params.film_dust_amount,
+        film_scratch_amount: params.film_scratch_amount,
+        gate_dust_amount: params.gate_dust_amount,
+        gate_scratch_amount: params.gate_scratch_amount,
+        camera_diffusion: diffusion(&params.camera_diffusion),
+        enlarger_diffusion: diffusion(&params.enlarger_diffusion),
+        film_profile_key: FjStringView {
+            data: params.film_profile_key.as_ptr().cast(),
+            count: params.film_profile_key.len(),
+        },
+        print_profile_key: FjStringView {
+            data: params.print_profile_key.as_ptr().cast(),
+            count: params.print_profile_key.len(),
+        },
+        scan_route: params.scan_route as u32,
+        glare_active: u32::from(params.glare_active),
+        camera_filter_override: u32::from(params.camera_filter_override),
+        scatter_halation: preparation::FjPreparationHalation {
+            active: u32::from(halation.active),
+            scatter_amount: halation.scatter_amount,
+            scatter_spatial_scale: halation.scatter_spatial_scale,
+            halation_amount: halation.halation_amount,
+            halation_spatial_scale: halation.halation_spatial_scale,
+        },
+        dir_couplers: crate::film_recipe_bridge::FjFilmDirParams {
+            active: u32::from(dir.active),
+            amount: dir.amount,
+            inhibition_same_layer: dir.inhibition_same_layer,
+            inhibition_interlayer: dir.inhibition_interlayer,
+            diffusion_size_um: dir.diffusion_size_um,
+            diffusion_tail_um: dir.diffusion_tail_um,
+            diffusion_tail_weight: dir.diffusion_tail_weight,
+            gamma_use_stock: u32::from(dir.gamma_use_stock),
+            gamma_same_layer_rgb: dir.gamma_same_layer_rgb,
+            gamma_interlayer_r_to_gb: dir.gamma_interlayer_r_to_gb,
+            gamma_interlayer_g_to_rb: dir.gamma_interlayer_g_to_rb,
+            gamma_interlayer_b_to_rg: dir.gamma_interlayer_b_to_rg,
+            langmuir_donor_k_rgb: dir.langmuir_donor_k_rgb,
+            langmuir_receiver_k_rgb: dir.langmuir_receiver_k_rgb,
+        },
+        grain: crate::film_recipe_bridge::FjVisualGrainParams {
+            active: u32::from(grain.active),
+            sublayers_active: u32::from(grain.sublayers_active),
+            particle_area_um2: grain.particle_area_um2,
+            particle_scale_cmy: grain.particle_scale_cmy,
+            particle_scale_layers: grain.particle_scale_layers,
+            particle_density_min_cmy: grain.particle_density_min_cmy,
+            uniformity_cmy: grain.uniformity_cmy,
+            correlation_sigma_px: grain.correlation_sigma_px,
+            dye_cloud_blur_um: grain.dye_cloud_blur_um,
+            micro_structure: grain.micro_structure,
+            sublayer_count: grain.sublayer_count,
+            amplitude: grain.amplitude,
+            chroma_mix: grain.chroma_mix,
+            chroma_shared_weight: grain.chroma_shared_weight,
+            chroma_independent_weight: grain.chroma_independent_weight,
+            coarse_weight: grain.coarse_weight,
+            mid_weight: grain.mid_weight,
+            size_mix_scale: grain.size_mix_scale,
+            clump_temporal_mix: grain.clump_temporal_mix,
+            clump_morph_period_sec: grain.clump_morph_period_sec,
+            debug_view: grain.debug_view,
+        },
+    }
+}
+
+/// Projects the Rust capture defaults into an independent fixture record.
+///
+/// # Safety
+/// Output and diagnostic records and any diagnostic backing must be initialized,
+/// aligned, live, exclusive, and disjoint for this synchronous call. No caller
+/// storage is retained, no foreign callback is invoked, and execution stays on
+/// the calling thread.
+#[cfg(feature = "test-support")]
+pub(crate) unsafe fn preparation_defaults(
+    out: *mut FjPreparationParams,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The caller supplies the exclusive output and diagnostic extents.
+    unsafe {
+        let valid = clear(out);
+        run(None, error, || {
+            if !valid {
+                return Err(Failure::Input("invalid preparation defaults output"));
+            }
+            let params = film_juicer_core::capture::defaults();
+            let mut result = captured_projection(&params);
+            // The local Params owns its key strings; return no borrowed pointers.
+            result.film_profile_key = FjStringView {
+                data: std::ptr::null(),
+                count: 0,
+            };
+            result.print_profile_key = FjStringView {
+                data: std::ptr::null(),
+                count: 0,
+            };
+            out.write(result);
+            Ok(())
+        })
+    }
+}
+
+#[cfg(feature = "test-support")]
+test_export!(fj_test_instance_observation_acquire(owner: *const FjInstance, out: *mut *mut FjInstanceObservation, error: *mut FjErrorBuffer) {
+    let valid = clear(out);
+    let instance = borrow_instance(owner);
+    run(instance, error, || {
+        let instance = instance.ok_or(Failure::Input("invalid observed instance"))?;
+        if !valid { return Err(Failure::Input("invalid observation output")); }
+        let observation = instance.observe()?;
+        out.write(Box::into_raw(Box::new(FjInstanceObservation { observation })));
+        Ok(())
+    })
+});
+#[cfg(feature = "test-support")]
+test_export!(fj_test_instance_observation_view(owner: *const FjInstanceObservation, out: *mut FjInstanceObservationView, error: *mut FjErrorBuffer) {
+    let valid = clear(out);
+    run(None, error, || {
+        if !valid || !aligned(owner) { return Err(Failure::Input("invalid observation view")); }
+        let observation = &(*owner).observation;
+        (*out).issued = observation.issued;
+        (*out).write_revision = observation.write_revision;
+        (*out).outstanding_writes = observation.outstanding_writes;
+        use state::ObservedPending;
+        (*out).pending_kind = match &observation.pending {
+            ObservedPending::Uninitialized => 0, ObservedPending::Capturing => 1,
+            ObservedPending::AwaitingWrites => 2, ObservedPending::NeedsRefresh => 3,
+            ObservedPending::Valid { params, identity } => {
+                (*out).input_identity = *identity;
+                (*out).captured = captured_projection(params); 4
+            }
+            ObservedPending::Failed(failure) => {
+                (*out).failure_kind = match failure.kind() {
+                    CaptureFailureKind::InvalidControls => 1, CaptureFailureKind::Host => 2, CaptureFailureKind::Allocation => 3,
+                };
+                (*out).diagnostic = FjStringView { data: failure.diagnostic().as_ptr().cast(), count: failure.diagnostic().len() }; 5
+            }
+            ObservedPending::Blocked => 6,
+        };
+        if let Some(admitted) = &observation.published {
+            (*out).published_identity = admitted.input_identity();
+            (*out).build = admitted.build();
+            (*out).backing_identity = admitted.state() as *const _ as usize;
+            let held = FjPreparedState::from_state(Arc::clone(admitted.shared_state()));
+            let status = preparation::state_view(&held, &mut (*out).published, std::ptr::null_mut());
+            if status.category != FJ_STATUS_SUCCESS { return Err(Failure::Input("cannot project observed state")); }
+        }
+        Ok(())
+    })
+});
+#[cfg(feature = "test-support")]
+test_export!(fj_test_instance_observation_release(owner: *mut FjInstanceObservation, error: *mut FjErrorBuffer) {
+    if !aligned(owner) { return run(None, error, || Err(Failure::Input("invalid observation owner"))); }
+    let owner = Box::from_raw(owner);
+    run(None, error, move || { drop(owner); Ok(()) })
+});
+
+#[cfg(feature = "test-support")]
+mod hooks {
+    use std::cell::Cell;
+    type Callback = Option<unsafe extern "C" fn(*mut std::ffi::c_void)>;
+    thread_local! {
+        static BEFORE: Cell<Callback> = const { Cell::new(None) };
+        static AFTER: Cell<Callback> = const { Cell::new(None) };
+        static CONTEXT: Cell<*mut std::ffi::c_void> = const { Cell::new(std::ptr::null_mut()) };
+    }
+    fn before() {
+        if let Some(callback) = BEFORE.get() {
+            // SAFETY: The fixture caller keeps the callback/context live on this
+            // thread through clearing; callback exceptions never cross this edge.
+            unsafe { callback(CONTEXT.get()) };
+        }
+    }
+    fn after() {
+        if let Some(callback) = AFTER.get() {
+            // SAFETY: Same bounded registration and exception-exclusion contract.
+            unsafe { callback(CONTEXT.get()) };
+        }
+    }
+    /// # Safety
+    /// Callbacks/context remain live on this thread through clearing. Callbacks
+    /// contain native exceptions and are never retained in production safe state.
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn fj_test_instance_prepare_hooks(
+        before_hook: Callback,
+        after_hook: Callback,
+        context: *mut std::ffi::c_void,
+    ) {
+        BEFORE.set(before_hook);
+        AFTER.set(after_hook);
+        CONTEXT.set(context);
+        crate::instance::testing::set_prepare_hooks(
+            before_hook.map(|_| before as fn()),
+            after_hook.map(|_| after as fn()),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::offset_of;
+    use crate::test_cases::RowCases;
+
+    #[test]
+    fn identity_edge_clears_outputs_and_rejects_rebinding() {
+        // SAFETY: Local records are disjoint and the instance remains live through each call.
+        unsafe {
+            let mut owner = std::ptr::null_mut();
+            assert_eq!(
+                create(&mut owner, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+            let (mut initialized, mut seed, mut token) = (9, 9, 9);
+            assert_eq!(
+                identity(
+                    owner,
+                    &mut initialized,
+                    &mut seed,
+                    &mut token,
+                    std::ptr::null_mut()
+                )
+                .category,
+                FJ_STATUS_SUCCESS
+            );
+            assert_eq!((initialized, seed, token), (0, 0, 0));
+            assert_eq!(
+                bind_identity(owner, 42, 73, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+            assert_eq!(
+                bind_identity(owner, 1, 2, std::ptr::null_mut()).category,
+                FJ_STATUS_INTERNAL_FAILURE
+            );
+            assert_eq!(
+                identity(
+                    owner,
+                    &mut initialized,
+                    &mut seed,
+                    &mut token,
+                    std::ptr::null_mut()
+                )
+                .category,
+                FJ_STATUS_SUCCESS
+            );
+            assert_eq!((initialized, seed, token), (1, 42, 73));
+            let mut cleared = 9;
+            assert_eq!(
+                invalidate_submission(owner, 1, 2, &mut cleared, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+            assert_eq!(cleared, 0);
+            assert_eq!(
+                identity(
+                    std::ptr::null(),
+                    &mut initialized,
+                    &mut seed,
+                    &mut token,
+                    std::ptr::null_mut()
+                )
+                .category,
+                FJ_STATUS_UNSUPPORTED_INPUT
+            );
+            assert_eq!((initialized, seed, token), (0, 0, 0));
+            assert_eq!(
+                destroy(owner, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+        }
+    }
+
+    #[test]
+    fn identity_and_invalidation_reject_invalid_edges() {
+        // SAFETY: The aligned outputs are exclusive and live. Deliberately null or
+        // misaligned pointers are rejected before any access to their storage.
+        unsafe {
+            let mut owner = std::ptr::null_mut();
+            assert_eq!(
+                create(&mut owner, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+            let bad_owner = (owner.cast::<u8>()).add(1).cast::<FjInstance>();
+            for invalid in [std::ptr::null(), bad_owner.cast_const()] {
+                assert_eq!(
+                    bind_identity(invalid, 1, 2, std::ptr::null_mut()).category,
+                    FJ_STATUS_UNSUPPORTED_INPUT
+                );
+                let (mut initialized, mut seed, mut token) = (9u32, 9u64, 9u64);
+                assert_eq!(
+                    identity(
+                        invalid,
+                        &mut initialized,
+                        &mut seed,
+                        &mut token,
+                        std::ptr::null_mut()
+                    )
+                    .category,
+                    FJ_STATUS_UNSUPPORTED_INPUT
+                );
+                assert_eq!((initialized, seed, token), (0, 0, 0));
+                let mut cleared = 9;
+                assert_eq!(
+                    invalidate_submission(invalid, 1, 2, &mut cleared, std::ptr::null_mut())
+                        .category,
+                    FJ_STATUS_UNSUPPORTED_INPUT
+                );
+                assert_eq!(cleared, 0);
+            }
+            assert_eq!(
+                bind_identity(owner, 4, 5, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+            for lane in 0..3 {
+                for misaligned in [false, true] {
+                    let (mut initialized, mut seed, mut token) = (9u32, 9u64, 9u64);
+                    let init_ptr = if lane == 0 {
+                        if misaligned {
+                            (&mut initialized as *mut u32).cast::<u8>().add(1).cast()
+                        } else {
+                            std::ptr::null_mut()
+                        }
+                    } else {
+                        &mut initialized
+                    };
+                    let seed_ptr = if lane == 1 {
+                        if misaligned {
+                            (&mut seed as *mut u64).cast::<u8>().add(1).cast()
+                        } else {
+                            std::ptr::null_mut()
+                        }
+                    } else {
+                        &mut seed
+                    };
+                    let token_ptr = if lane == 2 {
+                        if misaligned {
+                            (&mut token as *mut u64).cast::<u8>().add(1).cast()
+                        } else {
+                            std::ptr::null_mut()
+                        }
+                    } else {
+                        &mut token
+                    };
+                    assert_eq!(
+                        identity(owner, init_ptr, seed_ptr, token_ptr, std::ptr::null_mut())
+                            .category,
+                        FJ_STATUS_UNSUPPORTED_INPUT
+                    );
+                    assert_eq!(initialized, if lane == 0 { 9 } else { 0 });
+                    assert_eq!(seed, if lane == 1 { 9 } else { 0 });
+                    assert_eq!(token, if lane == 2 { 9 } else { 0 });
+                }
+            }
+            let mut cleared = 9u32;
+            let bad_output = (&mut cleared as *mut u32).cast::<u8>().add(1).cast();
+            for output in [std::ptr::null_mut(), bad_output] {
+                assert_eq!(
+                    invalidate_submission(owner, 1, 2, output, std::ptr::null_mut()).category,
+                    FJ_STATUS_UNSUPPORTED_INPUT
+                );
+                assert_eq!(cleared, 9);
+            }
+            let mut diagnostic = FjErrorBuffer {
+                data: std::ptr::null_mut(),
+                capacity: 1,
+                length: 99,
+            };
+            let (mut initialized, mut seed, mut token) = (9u32, 9u64, 9u64);
+            assert_eq!(
+                identity(
+                    owner,
+                    &mut initialized,
+                    &mut seed,
+                    &mut token,
+                    &mut diagnostic
+                )
+                .category,
+                FJ_STATUS_UNSUPPORTED_INPUT
+            );
+            assert_eq!((initialized, seed, token, diagnostic.length), (0, 0, 0, 0));
+            cleared = 9;
+            diagnostic.length = 99;
+            assert_eq!(
+                invalidate_submission(owner, 1, 2, &mut cleared, &mut diagnostic).category,
+                FJ_STATUS_UNSUPPORTED_INPUT
+            );
+            assert_eq!((cleared, diagnostic.length), (0, 0));
+            (*owner).instance.poison_submission_for_test();
+            cleared = 9;
+            assert_eq!(
+                invalidate_submission(owner, 1, 2, &mut cleared, std::ptr::null_mut()).category,
+                FJ_STATUS_INTERNAL_FAILURE
+            );
+            assert_eq!(cleared, 0);
+            assert_eq!(
+                destroy(owner, std::ptr::null_mut()).category,
+                FJ_STATUS_SUCCESS
+            );
+        }
+    }
+
+    #[test]
+    fn instance_layout_and_consuming_write_protocol() {
+        assert_eq!(
+            (
+                size_of::<FjCaptureStart>(),
+                align_of::<FjCaptureStart>(),
+                offset_of!(FjCaptureStart, capture),
+                offset_of!(FjCaptureStart, kind)
+            ),
+            (16, 8, 0, 8)
+        );
+        assert_eq!(
+            (
+                size_of::<FjSnapshotStart>(),
+                align_of::<FjSnapshotStart>(),
+                offset_of!(FjSnapshotStart, write_revision),
+                offset_of!(FjSnapshotStart, kind)
+            ),
+            (16, 8, 0, 8)
+        );
+        assert_eq!(
+            (
+                size_of::<FjAdmission>(),
+                align_of::<FjAdmission>(),
+                offset_of!(FjAdmission, state),
+                offset_of!(FjAdmission, input_identity),
+                offset_of!(FjAdmission, build),
+                offset_of!(FjAdmission, kind),
+                offset_of!(FjAdmission, route)
+            ),
+            (32, 8, 0, 8, 16, 24, 28)
+        );
+        let cases = [
+            "success-refresh",
+            "malformed-consumes",
+            "failed-write",
+            "poisoned-guard",
+        ];
+        let mut rows = RowCases::new("instance-write-protocol", cases);
+        for id in cases {
+            let row = rows.case(id);
+            // SAFETY: Local initialized C records are disjoint and every owning
+            // handle is consumed once; no raw owner is used after its finish.
+            unsafe {
+                let mut owner = std::ptr::null_mut();
+                assert_eq!(
+                    create(&mut owner, std::ptr::null_mut()).category,
+                    FJ_STATUS_SUCCESS
+                );
+                let mut start = FjCaptureStart {
+                    capture: 99,
+                    kind: 99,
+                };
+                assert_eq!(
+                    begin_capture(owner, 0, &mut start, std::ptr::null_mut()).category,
+                    FJ_STATUS_SUCCESS
+                );
+                let first = start.capture;
+                let mut write = std::ptr::null_mut();
+                let mut kind = 99;
+                assert_eq!(
+                    begin_host_write(owner, first, &mut write, &mut kind, std::ptr::null_mut())
+                        .category,
+                    FJ_STATUS_SUCCESS
+                );
+                assert_eq!(kind, 1);
+                assert!(!write.is_null());
+                assert_eq!(
+                    begin_capture(owner, 1, &mut start, std::ptr::null_mut()).category,
+                    FJ_STATUS_SUCCESS
+                );
+                let mut snapshot = FjSnapshotStart {
+                    write_revision: 99,
+                    kind: 99,
+                };
+                assert_eq!(
+                    begin_snapshot(owner, start.capture, &mut snapshot, std::ptr::null_mut())
+                        .category,
+                    FJ_STATUS_SUCCESS
+                );
+                assert_eq!((snapshot.kind, snapshot.write_revision), (2, 0));
+                let mut refresh = 99;
+                let failure = if id == "failed-write" {
+                    3
+                } else if id == "malformed-consumes" {
+                    99
+                } else {
+                    0
+                };
+                if id == "poisoned-guard" {
+                    (*owner).instance.block();
+                }
+                let result = host_write_finish(
+                    write,
+                    failure,
+                    FjStringView {
+                        data: std::ptr::null(),
+                        count: 0,
+                    },
+                    &mut refresh,
+                    std::ptr::null_mut(),
+                );
+                match id {
+                    "malformed-consumes" => {
+                        assert_eq!((result.category, refresh), (FJ_STATUS_UNSUPPORTED_INPUT, 0));
+                        assert!(
+                            matches!((*owner).instance.admit(&film_juicer_core::assets::Assets::new(std::path::PathBuf::new())), Err(state::Error::CaptureFailed(failure)) if failure.kind() == CaptureFailureKind::Host)
+                        );
+                    }
+                    "failed-write" => {
+                        assert_eq!((result.category, refresh), (FJ_STATUS_SUCCESS, 0))
+                    }
+                    "poisoned-guard" => {
+                        assert_eq!((result.category, refresh), (FJ_STATUS_INTERNAL_FAILURE, 0))
+                    }
+                    _ => {
+                        assert_eq!((result.category, refresh), (FJ_STATUS_SUCCESS, 1));
+                        assert_eq!(
+                            begin_capture(owner, 2, &mut start, std::ptr::null_mut()).category,
+                            FJ_STATUS_SUCCESS
+                        );
+                        assert_eq!(start.kind, 1);
+                    }
+                }
+                assert_eq!(
+                    destroy(owner, std::ptr::null_mut()).category,
+                    FJ_STATUS_SUCCESS
+                );
+            }
+            row.passed();
+        }
+        rows.finish();
+    }
+}

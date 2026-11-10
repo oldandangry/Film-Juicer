@@ -1,30 +1,33 @@
-# Product implementation shared by the OFX module and opt-in acceptance executable.
-set(JUICER_SOURCES
+# One native object set, shared by the OFX module and public test archive.
+set(JUICER_NATIVE_SOURCES
+    src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp
+    native/juicer_cuda_api.cpp
+    native/juicer_cuda_call_scope.cpp
+    native/juicer_cuda_descriptors.cpp
+    native/juicer_cuda_prepared.cpp
+    native/juicer_host_preparation.cpp
     src/Cuda/JuicerCudaDeviceLedger.cpp
     src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp
+    src/Cuda/JuicerCudaExecutor.cpp
+    src/Cuda/JuicerCudaFailure.cpp
     src/Cuda/JuicerCudaDriver.cpp
     src/Cuda/JuicerCudaResources.cpp
     src/Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp
     src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp
-    src/JuicerEffect.cpp
-    src/JuicerState.cpp
-    src/mainProcessing.cpp
-    src/ProfileAssets.cpp
-    src/ProfileCatalog.cpp
     src/ProcessRoot.cpp
-    src/DiffusionHostBehavior.cpp
     src/DiffusionExecution.cpp
-    src/GamutCompression.cpp
-    src/RenderRecipe.cpp
     src/Cuda/JuicerCudaFilmPayloads.cpp
-    src/FilmEffectsFrameDescriptors.cpp
-    src/ResourceAssetLibrary.cpp
-    src/ScatterHalation.cpp
-    src/Scanner.cpp
-    src/SpectralProcessing.cpp
     src/Cuda/Diffusion/JuicerCudaDiffusion.cu
     src/Cuda/Film/JuicerCudaScatterHalation.cu
     src/Cuda/Film/JuicerCudaFilmPipeline.cu
     src/Cuda/JuicerCudaAutoExposure.cu
     src/Cuda/Scan/JuicerCudaScanPipeline.cu
+)
+
+set(JUICER_HOST_SOURCES
+    src/DiffusionHostBehavior.cpp
+    src/RenderValues.cpp
+    src/FilmEffectsFrameDescriptors.cpp
+    src/JuicerDirBoundary.cpp
+    src/ScanRoute.cpp
 )

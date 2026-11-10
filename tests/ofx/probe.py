@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
+import unittest
 
 
 faulthandler.enable()
@@ -138,13 +140,47 @@ def get_params(handle, output):
     return 0
 
 
-image_suite = (pointer_type * 13)(
-    callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_handle),
-    callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_params),
-)
+# Load validates each consumed V1 slot even though this probe only calls
+# Load/Describe/Unload. Unused clip/parameter slots fail if invoked; they do
+# not simulate image access or parameter execution. The variadic entries use
+# their fixed C prefix and are never invoked by these lifecycle actions.
+unsupported_calls = []
+messages = []
+
+
+def unsupported(name, arguments):
+    def reject(*_arguments):
+        unsupported_calls.append(name)
+        return 5  # kOfxStatErrUnsupported
+    return callback(int_type, arguments, reject)
+
+
+image_suite = (pointer_type * 13)()
+image_suite[0] = callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_handle)
+image_suite[1] = callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_params)
+image_suite[2] = unsupported("clipDefine", [pointer_type, string_type, c.POINTER(pointer_type)])
+image_suite[3] = unsupported("clipGetHandle", [pointer_type, string_type, c.POINTER(pointer_type), c.POINTER(pointer_type)])
+image_suite[5] = unsupported("clipGetImage", [pointer_type, double_type, pointer_type, c.POINTER(pointer_type)])
+image_suite[6] = unsupported("clipReleaseImage", [pointer_type])
+image_suite[7] = unsupported("clipGetRegionOfDefinition", [pointer_type, double_type, pointer_type])
+image_suite[8] = unsupported("abort", [pointer_type])
 parameter_suite = (pointer_type * 32)()
+parameter_suite[0] = unsupported("paramDefine", [pointer_type, string_type, string_type, c.POINTER(pointer_type)])
+parameter_suite[1] = unsupported("paramGetHandle", [pointer_type, string_type, c.POINTER(pointer_type), c.POINTER(pointer_type)])
 parameter_suite[2] = callback(int_type, [pointer_type, c.POINTER(pointer_type)], get_handle)
+parameter_suite[3] = unsupported("paramGetPropertySet", [pointer_type, c.POINTER(pointer_type)])
+parameter_suite[4] = unsupported("paramGetValue", [pointer_type])
+parameter_suite[8] = unsupported("paramSetValue", [pointer_type])
+
+
+def message(_handle, kind, message_id, text):
+    messages.append([kind, message_id, text])
+    return 0
+
+
+message_suite = (pointer_type * 1)(callback(int_type, [pointer_type, string_type, string_type, string_type], message))
 dummy_suite = (pointer_type * 32)()
+
 suite_requests = []
 
 
@@ -156,7 +192,9 @@ def fetch(_handle, name, version):
         return c.addressof(image_suite)
     if name == b"OfxParameterSuite":
         return c.addressof(parameter_suite)
-    if name in (b"OfxMemorySuite", b"OfxMultiThreadSuite", b"OfxMessageSuite"):
+    if name == b"OfxMessageSuite":
+        return c.addressof(message_suite)
+    if name in (b"OfxMemorySuite", b"OfxMultiThreadSuite"):
         return c.addressof(dummy_suite)
     return None
 
@@ -177,71 +215,105 @@ class Plugin(c.Structure):
     ]
 
 
-host = Host(1, callback(pointer_type, [pointer_type, string_type, int_type], fetch))
-preloaded = [c.CDLL(str(path), mode=os.RTLD_NOW | os.RTLD_GLOBAL) for path in preload_paths]
-module = c.CDLL(str(module_path), mode=os.RTLD_NOW | os.RTLD_LOCAL)
-module.OfxGetNumberOfPlugins.restype = int_type
-module.OfxGetPlugin.argtypes = [int_type]
-module.OfxGetPlugin.restype = c.POINTER(Plugin)
-plugin_count = module.OfxGetNumberOfPlugins()
-if plugin_count != 1:
-    raise SystemExit(f"expected one OFX plugin, got {plugin_count}")
-plugin = module.OfxGetPlugin(0).contents
-c.CFUNCTYPE(None, c.POINTER(Host))(plugin.setHost)(c.byref(host))
-identifier = plugin.identifier.decode()
-entry = c.CFUNCTYPE(int_type, string_type, pointer_type, pointer_type, pointer_type)(plugin.mainEntry)
-results = {}
-described_properties = None
-for action, handle in (
-    (b"OfxActionLoad", None),
-    (b"OfxActionDescribe", 2),
-    (b"OfxActionUnload", None),
-):
-    print("Running " + action.decode(), flush=True)
-    results[action.decode()] = entry(action, handle, None, None)
-    if action == b"OfxActionDescribe" and results[action.decode()] == 0:
-        described_properties = {
-            key.decode(): [value.decode() if isinstance(value, bytes) else value
-                           for value in values]
-            for key, values in sorted(props[2].items())
-        }
-    if results[action.decode()] != 0:
-        break
+OPTIONS = None
 
-if args.descriptor_output:
-    args.descriptor_output.parent.mkdir(parents=True, exist_ok=True)
-    args.descriptor_output.write_text(
-        json.dumps(described_properties, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-if args.expected_descriptor:
-    expected = json.loads(args.expected_descriptor.read_text(encoding="utf-8"))
-    if described_properties != expected.get("properties", expected):
-        raise SystemExit("OFX descriptor properties differ from captured reference")
 
-print(
-    json.dumps(
-        {
-            "module": str(module_path),
-            "sha256": hashlib.file_digest(module_path.open("rb"), "sha256").hexdigest(),
-            "preloaded": [str(path) for path in preload_paths],
-            "identifier": identifier,
-            "actions": results,
-            "suite_requests": suite_requests,
-            "descriptor_properties": described_properties,
-            "scope": "Synthetic host lifecycle with optional host libraries; no rendering",
-        },
-        indent=2,
-    )
-)
-expected_results = {
-    "OfxActionLoad": 0,
-    "OfxActionDescribe": 0,
-    "OfxActionUnload": 0,
-}
-if results != expected_results:
-    raise SystemExit(f"unexpected OFX lifecycle results: {results!r}")
-cuda_support = props.get(2, {}).get(b"OfxImageEffectPropCudaRenderSupported")
-if cuda_support != [b"true"]:
-    raise SystemExit(f"unexpected CUDA support declaration: {cuda_support!r}")
-print("OFX_HOST_COMPAT=PASS", flush=True)
+class SyntheticHostLifecycleTests(unittest.TestCase):
+    def test_plugin_actions_and_descriptor(self):
+        args = OPTIONS
+        module_path = args.module.resolve()
+        preload_paths = [path.resolve() for path in args.preload]
+        self.subtest_cases = (
+            "action:OfxActionLoad",
+            "action:OfxActionDescribe",
+            "descriptor",
+            "action:OfxActionUnload",
+        )
+
+        host = Host(1, callback(pointer_type, [pointer_type, string_type, int_type], fetch))
+        preload_mode = os.RTLD_NOW | os.RTLD_GLOBAL if os.name != "nt" else c.DEFAULT_MODE
+        module_mode = os.RTLD_NOW | os.RTLD_LOCAL if os.name != "nt" else c.DEFAULT_MODE
+        self.preloaded_libraries = [c.CDLL(str(path), mode=preload_mode) for path in preload_paths]
+        module = c.CDLL(str(module_path), mode=module_mode)
+        module.OfxGetNumberOfPlugins.restype = int_type
+        module.OfxGetPlugin.argtypes = [int_type]
+        module.OfxGetPlugin.restype = c.POINTER(Plugin)
+        plugin_count = module.OfxGetNumberOfPlugins()
+        self.assertEqual(plugin_count, 1, f"expected one OFX plugin, got {plugin_count}")
+        plugin = module.OfxGetPlugin(0).contents
+        c.CFUNCTYPE(None, c.POINTER(Host))(plugin.setHost)(c.byref(host))
+        identifier = plugin.identifier.decode()
+        entry = c.CFUNCTYPE(int_type, string_type, pointer_type, pointer_type, pointer_type)(plugin.mainEntry)
+        results = {}
+        described_properties = None
+        actions = (
+            (b"OfxActionLoad", None),
+            (b"OfxActionDescribe", 2),
+            (b"OfxActionUnload", None),
+        )
+        for action, handle in actions:
+            name = action.decode()
+            with self.subTest(case="action:" + name):
+                print("Running " + name, flush=True)
+                results[name] = entry(action, handle, None, None)
+                self.assertEqual(results[name], 0, f"unexpected {name} result")
+
+            if action == b"OfxActionDescribe" and results[name] == 0:
+                described_properties = {
+                    key.decode(): [value.decode() if isinstance(value, bytes) else value
+                                   for value in values]
+                    for key, values in sorted(props[2].items())
+                }
+                with self.subTest(case="descriptor"):
+                    if args.expected_descriptor:
+                        expected = json.loads(args.expected_descriptor.read_text(encoding="utf-8"))
+                        self.assertEqual(described_properties, expected.get("properties", expected),
+                                         "OFX descriptor properties differ from captured reference")
+                    cuda_support = props.get(2, {}).get(b"OfxImageEffectPropCudaRenderSupported")
+                    self.assertEqual(cuda_support, [b"true"], "unexpected CUDA support declaration")
+
+            if results[name] != 0:
+                break
+
+        if args.descriptor_output:
+            args.descriptor_output.parent.mkdir(parents=True, exist_ok=True)
+            args.descriptor_output.write_text(
+                json.dumps(described_properties, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+        self.assertEqual(unsupported_calls, [], "lifecycle requested an unsupported host operation")
+        self.assertEqual(messages, [], "unexpected lifecycle host message")
+        self.assertEqual(results, {
+            "OfxActionLoad": 0,
+            "OfxActionDescribe": 0,
+            "OfxActionUnload": 0,
+        })
+        print(
+            json.dumps(
+                {
+                    "module": str(module_path),
+                    "sha256": hashlib.file_digest(module_path.open("rb"), "sha256").hexdigest(),
+                    "preloaded": [str(path) for path in preload_paths],
+                    "identifier": identifier,
+                    "actions": results,
+                    "suite_requests": suite_requests,
+                    "descriptor_properties": described_properties,
+                    "scope": "Synthetic host lifecycle with optional host libraries; no rendering",
+                },
+                indent=2,
+            )
+        )
+        print("OFX_HOST_COMPAT=PASS", flush=True)
+
+    test_plugin_actions_and_descriptor.required_subtests = True
+
+
+def main() -> int:
+    global OPTIONS
+    OPTIONS = parse_args()
+    return unittest.main(argv=[sys.argv[0]], exit=False).result.wasSuccessful()
+
+
+if __name__ == "__main__":
+    raise SystemExit(0 if main() else 1)

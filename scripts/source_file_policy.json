@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "verifierIndependentPrefixes": [
+    "src/",
+    "rust/film-juicer-core/src/",
+    "rust/film-juicer-plugin/src/"
+  ],
+  "verifierIndependentExtensions": [".cpp", ".cu", ".rs"],
+  "verifierRequiredPaths": [
+    "src/ScanRoute.cpp",
+    "src/RenderValues.cpp",
+    "rust/film-juicer-core/src/route.rs",
+    "rust/film-juicer-core/src/color/output.rs"
+  ],
+  "sourceRoot": "src",
+  "supportedExtensions": [
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inl",
+    ".ixx",
+    ".cu",
+    ".cuh",
+    ".inc"
+  ],
+  "headerLikeExtensions": [
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inl",
+    ".ixx",
+    ".cuh",
+    ".inc"
+  ],
+  "translationUnitExtensions": [
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".cu"
+  ],
+  "ignoredPrefixes": [
+    "external/",
+    "installer/",
+    "juicer/",
+    "x64/",
+    "Resources/",
+    "docs/"
+  ],
+  "generatedPaths": [
+    "rust/film-juicer-plugin/src/cuda/sys.rs",
+    "rust/film-juicer-plugin/src/ofx/sys.rs",
+    "src/GeneratedColorSpaces.cpp",
+    "src/GeneratedColorSpaces.h"
+  ],
+  "qualityOwnedPrefixes": [
+    "cmake/",
+    "native/",
+    "rust/",
+    "scripts/",
+    "src/",
+    "tests/"
+  ],
+  "qualityExcludedPrefixes": [
+    ".juicer-local/",
+    "ArchiveOldTestingFiles/",
+    "Resources/",
+    "external/",
+    "out/",
+    "third_party/",
+    "tools/"
+  ]
+}

@@ -1,0 +1,4 @@
+check-private-items = true
+# Handwritten cross-crate Rust APIs follow the same rules as private code.
+avoid-breaking-exported-api = false
+upper-case-acronyms-aggressive = true

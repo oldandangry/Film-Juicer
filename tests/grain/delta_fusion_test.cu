@@ -6,12 +6,16 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <string>
+#include <string_view>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <cuda_runtime.h>
 
 #include "Cuda/JuicerCudaPayloads.h"
+#include "../ffi/case_results.h"
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
@@ -21,6 +25,11 @@ __global__ void grain_layer_kernel(JuicerCuda::GrainPayload, int, int, const flo
 __global__ void grain_apply_simple_kernel(JuicerCuda::GrainPayload, int, int, const float*, float*, int);
 
 namespace {
+    void require(bool condition, const char* message) {
+        if (!condition)
+            throw std::runtime_error(message);
+    }
+
     void require_cuda(cudaError_t status) {
         if (status != cudaSuccess) {
             throw std::runtime_error(cudaGetErrorString(status));
@@ -84,6 +93,58 @@ namespace {
         Unblurred,
         Simple
     };
+
+    std::string shape_name(Shape shape) {
+        switch (shape) {
+            case Shape::Triplet:
+                return "triplet";
+            case Shape::SeparateLayers:
+                return "separate-layers";
+            case Shape::FinalLayerUnblurred:
+                return "final-layer-unblurred";
+            case Shape::Unblurred:
+                return "unblurred";
+            case Shape::Simple:
+                return "simple";
+        }
+        throw std::runtime_error("unknown grain shape");
+    }
+
+    std::string float_word(float value) {
+        return std::to_string(std::bit_cast<std::uint32_t>(value));
+    }
+
+    std::string numerical_case_id(
+        Shape shape,
+        int width,
+        int height,
+        float minimum,
+        float time,
+        std::string_view weight = "normal") {
+        return shape_name(shape) + "/" + std::to_string(width) + "x" +
+               std::to_string(height) + "/minimum-" + float_word(minimum) +
+               "/time-" + float_word(time) + "/weight-" + std::string(weight);
+    }
+
+    std::vector<std::string> numerical_case_ids() {
+        const std::array shapes{Shape::Triplet, Shape::SeparateLayers, Shape::FinalLayerUnblurred, Shape::Unblurred, Shape::Simple};
+        const std::array extents{std::array{1, 1}, std::array{1, 11}, std::array{33, 9}};
+        const std::array minima{0.0f, -0.0f, 0.08f, -0.08f, -std::numeric_limits<float>::max()};
+        const std::array times{0.0f, 0.375f};
+        std::vector<std::string> ids;
+        ids.reserve(154);
+        for (const auto shape : shapes)
+            for (const auto extent : extents)
+                for (const auto minimum : minima)
+                    for (const auto time : times)
+                        ids.push_back(numerical_case_id(
+                            shape, extent[0], extent[1], minimum, time));
+        for (const auto shape : {Shape::Triplet, Shape::SeparateLayers}) {
+            ids.push_back(numerical_case_id(shape, 33, 9, 0.08f, 0.0f, "max"));
+            ids.push_back(numerical_case_id(shape, 33, 9, 0.08f, 0.0f, "nan"));
+        }
+        return ids;
+    }
 
     void check_case(Shape shape, int width, int height, float densityMinimum, const std::array<float, 3>& weights, float timeAlpha) {
         const std::size_t count = static_cast<std::size_t>(width) * height;
@@ -190,30 +251,49 @@ namespace {
     }
 } // namespace
 
-int main() {
-    try {
-        require_cuda(cudaSetDevice(0));
-        int cases = 0;
-        for (Shape shape : {Shape::Triplet, Shape::SeparateLayers, Shape::FinalLayerUnblurred, Shape::Unblurred, Shape::Simple}) {
-            for (const auto extent : {std::array{1, 1}, std::array{1, 11}, std::array{33, 9}}) {
-                for (float minimum : {0.0f, -0.0f, 0.08f, -0.08f, -std::numeric_limits<float>::max()}) {
-                    for (float time : {0.0f, 0.375f}) {
-                        check_case(shape, extent[0], extent[1], minimum, {0.25f, 0.5f, 0.25f}, time);
-                        ++cases;
-                    }
+int main(int argc, char** argv) try {
+    const auto ids = numerical_case_ids();
+    if (JuicerTests::list_requested(argc, argv)) {
+        for (const auto& id : ids)
+            JuicerTests::list_case("grain_delta_fusion", id);
+        return 0;
+    }
+    require_cuda(cudaSetDevice(0));
+    JuicerTests::CaseLog case_log;
+    JuicerTests::Cohort cases("grain_delta_fusion", ids);
+    std::size_t case_index = 0;
+    for (Shape shape : {Shape::Triplet, Shape::SeparateLayers, Shape::FinalLayerUnblurred, Shape::Unblurred, Shape::Simple}) {
+        for (const auto extent : {std::array{1, 1}, std::array{1, 11}, std::array{33, 9}}) {
+            for (float minimum : {0.0f, -0.0f, 0.08f, -0.08f, -std::numeric_limits<float>::max()}) {
+                for (float time : {0.0f, 0.375f}) {
+                    const auto id = numerical_case_id(shape, extent[0], extent[1], minimum, time);
+                    require(ids.at(case_index++) == id, "grain numerical case dimensions match intended membership");
+                    auto row = cases.case_event(id);
+                    check_case(shape, extent[0], extent[1], minimum, {0.25f, 0.5f, 0.25f}, time);
+                    row.passed();
                 }
             }
         }
-        for (Shape shape : {Shape::Triplet, Shape::SeparateLayers}) {
-            for (float weight : {std::numeric_limits<float>::max(), std::numeric_limits<float>::quiet_NaN()}) {
-                check_case(shape, 33, 9, 0.08f, {weight, weight, weight}, 0.0f);
-                ++cases;
-            }
-        }
-        std::cout << "PASS: " << cases << " unfused grain numerical cases\n";
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
     }
+    for (Shape shape : {Shape::Triplet, Shape::SeparateLayers}) {
+        for (const auto& [weight, weight_name] : {
+                 std::pair{std::numeric_limits<float>::max(), "max"},
+                 std::pair{std::numeric_limits<float>::quiet_NaN(), "nan"}}) {
+            const auto id = numerical_case_id(shape, 33, 9, 0.08f, 0.0f, weight_name);
+            require(ids.at(case_index++) == id, "grain numerical case dimensions match intended membership");
+            auto row = cases.case_event(id);
+            check_case(shape, 33, 9, 0.08f, {weight, weight, weight}, 0.0f);
+            row.passed();
+        }
+    }
+    require(case_index == ids.size(), "grain numerical case membership exhausted");
+    std::cout << "PASS: " << case_index << " unfused grain numerical cases\n";
+    case_log.finish();
+    return 0;
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "%s\n", error.what());
+    return 1;
+} catch (...) {
+    std::fputs("Grain delta fusion test failed\n", stderr);
+    return 1;
 }

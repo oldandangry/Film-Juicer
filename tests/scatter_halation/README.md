@@ -44,3 +44,43 @@ cohort.
 Ordinary CTest execution reads the fixture but never modifies or regenerates
 it. Reference regeneration remains separate private evidence work until its
 generator and pinned environment form a complete public maintenance unit.
+
+The profile rows in `ScatterHalation.Gpu.HostContracts` acquire completed film
+profiles through `tests/ffi/juicer_test_api.h`. Each row stages a separate real
+catalog with the required film/print defaults. Its consume-once owner remains
+live for all borrowed-view reads; JSON is used only to author scratch inputs.
+Production profile ingestion remains separate until its cutover.
+
+Coefficient assertions follow the accepted Rust density contract: zero sigma
+produces a step away from the center, negative sigma reverses the CDF, a center
+narrowing to positive infinity produces zero, and a sigma narrowing to infinity
+produces half amplitude. Infinite amplitude and zero sigma at the exact center
+fail during density computation. Exact endpoint/center identities and the
+approved C1/C4 density contract supply expectations; no candidate capture or
+native evaluator is used. Metadata defaults/tags, unsupported representations,
+descending-axis and shape failures, nullable spectra, variable/duplicate axes,
+ordered narrowing infinities, and exposure-major CMY/layer-channel order remain
+covered. Checked-in numerical fixtures retain their bytes and provenance.
+
+`Profile.Gpu.NativeSafety` qualifies the production device density helpers,
+TC/scanner coordinate conversions and LUT consumers, plus direct/print film
+capture-development launchers at singleton, 17- and 257-sample axes. It preserves
+the existing device special-value sanitation and interpolation policy. Native
+prepared-span count/product failures remain in `Ffi.Host.PreparedProjection`.
+These tests require CUDA hardware; they do not establish installed-host or
+visual acceptance.
+
+`frame-fixtures/` is the separate native frame-construction characterization.
+`Ffi.Host.HalationFrame` checks fixed transport, C11/C++20/Rust ABI agreement,
+complete descriptor values, typed failures, diagnostics, independent clearing and
+bounded fixture faults. `Optics.Host.HalationFrameProducts` checks twenty completed
+route products using the same Rust producer. Both are finite driver-free host
+groups with 180-second deadlines. `Ffi.Host.PreparedProjection` checks all fields
+through native encode/decode; `ScatterHalation.Gpu.RouteBoundaries` checks complete
+frozen fields at preparation and the launch view for all four routes.
+
+The safe schedule constructor preserves the complete twenty-one-record family;
+it is distinct from the cached scalar GaussianKernel constructor. The native
+adapter transports and checks the fixed result without deriving recipe policy or
+recomputing mathematics. Native carriers, workspaces and finish/abort retirement
+retain their existing ownership.

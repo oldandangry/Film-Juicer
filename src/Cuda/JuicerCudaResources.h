@@ -16,29 +16,15 @@
 #include <string>
 #include <vector>
 
+#include "Cuda/JuicerCudaFailure.h"
+
 #include "Cuda/JuicerCudaDeviceLedger.h"
 #include "Cuda/Diffusion/JuicerCudaDiffusionResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
-#include "RenderRecipe.h"
+#include "RenderValues.h"
 
-namespace Spectral {
-    struct FilmTcLut;
-    struct FilmRawConfig;
-    struct SpectralTables;
-} // namespace Spectral
-namespace Scanner {
-    struct ColorRuntime;
-    struct ScannerSpectralLutDescriptor;
-} // namespace Scanner
-namespace Gamut {
-    struct OutputGamutTransform;
-    struct OutputBoundaryTable;
-} // namespace Gamut
-namespace JuicerAssets {
-    class Library;
-    struct StaticNoisePayloadSet;
-} // namespace JuicerAssets
+struct FjHostPreparation;
 
 struct JuicerCudaAutoExposurePartial {
     static constexpr int kLaneCount = 4;
@@ -64,21 +50,26 @@ struct JuicerCudaAutoExposureDeviceState {
 
 namespace JuicerCuda {
 
-    // Phase 4B focused print-preparation contract:
-    // - producer: build_print_resource_descriptors() from RenderRecipe::print and selected
-    //   validated profiles; consumer: prepare_print_resources() and pack_print_cuda_payloads().
+    struct FocusedRouteResourceInput;
+    struct PrintResourceInput;
+    struct StaticNoiseInput;
+
+    // Focused print-preparation contract:
+    // - producer: complete Rust preparation supplies resolved descriptors and host inputs;
+    //   consumers: prepare_print_resources() and pack_print_cuda_payloads().
     // - update frequency: descriptor miss only; descriptor hits perform no asset lookup,
     //   spectral derivation, profile packing, allocation, or upload.
     // - layouts/units: canonical 81-sample host/device spectra, capture-film spectral density,
     //   resolved density curves on the selected Float32 logE axis, and C/M/Y channel order.
     //   Filter values are Kodak CC units.
-    // - ownership/lifetime: immutable host derivations are temporary; device arrays and scalar
-    //   results are exact-context/epoch Resources residency exposed through PreparedCudaFrame.
+    // - ownership/lifetime: host inputs borrow held preparation storage for the immediate call;
+    //   device arrays and scalar results are exact-context/epoch Resources residency exposed
+    //   through PreparedCudaFrame.
     // - schema/hash: profile-table schema v2 separates resolved density-table content from selected
     //   stock identity. Balance/preflash schema v2 retain stock identity without creative curves.
     //   Descriptors exclude file discovery, CUDA pointers, frame tokens, and launch policy.
-    // - preparation point: Root's Phase 4B print prelaunch prepared-frame overload.
-    // - disabled behavior: disabled preflash has zero descriptor identity and no derivation/upload.
+    // - preparation point: Root's prepared-frame boundary.
+    // - disabled behavior: disabled preflash has zero descriptor identity and no upload.
     struct PrintProfileTablesDescriptor {
         static constexpr std::uint32_t kSchemaVersion = 2u;
 
@@ -126,8 +117,6 @@ namespace JuicerCuda {
         std::uint64_t filmDevelopRecipeHash = 0;
         std::uint64_t printProfileAssetVersionToken = 0;
         std::uint64_t filteredMainIlluminantHash = 0;
-        Spektrafilm::PrintNormalizationMode normalizationMode =
-            Spektrafilm::PrintNormalizationMode::None;
         float cameraExposureCompensationEv = 0.0f;
         std::uint64_t printBalanceRecipeHash = 0;
         std::uint64_t hash = 0;
@@ -142,12 +131,6 @@ namespace JuicerCuda {
         PrintBalanceDescriptor balance{};
         bool preflashActive = false;
         std::uint64_t hash = 0;
-    };
-
-    struct PrintResourcePreparation {
-        const RenderRecipe* recipe = nullptr;
-        JuicerAssets::Library* assets = nullptr;
-        const std::array<float, 81>* mainIlluminant = nullptr;
     };
 
     struct PrintPreparedView {
@@ -530,59 +513,63 @@ namespace JuicerCuda {
         Resources& operator=(const Resources&) = delete;
 
         ~Resources() noexcept;
+
+    private:
+        friend struct DeferredDestroyQueue;
+        // The existing deferred owner links already allocated Resources; queue
+        // transfer and exceptional restoration must not allocate storage.
+        Resources* deferredDestroyNext = nullptr;
     };
 
     Resources* create(
         const ResourceManager::DeviceContextKey& contextKey,
         std::uint64_t contextEpoch,
         std::shared_ptr<DeviceAllocationLedger> deviceLedger,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
     void destroy(Resources* resources) noexcept;
+    void invalidate_deferred_resources_after_proven_context_loss(
+        const ResourceManager::DeviceContextKey& key);
+    bool drain_deferred_resources(
+        const ResourceManager::DeviceContextKey& key,
+        Failure& outError);
+#if defined(JUICER_DEFERRED_DESTROY_TEST_HOOK)
+    namespace DeferredDestroyTest {
+        void before_drain(Resources& resources);
+    } // namespace DeferredDestroyTest
+#endif
+
     bool drain_for_context_retire(
         Resources& resources,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
     void invalidate_resources_after_proven_context_loss(
         Resources& resources) noexcept;
 
     // Narrow context-static serving helper used by the process-owned Root grain slots.
+
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,
-        const JuicerAssets::StaticNoisePayloadSet& payloads,
+        const StaticNoiseInput& input,
         void* cudaStreamOpaque,
-        std::string& outError);
-
-    struct FocusedRouteResourcePreparation {
-        const RenderRecipe* recipe = nullptr;
-        const Spectral::SpectralTables* exposureTables = nullptr;
-        const Spectral::FilmRawConfig* filmRawConfig = nullptr;
-        const Spectral::FilmTcLut* filmTcLut = nullptr;
-        const Spectral::SpectralTables* scannerTables = nullptr;
-        const Scanner::ColorRuntime* scannerColor = nullptr;
-        const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
-        const Gamut::OutputBoundaryTable* outputBoundaryTable = nullptr;
-    };
+        Failure& outError);
 
     // Descriptor-driven film and selected scan-route preparation. This is called only behind
     // Root's prepared-frame boundary and intentionally has no static-noise input.
     bool prepare_focused_route_resources(
         Resources& resources,
-        const FocusedRouteResourcePreparation& request,
+        const FocusedRouteResourceInput& input,
         void* cudaStreamOpaque,
-        std::string& outError);
-
-    bool build_print_resource_descriptors(
-        const RenderRecipe& recipe,
-        PrintResourceDescriptors& out,
-        std::string& diagnostic);
+        Failure& outError,
+        const FjHostPreparation* hostPreparation = nullptr);
 
     bool prepare_print_resources(
         Resources& resources,
-        const PrintResourcePreparation& request,
+        const PrintResourceInput& input,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
 
     bool pack_print_cuda_payloads(
-        const PrintRecipe& recipe,
+        float printExposure,
+        float preflashExposure,
         const PrintPreparedView& prepared,
         float routeCorrectionScale,
         PrintCudaPayloadPack& out,
@@ -596,11 +583,12 @@ namespace JuicerCuda {
         Resources::DeviceGaussianKernel& kernel,
         int radius,
         float sigma,
-        std::string& outError);
+        Failure& outError,
+        const FjHostPreparation* hostPreparation = nullptr);
     bool clear_spatial_dir_kernel_binding(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
-        std::string& outError);
+        Failure& outError);
     bool ensure_spatial_dir_boundary(
         Resources& resources,
         Resources::DeviceSpatialDirBoundary& boundary,
@@ -608,31 +596,32 @@ namespace JuicerCuda {
         int width,
         int height,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
     bool clear_spatial_dir_boundary_binding(
         Resources& resources,
         Resources::DeviceSpatialDirBoundary& boundary,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
     bool ensure_gaussian_kernel(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
         float sigma,
         int radius,
-        std::string& outError);
+        Failure& outError,
+        const FjHostPreparation* hostPreparation = nullptr);
 
     // Reaps deferred retire entries that are ready and returns reclaimed bytes.
-    bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, std::string& outError);
+    bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, Failure& outError);
 
     bool acquire_retained_frame_scratch_lease(
         Resources& resources,
         std::uint64_t leaseGeneration,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
     bool release_retained_frame_scratch_lease(
         Resources& resources,
         std::uint64_t leaseGeneration,
-        std::string& outError);
+        Failure& outError);
 
     struct SpatialDirCachedLogRawStageStats {
         std::size_t pendingScratchBytesBefore = 0;
@@ -661,18 +650,18 @@ namespace JuicerCuda {
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
         void* cudaStreamOpaque,
         SpatialDirCachedLogRawStageStats& outStats,
-        std::string& outError);
+        Failure& outError);
     bool reclaim_large_scratch_transition(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
         void* cudaStreamOpaque,
         LargeScratchTransitionReclaimStats& outStats,
-        std::string& outError);
+        Failure& outError);
     bool shed_retained_scratch_after_frame(
         Resources& resources,
         void* cudaStreamOpaque,
         PostFrameScratchShedStats& outStats,
-        std::string& outError);
+        Failure& outError);
     bool retire_frame_scratch_allocation(
         Resources& resources,
         void* ptr,
@@ -680,12 +669,12 @@ namespace JuicerCuda {
         DeviceByteReservation&& reservation,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError);
+        Failure& outError);
     bool adopt_failed_frame_allocation_record(
         Resources& resources,
         std::map<void*, DeviceByteReservation>::node_type& allocationRecord,
         bool completionCertain,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
     struct ScanErrorReadbackResult {
         int status = 0;
         std::uint64_t dirRecipeHash = 0;
@@ -701,18 +690,18 @@ namespace JuicerCuda {
         int*& host,
         void*& eventOpaque,
         const ScanErrorReadbackIdentity& identity,
-        std::string& outError);
+        Failure& outError);
     bool poll_scan_error_readbacks(
         Resources& resources,
         void* cudaStreamOpaque,
         ScanErrorReadbackResult& outResult,
-        std::string& outError);
+        Failure& outError);
 
     bool record_frame_use_event(
         Resources& resources,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError);
+        Failure& outError);
     void quarantine_unfenced_frame_use(
         Resources& resources,
         void* cudaStreamOpaque) noexcept;
@@ -727,5 +716,55 @@ namespace JuicerCuda {
         int deviceId,
         void* contextOpaque,
         PinnedUploadPurgeDisposition disposition) noexcept;
+
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+    namespace ScannerLutTest {
+        void after_prepare(Resources&) noexcept;
+        void after_upload(Resources&) noexcept;
+        bool before_upload(Resources&, const char* label, Failure&) noexcept;
+        std::int32_t retire_fence_error(Resources&, const char* label) noexcept;
+    } // namespace ScannerLutTest
+#endif
+
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+    namespace GaussianKernelTest {
+        std::int32_t copy(Resources&, std::uint64_t key, void* destination, const void* source, std::size_t bytes) noexcept;
+        void before_insert(Resources&, std::uint64_t key) noexcept;
+        bool after_upload(Resources&, std::uint64_t key, float* candidate) noexcept;
+        void observed_free(Resources&, std::uint64_t key, void* pointer, bool success) noexcept;
+    } // namespace GaussianKernelTest
+#endif
+
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+    namespace PinnedUploadTest {
+        enum class Operation : std::uint8_t {
+            Allocate,
+            CreateEvent,
+            Copy,
+            RecordEvent,
+            Synchronize
+        };
+        std::int32_t injected_error(Operation operation) noexcept;
+        void before_diagnostic();
+
+        struct Block {
+            void* pointer = nullptr;
+            void* event = nullptr;
+            std::size_t capacity = 0;
+            std::uint64_t id = 0;
+        };
+        struct Snapshot {
+            std::size_t available = 0;
+            std::size_t reserved = 0;
+            std::size_t inFlight = 0;
+            std::size_t quarantined = 0;
+            std::size_t totalBytes = 0;
+            std::vector<Block> blocks;
+        };
+        bool upload(Resources& resources, void* destination, const void* source, std::size_t bytes, void* stream, Failure& failure);
+        Snapshot snapshot(const ResourceManager::DeviceContextKey& key);
+        void poll(const ResourceManager::DeviceContextKey& key);
+    } // namespace PinnedUploadTest
+#endif
 
 } // namespace JuicerCuda

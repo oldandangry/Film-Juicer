@@ -1,0 +1,195 @@
+{
+  "frames": [],
+  "primitives": [],
+  "products": [],
+  "samples": [
+    {
+      "component_diagnostic": "InvalidDiffusionHostBehavior field=component_output",
+      "components": {
+        "blue": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "green": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "lambda": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "red": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "diagnostic": "",
+      "expanded": false,
+      "input": {
+        "active": false,
+        "centers": [
+          9214871658872686752,
+          4625506439783881114,
+          4635590280824540365
+        ],
+        "domain": 0,
+        "family": 0,
+        "hash": 9,
+        "height": 2160,
+        "name": "component-output-overflow",
+        "pixel": 118622047889322841,
+        "resolved_hash": 0,
+        "scale": 4607182418800017408,
+        "scatter": 4596734067664517857,
+        "warmth": 0,
+        "weights": [
+          4595292915783759299,
+          4598895795485655695,
+          4603039107142836552
+        ],
+        "width": 4096
+      },
+      "sample": {
+        "centers": [
+          9214871658872686752,
+          4625506439783881114,
+          4635590280824540365
+        ],
+        "family": 0,
+        "hash": 9454223325088486238,
+        "pixel": 118622047889322841,
+        "radius": 1079,
+        "scale": 4607182418800017408,
+        "warmth": 0,
+        "weights": [
+          4595292915783759299,
+          4598895795485655695,
+          4603039107142836552
+        ]
+      },
+      "success": true
+    },
+    {
+      "component_diagnostic": "InvalidDiffusionHostBehavior field=component_expansion",
+      "components": {
+        "blue": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "green": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "lambda": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "red": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "diagnostic": "",
+      "expanded": false,
+      "input": {
+        "active": false,
+        "centers": [
+          4608533498688228557,
+          4625506439783881114,
+          118622047889322841
+        ],
+        "domain": 0,
+        "family": 1,
+        "hash": 9,
+        "height": 2160,
+        "name": "bloom-weight-overflow",
+        "pixel": 4619848792751996928,
+        "resolved_hash": 0,
+        "scale": 4607182418800017408,
+        "scatter": 4596734067664517857,
+        "warmth": 0,
+        "weights": [
+          4595292915783759299,
+          4598895795485655695,
+          4603039107142836552
+        ],
+        "width": 4096
+      },
+      "sample": {
+        "centers": [
+          4608533498688228557,
+          4625506439783881114,
+          118622047889322841
+        ],
+        "family": 1,
+        "hash": 17187053316531109916,
+        "pixel": 4619848792751996928,
+        "radius": 5,
+        "scale": 4607182418800017408,
+        "warmth": 0,
+        "weights": [
+          4595292915783759299,
+          4598895795485655695,
+          4603039107142836552
+        ]
+      },
+      "success": true
+    }
+  ]
+}

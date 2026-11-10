@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "kind": "Authored output clearing, raw admission and bounded conversion safety contracts; never native undefined conversion oracles",
+  "r1": {
+    "category": 3,
+    "api": 0,
+    "code": 0,
+    "reason": 2,
+    "field": 12,
+    "layer": 0,
+    "channel": 0,
+    "diagnostic": "ResourceDescriptorMismatch phase=grain_descriptor field=layer_particle_count",
+    "raw_math": "all-zero",
+    "native_failure": "default"
+  },
+  "diagnostic_capacities": [
+    "0",
+    "1",
+    "short",
+    "M",
+    "M+1"
+  ],
+  "failure_output": "all-zero raw math and native default; original native partial captures retained as unusable provenance",
+  "gaussian_safety": [
+    {
+      "input": 1621981420,
+      "expected": [
+        1621981420,
+        75,
+        2164168441842679999
+      ]
+    },
+    {
+      "input": 2139095039,
+      "expected": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

@@ -2,21 +2,25 @@
 //
 // Descriptor-driven CUDA uploads and primitive validation hooks.
 //
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+#include "Cuda/JuicerCudaPerformanceObservation.h"
+#endif
+
 #include "Cuda/JuicerCudaResources.h"
+#include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
-#include "ColorTransforms.h"
+#include "SpectralData.h"
 #include "GamutCompression.h"
-#include "SpectralProcessing.h"
-#include "ProcessRoot.h"
-#include "ResourceAssetLibrary.h"
 #include "Scanner.h"
+#include "JuicerDirBoundary.h"
+#include "juicer_cuda_call_scope.h"
+#include "juicer_host_preparation.h"
 
 #include "Logging.h"
-#include "Hash.h"
 #include "nlohmann/json.hpp"
 
 #include <cuda_runtime.h>
@@ -33,229 +37,112 @@
 #include <numeric>
 #include <atomic>
 #include <sstream>
+#include <exception>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+#include "Cuda/JuicerCudaExecutor.h"
+#endif
+
+#if defined(JUICER_DIR_BOUNDARY_TEST_HOOK)
+#include "../../tests/dir/boundary_test_hooks.h"
+#endif
+
 namespace JuicerCuda {
-    namespace Precompute {
 
-        struct CanonicalScanLutCpu {
-            std::vector<float> log2XYZ;
-            std::vector<float> slopeC;
-            std::vector<float> slopeM;
-            std::vector<float> slopeY;
-            std::vector<float> cellMin;
-            std::vector<float> cellMax;
-        };
+    ThreeChannelSamplesView::ThreeChannelSamplesView(std::span<const std::array<float, 3>> rows)
+        : _samples(rows) {
+    }
 
-        namespace {
+    ThreeChannelSamplesView::ThreeChannelSamplesView(std::span<const float> scalars)
+        : _samples(std::as_bytes(scalars)) {
+    }
 
-            size_t scan_lut_index(std::uint32_t res, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
-                return (((static_cast<size_t>(c) * res + m) * res + y) * 3u) + out;
-            }
+    ThreeChannelSamplesView::ThreeChannelSamplesView(std::span<const std::byte> scalarBytes)
+        : _samples(scalarBytes) {
+    }
 
-            size_t scan_lut_cell_index(std::uint32_t cellRes, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
-                return (((static_cast<size_t>(c) * cellRes + m) * cellRes + y) * 3u) + out;
-            }
-
-            void fill_monotone_slopes_1d(const std::vector<double>& values, std::vector<double>& slopes) {
-                const size_t size = values.size();
-                slopes.assign(size, 0.0);
-                if (size <= 1u) {
-                    return;
-                }
-
-                std::vector<double> deltas(size - 1u);
-                for (size_t index = 0; index + 1u < size; ++index) {
-                    deltas[index] = values[index + 1u] - values[index];
-                }
-                if (size == 2u) {
-                    slopes[0] = deltas[0];
-                    slopes[1] = deltas[0];
-                    return;
-                }
-
-                double left = 0.5 * (3.0 * deltas[0] - deltas[1]);
-                if (left * deltas[0] <= 0.0) {
-                    left = 0.0;
-                } else if (deltas[0] * deltas[1] < 0.0 && std::abs(left) > std::abs(3.0 * deltas[0])) {
-                    left = 3.0 * deltas[0];
-                }
-                slopes[0] = left;
-
-                for (size_t index = 1u; index + 1u < size; ++index) {
-                    const double previous = deltas[index - 1u];
-                    const double next = deltas[index];
-                    slopes[index] =
-                        previous == 0.0 || next == 0.0 || previous * next <= 0.0
-                            ? 0.0
-                            : 2.0 * previous * next / (previous + next);
-                }
-
-                double right = 0.5 * (3.0 * deltas[size - 2u] - deltas[size - 3u]);
-                if (right * deltas[size - 2u] <= 0.0) {
-                    right = 0.0;
-                } else if (deltas[size - 2u] * deltas[size - 3u] < 0.0 &&
-                           std::abs(right) > std::abs(3.0 * deltas[size - 2u])) {
-                    right = 3.0 * deltas[size - 2u];
-                }
-                slopes[size - 1u] = right;
-            }
-
-        } // namespace
-
-        bool build_canonical_scan_lut_cpu(
-            const Scanner::ScannerMediumRuntime& medium,
-            std::uint32_t res,
-            CanonicalScanLutCpu& out,
-            std::string& outError) {
-            if (res < 2u) {
-                outError = "canonical scan LUT resolution must be at least two";
-                return false;
-            }
-
-            const size_t voxelValues = static_cast<size_t>(res) * res * res * 3u;
-            const std::uint32_t cellRes = res - 1u;
-            const size_t cellValues = static_cast<size_t>(cellRes) * cellRes * cellRes * 3u;
-            std::vector<double> log2XYZ(voxelValues, 0.0);
-            out.log2XYZ.assign(voxelValues, 0.0f);
-            out.slopeC.assign(voxelValues, 0.0f);
-            out.slopeM.assign(voxelValues, 0.0f);
-            out.slopeY.assign(voxelValues, 0.0f);
-            out.cellMin.assign(cellValues, 0.0f);
-            out.cellMax.assign(cellValues, 0.0f);
-
-            constexpr double kLog2_10 = 3.32192809488736234787;
-
-            for (std::uint32_t c = 0; c < res; ++c) {
-                const double nc = static_cast<double>(c) / static_cast<double>(res - 1u);
-                for (std::uint32_t m = 0; m < res; ++m) {
-                    const double nm = static_cast<double>(m) / static_cast<double>(res - 1u);
-                    for (std::uint32_t y = 0; y < res; ++y) {
-                        const double ny = static_cast<double>(y) / static_cast<double>(res - 1u);
-                        const double normalizedCmy[3] = {nc, nm, ny};
-                        double logXYZ[3] = {0.0, 0.0, 0.0};
-                        Scanner::spectral_to_log_xyz(medium, normalizedCmy, logXYZ);
-                        for (std::uint32_t output = 0; output < 3u; ++output) {
-                            if (!std::isfinite(logXYZ[output])) {
-                                outError = "canonical scan LUT build produced non-finite log2 XYZ";
-                                return false;
-                            }
-                            const size_t index = scan_lut_index(res, c, m, y, output);
-                            log2XYZ[index] = logXYZ[output] * kLog2_10;
-                            out.log2XYZ[index] = static_cast<float>(log2XYZ[index]);
-                        }
-                    }
-                }
-            }
-
-            std::vector<double> line(res);
-            std::vector<double> slopes;
-            for (std::uint32_t m = 0; m < res; ++m) {
-                for (std::uint32_t y = 0; y < res; ++y) {
-                    for (std::uint32_t output = 0; output < 3u; ++output) {
-                        for (std::uint32_t c = 0; c < res; ++c) {
-                            line[c] = log2XYZ[scan_lut_index(res, c, m, y, output)];
-                        }
-                        fill_monotone_slopes_1d(line, slopes);
-                        for (std::uint32_t c = 0; c < res; ++c) {
-                            out.slopeC[scan_lut_index(res, c, m, y, output)] = static_cast<float>(slopes[c]);
-                        }
-                    }
-                }
-            }
-            for (std::uint32_t c = 0; c < res; ++c) {
-                for (std::uint32_t y = 0; y < res; ++y) {
-                    for (std::uint32_t output = 0; output < 3u; ++output) {
-                        for (std::uint32_t m = 0; m < res; ++m) {
-                            line[m] = log2XYZ[scan_lut_index(res, c, m, y, output)];
-                        }
-                        fill_monotone_slopes_1d(line, slopes);
-                        for (std::uint32_t m = 0; m < res; ++m) {
-                            out.slopeM[scan_lut_index(res, c, m, y, output)] = static_cast<float>(slopes[m]);
-                        }
-                    }
-                }
-            }
-            for (std::uint32_t c = 0; c < res; ++c) {
-                for (std::uint32_t m = 0; m < res; ++m) {
-                    for (std::uint32_t output = 0; output < 3u; ++output) {
-                        for (std::uint32_t y = 0; y < res; ++y) {
-                            line[y] = log2XYZ[scan_lut_index(res, c, m, y, output)];
-                        }
-                        fill_monotone_slopes_1d(line, slopes);
-                        for (std::uint32_t y = 0; y < res; ++y) {
-                            out.slopeY[scan_lut_index(res, c, m, y, output)] = static_cast<float>(slopes[y]);
-                        }
-                    }
-                }
-            }
-
-            for (std::uint32_t c = 0; c < cellRes; ++c) {
-                for (std::uint32_t m = 0; m < cellRes; ++m) {
-                    for (std::uint32_t y = 0; y < cellRes; ++y) {
-                        for (std::uint32_t output = 0; output < 3u; ++output) {
-                            double minimum = log2XYZ[scan_lut_index(res, c, m, y, output)];
-                            double maximum = minimum;
-                            for (std::uint32_t dc = 0; dc < 2u; ++dc) {
-                                for (std::uint32_t dm = 0; dm < 2u; ++dm) {
-                                    for (std::uint32_t dy = 0; dy < 2u; ++dy) {
-                                        const double sample =
-                                            log2XYZ[scan_lut_index(res, c + dc, m + dm, y + dy, output)];
-                                        minimum = std::min(minimum, sample);
-                                        maximum = std::max(maximum, sample);
-                                    }
-                                }
-                            }
-                            const size_t cellIndex = scan_lut_cell_index(cellRes, c, m, y, output);
-                            out.cellMin[cellIndex] = static_cast<float>(minimum);
-                            out.cellMax[cellIndex] = static_cast<float>(maximum);
-                        }
-                    }
-                }
-            }
-            return true;
+    std::span<const std::byte> ThreeChannelSamplesView::object_bytes() const noexcept {
+        static_assert(sizeof(std::array<float, 3>) == 3u * sizeof(float));
+        static_assert(std::is_trivially_copyable_v<std::array<float, 3>>);
+        if (const auto* rows = std::get_if<std::span<const std::array<float, 3>>>(&_samples)) {
+            return std::as_bytes(*rows);
         }
+        return *std::get_if<std::span<const std::byte>>(&_samples);
+    }
 
-    } // namespace Precompute
+    std::size_t ThreeChannelSamplesView::sample_count() const noexcept {
+        if (const auto* rows = std::get_if<std::span<const std::array<float, 3>>>(&_samples)) {
+            return rows->size();
+        }
+        return std::get_if<std::span<const std::byte>>(&_samples)->size() / sizeof(std::array<float, 3>);
+    }
+
+    std::size_t ThreeChannelSamplesView::scalar_count() const noexcept {
+        if (const auto* rows = std::get_if<std::span<const std::array<float, 3>>>(&_samples)) {
+            return rows->size() * 3u;
+        }
+        return std::get_if<std::span<const std::byte>>(&_samples)->size() / sizeof(float);
+    }
+
+    std::array<float, 3> ThreeChannelSamplesView::sample(std::size_t index) const {
+        if (const auto* rows = std::get_if<std::span<const std::array<float, 3>>>(&_samples)) {
+            return (*rows)[index];
+        }
+        const auto bytes = *std::get_if<std::span<const std::byte>>(&_samples);
+        std::array<float, 3> result{};
+        std::memcpy(result.data(), bytes.data() + index * sizeof(result), sizeof(result));
+        return result;
+    }
+
 } // namespace JuicerCuda
 
 namespace JuicerCuda {
 
     static bool validate_resource_context_locked(
         Resources& resources,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         int cur = -1;
         const cudaError_t devErr = cudaGetDevice(&cur);
         if (devErr != cudaSuccess || cur < 0) {
-            outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+            set_failure(outError, runtime_failure_status(devErr), "cudaGetDevice failed for cached resources");
             return false;
         }
         if (resources.ownerContextKey.deviceId != cur ||
             resources.deviceId != cur || resources.contextEpoch == 0 ||
             !resources.deviceLedger) {
-            outError = "CUDA device mismatch for cached resources";
+            outError.diagnostic = "CUDA device mismatch for cached resources";
             return false;
         }
         void* currentContextOpaque = nullptr;
         std::string contextError;
-        if (!query_current_cuda_context(currentContextOpaque, contextError) ||
-            currentContextOpaque != resources.ownerContextKey.contextOpaque) {
-            outError = contextError.empty()
-                           ? "CUDA context mismatch for cached resources"
-                           : contextError;
+        int contextCode = 0;
+        bool queried = false;
+        try {
+            queried = query_current_cuda_context(currentContextOpaque, contextError, &contextCode);
+        } catch (...) {
+            if (contextCode == 0) {
+                throw;
+            }
+        }
+        if (!queried || currentContextOpaque != resources.ownerContextKey.contextOpaque) {
+            set_failure(outError, driver_failure_status(contextCode), contextError.empty() ? "CUDA context query or identity mismatch for cached resources" : std::string_view(contextError));
             return false;
         }
         return true;
     }
 
-    bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset) {
+    bool validate_resource_owner_locked(Resources& resources, Failure& outError, bool bindIfUnset) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         (void)bindIfUnset;
         if (!validate_resource_context_locked(resources, outError)) {
             return false;
         }
         if (resources.frameUseFenceQuarantined) {
-            outError = "CUDA resources quarantined after unfenced frame use";
+            outError.diagnostic = "CUDA resources quarantined after unfenced frame use";
             return false;
         }
         return true;
@@ -273,7 +160,7 @@ namespace JuicerCuda {
         const void* src,
         std::size_t bytes,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError) noexcept;
 
     static void free_stbn(Resources& resources) noexcept;
     static void free_wang(Resources& resources) noexcept;
@@ -289,20 +176,86 @@ namespace JuicerCuda {
 } // namespace JuicerCuda
 
 namespace JuicerCuda {
-    struct DeferredDestroyEntry {
-        Resources* resources = nullptr;
-        int ownerDeviceId = -1;
-        void* ownerContextOpaque = nullptr;
+    struct DeferredDestroyQueue {
+        Resources* head = nullptr;
+
+        void push(Resources* resources) noexcept {
+            resources->deferredDestroyNext = head;
+            head = resources;
+        }
+
+        Resources* pop() noexcept {
+            auto* resources = head;
+            head = resources->deferredDestroyNext;
+            resources->deferredDestroyNext = nullptr;
+            return resources;
+        }
+
+        std::size_t size() const noexcept {
+            std::size_t count = 0;
+            for (auto* entry = head; entry; entry = entry->deferredDestroyNext) {
+                ++count;
+            }
+            return count;
+        }
+
+        void extract(const ResourceManager::DeviceContextKey& key, DeferredDestroyQueue& ready) noexcept {
+            auto** link = &head;
+            while (*link) {
+                auto* entry = *link;
+                if (entry->ownerContextKey == key) {
+                    *link = entry->deferredDestroyNext;
+                    ready.push(entry);
+                } else {
+                    link = &entry->deferredDestroyNext;
+                }
+            }
+        }
     };
 
-    static std::mutex& deferred_destroy_mutex() {
-        static std::mutex mutex;
-        return mutex;
+    static DeferredDestroyQueue& deferred_destroy_queue() noexcept {
+        static DeferredDestroyQueue queue;
+        return queue;
     }
 
-    static std::vector<DeferredDestroyEntry>& deferred_destroy_queue() {
-        static std::vector<DeferredDestroyEntry> queue;
-        return queue;
+    // Only queue links are protected. Nonthrowing acquisition allows an extracted
+    // batch to restore ownership even during allocation or mutex-exception unwind.
+    class DeferredDestroyLock final {
+    public:
+        DeferredDestroyLock() noexcept {
+            while (_held.test_and_set(std::memory_order_acquire)) {
+                _held.wait(true, std::memory_order_relaxed);
+            }
+        }
+        ~DeferredDestroyLock() {
+            _held.clear(std::memory_order_release);
+            _held.notify_one();
+        }
+        DeferredDestroyLock(const DeferredDestroyLock&) = delete;
+        DeferredDestroyLock& operator=(const DeferredDestroyLock&) = delete;
+
+    private:
+        static inline std::atomic_flag _held = ATOMIC_FLAG_INIT;
+    };
+
+    struct DeferredDestroyBatch {
+        DeferredDestroyBatch() = default;
+        DeferredDestroyBatch(const DeferredDestroyBatch&) = delete;
+        DeferredDestroyBatch& operator=(const DeferredDestroyBatch&) = delete;
+
+        DeferredDestroyQueue entries;
+
+        ~DeferredDestroyBatch() {
+            const DeferredDestroyLock lock;
+            while (entries.head) {
+                deferred_destroy_queue().push(entries.pop());
+            }
+        }
+    };
+
+    static void defer_destroy(Resources* resources) noexcept {
+        const DeferredDestroyLock lock;
+        deferred_destroy_queue().push(resources);
     }
 
     static bool query_current_cuda_device(int& outDeviceId, std::string& outError) {
@@ -379,102 +332,87 @@ namespace JuicerCuda {
         }
     }
 
-    static void reap_deferred_destroy_queue(const char* stage) {
-        std::vector<DeferredDestroyEntry> readyEntries;
+    static bool reap_deferred_destroy_queue(
+        const char* stage,
+        Failure* outError = nullptr,
+        const ResourceManager::DeviceContextKey* requiredContext = nullptr) {
+        DeferredDestroyBatch ready;
         std::size_t remainingDepth = 0;
         int currentDeviceId = -1;
-        std::string deviceError;
-        const bool currentDeviceValid = query_current_cuda_device(currentDeviceId, deviceError);
+        const cudaError_t deviceCode = cudaGetDevice(&currentDeviceId);
+        const bool currentDeviceValid = deviceCode == cudaSuccess && currentDeviceId >= 0;
+        if (!currentDeviceValid) {
+            if (outError) {
+                set_failure(*outError, runtime_failure_status(deviceCode), "deferred destruction could not query the current CUDA device");
+            }
+            return false;
+        }
         void* currentContextOpaque = nullptr;
         std::string contextError;
-        const bool currentContextValid = query_current_cuda_context(currentContextOpaque, contextError);
-
-        {
-            std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-            auto& queue = deferred_destroy_queue();
-            if (queue.empty()) {
-                return;
+        int contextCode = 0;
+        bool currentContextValid = false;
+        try {
+            currentContextValid = query_current_cuda_context(currentContextOpaque, contextError, &contextCode);
+        } catch (...) {
+            if (contextCode == 0) {
+                throw;
             }
-            for (std::size_t i = 0; i < queue.size();) {
-                bool deviceMatch = false;
-                bool contextMatch = false;
-                if (owner_matches_current(
-                        queue[i].ownerDeviceId,
-                        queue[i].ownerContextOpaque,
-                        currentDeviceId,
-                        currentDeviceValid,
-                        currentContextOpaque,
-                        currentContextValid,
-                        deviceMatch,
-                        contextMatch)) {
-                    readyEntries.push_back(queue[i]);
-                    queue[i] = queue.back();
-                    queue.pop_back();
-                    continue;
-                }
-                ++i;
+        }
+        if (!currentContextValid ||
+            (requiredContext && (requiredContext->deviceId != currentDeviceId || requiredContext->contextOpaque != currentContextOpaque))) {
+            if (outError) {
+                set_failure(*outError, driver_failure_status(contextCode), contextError.empty() ? "deferred destruction requires the exact current owner context" : std::string_view(contextError));
             }
-            remainingDepth = queue.size();
+            return false;
         }
 
-        for (const DeferredDestroyEntry& entry : readyEntries) {
-            bool deviceMatch = false;
-            bool contextMatch = false;
-            (void)owner_matches_current(
-                entry.ownerDeviceId,
-                entry.ownerContextOpaque,
-                currentDeviceId,
-                currentDeviceValid,
-                currentContextOpaque,
-                currentContextValid,
-                deviceMatch,
-                contextMatch);
-            std::string detail;
-            if (!deviceError.empty()) {
-                detail = deviceError;
-            }
-            if (!contextError.empty()) {
-                if (!detail.empty()) {
-                    detail += "; ";
+        {
+            const DeferredDestroyLock lock;
+            deferred_destroy_queue().extract({currentDeviceId, currentContextOpaque}, ready.entries);
+            remainingDepth = deferred_destroy_queue().size();
+        }
+
+        while (auto* resources = ready.entries.head) {
+            trace_teardown_event(stage, "deferred_reap", resources->ownerContextKey.deviceId, resources->ownerContextKey.contextOpaque, currentDeviceId, currentContextOpaque, true, true, false, false, false, false, remainingDepth, contextError);
+            Failure drainError;
+            if (!drain_for_context_retire(*resources, drainError)) {
+                if (outError) {
+                    *outError = std::move(drainError);
                 }
-                detail += contextError;
+                // Restore the failed and all unprocessed entries exactly once.
+                return false;
             }
-            trace_teardown_event(
-                stage,
-                "deferred_reap",
-                entry.ownerDeviceId,
-                entry.ownerContextOpaque,
-                currentDeviceId,
-                currentContextOpaque,
-                deviceMatch,
-                contextMatch,
-                false,
-                false,
-                false,
-                false,
-                remainingDepth,
-                detail);
-            std::string drainError;
-            if (drain_for_context_retire(*entry.resources, drainError)) {
-                delete entry.resources;
-            } else {
-                std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-                deferred_destroy_queue().push_back(entry);
-            }
+            delete ready.entries.pop();
+        }
+        return true;
+    }
+
+    void invalidate_deferred_resources_after_proven_context_loss(const ResourceManager::DeviceContextKey& key) {
+        DeferredDestroyBatch ready;
+        {
+            const DeferredDestroyLock lock;
+            deferred_destroy_queue().extract(key, ready.entries);
+        }
+        while (auto* retained = ready.entries.head) {
+            invalidate_resources_after_proven_context_loss(*retained);
+            delete ready.entries.pop();
         }
     }
 
+    bool drain_deferred_resources(const ResourceManager::DeviceContextKey& key, Failure& outError) {
+        return reap_deferred_destroy_queue("context_retire", &outError, &key);
+    }
 
     static bool allocate_owned_device(
         Resources& resources,
         void** outPtr,
         std::size_t bytes,
         const char* label,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         if (!outPtr || *outPtr || bytes == 0 || !label || !label[0] ||
             !resources.deviceLedger) {
-            outError = "invalid owned CUDA allocation request";
+            outError.diagnostic = "invalid owned CUDA allocation request";
             return false;
         }
 
@@ -485,7 +423,7 @@ namespace JuicerCuda {
             stagedNode = stagedRecords.extract(stagedRecords.begin());
         } catch (...) {
             JuicerLogging::discard_current_exception();
-            outError = "failed to stage owned CUDA allocation record";
+            outError.diagnostic = "failed to stage owned CUDA allocation record";
             return false;
         }
 
@@ -503,13 +441,14 @@ namespace JuicerCuda {
         void* allocated = nullptr;
         const cudaError_t allocationError = cudaMalloc(&allocated, bytes);
         if (allocationError != cudaSuccess || !allocated) {
-            outError = std::string("cudaMalloc(") + label + ") failed: " +
-                       (cudaGetErrorString(allocationError)
-                            ? cudaGetErrorString(allocationError)
-                            : "(unknown)");
+            outError.status = runtime_failure_status(allocationError);
+            outError.diagnostic = std::string("cudaMalloc(") + label + ") failed: " +
+                                  (cudaGetErrorString(allocationError)
+                                       ? cudaGetErrorString(allocationError)
+                                       : "(unknown)");
             return false;
         }
-        if (!reservation.commit(static_cast<std::uint64_t>(bytes), outError)) {
+        if (!reservation.commit(static_cast<std::uint64_t>(bytes), outError.diagnostic)) {
             (void)cudaFree(allocated);
             return false;
         }
@@ -526,15 +465,15 @@ namespace JuicerCuda {
             (void)stagedNode.mapped().mark_retiring(retireError);
             const cudaError_t freeError = cudaFree(allocated);
             (void)stagedNode.mapped().release_after_physical_free(freeError == cudaSuccess, retireError);
-            outError = "owned CUDA allocation pointer collision";
+            outError.diagnostic = "owned CUDA allocation pointer collision";
             return false;
         }
         *outPtr = allocated;
         return true;
     }
 
-    static bool free_owned_device(Resources& resources, void* ptr, std::string& outError) noexcept {
-        outError.clear();
+    static bool free_owned_device(Resources& resources, void* ptr, Failure& outError) noexcept {
+        outError = {};
         if (!ptr) {
             return true;
         }
@@ -545,19 +484,22 @@ namespace JuicerCuda {
                 record = resources.deviceAllocationRecords.extract(ptr);
             }
             if (record.empty()) {
-                outError = "unregistered owned CUDA free";
+                outError.diagnostic = "unregistered owned CUDA free";
                 return false;
             }
             auto& reservation = record.mapped();
-            const bool retiring = reservation.state() != DeviceReservationState::Committed || reservation.mark_retiring(outError);
+            const bool retiring = reservation.state() != DeviceReservationState::Committed || reservation.mark_retiring(outError.diagnostic);
             const cudaError_t error = retiring ? cudaFree(ptr) : cudaErrorUnknown;
             if (error != cudaSuccess) {
                 std::lock_guard<std::mutex> lock(resources.deviceAllocationRecordsMutex);
                 resources.deviceAllocationRecords.insert(std::move(record));
-                outError = "owned CUDA physical free failed";
+                if (retiring) {
+                    outError.status = runtime_failure_status(error);
+                }
+                outError.diagnostic = "owned CUDA physical free failed";
                 return false;
             }
-            return reservation.release_after_physical_free(true, outError);
+            return reservation.release_after_physical_free(true, outError.diagnostic);
         } catch (...) {
             JuicerLogging::discard_current_exception();
             return false;
@@ -565,8 +507,13 @@ namespace JuicerCuda {
     }
 
     static void free_owned_device_noexcept(Resources& resources, void* ptr) noexcept {
-        std::string ignored;
+        Failure ignored;
+#if defined(JUICER_DIR_BOUNDARY_TEST_HOOK)
+        const bool freed = free_owned_device(resources, ptr, ignored);
+        DirBoundaryTest::observed_free(resources, ptr, freed);
+#else
         (void)free_owned_device(resources, ptr, ignored);
+#endif
     }
 
     static void recycle_completion_event_locked(
@@ -654,15 +601,21 @@ namespace JuicerCuda {
         }
     }
 
-    static bool drain_retire_queue_blocking(Resources& resources) noexcept {
+    static bool drain_retire_queue_blocking(Resources& resources, Failure& outError) noexcept {
         bool allReleased = true;
         for (std::size_t i = 0; i < resources.retireQueue.size();) {
             Resources::RetireEntry& e = resources.retireQueue[i];
             cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(e.doneEventOpaque);
-            if (ev && cudaEventSynchronize(ev) != cudaSuccess) {
-                allReleased = false;
-                ++i;
-                continue;
+            if (ev) {
+                const auto result = cudaEventSynchronize(ev);
+                if (result != cudaSuccess) {
+                    if (allReleased) {
+                        set_failure(outError, runtime_failure_status(result), "retired allocation completion wait failed");
+                    }
+                    allReleased = false;
+                    ++i;
+                    continue;
+                }
             }
             bool released = true;
             if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
@@ -676,14 +629,23 @@ namespace JuicerCuda {
                         e.ptr = nullptr;
                     }
                 } else {
+                    if (allReleased) {
+                        set_failure(outError, runtime_failure_status(freeError), "retired CUDA allocation free failed");
+                    }
                     released = false;
                 }
             } else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
-                released = cudaFreeHost(e.ptr) == cudaSuccess;
+                const auto result = cudaFreeHost(e.ptr);
+                released = result == cudaSuccess;
+                if (!released && allReleased) {
+                    set_failure(outError, runtime_failure_status(result), "retired pinned allocation free failed");
+                }
             } else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
-                released =
-                    cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr)) ==
-                    cudaSuccess;
+                const auto result = cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
+                released = result == cudaSuccess;
+                if (!released && allReleased) {
+                    set_failure(outError, runtime_failure_status(result), "retired event destruction failed");
+                }
             } else if (e.kind == Resources::RetireKind::DeviceFree &&
                        e.deviceReservation.active()) {
                 std::string releaseError;
@@ -723,7 +685,8 @@ namespace JuicerCuda {
         return allReleased;
     }
 
-    static bool acquire_retire_event_locked(Resources& resources, void*& outEventOpaque, std::string& outError) {
+    static bool acquire_retire_event_locked(Resources& resources, void*& outEventOpaque, Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!resources.completionEventPoolOpaque.empty()) {
             outEventOpaque = resources.completionEventPoolOpaque.back();
             resources.completionEventPoolOpaque.pop_back();
@@ -732,7 +695,8 @@ namespace JuicerCuda {
         cudaEvent_t ev = nullptr;
         const cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
         if (err != cudaSuccess || !ev) {
-            outError = std::string("cudaEventCreateWithFlags failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            outError.status = runtime_failure_status(err);
+            outError.diagnostic = std::string("cudaEventCreateWithFlags failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             outEventOpaque = nullptr;
             return false;
         }
@@ -784,7 +748,8 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         reap_frame_use_events_locked(resources);
         if (resources.pendingFrameUseEvents.empty()) {
             return true;
@@ -800,7 +765,8 @@ namespace JuicerCuda {
             const cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(entry.eventOpaque);
             const cudaError_t waitErr = cudaStreamWaitEvent(stream, ev, 0);
             if (waitErr != cudaSuccess) {
-                outError = std::string("cudaStreamWaitEvent before ") + (label ? label : "resource") + " update failed: " + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                outError.status = runtime_failure_status(waitErr);
+                outError.diagnostic = std::string("cudaStreamWaitEvent before ") + (label ? label : "resource") + " update failed: " + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
                 return false;
             }
         }
@@ -816,10 +782,11 @@ namespace JuicerCuda {
     static bool record_retire_fence_locked(
         Resources& resources,
         const RetireFenceRecord& record,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         cudaEvent_t retireEv = reinterpret_cast<cudaEvent_t>(record.retireEventOpaque);
         if (!retireEv) {
-            outError = "retire fence event missing";
+            outError.diagnostic = "retire fence event missing";
             return false;
         }
         const cudaStream_t stream = record.cudaStreamOpaque
@@ -828,15 +795,22 @@ namespace JuicerCuda {
         if (!wait_for_frame_use_events_locked(resources, record.cudaStreamOpaque, record.label, outError)) {
             return false;
         }
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+        const auto injected = static_cast<cudaError_t>(ScannerLutTest::retire_fence_error(resources, record.label));
+        const cudaError_t recErr = injected == cudaSuccess ? cudaEventRecord(retireEv, stream) : injected;
+#else
         const cudaError_t recErr = cudaEventRecord(retireEv, stream);
+#endif
         if (recErr != cudaSuccess) {
-            outError = std::string("cudaEventRecord for ") + (record.label ? record.label : "resource") + " retire failed: " + (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
+            outError.status = runtime_failure_status(recErr);
+            outError.diagnostic = std::string("cudaEventRecord for ") + (record.label ? record.label : "resource") + " retire failed: " + (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
             return false;
         }
         return true;
     }
 
-    static bool retire_ptr_locked(Resources& resources, void* ptr, std::size_t bytes, Resources::RetireKind kind, void* cudaStreamOpaque, const char* label, std::string& outError, bool scratchTier = false, DeviceByteReservation* externalReservation = nullptr) {
+    static bool retire_ptr_locked(Resources& resources, void* ptr, std::size_t bytes, Resources::RetireKind kind, void* cudaStreamOpaque, const char* label, Failure& outError, bool scratchTier = false, DeviceByteReservation* externalReservation = nullptr) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!ptr) {
             return true;
         }
@@ -845,7 +819,7 @@ namespace JuicerCuda {
             (scratchTier &&
              bytes > std::numeric_limits<std::size_t>::max() -
                          resources.retireScratchBytes)) {
-            outError = "CUDA retirement byte accounting overflow";
+            outError.diagnostic = "CUDA retirement byte accounting overflow";
             return false;
         }
 
@@ -855,14 +829,14 @@ namespace JuicerCuda {
             resources.retireQueue.reserve(resources.retireQueue.size() + 1u);
         } catch (...) {
             JuicerLogging::discard_current_exception();
-            outError = "failed to reserve CUDA retirement record";
+            outError.diagnostic = "failed to reserve CUDA retirement record";
             return false;
         }
 
         void* retireEventOpaque = nullptr;
         if (!acquire_retire_event_locked(resources, retireEventOpaque, outError)) {
-            if (outError.empty()) {
-                outError = std::string("retire fence acquisition failed for ") + (label ? label : "resource");
+            if (outError.diagnostic.empty()) {
+                outError.diagnostic = std::string("retire fence acquisition failed for ") + (label ? label : "resource");
             }
             return false;
         }
@@ -874,8 +848,8 @@ namespace JuicerCuda {
         if (!record_retire_fence_locked(resources, fenceRecord, outError)) {
             // If we can't record the retire fence, fail closed instead of falling back to a blocking sync.
             cudaEventDestroy(reinterpret_cast<cudaEvent_t>(retireEventOpaque));
-            if (outError.empty()) {
-                outError = std::string("retire fence record failed for ") + (label ? label : "resource");
+            if (outError.diagnostic.empty()) {
+                outError.diagnostic = std::string("retire fence record failed for ") + (label ? label : "resource");
             }
             return false;
         }
@@ -892,15 +866,15 @@ namespace JuicerCuda {
                     externalReservation->bytes() != bytes) {
                     cudaEventDestroy(
                         reinterpret_cast<cudaEvent_t>(retireEventOpaque));
-                    if (outError.empty()) {
-                        outError =
+                    if (outError.diagnostic.empty()) {
+                        outError.diagnostic =
                             "invalid external CUDA retirement reservation";
                     }
                     return false;
                 }
                 if (externalReservation->state() ==
                         DeviceReservationState::Committed &&
-                    !externalReservation->mark_retiring(outError)) {
+                    !externalReservation->mark_retiring(outError.diagnostic)) {
                     cudaEventDestroy(
                         reinterpret_cast<cudaEvent_t>(retireEventOpaque));
                     return false;
@@ -909,7 +883,7 @@ namespace JuicerCuda {
                     DeviceReservationState::Retiring) {
                     cudaEventDestroy(
                         reinterpret_cast<cudaEvent_t>(retireEventOpaque));
-                    outError =
+                    outError.diagnostic =
                         "external CUDA retirement reservation is not committed or retiring";
                     return false;
                 }
@@ -922,10 +896,10 @@ namespace JuicerCuda {
                     allocation->second.bytes() != bytes) {
                     cudaEventDestroy(
                         reinterpret_cast<cudaEvent_t>(retireEventOpaque));
-                    outError = "unregistered or size-mismatched CUDA retirement";
+                    outError.diagnostic = "unregistered or size-mismatched CUDA retirement";
                     return false;
                 }
-                if (!allocation->second.mark_retiring(outError)) {
+                if (!allocation->second.mark_retiring(outError.diagnostic)) {
                     cudaEventDestroy(
                         reinterpret_cast<cudaEvent_t>(retireEventOpaque));
                     return false;
@@ -957,7 +931,8 @@ namespace JuicerCuda {
         c.domainEnd = 0;
     }
 
-    static bool retire_curve_locked(Resources& resources, DeviceCurve& c, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool retire_curve_locked(Resources& resources, DeviceCurve& c, void* cudaStreamOpaque, const char* label, Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         const size_t bytes = static_cast<size_t>(std::max(0, c.n)) * sizeof(float);
         if (c.x) {
             if (!retire_ptr_locked(resources, c.x, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
@@ -995,7 +970,8 @@ namespace JuicerCuda {
         resources.filmDensityLayersHash = 0;
     }
 
-    static bool retire_density_layers_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool retire_density_layers_locked(Resources& resources, void* cudaStreamOpaque, const char* label, Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         for (int ch = 0; ch < 3; ++ch) {
             const size_t bytes =
                 static_cast<size_t>(std::max(0, resources.densityCurvesLayersChannelN[ch])) *
@@ -1086,9 +1062,10 @@ namespace JuicerCuda {
         resources.printPreparationDescriptorHash = 0;
     }
 
-    static bool alloc_and_upload_array(Resources& resources, float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool alloc_and_upload_array(Resources& resources, float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!src || n <= 0) {
-            outError = std::string(label) + " array is empty";
+            outError.diagnostic = std::string(label) + " array is empty";
             return false;
         }
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
@@ -1118,13 +1095,18 @@ namespace JuicerCuda {
     static bool relock_resources_after_offlock_upload(
         Resources& resources,
         std::unique_lock<std::mutex>* resourcesLock,
-        std::string& outError) {
+        Failure& outError) {
         if (!resourcesLock) {
             return true;
         }
         resourcesLock->lock();
         reap_retire_queue_locked(resources);
-        return validate_resource_owner_locked(resources, outError, false);
+        Failure ownerError;
+        if (!validate_resource_owner_locked(resources, ownerError, false)) {
+            outError = std::move(ownerError);
+            return false;
+        }
+        return true;
     }
 
     static bool alloc_and_upload_bytes(
@@ -1134,12 +1116,22 @@ namespace JuicerCuda {
         std::size_t bytes,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!src || bytes == 0) {
-            outError = std::string(label ? label : "buffer") + " buffer is empty";
+            outError.diagnostic = std::string(label ? label : "buffer") + " buffer is empty";
             return false;
         }
 
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (ExecutorTest::inject_grain_upload_failure(label, outError)) {
+            return false;
+        }
+#endif
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+        if (!ScannerLutTest::before_upload(resources, label, outError))
+            return false;
+#endif
         if (!allocate_owned_device(
                 resources,
                 &dst,
@@ -1173,7 +1165,8 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (resourcesLock) {
             resourcesLock->unlock();
         }
@@ -1198,9 +1191,10 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!src || n <= 0) {
-            outError = std::string(label ? label : "array") + " array is empty";
+            outError.diagnostic = std::string(label ? label : "array") + " array is empty";
             return false;
         }
 
@@ -1252,14 +1246,14 @@ namespace JuicerCuda {
 
     static bool prepare_output_gamut_table_locked(
         Resources& resources,
-        const OutputGamutRecipe& recipe,
-        const Gamut::OutputBoundaryTable* table,
+        const OutputGamutResourceInput& input,
         void* cudaStreamOpaque,
         std::unique_lock<std::mutex>& resourcesLock,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         constexpr std::size_t kTableBytes =
             Gamut::kOutputBoundaryValueCount * sizeof(float);
-        if (!recipe.enabled) {
+        if (!input.enabled) {
             if (resources.outputGamutCmax) {
                 if (!retire_ptr_locked(
                         resources,
@@ -1277,14 +1271,14 @@ namespace JuicerCuda {
             resources.outputGamutRecipeHash = 0;
             return true;
         }
-        if (!table) {
-            outError =
+        if (input.cmax.empty()) {
+            outError.diagnostic =
                 "MissingRequiredResource component=output_gamut_cmax field=boundary_table";
             return false;
         }
         if (resources.outputGamutCmax &&
-            resources.outputGamutTableHash == table->hash &&
-            resources.outputGamutRecipeHash == recipe.hash) {
+            resources.outputGamutTableHash == input.tableHash &&
+            resources.outputGamutRecipeHash == input.recipeHash) {
             return true;
         }
 
@@ -1292,7 +1286,7 @@ namespace JuicerCuda {
         if (!alloc_and_upload_bytes_locked(
                 resources,
                 candidateRaw,
-                table->cmax.data(),
+                input.cmax.data(),
                 kTableBytes,
                 cudaStreamOpaque,
                 &resourcesLock,
@@ -1315,8 +1309,8 @@ namespace JuicerCuda {
             }
         }
         resources.outputGamutCmax = candidate;
-        resources.outputGamutTableHash = table->hash;
-        resources.outputGamutRecipeHash = recipe.hash;
+        resources.outputGamutTableHash = input.tableHash;
+        resources.outputGamutRecipeHash = input.recipeHash;
         return true;
     }
 
@@ -1325,7 +1319,8 @@ namespace JuicerCuda {
         DeviceCurve& dst,
         const Spectral::Curve& src,
         void* cudaStreamOpaque,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         const int n = static_cast<int>(src.lambda_nm.size());
         const size_t bytes = src.lambda_nm.size() * sizeof(float);
         dst.domainBegin = 0;
@@ -1357,8 +1352,8 @@ namespace JuicerCuda {
                 bytes,
                 cudaStreamOpaque,
                 outError)) {
-            outError = std::string("curve.x upload failed: ") + outError;
             free_curve(resources, dst);
+            outError.diagnostic = std::string("curve.x upload failed: ") + outError.diagnostic;
             return false;
         }
         if (!enqueue_host_to_device_copy(
@@ -1369,8 +1364,8 @@ namespace JuicerCuda {
                 bytes,
                 cudaStreamOpaque,
                 outError)) {
-            outError = std::string("curve.y upload failed: ") + outError;
             free_curve(resources, dst);
+            outError.diagnostic = std::string("curve.y upload failed: ") + outError.diagnostic;
             return false;
         }
 
@@ -1385,15 +1380,16 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         const size_t sampleCount = src.lambda_nm.size();
         if (sampleCount == 0 || src.linear.size() != sampleCount) {
-            outError = std::string(label) + ": curve has no samples or mismatched arrays";
+            outError.diagnostic = std::string(label) + ": curve has no samples or mismatched arrays";
             return false;
         }
         if (sampleCount > static_cast<size_t>(std::numeric_limits<int>::max()) ||
             sampleCount > std::numeric_limits<size_t>::max() / sizeof(float)) {
-            outError = std::string(label) + ": curve sample count invalid";
+            outError.diagnostic = std::string(label) + ": curve sample count invalid";
             return false;
         }
         const int n = static_cast<int>(sampleCount);
@@ -1426,11 +1422,11 @@ namespace JuicerCuda {
                                                 cudaStreamOpaque,
                                                 outError);
             if (!copyXOk) {
-                outError = std::string(baseLabel) + ".x upload failed: " + outError;
+                outError.diagnostic = std::string(baseLabel) + ".x upload failed: " + outError.diagnostic;
                 return false;
             }
             if (!copyYOk) {
-                outError = std::string(baseLabel) + ".y upload failed: " + outError;
+                outError.diagnostic = std::string(baseLabel) + ".y upload failed: " + outError.diagnostic;
                 return false;
             }
 
@@ -1456,7 +1452,7 @@ namespace JuicerCuda {
             return false;
         }
         if (!allocOk) {
-            outError = std::string(label) + ": " + outError;
+            outError.diagnostic = std::string(label) + ": " + outError.diagnostic;
             return false;
         }
 
@@ -1480,14 +1476,15 @@ namespace JuicerCuda {
         return true;
     }
 
-    static bool alloc_and_upload_spectral_samples(Resources& resources, DeviceCurve& dst, const std::vector<float>& src, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool alloc_and_upload_spectral_samples(Resources& resources, DeviceCurve& dst, const std::vector<float>& src, void* cudaStreamOpaque, const char* label, Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (src.empty()) {
-            outError = std::string(label) + " array is empty";
+            outError.diagnostic = std::string(label) + " array is empty";
             return false;
         }
         const int n = static_cast<int>(src.size());
         if (n <= 0) {
-            outError = std::string(label) + " sample count invalid";
+            outError.diagnostic = std::string(label) + " sample count invalid";
             return false;
         }
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
@@ -1524,15 +1521,16 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (src.empty()) {
-            outError = std::string(label ? label : "spectral samples") + " array is empty";
+            outError.diagnostic = std::string(label ? label : "spectral samples") + " array is empty";
             return false;
         }
 
         const int n = static_cast<int>(src.size());
         if (n <= 0) {
-            outError = std::string(label ? label : "spectral samples") + " sample count invalid";
+            outError.diagnostic = std::string(label ? label : "spectral samples") + " sample count invalid";
             return false;
         }
 
@@ -1584,7 +1582,7 @@ namespace JuicerCuda {
     }
 
 
-    static bool drain_all_resource_allocations(Resources& resources) noexcept {
+    static bool drain_all_resource_allocations(Resources& resources, Failure& outError) noexcept {
         bool eventsReady = true;
         for (Resources::PendingFrameUseEvent& entry :
              resources.pendingFrameUseEvents) {
@@ -1592,16 +1590,25 @@ namespace JuicerCuda {
                                           ? reinterpret_cast<cudaEvent_t>(
                                                 entry.eventOpaque)
                                           : nullptr;
-            if (event && cudaEventSynchronize(event) != cudaSuccess) {
-                eventsReady = false;
+            if (event) {
+                const auto result = cudaEventSynchronize(event);
+                if (result != cudaSuccess) {
+                    if (eventsReady) {
+                        set_failure(outError, runtime_failure_status(result), "frame-use completion wait failed");
+                    }
+                    eventsReady = false;
+                }
             }
         }
-        const bool retiredReady = drain_retire_queue_blocking(resources);
-        bool diffusionReady = true;
-        std::string diffusionDrainError;
-        diffusionReady = Diffusion::drain_diffusion_resources(
-            resources.diffusion,
-            diffusionDrainError);
+        Failure retireError;
+        const bool retiredReady = drain_retire_queue_blocking(resources, retireError);
+        Failure diffusionDrainError;
+        const bool diffusionReady = Diffusion::drain_diffusion_resources(resources.diffusion, diffusionDrainError);
+        if (eventsReady && !retiredReady) {
+            outError = std::move(retireError);
+        } else if (eventsReady && retiredReady && !diffusionReady) {
+            outError = std::move(diffusionDrainError);
+        }
         if (!eventsReady || !retiredReady || !diffusionReady) {
             return false;
         }
@@ -1654,8 +1661,9 @@ namespace JuicerCuda {
                 }
                 orphanedPtr = resources.deviceAllocationRecords.begin()->first;
             }
-            std::string freeError;
+            Failure freeError;
             if (!free_owned_device(resources, orphanedPtr, freeError)) {
+                outError = std::move(freeError);
                 break;
             }
         }
@@ -1672,85 +1680,83 @@ namespace JuicerCuda {
             if (contextInvalidatedByProvenLoss) {
                 return;
             }
-            (void)drain_all_resource_allocations(*this);
+            Failure ignored;
+            (void)drain_all_resource_allocations(*this, ignored);
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }
     }
 
-    bool drain_for_context_retire(
-        Resources& resources,
-        std::string& outError) noexcept {
-        outError.clear();
-        try {
-            std::lock_guard<std::mutex> servingLock(resources.servingUpdateMutex);
-            // Root has closed registry admission and rejected active submissions.
-            // Drain the defect attachments before entering the existing state-locked
-            // teardown of unrelated resource families.
-            if (!validate_resource_context_locked(resources, outError)) {
-                return false;
-            }
-            void* unfencedStreamOpaque = nullptr;
-            bool frameUseFenceQuarantined = false;
-            {
-                std::lock_guard<std::mutex> resourceLock(resources.m);
-                frameUseFenceQuarantined =
-                    resources.frameUseFenceQuarantined;
-                if (frameUseFenceQuarantined) {
-                    unfencedStreamOpaque = resources.unfencedFrameUseStreamOpaque;
-                }
-            }
+    bool drain_for_context_retire(Resources& resources, Failure& outError) noexcept try {
+        outError = {};
+#if defined(JUICER_DEFERRED_DESTROY_TEST_HOOK)
+        DeferredDestroyTest::before_drain(resources);
+#endif
+        std::lock_guard<std::mutex> servingLock(resources.servingUpdateMutex);
+        // The explicit lifecycle owner has excluded new use. Destruction never
+        // reenters Root policy; uncertainty stays in native retirement ownership.
+        if (!validate_resource_context_locked(resources, outError)) {
+            return false;
+        }
+        void* unfencedStreamOpaque = nullptr;
+        bool frameUseFenceQuarantined = false;
+        {
+            std::lock_guard<std::mutex> resourceLock(resources.m);
+            frameUseFenceQuarantined = resources.frameUseFenceQuarantined;
             if (frameUseFenceQuarantined) {
-                const cudaError_t syncError = cudaStreamSynchronize(
-                    unfencedStreamOpaque
-                        ? reinterpret_cast<cudaStream_t>(unfencedStreamOpaque)
-                        : nullptr);
-                if (syncError != cudaSuccess) {
-                    outError = std::string(
-                                   "quarantined frame-use stream synchronization failed: ") +
-                               (cudaGetErrorString(syncError)
-                                    ? cudaGetErrorString(syncError)
-                                    : "(unknown)");
-                    return false;
-                }
-                std::lock_guard<std::mutex> resourceLock(resources.m);
-                resources.frameUseFenceQuarantined = false;
-                resources.unfencedFrameUseStreamOpaque = nullptr;
+                unfencedStreamOpaque = resources.unfencedFrameUseStreamOpaque;
             }
-            if (resources.scannerScratch.filmDustTransmittance || resources.scannerScratch.gateTransmittance) {
-                for (const auto& entry : resources.pendingFrameUseEvents) {
-                    if (entry.eventOpaque && cudaEventSynchronize(reinterpret_cast<cudaEvent_t>(entry.eventOpaque)) != cudaSuccess) {
-                        outError = "context defect attachment completion wait failed";
-                        return false;
-                    }
-                }
-                for (float** plane : {&resources.scannerScratch.filmDustTransmittance, &resources.scannerScratch.gateTransmittance}) {
-                    if (!free_owned_device(resources, *plane, outError)) {
-                        return false;
-                    }
-                    std::lock_guard<std::mutex> lock(resources.m);
-                    *plane = nullptr;
-                }
+        }
+        if (frameUseFenceQuarantined) {
+            const cudaError_t syncError = cudaStreamSynchronize(
+                reinterpret_cast<cudaStream_t>(unfencedStreamOpaque));
+            if (syncError != cudaSuccess) {
+                set_failure(outError, runtime_failure_status(syncError), "quarantined frame-use stream synchronization failed");
+                return false;
             }
             std::lock_guard<std::mutex> resourceLock(resources.m);
-            if (!validate_resource_owner_locked(resources, outError, false)) {
-                return false;
+            resources.frameUseFenceQuarantined = false;
+            resources.unfencedFrameUseStreamOpaque = nullptr;
+        }
+        if (resources.scannerScratch.filmDustTransmittance || resources.scannerScratch.gateTransmittance) {
+            for (const auto& entry : resources.pendingFrameUseEvents) {
+                if (entry.eventOpaque) {
+                    const auto result = cudaEventSynchronize(reinterpret_cast<cudaEvent_t>(entry.eventOpaque));
+                    if (result != cudaSuccess) {
+                        set_failure(outError, runtime_failure_status(result), "context defect attachment completion wait failed");
+                        return false;
+                    }
+                }
             }
-            if (!drain_all_resource_allocations(resources)) {
-                outError =
-                    "CUDA context resource drain retained failed physical frees";
-                return false;
+            for (float** plane : {&resources.scannerScratch.filmDustTransmittance, &resources.scannerScratch.gateTransmittance}) {
+                if (!free_owned_device(resources, *plane, outError)) {
+                    return false;
+                }
+                std::lock_guard<std::mutex> lock(resources.m);
+                *plane = nullptr;
             }
-            return true;
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            try {
-                outError = "CUDA context resource drain failed";
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
+        }
+        std::lock_guard<std::mutex> resourceLock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, false)) {
+            return false;
+        }
+        if (!drain_all_resource_allocations(resources, outError)) {
+            if (outError.diagnostic.empty()) {
+                set_failure(outError, outError.status, "CUDA context resource drain retained failed physical frees");
             }
             return false;
         }
+        return true;
+
+    } catch (const std::bad_alloc&) {
+        set_failure(outError, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA resource drain allocation failed");
+        return false;
+    } catch (const std::exception& detail) {
+        set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what());
+        return false;
+    } catch (...) {
+        set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA resource drain failed with unknown exception");
+        return false;
     }
 
     void invalidate_resources_after_proven_context_loss(
@@ -1797,12 +1803,12 @@ namespace JuicerCuda {
         const ResourceManager::DeviceContextKey& contextKey,
         std::uint64_t contextEpoch,
         std::shared_ptr<DeviceAllocationLedger> deviceLedger,
-        std::string& outError) noexcept {
+        Failure& outError) noexcept {
         try {
-            outError.clear();
+            outError = {};
             if (contextKey.deviceId < 0 || contextKey.contextOpaque == nullptr ||
                 contextEpoch == 0 || deviceLedger == nullptr) {
-                outError =
+                outError.diagnostic =
                     "ResourceDescriptorMismatch component=cuda_resources field=allocation_identity";
                 return nullptr;
             }
@@ -1813,7 +1819,7 @@ namespace JuicerCuda {
                 std::move(deviceLedger));
         } catch (...) {
             try {
-                outError = "failed to allocate exact-context CUDA resources";
+                outError.diagnostic = "failed to allocate exact-context CUDA resources";
             } catch (...) {
                 JuicerLogging::discard_current_exception();
             }
@@ -1822,8 +1828,14 @@ namespace JuicerCuda {
     }
 
     void destroy(Resources* resources) noexcept {
+        std::unique_ptr<Resources, decltype(&defer_destroy)> retained(resources, &defer_destroy);
         try {
             if (!resources) {
+                return;
+            }
+
+            if (resources->contextInvalidatedByProvenLoss) {
+                delete retained.release();
                 return;
             }
 
@@ -1902,7 +1914,7 @@ namespace JuicerCuda {
             if (ownerMatch) {
                 std::size_t deferredQueueDepth = 0;
                 {
-                    std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
+                    const DeferredDestroyLock lock;
                     deferredQueueDepth = deferred_destroy_queue().size();
                 }
                 std::string detail;
@@ -1930,21 +1942,15 @@ namespace JuicerCuda {
                     false,
                     deferredQueueDepth,
                     detail);
-                std::string drainError;
+                Failure drainError;
                 if (!drain_for_context_retire(*resources, drainError)) {
-                    std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-                    deferred_destroy_queue().push_back(
-                        DeferredDestroyEntry{
-                            resources,
-                            ownerDeviceId,
-                            ownerContextOpaque});
                     if (restoreDevice && restoreDeviceId >= 0 &&
                         restoreDeviceId != ownerDeviceId) {
                         (void)cudaSetDevice(restoreDeviceId);
                     }
                     return;
                 }
-                delete resources;
+                delete retained.release();
 
                 if (restoreDevice && restoreDeviceId >= 0 && restoreDeviceId != ownerDeviceId) {
                     (void)cudaSetDevice(restoreDeviceId);
@@ -1957,25 +1963,11 @@ namespace JuicerCuda {
                 (void)cudaSetDevice(restoreDeviceId);
             }
 
-            bool managerRetireAttempted = false;
-            bool managerRetireAccepted = false;
-            std::string managerRetireError;
-            if (ownerDeviceId >= 0 && ownerContextOpaque) {
-                managerRetireAttempted = true;
-                managerRetireAccepted =
-                    JuicerProcess::root().retire_idle_context(ownerDeviceId, ownerContextOpaque, managerRetireError);
-            }
-
             std::size_t deferredQueueDepth = 0;
             {
-                std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-                auto& queue = deferred_destroy_queue();
-                DeferredDestroyEntry entry{};
-                entry.resources = resources;
-                entry.ownerDeviceId = ownerDeviceId;
-                entry.ownerContextOpaque = ownerContextOpaque;
-                queue.push_back(entry);
-                deferredQueueDepth = queue.size();
+                const DeferredDestroyLock lock;
+                deferred_destroy_queue().push(retained.release());
+                deferredQueueDepth = deferred_destroy_queue().size();
             }
 
             std::string detail;
@@ -1988,12 +1980,6 @@ namespace JuicerCuda {
                 }
                 detail += currentContextError;
             }
-            if (!managerRetireError.empty()) {
-                if (!detail.empty()) {
-                    detail += "; ";
-                }
-                detail += managerRetireError;
-            }
             trace_teardown_event(
                 "destroy",
                 "deferred_enqueue",
@@ -2005,8 +1991,8 @@ namespace JuicerCuda {
                 contextMatch,
                 switchAttempted,
                 switchSucceeded,
-                managerRetireAttempted,
-                managerRetireAccepted,
+                false,
+                false,
                 deferredQueueDepth,
                 detail);
         } catch (...) {
@@ -2014,9 +2000,9 @@ namespace JuicerCuda {
         }
     }
 
-    bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, std::string& outError) {
+    bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, Failure& outError) {
         reclaimedBytes = 0;
-        outError.clear();
+        outError = {};
         std::lock_guard<std::mutex> lock(resources.m);
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
@@ -2032,9 +2018,9 @@ namespace JuicerCuda {
         Resources& resources,
         const char* label,
         void*& outEventOpaque,
-        std::string& outError) {
+        Failure& outError) {
         outEventOpaque = nullptr;
-        outError.clear();
+        outError = {};
         {
             std::lock_guard<std::mutex> lock(resources.m);
             reap_retire_queue_locked(resources);
@@ -2056,11 +2042,12 @@ namespace JuicerCuda {
             if (event) {
                 cudaEventDestroy(event);
             }
-            outError = std::string("cudaEventCreateWithFlags(") +
-                       (label ? label : "frame use") + ") failed: " +
-                       (cudaGetErrorString(createError)
-                            ? cudaGetErrorString(createError)
-                            : "(unknown)");
+            outError.status = runtime_failure_status(createError);
+            outError.diagnostic = std::string("cudaEventCreateWithFlags(") +
+                                  (label ? label : "frame use") + ") failed: " +
+                                  (cudaGetErrorString(createError)
+                                       ? cudaGetErrorString(createError)
+                                       : "(unknown)");
             return false;
         }
         outEventOpaque = reinterpret_cast<void*>(event);
@@ -2070,8 +2057,8 @@ namespace JuicerCuda {
     static bool retain_frame_use_event(
         Resources& resources,
         void*& eventOpaque,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         if (!eventOpaque) {
             return true;
         }
@@ -2086,7 +2073,7 @@ namespace JuicerCuda {
             entry.eventOpaque = eventOpaque;
             resources.pendingFrameUseEvents.push_back(entry);
         } catch (...) {
-            outError = "frame use event retention failed";
+            outError.diagnostic = "frame use event retention failed";
             return false;
         }
 
@@ -2098,7 +2085,8 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         void* eventOpaque = nullptr;
         if (!acquire_frame_use_event(
                 resources,
@@ -2117,11 +2105,12 @@ namespace JuicerCuda {
         const cudaError_t recordError = cudaEventRecord(event, stream);
         if (recordError != cudaSuccess) {
             cudaEventDestroy(event);
-            outError = std::string("cudaEventRecord(") +
-                       (label ? label : "frame use") + ") failed: " +
-                       (cudaGetErrorString(recordError)
-                            ? cudaGetErrorString(recordError)
-                            : "(unknown)");
+            outError.status = runtime_failure_status(recordError);
+            outError.diagnostic = std::string("cudaEventRecord(") +
+                                  (label ? label : "frame use") + ") failed: " +
+                                  (cudaGetErrorString(recordError)
+                                       ? cudaGetErrorString(recordError)
+                                       : "(unknown)");
             return false;
         }
 
@@ -2130,9 +2119,9 @@ namespace JuicerCuda {
                 cudaEventDestroy(
                     reinterpret_cast<cudaEvent_t>(eventOpaque));
             }
-            if (outError.empty()) {
-                outError = std::string(label ? label : "frame use") +
-                           " retention failed";
+            if (outError.diagnostic.empty()) {
+                outError.diagnostic = std::string(label ? label : "frame use") +
+                                      " retention failed";
             }
             return false;
         }
@@ -2209,6 +2198,31 @@ namespace JuicerCuda {
         static PinnedUploadStagingPolicyState state;
         return state;
     }
+
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+    bool PerformanceObservation::upload_snapshot(UploadPoolSnapshot& snapshot) noexcept {
+        try {
+            auto& policy = pinned_upload_staging_policy_state();
+            std::lock_guard lock(policy.mutex);
+            for (unsigned i = 0; i < 4; ++i) {
+                snapshot.bytes[i] = 0;
+                snapshot.counts[i] = 0;
+            }
+            for (const auto& entry : policy.pools) {
+                for (const auto& block : entry.second.blocks) {
+                    const auto i = static_cast<unsigned>(block.state);
+                    if (i >= 4 || block.capacity > UINT64_MAX - snapshot.bytes[i] || snapshot.counts[i] == UINT64_MAX)
+                        return false;
+                    snapshot.bytes[i] += block.capacity;
+                    ++snapshot.counts[i];
+                }
+            }
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+#endif
 
     static std::uint64_t pinned_upload_now_ms() noexcept {
         using Clock = std::chrono::steady_clock;
@@ -2445,6 +2459,9 @@ namespace JuicerCuda {
                     totalBytesAfterTrim);
                 continue;
             }
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+            PerformanceObservation::upload_free(detached.block.capacity);
+#endif
             freedBytes += detached.block.capacity;
             detached.block.ptr = nullptr;
             if (detached.block.doneEventOpaque) {
@@ -2480,7 +2497,6 @@ namespace JuicerCuda {
         std::uint64_t blockId = 0;
         void* stagingPtr = nullptr;
         void* doneEventOpaque = nullptr;
-        const char* fallbackReason = nullptr;
     };
 
     static bool reserve_reusable_pinned_upload_block_locked(
@@ -2512,19 +2528,28 @@ namespace JuicerCuda {
 
     static void destroy_unpublished_pinned_upload_block(
         void* pinnedPtr,
-        cudaEvent_t doneEvent) noexcept {
+        cudaEvent_t doneEvent,
+        std::size_t bytes) noexcept {
         if (doneEvent) {
             (void)cudaEventDestroy(doneEvent);
         }
         if (pinnedPtr) {
-            (void)cudaFreeHost(pinnedPtr);
+            const cudaError_t freeErr = cudaFreeHost(pinnedPtr);
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+            if (freeErr == cudaSuccess)
+                PerformanceObservation::upload_free(bytes);
+#else
+            (void)freeErr;
+            (void)bytes;
+#endif
         }
     }
 
     static PinnedUploadReservation reserve_pinned_upload_block(
         Resources& resources,
         std::size_t bytes,
-        const char* stage) {
+        const char* stage,
+        Failure& outError) {
         PinnedUploadReservation result{};
         if (bytes == 0) {
             return result;
@@ -2534,11 +2559,11 @@ namespace JuicerCuda {
         result.key.contextOpaque = resources.ownerContextKey.contextOpaque;
         if (result.key.deviceId < 0 || !result.key.contextOpaque ||
             resources.deviceId != result.key.deviceId) {
-            result.fallbackReason = "invalid_resource_owner";
+            outError.diagnostic = "pinned staging invalid_resource_owner";
             return result;
         }
         if (bytes > kPinnedUploadStagingMaxBytes) {
-            result.fallbackReason = "cap_exceeded";
+            outError.diagnostic = "pinned staging cap_exceeded";
             return result;
         }
 
@@ -2633,25 +2658,55 @@ namespace JuicerCuda {
                 bytes,
                 totalBytesAfterTrim);
             if (totalBytesAfterTrim > kPinnedUploadStagingMaxBytes - bytes) {
-                result.fallbackReason = "cap_exceeded";
+                outError.diagnostic = "pinned staging cap_exceeded";
                 return result;
             }
         }
 
         void* pinnedPtr = nullptr;
-        const cudaError_t allocErr = cudaMallocHost(&pinnedPtr, bytes);
+        cudaError_t allocErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        allocErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::Allocate));
+#endif
+        if (allocErr == cudaSuccess) {
+            allocErr = cudaMallocHost(&pinnedPtr, bytes);
+        }
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+        if (allocErr == cudaSuccess && pinnedPtr)
+            PerformanceObservation::upload_allocate(bytes);
+#endif
         if (allocErr != cudaSuccess || !pinnedPtr) {
-            destroy_unpublished_pinned_upload_block(pinnedPtr, nullptr);
-            result.fallbackReason = "host_alloc_failed";
+            destroy_unpublished_pinned_upload_block(pinnedPtr, nullptr, bytes);
+            outError.status = runtime_failure_status(allocErr);
+            // Host staging exhaustion is not device capacity and must not select device reclaim.
+            if (allocErr == cudaErrorMemoryAllocation) {
+                outError.status.category = FJ_STATUS_CUDA_FAILURE;
+            }
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+            PinnedUploadTest::before_diagnostic();
+#endif
+            outError.diagnostic = std::string("cudaMallocHost(pinned staging) failed: ") + cudaGetErrorString(allocErr);
             return result;
         }
 
         cudaEvent_t doneEvent = nullptr;
-        const cudaError_t eventErr =
-            cudaEventCreateWithFlags(&doneEvent, cudaEventDisableTiming);
+        cudaError_t eventErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        eventErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::CreateEvent));
+#endif
+        if (eventErr == cudaSuccess) {
+            eventErr = cudaEventCreateWithFlags(&doneEvent, cudaEventDisableTiming);
+        }
         if (eventErr != cudaSuccess || !doneEvent) {
-            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent);
-            result.fallbackReason = "event_create_failed";
+            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent, bytes);
+            outError.status = runtime_failure_status(eventErr);
+            if (eventErr == cudaErrorMemoryAllocation) {
+                outError.status.category = FJ_STATUS_CUDA_FAILURE;
+            }
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+            PinnedUploadTest::before_diagnostic();
+#endif
+            outError.diagnostic = std::string("cudaEventCreateWithFlags(pinned staging) failed: ") + cudaGetErrorString(eventErr);
             return result;
         }
 
@@ -2684,8 +2739,8 @@ namespace JuicerCuda {
         }
 
         if (!inserted) {
-            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent);
-            result.fallbackReason = "pool_insert_failed";
+            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent, bytes);
+            outError.diagnostic = "pinned staging pool_insert_failed";
             return result;
         }
 
@@ -2740,31 +2795,39 @@ namespace JuicerCuda {
         const PinnedUploadReservation& reservation,
         cudaStream_t stream,
         const char* stage,
-        std::string& outError) {
-        outError.clear();
-        const cudaError_t recordErr = cudaEventRecord(
-            reinterpret_cast<cudaEvent_t>(reservation.doneEventOpaque),
-            stream);
+        Failure& outError) {
+        outError = {};
+        cudaError_t recordErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        recordErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::RecordEvent));
+#endif
+        if (recordErr == cudaSuccess) {
+            recordErr = cudaEventRecord(
+                reinterpret_cast<cudaEvent_t>(reservation.doneEventOpaque), stream);
+        }
         if (recordErr == cudaSuccess) {
             if (transition_pinned_upload_reservation(
                     reservation,
                     PinnedUploadBlockState::InFlight)) {
                 return PinnedUploadCompletionResult::InFlight;
             }
-            outError = "pinned staging reservation ownership was lost";
+            outError.diagnostic = "pinned staging reservation ownership was lost";
             return PinnedUploadCompletionResult::Quarantined;
         }
 
-        const char* recordReason = cudaGetErrorString(recordErr);
-        const std::string recordError =
-            std::string("cudaEventRecord(pinned staging) failed: ") +
-            (recordReason ? recordReason : "(unknown)");
-        const cudaError_t syncErr = cudaStreamSynchronize(stream);
+        // Resolve completion and reservation ownership before allocating diagnostics.
+        cudaError_t syncErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        syncErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::Synchronize));
+#endif
+        if (syncErr == cudaSuccess) {
+            syncErr = cudaStreamSynchronize(stream);
+        }
         if (syncErr == cudaSuccess) {
             if (!transition_pinned_upload_reservation(
                     reservation,
                     PinnedUploadBlockState::Available)) {
-                outError = "pinned staging reservation ownership was lost";
+                outError.diagnostic = "pinned staging reservation ownership was lost";
                 return PinnedUploadCompletionResult::Quarantined;
             }
             trace_pinned_staging_event(
@@ -2774,7 +2837,6 @@ namespace JuicerCuda {
                 reservation.key,
                 0,
                 published_pinned_upload_staging_bytes());
-            outError = recordError;
             return PinnedUploadCompletionResult::CompletedAfterExceptionalSync;
         }
 
@@ -2782,10 +2844,19 @@ namespace JuicerCuda {
             reservation,
             PinnedUploadBlockState::Quarantined);
         const char* syncReason = cudaGetErrorString(syncErr);
-        outError = recordError + " | cudaStreamSynchronize(pinned staging) failed: " +
-                   (syncReason ? syncReason : "(unknown)");
+        const auto recordStatus = runtime_failure_status(recordErr);
+        outError.status = recordStatus.category == FJ_STATUS_CONTEXT_LOSS ? recordStatus : runtime_failure_status(syncErr);
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        PinnedUploadTest::before_diagnostic();
+#endif
+        const char* recordReason = cudaGetErrorString(recordErr);
+        const std::string recordError =
+            std::string("cudaEventRecord(pinned staging) failed: ") +
+            (recordReason ? recordReason : "(unknown)");
+        outError.diagnostic = recordError + " | cudaStreamSynchronize(pinned staging) failed: " +
+                              (syncReason ? syncReason : "(unknown)");
         if (!quarantined) {
-            outError += " | pinned staging reservation ownership was lost";
+            outError.diagnostic += " | pinned staging reservation ownership was lost";
         }
         trace_pinned_staging_event(
             stage,
@@ -2804,84 +2875,109 @@ namespace JuicerCuda {
         const void* src,
         std::size_t bytes,
         void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) noexcept try {
+        outError = {};
         if (bytes == 0) {
             return true;
         }
         if (!dst || !src) {
-            outError = std::string(request.label ? request.label : "copy") + " upload args invalid";
+            outError.diagnostic = std::string(request.label ? request.label : "copy") + " upload args invalid";
             return false;
         }
 
-        const cudaStream_t stream = cudaStreamOpaque
-                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-                                        : nullptr;
-
-        PinnedUploadReservation reservation =
-            reserve_pinned_upload_block(resources, bytes, request.stage);
-        if (reservation.staged && reservation.stagingPtr) {
-            std::memcpy(reservation.stagingPtr, src, bytes);
-            const cudaError_t stagedErr = cudaMemcpyAsync(
-                dst,
-                reservation.stagingPtr,
-                bytes,
-                cudaMemcpyHostToDevice,
-                stream);
-            if (stagedErr == cudaSuccess) {
-                const PinnedUploadCompletionResult completion =
-                    complete_enqueued_pinned_upload(
-                        reservation,
-                        stream,
-                        request.stage,
-                        outError);
-                if (completion == PinnedUploadCompletionResult::InFlight) {
-                    return true;
-                }
-                if (completion ==
-                    PinnedUploadCompletionResult::CompletedAfterExceptionalSync) {
-                    trace_pinned_staging_event(
-                        request.stage,
-                        "fallback",
-                        "event_record_failed_stream_synchronized",
-                        reservation.key,
-                        bytes,
-                        published_pinned_upload_staging_bytes());
-                    outError.clear();
-                    return true;
-                }
-                return false;
-            }
-
-            if (!return_pinned_upload_reservation(reservation)) {
-                outError = "failed to return pinned staging reservation";
-                return false;
-            }
-            reservation.fallbackReason = "staged_copy_failed";
-        }
-
-        const cudaError_t err = cudaMemcpyAsync(
-            dst,
-            src,
-            bytes,
-            cudaMemcpyHostToDevice,
-            stream);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMemcpyAsync(") + (request.label ? request.label : "upload") + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        const cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
+        const PinnedUploadReservation reservation =
+            reserve_pinned_upload_block(resources, bytes, request.stage, outError);
+        if (!reservation.staged) {
+            outError.diagnostic = std::string(request.label ? request.label : "upload") + ": " + outError.diagnostic;
             return false;
         }
 
-        if (reservation.fallbackReason) {
-            trace_pinned_staging_event(
-                request.stage,
-                "fallback",
-                reservation.fallbackReason,
-                reservation.key,
-                bytes,
-                published_pinned_upload_staging_bytes());
+        // The caller's storage expires at return, including local split/generated tables.
+        std::memcpy(reservation.stagingPtr, src, bytes);
+        cudaError_t copyErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        copyErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::Copy));
+#endif
+#if defined(JUICER_DIR_BOUNDARY_TEST_HOOK)
+        if (copyErr == cudaSuccess)
+            copyErr = static_cast<cudaError_t>(DirBoundaryTest::staged(resources, request.label, dst, src, reservation.stagingPtr, bytes));
+#endif
+        if (copyErr == cudaSuccess) {
+            copyErr = cudaMemcpyAsync(dst, reservation.stagingPtr, bytes, cudaMemcpyHostToDevice, stream);
+        }
+        if (copyErr != cudaSuccess) {
+            const bool returned = return_pinned_upload_reservation(reservation);
+            outError.status = runtime_failure_status(copyErr);
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+            PinnedUploadTest::before_diagnostic();
+#endif
+            outError.diagnostic = std::string("cudaMemcpyAsync(") + (request.label ? request.label : "upload") + " pinned staging) failed: " + cudaGetErrorString(copyErr);
+            if (!returned) {
+                outError.diagnostic += " | failed to return pinned staging reservation";
+            }
+            return false;
+        }
+
+        const PinnedUploadCompletionResult completion =
+            complete_enqueued_pinned_upload(reservation, stream, request.stage, outError);
+        if (completion == PinnedUploadCompletionResult::Quarantined) {
+            return false;
+        }
+        if (completion == PinnedUploadCompletionResult::CompletedAfterExceptionalSync) {
+            outError = {};
         }
         return true;
+    } catch (...) {
+        // Pool/diagnostic allocation failure must still reach the caller's device rollback.
+        // Any enqueued copy has reached its terminal reservation state before formatting.
+        JuicerLogging::discard_current_exception();
+        outError.diagnostic.clear();
+        return false;
     }
+
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+    namespace PinnedUploadTest {
+        bool upload(Resources& resources, void* destination, const void* source, std::size_t bytes, void* stream, Failure& failure) {
+            return enqueue_host_to_device_copy(resources, {"pinned_upload_test", "prepared span"}, destination, source, bytes, stream, failure);
+        }
+
+        Snapshot snapshot(const ResourceManager::DeviceContextKey& key) {
+            auto& state = pinned_upload_staging_policy_state();
+            std::lock_guard<std::mutex> lock(state.mutex);
+            Snapshot result;
+            result.totalBytes = state.totalBytesAllContexts;
+            const auto found = state.pools.find({key.deviceId, key.contextOpaque});
+            if (found != state.pools.end()) {
+                for (const auto& block : found->second.blocks) {
+                    switch (block.state) {
+                        case PinnedUploadBlockState::Available:
+                            ++result.available;
+                            break;
+                        case PinnedUploadBlockState::Reserved:
+                            ++result.reserved;
+                            break;
+                        case PinnedUploadBlockState::InFlight:
+                            ++result.inFlight;
+                            break;
+                        case PinnedUploadBlockState::Quarantined:
+                            ++result.quarantined;
+                            break;
+                    }
+                    result.blocks.push_back({block.ptr, block.doneEventOpaque, block.capacity, block.id});
+                }
+            }
+            return result;
+        }
+
+        void poll(const ResourceManager::DeviceContextKey& key) {
+            auto& state = pinned_upload_staging_policy_state();
+            std::lock_guard<std::mutex> lock(state.reservationMutex);
+            const PinnedUploadContextKey filter{key.deviceId, key.contextOpaque};
+            refresh_pinned_block_completions(state, &filter);
+        }
+    } // namespace PinnedUploadTest
+#endif
 
 
     static void free_stbn(Resources& resources) noexcept {
@@ -2940,10 +3036,10 @@ namespace JuicerCuda {
         int*& host,
         void*& eventOpaque,
         const ScanErrorReadbackIdentity& identity,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         if (!host || !eventOpaque) {
-            outError = "scan error readback staging missing";
+            outError.diagnostic = "scan error readback staging missing";
             return false;
         }
 
@@ -2959,7 +3055,7 @@ namespace JuicerCuda {
             entry.identity = identity;
             resources.pendingScanErrorReadbacks.push_back(entry);
         } catch (...) {
-            outError = "scan error readback retention failed";
+            outError.diagnostic = "scan error readback retention failed";
             return false;
         }
 
@@ -2972,9 +3068,9 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         ScanErrorReadbackResult& outResult,
-        std::string& outError) {
+        Failure& outError) {
         outResult = ScanErrorReadbackResult{};
-        outError.clear();
+        outError = {};
 
         std::lock_guard<std::mutex> lock(resources.m);
         if (!validate_resource_owner_locked(resources, outError, true)) {
@@ -3018,16 +3114,18 @@ namespace JuicerCuda {
                                           : nullptr;
                 const cudaError_t waitErr = cudaStreamWaitEvent(stream, ev, 0);
                 if (waitErr != cudaSuccess) {
-                    outError = std::string("CUDA scan error stream wait failed: ") +
-                               (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                    outError.status = runtime_failure_status(waitErr);
+                    outError.diagnostic = std::string("CUDA scan error stream wait failed: ") +
+                                          (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
                     return false;
                 }
                 ++i;
                 continue;
             }
 
-            outError = std::string("CUDA scan error event query failed: ") +
-                       (cudaGetErrorString(pollErr) ? cudaGetErrorString(pollErr) : "(unknown)");
+            outError.status = runtime_failure_status(pollErr);
+            outError.diagnostic = std::string("CUDA scan error event query failed: ") +
+                                  (cudaGetErrorString(pollErr) ? cudaGetErrorString(pollErr) : "(unknown)");
             return false;
         }
         return true;
@@ -3036,29 +3134,15 @@ namespace JuicerCuda {
 
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,
-        const JuicerAssets::StaticNoisePayloadSet& payloads,
+        const StaticNoiseInput& input,
         void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        const JuicerAssets::StbnNoisePayload& stbn = payloads.stbn;
-        const JuicerAssets::WangNoisePayload& wang = payloads.wang;
-        if (!stbn.valid) {
-            outError = stbn.error.empty()
-                           ? "grain static STBN payload is invalid"
-                           : stbn.error;
-            return false;
-        }
-        if (!wang.valid) {
-            outError = wang.error.empty()
-                           ? "grain static Wang payload is invalid"
-                           : wang.error;
-            return false;
-        }
-        if (stbn.data.empty() || stbn.width <= 0 || stbn.height <= 0 ||
-            stbn.frames <= 0 || wang.tiles.empty() || wang.lut.empty() ||
-            wang.width <= 0 || wang.height <= 0 || wang.count <= 0 ||
-            wang.colors <= 0) {
-            outError = "grain static host asset payload is incomplete";
+        Failure& outError) {
+        outError = {};
+        if (input.stbn.empty() || input.stbnWidth <= 0 || input.stbnHeight <= 0 ||
+            input.stbnFrames <= 0 || input.wangTiles.empty() || input.wangLut.empty() ||
+            input.wangWidth <= 0 || input.wangHeight <= 0 || input.wangCount <= 0 ||
+            input.wangColors <= 0) {
+            outError.diagnostic = "grain static host asset payload is incomplete";
             return false;
         }
 
@@ -3077,37 +3161,40 @@ namespace JuicerCuda {
                 resources.stbnFrames <= 0 || resources.wangWidth <= 0 ||
                 resources.wangHeight <= 0 || resources.wangCount <= 0 ||
                 resources.wangColors <= 0) {
-                outError = "grain static resource identity mismatch";
+                outError.diagnostic = "grain static resource identity mismatch";
                 return false;
             }
             return true;
         }
 
-        std::string stbnError;
+        bool stbnFailed = false;
+        bool wangFailed = false;
+        Failure stbnError;
         if (!resources.stbnData) {
             void* stbnData = nullptr;
             if (!alloc_and_upload_bytes_locked(
                     resources,
                     stbnData,
-                    stbn.data.data(),
-                    stbn.data.size(),
+                    input.stbn.data(),
+                    input.stbn.size(),
                     cudaStreamOpaque,
                     &lock,
                     "STBN",
                     stbnError)) {
+                stbnFailed = true;
                 free_stbn(resources);
             } else if (!resources.stbnData) {
                 resources.stbnData =
                     reinterpret_cast<std::uint8_t*>(stbnData);
-                resources.stbnWidth = stbn.width;
-                resources.stbnHeight = stbn.height;
-                resources.stbnFrames = stbn.frames;
+                resources.stbnWidth = input.stbnWidth;
+                resources.stbnHeight = input.stbnHeight;
+                resources.stbnFrames = input.stbnFrames;
             } else if (stbnData) {
                 free_owned_device_noexcept(resources, stbnData);
             }
         }
 
-        std::string wangError;
+        Failure wangError;
         if (!resources.wangTilesData || !resources.wangLutData) {
             if (resources.wangTilesData || resources.wangLutData) {
                 free_wang(resources);
@@ -3117,8 +3204,8 @@ namespace JuicerCuda {
             const bool tilesOk = alloc_and_upload_bytes_locked(
                 resources,
                 wangTilesData,
-                wang.tiles.data(),
-                wang.tiles.size(),
+                input.wangTiles.data(),
+                input.wangTiles.size(),
                 cudaStreamOpaque,
                 &lock,
                 "Wang.tiles",
@@ -3126,13 +3213,14 @@ namespace JuicerCuda {
             const bool lutOk = tilesOk && alloc_and_upload_bytes_locked(
                                               resources,
                                               wangLutData,
-                                              wang.lut.data(),
-                                              wang.lut.size(),
+                                              input.wangLut.data(),
+                                              input.wangLut.size(),
                                               cudaStreamOpaque,
                                               &lock,
                                               "Wang.lut",
                                               wangError);
             if (!tilesOk || !lutOk) {
+                wangFailed = true;
                 if (wangTilesData) {
                     free_owned_device_noexcept(resources, wangTilesData);
                 }
@@ -3145,10 +3233,10 @@ namespace JuicerCuda {
                     reinterpret_cast<std::uint8_t*>(wangTilesData);
                 resources.wangLutData =
                     reinterpret_cast<std::uint8_t*>(wangLutData);
-                resources.wangWidth = wang.width;
-                resources.wangHeight = wang.height;
-                resources.wangCount = wang.count;
-                resources.wangColors = wang.colors;
+                resources.wangWidth = input.wangWidth;
+                resources.wangHeight = input.wangHeight;
+                resources.wangCount = input.wangCount;
+                resources.wangColors = input.wangColors;
             } else {
                 if (wangTilesData) {
                     free_owned_device_noexcept(resources, wangTilesData);
@@ -3166,11 +3254,21 @@ namespace JuicerCuda {
             resources.wangWidth > 0 && resources.wangHeight > 0 &&
             resources.wangCount > 0 && resources.wangColors > 0;
         if (!ready) {
-            outError = !stbnError.empty()
-                           ? stbnError
-                           : (!wangError.empty()
-                                  ? wangError
-                                  : "grain static resource upload incomplete");
+            outError.status = stbnFailed ? stbnError.status : wangFailed ? wangError.status
+                                                                         : FjStatus{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+            // Either upload can invalidate the shared context, even after an ordinary failure.
+            if (wangFailed && context_loss(wangError) && !context_loss(outError)) {
+                outError.status = wangError.status;
+            }
+            outError.diagnostic = !stbnError.diagnostic.empty()
+                                      ? stbnError.diagnostic
+                                      : (!wangError.diagnostic.empty()
+                                             ? wangError.diagnostic
+                                             : "grain static resource upload incomplete");
+            if (!stbnError.diagnostic.empty() && !wangError.diagnostic.empty()) {
+                outError.diagnostic += " | Wang upload failed: ";
+                outError.diagnostic += wangError.diagnostic;
+            }
             return false;
         }
         return true;
@@ -3244,7 +3342,9 @@ namespace JuicerCuda {
             for (const PinnedUploadBlock& block : blocksToFree) {
                 bool completionProven =
                     block.state == PinnedUploadBlockState::Available;
-                if (block.state != PinnedUploadBlockState::Available &&
+                // Only InFlight has a fence recorded after its latest upload. A failed
+                // record can leave a Reserved/Quarantined block with an older event.
+                if (block.state == PinnedUploadBlockState::InFlight &&
                     block.doneEventOpaque && ownerDeviceSelected) {
                     cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
                     const cudaError_t syncErr = cudaEventSynchronize(doneEvent);
@@ -3262,10 +3362,12 @@ namespace JuicerCuda {
                         block.capacity);
                 }
                 if (block.ptr && completionProven) {
-                    trace_cuda_failure(
-                        "cudaFreeHost",
-                        cudaFreeHost(block.ptr),
-                        block.capacity);
+                    const cudaError_t freeErr = cudaFreeHost(block.ptr);
+#if defined(JUICER_PERFORMANCE_OBSERVATION)
+                    if (freeErr == cudaSuccess)
+                        PerformanceObservation::upload_free(block.capacity);
+#endif
+                    trace_cuda_failure("cudaFreeHost", freeErr, block.capacity);
                 } else if (block.ptr) {
                     trace_pinned_staging_event(
                         "context_purge",
@@ -3288,65 +3390,56 @@ namespace JuicerCuda {
     }
     bool prepare_focused_route_resources(
         Resources& resources,
-        const FocusedRouteResourcePreparation& request,
+        const FocusedRouteResourceInput& input,
         void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!request.recipe || !request.exposureTables ||
-            !request.filmRawConfig || !request.scannerTables || !request.scannerColor ||
-            !request.scannerLutDescriptor) {
-            outError = "focused route resource preparation request is incomplete";
-            return false;
-        }
-
-        const RenderRecipe& recipe = *request.recipe;
-        const Spektrafilm::ScanRoute route = recipe.profileRoute.scanRoute;
+        Failure& outError,
+        const FjHostPreparation* hostPreparation) {
+        outError = {};
+        const Spektrafilm::ScanRoute route = input.route;
         const Spektrafilm::ScanRouteMetadata& routeMetadata =
             Spektrafilm::scan_route_metadata(route);
         const bool printRoute = routeMetadata.printRoute;
-        const FilmRawRecipe& filmRaw = recipe.filmRaw;
+        const FilmExposureResourceInput& filmRaw = input.filmRaw;
         const bool tcMethod =
             filmRaw.rgbToRawMethod ==
                 Spektrafilm::RgbToRawMethod::Hanatos2025 ||
             filmRaw.rgbToRawMethod ==
                 Spektrafilm::RgbToRawMethod::Arctic2026beta04;
         constexpr std::size_t kFilmTcValueCount =
-            static_cast<std::size_t>(Spectral::FilmTcLut::kSize) *
-            static_cast<std::size_t>(Spectral::FilmTcLut::kSize) *
-            Spectral::FilmTcLut::kChannels;
+            static_cast<std::size_t>(Spectral::kFilmTcLutExtent) *
+            static_cast<std::size_t>(Spectral::kFilmTcLutExtent) *
+            Spectral::kFilmTcLutChannels;
         if ((tcMethod &&
-             (!request.filmTcLut ||
-              request.filmTcLut->rgba.size() != kFilmTcValueCount ||
+             (input.filmTcLut.size() != kFilmTcValueCount ||
               filmRaw.tcLutHash == 0)) ||
-            (!tcMethod && request.filmTcLut)) {
-            outError =
+            (!tcMethod && !input.filmTcLut.empty())) {
+            outError.diagnostic =
                 "ResourceDescriptorMismatch component=focused_route field=film_tc_lut";
             return false;
         }
-        const FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
-        const DirCouplersRecipe& dirCouplers = recipe.dirCouplers;
-        const DensityBoundsRecipe& densityBounds = recipe.densityBounds;
-        const OutputGamutRecipe& outputGamut =
-            recipe.scannerOutput.outputGamut;
-        if ((outputGamut.enabled && !request.outputBoundaryTable) ||
-            (!outputGamut.enabled && request.outputBoundaryTable)) {
-            outError =
+        const FilmDevelopmentResourceInput& filmDevelop = input.filmDevelop;
+        const DirResourceInput& dirCouplers = input.dirCouplers;
+        const DensityBoundsInput& densityBounds = input.densityBounds;
+        const OutputGamutResourceInput& outputGamut = input.outputGamut;
+        if ((outputGamut.enabled && outputGamut.cmax.size() != Gamut::kOutputBoundaryValueCount) ||
+            (!outputGamut.enabled && !outputGamut.cmax.empty())) {
+            outError.diagnostic =
                 "ResourceDescriptorMismatch component=focused_route field=output_gamut_binding";
             return false;
         }
         const bool wantDensityLayers =
-            recipe.visualGrain.active && recipe.visualGrain.sublayersActive;
+            input.wantDensityLayers;
         const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
-            *request.scannerLutDescriptor;
+            input.scannerLutDescriptor;
         if (scannerDescriptor.densityBoundsHash != densityBounds.hash) {
-            outError = "focused route resource descriptor mismatch";
+            outError.diagnostic = "focused route resource descriptor mismatch";
             return false;
         }
-        if (request.exposureTables->K != Spectral::kNumSamples ||
-            request.scannerTables->K != Spectral::kNumSamples ||
+        if (input.exposureSampleCount != Spectral::kNumSamples ||
+            input.scannerTables.K != Spectral::kNumSamples ||
             filmDevelop.logExposure.empty() ||
-            filmDevelop.logExposure.size() != filmDevelop.normalizedDensityCurves.size()) {
-            outError = "focused route resource host derivation shape mismatch";
+            filmDevelop.logExposure.size() * 3u != filmDevelop.normalizedDensityCurvesRgb.scalar_count()) {
+            outError.diagnostic = "focused route resource host derivation shape mismatch";
             return false;
         }
 
@@ -3382,7 +3475,7 @@ namespace JuicerCuda {
             (printRoute ? resources.scanPrintLut.hash : resources.scanNegativeLut.hash) == scannerDescriptor.hash &&
             ((tcMethod &&
               resources.filmTcLut &&
-              resources.filmTcLutExtent == Spectral::FilmTcLut::kSize &&
+              resources.filmTcLutExtent == Spectral::kFilmTcLutExtent &&
               resources.filmTcLutKeyHash == filmRaw.tcLutHash &&
               !resources.mallettBasis) ||
              (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 &&
@@ -3391,7 +3484,6 @@ namespace JuicerCuda {
             return prepare_output_gamut_table_locked(
                 resources,
                 outputGamut,
-                request.outputBoundaryTable,
                 cudaStreamOpaque,
                 lock,
                 outError);
@@ -3405,14 +3497,14 @@ namespace JuicerCuda {
         Spectral::Curve sensB;
         Spectral::Curve sensG;
         Spectral::Curve sensR;
-        sensB.lambda_nm.assign(Spectral::gShape.wavelengths.begin(), Spectral::gShape.wavelengths.end());
+        Spectral::assign_reference_axis(sensB.lambda_nm);
         sensG.lambda_nm = sensB.lambda_nm;
         sensR.lambda_nm = sensB.lambda_nm;
         sensB.linear.resize(Spectral::kNumSamples);
         sensG.linear.resize(Spectral::kNumSamples);
         sensR.linear.resize(Spectral::kNumSamples);
         for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
-            const auto& rgb = filmRaw.finalSensitivity[static_cast<std::size_t>(sample)];
+            const auto rgb = filmRaw.finalSensitivityRgb.sample(static_cast<std::size_t>(sample));
             sensB.linear[static_cast<std::size_t>(sample)] = rgb[2];
             sensG.linear[static_cast<std::size_t>(sample)] = rgb[1];
             sensR.linear[static_cast<std::size_t>(sample)] = rgb[0];
@@ -3421,14 +3513,14 @@ namespace JuicerCuda {
         Spectral::Curve densB;
         Spectral::Curve densG;
         Spectral::Curve densR;
-        densB.lambda_nm = filmDevelop.logExposure;
-        densG.lambda_nm = filmDevelop.logExposure;
-        densR.lambda_nm = filmDevelop.logExposure;
-        densB.linear.resize(filmDevelop.normalizedDensityCurves.size());
-        densG.linear.resize(filmDevelop.normalizedDensityCurves.size());
-        densR.linear.resize(filmDevelop.normalizedDensityCurves.size());
-        for (std::size_t sample = 0; sample < filmDevelop.normalizedDensityCurves.size(); ++sample) {
-            const auto& rgb = filmDevelop.normalizedDensityCurves[sample];
+        densB.lambda_nm.assign(filmDevelop.logExposure.begin(), filmDevelop.logExposure.end());
+        densG.lambda_nm.assign(filmDevelop.logExposure.begin(), filmDevelop.logExposure.end());
+        densR.lambda_nm.assign(filmDevelop.logExposure.begin(), filmDevelop.logExposure.end());
+        densB.linear.resize(filmDevelop.normalizedDensityCurvesRgb.sample_count());
+        densG.linear.resize(filmDevelop.normalizedDensityCurvesRgb.sample_count());
+        densR.linear.resize(filmDevelop.normalizedDensityCurvesRgb.sample_count());
+        for (std::size_t sample = 0; sample < filmDevelop.normalizedDensityCurvesRgb.sample_count(); ++sample) {
+            const auto rgb = filmDevelop.normalizedDensityCurvesRgb.sample(sample);
             densB.linear[sample] = rgb[2];
             densG.linear[sample] = rgb[1];
             densR.linear[sample] = rgb[0];
@@ -3450,14 +3542,14 @@ namespace JuicerCuda {
             if (!filmDevelop.densityCurvesLayersRequired ||
                 filmDevelop.densityCurvesLayersHash == 0 ||
                 densitySamples <= 0) {
-                outError = "MissingRequiredResource phase=9B field=density_curves_layers";
+                outError.diagnostic = "MissingRequiredResource phase=9B field=density_curves_layers";
                 return false;
             }
             for (int layer = 0; layer < 3; ++layer) {
                 for (int ch = 0; ch < 3; ++ch) {
                     if (static_cast<int>(filmDevelop.densityCurvesLayers[layer][ch].size()) !=
                         densitySamples) {
-                        outError = "MalformedRequiredProfileData phase=9B field=density_curves_layers shape";
+                        outError.diagnostic = "MalformedRequiredProfileData phase=9B field=density_curves_layers shape";
                         return false;
                     }
                 }
@@ -3524,15 +3616,15 @@ namespace JuicerCuda {
                     [&](const auto& axis) {
                         return axis.size() != filmDevelop.logExposure.size();
                     })) {
-                outError = "focused film DIR resource descriptor mismatch";
+                outError.diagnostic = "focused film DIR resource descriptor mismatch";
                 return false;
             }
             Spectral::Curve dirB = densB;
             Spectral::Curve dirG = densG;
             Spectral::Curve dirR = densR;
-            dirB.lambda_nm = dirCouplers.compensatedDensityCurveAxesRgb[2];
-            dirG.lambda_nm = dirCouplers.compensatedDensityCurveAxesRgb[1];
-            dirR.lambda_nm = dirCouplers.compensatedDensityCurveAxesRgb[0];
+            dirB.lambda_nm.assign(dirCouplers.compensatedDensityCurveAxesRgb[2].begin(), dirCouplers.compensatedDensityCurveAxesRgb[2].end());
+            dirG.lambda_nm.assign(dirCouplers.compensatedDensityCurveAxesRgb[1].begin(), dirCouplers.compensatedDensityCurveAxesRgb[1].end());
+            dirR.lambda_nm.assign(dirCouplers.compensatedDensityCurveAxesRgb[0].begin(), dirCouplers.compensatedDensityCurveAxesRgb[0].end());
             if (!upload_curve_locked(resources, resources.dirDensB, dirB, cudaStreamOpaque, &lock, "focused film DIR densB", outError) ||
                 !upload_curve_locked(resources, resources.dirDensG, dirG, cudaStreamOpaque, &lock, "focused film DIR densG", outError) ||
                 !upload_curve_locked(resources, resources.dirDensR, dirR, cudaStreamOpaque, &lock, "focused film DIR densR", outError)) {
@@ -3546,9 +3638,7 @@ namespace JuicerCuda {
             }
         }
 
-        const Spectral::SpectralTables& exposureTables = *request.exposureTables;
-        const int exposureK = exposureTables.K;
-        Spectral::SpectralContext& context = Spectral::context();
+        const int exposureK = input.exposureSampleCount;
         if (tcMethod) {
             if (resources.tablesIllum) {
                 const std::size_t bytes =
@@ -3559,10 +3649,10 @@ namespace JuicerCuda {
                 resources.tablesIllum = nullptr;
                 resources.tablesK = 0;
             }
-            constexpr int extent = Spectral::FilmTcLut::kSize;
+            constexpr int extent = Spectral::kFilmTcLutExtent;
             constexpr int integratedCount =
-                extent * extent * Spectral::FilmTcLut::kChannels;
-            if (!upload_array_locked(resources, resources.filmTcLut, resources.filmTcLutExtent * resources.filmTcLutExtent * Spectral::FilmTcLut::kChannels, request.filmTcLut->rgba.data(), integratedCount, cudaStreamOpaque, &lock, "film TC LUT", outError)) {
+                extent * extent * Spectral::kFilmTcLutChannels;
+            if (!upload_array_locked(resources, resources.filmTcLut, resources.filmTcLutExtent * resources.filmTcLutExtent * Spectral::kFilmTcLutChannels, input.filmTcLut.data(), integratedCount, cudaStreamOpaque, &lock, "film TC LUT", outError)) {
                 return false;
             }
             resources.filmTcLutExtent = extent;
@@ -3576,25 +3666,25 @@ namespace JuicerCuda {
                 resources.mallettBasisK = 0;
             }
         } else if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
-            if (!upload_array_locked(resources, resources.tablesIllum, resources.tablesK, exposureTables.illum.data(), exposureK, cudaStreamOpaque, &lock, "focused film tablesIllum", outError)) {
+            if (!upload_array_locked(resources, resources.tablesIllum, resources.tablesK, input.exposureIlluminant.data(), exposureK, cudaStreamOpaque, &lock, "focused film tablesIllum", outError)) {
                 return false;
             }
             resources.tablesK = exposureK;
-            const int k = context.mallettBasis.rows;
-            if (!context.mallettAvailable.load(std::memory_order_acquire) ||
-                k != Spectral::kNumSamples || context.mallettBasis.cols != 3 ||
-                context.mallettBasis.data.empty()) {
-                outError = "selected Mallett resource family is unavailable";
+            const int k = input.mallettRows;
+            if (!input.mallettAvailable ||
+                k != Spectral::kNumSamples || input.mallettColumns != 3 ||
+                input.mallettBasis.empty()) {
+                outError.diagnostic = "selected Mallett resource family is unavailable";
                 return false;
             }
             const int count = k * 3;
-            if (!upload_array_locked(resources, resources.mallettBasis, resources.mallettBasisK * 3, context.mallettBasis.data.data(), count, cudaStreamOpaque, &lock, "film Mallett basis", outError)) {
+            if (!upload_array_locked(resources, resources.mallettBasis, resources.mallettBasisK * 3, input.mallettBasis.data(), count, cudaStreamOpaque, &lock, "film Mallett basis", outError)) {
                 return false;
             }
             resources.mallettBasisK = k;
             if (resources.filmTcLut) {
                 const std::size_t bytes = static_cast<std::size_t>(resources.filmTcLutExtent) *
-                                          static_cast<std::size_t>(resources.filmTcLutExtent) * Spectral::FilmTcLut::kChannels * sizeof(float);
+                                          static_cast<std::size_t>(resources.filmTcLutExtent) * Spectral::kFilmTcLutChannels * sizeof(float);
                 if (!retire_ptr_locked(resources, resources.filmTcLut, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unselected film TC LUT", outError)) {
                     return false;
                 }
@@ -3603,7 +3693,7 @@ namespace JuicerCuda {
                 resources.filmTcLutKeyHash = 0;
             }
         } else {
-            outError = "selected RGB-to-raw method is unsupported";
+            outError.diagnostic = "selected RGB-to-raw method is unsupported";
             return false;
         }
 
@@ -3621,9 +3711,9 @@ namespace JuicerCuda {
                 densityBounds.invSpanCmy[static_cast<std::size_t>(channel)];
         }
 
-        Scanner::ScannerMediumRuntime medium{};
+        Scanner::MediumView medium{};
         medium.medium = printRoute ? Scanner::ScannerMedium::Print : Scanner::ScannerMedium::Negative;
-        medium.tables = request.scannerTables;
+        medium.tables = input.scannerTables;
         for (int channel = 0; channel < 3; ++channel) {
             medium.range.min_cmy[channel] = scanRange.min_cmy[channel];
             medium.range.inv_max_cmy[channel] = scanRange.inv_max_cmy[channel];
@@ -3633,15 +3723,22 @@ namespace JuicerCuda {
         }
 
         if (!routeLutAlreadyPrepared) {
-            Precompute::CanonicalScanLutCpu lutCpu;
+            Failure constructionFailure;
+            FjScannerLutView lutView{};
+            const FjHostPreparation emptyPreparation{};
+            const auto& preparation = hostPreparation ? *hostPreparation : emptyPreparation;
             lock.unlock();
-            const bool lutBuilt = Precompute::build_canonical_scan_lut_cpu(
-                medium,
-                scannerDescriptor.lutResolution,
-                lutCpu,
-                outError);
+            const bool constructed = prepare_scanner_lut(preparation, medium, scannerDescriptor.lutResolution, lutView, constructionFailure);
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+            ScannerLutTest::after_prepare(resources);
+#endif
             lock.lock();
-            if (!validate_resource_owner_locked(resources, outError, false) || !lutBuilt) {
+            if (!validate_resource_owner_locked(resources, outError, false)) {
+                lock.unlock();
+                return false;
+            }
+            if (!constructed) {
+                outError = std::move(constructionFailure);
                 return false;
             }
             struct NextCanonicalScanLut {
@@ -3661,13 +3758,13 @@ namespace JuicerCuda {
                 free_owned_device_noexcept(resources, next.cellMax);
                 next = {};
             };
-            auto upload_next = [&](float*& destination, const std::vector<float>& source, const char* label) {
+            auto upload_next = [&](float*& destination, FjFloatSpan source, const char* label) {
                 void* raw = nullptr;
                 if (!alloc_and_upload_bytes(
                         resources,
                         raw,
-                        source.data(),
-                        source.size() * sizeof(float),
+                        source.data,
+                        source.count * sizeof(float),
                         cudaStreamOpaque,
                         label,
                         outError)) {
@@ -3679,12 +3776,16 @@ namespace JuicerCuda {
 
             lock.unlock();
             const bool canonicalUploaded =
-                upload_next(next.log2PchipXYZ, lutCpu.log2XYZ, "focused scan PCHIP log2 XYZ") &&
-                upload_next(next.slopeC, lutCpu.slopeC, "focused scan PCHIP C slopes") &&
-                upload_next(next.slopeM, lutCpu.slopeM, "focused scan PCHIP M slopes") &&
-                upload_next(next.slopeY, lutCpu.slopeY, "focused scan PCHIP Y slopes") &&
-                upload_next(next.cellMin, lutCpu.cellMin, "focused scan PCHIP cell minima") &&
-                upload_next(next.cellMax, lutCpu.cellMax, "focused scan PCHIP cell maxima");
+                upload_next(next.log2PchipXYZ, lutView.log2_xyz, "focused scan PCHIP log2 XYZ") &&
+                upload_next(next.slopeC, lutView.slope_c, "focused scan PCHIP C slopes") &&
+                upload_next(next.slopeM, lutView.slope_m, "focused scan PCHIP M slopes") &&
+                upload_next(next.slopeY, lutView.slope_y, "focused scan PCHIP Y slopes") &&
+                upload_next(next.cellMin, lutView.cell_min, "focused scan PCHIP cell minima") &&
+                upload_next(next.cellMax, lutView.cell_max, "focused scan PCHIP cell maxima");
+            // Native pinned staging owns every enqueued source byte at return.
+#if defined(JUICER_SCANNER_LUT_TEST_HOOK)
+            ScannerLutTest::after_upload(resources);
+#endif
             lock.lock();
             if (!validate_resource_owner_locked(resources, outError, false) || !canonicalUploaded) {
                 free_next();
@@ -3743,7 +3844,6 @@ namespace JuicerCuda {
         return prepare_output_gamut_table_locked(
             resources,
             outputGamut,
-            request.outputBoundaryTable,
             cudaStreamOpaque,
             lock,
             outError);
@@ -3751,549 +3851,282 @@ namespace JuicerCuda {
 
     namespace {
 
-        template <typename T>
-        void hash_print_descriptor_value(std::uint64_t& hash, const T& value) {
-            Hash::hash_bytes_update(hash, &value, sizeof(value));
-        }
-
-        void hash_print_descriptor_cmy(std::uint64_t& hash, const CmyCcTriplet& value) {
-            hash_print_descriptor_value(hash, value.c);
-            hash_print_descriptor_value(hash, value.m);
-            hash_print_descriptor_value(hash, value.y);
-        }
-
-        std::uint64_t hash_profile_sensitivities(
-            const Profiles::SpektrafilmProfileSamples& data) {
-            const Hash::FloatSpanHash sensitivities = Hash::hash_float_span_with_nan_mask(
-                &data.linearSensitivity[0][0],
-                data.linearSensitivity.size() * 3u);
-            return Hash::hash_uint64_values({sensitivities.valueHash,
-                                             sensitivities.nanMaskHash});
-        }
-
-        std::uint64_t hash_profile_film_density_tables(
-            const Profiles::SpektrafilmProfileSamples& data) {
-            const Hash::FloatSpanHash channelDensity = Hash::hash_float_span_with_nan_mask(
-                &data.channelDensity[0][0],
-                data.channelDensity.size() * 3u);
-            const Hash::FloatSpanHash baseDensity = Hash::hash_float_span_with_nan_mask(
-                data.baseDensity.data(),
-                data.baseDensity.size());
-            return Hash::hash_uint64_values({Hash::hash_float_span(data.wavelengths.data(), data.wavelengths.size()),
-                                             channelDensity.valueHash,
-                                             channelDensity.nanMaskHash,
-                                             baseDensity.valueHash,
-                                             baseDensity.nanMaskHash});
-        }
-
         bool print_curve_ready(const DeviceCurveView& curve, int expectedSamples, bool requireX) {
             return curve.y && (!requireX || curve.x) && curve.n == expectedSamples &&
                    curve.domainBegin >= 0 && curve.domainEnd >= curve.domainBegin &&
                    curve.domainEnd < curve.n;
         }
 
-        const Spectral::Curve* select_print_illuminant(
-            const JuicerAssets::IlluminantFilterCurveSet& curves,
-            const std::string& key) {
-            if (key == "D65")
-                return &curves.d65;
-            if (key == "D55")
-                return &curves.d55;
-            if (key == "D50")
-                return &curves.d50;
-            if (key == "TH-KG3")
-                return &curves.tungstenKg3;
-            if (key == "TH-KG3-L")
-                return &curves.tungstenKg3Lens;
-            if (key == "T")
-                return &curves.tungsten;
-            if (key == "K75P")
-                return &curves.kinoton75P;
-            return nullptr;
-        }
-
-        bool copy_source_illuminant(
-            JuicerAssets::Library& assets,
-            const std::string& key,
-            std::array<float, Spectral::kNumSamples>& out,
-            std::string& diagnostic) {
-            if (key == "EQUAL") {
-                out.fill(1.0f);
-                return true;
-            }
-            const JuicerAssets::IlluminantFilterCurveSet& curves =
-                assets.illuminant_filter_curves();
-            const Spectral::Curve* selected = select_print_illuminant(curves, key);
-            if (!selected ||
-                selected->linear.size() != out.size() ||
-                selected->lambda_nm.size() != out.size()) {
-                diagnostic = "MissingRequiredResource phase=4B field=print_illuminant key=" + key;
+        bool prepare_print_resources_impl(
+            Resources& resources,
+            const PrintResourceInput& suppliedInput,
+            void* cudaStreamOpaque,
+            Failure& outError) {
+            const PrintResourceDescriptors& descriptors = suppliedInput.descriptors;
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+            std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
+            std::unique_lock<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
+            if (!validate_resource_owner_locked(resources, outError, true)) {
                 return false;
             }
-            std::copy(selected->linear.begin(), selected->linear.end(), out.begin());
-            float energy = 0.0f;
-            const bool valid = std::all_of(out.begin(), out.end(), [&energy](float value) {
-                                   if (std::isfinite(value) && value >= 0.0f) {
-                                       energy += value;
-                                       return true;
-                                   }
-                                   return false;
-                               }) &&
-                               energy > 0.0f;
-            if (!valid) {
-                diagnostic =
-                    "MalformedRequiredResource phase=4B field=print_illuminant key=" + key;
-            }
-            return valid;
-        }
-
-        double density_to_light_sample_spektrafilm(double density, double illuminant) {
-            const double transmitted = std::pow(10.0, -density) * illuminant;
-            return std::isnan(transmitted) ? 0.0 : transmitted;
-        }
-
-        bool derive_preflash_raw(
-            const Profiles::ValidatedFilmProfile& film,
-            const Profiles::ValidatedPrintProfile& print,
-            const std::array<float, Spectral::kNumSamples>& preflashIlluminant,
-            std::array<float, 3>& out,
-            std::string& diagnostic) {
-            std::array<double, 3> raw{};
-            for (std::size_t sample = 0; sample < preflashIlluminant.size(); ++sample) {
-                const double light = density_to_light_sample_spektrafilm(
-                    static_cast<double>(film.data.baseDensity[sample]),
-                    static_cast<double>(preflashIlluminant[sample]));
-                for (std::size_t channel = 0; channel < raw.size(); ++channel) {
-                    const float sensitivity = print.data.linearSensitivity[sample][channel];
-                    if (std::isfinite(sensitivity)) {
-                        raw[channel] += light * static_cast<double>(sensitivity);
-                    }
+            const bool filmDensityHit =
+                resources.printFilmDensityTablesDescriptorHash == descriptors.filmDensityTables.hash &&
+                resources.printFilmDensityTables.K == Spectral::kNumSamples &&
+                resources.printFilmDensityTables.epsC &&
+                resources.printFilmDensityTables.epsM &&
+                resources.printFilmDensityTables.epsY &&
+                resources.printFilmDensityTables.hasBaseline &&
+                resources.printFilmDensityTables.baseDensityMin;
+            const bool profileHit =
+                resources.printProfileTablesDescriptorHash == descriptors.profileTables.hash &&
+                resources.printDcC.x && resources.printDcM.x && resources.printDcY.x &&
+                resources.printSensC.y && resources.printSensM.y && resources.printSensY.y;
+            const bool mainHit =
+                resources.printMainIlluminantDescriptorHash == descriptors.mainIlluminant.hash &&
+                resources.printIllumFiltered &&
+                resources.printIllumK == Spectral::kNumSamples &&
+                resources.printIllumFilteredHostValid;
+            const bool preflashIlluminantHit =
+                !descriptors.preflashActive ||
+                (resources.printPreflashIlluminantDescriptorHash == descriptors.preflashIlluminant.hash &&
+                 resources.printPreflashIllumFiltered &&
+                 resources.printPreflashIllumK == Spectral::kNumSamples &&
+                 resources.printPreflashIllumFilteredHostValid);
+            const bool preflashRawHit =
+                !descriptors.preflashActive ||
+                (resources.printPreflashRawDescriptorHash == descriptors.preflashRaw.hash &&
+                 resources.printPreflashValid);
+            const bool balanceHit =
+                resources.printBalanceDescriptorHash == descriptors.balance.hash;
+            auto trace_main_illuminant = [&](const char* cacheOutcome,
+                                             const char* mainIlluminantOutcome) {
+                if (!JTRACE_ENABLED(3)) {
+                    return;
                 }
+                std::string msg;
+                msg.reserve(512);
+                msg = "event=print_resource_preparation cacheOutcome=";
+                msg += cacheOutcome;
+                msg += " mainIlluminantOutcome=";
+                msg += mainIlluminantOutcome;
+                msg += " filteredMainIlluminantDescriptorHash=";
+                msg += std::to_string(descriptors.mainIlluminant.hash);
+                msg += " preparedMainIlluminantDescriptorHash=";
+                msg += std::to_string(resources.printMainIlluminantDescriptorHash);
+                msg += " descriptorCmyCc(C/M/Y)=";
+                msg += std::to_string(descriptors.mainIlluminant.cmyCc.c);
+                msg += "/";
+                msg += std::to_string(descriptors.mainIlluminant.cmyCc.m);
+                msg += "/";
+                msg += std::to_string(descriptors.mainIlluminant.cmyCc.y);
+                msg += " sourceIlluminantDescriptorHash=";
+                msg += std::to_string(descriptors.mainIlluminant.printIlluminantHash);
+                msg += " dichroicResourceHash=";
+                msg += std::to_string(descriptors.mainIlluminant.dichroicResourceHash);
+                JTRACE_VERBOSE("PHASE4C_BALANCE", msg);
+            };
+            if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
+                balanceHit &&
+                resources.printPreparationDescriptorHash == descriptors.hash) {
+                trace_main_illuminant("hit", "hit");
             }
-            for (std::size_t channel = 0; channel < raw.size(); ++channel) {
-                if (!std::isfinite(raw[channel]) || raw[channel] < 0.0) {
-                    diagnostic = "MalformedRequiredResource phase=4B field=preflash_raw";
+            if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
+                balanceHit &&
+                resources.printPreparationDescriptorHash == descriptors.hash) {
+                return true;
+            }
+
+            std::array<float, Spectral::kNumSamples> mainIlluminant{};
+            std::array<float, Spectral::kNumSamples> preflashIlluminant{};
+            std::array<float, 3> preflashRaw{};
+            if (mainHit && !balanceHit) {
+                mainIlluminant = resources.printIllumFilteredHost;
+            }
+            if (descriptors.preflashActive && preflashIlluminantHit && !preflashRawHit) {
+                preflashIlluminant = resources.printPreflashIllumFilteredHost;
+            }
+            float factorMidgray = resources.printBalanceFactorMidgray;
+            float factorMidgrayComp = resources.printBalanceFactorMidgrayComp;
+            float normalizer = resources.printBalanceNormalizer;
+
+            lock.unlock();
+            const PrintResourceInput input = suppliedInput;
+            if (!mainHit) {
+                std::copy(input.mainIlluminant.begin(), input.mainIlluminant.end(), mainIlluminant.begin());
+            }
+            if (descriptors.preflashActive && !preflashIlluminantHit &&
+                input.preflashIlluminant.data() != preflashIlluminant.data()) {
+                std::copy(input.preflashIlluminant.begin(), input.preflashIlluminant.end(), preflashIlluminant.begin());
+            }
+            if (!balanceHit) {
+                factorMidgray = input.factorMidgray;
+                factorMidgrayComp = input.factorMidgrayComp;
+                normalizer = input.normalizer;
+            }
+            if (descriptors.preflashActive && !preflashRawHit) {
+                preflashRaw = input.preflashRawCmy;
+            }
+            lock.lock();
+            if (!validate_resource_owner_locked(resources, outError, false)) {
+                return false;
+            }
+
+            if (!filmDensityHit) {
+                std::array<float, Spectral::kNumSamples> epsC{};
+                std::array<float, Spectral::kNumSamples> epsM{};
+                std::array<float, Spectral::kNumSamples> epsY{};
+                for (std::size_t sample = 0; sample < input.filmChannelDensityCmy.sample_count(); ++sample) {
+                    const auto cmy = input.filmChannelDensityCmy.sample(sample);
+                    epsC[sample] = cmy[0];
+                    epsM[sample] = cmy[1];
+                    epsY[sample] = cmy[2];
+                }
+                Resources::DeviceSpectralTables& tables = resources.printFilmDensityTables;
+                const int currentK = tables.K;
+                if (!upload_array_locked(resources, tables.epsC, currentK, epsC.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsC", outError) ||
+                    !upload_array_locked(resources, tables.epsM, currentK, epsM.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsM", outError) ||
+                    !upload_array_locked(resources, tables.epsY, currentK, epsY.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsY", outError) ||
+                    !upload_array_locked(resources, tables.baseDensityMin, currentK, input.filmBaseDensity.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density base", outError)) {
                     return false;
                 }
-                out[channel] = static_cast<float>(raw[channel]);
+                tables.K = Spectral::kNumSamples;
+                tables.hasBaseline = 1;
+                tables.invYn = 1.0f;
+                resources.printFilmDensityTablesDescriptorHash = descriptors.filmDensityTables.hash;
             }
+            if (!profileHit) {
+                Spectral::Curve dcC;
+                Spectral::Curve dcM;
+                Spectral::Curve dcY;
+                dcC.lambda_nm.assign(input.printLogExposure.begin(), input.printLogExposure.end());
+                dcM.lambda_nm.assign(input.printLogExposure.begin(), input.printLogExposure.end());
+                dcY.lambda_nm.assign(input.printLogExposure.begin(), input.printLogExposure.end());
+                dcC.linear.resize(input.printDensityCurvesCmy.sample_count());
+                dcM.linear.resize(input.printDensityCurvesCmy.sample_count());
+                dcY.linear.resize(input.printDensityCurvesCmy.sample_count());
+                std::vector<float> sensC(Spectral::kNumSamples);
+                std::vector<float> sensM(Spectral::kNumSamples);
+                std::vector<float> sensY(Spectral::kNumSamples);
+                for (std::size_t sample = 0;
+                     sample < input.printDensityCurvesCmy.sample_count();
+                     ++sample) {
+                    const auto cmy = input.printDensityCurvesCmy.sample(sample);
+                    dcC.linear[sample] = cmy[0];
+                    dcM.linear[sample] = cmy[1];
+                    dcY.linear[sample] = cmy[2];
+                }
+                for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
+                    const auto cmy = input.printSensitivityCmy.sample(static_cast<std::size_t>(sample));
+                    sensC[static_cast<std::size_t>(sample)] = cmy[0];
+                    sensM[static_cast<std::size_t>(sample)] = cmy[1];
+                    sensY[static_cast<std::size_t>(sample)] = cmy[2];
+                }
+                if (!upload_curve_locked(resources, resources.printDcC, dcC, cudaStreamOpaque, &lock, "phase4B print dcC", outError) ||
+                    !upload_curve_locked(resources, resources.printDcM, dcM, cudaStreamOpaque, &lock, "phase4B print dcM", outError) ||
+                    !upload_curve_locked(resources, resources.printDcY, dcY, cudaStreamOpaque, &lock, "phase4B print dcY", outError) ||
+                    !upload_spectral_samples_locked(resources, resources.printSensC, sensC, cudaStreamOpaque, &lock, "phase4B print sensC", outError) ||
+                    !upload_spectral_samples_locked(resources, resources.printSensM, sensM, cudaStreamOpaque, &lock, "phase4B print sensM", outError) ||
+                    !upload_spectral_samples_locked(resources, resources.printSensY, sensY, cudaStreamOpaque, &lock, "phase4B print sensY", outError)) {
+                    return false;
+                }
+                resources.printProfileTablesDescriptorHash = descriptors.profileTables.hash;
+            }
+            if (!mainHit) {
+                if (!upload_array_locked(
+                        resources,
+                        resources.printIllumFiltered,
+                        resources.printIllumK,
+                        mainIlluminant.data(),
+                        Spectral::kNumSamples,
+                        cudaStreamOpaque,
+                        &lock,
+                        "phase4B filtered main print illuminant",
+                        outError)) {
+                    return false;
+                }
+                resources.printIllumK = Spectral::kNumSamples;
+                resources.printIllumFilteredHost = mainIlluminant;
+                resources.printIllumFilteredHostValid = true;
+                resources.printMainIlluminantDescriptorHash = descriptors.mainIlluminant.hash;
+            }
+            if (descriptors.preflashActive) {
+                if (!preflashIlluminantHit) {
+                    if (!upload_array_locked(
+                            resources,
+                            resources.printPreflashIllumFiltered,
+                            resources.printPreflashIllumK,
+                            preflashIlluminant.data(),
+                            Spectral::kNumSamples,
+                            cudaStreamOpaque,
+                            &lock,
+                            "phase4B filtered preflash print illuminant",
+                            outError)) {
+                        return false;
+                    }
+                    resources.printPreflashIllumK = Spectral::kNumSamples;
+                    resources.printPreflashIllumFilteredHost = preflashIlluminant;
+                    resources.printPreflashIllumFilteredHostValid = true;
+                    resources.printPreflashIlluminantDescriptorHash =
+                        descriptors.preflashIlluminant.hash;
+                }
+                if (!preflashRawHit) {
+                    std::copy(preflashRaw.begin(), preflashRaw.end(), resources.printPreflashRaw);
+                    resources.printPreflashValid = true;
+                    resources.printPreflashRawDescriptorHash = descriptors.preflashRaw.hash;
+                }
+            } else {
+                if (resources.printPreflashIllumFiltered) {
+                    const std::size_t bytes =
+                        static_cast<std::size_t>(std::max(0, resources.printPreflashIllumK)) * sizeof(float);
+                    if (!retire_ptr_locked(
+                            resources,
+                            resources.printPreflashIllumFiltered,
+                            bytes,
+                            Resources::RetireKind::DeviceFree,
+                            cudaStreamOpaque,
+                            "disabled phase4B preflash illuminant",
+                            outError)) {
+                        return false;
+                    }
+                    resources.printPreflashIllumFiltered = nullptr;
+                }
+                resources.printPreflashIllumK = 0;
+                resources.printPreflashIllumFilteredHost.fill(0.0f);
+                resources.printPreflashIllumFilteredHostValid = false;
+                resources.printPreflashIlluminantDescriptorHash = 0;
+                resources.printPreflashRaw[0] = 0.0f;
+                resources.printPreflashRaw[1] = 0.0f;
+                resources.printPreflashRaw[2] = 0.0f;
+                resources.printPreflashValid = false;
+                resources.printPreflashRawDescriptorHash = 0;
+            }
+            if (!balanceHit) {
+                resources.printBalanceFactorMidgray = factorMidgray;
+                resources.printBalanceFactorMidgrayComp = factorMidgrayComp;
+                resources.printBalanceNormalizer = normalizer;
+                resources.printBalanceDescriptorHash = descriptors.balance.hash;
+            }
+            resources.printPreparationDescriptorHash = descriptors.hash;
+            trace_main_illuminant("rebuilt", mainHit ? "retained" : "rebuilt");
             return true;
         }
 
     } // namespace
 
-    bool build_print_resource_descriptors(
-        const RenderRecipe& recipe,
-        PrintResourceDescriptors& out,
-        std::string& diagnostic) {
-        diagnostic.clear();
-        out = PrintResourceDescriptors{};
-        if (!Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
-            !recipe.profileRoute.filmProfile ||
-            !recipe.profileRoute.printProfile ||
-            recipe.print.develop.densityCurves.empty()) {
-            diagnostic = "ResourceDescriptorMismatch phase=4B field=print_recipe";
-            return false;
-        }
-
-        const Profiles::ValidatedFilmProfile& film = *recipe.profileRoute.filmProfile;
-        const Profiles::ValidatedPrintProfile& print = *recipe.profileRoute.printProfile;
-        PrintProfileTablesDescriptor& profile = out.profileTables;
-        profile.printProfileAssetVersionToken = recipe.profileRoute.printProfileAssetVersionToken;
-        profile.densityCurvesHash = recipe.print.develop.densityCurvesHash;
-        profile.sensitivitiesHash = hash_profile_sensitivities(print.data);
-        profile.densitySampleCount =
-            static_cast<std::uint32_t>(recipe.print.develop.densityCurves.size());
-        profile.spectralSampleCount = static_cast<std::uint32_t>(print.data.linearSensitivity.size());
-        profile.hash = Hash::kFnvOffset;
-        hash_print_descriptor_value(profile.hash, PrintProfileTablesDescriptor::kSchemaVersion);
-        hash_print_descriptor_value(profile.hash, profile.printProfileAssetVersionToken);
-        hash_print_descriptor_value(profile.hash, profile.densityCurvesHash);
-        hash_print_descriptor_value(profile.hash, profile.sensitivitiesHash);
-        hash_print_descriptor_value(profile.hash, profile.densitySampleCount);
-        hash_print_descriptor_value(profile.hash, profile.spectralSampleCount);
-
-        PrintFilmDensityTablesDescriptor& filmDensity = out.filmDensityTables;
-        filmDensity.filmProfileAssetVersionToken = recipe.profileRoute.filmProfileAssetVersionToken;
-        filmDensity.densityTablesHash = hash_profile_film_density_tables(film.data);
-        filmDensity.spectralSampleCount = static_cast<std::uint32_t>(film.data.channelDensity.size());
-        filmDensity.hash = Hash::kFnvOffset;
-        hash_print_descriptor_value(filmDensity.hash, PrintFilmDensityTablesDescriptor::kSchemaVersion);
-        hash_print_descriptor_value(filmDensity.hash, filmDensity.filmProfileAssetVersionToken);
-        hash_print_descriptor_value(filmDensity.hash, filmDensity.densityTablesHash);
-        hash_print_descriptor_value(filmDensity.hash, filmDensity.spectralSampleCount);
-
-        auto build_illuminant = [&](FilteredPrintIlluminantDescriptor& descriptor,
-                                    const CmyCcTriplet& cc,
-                                    bool preflash) {
-            descriptor.printIlluminantHash = recipe.print.illuminant.hash;
-            descriptor.dichroicResourceHash = recipe.print.filters.dichroic.hash;
-            descriptor.cmyCc = cc;
-            descriptor.preflash = preflash;
-            descriptor.hash = Hash::kFnvOffset;
-            hash_print_descriptor_value(
-                descriptor.hash,
-                FilteredPrintIlluminantDescriptor::kSchemaVersion);
-            hash_print_descriptor_value(descriptor.hash, descriptor.printIlluminantHash);
-            hash_print_descriptor_value(descriptor.hash, descriptor.dichroicResourceHash);
-            hash_print_descriptor_cmy(descriptor.hash, descriptor.cmyCc);
-            hash_print_descriptor_value(descriptor.hash, descriptor.preflash);
-        };
-        build_illuminant(out.mainIlluminant, recipe.print.filters.mainCmyCc, false);
-
-        out.preflashActive = recipe.print.exposure.preflashExposure > 0.0f;
-        if (out.preflashActive) {
-            build_illuminant(out.preflashIlluminant, recipe.print.filters.preflashCmyCc, true);
-            out.preflashRaw.filmProfileAssetVersionToken =
-                recipe.profileRoute.filmProfileAssetVersionToken;
-            out.preflashRaw.printProfileAssetVersionToken =
-                recipe.profileRoute.printProfileAssetVersionToken;
-            out.preflashRaw.filteredPreflashIlluminantHash = out.preflashIlluminant.hash;
-            out.preflashRaw.hash = Hash::kFnvOffset;
-            hash_print_descriptor_value(out.preflashRaw.hash, PrintPreflashRawDescriptor::kSchemaVersion);
-            hash_print_descriptor_value(out.preflashRaw.hash, out.preflashRaw.filmProfileAssetVersionToken);
-            hash_print_descriptor_value(
-                out.preflashRaw.hash,
-                out.preflashRaw.printProfileAssetVersionToken);
-            hash_print_descriptor_value(out.preflashRaw.hash, out.preflashRaw.filteredPreflashIlluminantHash);
-        }
-
-        out.balance.filmProfileAssetVersionToken = recipe.profileRoute.filmProfileAssetVersionToken;
-        out.balance.filmRawRecipeHash = recipe.filmRaw.hash;
-        out.balance.filmDevelopRecipeHash = recipe.filmDevelop.hash;
-        out.balance.printProfileAssetVersionToken =
-            recipe.profileRoute.printProfileAssetVersionToken;
-        out.balance.filteredMainIlluminantHash = out.mainIlluminant.hash;
-        out.balance.normalizationMode = recipe.print.exposure.normalizationMode;
-        out.balance.cameraExposureCompensationEv =
-            recipe.print.exposure.printExposureCompensation
-                ? recipe.print.exposure.cameraExposureCompensationEv
-                : 0.0f;
-        out.balance.printBalanceRecipeHash = recipe.print.balance.hash;
-        out.balance.hash = Hash::kFnvOffset;
-        hash_print_descriptor_value(out.balance.hash, PrintBalanceDescriptor::kSchemaVersion);
-        hash_print_descriptor_value(out.balance.hash, out.balance.filmProfileAssetVersionToken);
-        hash_print_descriptor_value(out.balance.hash, out.balance.filmRawRecipeHash);
-        hash_print_descriptor_value(out.balance.hash, out.balance.filmDevelopRecipeHash);
-        hash_print_descriptor_value(
-            out.balance.hash,
-            out.balance.printProfileAssetVersionToken);
-        hash_print_descriptor_value(out.balance.hash, out.balance.filteredMainIlluminantHash);
-        hash_print_descriptor_value(out.balance.hash, out.balance.normalizationMode);
-        hash_print_descriptor_value(out.balance.hash, out.balance.cameraExposureCompensationEv);
-        hash_print_descriptor_value(out.balance.hash, out.balance.printBalanceRecipeHash);
-
-        out.hash = Hash::hash_uint64_values({profile.hash,
-                                             filmDensity.hash,
-                                             out.mainIlluminant.hash,
-                                             out.preflashIlluminant.hash,
-                                             out.preflashRaw.hash,
-                                             out.balance.hash});
-        if (profile.densityCurvesHash == 0 ||
-            profile.sensitivitiesHash == 0 ||
-            profile.densitySampleCount == 0 ||
-            profile.spectralSampleCount != Spectral::kNumSamples ||
-            profile.hash == 0 ||
-            filmDensity.filmProfileAssetVersionToken == 0 ||
-            filmDensity.densityTablesHash == 0 ||
-            filmDensity.spectralSampleCount != Spectral::kNumSamples ||
-            filmDensity.hash == 0 ||
-            out.mainIlluminant.hash == 0 ||
-            out.balance.hash == 0 ||
-            out.balance.filmRawRecipeHash == 0 ||
-            out.balance.filmDevelopRecipeHash == 0 ||
-            out.balance.printBalanceRecipeHash == 0 ||
-            out.hash == 0 ||
-            (out.preflashActive &&
-             (out.preflashIlluminant.hash == 0 || out.preflashRaw.hash == 0))) {
-            diagnostic = "ResourceDescriptorMismatch phase=4B field=print_resource_descriptors";
-            return false;
-        }
-        return true;
-    }
 
     bool prepare_print_resources(
         Resources& resources,
-        const PrintResourcePreparation& request,
+        const PrintResourceInput& input,
         void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!request.recipe || !request.assets) {
-            outError = "MissingRequiredResource phase=4B field=print_preparation_request";
-            return false;
-        }
-        if (!request.mainIlluminant) {
-            outError =
-                "ResourceDescriptorMismatch phase=4B field=published_print_balance";
-            return false;
-        }
-        PrintResourceDescriptors descriptors{};
-        if (!build_print_resource_descriptors(*request.recipe, descriptors, outError)) {
-            return false;
-        }
-        const Profiles::ValidatedFilmProfile& film = *request.recipe->profileRoute.filmProfile;
-        const Profiles::ValidatedPrintProfile& print = *request.recipe->profileRoute.printProfile;
-
-        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
-        std::unique_lock<std::mutex> lock(resources.m);
-        reap_retire_queue_locked(resources);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-        const bool filmDensityHit =
-            resources.printFilmDensityTablesDescriptorHash == descriptors.filmDensityTables.hash &&
-            resources.printFilmDensityTables.K == Spectral::kNumSamples &&
-            resources.printFilmDensityTables.epsC &&
-            resources.printFilmDensityTables.epsM &&
-            resources.printFilmDensityTables.epsY &&
-            resources.printFilmDensityTables.hasBaseline &&
-            resources.printFilmDensityTables.baseDensityMin;
-        const bool profileHit =
-            resources.printProfileTablesDescriptorHash == descriptors.profileTables.hash &&
-            resources.printDcC.x && resources.printDcM.x && resources.printDcY.x &&
-            resources.printSensC.y && resources.printSensM.y && resources.printSensY.y;
-        const bool mainHit =
-            resources.printMainIlluminantDescriptorHash == descriptors.mainIlluminant.hash &&
-            resources.printIllumFiltered &&
-            resources.printIllumK == Spectral::kNumSamples &&
-            resources.printIllumFilteredHostValid;
-        const bool preflashIlluminantHit =
-            !descriptors.preflashActive ||
-            (resources.printPreflashIlluminantDescriptorHash == descriptors.preflashIlluminant.hash &&
-             resources.printPreflashIllumFiltered &&
-             resources.printPreflashIllumK == Spectral::kNumSamples &&
-             resources.printPreflashIllumFilteredHostValid);
-        const bool preflashRawHit =
-            !descriptors.preflashActive ||
-            (resources.printPreflashRawDescriptorHash == descriptors.preflashRaw.hash &&
-             resources.printPreflashValid);
-        const bool balanceHit =
-            resources.printBalanceDescriptorHash == descriptors.balance.hash;
-        auto trace_main_illuminant = [&](const char* cacheOutcome,
-                                         const char* mainIlluminantOutcome) {
-            if (!JTRACE_ENABLED(3)) {
-                return;
-            }
-            std::string msg;
-            msg.reserve(512);
-            msg = "event=print_resource_preparation cacheOutcome=";
-            msg += cacheOutcome;
-            msg += " mainIlluminantOutcome=";
-            msg += mainIlluminantOutcome;
-            msg += " filteredMainIlluminantDescriptorHash=";
-            msg += std::to_string(descriptors.mainIlluminant.hash);
-            msg += " preparedMainIlluminantDescriptorHash=";
-            msg += std::to_string(resources.printMainIlluminantDescriptorHash);
-            msg += " descriptorCmyCc(C/M/Y)=";
-            msg += std::to_string(descriptors.mainIlluminant.cmyCc.c);
-            msg += "/";
-            msg += std::to_string(descriptors.mainIlluminant.cmyCc.m);
-            msg += "/";
-            msg += std::to_string(descriptors.mainIlluminant.cmyCc.y);
-            msg += " sourceIlluminantDescriptorHash=";
-            msg += std::to_string(descriptors.mainIlluminant.printIlluminantHash);
-            msg += " dichroicResourceHash=";
-            msg += std::to_string(descriptors.mainIlluminant.dichroicResourceHash);
-            JTRACE_VERBOSE("PHASE4C_BALANCE", msg);
-        };
-        if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
-            balanceHit &&
-            resources.printPreparationDescriptorHash == descriptors.hash) {
-            trace_main_illuminant("hit", "hit");
-        }
-        if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
-            balanceHit &&
-            resources.printPreparationDescriptorHash == descriptors.hash) {
-            return true;
-        }
-
-        std::array<float, Spectral::kNumSamples> mainIlluminant{};
-        std::array<float, Spectral::kNumSamples> preflashIlluminant{};
-        std::array<float, 3> preflashRaw{};
-        if (mainHit && !balanceHit) {
-            mainIlluminant = resources.printIllumFilteredHost;
-        }
-        if (descriptors.preflashActive && preflashIlluminantHit && !preflashRawHit) {
-            preflashIlluminant = resources.printPreflashIllumFilteredHost;
-        }
-        float factorMidgray = resources.printBalanceFactorMidgray;
-        float factorMidgrayComp = resources.printBalanceFactorMidgrayComp;
-        float normalizer = resources.printBalanceNormalizer;
-
-        lock.unlock();
-        if (!mainHit) {
-            mainIlluminant = *request.mainIlluminant;
-        }
-        if (descriptors.preflashActive && !preflashIlluminantHit) {
-            std::array<float, Spectral::kNumSamples> sourceIlluminant{};
-            if (!copy_source_illuminant(
-                    *request.assets,
-                    request.recipe->print.illuminant.key,
-                    sourceIlluminant,
-                    outError) ||
-                !Spektrafilm::build_filtered_print_illuminant(
-                    request.recipe->print,
-                    sourceIlluminant,
-                    request.recipe->print.filters.preflashCmyCc,
-                    preflashIlluminant,
-                    outError)) {
-                return false;
-            }
-        }
-        if (!balanceHit) {
-            factorMidgray = request.recipe->print.balance.factorMidgray;
-            factorMidgrayComp = request.recipe->print.balance.factorMidgrayComp;
-            normalizer = request.recipe->print.balance.normalizer;
-        }
-        if (descriptors.preflashActive && !preflashRawHit &&
-            !derive_preflash_raw(film, print, preflashIlluminant, preflashRaw, outError)) {
-            return false;
-        }
-        lock.lock();
-        if (!validate_resource_owner_locked(resources, outError, false)) {
-            return false;
-        }
-
-        if (!filmDensityHit) {
-            std::array<float, Spectral::kNumSamples> epsC{};
-            std::array<float, Spectral::kNumSamples> epsM{};
-            std::array<float, Spectral::kNumSamples> epsY{};
-            for (std::size_t sample = 0; sample < film.data.channelDensity.size(); ++sample) {
-                epsC[sample] = film.data.channelDensity[sample][0];
-                epsM[sample] = film.data.channelDensity[sample][1];
-                epsY[sample] = film.data.channelDensity[sample][2];
-            }
-            Resources::DeviceSpectralTables& tables = resources.printFilmDensityTables;
-            const int currentK = tables.K;
-            if (!upload_array_locked(resources, tables.epsC, currentK, epsC.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsC", outError) ||
-                !upload_array_locked(resources, tables.epsM, currentK, epsM.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsM", outError) ||
-                !upload_array_locked(resources, tables.epsY, currentK, epsY.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsY", outError) ||
-                !upload_array_locked(resources, tables.baseDensityMin, currentK, film.data.baseDensity.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density base", outError)) {
-                return false;
-            }
-            tables.K = Spectral::kNumSamples;
-            tables.hasBaseline = 1;
-            tables.invYn = 1.0f;
-            resources.printFilmDensityTablesDescriptorHash = descriptors.filmDensityTables.hash;
-        }
-        if (!profileHit) {
-            Spectral::Curve dcC;
-            Spectral::Curve dcM;
-            Spectral::Curve dcY;
-            dcC.lambda_nm = print.data.logExposure;
-            dcM.lambda_nm = print.data.logExposure;
-            dcY.lambda_nm = print.data.logExposure;
-            dcC.linear.resize(request.recipe->print.develop.densityCurves.size());
-            dcM.linear.resize(request.recipe->print.develop.densityCurves.size());
-            dcY.linear.resize(request.recipe->print.develop.densityCurves.size());
-            std::vector<float> sensC(Spectral::kNumSamples);
-            std::vector<float> sensM(Spectral::kNumSamples);
-            std::vector<float> sensY(Spectral::kNumSamples);
-            for (std::size_t sample = 0;
-                 sample < request.recipe->print.develop.densityCurves.size();
-                 ++sample) {
-                dcC.linear[sample] = request.recipe->print.develop.densityCurves[sample][0];
-                dcM.linear[sample] = request.recipe->print.develop.densityCurves[sample][1];
-                dcY.linear[sample] = request.recipe->print.develop.densityCurves[sample][2];
-            }
-            for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
-                const auto& cmy = print.data.linearSensitivity[static_cast<std::size_t>(sample)];
-                sensC[static_cast<std::size_t>(sample)] = cmy[0];
-                sensM[static_cast<std::size_t>(sample)] = cmy[1];
-                sensY[static_cast<std::size_t>(sample)] = cmy[2];
-            }
-            if (!upload_curve_locked(resources, resources.printDcC, dcC, cudaStreamOpaque, &lock, "phase4B print dcC", outError) ||
-                !upload_curve_locked(resources, resources.printDcM, dcM, cudaStreamOpaque, &lock, "phase4B print dcM", outError) ||
-                !upload_curve_locked(resources, resources.printDcY, dcY, cudaStreamOpaque, &lock, "phase4B print dcY", outError) ||
-                !upload_spectral_samples_locked(resources, resources.printSensC, sensC, cudaStreamOpaque, &lock, "phase4B print sensC", outError) ||
-                !upload_spectral_samples_locked(resources, resources.printSensM, sensM, cudaStreamOpaque, &lock, "phase4B print sensM", outError) ||
-                !upload_spectral_samples_locked(resources, resources.printSensY, sensY, cudaStreamOpaque, &lock, "phase4B print sensY", outError)) {
-                return false;
-            }
-            resources.printProfileTablesDescriptorHash = descriptors.profileTables.hash;
-        }
-        if (!mainHit) {
-            if (!upload_array_locked(
-                    resources,
-                    resources.printIllumFiltered,
-                    resources.printIllumK,
-                    mainIlluminant.data(),
-                    Spectral::kNumSamples,
-                    cudaStreamOpaque,
-                    &lock,
-                    "phase4B filtered main print illuminant",
-                    outError)) {
-                return false;
-            }
-            resources.printIllumK = Spectral::kNumSamples;
-            resources.printIllumFilteredHost = mainIlluminant;
-            resources.printIllumFilteredHostValid = true;
-            resources.printMainIlluminantDescriptorHash = descriptors.mainIlluminant.hash;
-        }
-        if (descriptors.preflashActive) {
-            if (!preflashIlluminantHit) {
-                if (!upload_array_locked(
-                        resources,
-                        resources.printPreflashIllumFiltered,
-                        resources.printPreflashIllumK,
-                        preflashIlluminant.data(),
-                        Spectral::kNumSamples,
-                        cudaStreamOpaque,
-                        &lock,
-                        "phase4B filtered preflash print illuminant",
-                        outError)) {
-                    return false;
-                }
-                resources.printPreflashIllumK = Spectral::kNumSamples;
-                resources.printPreflashIllumFilteredHost = preflashIlluminant;
-                resources.printPreflashIllumFilteredHostValid = true;
-                resources.printPreflashIlluminantDescriptorHash =
-                    descriptors.preflashIlluminant.hash;
-            }
-            if (!preflashRawHit) {
-                std::copy(preflashRaw.begin(), preflashRaw.end(), resources.printPreflashRaw);
-                resources.printPreflashValid = true;
-                resources.printPreflashRawDescriptorHash = descriptors.preflashRaw.hash;
-            }
-        } else {
-            if (resources.printPreflashIllumFiltered) {
-                const std::size_t bytes =
-                    static_cast<std::size_t>(std::max(0, resources.printPreflashIllumK)) * sizeof(float);
-                if (!retire_ptr_locked(
-                        resources,
-                        resources.printPreflashIllumFiltered,
-                        bytes,
-                        Resources::RetireKind::DeviceFree,
-                        cudaStreamOpaque,
-                        "disabled phase4B preflash illuminant",
-                        outError)) {
-                    return false;
-                }
-                resources.printPreflashIllumFiltered = nullptr;
-            }
-            resources.printPreflashIllumK = 0;
-            resources.printPreflashIllumFilteredHost.fill(0.0f);
-            resources.printPreflashIllumFilteredHostValid = false;
-            resources.printPreflashIlluminantDescriptorHash = 0;
-            resources.printPreflashRaw[0] = 0.0f;
-            resources.printPreflashRaw[1] = 0.0f;
-            resources.printPreflashRaw[2] = 0.0f;
-            resources.printPreflashValid = false;
-            resources.printPreflashRawDescriptorHash = 0;
-        }
-        if (!balanceHit) {
-            resources.printBalanceFactorMidgray = factorMidgray;
-            resources.printBalanceFactorMidgrayComp = factorMidgrayComp;
-            resources.printBalanceNormalizer = normalizer;
-            resources.printBalanceDescriptorHash = descriptors.balance.hash;
-        }
-        resources.printPreparationDescriptorHash = descriptors.hash;
-        trace_main_illuminant("rebuilt", mainHit ? "retained" : "rebuilt");
-        return true;
+        Failure& outError) {
+        outError = {};
+        return prepare_print_resources_impl(resources, input, cudaStreamOpaque, outError);
     }
 
     bool pack_print_cuda_payloads(
-        const PrintRecipe& recipe,
+        float printExposure,
+        float preflashExposure,
         const PrintPreparedView& prepared,
         float routeCorrectionScale,
         PrintCudaPayloadPack& out,
@@ -4330,8 +4163,8 @@ namespace JuicerCuda {
             diagnostic = "MissingRequiredResource phase=4B field=preflash_prepared_view";
             return false;
         }
-        if (!std::isfinite(recipe.exposure.printExposure) ||
-            recipe.exposure.printExposure < 0.0f ||
+        if (!std::isfinite(printExposure) ||
+            printExposure < 0.0f ||
             !std::isfinite(prepared.normalizer) ||
             !(prepared.normalizer > 0.0f) ||
             !std::isfinite(routeCorrectionScale) ||
@@ -4341,8 +4174,8 @@ namespace JuicerCuda {
             return false;
         }
         if (prepared.preflashActive) {
-            if (!std::isfinite(recipe.exposure.preflashExposure) ||
-                recipe.exposure.preflashExposure < 0.0f) {
+            if (!std::isfinite(preflashExposure) ||
+                preflashExposure < 0.0f) {
                 diagnostic =
                     "ResourceDescriptorMismatch phase=4B field=preflash_exposure";
                 return false;
@@ -4363,10 +4196,10 @@ namespace JuicerCuda {
         out.expose.printSensC = prepared.printSensC;
         out.expose.printSensM = prepared.printSensM;
         out.expose.printSensY = prepared.printSensY;
-        out.expose.printExposure = recipe.exposure.printExposure;
+        out.expose.printExposure = printExposure;
         out.expose.routeCorrectionScale = routeCorrectionScale;
         out.expose.printPreflashExposure =
-            prepared.preflashActive ? recipe.exposure.preflashExposure : 0.0f;
+            prepared.preflashActive ? preflashExposure : 0.0f;
         out.expose.printMidgrayFactor = prepared.normalizer;
         if (prepared.preflashActive) {
             std::copy_n(prepared.preflashRawCmy, 3, out.expose.printPreflashRaw);
@@ -4374,40 +4207,12 @@ namespace JuicerCuda {
         out.develop.printDcC = prepared.printDcC;
         out.develop.printDcM = prepared.printDcM;
         out.develop.printDcY = prepared.printDcY;
-        out.printRawScale = recipe.exposure.printExposure * prepared.normalizer;
+        out.printRawScale = printExposure * prepared.normalizer;
         if (!(std::isfinite(out.printRawScale) && out.printRawScale >= 0.0f)) {
             diagnostic = "MalformedRequiredResource phase=4B field=print_raw_scale";
             return false;
         }
         return true;
-    }
-
-    // Cuda/JuicerCudaResourcesScratch.cpp
-    //
-    // Included by JuicerCudaResources.cpp (single-TU split).
-    static void build_gaussian_weights_cpu(
-        int radius,
-        float sigma,
-        std::vector<float>& outWeights) {
-        outWeights.clear();
-        if (radius <= 0 || !std::isfinite(sigma) || sigma <= 0.0f) {
-            return;
-        }
-        const std::size_t radiusSize = static_cast<std::size_t>(radius);
-        outWeights.resize(radiusSize * 2u + 1u);
-        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
-        double wsum = 0.0;
-        std::size_t weightIndex = 0;
-        for (int i = -radius; i <= radius; ++i, ++weightIndex) {
-            const double iDouble = static_cast<double>(i);
-            const double w = std::exp(-(iDouble * iDouble) / s2);
-            outWeights[weightIndex] = static_cast<float>(w);
-            wsum += w;
-        }
-        const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
-        for (float& w : outWeights) {
-            w = static_cast<float>(static_cast<double>(w) * invW);
-        }
     }
 
     static void free_tracked_device_ptr_locked(
@@ -4438,11 +4243,12 @@ namespace JuicerCuda {
         std::size_t bytes,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         (void)cudaStreamOpaque;
         outPtr = nullptr;
         if (bytes == 0) {
-            outError = std::string(label ? label : "scratch") + " bytes invalid";
+            outError.diagnostic = std::string(label ? label : "scratch") + " bytes invalid";
             return false;
         }
 
@@ -4461,7 +4267,8 @@ namespace JuicerCuda {
         std::size_t bytes,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         void* raw = nullptr;
         const bool ok = allocate_scratch_device_ptr_locked(
             resources,
@@ -4602,9 +4409,10 @@ namespace JuicerCuda {
         s.filmDustCapacityElements = 0;
     }
 
-    static bool retire_optics_scratch_locked(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool retire_optics_scratch_locked(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque, const char* label, Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (s.filmDustTransmittance || s.gateTransmittance) {
-            outError = "whole-optics retirement requires staged defect attachment retirement";
+            outError.diagnostic = "whole-optics retirement requires staged defect attachment retirement";
             return false;
         }
         const size_t planeBytes = s.capacityElements * sizeof(float);
@@ -4687,7 +4495,8 @@ namespace JuicerCuda {
         s.capacityElements = 0;
     }
 
-    static bool retire_spatial_dir_scratch_locked(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool retire_spatial_dir_scratch_locked(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque, const char* label, Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         const size_t bytes = s.capacityElements * sizeof(float);
         if (s.rawCorrectionY) {
             if (!retire_ptr_locked(resources, s.rawCorrectionY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
@@ -4895,7 +4704,8 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!resources.sharedTmpPlane) {
             return true;
         }
@@ -4925,7 +4735,8 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!resources.sharedTmpPlane) {
             return true;
         }
@@ -4944,10 +4755,10 @@ namespace JuicerCuda {
         Resources& resources,
         std::uint64_t leaseGeneration,
         void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         if (leaseGeneration == 0) {
-            outError = "retained frame scratch lease generation is invalid";
+            outError.diagnostic = "retained frame scratch lease generation is invalid";
             return false;
         }
 
@@ -4961,7 +4772,7 @@ namespace JuicerCuda {
             return true;
         }
         if (resources.retainedScratchLeaseGeneration != 0) {
-            outError =
+            outError.diagnostic =
                 "retained frame scratch lease is already active under the serialized render contract";
             return false;
         }
@@ -4979,10 +4790,10 @@ namespace JuicerCuda {
     bool release_retained_frame_scratch_lease(
         Resources& resources,
         std::uint64_t leaseGeneration,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         if (leaseGeneration == 0) {
-            outError = "retained frame scratch lease generation is invalid";
+            outError.diagnostic = "retained frame scratch lease generation is invalid";
             return false;
         }
 
@@ -4991,7 +4802,7 @@ namespace JuicerCuda {
             return true;
         }
         if (resources.retainedScratchLeaseGeneration != leaseGeneration) {
-            outError = "retained frame scratch lease generation mismatch";
+            outError.diagnostic = "retained frame scratch lease generation mismatch";
             return false;
         }
         resources.retainedScratchLeaseGeneration = 0;
@@ -5004,32 +4815,32 @@ namespace JuicerCuda {
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
         void* cudaStreamOpaque,
         SpatialDirCachedLogRawStageStats& outStats,
-        std::string& outError) {
+        Failure& outError) {
         outStats = SpatialDirCachedLogRawStageStats{};
-        outError.clear();
+        outError = {};
         if (leaseGeneration == 0) {
-            outError = "retained spatial DIR cached log raw stage lease generation is invalid";
+            outError.diagnostic = "retained spatial DIR cached log raw stage lease generation is invalid";
             return false;
         }
         if (!ResourceManager::scratch_request_descriptor_is_valid(scratchRequest)) {
-            outError = "retained spatial DIR cached log raw stage request invalid";
+            outError.diagnostic = "retained spatial DIR cached log raw stage request invalid";
             return false;
         }
         if (scratchRequest.requestedWidth <= 0 || scratchRequest.requestedHeight <= 0) {
-            outError = "retained spatial DIR cached log raw stage dimensions invalid";
+            outError.diagnostic = "retained spatial DIR cached log raw stage dimensions invalid";
             return false;
         }
 
         const std::size_t widthElements = static_cast<std::size_t>(scratchRequest.requestedWidth);
         const std::size_t heightElements = static_cast<std::size_t>(scratchRequest.requestedHeight);
         if (widthElements > (std::numeric_limits<std::size_t>::max() / heightElements)) {
-            outError = "retained spatial DIR cached log raw stage element count overflow";
+            outError.diagnostic = "retained spatial DIR cached log raw stage element count overflow";
             return false;
         }
         const std::size_t requiredElements = widthElements * heightElements;
         if (requiredElements == 0 ||
             requiredElements > (std::numeric_limits<std::size_t>::max() / sizeof(float))) {
-            outError = "retained spatial DIR cached log raw stage byte count overflow";
+            outError.diagnostic = "retained spatial DIR cached log raw stage byte count overflow";
             return false;
         }
         const std::size_t bytes = requiredElements * sizeof(float);
@@ -5040,7 +4851,7 @@ namespace JuicerCuda {
             return false;
         }
         if (resources.retainedScratchLeaseGeneration != leaseGeneration) {
-            outError = "retained spatial DIR cached log raw stage lease generation mismatch";
+            outError.diagnostic = "retained spatial DIR cached log raw stage lease generation mismatch";
             return false;
         }
 
@@ -5051,7 +4862,7 @@ namespace JuicerCuda {
             scratch.capacityElements < requiredElements ||
             !scratch.filteredCorrectionY || !scratch.filteredCorrectionM ||
             !scratch.filteredCorrectionC) {
-            outError = "retained spatial DIR cached log raw stage missing filtered correction residency";
+            outError.diagnostic = "retained spatial DIR cached log raw stage missing filtered correction residency";
             return false;
         }
         if (scratch.logRawB && scratch.logRawG && scratch.logRawR) {
@@ -5090,25 +4901,25 @@ namespace JuicerCuda {
                                            const ResourceManager::ScratchRequestDescriptor& request,
                                            std::uint64_t expectedLease,
                                            void* streamOpaque,
-                                           std::string& outError);
+                                           Failure& outError);
 
     bool reclaim_large_scratch_transition(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
         void* cudaStreamOpaque,
         LargeScratchTransitionReclaimStats& outStats,
-        std::string& outError) {
+        Failure& outError) {
         outStats = LargeScratchTransitionReclaimStats{};
-        outError.clear();
+        outError = {};
         if (!ResourceManager::scratch_request_descriptor_is_valid(scratchRequest)) {
-            outError = "large scratch transition request descriptor is invalid";
+            outError.diagnostic = "large scratch transition request descriptor is invalid";
             return false;
         }
         const std::size_t requestedWidth = static_cast<std::size_t>(scratchRequest.requestedWidth);
         const std::size_t requestedHeight = static_cast<std::size_t>(scratchRequest.requestedHeight);
         if (requestedHeight != 0 &&
             requestedWidth > (std::numeric_limits<std::size_t>::max() / requestedHeight)) {
-            outError = "large scratch transition element count overflow";
+            outError.diagnostic = "large scratch transition element count overflow";
             return false;
         }
         const std::size_t requiredElements = requestedWidth * requestedHeight;
@@ -5221,8 +5032,9 @@ namespace JuicerCuda {
                                         : nullptr;
         const cudaError_t syncErr = cudaStreamSynchronize(stream);
         if (syncErr != cudaSuccess) {
-            outError = std::string("cudaStreamSynchronize(large scratch transition) failed: ") +
-                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+            outError.status = runtime_failure_status(syncErr);
+            outError.diagnostic = std::string("cudaStreamSynchronize(large scratch transition) failed: ") +
+                                  (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
             return false;
         }
         return reap_retired_allocations(resources, outStats.reclaimedBytes, outError);
@@ -5233,9 +5045,9 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         PostFrameScratchShedStats& outStats,
-        std::string& outError) {
+        Failure& outError) {
         outStats = PostFrameScratchShedStats{};
-        outError.clear();
+        outError = {};
 
         bool retireAttachments = false;
         {
@@ -5322,8 +5134,9 @@ namespace JuicerCuda {
                                         : nullptr;
         const cudaError_t syncErr = cudaStreamSynchronize(stream);
         if (syncErr != cudaSuccess) {
-            outError = std::string("cudaStreamSynchronize(post-frame scratch shed) failed: ") +
-                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+            outError.status = runtime_failure_status(syncErr);
+            outError.diagnostic = std::string("cudaStreamSynchronize(post-frame scratch shed) failed: ") +
+                                  (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
             return false;
         }
         return reap_retired_allocations(resources, outStats.reclaimedBytes, outError);
@@ -5336,7 +5149,8 @@ namespace JuicerCuda {
         DeviceByteReservation&& reservation,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!ptr) {
             return true;
         }
@@ -5361,12 +5175,12 @@ namespace JuicerCuda {
         Resources& resources,
         std::map<void*, DeviceByteReservation>::node_type& allocationRecord,
         bool completionCertain,
-        std::string& outError) noexcept {
+        Failure& outError) noexcept {
         try {
-            outError.clear();
+            outError = {};
             if (allocationRecord.empty() || !allocationRecord.key() ||
                 !allocationRecord.mapped().active()) {
-                outError = "invalid failed frame allocation record";
+                outError.diagnostic = "invalid failed frame allocation record";
                 return false;
             }
             std::lock_guard<std::mutex> lock(
@@ -5377,14 +5191,14 @@ namespace JuicerCuda {
             auto insertion = destination.insert(std::move(allocationRecord));
             if (!insertion.inserted) {
                 allocationRecord = std::move(insertion.node);
-                outError = "failed frame allocation pointer collision";
+                outError.diagnostic = "failed frame allocation pointer collision";
                 return false;
             }
             return true;
         } catch (...) {
             JuicerLogging::discard_current_exception();
             try {
-                outError = "failed frame allocation adoption failed";
+                outError.diagnostic = "failed frame allocation adoption failed";
             } catch (...) {
                 JuicerLogging::discard_current_exception();
             }
@@ -5392,9 +5206,10 @@ namespace JuicerCuda {
         }
     }
 
-    static bool ensure_shared_tmp_plane_locked(Resources& resources, int width, int height, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool ensure_shared_tmp_plane_locked(Resources& resources, int width, int height, void* cudaStreamOpaque, const char* label, Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (width <= 0 || height <= 0) {
-            outError = std::string(label ? label : "shared tmp") + " dimensions invalid";
+            outError.diagnostic = std::string(label ? label : "shared tmp") + " dimensions invalid";
             return false;
         }
 
@@ -5439,7 +5254,8 @@ namespace JuicerCuda {
                                            const ResourceManager::ScratchRequestDescriptor& request,
                                            std::uint64_t expectedLease,
                                            void* streamOpaque,
-                                           std::string& outError) {
+                                           Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
@@ -5454,7 +5270,7 @@ namespace JuicerCuda {
             std::lock_guard<std::mutex> lock(resources.m);
             if (resources.retainedScratchLeaseGeneration != expectedLease ||
                 (expectedLease == 0 && (desired[0] != 0 || desired[1] != 0))) {
-                outError = "defect attachment lease mismatch";
+                outError.diagnostic = "defect attachment lease mismatch";
                 return false;
             }
             context = resources.ownerContextKey;
@@ -5482,7 +5298,7 @@ namespace JuicerCuda {
         bool replace[2]{};
         for (int i = 0; i < 2; ++i) {
             if (desired[i] > std::numeric_limits<std::size_t>::max() / sizeof(float)) {
-                outError = "defect attachment byte overflow";
+                outError.diagnostic = "defect attachment byte overflow";
                 return false;
             }
             replace[i] = desired[i] == 0 ? previous[i] != nullptr : !previous[i] || capacity[i] < desired[i];
@@ -5493,12 +5309,24 @@ namespace JuicerCuda {
                 return false;
             }
             if (previous[i]) {
-                cudaError_t error = cudaEventCreateWithFlags(&pending.events[i], cudaEventDisableTiming);
+                cudaError_t error = cudaSuccess;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+                if (!ExecutorTest::inject_defect_event_create(error))
+#endif
+                {
+                    error = cudaEventCreateWithFlags(&pending.events[i], cudaEventDisableTiming);
+                }
                 if (error == cudaSuccess) {
-                    error = cudaEventRecord(pending.events[i], reinterpret_cast<cudaStream_t>(streamOpaque));
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+                    if (!ExecutorTest::inject_defect_event_record(error))
+#endif
+                    {
+                        error = cudaEventRecord(pending.events[i], reinterpret_cast<cudaStream_t>(streamOpaque));
+                    }
                 }
                 if (error != cudaSuccess) {
-                    outError = "defect attachment retirement fence failed";
+                    outError.status = runtime_failure_status(error);
+                    outError.diagnostic = "defect attachment retirement fence failed";
                     return false;
                 }
             }
@@ -5511,7 +5339,7 @@ namespace JuicerCuda {
             if (resources.retainedScratchLeaseGeneration != expectedLease || resources.contextEpoch != epoch ||
                 !(resources.ownerContextKey == context) || resources.scannerScratch.filmDustTransmittance != previous[0] ||
                 resources.scannerScratch.gateTransmittance != previous[1]) {
-                outError = "defect attachment publication identity mismatch";
+                outError.diagnostic = "defect attachment publication identity mismatch";
                 return false;
             }
             // State precedes allocation bookkeeping; no CUDA call occurs under either lock.
@@ -5521,7 +5349,7 @@ namespace JuicerCuda {
                 if (replace[i] && previous[i]) {
                     const auto record = resources.deviceAllocationRecords.find(previous[i]);
                     if (record == resources.deviceAllocationRecords.end() || record->second.bytes() != capacity[i] * sizeof(float)) {
-                        outError = "defect attachment retirement inventory mismatch";
+                        outError.diagnostic = "defect attachment retirement inventory mismatch";
                         return false;
                     }
                     retiringBytes += capacity[i] * sizeof(float);
@@ -5529,20 +5357,20 @@ namespace JuicerCuda {
             }
             if (retiringBytes > std::numeric_limits<std::size_t>::max() - resources.retireBytes ||
                 retiringBytes > std::numeric_limits<std::size_t>::max() - resources.retireScratchBytes) {
-                outError = "defect attachment retirement byte overflow";
+                outError.diagnostic = "defect attachment retirement byte overflow";
                 return false;
             }
             try {
                 resources.retireQueue.reserve(resources.retireQueue.size() + 2);
             } catch (...) {
                 JuicerLogging::discard_current_exception();
-                outError = "defect attachment retirement reservation failed";
+                outError.diagnostic = "defect attachment retirement reservation failed";
                 return false;
             }
             for (int i = 0; i < 2; ++i) {
                 if (replace[i] && previous[i]) {
                     auto& reservation = resources.deviceAllocationRecords.find(previous[i])->second;
-                    if (!reservation.mark_retiring(outError)) {
+                    if (!reservation.mark_retiring(outError.diagnostic)) {
                         return false;
                     }
                 }
@@ -5586,7 +5414,8 @@ namespace JuicerCuda {
         const ResourceManager::ScratchRequestDescriptor& request,
         std::uint64_t expectedLease,
         void* cudaStreamOpaque,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         const int width = request.requestedWidth;
         const int height = request.requestedHeight;
         const bool needBlurredScratch = request.needBlurred;
@@ -5599,7 +5428,7 @@ namespace JuicerCuda {
         const bool needGrainSharedScratch = request.needGrainShared;
 
         if (width <= 0 || height <= 0) {
-            outError = "optics scratch dimensions invalid";
+            outError.diagnostic = "optics scratch dimensions invalid";
             return false;
         }
 
@@ -5839,17 +5668,18 @@ namespace JuicerCuda {
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& request,
         void* cudaStreamOpaque,
-        std::string& outError) {
+        Failure& outError) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         const int width = request.requestedWidth;
         const int height = request.requestedHeight;
         const Spektrafilm::DirScratchTier scratchTier = request.spatialDirScratchTier;
         const Spektrafilm::DirScratchPlaneRoles& planeRoles = request.spatialDirPlaneRoles;
         if (width <= 0 || height <= 0) {
-            outError = "spatial DIR scratch dimensions invalid";
+            outError.diagnostic = "spatial DIR scratch dimensions invalid";
             return false;
         }
         if (!Spektrafilm::spatial_dir_roles_match_tier(scratchTier, planeRoles)) {
-            outError = "spatial DIR scratch request tier/roles invalid";
+            outError.diagnostic = "spatial DIR scratch request tier/roles invalid";
             return false;
         }
 
@@ -5857,6 +5687,12 @@ namespace JuicerCuda {
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (ExecutorTest::inject_workspace_candidate_failure(outError)) {
+            return false;
+        }
+#endif
 
         Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
         const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
@@ -6106,8 +5942,9 @@ namespace JuicerCuda {
         int radius,
         float sigma,
         const char* label,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError,
+        const FjHostPreparation* hostPreparation) {
+        outError = {};
         const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
         if (!sigmaOk || radius <= 0) {
             std::lock_guard<std::mutex> lock(resources.m);
@@ -6140,14 +5977,13 @@ namespace JuicerCuda {
             }
         }
 
-        std::vector<float> cpuWeights;
-        build_gaussian_weights_cpu(radius, sigma, cpuWeights);
-        if (cpuWeights.empty()) {
-            outError = std::string(label ? label : "gaussian kernel") + " weights build failed";
+        FjGaussianKernelView view{};
+        const FjHostPreparation emptyPreparation{};
+        const auto& preparation = hostPreparation ? *hostPreparation : emptyPreparation;
+        if (!prepare_gaussian_kernel(preparation, {radius, sigma}, view, outError))
             return false;
-        }
-
-        const std::size_t bytes = cpuWeights.size() * sizeof(float);
+        const std::span<const float> weights{view.weights.data, view.weights.count};
+        const std::size_t bytes = weights.size_bytes();
         void* candidateRaw = nullptr;
         if (!allocate_owned_device(
                 resources,
@@ -6158,21 +5994,43 @@ namespace JuicerCuda {
             return false;
         }
         auto* candidateWeights = static_cast<float*>(candidateRaw);
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+        const cudaError_t copyError = static_cast<cudaError_t>(GaussianKernelTest::copy(
+            resources, key, candidateWeights, weights.data(), bytes));
+#else
         const cudaError_t copyError = cudaMemcpy(
             candidateWeights,
-            cpuWeights.data(),
+            weights.data(),
             bytes,
             cudaMemcpyHostToDevice);
+#endif
         if (copyError != cudaSuccess) {
-            outError = std::string("cudaMemcpy(") +
-                       (label ? label : "gaussian kernel") + ") failed: " +
-                       (cudaGetErrorString(copyError)
-                            ? cudaGetErrorString(copyError)
-                            : "(unknown)");
+            outError.status = runtime_failure_status(copyError);
+            outError.diagnostic = std::string("cudaMemcpy(") +
+                                  (label ? label : "gaussian kernel") + ") failed: " +
+                                  (cudaGetErrorString(copyError)
+                                       ? cudaGetErrorString(copyError)
+                                       : "(unknown)");
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+            Failure ignored;
+            const bool freed = free_owned_device(resources, candidateWeights, ignored);
+            GaussianKernelTest::observed_free(resources, key, candidateWeights, freed);
+#else
             free_owned_device_noexcept(resources, candidateWeights);
+#endif
             return false;
         }
 
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+        if (!GaussianKernelTest::after_upload(resources, key, candidateWeights)) {
+            Failure ignored;
+            const bool freed = free_owned_device(resources, candidateWeights, ignored);
+            GaussianKernelTest::observed_free(resources, key, candidateWeights, freed);
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+            outError.diagnostic = "Gaussian kernel fixture rendezvous canceled";
+            return false;
+        }
+#endif
         bool cacheOwnsCandidate = false;
         bool success = false;
         {
@@ -6180,6 +6038,9 @@ namespace JuicerCuda {
             reap_retire_queue_locked(resources);
             if (validate_resource_owner_locked(resources, outError, true)) {
                 try {
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+                    GaussianKernelTest::before_insert(resources, key);
+#endif
                     const auto inserted = resources.gaussianKernelCache.emplace(
                         key,
                         candidateWeights);
@@ -6191,12 +6052,18 @@ namespace JuicerCuda {
                     success = true;
                 } catch (...) {
                     JuicerLogging::discard_current_exception();
-                    outError = "Gaussian cache bookkeeping failed";
+                    outError.diagnostic = "Gaussian cache bookkeeping failed";
                 }
             }
         }
         if (!cacheOwnsCandidate) {
+#if defined(JUICER_GAUSSIAN_TEST_HOOK)
+            Failure ignored;
+            const bool freed = free_owned_device(resources, candidateWeights, ignored);
+            GaussianKernelTest::observed_free(resources, key, candidateWeights, freed);
+#else
             free_owned_device_noexcept(resources, candidateWeights);
+#endif
         }
         return success;
     }
@@ -6206,10 +6073,12 @@ namespace JuicerCuda {
         Resources::DeviceGaussianKernel& kernel,
         int radius,
         float sigma,
-        std::string& outError) {
+        Failure& outError,
+        const FjHostPreparation* hostPreparation) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         constexpr int kMaxRadius = 2048;
         if (!std::isfinite(sigma) || sigma <= 0.0f || radius <= 0 || radius > kMaxRadius) {
-            outError = "spatial DIR kernel radius exceeds prepared-frame limit";
+            outError.diagnostic = "spatial DIR kernel radius exceeds prepared-frame limit";
             return false;
         }
         return ensure_cached_gaussian_kernel(
@@ -6218,396 +6087,9 @@ namespace JuicerCuda {
             radius,
             sigma,
             "spatial DIR kernel",
-            outError);
+            outError,
+            hostPreparation);
     }
-
-    namespace {
-
-        struct DirDoubleDouble {
-            double hi = 0.0;
-            double lo = 0.0;
-        };
-
-        DirDoubleDouble dir_dd_normalize(double hi, double lo) noexcept {
-            const double sum = hi + lo;
-            return {sum, lo - (sum - hi)};
-        }
-
-        DirDoubleDouble dir_dd_add(
-            DirDoubleDouble lhs,
-            DirDoubleDouble rhs) noexcept {
-            const double sum = lhs.hi + rhs.hi;
-            const double virtualRhs = sum - lhs.hi;
-            const double error = (lhs.hi - (sum - virtualRhs)) +
-                                 (rhs.hi - virtualRhs) + lhs.lo + rhs.lo;
-            return dir_dd_normalize(sum, error);
-        }
-
-        DirDoubleDouble dir_dd_negate(DirDoubleDouble value) noexcept {
-            return {-value.hi, -value.lo};
-        }
-
-        DirDoubleDouble dir_dd_subtract(
-            DirDoubleDouble lhs,
-            DirDoubleDouble rhs) noexcept {
-            return dir_dd_add(lhs, dir_dd_negate(rhs));
-        }
-
-        DirDoubleDouble dir_dd_multiply(
-            DirDoubleDouble lhs,
-            DirDoubleDouble rhs) noexcept {
-            const double product = lhs.hi * rhs.hi;
-            const double error = std::fma(lhs.hi, rhs.hi, -product) +
-                                 lhs.hi * rhs.lo + lhs.lo * rhs.hi +
-                                 lhs.lo * rhs.lo;
-            return dir_dd_normalize(product, error);
-        }
-
-        DirDoubleDouble dir_dd_divide(
-            DirDoubleDouble numerator,
-            DirDoubleDouble denominator) noexcept {
-            const double first = numerator.hi / denominator.hi;
-            const DirDoubleDouble remainder = dir_dd_subtract(
-                numerator,
-                dir_dd_multiply(denominator, {first, 0.0}));
-            const double second = (remainder.hi + remainder.lo) / denominator.hi;
-            return dir_dd_add({first, 0.0}, {second, 0.0});
-        }
-
-        double dir_dd_value(DirDoubleDouble value) noexcept {
-            return value.hi + value.lo;
-        }
-
-        using DirDdMatrix = std::array<std::array<DirDoubleDouble, 3>, 3>;
-        using DirDdVector = std::array<DirDoubleDouble, 3>;
-
-        DirDdMatrix dir_dd_identity() noexcept {
-            DirDdMatrix result{};
-            for (std::size_t index = 0; index < result.size(); ++index) {
-                result[index][index] = {1.0, 0.0};
-            }
-            return result;
-        }
-
-        DirDdMatrix dir_dd_matrix_multiply(
-            const DirDdMatrix& lhs,
-            const DirDdMatrix& rhs) noexcept {
-            DirDdMatrix result{};
-            for (std::size_t row = 0; row < 3u; ++row) {
-                for (std::size_t column = 0; column < 3u; ++column) {
-                    for (std::size_t inner = 0; inner < 3u; ++inner) {
-                        result[row][column] = dir_dd_add(
-                            result[row][column],
-                            dir_dd_multiply(lhs[row][inner], rhs[inner][column]));
-                    }
-                }
-            }
-            return result;
-        }
-
-        DirDdVector dir_dd_matrix_vector_multiply(
-            const DirDdMatrix& matrix,
-            const DirDdVector& vector) noexcept {
-            DirDdVector result{};
-            for (std::size_t row = 0; row < 3u; ++row) {
-                for (std::size_t column = 0; column < 3u; ++column) {
-                    result[row] = dir_dd_add(
-                        result[row],
-                        dir_dd_multiply(matrix[row][column], vector[column]));
-                }
-            }
-            return result;
-        }
-
-        bool dir_dd_invert(
-            DirDdMatrix matrix,
-            int size,
-            DirDdMatrix& inverse) noexcept {
-            inverse = dir_dd_identity();
-            for (int column = 0; column < size; ++column) {
-                int pivot = column;
-                double pivotMagnitude =
-                    std::abs(dir_dd_value(matrix[static_cast<std::size_t>(pivot)]
-                                                [static_cast<std::size_t>(column)]));
-                for (int row = column + 1; row < size; ++row) {
-                    const double magnitude =
-                        std::abs(dir_dd_value(matrix[static_cast<std::size_t>(row)]
-                                                    [static_cast<std::size_t>(column)]));
-                    if (magnitude > pivotMagnitude) {
-                        pivot = row;
-                        pivotMagnitude = magnitude;
-                    }
-                }
-                if (!(pivotMagnitude > 0.0) || !std::isfinite(pivotMagnitude)) {
-                    return false;
-                }
-                if (pivot != column) {
-                    std::swap(matrix[static_cast<std::size_t>(pivot)],
-                              matrix[static_cast<std::size_t>(column)]);
-                    std::swap(inverse[static_cast<std::size_t>(pivot)],
-                              inverse[static_cast<std::size_t>(column)]);
-                }
-                const DirDoubleDouble scale =
-                    matrix[static_cast<std::size_t>(column)]
-                          [static_cast<std::size_t>(column)];
-                for (int entry = 0; entry < size; ++entry) {
-                    matrix[static_cast<std::size_t>(column)]
-                          [static_cast<std::size_t>(entry)] =
-                              dir_dd_divide(
-                                  matrix[static_cast<std::size_t>(column)]
-                                        [static_cast<std::size_t>(entry)],
-                                  scale);
-                    inverse[static_cast<std::size_t>(column)]
-                           [static_cast<std::size_t>(entry)] =
-                               dir_dd_divide(
-                                   inverse[static_cast<std::size_t>(column)]
-                                          [static_cast<std::size_t>(entry)],
-                                   scale);
-                }
-                for (int row = 0; row < size; ++row) {
-                    if (row == column) {
-                        continue;
-                    }
-                    const DirDoubleDouble factor =
-                        matrix[static_cast<std::size_t>(row)]
-                              [static_cast<std::size_t>(column)];
-                    for (int entry = 0; entry < size; ++entry) {
-                        matrix[static_cast<std::size_t>(row)]
-                              [static_cast<std::size_t>(entry)] =
-                                  dir_dd_subtract(
-                                      matrix[static_cast<std::size_t>(row)]
-                                            [static_cast<std::size_t>(entry)],
-                                      dir_dd_multiply(
-                                          factor,
-                                          matrix[static_cast<std::size_t>(column)]
-                                                [static_cast<std::size_t>(entry)]));
-                        inverse[static_cast<std::size_t>(row)]
-                               [static_cast<std::size_t>(entry)] =
-                                   dir_dd_subtract(
-                                       inverse[static_cast<std::size_t>(row)]
-                                              [static_cast<std::size_t>(entry)],
-                                       dir_dd_multiply(
-                                           factor,
-                                           inverse[static_cast<std::size_t>(column)]
-                                                  [static_cast<std::size_t>(entry)]));
-                    }
-                }
-            }
-            return true;
-        }
-
-        struct SpatialDirBoundaryAxisCpu {
-            std::vector<double> initialWeights;
-            int initialWeightLength = 0;
-            int terminalSize = 0;
-            std::array<double, 9> terminalMatrix{};
-        };
-
-        bool build_spatial_dir_boundary_axis_cpu(
-            const Spektrafilm::DirGaussianComponentPlan& component,
-            int length,
-            SpatialDirBoundaryAxisCpu& output,
-            std::string& outError) {
-            if (length <= 0 ||
-                !(component.boundaryTruncationAccuracy > 0.0) ||
-                !(component.boundaryCertificationTolerance > 0.0) ||
-                component.boundaryDerivationVersion != 1u) {
-                outError = "spatial DIR reflected-boundary policy is invalid";
-                return false;
-            }
-            const auto& coefficients = component.iir;
-            DirDdMatrix transition{};
-            for (std::size_t coefficient = 0; coefficient < 3u; ++coefficient) {
-                transition[0][coefficient] = {coefficients.feedback[coefficient], 0.0};
-            }
-            transition[1][0] = {1.0, 0.0};
-            transition[2][1] = {1.0, 0.0};
-
-            const int period = 2 * length;
-            DirDdMatrix periodPower = dir_dd_identity();
-            std::vector<DirDdVector> feedforwardPowers(static_cast<std::size_t>(period));
-            feedforwardPowers[0][0] = {coefficients.feedforward, 0.0};
-            for (int exponent = 1; exponent < period; ++exponent) {
-                feedforwardPowers[static_cast<std::size_t>(exponent)] =
-                    dir_dd_matrix_vector_multiply(
-                        transition,
-                        feedforwardPowers[static_cast<std::size_t>(exponent - 1)]);
-            }
-            for (int exponent = 0; exponent < period; ++exponent) {
-                periodPower = dir_dd_matrix_multiply(transition, periodPower);
-            }
-
-            DirDdMatrix periodicSystem = dir_dd_identity();
-            for (std::size_t row = 0; row < 3u; ++row) {
-                for (std::size_t column = 0; column < 3u; ++column) {
-                    periodicSystem[row][column] = dir_dd_subtract(
-                        periodicSystem[row][column],
-                        periodPower[row][column]);
-                }
-            }
-            DirDdMatrix periodicInverse{};
-            if (!dir_dd_invert(periodicSystem, 3, periodicInverse)) {
-                outError = "spatial DIR causal reflected-boundary solve is singular";
-                return false;
-            }
-
-            std::vector<double> fullWeights(
-                std::size_t{3} * static_cast<std::size_t>(length));
-            std::array<DirDoubleDouble, 3> weightSums{};
-            for (int sample = 0; sample < length; ++sample) {
-                DirDdVector rightHandSide{};
-                const DirDdVector& first =
-                    feedforwardPowers[static_cast<std::size_t>(sample)];
-                const DirDdVector& second =
-                    feedforwardPowers[static_cast<std::size_t>(period - 1 - sample)];
-                for (std::size_t row = 0; row < 3u; ++row) {
-                    rightHandSide[row] = dir_dd_add(first[row], second[row]);
-                }
-                const DirDdVector state =
-                    dir_dd_matrix_vector_multiply(periodicInverse, rightHandSide);
-                for (std::size_t row = 0; row < 3u; ++row) {
-                    const double value = dir_dd_value(state[row]);
-                    if (!std::isfinite(value)) {
-                        outError = "spatial DIR causal reflected-boundary weights are nonfinite";
-                        return false;
-                    }
-                    fullWeights[row * static_cast<std::size_t>(length) +
-                                static_cast<std::size_t>(sample)] = value;
-                    weightSums[row] = dir_dd_add(weightSums[row], {value, 0.0});
-                }
-            }
-            for (DirDoubleDouble sumValue : weightSums) {
-                const double sum = dir_dd_value(sumValue);
-                if (!std::isfinite(sum) ||
-                    std::abs(sum - 1.0) > component.boundaryCertificationTolerance) {
-                    std::ostringstream detail;
-                    detail << "spatial DIR causal reflected-boundary certification failed"
-                           << " length=" << length
-                           << " sigma=" << component.sigmaPixels
-                           << " sum=" << sum
-                           << " tolerance="
-                           << component.boundaryCertificationTolerance;
-                    outError = detail.str();
-                    return false;
-                }
-            }
-
-            const int minimumLength = std::min(3, length);
-            int retainedLength = length;
-            std::array<double, 3> discardedAbsoluteTail{};
-            for (int sample = length - 1; sample >= minimumLength; --sample) {
-                for (std::size_t row = 0; row < 3u; ++row) {
-                    discardedAbsoluteTail[row] += std::abs(
-                        fullWeights[row * static_cast<std::size_t>(length) +
-                                    static_cast<std::size_t>(sample)]);
-                }
-                const double maximumTail = *std::max_element(
-                    discardedAbsoluteTail.begin(), discardedAbsoluteTail.end());
-                if (maximumTail >= component.boundaryTruncationAccuracy) {
-                    retainedLength = sample + 1;
-                    break;
-                }
-                retainedLength = sample;
-            }
-            output.initialWeightLength = retainedLength;
-            output.initialWeights.resize(
-                std::size_t{3} * static_cast<std::size_t>(retainedLength));
-            for (std::size_t row = 0; row < 3u; ++row) {
-                std::copy_n(
-                    fullWeights.begin() +
-                        static_cast<std::ptrdiff_t>(row * static_cast<std::size_t>(length)),
-                    retainedLength,
-                    output.initialWeights.begin() +
-                        static_cast<std::ptrdiff_t>(row * static_cast<std::size_t>(retainedLength)));
-            }
-
-            const int terminalSize = std::min(3, length);
-            const auto reflectHalfSample = [length](int index) noexcept {
-                const std::int64_t period = 2 * static_cast<std::int64_t>(length);
-                std::int64_t wrapped = static_cast<std::int64_t>(index) % period;
-                if (wrapped < 0) {
-                    wrapped += period;
-                }
-                return static_cast<int>(wrapped < length ? wrapped : period - 1 - wrapped);
-            };
-            DirDdMatrix terminalSystem{};
-            for (int diagonal = 0; diagonal < terminalSize; ++diagonal) {
-                terminalSystem[static_cast<std::size_t>(diagonal)]
-                              [static_cast<std::size_t>(diagonal)] = {
-                                  coefficients.normalizationDenominator,
-                                  0.0};
-            }
-            for (int row = 0; row < terminalSize; ++row) {
-                const int outputIndex = length - terminalSize + row;
-                for (int coefficient = 0; coefficient < 3; ++coefficient) {
-                    const int reflected = reflectHalfSample(outputIndex + coefficient + 1);
-                    const int column = reflected - (length - terminalSize);
-                    if (column < 0 || column >= terminalSize) {
-                        outError = "spatial DIR reflected terminal system escaped its tail";
-                        return false;
-                    }
-                    terminalSystem[static_cast<std::size_t>(row)]
-                                  [static_cast<std::size_t>(column)] =
-                                      dir_dd_subtract(
-                                          terminalSystem[static_cast<std::size_t>(row)]
-                                                        [static_cast<std::size_t>(column)],
-                                          {coefficients.feedbackNumerators[static_cast<std::size_t>(coefficient)],
-                                           0.0});
-                }
-            }
-            DirDdMatrix terminalInverse{};
-            if (!dir_dd_invert(terminalSystem, terminalSize, terminalInverse)) {
-                outError = "spatial DIR reflected terminal solve is singular";
-                return false;
-            }
-            output.terminalSize = terminalSize;
-            for (int row = 0; row < terminalSize; ++row) {
-                double rowSum = 0.0;
-                for (int column = 0; column < terminalSize; ++column) {
-                    const double value = dir_dd_value(dir_dd_multiply(
-                        {coefficients.feedforwardNumerator, 0.0},
-                        terminalInverse[static_cast<std::size_t>(row)]
-                                       [static_cast<std::size_t>(column)]));
-                    output.terminalMatrix[static_cast<std::size_t>(row) *
-                                              static_cast<std::size_t>(terminalSize) +
-                                          static_cast<std::size_t>(column)] = value;
-                    rowSum += value;
-                }
-                if (!std::isfinite(rowSum) ||
-                    std::abs(rowSum - 1.0) > component.boundaryCertificationTolerance) {
-                    outError = "spatial DIR reflected terminal certification failed";
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        std::uint64_t spatial_dir_boundary_identity(
-            const Spektrafilm::DirGaussianComponentPlan& component,
-            int width,
-            int height) {
-            std::uint64_t hash = Hash::kFnvOffset;
-            const auto hashBytes = [&hash](const auto& value) {
-                Hash::hash_bytes_update(hash, &value, sizeof(value));
-            };
-            hashBytes(component.boundaryDerivationVersion);
-            hashBytes(component.iir.feedforward);
-            for (double coefficient : component.iir.feedback) {
-                hashBytes(coefficient);
-            }
-            hashBytes(component.iir.normalizationDenominator);
-            hashBytes(component.iir.feedforwardNumerator);
-            for (double numerator : component.iir.feedbackNumerators) {
-                hashBytes(numerator);
-            }
-            hashBytes(width);
-            hashBytes(height);
-            hashBytes(component.boundaryTruncationAccuracy);
-            hashBytes(component.boundaryCertificationTolerance);
-            return hash;
-        }
-
-    } // namespace
 
     bool ensure_spatial_dir_boundary(
         Resources& resources,
@@ -6616,16 +6098,22 @@ namespace JuicerCuda {
         int width,
         int height,
         void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         if (component.referenceOperator !=
                 Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect ||
             !(component.weight > 0.0f) || width <= 0 || height <= 0) {
-            outError = "spatial DIR reflected-boundary request is invalid";
+            outError.diagnostic = "spatial DIR reflected-boundary request is invalid";
             return false;
         }
-        const std::uint64_t identity =
-            spatial_dir_boundary_identity(component, width, height);
+        const auto input = JuicerDirBoundary::project_input(component, {width, height});
+        std::uint64_t identity = 0;
+        if (!JuicerDirBoundary::describe(input, identity, outError)) {
+            return false;
+        }
+#if defined(JUICER_DIR_BOUNDARY_TEST_HOOK)
+        DirBoundaryTest::request(resources, identity);
+#endif
         {
             std::lock_guard<std::mutex> lock(resources.m);
             reap_retire_queue_locked(resources);
@@ -6637,35 +6125,17 @@ namespace JuicerCuda {
             }
         }
 
-        SpatialDirBoundaryAxisCpu horizontal{};
-        SpatialDirBoundaryAxisCpu vertical{};
-        if (!build_spatial_dir_boundary_axis_cpu(
-                component, width, horizontal, outError) ||
-            !build_spatial_dir_boundary_axis_cpu(
-                component, height, vertical, outError)) {
+        auto hostBoundary = JuicerDirBoundary::Boundary::acquire(input, identity, outError);
+        if (!hostBoundary) {
             return false;
         }
-        std::vector<double> combined;
-        combined.reserve(horizontal.initialWeights.size() + vertical.initialWeights.size());
-        combined.insert(
-            combined.end(),
-            horizontal.initialWeights.begin(),
-            horizontal.initialWeights.end());
-        combined.insert(
-            combined.end(),
-            vertical.initialWeights.begin(),
-            vertical.initialWeights.end());
-        if (combined.empty() ||
-            combined.size() > std::numeric_limits<std::size_t>::max() / sizeof(double)) {
-            outError = "spatial DIR reflected-boundary storage size is invalid";
-            return false;
-        }
-        const std::size_t bytes = combined.size() * sizeof(double);
+        const auto view = hostBoundary->view();
+        const std::size_t bytes = view.count * sizeof(double);
         void* candidateRaw = nullptr;
         if (!alloc_and_upload_bytes(
                 resources,
                 candidateRaw,
-                combined.data(),
+                view.weights,
                 bytes,
                 cudaStreamOpaque,
                 "spatial DIR reflected boundary",
@@ -6673,6 +6143,14 @@ namespace JuicerCuda {
             return false;
         }
 
+#if defined(JUICER_DIR_BOUNDARY_TEST_HOOK)
+        if (!DirBoundaryTest::after_upload(resources, identity, candidateRaw)) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+            outError.diagnostic = "spatial DIR boundary candidate rendezvous canceled";
+            free_owned_device_noexcept(resources, candidateRaw);
+            return false;
+        }
+#endif
         bool keepCandidate = false;
         bool success = false;
         {
@@ -6693,12 +6171,12 @@ namespace JuicerCuda {
                                outError)) {
                     boundary.weights = static_cast<double*>(candidateRaw);
                     boundary.bytes = bytes;
-                    boundary.horizontalLength = horizontal.initialWeightLength;
-                    boundary.verticalLength = vertical.initialWeightLength;
-                    boundary.horizontalTerminalSize = horizontal.terminalSize;
-                    boundary.verticalTerminalSize = vertical.terminalSize;
-                    boundary.horizontalTerminalMatrix = horizontal.terminalMatrix;
-                    boundary.verticalTerminalMatrix = vertical.terminalMatrix;
+                    boundary.horizontalLength = view.horizontal_length;
+                    boundary.verticalLength = view.vertical_length;
+                    boundary.horizontalTerminalSize = view.horizontal_terminal_size;
+                    boundary.verticalTerminalSize = view.vertical_terminal_size;
+                    std::copy_n(view.horizontal_terminal, boundary.horizontalTerminalMatrix.size(), boundary.horizontalTerminalMatrix.begin());
+                    std::copy_n(view.vertical_terminal, boundary.verticalTerminalMatrix.size(), boundary.verticalTerminalMatrix.begin());
                     boundary.identity = identity;
                     keepCandidate = true;
                     success = true;
@@ -6715,8 +6193,8 @@ namespace JuicerCuda {
         Resources& resources,
         Resources::DeviceSpatialDirBoundary& boundary,
         void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         std::lock_guard<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
         if (!validate_resource_owner_locked(resources, outError, true)) {
@@ -6740,8 +6218,8 @@ namespace JuicerCuda {
     bool clear_spatial_dir_kernel_binding(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         std::lock_guard<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
         if (!validate_resource_owner_locked(resources, outError, true)) {
@@ -6756,11 +6234,13 @@ namespace JuicerCuda {
         Resources::DeviceGaussianKernel& kernel,
         float sigma,
         int radius,
-        std::string& outError) {
+        Failure& outError,
+        const FjHostPreparation* hostPreparation) {
+        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         constexpr int kMaxRadius = 75;
         if (!std::isfinite(sigma) || sigma <= 0.0f || radius <= 0 ||
             radius > kMaxRadius) {
-            outError = "gaussian descriptor is invalid";
+            outError.diagnostic = "gaussian descriptor is invalid";
             return false;
         }
         return ensure_cached_gaussian_kernel(
@@ -6769,6 +6249,7 @@ namespace JuicerCuda {
             radius,
             sigma,
             "gaussian kernel",
-            outError);
+            outError,
+            hostPreparation);
     }
 } // namespace JuicerCuda

@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <numbers>
@@ -12,6 +14,8 @@
 #include <vector>
 
 #include "DiffusionHostBehavior.h"
+#include "spatial_optics_fixture.h"
+#include "../ffi/case_results.h"
 #include "reference_cases.h"
 
 namespace {
@@ -125,7 +129,7 @@ namespace {
         Spektrafilm::DiffusionFilterResolvedParameters& resolved,
         std::string_view name) {
         std::string diagnostic;
-        if (!Spektrafilm::resolve_diffusion_filter(authored, resolved, diagnostic)) {
+        if (!JuicerTestSupport::prepare_diffusion_filter(authored, resolved, diagnostic)) {
             fail_text(name, "resolve", diagnostic.empty() ? "no diagnostic" : diagnostic);
             return false;
         }
@@ -140,7 +144,7 @@ namespace {
         Spektrafilm::DiffusionPsfSampleDescriptor& descriptor,
         std::string_view name) {
         std::string diagnostic;
-        if (!Spektrafilm::build_diffusion_psf_sample_descriptor(
+        if (!JuicerTestSupport::prepare_diffusion_sample(
                 resolved,
                 pixelSizeUm,
                 width,
@@ -158,7 +162,7 @@ namespace {
         Spektrafilm::DiffusionPsfComponents& components,
         std::string_view name) {
         std::string diagnostic;
-        if (!Spektrafilm::expand_diffusion_psf_components(descriptor, components, diagnostic)) {
+        if (!JuicerTestSupport::prepare_diffusion_components(descriptor, components, diagnostic)) {
             fail_text(name, "components", diagnostic.empty() ? "no diagnostic" : diagnostic);
             return false;
         }
@@ -193,8 +197,11 @@ namespace {
 
     void test_strength_cases() {
         for (const auto& row : DiffusionHostReference::kStrengthCases) {
+            const int failures_before = gFailures;
+            JuicerTests::CaseEvent event("diffusion_host_reference", std::string("strength.") + std::string(row.name));
             Spektrafilm::DiffusionFilterResolvedParameters resolved{};
             if (!resolve(authored_controls(row.authored), resolved, row.name)) {
+                event.complete(gFailures == failures_before);
                 continue;
             }
             check_close(resolved.scatterFraction, row.scatterFraction, row.name, "scatterFraction");
@@ -207,11 +214,14 @@ namespace {
             } else {
                 check_equal(resolved.hash, std::uint64_t{0}, row.name, "resolved_hash_zero");
             }
+            event.complete(gFailures == failures_before);
         }
     }
 
     void test_family_cases() {
         for (const auto& row : DiffusionHostReference::kFamilyCases) {
+            const int failures_before = gFailures;
+            JuicerTests::CaseEvent event("diffusion_host_reference", std::string("family.") + std::string(row.name));
             auto authored = default_authored(row.familyIndex);
             Spektrafilm::DiffusionFilterResolvedParameters resolved{};
             Spektrafilm::DiffusionPsfSampleDescriptor descriptor{};
@@ -225,6 +235,7 @@ namespace {
                     descriptor,
                     components,
                     row.name)) {
+                event.complete(gFailures == failures_before);
                 continue;
             }
             check_array_close(
@@ -281,11 +292,14 @@ namespace {
                     row.name,
                     "bloomInternalWeight");
             }
+            event.complete(gFailures == failures_before);
         }
     }
 
     void test_warmth_cases() {
         for (const auto& row : DiffusionHostReference::kWarmthCases) {
+            const int failures_before = gFailures;
+            JuicerTests::CaseEvent event("diffusion_host_reference", std::string("warmth.") + std::string(row.name));
             Spektrafilm::DiffusionFilterResolvedParameters resolved{};
             Spektrafilm::DiffusionPsfSampleDescriptor descriptor{};
             Spektrafilm::DiffusionPsfComponents components{};
@@ -298,6 +312,7 @@ namespace {
                     descriptor,
                     components,
                     row.name)) {
+                event.complete(gFailures == failures_before);
                 continue;
             }
             check_close(resolved.effectiveWarmth, row.effectiveWarmth, row.name, "effectiveWarmth");
@@ -312,11 +327,14 @@ namespace {
                         "haloChannelWeight");
                 }
             }
+            event.complete(gFailures == failures_before);
         }
     }
 
     void test_advanced_cases() {
         for (const auto& row : DiffusionHostReference::kAdvancedCases) {
+            const int failures_before = gFailures;
+            JuicerTests::CaseEvent event("diffusion_host_reference", std::string("advanced.") + std::string(row.name));
             auto authored = authored_controls(row.authored);
             Spektrafilm::DiffusionFilterResolvedParameters resolved{};
             Spektrafilm::DiffusionPsfSampleDescriptor descriptor{};
@@ -330,6 +348,7 @@ namespace {
                     descriptor,
                     components,
                     row.name)) {
+                event.complete(gFailures == failures_before);
                 continue;
             }
             check_array_close(
@@ -384,11 +403,14 @@ namespace {
                         "bloomInternalWeight");
                 }
             }
+            event.complete(gFailures == failures_before);
         }
     }
 
     void test_radius_cases() {
         for (const auto& row : DiffusionHostReference::kRadiusCases) {
+            const int failures_before = gFailures;
+            JuicerTests::CaseEvent event("diffusion_host_reference", std::string("radius.") + std::string(row.name));
             Spektrafilm::DiffusionFilterResolvedParameters resolved{};
             Spektrafilm::DiffusionPsfSampleDescriptor descriptor{};
             if (!resolve(authored_controls(row.authored), resolved, row.name) ||
@@ -399,9 +421,11 @@ namespace {
                     row.height,
                     descriptor,
                     row.name)) {
+                event.complete(gFailures == failures_before);
                 continue;
             }
             check_equal(descriptor.radiusPixels, row.radiusPixels, row.name, "radiusPixels");
+            event.complete(gFailures == failures_before);
         }
     }
 
@@ -450,6 +474,8 @@ namespace {
 
     void test_psf_cases() {
         for (const auto& row : DiffusionHostReference::kPsfCases) {
+            const int failures_before = gFailures;
+            JuicerTests::CaseEvent event("diffusion_host_reference", std::string("psf.") + std::string(row.name));
             Spektrafilm::DiffusionFilterResolvedParameters resolved{};
             Spektrafilm::DiffusionPsfSampleDescriptor descriptor{};
             Spektrafilm::DiffusionPsfComponents components{};
@@ -462,6 +488,7 @@ namespace {
                     descriptor,
                     components,
                     row.name)) {
+                event.complete(gFailures == failures_before);
                 continue;
             }
             const std::vector<double> actual = sample_psf(components, row.height, row.width);
@@ -472,6 +499,7 @@ namespace {
                     row.name,
                     "psf");
             }
+            event.complete(gFailures == failures_before);
         }
     }
 
@@ -782,7 +810,7 @@ namespace {
         Spektrafilm::DiffusionFilterResolvedParameters resolved{};
         std::string diagnostic;
         check_false(
-            Spektrafilm::resolve_diffusion_filter(authored, resolved, diagnostic),
+            JuicerTestSupport::prepare_diffusion_filter(authored, resolved, diagnostic),
             "invalid:family",
             "resolve");
 
@@ -804,7 +832,7 @@ namespace {
                 authored.*fields[field] = invalidValues[value];
                 diagnostic.clear();
                 check_false(
-                    Spektrafilm::resolve_diffusion_filter(authored, resolved, diagnostic),
+                    JuicerTestSupport::prepare_diffusion_filter(authored, resolved, diagnostic),
                     "invalid:numeric",
                     std::string("field=") + std::to_string(field) +
                         " value=" + std::to_string(value));
@@ -841,7 +869,7 @@ namespace {
             Spektrafilm::DiffusionPsfSampleDescriptor descriptor{};
             diagnostic.clear();
             check_false(
-                Spektrafilm::build_diffusion_psf_sample_descriptor(
+                JuicerTestSupport::prepare_diffusion_sample(
                     resolved,
                     0.0,
                     1920,
@@ -851,7 +879,7 @@ namespace {
                 "invalid:descriptor",
                 "pixelSizeZero");
             check_false(
-                Spektrafilm::build_diffusion_psf_sample_descriptor(
+                JuicerTestSupport::prepare_diffusion_sample(
                     resolved,
                     1.0,
                     0,
@@ -861,7 +889,7 @@ namespace {
                 "invalid:descriptor",
                 "widthZero");
             check_false(
-                Spektrafilm::build_diffusion_psf_sample_descriptor(
+                JuicerTestSupport::prepare_diffusion_sample(
                     resolved,
                     1.0,
                     1920,
@@ -876,7 +904,7 @@ namespace {
         Spektrafilm::DiffusionPsfComponents components{};
         diagnostic.clear();
         check_false(
-            Spektrafilm::expand_diffusion_psf_components(
+            JuicerTestSupport::prepare_diffusion_components(
                 inactiveDescriptor,
                 components,
                 diagnostic),
@@ -886,17 +914,47 @@ namespace {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) try {
+    JuicerTests::CaseLog case_log;
+    if (argc > 1 && std::string_view(argv[argc - 1]) == "--list-cases") {
+        for (const auto& row : DiffusionHostReference::kStrengthCases)
+            JuicerTests::list_case("diffusion_host_reference", std::string("strength.") + std::string(row.name));
+        for (const auto& row : DiffusionHostReference::kFamilyCases)
+            JuicerTests::list_case("diffusion_host_reference", std::string("family.") + std::string(row.name));
+        for (const auto& row : DiffusionHostReference::kWarmthCases)
+            JuicerTests::list_case("diffusion_host_reference", std::string("warmth.") + std::string(row.name));
+        for (const auto& row : DiffusionHostReference::kAdvancedCases)
+            JuicerTests::list_case("diffusion_host_reference", std::string("advanced.") + std::string(row.name));
+        for (const auto& row : DiffusionHostReference::kRadiusCases)
+            JuicerTests::list_case("diffusion_host_reference", std::string("radius.") + std::string(row.name));
+        for (const auto& row : DiffusionHostReference::kPsfCases)
+            JuicerTests::list_case("diffusion_host_reference", std::string("psf.") + std::string(row.name));
+        for (const char* id : {"spatial_scale_floor", "authored_field_hash", "hash_relationships", "invalid_identity_inputs"})
+            JuicerTests::list_case("diffusion_host_reference", id);
+        return 0;
+    }
     test_strength_cases();
     test_family_cases();
     test_warmth_cases();
     test_advanced_cases();
     test_radius_cases();
     test_psf_cases();
+    const int scale_failures_before = gFailures;
+    JuicerTests::CaseEvent scale_event("diffusion_host_reference", "spatial_scale_floor");
     test_spatial_scale_floor_contract();
+    scale_event.complete(gFailures == scale_failures_before);
+    const int authored_failures_before = gFailures;
+    JuicerTests::CaseEvent authored_event("diffusion_host_reference", "authored_field_hash");
     test_authored_field_hash_coverage();
+    authored_event.complete(gFailures == authored_failures_before);
+    const int hash_failures_before = gFailures;
+    JuicerTests::CaseEvent hash_event("diffusion_host_reference", "hash_relationships");
     test_hash_relationships();
+    hash_event.complete(gFailures == hash_failures_before);
+    const int invalid_failures_before = gFailures;
+    JuicerTests::CaseEvent invalid_event("diffusion_host_reference", "invalid_identity_inputs");
     test_invalid_and_identity_inputs();
+    invalid_event.complete(gFailures == invalid_failures_before);
 
     if (gFailures != 0) {
         std::cerr << "HOST_BEHAVIOR_CONTRACT=FAIL failures=" << gFailures << '\n';
@@ -911,5 +969,12 @@ int main() {
               << " radius=" << DiffusionHostReference::kRadiusCases.size()
               << " psf=" << DiffusionHostReference::kPsfCases.size()
               << '\n';
+    case_log.finish();
     return 0;
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "HOST_BEHAVIOR_CONTRACT=FAIL exception=%s\n", error.what());
+    return 1;
+} catch (...) {
+    std::fputs("HOST_BEHAVIOR_CONTRACT=FAIL unknown_exception\n", stderr);
+    return 1;
 }

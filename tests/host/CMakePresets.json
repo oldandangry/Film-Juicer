@@ -1,0 +1,48 @@
+{
+  "version": 6,
+  "include": [
+    "../../CMakePresets.json"
+  ],
+  "configurePresets": [
+    {
+      "name": "linux-debug-host-tests",
+      "inherits": "linux-debug",
+      "binaryDir": "${sourceDir}/../../out/build/linux-debug/host-tests",
+      "cacheVariables": {
+        "CMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit": true,
+        "CMAKE_CUDA_COMPILER": "CMAKE_CUDA_COMPILER-NOTFOUND",
+        "CUDAToolkit_ROOT": null
+      }
+    },
+    {
+      "name": "linux-release-host-tests",
+      "inherits": "linux-release",
+      "binaryDir": "${sourceDir}/../../out/build/linux-release/host-tests",
+      "cacheVariables": {
+        "CMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit": true,
+        "CMAKE_CUDA_COMPILER": "CMAKE_CUDA_COMPILER-NOTFOUND",
+        "CUDAToolkit_ROOT": null
+      }
+    },
+    {
+      "name": "windows-clang-debug-host-tests",
+      "inherits": "windows-clang-debug",
+      "binaryDir": "${sourceDir}/../../out/build/windows-clang-debug/host-tests",
+      "cacheVariables": {
+        "CMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit": true,
+        "CMAKE_CUDA_COMPILER": "CMAKE_CUDA_COMPILER-NOTFOUND",
+        "CUDAToolkit_ROOT": null
+      }
+    },
+    {
+      "name": "windows-clang-release-host-tests",
+      "inherits": "windows-clang-release",
+      "binaryDir": "${sourceDir}/../../out/build/windows-clang-release/host-tests",
+      "cacheVariables": {
+        "CMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit": true,
+        "CMAKE_CUDA_COMPILER": "CMAKE_CUDA_COMPILER-NOTFOUND",
+        "CUDAToolkit_ROOT": null
+      }
+    }
+  ]
+}

@@ -1,0 +1,346 @@
+{
+  "classification": "Film-Juicer native characterization, not external-reference pixels",
+  "authority_head": "aef712df8abf620eba0247741043a00e39d3bb52",
+  "nonlinear_dir_reference": "28bf883e1672e884307edc75852549376e13644e",
+  "provenance": {
+    "frozen_utc": "2026-10-16T20:00:00Z",
+    "timestamp_precision": "Approximate minute; filesystem records preserve exact creation time.",
+    "head": "aef712df8abf620eba0247741043a00e39d3bb52",
+    "records": {
+      "linux-debug": {
+        "capture": {
+          "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-capture/native.json",
+          "sha256": "c52952ff4466ae44892e0ed1b557340183c18a11884363ea720d75161340c5d4",
+          "cases": 64,
+          "attempts": [
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-capture/attempts/capture-compile-u3vy95xe/result.json",
+              "sha256": "9326753d2711129cd65264f8fb9a37210a35b9746f10e4d7b79fd28b57fa1df3"
+            },
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-capture/attempts/capture-link-904vvcn4/result.json",
+              "sha256": "026b0a4de0632312fb483c32129f2727fdd96029a0ac7dee65d16158a8df08eb"
+            },
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-capture/attempts/capture-runtime-v4ryf4br/result.json",
+              "sha256": "0c88ffa42d11d563626d4fdbfe19eeae742dd4eb2a581c8a24edd193f4e5b709"
+            },
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-capture/attempts/feature-runtime-nwj4xnkj/result.json",
+              "sha256": "110d04e1057f818b2c76fa8d81247cb189cf8023e98e86c0c7cd6c3e7291b5b8"
+            },
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-capture/attempts/native-build-kvrnr9i4/result.json",
+              "sha256": "8d3aac2956766f8cce394cf1e9e83c3ad59fb5549a917d2f1ed50d827d57748e"
+            }
+          ]
+        },
+        "f1": {
+          "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-f1/native-f1.json",
+          "sha256": "24be2e15d5e18d2e28ed3553f6f4034a704ec4d5014902e8815100e5e7d0d9ca",
+          "cases": 42,
+          "attempts": [
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-f1/attempts/capture-compile-749ojgko/result.json",
+              "sha256": "ebec70a6f4a4ba05fc6d217f417175e05668c2ff372fbd20be7594fc3604a13e"
+            },
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-f1/attempts/capture-link-ogy6g4ne/result.json",
+              "sha256": "ddb9a2678ed56f4ac3c4a36a26f5054a570186bab139cbd044541db8d2543831"
+            },
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-f1/attempts/capture-runtime-y0ds8y1k/result.json",
+              "sha256": "94fecc0a222cc4ff2179017473bddf97ecdf65ebaefaa9b4f51e6a96b6ec9024"
+            }
+          ]
+        },
+        "focused": {
+          "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-focused/native-focused.json",
+          "sha256": "977070b818a23af02f8f5fa744440f04020ea83ef12618762b8555505e7c22f6",
+          "cases": 40,
+          "attempts": [
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-focused/attempts/capture-compile-k1ecv6qd/result.json",
+              "sha256": "55fb8259d4388fdb1b46cfe873eb5aa4f522ed1611041a594135f64fdc22a0db"
+            },
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-focused/attempts/capture-link-2fmqodlp/result.json",
+              "sha256": "49b93a66c48134d9f22a3f451e8158d038b17f1ba03f27f90b41042770823f3a"
+            },
+            {
+              "path": "out/validation/linux-debug/s4-b-slice-3-2026-10-16-focused/attempts/capture-runtime-pu7prj7m/result.json",
+              "sha256": "a469d69ad825d01685e29d811831a7f820bc140bdc9c4f1dabb844e121cf34e8"
+            }
+          ]
+        }
+      },
+      "linux-release": {
+        "capture": {
+          "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-capture/native.json",
+          "sha256": "c52952ff4466ae44892e0ed1b557340183c18a11884363ea720d75161340c5d4",
+          "cases": 64,
+          "attempts": [
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-capture/attempts/capture-compile-y1c2mxpl/result.json",
+              "sha256": "4ff032a777e24729158ed21e4705c6474719db40af4e32bdb79b7477ca401121"
+            },
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-capture/attempts/capture-link-rccuknm1/result.json",
+              "sha256": "72d29ae98cd6016aa6555a22e44a84d1ce6a1c36ec4c5ac64fb111c97846e22a"
+            },
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-capture/attempts/capture-runtime-81l_ljd_/result.json",
+              "sha256": "a11085466df2726e8b88c482ad498cee1820e61423d270a1bc41ed849b974055"
+            },
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-capture/attempts/feature-runtime-jx3gq2bp/result.json",
+              "sha256": "9de2fd337461659730144ca308b27a7417977bc6708d33aac31ff2b5237345fc"
+            },
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-capture/attempts/native-build-7kcal649/result.json",
+              "sha256": "5def84ee211d22af81403417eed4746bf60bfd1904d3b4385e519a26d04e09b1"
+            }
+          ]
+        },
+        "f1": {
+          "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-f1/native-f1.json",
+          "sha256": "24be2e15d5e18d2e28ed3553f6f4034a704ec4d5014902e8815100e5e7d0d9ca",
+          "cases": 42,
+          "attempts": [
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-f1/attempts/capture-compile-h_pzp7v8/result.json",
+              "sha256": "d9d376a6bf803cc7498499de14f2258f4e4ad5b0fc81f86436ae495d6f0b2426"
+            },
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-f1/attempts/capture-link-4jtuxtyd/result.json",
+              "sha256": "ef91f11f6b903c3ae6d344f1ab90d90ac37ccc5d72473c9ffd05df5d76dfa7f7"
+            },
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-f1/attempts/capture-runtime-vyz6l866/result.json",
+              "sha256": "e5f7b57f6aa0ff35740635c6c12233cdbf7583491f030c6d9fd646d2ea292146"
+            }
+          ]
+        },
+        "focused": {
+          "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-focused/native-focused.json",
+          "sha256": "977070b818a23af02f8f5fa744440f04020ea83ef12618762b8555505e7c22f6",
+          "cases": 40,
+          "attempts": [
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-focused/attempts/capture-compile-dysbt7n0/result.json",
+              "sha256": "a386521866db6d5d4e09b291c3f9427d9df6bc41f55975a66a3e803c6f359a91"
+            },
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-focused/attempts/capture-link-3lki9arl/result.json",
+              "sha256": "252c3a24bb15f12e6843e66a092fd83bdfe7b568e21b3e4eb8a47a346c6d011d"
+            },
+            {
+              "path": "out/validation/linux-release/s4-b-slice-3-2026-10-16-focused/attempts/capture-runtime-dbe89zr6/result.json",
+              "sha256": "9c14830152eee80ad65a362b038afabf4db377c7f00e1ca5afcb0bf343d7f105"
+            }
+          ]
+        }
+      },
+      "windows-clang-debug": {
+        "capture": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-capture/native.json",
+          "sha256": "39b2b6c414877b5afd754a1028a14e355047b665a178585ce7b31e00b69d510a",
+          "cases": 64,
+          "attempts": [
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-capture/attempts/capture-compile-o5cvp7ev/result.json",
+              "sha256": "e583a3e839a5646ce6e941ab2e0943fd6deba4e5d4ebb10fe7eecad0ecb7420a"
+            },
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-capture/attempts/capture-link-rks6xswd/result.json",
+              "sha256": "8b755377b31fe78c73a61c6c97e630e95fad53813c79f97b640f3063f95676d8"
+            },
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-capture/attempts/capture-runtime-hfu1ew1q/result.json",
+              "sha256": "5ba840d48331f359b0a2e1ffb4ec348162f64ba0b74f7ccdf51c7311c9450f83"
+            },
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-capture/attempts/feature-runtime-9_722ovc/result.json",
+              "sha256": "b69a47781e8aebdea1e71b05700843a91f2fb762c31387efca7743c0dc100d2f"
+            },
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-capture/attempts/native-build-2jfp0zqv/result.json",
+              "sha256": "d245cf8b384fd739b852ce4f72d1272ae9d9f9fb4f9fadecebbe57f12342737f"
+            }
+          ]
+        },
+        "f1": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-f1/native-f1.json",
+          "sha256": "67786d7360650703452d216663d766860e8ec53611fae34d61659a6fb8dc4957",
+          "cases": 42,
+          "attempts": [
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-f1/attempts/capture-compile-y6op3x_f/result.json",
+              "sha256": "7576429a03b106332bb3df3a4ab1cfc1d23791fe1bf9a24fdf6f18de1d904845"
+            },
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-f1/attempts/capture-link-0f78vbiu/result.json",
+              "sha256": "33ade2d6c3d0b31ec2aa20c12e315f3cf97fe206f9a9a7520ed3ef1ce0be3c91"
+            },
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-f1/attempts/capture-runtime-rac546d6/result.json",
+              "sha256": "d108c64c54468e464344c9a5a9c3dbf86398206f8c4d1d995c0aaf82c59f11cb"
+            }
+          ]
+        },
+        "focused": {
+          "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-focused/native-focused.json",
+          "sha256": "79ec3fe7dbf94ba4aa4a8deeb001a3f34e624f1c659e8ff050d8cc0384b4a72f",
+          "cases": 40,
+          "attempts": [
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-focused/attempts/capture-compile-r6q22yy0/result.json",
+              "sha256": "8662f05c58666069c72399813deeb197486b841678c57bee947af64ff26343e7"
+            },
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-focused/attempts/capture-link-cyca81dj/result.json",
+              "sha256": "c1fcfcbae30086c79e841c44c8eaf05bdee9f7e69d520252b7afc87d7a6b217b"
+            },
+            {
+              "path": "out/validation/windows-clang-debug/s4-b-slice-3-2026-10-16-focused/attempts/capture-runtime-kmzxrrzl/result.json",
+              "sha256": "0b984e5e76ae74ce488dbb86620143944f108f5acf4675e558d4a3ee5dcadac2"
+            }
+          ]
+        }
+      },
+      "windows-clang-release": {
+        "capture": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-capture/native.json",
+          "sha256": "39b2b6c414877b5afd754a1028a14e355047b665a178585ce7b31e00b69d510a",
+          "cases": 64,
+          "attempts": [
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-capture/attempts/capture-compile-rxkbekt9/result.json",
+              "sha256": "14d91f060d2e88c9a32c32a389d8d451d5054b5dadd7abc15ea293141c6463b5"
+            },
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-capture/attempts/capture-link-6se6vqdr/result.json",
+              "sha256": "344080b4f40a665798cdfca0071869f04cdac851e8326bc9599a9ebfb51c5ee2"
+            },
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-capture/attempts/capture-runtime-3kz0f3fq/result.json",
+              "sha256": "9dcc552407db5f7ac8c215cdaf6783ac5e0adad9cda77dd4d81e6cde8b6af69e"
+            },
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-capture/attempts/feature-runtime-6g0maqbw/result.json",
+              "sha256": "b865f796863f80cf7e5df8b7354d6ea9a08a6512788219e737e0206b94b70c1f"
+            },
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-capture/attempts/native-build-bnrgg2eh/result.json",
+              "sha256": "5f6ae7a103f2240dfabc9c8e21ba99866b0716ff697781cd194d8167936547b3"
+            }
+          ]
+        },
+        "f1": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-f1/native-f1.json",
+          "sha256": "67786d7360650703452d216663d766860e8ec53611fae34d61659a6fb8dc4957",
+          "cases": 42,
+          "attempts": [
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-f1/attempts/capture-compile-qdtpnt9v/result.json",
+              "sha256": "1b412d256efa6a8f4b203150c1a0ed3f4230443a8e8b4acfb6bdd0ed84c70a14"
+            },
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-f1/attempts/capture-link-mw3a0v_1/result.json",
+              "sha256": "beefbfce76fd938978e8e317be41be072d9c4735bcb047115d9c2ba95b489f13"
+            },
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-f1/attempts/capture-runtime-qrcaiith/result.json",
+              "sha256": "1aaccc93a918f1e95d6c658ee835d8d220147a2498e924304180ea454785cff1"
+            }
+          ]
+        },
+        "focused": {
+          "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-focused/native-focused.json",
+          "sha256": "79ec3fe7dbf94ba4aa4a8deeb001a3f34e624f1c659e8ff050d8cc0384b4a72f",
+          "cases": 40,
+          "attempts": [
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-focused/attempts/capture-compile-o_dj0ibu/result.json",
+              "sha256": "a023986d3f623b5ce8257c0ac3740fe238bb46e7703f466606b14d0c07f7989a"
+            },
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-focused/attempts/capture-link-h9rkvo6o/result.json",
+              "sha256": "5cb35558023afc3a91de3d2d88ba6548621d262e23475ecbdb1e6e00f3925508"
+            },
+            {
+              "path": "out/validation/windows-clang-release/s4-b-slice-3-2026-10-16-focused/attempts/capture-runtime-0gsddmwb/result.json",
+              "sha256": "dd1a9c4331d13602ac2143d1eb21aa6f39a54f8004e7d0c784e339077fe75934"
+            }
+          ]
+        }
+      }
+    },
+    "preserved_source": {
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/BEGIN.json": "d1d4c49de53d8c34c6e109eda8737a35003e5697409fe97125c4724549c67dd7",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/capture-f1.cpp": "25dc5f83f0b55e587c5957de6c7d5b5bf7a5b672c19d980a977d35dafd0af8c9",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/capture-f1.py": "a36bf4fdef2ff1fac21463a6d144d1d0a3b9b3e03b69ed7daa1c7ed1d7b02109",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/capture-focused.cpp": "8aa596c0a231bd96facd29a22f0728db8ed3c5e067434420b8605c96060e5d97",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/capture-focused.py": "736c88f3c191d445e6378f075be1c1d01cc50f04a38bfd73d66e7e690f9ad824",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/capture-inputs.json": "020584213e4b627138a7677329c66b449e3a2fa92fe622125f04b4cf50858814",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/capture-windows.ps1": "056c2de27d7560db5f8022ffb4dd797c50857c22a483c1f40d866cfd1fc0f42a",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/capture.cpp": "4464ea236c6f6b30fb8a4c3ab2e102f818a485de8e6a54c5e73179221d5bcdcd",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/capture.py": "b844d72561b85e80b60d3beb8e1151309bbc44acbbc675ff2ac2e6f8ffc66ed2",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/environment-probe.cu": "bad5226b3ca430d6439e6bcc2b7c17ef4975be56df157c0f7a67c2b46919c60a",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/environment-windows.ps1": "40332f8c743376cd510868cede5c4e16f094da3f7d5b3d2939e4a014ac66c2e9",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/environment.py": "fc6d73b85c630629b8427c964f4920b918d94b048f49da00f36dfc5ba6c153d7",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/execution.md": "2e0eed3e5a9b14372f970558e5f489e1fa8a3606a297f7ac352a0884e1532154",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/f1-inputs.json": "c7e3725ee84abfb68ad52672b1dc53b849a81e72a5b2ed1adea3ad32906f2f99",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/f1-windows.ps1": "9fecc6025fbd791f3f885e2aa464eacfb90056cfce03725ca69329e395120f22",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/focused-inputs.json": "ebbe2cf7bd2ce81095f708a9ead95be7955173b2fa1e7ee0419fd94b79b5b862",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/focused-windows.ps1": "066b93ae1dde048e1f2373d57d2ee0772043caeaa2ca2d3f2c0ff676e10606e3",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/inspect-windows.ps1": "61fc3c28626ede4366a2d1f109970a4c98147f6ce3074a4c1d05323a1b61d4dc",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/ISOLATION-AMENDMENT.json": "439cda0bd7f72c9fb652b97e4a57440dee142af7ea0de5f4cb52ff6f01562d66",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/native-density.inc": "3057a5a6ddff76aa958d6137092182dc5732713d78c37ff1e1198b203c49082e",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/native-dir.inc": "593cc55bc3e6299d3147f261a88e705a4bcb1c7032d77e46b095bee729052a28",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/owner-instruction.txt": "de704aa3e2af8a8a22b86dfc649cf774d50d078aa789dc156db32e93593a4a1e",
+      ".juicer-local/validation/s4-b-slice-3-2026-10-16/prepare-f1.py": "1e2859653078d5118103abbc58eebf34a1cdfa857e5111c4dfeb1094c1c25bcd"
+    },
+    "classification": "Film-Juicer native characterization; unchanged accepted Development sampling is Rust; DIR/minimum/film bounds producers are native. No candidate-derived expectations."
+  },
+  "presets": {
+    "linux-debug": {
+      "values": "linux.json",
+      "f1": "linux-f1.json",
+      "focused": "linux-focused.json"
+    },
+    "linux-release": {
+      "values": "linux.json",
+      "f1": "linux-f1.json",
+      "focused": "linux-focused.json"
+    },
+    "windows-clang-debug": {
+      "values": "windows.json",
+      "f1": "windows-f1.json",
+      "focused": "windows-focused.json"
+    },
+    "windows-clang-release": {
+      "values": "windows.json",
+      "f1": "windows-f1.json",
+      "focused": "windows-focused.json"
+    }
+  },
+  "synthetic": "Derived from accepted n21 fixture; only authored log_exposure changed. Attribution and license retained. Duplicates/singleton reuse existing immutable resources.",
+  "values": "All f32 values are unsigned raw bit words. Axes RGB channel-major, each N. Bounds are CMY. Exact comparisons; no tolerance.",
+  "payload_sha256": {
+    "linux-f1.json": "24be2e15d5e18d2e28ed3553f6f4034a704ec4d5014902e8815100e5e7d0d9ca",
+    "linux-focused.json": "977070b818a23af02f8f5fa744440f04020ea83ef12618762b8555505e7c22f6",
+    "linux.json": "c52952ff4466ae44892e0ed1b557340183c18a11884363ea720d75161340c5d4",
+    "windows-f1.json": "67786d7360650703452d216663d766860e8ec53611fae34d61659a6fb8dc4957",
+    "windows-focused.json": "79ec3fe7dbf94ba4aa4a8deeb001a3f34e624f1c659e8ff050d8cc0384b4a72f",
+    "windows.json": "39b2b6c414877b5afd754a1028a14e355047b665a178585ce7b31e00b69d510a",
+    "synthetic/finite-wide/profiles/kodak_portra_400.json": "2dd4bc5e644b879b1d2131014a6011056b46f13b86c164018669296d38fad3d3",
+    "synthetic/finite-wide/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/infinities/profiles/kodak_portra_400.json": "2fb34093a10a3f20a39416be8d4a29542a6ed44111f6fdf3b258b1d9e9bebcaf",
+    "synthetic/infinities/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/narrowing-equal/profiles/kodak_portra_400.json": "ee719d94e5f1f2cd85fc82140b0b205d6ef33cc0da3c3ab3b2d6cdb98099912f",
+    "synthetic/narrowing-equal/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/signed-zero/profiles/kodak_portra_400.json": "54c16da11c80f828aeaaccaa9a10c16199c96ffe98b2ae05bb5e502df21817df",
+    "synthetic/signed-zero/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969"
+  }
+}

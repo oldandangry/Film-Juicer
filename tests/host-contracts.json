@@ -1,0 +1,425 @@
+{
+  "schema": "native-host-contracts-v1",
+  "required": [
+    "Rust.Core",
+    "Rust.Bridge",
+    "Ffi.Host.PreparedState",
+    "Prepare.Host.StateProducts"
+  ],
+  "targets": {
+    "JuicerOfxAbiTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerCudaAbiTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerProfileOwnerTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerSpectralOwnerTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerNoiseOwnerTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerCatalogOwnerTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerProductionProfileOwnerTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerFilmInputTests": {
+      "protocol": "custom",
+      "registrations": 2
+    },
+    "JuicerFilmRecipeTests": {
+      "protocol": "custom",
+      "registrations": 40
+    },
+    "JuicerFilmDevelopmentTests": {
+      "protocol": "custom",
+      "registrations": 2
+    },
+    "JuicerCudaOwnerTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerCudaTerminalTests": {
+      "protocol": "custom",
+      "registrations": 29
+    },
+    "JuicerCudaFailureTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerCudaInspectTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerRouteBridgeTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerHashContractTests": {
+      "protocol": "gtest",
+      "registrations": 3,
+      "cuda_free": true
+    },
+    "JuicerScatterHalationHostTests": {
+      "protocol": "gtest",
+      "registrations": 8
+    },
+    "JuicerScratchRequestTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerPreparedProjectionTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerPreparedStateTests": {
+      "protocol": "gtest",
+      "registrations": 2,
+      "rows": [
+        "Prepare.Host.StateProducts"
+      ]
+    },
+    "JuicerAssetLookupTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerDiffusionHostReferenceTest": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerSpectralBootstrapTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    },
+    "JuicerIlluminantCalibrationTests": {
+      "protocol": "gtest",
+      "registrations": 7
+    },
+    "JuicerColorPreparationTests": {
+      "protocol": "custom",
+      "registrations": 7
+    },
+    "JuicerExposurePreparationTests": {
+      "protocol": "custom",
+      "registrations": 5
+    },
+    "JuicerMallettExposureTests": {
+      "protocol": "custom",
+      "registrations": 5
+    },
+    "JuicerSpectralPreparationTests": {
+      "protocol": "custom",
+      "registrations": 6
+    },
+    "JuicerTcLutTests": {
+      "protocol": "custom",
+      "registrations": 4
+    },
+    "JuicerTcLutLifetimeTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerInputHullTests": {
+      "protocol": "custom",
+      "registrations": 10
+    },
+    "JuicerOutputGamutTests": {
+      "protocol": "custom",
+      "registrations": 2
+    },
+    "JuicerOutputGamutCacheTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOutputColorTests": {
+      "protocol": "custom",
+      "registrations": 2
+    },
+    "JuicerCudaOwnerUnloadTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerRenderAssertionTests": {
+      "protocol": "gtest",
+      "registrations": 1,
+      "cuda_free": true
+    },
+    "JuicerOfxContextTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxInstanceTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxActionTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxRenderTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxRenderControlTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxCaptureTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxInstanceControlTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxContextControlTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxModuleTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxModuleControlTests": {
+      "protocol": "custom",
+      "registrations": 3
+    },
+    "JuicerPreparedValueTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOutputColorValueTests": {
+      "protocol": "custom",
+      "registrations": 1
+    },
+    "JuicerOfxMeasurementTests": {
+      "protocol": "gtest",
+      "registrations": 1
+    }
+  },
+  "native_cohorts": {
+    "Color.Host.Cat02": 6,
+    "Color.Host.Cat16": 4,
+    "Color.Host.InputColor": 9,
+    "Exposure.Host.Mallett.admission": 6,
+    "Exposure.Host.Mallett.boundary": 4,
+    "Exposure.Host.Mallett.numerical": 4,
+    "Exposure.Host.Mallett.products": 5,
+    "Ffi.Host.Cat02Preparation": 4,
+    "Ffi.Host.CatalogOwner": {
+      "linux": 6,
+      "windows": 7
+    },
+    "Ffi.Host.ColorPreparation": 3,
+    "Ffi.Host.CudaOwner": 2,
+    "Ffi.Host.CudaTerminal.allocation": 1,
+    "Ffi.Host.CudaTerminal.context-loss": 1,
+    "Ffi.Host.CudaTerminal.diagnostic-allocation": 1,
+    "Ffi.Host.CudaTerminal.runtime": 1,
+    "Ffi.Host.CudaTerminal.standard": 1,
+    "Ffi.Host.CudaTerminal.typed": 1,
+    "Ffi.Host.CudaTerminal.unknown": 1,
+    "Ffi.Host.CudaTerminal.wording": 1,
+    "Ffi.Host.DiffusionFrame": 4,
+    "Ffi.Host.DirBoundary": 4,
+    "Ffi.Host.DirFrame": 4,
+    "Ffi.Host.EffectsFrame": 2,
+    "Ffi.Host.ExposurePreparation": 4,
+    "Ffi.Host.FilmDevelopment": 5,
+    "Ffi.Host.FilmInput": 6,
+    "Ffi.Host.FilmRecipes": 3,
+    "Ffi.Host.FilmReference": 3,
+    "Ffi.Host.FrameGeometry": 3,
+    "Ffi.Host.GaussianKernel": 6,
+    "Ffi.Host.GrainFrame": 3,
+    "Ffi.Host.HalationFrame": 3,
+    "Ffi.Host.InputColorPreparation": 3,
+    "Ffi.Host.PhysicalEffects": 2,
+    "Ffi.Host.PrintBalance": 5,
+    "Ffi.Host.PrintIlluminant": 4,
+    "Ffi.Host.PrintPreflash": 4,
+    "Ffi.Host.ScannerColor": 1,
+    "Ffi.Host.ScannerCorrection": 5,
+    "Ffi.Host.ScannerLut": 6,
+    "Ffi.Host.ScannerLutDescriptor": 3,
+    "Ffi.Host.ScannerPostEffects": 3,
+    "Ffi.Host.SharedFixtureLoading": 2,
+    "Ffi.Host.SpectralPreparation": 2,
+    "Ffi.Host.VisualGrain": 2,
+    "Film.Host.DevelopmentProducts": 1,
+    "Film.Host.DirBoundaryProducts": 1,
+    "Film.Host.DirDensityProducts": 1,
+    "Film.Host.InputProducts": 1,
+    "Film.Host.ReferenceProducts": 2,
+    "Gamut.Host.InputHull.cache": 1,
+    "Gamut.Host.Output.Cache": 3,
+    "Gamut.Host.Output.boundary": 4,
+    "Optics.Host.DiffusionFrameProducts": 2,
+    "Optics.Host.GaussianKernelProducts": 1,
+    "Print.Host.BalanceProducts": 2,
+    "Print.Host.IlluminantProducts": 1,
+    "Print.Host.PreflashProducts": 1,
+    "Reconstruction.Host.TcLut.boundary": 2,
+    "Scanner.Host.CorrectionProducts": 1,
+    "Ofx.Host.Context": 8,
+    "Ofx.Host.Actions": 1,
+    "Ofx.Host.Render": 4,
+    "Ofx.Host.RenderControls": 3,
+    "Ofx.Host.Instance": 9,
+    "Ofx.Host.Capture": 13,
+    "Ofx.Host.InstanceControls": 5,
+    "Ofx.Host.ContextControls": 3,
+    "Ofx.Host.Module": 3,
+    "Ofx.Host.ModuleControls.Construction": 4,
+    "Ofx.Host.ModuleControls.Panic": 2,
+    "Ofx.Host.ModuleControls.Terminal": 1,
+    "Ffi.Host.PreparedValues": 1,
+    "Ffi.Host.OutputColorValues": 1
+  },
+  "rust_cohorts": {
+    "film-juicer-core": 89,
+    "film-juicer-core::assets": 17,
+    "film-juicer-core::calibration": 6,
+    "film-juicer-core::color": 8,
+    "film-juicer-core::data_io": 30,
+    "film-juicer-core::density": 14,
+    "film-juicer-core::exposure": 6,
+    "film-juicer-core::film": 5,
+    "film-juicer-core::film_dir_density": 5,
+    "film-juicer-core::hash": 4,
+    "film-juicer-core::illuminant": 8,
+    "film-juicer-core::input_hull": 5,
+    "film-juicer-core::noise": 7,
+    "film-juicer-core::output_gamut": 4,
+    "film-juicer-core::print_gamma": 5,
+    "film-juicer-core::profile": 41,
+    "film-juicer-core::sampled_profile": 7,
+    "film-juicer-core::tc_lut": 1,
+    "film-juicer-plugin": 12
+  },
+  "gtest_cohorts": {
+    "AllocationRetry.CapacityRetriesOnceRegardlessOfDiagnostic": 1,
+    "AllocationRetry.IdenticalTextCannotEnableRetryForOtherCategories": 1,
+    "AssetLookup.OrderedInfinitiesDoNotImplyFiniteOutput": 1,
+    "AssetLookup.ScannerFiniteAscendingAndDescending": 1,
+    "AssetLookup.SingletonAndDistinctDuplicateSelection": 2,
+    "AssetLookup.SyntheticFiniteInterpolationAndEndpoints": 1,
+    "CalibrationAbi.Bundled160CmyTripletsMatchIndependentCapture": 1,
+    "CalibrationAbi.ReadAllocationClassifierSurvivesAssetsAndTransportUntilRelease": 2,
+    "CalibrationAbi.SelectedFieldsExactUtf8KeysAndClearedInvalidInputs": 1,
+    "CalibrationNative.ImpossibleTagsAreInternalAndAllocationCannotSelectRecipeFallback": 2,
+    "CalibrationNative.LookupCompletesAcrossCacheReleaseAndStockKeysOwnRecipeSelection": 1,
+    "CudaFailure.DriverCodesRetainApiAndRecovery": 2,
+    "CudaFailure.ExceptionAndTruncationPreserveStatus": 1,
+    "CudaFailure.RuntimeCodesSelectRecoveryWithoutText": 2,
+    "FilmEffectsDescriptor.ConstructsEachActivationAndAllOffIdentity": 1,
+    "IlluminantAbi.AllSourcesRetainExactBitsAcrossAssetsReleaseAndDestruction": 1,
+    "IlluminantAbi.CapacityPoisonAndPanicTransportClearsOutput": 1,
+    "IlluminantAbi.ClearedOutputsOptionalDiagnosticsAndConsumeOnceRelease": 1,
+    "IlluminantConstruction.BorrowedRowsAndMeasuredScratchHaveScopedLifetimes": 1,
+    "IlluminantConstruction.ConstructionAdmissionAndEqualPreflashPublication": 3,
+    "IlluminantConstruction.MalformedDescriptorsClearAndConsume": 2,
+    "IlluminantConstruction.PublishedCallerProductsMatchFrozenNativeParent": 1,
+    "IlluminantConstruction.RawAbiAndCoreFacadeMatchFrozenLeaves": 3,
+    "IlluminantConstruction.WarningsFailuresAndRawFaultConsumption": 1,
+    "IlluminantLibrary.SevenDerivedCurvesMatchAcceptedNativeProducerAndRetainSnapshots": 1,
+    "IlluminantNative.LensAcquisitionUnwindConsumesPreparedOwnerAndPreservesSourceFailure": 1,
+    "IlluminantNative.UnrelatedAllocationAndInternalFaultAbortColdConstruction": 1,
+    "InspectHost.EachImageIsValidatedIndependently": 1,
+    "InspectHost.FlagsWindowsAndComponents": 1,
+    "PreparedProjection.DirFramesKeepCapturedMathAndCarriedHashWithNativeZeroWeightTiers": 1,
+    "PreparedProjection.DisabledGamutKeepsRecipeIdentityWithoutActiveResources": 1,
+    "PreparedProjection.GrainFramesKeepCapturedMathHashAndRecipeMetadata": 1,
+    "PreparedProjection.MalformedForeignDescriptorsClearPreviousOutput": 1,
+    "PreparedProjection.OutputEncodingAdmissionUsesSchemaAndKindEvenWhenDisabled": 1,
+    "PreparedProjection.OutputEncodingRoundTripsBothRoutesAndFlagsWithoutRepreparation": 1,
+    "PreparedProjection.RealPostConstructorSurvivesExecutionProjection": 1,
+    "PreparedProjection.RoutesKeepCapturePolarityAndSelectedMedium": 1,
+    "PreparedProjection.RustHalationFramesKeepEveryFrozenFieldThroughEncodeDecode": 1,
+    "PreparedSpans.EveryLayerAndDirAxisObeysItsActivationAndSampleCount": 2,
+    "PreparedSpans.ExposureTripletLimitRejectsBeforeMultiplicationOrRead": 1,
+    "PreparedSpans.FilmAndScannerRequireExactCountsAndNonNullStorage": 1,
+    "PreparedSpans.NoiseRequiresExactCheckedProductsAndPointers": 1,
+    "PreparedSpans.PrintTablesAndIlluminantsRequireExactStorage": 1,
+    "PreparedStateAbi.DiagnosticTruncationPreservesStatusAndOwner": 1,
+    "PreparedStateAbi.InstanceCaptureWriteAdmissionC11Protocol": 1,
+    "PreparedStateAbi.InstanceDiagnosticsAreBoundedAndDestroyConsumesMalformedRecord": 1,
+    "PreparedStateAbi.InputHullFaultsBelongToActualOwnerAndRetainedWarmEntry": 1,
+    "PreparedStateProducts.CalibrationBeforePrintGamma": 1,
+    "PreparedStateProducts.CameraAndEnlargerOptics": 1,
+    "PreparedStateProducts.CorrectionsAndScannerControls": 1,
+    "PreparedStateProducts.DevelopmentBeforeCalibration": 1,
+    "PreparedStateProducts.DirAndCompressionOff": 1,
+    "PreparedStateProducts.DirectIgnoresPrintControls": 1,
+    "PreparedStateProducts.DirectScannerBeforeInputPolicy": 1,
+    "PreparedStateProducts.DisabledFamiliesExcludeUnusedControls": 1,
+    "PreparedStateProducts.EarlyAndLatePanicsReturnNoOwner": 1,
+    "PreparedStateProducts.EncodingOnlyReusesMediumIdentities": 1,
+    "PreparedStateProducts.GammaAndGrainLayers": 1,
+    "PreparedStateProducts.GrainDebugSuppressesPhysicalEffects": 1,
+    "PreparedStateProducts.InputAllocationBeforeScannerControl": 1,
+    "PreparedStateProducts.NegativeDirectArctic": 1,
+    "PreparedStateProducts.NegativeDirectHanatos": 1,
+    "PreparedStateProducts.NegativeDirectMallett": 1,
+    "PreparedStateProducts.NegativePrintArctic": 1,
+    "PreparedStateProducts.NegativePrintHanatos": 1,
+    "PreparedStateProducts.NegativePrintMallett": 1,
+    "PreparedStateProducts.PhysicalDefectsAndWeave": 1,
+    "PreparedStateProducts.PositiveDirectArctic": 1,
+    "PreparedStateProducts.PositiveDirectHanatos": 1,
+    "PreparedStateProducts.PositiveDirectMallett": 1,
+    "PreparedStateProducts.PositivePrintArctic": 1,
+    "PreparedStateProducts.PositivePrintHanatos": 1,
+    "PreparedStateProducts.PositivePrintMallett": 1,
+    "PreparedStateProducts.PreflashAndNormalizationModes": 1,
+    "PreparedStateProducts.PrintGammaBeforeInputPolicy": 1,
+    "PreparedStateProducts.PrintInputBeforeInputPolicy": 1,
+    "PreparedStateProducts.ReservedZeroIdentitiesRejectCompletion": 1,
+    "PreparedStateProducts.SignedZeroGlare": 1,
+    "PreparedStateProducts.SnapshotIntegerBooleansPreserveNonzeroCasts": 1,
+    "ProductionProfileConsumer.BroaderAxesAreCopiedAndReachLocalComputations": 1,
+    "ProductionProfileConsumer.HanatosWindowBroaderValuesReachAcceptedFormula": 1,
+    "ProductionProfileConsumer.TypedOriginalBbReachesEveryProfileIlluminantConsumer": 2,
+    "ProductionProfileOwner.All28TokensTablesDigestsAndGammaMatchIndependentCaptures": 2,
+    "ProductionProfileOwner.CacheReleaseOverlapsFirstCatalogPublication": 1,
+    "ProductionProfileOwner.ForeignFailuresClearOutputsAndConsumeMalformedReleases": 5,
+    "ProfileOwner.AllMetadataTagsAndIndependentHalationBits": 1,
+    "ProfileOwner.FailureOutputsAndBoundedDiagnostics": 1,
+    "ProfileOwner.TypedResourceAndCompletionFailuresPublishNoOwner": 1,
+    "ScatterHalationControls.RejectsInvalidActiveValues": 1,
+    "ScatterHalationControls.RetainsFloat32BoundsAndIdentity": 1,
+    "ScatterHalationRecipe.ResolvesProfileMappingsAndZeroWork": 1,
+    "ScratchRequest.ActiveDirRejectsMismatchedSourceAndTargetLayouts": 1,
+    "ScratchRequest.CompletedLayoutKeepsLogicalGrainSeparateFromAllocation": 1,
+    "ScratchRequest.DirectAndPrintTierCompositionsKeepTheirGeneration": 1,
+    "ScratchRequest.FrameExtentMustBePositive": 1,
+    "ScratchRequest.GateAttachmentRequiresPositiveGateExtent": 1,
+    "ScratchRequest.OpticsAttachmentsAreRejectedWithoutOptics": 1,
+    "ScratchRequest.RawAdmissionRequiresCanonicalSentinelAndConsistentGeneration": 1,
+    "SpectralBootstrap.AlteredFiniteSourcesAndOverflowReachComputation": 1,
+    "SpectralBootstrap.IndependentMissingFamiliesAndSelectedConsumers": 1,
+    "SpectralBootstrap.MalformedSourcesFailWithoutTranspositionOrPartialPublication": 1,
+    "SpectralBootstrap.SequentialOwnerCmfFailuresClearAllCurves": 1,
+    "SpectralBootstrap.SupportedWidthsChangedExtremaAndSignedSpecials": 1,
+    "SpectralOwner.ClearedOutputsDiagnosticsAndConsumingRelease": 4,
+    "SpectralOwner.MallettAndCmfFailureClearingAndConsumption": 2,
+    "RenderAssertions.RejectsNonFiniteActualAndExpected": 1,
+    "RenderAssertions.RejectsEveryHashAndSeedLane": 1
+  },
+  "cuda_free_required": [
+    "Rust.Core",
+    "Rust.Bridge"
+  ]
+}

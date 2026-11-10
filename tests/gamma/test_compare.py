@@ -70,33 +70,98 @@ class FusedEquivalenceTests(unittest.TestCase):
         self.assertTrue(failures)
         self.assertEqual(0.0, result["frozen_bound"])
 
+    def test_numeric_zero_bound_passes(self) -> None:
+        cases = (("integer-zero", 0), ("float-zero", 0.0))
+        self.subtest_cases = tuple(case_id for case_id, _ in cases)
+        for case_id, zero in cases:
+            with self.subTest(case=case_id):
+                record = dict(self.frozen)
+                record["fused_maximum_absolute_difference"] = zero
+                result, failures = comparator.compare_fused_case(
+                    record, record, "paired-case", self.source, "paired-case"
+                )
+                self.assertEqual([], failures)
+                self.assertEqual("passed", result["status"])
+                self.assertEqual(0.0, result["candidate_difference"])
+                self.assertEqual(0.0, result["frozen_bound"])
+
+    def test_boolean_applicable_measurements_fail(self) -> None:
+        cases = tuple((side, measurement) for side in ("candidate", "frozen") for measurement in (False, True))
+        self.subtest_cases = tuple(f"{side}-boolean-{str(measurement).lower()}" for side, measurement in cases)
+        for case_id, (side, measurement) in zip(self.subtest_cases, cases):
+            with self.subTest(case=case_id):
+                candidate = dict(self.frozen)
+                frozen = dict(self.frozen)
+                candidate["fused_maximum_absolute_difference"] = 0.0
+                frozen["fused_maximum_absolute_difference"] = 1.0
+                record = candidate if side == "candidate" else frozen
+                record["fused_maximum_absolute_difference"] = measurement
+                result, failures = comparator.compare_fused_case(
+                    candidate, frozen, "paired-case", self.source, "paired-case"
+                )
+                self.assertEqual("failed", result["status"])
+                self.assertEqual(
+                    [f"paired-case.{side}: fused maximum difference must not be Boolean"],
+                    failures,
+                )
+
+    def test_boolean_legacy_applicable_bound_fails(self) -> None:
+        candidate = {
+            "case": "negative-direct",
+            "fused_path_applicable": True,
+            "fused_maximum_absolute_difference": 0.0,
+        }
+        measurements = (False, True)
+        self.subtest_cases = ("false", "true")
+        for case_id, measurement in zip(self.subtest_cases, measurements):
+            with self.subTest(case=case_id):
+                frozen = {
+                    "case": "negative-direct",
+                    "fused_maximum_absolute_difference": measurement,
+                }
+                result, failures = comparator.compare_fused_case(
+                    candidate, frozen, "negative-direct", self.source, "negative-direct"
+                )
+                self.assertEqual("failed", result["status"])
+                self.assertEqual(
+                    ["negative-direct.frozen: fused maximum difference must not be Boolean"],
+                    failures,
+                )
+
     def test_malformed_and_changed_candidates_fail(self) -> None:
         valid = {
             "case": "paired-case",
             "fused_path_applicable": True,
             "fused_maximum_absolute_difference": 0.25,
         }
-        malformed = []
-        for value in (math.nan, math.inf):
+        malformed_cases = []
+        for case_id, value in (
+            ("nan", math.nan), ("positive-infinity", math.inf),
+            ("negative-infinity", -math.inf), ("negative-bound", -0.25),
+        ):
             row = dict(valid)
             row["fused_maximum_absolute_difference"] = value
-            malformed.append(row)
+            malformed_cases.append((case_id, row))
         missing_difference = dict(valid)
         del missing_difference["fused_maximum_absolute_difference"]
-        malformed.append(missing_difference)
+        malformed_cases.append(("missing-difference", missing_difference))
         missing_applicability = dict(valid)
         del missing_applicability["fused_path_applicable"]
-        malformed.append(missing_applicability)
+        malformed_cases.append(("missing-applicability", missing_applicability))
         wrong_case = dict(valid)
         wrong_case["case"] = "wrong-case"
-        malformed.append(wrong_case)
+        malformed_cases.append(("wrong-case", wrong_case))
         changed_applicability = dict(valid)
         changed_applicability["fused_path_applicable"] = False
         changed_applicability["fused_maximum_absolute_difference"] = None
-        malformed.append(changed_applicability)
+        malformed_cases.append(("changed-applicability", changed_applicability))
 
-        for index, candidate in enumerate(malformed):
-            with self.subTest(index=index):
+        self.subtest_cases = (
+            "nan", "positive-infinity", "negative-infinity", "negative-bound",
+            "missing-difference", "missing-applicability", "wrong-case", "changed-applicability",
+        )
+        for case_id, (_, candidate) in zip(self.subtest_cases, malformed_cases):
+            with self.subTest(case=case_id):
                 result, failures = self.compare(candidate)
                 self.assertTrue(failures)
                 self.assertEqual("failed", result["status"])
@@ -181,6 +246,37 @@ class CommandLineFailureTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing comparison input", result.stderr)
 
+    def test_boolean_measurements_exit_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = root / "candidate.json"
+            frozen = root / "frozen.json"
+            cases = tuple((side, measurement) for side in ("candidate", "frozen") for measurement in (False, True))
+            self.subtest_cases = tuple(f"{side}-boolean-{str(measurement).lower()}" for side, measurement in cases)
+            for case_id, (side, measurement) in zip(self.subtest_cases, cases):
+                with self.subTest(case=case_id):
+                    records = {
+                        name: {
+                            "case": "x",
+                            "fused_path_applicable": True,
+                            "fused_maximum_absolute_difference": difference,
+                        }
+                        for name, difference in (("candidate", 0.0), ("frozen", 1.0))
+                    }
+                    records[side]["fused_maximum_absolute_difference"] = measurement
+                    candidate.write_text(json.dumps(records["candidate"]), encoding="utf-8")
+                    frozen.write_text(json.dumps(records["frozen"]), encoding="utf-8")
+                    result = self.run_compare(
+                        "--candidate", str(candidate), "--frozen", str(frozen), "--case", "x"
+                    )
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    report = json.loads(result.stdout)
+                    self.assertEqual("failed", report["status"])
+                    self.assertEqual(
+                        [f"x.{side}: fused maximum difference must not be Boolean"],
+                        report["failures"],
+                    )
+
     def test_deliberate_numerical_mismatch_is_nonzero(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -218,6 +314,25 @@ class CommandLineFailureTests(unittest.TestCase):
         report = json.loads(result.stdout)
         self.assertEqual(report["status"], "failed")
         self.assertIn("fused difference", report["failures"][0])
+
+
+FusedEquivalenceTests.test_numeric_zero_bound_passes.required_subtests = True
+FusedEquivalenceTests.test_numeric_zero_bound_passes.subtest_cases = ("integer-zero", "float-zero")
+FusedEquivalenceTests.test_boolean_applicable_measurements_fail.required_subtests = True
+FusedEquivalenceTests.test_boolean_applicable_measurements_fail.subtest_cases = (
+    "candidate-boolean-false", "candidate-boolean-true", "frozen-boolean-false", "frozen-boolean-true"
+)
+FusedEquivalenceTests.test_boolean_legacy_applicable_bound_fails.required_subtests = True
+FusedEquivalenceTests.test_boolean_legacy_applicable_bound_fails.subtest_cases = ("false", "true")
+FusedEquivalenceTests.test_malformed_and_changed_candidates_fail.required_subtests = True
+FusedEquivalenceTests.test_malformed_and_changed_candidates_fail.subtest_cases = (
+    "nan", "positive-infinity", "negative-infinity", "negative-bound", "missing-difference",
+    "missing-applicability", "wrong-case", "changed-applicability"
+)
+CommandLineFailureTests.test_boolean_measurements_exit_failed.required_subtests = True
+CommandLineFailureTests.test_boolean_measurements_exit_failed.subtest_cases = (
+    "candidate-boolean-false", "candidate-boolean-true", "frozen-boolean-false", "frozen-boolean-true"
+)
 
 
 if __name__ == "__main__":

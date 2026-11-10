@@ -11,6 +11,8 @@
 #include <string>
 #include <unordered_map>
 
+#include "Cuda/JuicerCudaFailure.h"
+
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 
 namespace JuicerCuda {
@@ -94,7 +96,7 @@ namespace JuicerCuda {
         bool reserve(
             const DeviceReservationRequest& request,
             DeviceByteReservation& outReservation,
-            std::string& outError);
+            Failure& outError);
         [[nodiscard]] DeviceLedgerSnapshot snapshot() const;
         [[nodiscard]] std::uint64_t record_count_for_context(
             const ResourceManager::DeviceContextKey& contextKey,

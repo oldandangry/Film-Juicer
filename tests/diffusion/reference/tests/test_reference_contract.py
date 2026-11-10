@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import platform
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -10,8 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 TOOL = ROOT / "tests/diffusion/reference"
 BOOTSTRAP = TOOL / "bootstrap_reference_env.sh"
-MANIFEST = TOOL / "fixtures/diffusion_reference_v1.json"
-ARRAYS = TOOL / "fixtures/diffusion_reference_v1.npz"
+MANIFEST = TOOL.parent / "fixtures/diffusion_reference_v1.json"
+ARRAYS = TOOL.parent / "fixtures/diffusion_reference_v1.npz"
 
 
 class BootstrapContractTests(unittest.TestCase):
@@ -31,9 +34,21 @@ class BootstrapContractTests(unittest.TestCase):
         self.assertIn("--hash=sha256:", text)
 
 
-class PromotedReferenceContractTests(unittest.TestCase):
+class PromotedFixtureIntegrityTests(unittest.TestCase):
+    def test_committed_bytes(self) -> None:
+        # Accepted public relocation; historical capture identities stay unchanged.
+        self.assertEqual(hashlib.sha256(MANIFEST.read_bytes()).hexdigest(),
+                         "588f993e41fc03c4f00e112c53501fc4058e62c253a676b39ea71cc0e624ca23")
+        self.assertEqual(hashlib.sha256(ARRAYS.read_bytes()).hexdigest(),
+                         "963c7de75e513cfd503e48d52fe072380e4272468fc69cfede5bf4ccea914b4b")
+
+
+class ReferenceContractTests(unittest.TestCase):
+    manifest = MANIFEST
+    arrays = ARRAYS
+
     def test_promoted_fixture_contract(self) -> None:
-        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        data = json.loads(self.manifest.read_text(encoding="utf-8"))
         self.assertEqual(
             set(data),
             {
@@ -71,10 +86,10 @@ class PromotedReferenceContractTests(unittest.TestCase):
         self.assertEqual(data["semantic_channel_order"], ["R", "G", "B"])
         self.assertEqual(data["python"]["major_minor"], "3.13")
         self.assertTrue(data["source_files"])
-        self.assertTrue(ARRAYS.exists())
+        self.assertTrue(self.arrays.exists())
 
-    def test_environment_provenance_matches_current_evidence(self) -> None:
-        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    def test_historical_environment_provenance(self) -> None:
+        data = json.loads(self.manifest.read_text(encoding="utf-8"))
         self.assertEqual(
             set(data["python"]),
             {"major_minor", "version", "implementation", "executable", "platform", "machine"},
@@ -82,50 +97,22 @@ class PromotedReferenceContractTests(unittest.TestCase):
         self.assertEqual(data["python"]["major_minor"], "3.13")
         self.assertTrue(data["python"]["version"].startswith("3.13."))
         self.assertEqual(data["python"]["implementation"], "CPython")
-        self.assertEqual(data["python"]["executable"], ".tmp/diffusion/reference-venv/bin/python")
-        self.assertTrue(data["python"]["platform"])
-        self.assertTrue(data["python"]["machine"])
-
+        for key in ("executable", "platform", "machine"):
+            self.assertTrue(data["python"][key])
+        self.assertEqual(set(data["uv"]), {"version", "evidence_path", "sha256"})
+        self.assertTrue(data["uv"]["version"].startswith("uv "))
+        self.assertEqual(set(data["dependency_lock"]), {"path", "sha256"})
+        self.assertEqual(set(data["python_freeze"]), {"path", "sha256", "line_count"})
+        self.assertGreater(data["python_freeze"]["line_count"], 0)
         for key in ("uv", "dependency_lock", "python_freeze"):
             row = data[key]
-            path = ROOT / row["path" if key != "uv" else "evidence_path"]
-            self.assertTrue(path.is_file(), row)
-            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), row["sha256"])
-        self.assertEqual(set(data["uv"]), {"version", "evidence_path", "sha256"})
-        self.assertTrue(data["uv"]["version"].startswith("uv 0.11."))
-        self.assertEqual(set(data["dependency_lock"]), {"path", "sha256"})
-        self.assertEqual(
-            set(data["python_freeze"]),
-            {"path", "sha256", "line_count"},
-        )
-        freeze = (ROOT / data["python_freeze"]["path"]).read_text(encoding="utf-8")
-        self.assertEqual(len(freeze.splitlines()), data["python_freeze"]["line_count"])
-        self.assertIn(f"-e file://{ROOT / 'external/spektrafilm'}", freeze.splitlines())
-
-        repository_commit = subprocess.run(
-            ("git", "rev-parse", "HEAD"),
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        reference_commit = subprocess.run(
-            ("git", "rev-parse", "HEAD"),
-            cwd=ROOT / "external/spektrafilm",
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        self.assertEqual(data["repository_git"], {"commit": repository_commit})
-        self.assertEqual(
-            data["reference_git"],
-            {"commit": reference_commit, "status_porcelain": ""},
-        )
+            self.assertTrue(row["evidence_path" if key == "uv" else "path"])
+            self.assertRegex(row["sha256"], r"^[0-9a-f]{64}$")
 
     def test_control_expansions_have_closed_consumed_schemas(self) -> None:
         import numpy as np
 
-        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        data = json.loads(self.manifest.read_text(encoding="utf-8"))
         families = data["family_order"]
         self.assertEqual([row["family"] for row in data["family_cases"]], families)
 
@@ -281,7 +268,7 @@ class PromotedReferenceContractTests(unittest.TestCase):
     def test_reference_cases_cover_families_controls_stages_and_edges(self) -> None:
         import numpy as np
 
-        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        data = json.loads(self.manifest.read_text(encoding="utf-8"))
         strength = {(row["family"], row["strength"]) for row in data["strength_cases"]}
         for family in data["family_order"]:
             for value in (-1.0, 0.0, 0.0625, 0.125, 0.25, 0.375, 0.5, 1.0, 2.0, 4.0):
@@ -316,7 +303,7 @@ class PromotedReferenceContractTests(unittest.TestCase):
             },
         )
 
-        with np.load(ARRAYS) as arrays:
+        with np.load(self.arrays, allow_pickle=False) as arrays:
             for row in data["psf_cases"]:
                 self.assertEqual(
                     set(row),
@@ -437,47 +424,35 @@ class PromotedReferenceContractTests(unittest.TestCase):
             self.assertLessEqual(float(hdr.max()), 16.0)
             self.assertTrue(all(np.isfinite(arrays[name]).all() for name in arrays.files))
 
-    def test_fixture_provenance_uses_real_imported_files(self) -> None:
-        import sys
-
-        from tools.diffusion_reference import generate_reference
-
-        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    def test_historical_source_provenance(self) -> None:
+        data = json.loads(self.manifest.read_text(encoding="utf-8"))
         source_paths = {row["path"] for row in data["source_files"]}
-        source_root = (ROOT / "external/spektrafilm").resolve()
-        imported_source_modules = {
-            name
-            for name, module in sys.modules.items()
-            if (name == "spektrafilm" or name.startswith("spektrafilm."))
-            and getattr(module, "__file__", None)
-            and source_root in Path(module.__file__).resolve().parents
-            and Path(module.__file__).suffix == ".py"
-        }
-        recorded_modules = {row["module"] for row in data["source_files"]}
-        self.assertTrue(imported_source_modules <= recorded_modules)
         self.assertIn(
-            "external/spektrafilm/src/spektrafilm/model/diffusion.py",
-            source_paths,
+            "external/spektrafilm/src/spektrafilm/model/diffusion.py", source_paths,
         )
         self.assertIn(
-            "external/spektrafilm/src/spektrafilm/runtime/params_schema.py",
-            source_paths,
+            "external/spektrafilm/src/spektrafilm/runtime/params_schema.py", source_paths,
         )
+        modules = [row["module"] for row in data["source_files"]]
+        self.assertEqual(len(modules), len(set(modules)))
         for row in data["source_files"]:
             self.assertEqual(set(row), {"module", "path", "sha256"})
-            path = ROOT / row["path"]
-            self.assertTrue(path.is_file(), row)
-            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), row["sha256"])
+            self.assertTrue(row["module"] == "spektrafilm" or row["module"].startswith("spektrafilm."))
+            self.assertTrue(row["path"].startswith("external/spektrafilm/"))
+            self.assertNotIn("..", Path(row["path"]).parts)
+            self.assertRegex(row["sha256"], r"^[0-9a-f]{64}$")
         self.assertNotIn("scripts/spektrafilm_validate_exact_optics.py", source_paths)
-        self.assertEqual(len(data["reference_git"]["commit"]), 40)
+        self.assertEqual(set(data["reference_git"]), {"commit", "status_porcelain"})
         self.assertEqual(data["reference_git"]["status_porcelain"], "")
-        self.assertEqual(len(data["repository_git"]["commit"]), 40)
+        self.assertEqual(set(data["repository_git"]), {"commit"})
+        for key in ("reference_git", "repository_git"):
+            self.assertRegex(data[key]["commit"], r"^[0-9a-f]{40}$")
 
     def test_array_manifest_matches_promoted_payload(self) -> None:
         import numpy as np
 
-        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        with np.load(ARRAYS) as arrays:
+        data = json.loads(self.manifest.read_text(encoding="utf-8"))
+        with np.load(self.arrays, allow_pickle=False) as arrays:
             self.assertEqual(set(arrays.files), {row["name"] for row in data["arrays"]})
             for row in data["arrays"]:
                 self.assertEqual(set(row), {"name", "shape", "dtype", "sha256"})
@@ -490,5 +465,79 @@ class PromotedReferenceContractTests(unittest.TestCase):
                 )
 
 
+def capture_suite(directory: Path) -> unittest.TestSuite:
+    """Check an explicit candidate in its generating environment, never on discovery."""
+    class CapturedReferenceContractTests(ReferenceContractTests):
+        manifest = directory / "diffusion_reference_v1.json"
+        arrays = directory / "diffusion_reference_v1.npz"
+
+        def test_current_environment_provenance(self) -> None:
+            data = json.loads(self.manifest.read_text(encoding="utf-8"))
+            self.assertEqual(data["python"]["version"], platform.python_version())
+            self.assertEqual(data["python"]["implementation"], platform.python_implementation())
+            self.assertEqual(data["python"]["platform"], platform.platform())
+            self.assertEqual(data["python"]["machine"], platform.machine())
+            self.assertEqual((ROOT / data["python"]["executable"]).resolve(), Path(sys.executable).resolve())
+            interpreter = ROOT / data["python"]["executable"]
+            self.assertEqual(interpreter.parent.parent.resolve(), Path(sys.prefix).resolve(),
+                             "capture environment prefix")
+            for key in ("uv", "dependency_lock", "python_freeze"):
+                row = data[key]
+                path = ROOT / row["evidence_path" if key == "uv" else "path"]
+                path.resolve().relative_to(ROOT)
+                self.assertTrue(path.is_file(), row)
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), row["sha256"])
+            self.assertEqual(
+                data["uv"]["version"],
+                (ROOT / data["uv"]["evidence_path"]).read_text(encoding="utf-8").strip(),
+            )
+            freeze = (ROOT / data["python_freeze"]["path"]).read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(freeze), data["python_freeze"]["line_count"])
+            self.assertIn(f"-e {(ROOT / 'external/spektrafilm').as_uri()}", freeze)
+            for key, cwd in (("repository_git", ROOT), ("reference_git", ROOT / "external/spektrafilm")):
+                commit = subprocess.run(
+                    ("git", "rev-parse", "HEAD"), cwd=cwd, check=True,
+                    capture_output=True, text=True,
+                ).stdout.strip()
+                self.assertEqual(data[key]["commit"], commit)
+            status = subprocess.run(
+                ("git", "status", "--porcelain"), cwd=ROOT / "external/spektrafilm",
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertEqual(data["reference_git"]["status_porcelain"], status)
+            self.assertEqual(status, "")
+
+        def test_current_imported_source_provenance(self) -> None:
+            # Normal public imports establish the actual transitive reference closure.
+            from tests.diffusion.reference import generate_reference
+
+            data = json.loads(self.manifest.read_text(encoding="utf-8"))
+            recorded = {row["module"]: row for row in data["source_files"]}
+            for row in generate_reference.source_provenance(ROOT):
+                self.assertIn(row["module"], recorded)
+                self.assertEqual(recorded[row["module"]], row)
+            for row in data["source_files"]:
+                path = ROOT / row["path"]
+                path.resolve().relative_to((ROOT / "external/spektrafilm").resolve())
+                self.assertTrue(path.is_file(), row)
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), row["sha256"])
+
+    return unittest.defaultTestLoader.loadTestsFromTestCase(CapturedReferenceContractTests)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Check committed diffusion integrity or an explicit fresh capture.")
+    parser.add_argument("--capture-dir", type=Path)
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args()
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(BootstrapContractTests)
+    if args.capture_dir is None:
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(PromotedFixtureIntegrityTests))
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(ReferenceContractTests))
+    else:
+        suite.addTests(capture_suite(args.capture_dir.resolve(strict=True)))
+    return 0 if unittest.TextTestRunner(verbosity=2 if args.verbose else 1).run(suite).wasSuccessful() else 1
+
+
 if __name__ == "__main__":
-    unittest.main()
+    raise SystemExit(main())

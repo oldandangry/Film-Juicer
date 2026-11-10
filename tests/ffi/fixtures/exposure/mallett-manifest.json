@@ -1,0 +1,88 @@
+{
+  "contract": "Film-Juicer characterization: exact accepted native A7 mathematics; separately owner-authorized focused missing-basis amendment",
+  "parent": "74673794f683861ad83754b66df94a385c780282",
+  "upstream_context": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "comparison": "Finite, signed-zero and signed-infinity bit identity; NaN category. No tolerance or new numeric exception. Fixed RGB inputs, basis/illuminant/final-sensitivity positional borrows; focused BGR and reference RGB reductions are distinct.",
+  "qualification_receipts": {
+    "linux-debug": {
+      "core-comparison.json": "31766f9ca0d1c86051964b45521a9da8569b00661ed561e22f3882aa08fdc904",
+      "core-commands.json": "86788990031acf670d139bc1db085e57ec7611daf9b29da41b97d5d82875eda5",
+      "primitive-comparison.json": "c640732dbd2757761959d225e8f99ebe1573cec5c52af4c8d3c09790a13a7899",
+      "native-parent.json": "978dcee9da9e26d262a7aa6eab462f48d98f83da5cdc676f7f50a09a2d222fed",
+      "native-capture-manifest.json": "88e933cdc4fc5ddc0f7fd67c90d46b8e895001927f7a13aeb49ed1097738a0fe",
+      "retained-helper-freeze.json": "284166698565aed0ef582f9741cce1bd621d1efd2ed8ed7504130625851c9cd7"
+    },
+    "linux-release": {
+      "core-comparison.json": "de8ee0af1bcb088d1fe1158d37a1deaa8c265bf792f0cb760e3ff72d8dd7239d",
+      "core-commands.json": "362fdf65a61332b68026e801a19354c1a95d893b69988a53e1f6af4376ff987e",
+      "primitive-comparison.json": "1c1d10973983dd933412fd847e457938d3fb2f473c14f27031c0f50047389859",
+      "native-parent.json": "7dd206b951b1ca9f1aa21ad2ea3214b5f4d468427fdb6f89e1a10c6ab931c568",
+      "native-capture-manifest.json": "8838c32e41eae1842ced9776d6dbb1df4f5b0a8553d87117daed5f8af820bd98",
+      "retained-helper-freeze.json": "e912bc594160dc8fcb929904512f78dd0a5b00bbb75de83dfc922dd698f930d2"
+    },
+    "windows-clang-debug": {
+      "core-comparison.json": "d07e5ee3d51cef8a3bb8023478b7af2f468d4d2479ab396c66be331002768e4f",
+      "core-commands.json": "cda69aecdc65442351f543a6084b9e25e08a67be98953c7333c75d85270ee4d8",
+      "primitive-comparison.json": "e5b186798017f4543020adcd2f21bd52abce883401770de80a1e25d580ae700c",
+      "native-parent.json": "6cc77f0af50a79653466dbc4513dc6b85cdaa605282483866b3c6a7c0392e9d6",
+      "native-capture-manifest.json": "6a2f89507cc72d6c36555ca062b4f683a2f2eb1536613ee8be2c80ebbe52a835",
+      "retained-helper-freeze.json": "86ae41dd8fa81975902dde7aed7e74d60fa3e24d6de9e44b5441fcbd01e974ad"
+    },
+    "windows-clang-release": {
+      "core-comparison.json": "cf1811ee8705e6a650d7f919c819d38b4444c8430dcc32b2adb7c10da304f795",
+      "core-commands.json": "6774003be99b7d494c709139c813d7b7ae9e324e77506f2368557a0e5aee9ec8",
+      "primitive-comparison.json": "f961b2d10bb1238e5e3df88244e23b062c59b7d06565dfcd0ec4d607ecfdea20",
+      "native-parent.json": "05255cf983cfd03b90baaac5129f4048f56772fbfda70afcec4db5bbcdbc10da",
+      "native-capture-manifest.json": "a2910477110d822e0e8a8d9e11ba510172e6536f3168c3f05ef9e2352e0a3f67",
+      "retained-helper-freeze.json": "b06580b309ee465bff6c97d8ce768233cc0d69947b70103d748867a0d5fef9f8"
+    }
+  },
+  "presets": {
+    "linux-debug": {
+      "numerical": "mallett-numerical-linux-debug.json",
+      "products": "mallett-products-linux-debug.json"
+    },
+    "linux-release": {
+      "numerical": "mallett-numerical-linux-release.json",
+      "products": "mallett-products-linux-debug.json"
+    },
+    "windows-clang-debug": {
+      "numerical": "mallett-numerical-linux-release.json",
+      "products": "mallett-products-windows-clang-debug.json"
+    },
+    "windows-clang-release": {
+      "numerical": "mallett-numerical-linux-debug.json",
+      "products": "mallett-products-windows-clang-debug.json"
+    }
+  },
+  "files": {
+    "mallett-numerical-linux-debug.json": {
+      "sha256": "c86e2159a45fc720b744e18211d9e095caab0412f68c855e57ac5a6d1cc4a68e",
+      "bytes": 1319027,
+      "kind": "numerical"
+    },
+    "mallett-products-linux-debug.json": {
+      "sha256": "52c4af4d0080f083d63481ad9a21ad6f4a144adbd24bb703301fb61a617bd6c5",
+      "bytes": 1540941,
+      "kind": "products"
+    },
+    "mallett-numerical-linux-release.json": {
+      "sha256": "3bb758d925bbec279caf988ee1e694fd80dd0d477799b8e9dc1a296fb2536b40",
+      "bytes": 1319027,
+      "kind": "numerical"
+    },
+    "mallett-products-windows-clang-debug.json": {
+      "sha256": "c5210a09ffde6c57a1fb3b5cfe41af0243432797da7fdc951156e424dbebc2f2",
+      "bytes": 1541008,
+      "kind": "products"
+    }
+  },
+  "failure_amendment": {
+    "owner_authorization_date": "2026-10-10",
+    "binding": "Focused Mallett only, after existing tables/S-inverse/configuration preparation",
+    "diagnostic": "MissingRequiredResource component=mallett_midgray requirement=81x3_basis",
+    "native_contract": "Empty/malformed basis reached S-inverse fallback then synthetic_reference_raw rejection. Intact basis with availability false could admit through that fallback. Earlier input/recipe/table/S-inverse failures preempt both paths.",
+    "adopted_contract": "Availability plus 81 rows, 3 columns and 243 values required at focused binding; ordinary false, no fallback. Preserve earlier failures, valid pending/hash/counter behavior and already admitted holds; synthetic reference keeps its existing shape/data-only contract.",
+    "numerical_parity": "This timing/diagnostic/admission change is explicitly authorized, distinct from valid-source numerical identity."
+  }
+}
